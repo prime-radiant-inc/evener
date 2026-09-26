@@ -23,6 +23,10 @@ type probeDaemonConfig struct {
 	hubToken    string
 	source      wireProbeEnvelopeSource
 	descendants map[string]string
+	// setup, when set, wires extra seams on the fixture server before the
+	// envelope refresh, so a test can shape the daemon's own answers (its
+	// capability set, for instance).
+	setup func(*server.Server)
 	// childWatches is installed as the daemon's descendant watch accessor, so
 	// each listed child thread carries its own watches on read.
 	childWatches map[string][]agent.WatchStatusInfo
@@ -34,6 +38,9 @@ func startProbeDaemon(t *testing.T, cfg probeDaemonConfig) (*StatusProber, rende
 	srv.SetAppIdentity("local", cfg.sessionID)
 	srv.SetState(cfg.state)
 	srv.SetThreadEnvelopeSource(cfg.source)
+	if cfg.setup != nil {
+		cfg.setup(srv)
+	}
 	if cfg.childWatches != nil {
 		srv.SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo {
 			rows := make(map[string][]agent.WatchStatusInfo, len(threadIDs))
@@ -290,5 +297,38 @@ func TestProbeSeparatesActiveAndCompletedNonAgentJobs(t *testing.T) {
 	}
 	if len(result.CompletedJobs) != 1 || result.CompletedJobs[0].JobID != "job-completed" {
 		t.Fatalf("completed jobs = %+v, want only terminal non-agent job", result.CompletedJobs)
+	}
+}
+
+// The daemon's command-outcome statuses (command_exited_nonzero /
+// command_killed) are terminal: a reaped nonzero exit or a signal death is a
+// finished run, and SplitNonAgentJobs must file it with the completed jobs,
+// not leave it on the running rail forever.
+func TestTerminalJobStatusKnowsCommandOutcomes(t *testing.T) {
+	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
+		if !terminalJobStatus(status) {
+			t.Errorf("terminalJobStatus(%q) = false, want true", status)
+		}
+	}
+}
+
+func TestSplitNonAgentJobsFilesCommandOutcomeJobsAsCompleted(t *testing.T) {
+	running, completed := SplitNonAgentJobs([]appwire.EvenerJobInfo{
+		{JobID: "job_cf", JobType: "shell", Status: "command_exited_nonzero"},
+		{JobID: "job_ck", JobType: "shell", Status: "command_killed"},
+		{JobID: "job_run", JobType: "shell", Status: "running"},
+	})
+	if len(running) != 1 || running[0].JobID != "job_run" {
+		t.Errorf("running = %+v, want only job_run", running)
+	}
+	if len(completed) != 2 {
+		t.Fatalf("completed = %+v, want the two command-outcome jobs", completed)
+	}
+	got := map[string]bool{}
+	for _, job := range completed {
+		got[job.JobID] = true
+	}
+	if !got["job_cf"] || !got["job_ck"] {
+		t.Errorf("completed = %+v, want job_cf and job_ck", completed)
 	}
 }

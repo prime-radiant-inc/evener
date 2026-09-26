@@ -130,7 +130,7 @@ func FuzzRootTUIModelMisc(f *testing.F) {
 		for _, item := range []appwire.ThreadItem{{ToolName: "shell", Description: "run"}, {ToolName: "shell"}, {Type: "reasoning"}, {Text: "text"}, {Status: "status"}} {
 			_ = childActivityFromItem(item)
 		}
-		for _, s := range []string{"done", "failed", "cancelled", "stopped", "succeeded", "running"} {
+		for _, s := range []string{"done", "failed", "cancelled", "stopped", "succeeded", "command_exited_nonzero", "command_killed", "running"} {
 			_ = runStillRunning(s)
 		}
 		m.watchedChildRefs = map[string]bool{"child": true}

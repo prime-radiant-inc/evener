@@ -331,14 +331,14 @@ func wcvpAssertManagerTargetValidation(t *testing.T, r *wcvpReader) {
 	if err := runtimeJM.validateWatchTarget(runRec.JobID); err != nil {
 		t.Fatalf("running target validation: %v", err)
 	}
-	if status, terminal, err := runtimeJM.terminalWatchTargetStatus(runRec.JobID); err != nil || terminal || status != "" {
+	if status, _, terminal, err := runtimeJM.terminalWatchTargetStatus(runRec.JobID); err != nil || terminal || status != "" {
 		t.Fatalf("running target status = (%q, %v, %v)", status, terminal, err)
 	}
 	runtimeJM.mu.Lock()
 	runtimeJM.running[runRec.JobID].terminal = &terminalJob{status: jobstore.StatusCompleted}
 	runtimeJM.mu.Unlock()
 	wcvpRequireErrorPrefix(t, runtimeJM.validateWatchTarget(runRec.JobID), "target_terminal:")
-	if status, terminal, err := runtimeJM.terminalWatchTargetStatus(runRec.JobID); err != nil || !terminal || status != jobstore.StatusCompleted {
+	if status, _, terminal, err := runtimeJM.terminalWatchTargetStatus(runRec.JobID); err != nil || !terminal || status != jobstore.StatusCompleted {
 		t.Fatalf("runtime terminal status = (%q, %v, %v)", status, terminal, err)
 	}
 	runtimeJM.mu.Lock()
@@ -346,7 +346,7 @@ func wcvpAssertManagerTargetValidation(t *testing.T, r *wcvpReader) {
 	runtimeJM.running[runRec.JobID].finalize = &finalizeAttempt{done: make(chan struct{})}
 	runtimeJM.mu.Unlock()
 	wcvpRequireErrorPrefix(t, runtimeJM.validateWatchTarget(runRec.JobID), "target_terminal: job")
-	if status, terminal, err := runtimeJM.terminalWatchTargetStatus(runRec.JobID); err != nil || terminal || status != "" {
+	if status, _, terminal, err := runtimeJM.terminalWatchTargetStatus(runRec.JobID); err != nil || terminal || status != "" {
 		t.Fatalf("finalizing target status = (%q, %v, %v)", status, terminal, err)
 	}
 
@@ -366,16 +366,16 @@ func wcvpAssertManagerTargetValidation(t *testing.T, r *wcvpReader) {
 	wcvpRequireErrorPrefix(t, storeJM.validateWatchTarget("job_wcvp_terminal"), "target_terminal:")
 	wcvpRequireErrorPrefix(t, storeJM.validateWatchTarget("job_wcvp_nested"), "target_not_watchable:")
 	wcvpRequireErrorPrefix(t, storeJM.validateWatchTarget("job_wcvp_missing"), "target_not_found:")
-	if status, terminal, err := storeJM.terminalWatchTargetStatus("job_wcvp_terminal"); err != nil || !terminal || status != jobstore.StatusFailed {
+	if status, _, terminal, err := storeJM.terminalWatchTargetStatus("job_wcvp_terminal"); err != nil || !terminal || status != jobstore.StatusFailed {
 		t.Fatalf("stored terminal target status = (%q, %v, %v)", status, terminal, err)
 	}
-	if status, terminal, err := storeJM.terminalWatchTargetStatus("job_wcvp_nested"); err != nil || terminal || status != "" {
+	if status, _, terminal, err := storeJM.terminalWatchTargetStatus("job_wcvp_nested"); err != nil || terminal || status != "" {
 		t.Fatalf("nested target catch-up status = (%q, %v, %v)", status, terminal, err)
 	}
-	if status, terminal, err := storeJM.terminalWatchTargetStatus("job_wcvp_missing"); err != nil || terminal || status != "" {
+	if status, _, terminal, err := storeJM.terminalWatchTargetStatus("job_wcvp_missing"); err != nil || terminal || status != "" {
 		t.Fatalf("missing target catch-up status = (%q, %v, %v)", status, terminal, err)
 	}
-	if status, terminal, err := storeJM.terminalWatchTargetStatus(runtimeMessageAliasCaller); err != nil || terminal || status != "" {
+	if status, _, terminal, err := storeJM.terminalWatchTargetStatus(runtimeMessageAliasCaller); err != nil || terminal || status != "" {
 		t.Fatalf("session catch-up status = (%q, %v, %v)", status, terminal, err)
 	}
 
@@ -719,7 +719,7 @@ func wcvpAssertClosedStoreFailures(t *testing.T) {
 	if err := jm.validateWatchTarget("job_wcvp_missing"); err == nil {
 		t.Fatal("closed store target validation unexpectedly succeeded")
 	}
-	if _, _, err := jm.terminalWatchTargetStatus("job_wcvp_missing"); err == nil {
+	if _, _, _, err := jm.terminalWatchTargetStatus("job_wcvp_missing"); err == nil {
 		t.Fatal("closed store terminal-status lookup unexpectedly succeeded")
 	}
 	if got := jobProvenanceForWatch(jm, "job_wcvp"); got != nil {

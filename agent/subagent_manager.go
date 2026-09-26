@@ -269,6 +269,56 @@ func (m *subagentManager) drainForClose() []*subagent {
 	return subs
 }
 
+// closeOrRestoreResiduePending reports whether the manager has begun closing
+// or restore side effects are still settling on its children. Retirement
+// refuses on it, and the idle-release pre-gate refuses on it for the same
+// reason: a teardown through either would race the close or abandon a
+// settling side effect. Callers must hold m.mu.
+func (m *subagentManager) closeOrRestoreResiduePending() bool {
+	return m.closing || m.activeRestoreSideEffects != 0
+}
+
+// hasRunningChildren reports whether any tracked child has unfinished work:
+// a run still executing, a drive or committed start in flight, a finalization
+// still draining, a restoration still reconstructing, or a runner whose done
+// channel has not closed. An opportunistic release of the owning runtime
+// must refuse while any of these hold instead of abandoning the child.
+func (m *subagentManager) hasRunningChildren() bool {
+	m.mu.Lock()
+	if len(m.reconstructing) != 0 {
+		m.mu.Unlock()
+		return true
+	}
+	subs := make([]*subagent, 0, len(m.subs))
+	for _, sub := range m.subs {
+		subs = append(subs, sub)
+	}
+	m.mu.Unlock()
+	for _, sub := range subs {
+		sub.mu.Lock()
+		busy := sub.running || sub.driving || sub.finalizing
+		done := sub.done
+		sub.mu.Unlock()
+		if busy {
+			return true
+		}
+		if done == nil {
+			// A restored-idle record is built without a runner channel and
+			// keeps it until its first run starts (resetSubagentForRunLocked
+			// sets running and done under one hold), so nil done is the
+			// restored-idle steady state, not liveness — treating it as busy
+			// would pin the owner's release forever.
+			continue
+		}
+		select {
+		case <-done:
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 // countsTowardCap reports whether a record occupies a retention slot: a terminal
 // record (completed|failed|cancelled) whose close has not timed out. running
 // children and close-timed-out records never count, so they cannot deadlock

@@ -130,6 +130,12 @@ func TestKeybindingsStorePostRenameFailurePublishesNewState(t *testing.T) {
 	if _, postRename := errors.AsType[*KeybindingsPostRenameError](patchErr); !postRename {
 		t.Fatalf("post-rename error type=%T, want *KeybindingsPostRenameError", patchErr)
 	}
+	// The same state also answers the hub's generic write-applied check
+	// (app_write_applied.go's writeDidApply), so a caller that only knows
+	// ErrWriteApplied recognizes it too, without a type switch.
+	if !errors.Is(patchErr, ErrWriteApplied) {
+		t.Fatalf("post-rename error = %v, want errors.Is(err, ErrWriteApplied)", patchErr)
+	}
 	if got := failing.Snapshot(); got.Revision != 2 || !reflect.DeepEqual(got.Rules, newConfig.Rules) {
 		t.Fatalf("post-rename memory=%#v, want revision 2/rules %#v", got, newConfig.Rules)
 	}

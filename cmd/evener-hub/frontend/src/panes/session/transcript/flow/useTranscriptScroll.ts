@@ -37,7 +37,14 @@ import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isDormantTranscript } from "../transcriptVisibility";
-import { isAtBottom, isNearTop, readScrollMetrics, type ScrollMetrics } from "./scrollMetrics";
+import {
+  contentGrewBelowViewport,
+  isAtBottom,
+  isEndBelowFold,
+  isNearTop,
+  readScrollMetrics,
+  type ScrollMetrics,
+} from "./scrollMetrics";
 import { type CapturedTranscriptView, registerTranscriptView } from "./transcriptViewRegistry";
 
 export interface UseTranscriptScrollOptions {
@@ -82,6 +89,16 @@ export interface UseTranscriptScrollOptions {
    * already told.
    */
   askDockActivationEpoch?: number;
+  /** Whether a held-steering trailing row mounts an otherwise dormant transcript. */
+  heldVisible?: boolean;
+  /**
+   * The held-steering ghost stack's arrival counter (Session's
+   * useHeldSteerEpoch). Same role as askDockActivationEpoch: a held steer
+   * APPEARING changes no turn/item shape, so this carries the arrival edge
+   * for the pill. Removals never bump it (announced, not counted), so a
+   * departure leaves the pill alone.
+   */
+  heldEpoch?: number;
 }
 
 export interface ViewAnchorPosition {
@@ -763,6 +780,8 @@ export function useTranscriptScroll({
   sourceTurnRowIndexes,
   askDockPending = false,
   askDockActivationEpoch = 0,
+  heldVisible = false,
+  heldEpoch = 0,
 }: UseTranscriptScrollOptions): UseTranscriptScrollResult {
   const [pillCount, setPillCount] = useState(0);
   // The first failed turn's index, while the reader hasn't seen it yet
@@ -1093,10 +1112,11 @@ export function useTranscriptScroll({
   // mount effect below would silently never re-run at the one render where
   // VirtualList actually appears - initializedRef stuck false, no
   // scroll-to-bottom, no scroll listener, no stick-to-bottom, for the rest
-  // of the pane's mounted life. isDormantTranscript mirrors Session.tsx's
-  // own render condition exactly, so this flips at the SAME transition
-  // VirtualList actually mounts at.
-  const hasContent = !isDormantTranscript(model?.turns ?? []);
+  // of the pane's mounted life. isDormantTranscript plus heldVisible mirrors
+  // Session.tsx's own render condition exactly, so this flips at the SAME
+  // transition VirtualList actually mounts at. Ask-only dormant behavior is
+  // intentionally unchanged.
+  const hasContent = heldVisible || !isDormantTranscript(model?.turns ?? []);
   // Track hasContent transitions so a false->true flip (VirtualList remounts
   // after the model briefly went undefined - e.g. a store resync that clears
   // the thread, or the same ref re-hydrating) re-runs the one-time
@@ -1413,14 +1433,7 @@ export function useTranscriptScroll({
       // assignment genuinely moves scrollTop and the browser dispatches for it.
       const previous = lastScrollGeometryRef.current;
       lastScrollGeometryRef.current = m;
-      if (
-        !gestured &&
-        wasAtBottomRef.current &&
-        !isAtBottom(m) &&
-        m.clientHeight === previous.clientHeight &&
-        m.scrollHeight > previous.scrollHeight &&
-        m.scrollTop >= previous.scrollTop
-      ) {
+      if (!gestured && wasAtBottomRef.current && contentGrewBelowViewport(previous, m)) {
         el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
         return;
       }
@@ -1467,6 +1480,86 @@ export function useTranscriptScroll({
       if (isNearTop(m.scrollTop)) loadOlderRef.current().catch(() => {});
     }
 
+    // A geometry change that never produces a scroll event: a webfont swaps in
+    // after the mount's landing (scrollHeight grows while the offset stays
+    // pinned - measured 11466 -> 11487 at document.fonts.ready), the
+    // virtualizer adopts newly-measured row heights without moving scrollTop,
+    // or the port itself shrinks because something outside the transcript grew
+    // (the pane header's cadence trace appearing - measured clientHeight
+    // 671 -> 667 - or the composer gaining a line). Each leaves the reader
+    // short of the true bottom with wasAtBottomRef still true: no pill, nothing
+    // to click. Re-pin to the true bottom from live geometry.
+    //
+    // No growth-since-baseline test here, unlike the scroll listener's
+    // contentGrewBelowViewport: a scroll event may be the reader's own
+    // movement, so that path has to prove the change was not them, but these
+    // triggers never are (and the gesture veto below covers a reader mid-way
+    // through one). "Was following the bottom, and the true end is out of
+    // view" is the whole condition, which also holds when a scroll event in
+    // the same frame already took the shrunk geometry as its baseline (scroll
+    // events dispatch before ResizeObserver delivery), and for a shortfall
+    // inside isAtBottom's rounding tolerance, which nothing else would ever
+    // correct. A reader scrolled away has wasAtBottomRef false and is never
+    // moved.
+    let reanchorRetryFrame: number | null = null;
+    // Re-run once the frame boundary clears a pending gesture marker (the same
+    // frame markGesture schedules its own clear on). Only armed for a growth
+    // the gesture actually vetoed, so it is not a poll: for a drag or wheel the
+    // marker is gone by the next frame, and for the one unbounded case (a
+    // stationary middle-button hold) it stops the moment the hold does.
+    function scheduleReanchorRetry() {
+      if (reanchorRetryFrame !== null) return;
+      reanchorRetryFrame = requestAnimationFrame(() => {
+        reanchorRetryFrame = null;
+        reanchorIfEndLeftView();
+      });
+    }
+    function reanchorIfEndLeftView() {
+      if (!el) return;
+      const m = measure(el);
+      // The same gesture veto the scroll listener applies, but READ rather than
+      // consumed: this is not the event a pending gesture caused (content
+      // growth fires none), so the marker must survive for the scroll event
+      // that the gesture's own movement still delivers.
+      const gestured = gesturePendingRef.current || middleButtonHeldRef.current;
+      const endLeftView = isEndBelowFold(m);
+      // A vetoed correction MUST be retried: the marker can outlive this
+      // trigger with no further resize or font event (a stationary
+      // middle-button hold, a selection drag), and a dropped correction would
+      // leave the reader permanently short of the bottom with wasAtBottomRef
+      // still true and no pill to recover with.
+      if (wasAtBottomRef.current && endLeftView && gestured) {
+        scheduleReanchorRetry();
+        return;
+      }
+      lastScrollGeometryRef.current = m;
+      if (wasAtBottomRef.current && endLeftView) {
+        el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
+      }
+    }
+
+    let disposed = false;
+    // The fonts trigger covers the swap landing before the virtualizer has
+    // re-measured the rows; the observer covers the row measurement itself
+    // (the content) and the port's own resize (the scroll element).
+    const fonts = document.fonts;
+    if (fonts) {
+      void fonts.ready
+        .then(() => {
+          if (!disposed) reanchorIfEndLeftView();
+        })
+        .catch(() => {});
+    }
+    let geometryObserver: ResizeObserver | undefined;
+    const content = el.firstElementChild;
+    if (typeof ResizeObserver !== "undefined" && content) {
+      geometryObserver = new ResizeObserver(() => {
+        if (!disposed) reanchorIfEndLeftView();
+      });
+      geometryObserver.observe(content);
+      geometryObserver.observe(el);
+    }
+
     el.addEventListener("scroll", handleScroll);
     el.addEventListener("wheel", markWheel, { passive: true });
     el.addEventListener("touchstart", startTouch, { passive: true });
@@ -1481,6 +1574,9 @@ export function useTranscriptScroll({
     window.addEventListener("blur", endAutoscrollOnFocusLoss, { passive: true });
     document.addEventListener("visibilitychange", forgetGesturesWhenHidden, { passive: true });
     return () => {
+      disposed = true;
+      if (reanchorRetryFrame !== null) cancelAnimationFrame(reanchorRetryFrame);
+      geometryObserver?.disconnect();
       el.removeEventListener("scroll", handleScroll);
       el.removeEventListener("wheel", markWheel);
       el.removeEventListener("touchstart", startTouch);
@@ -1561,6 +1657,19 @@ export function useTranscriptScroll({
     if (!initializedRef.current || wasAtBottomRef.current) return;
     setPillCount((count) => count + 1);
   }, [askDockActivationEpoch]);
+
+  // The held-steer stack's arrival edge (see the option's doc comment):
+  // keyed on the epoch, never on stack presence, and a pane opened with a
+  // hold already in flight never fires it (initial mount scrolls to the
+  // end; the first observation baselines without a bump).
+  const prevHeldEpochRef = useRef(heldEpoch);
+  useLayoutEffect(() => {
+    const previous = prevHeldEpochRef.current;
+    prevHeldEpochRef.current = heldEpoch;
+    if (heldEpoch === previous || heldEpoch === 0) return;
+    if (!initializedRef.current || wasAtBottomRef.current) return;
+    setPillCount((count) => count + 1);
+  }, [heldEpoch]);
 
   // Content-changed reaction: fires only when the turn/item SHAPE actually
   // changes (item count, the first turn's identity, or the failed-turn

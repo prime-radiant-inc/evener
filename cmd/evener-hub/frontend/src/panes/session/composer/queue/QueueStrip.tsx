@@ -12,10 +12,15 @@ import type { InputItem } from "@evener/appwire-client";
 import { canonicalSkillNames, errorText, STEER_UNAVAILABLE, sessionActionError } from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
 import { copyToClipboard } from "../../../../shell/palette/commands";
-import { controlsFor, pressRefusal } from "../../../../stores/liveControls";
+import { controlsFor, pressLocalRecoveryFenced, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
-import { threadsStore, useThreadsStore } from "../../../../stores/threads";
+import {
+  readMutationPersistence,
+  retryBlockedBySnapshot,
+  threadsStore,
+  useThreadsStore,
+} from "../../../../stores/threads";
 import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
@@ -25,6 +30,7 @@ import {
   retryBlockedPendingTurn,
   submitWithPendingTracking,
   useBlockedMutationEntries,
+  useCanceledMutationEntries,
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "./pendingTurnsStore";
@@ -115,8 +121,24 @@ function ActionButton({ disabledReason, ...iconButtonProps }: { disabledReason?:
 
 const ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available for this session";
 
+// The recovery-fenced reading of the same refusal: the hub rejects every queue
+// action (turn/promoteQueuedAsSteer, turn/drainAsSteer, turn/cancelQueued) for
+// a fenced session until the explicit Resume clears it, so the press names
+// that path rather than a generic unavailability.
+const RECOVERY_ACTIONS_UNAVAILABLE_REASON = "Queue actions aren't available until this session is resumed";
+
 function recordContent(record: MutationOutboxRecord): { text: string; imageCount: number; skillNames: string[] } {
-  const input = Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : [];
+  // A promoted row's composed content lives in its optimisticDisplay.input -
+  // its wire params carry only the queue position - so this reading prefers
+  // the display input and falls back to the payload input every other
+  // method populates (the same precedence pendingEntries' outboxInput gives
+  // pending rows).
+  const display = record.optimisticDisplay;
+  const displayInput =
+    display && typeof display === "object" && "input" in display && Array.isArray(display.input)
+      ? (display.input as InputItem[])
+      : undefined;
+  const input = displayInput ?? (Array.isArray(record.payload.input) ? (record.payload.input as InputItem[]) : []);
   const text = input
     .filter((item): item is InputItem & { text: string } => item.type === "text" && typeof item.text === "string")
     .map((item) => item.text)
@@ -170,22 +192,33 @@ export function QueueStrip({
 }: QueueStripProps): ReactNode {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const mutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
+  const recoveryObligated = useThreadsStore((s) => s.restartBlockingObligations.has(sessionRef));
   const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue").filter(
-    (entry) => entry.state !== "blockedUnknown",
+    // A queue-method row Stop canceled (or one whose delivery turned unknown)
+    // is a durable row below, not a bare pending one - the same slot rule the
+    // blocked state already follows.
+    (entry) => entry.state !== "blockedUnknown" && entry.state !== "canceled",
   );
   const recoveryEntries = useRecoveryEntries(sessionRef).filter(
     (record) => record.method !== "notes/human/set" && record.clientMutationId !== activeRecoveryId,
   );
+  // Canceled note saves are owned by the note editor (humanNoteDrafts reports
+  // "Note save was canceled by Stop"), the same way blocked ones are.
   const blockedEntries = useBlockedMutationEntries(sessionRef).filter((record) => record.method !== "notes/human/set");
+  const canceledEntries = useCanceledMutationEntries(sessionRef).filter(
+    (record) => record.method !== "notes/human/set",
+  );
   const durableEntries = [
     ...recoveryEntries.map((record) => ({ kind: "recovery" as const, record })),
     ...blockedEntries.map((record) => ({ kind: "blocked" as const, record })),
+    ...canceledEntries.map((record) => ({ kind: "canceled" as const, record })),
   ].sort((left, right) => left.record.intentSequence - right.record.intentSequence);
   const toasts = useToasts();
   // Keyed by daemon-minted entryId (stable across a re-render even as
   // indices shift), not row index - mirrors the legacy renderer's own
   // setQueuedRowActionsDisabled keying.
   const [busyEntryIds, setBusyEntryIds] = useState<ReadonlySet<string>>(new Set());
+  const [retryErrors, setRetryErrors] = useState<ReadonlyMap<string, string>>(new Map());
 
   const queue = model?.queue ?? null;
   const depth = queue?.depth ?? 0;
@@ -214,7 +247,20 @@ export function QueueStrip({
     });
   }
 
-  async function handlePromote(index: number, entryId: string): Promise<void> {
+  async function handlePromote(
+    index: number,
+    entryId: string,
+    displayText: string,
+    skillNames?: readonly string[],
+  ): Promise<void> {
+    // The recovery fence, re-read live at the press (the same render-vs-press
+    // rule as pressRefusal below): the hub refuses turn/promoteQueuedAsSteer
+    // for the obligation's whole window, so an offered press could only mint
+    // durable intent that parks until the explicit Resume action clears it.
+    if (pressLocalRecoveryFenced(sessionRef)) {
+      toasts.push("error", RECOVERY_ACTIONS_UNAVAILABLE_REASON);
+      return;
+    }
     // Judged on the store's live controls at the press, not the render's
     // (stores/liveControls.ts): the turn can have ended in between.
     const refusal = pressRefusal(sessionRef, "drain");
@@ -224,7 +270,10 @@ export function QueueStrip({
     }
     setRowBusy(entryId, true);
     try {
-      await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId);
+      await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId, {
+        text: displayText,
+        skillNames,
+      });
       // Success is entirely rendered by the daemon's own thread/queueChanged
       // (row removed) + evener/steering/injected (transcript shows it) - no
       // local mirror, per parity §B.
@@ -239,6 +288,14 @@ export function QueueStrip({
   }
 
   async function handleCancel(index: number, entryId: string): Promise<void> {
+    // The recovery fence, re-read live at the press: the hub refuses
+    // turn/cancelQueued for the obligation's whole window, so an offered press
+    // could only mint durable intent that parks until the explicit Resume
+    // action clears it.
+    if (pressLocalRecoveryFenced(sessionRef)) {
+      toasts.push("error", RECOVERY_ACTIONS_UNAVAILABLE_REASON);
+      return;
+    }
     setRowBusy(entryId, true);
     try {
       await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
@@ -255,6 +312,14 @@ export function QueueStrip({
     fullText: string,
     skillNames?: readonly string[],
   ): Promise<void> {
+    // The recovery fence, re-read live at the press. An edit refuses as a
+    // whole: restoring the text without the cancelQueued half would leave the
+    // row and the composer carrying the same message, and the cancel alone
+    // could only park.
+    if (pressLocalRecoveryFenced(sessionRef)) {
+      toasts.push("error", RECOVERY_ACTIONS_UNAVAILABLE_REASON);
+      return;
+    }
     setRowBusy(entryId, true);
     try {
       // FIRST - loser-safe: the user's text is safely in the composer
@@ -277,6 +342,15 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
+    // The recovery fence, re-read live at the press: the hub refuses
+    // turn/drainAsSteer for the obligation's whole window, so an offered press
+    // could only mint durable intent that parks until the explicit Resume
+    // action clears it. Ahead of the busy report so a refusal never churns
+    // the shared busy state.
+    if (pressLocalRecoveryFenced(sessionRef)) {
+      toasts.push("error", RECOVERY_ACTIONS_UNAVAILABLE_REASON);
+      return;
+    }
     const refusal = pressRefusal(sessionRef, "drain");
     if (refusal !== undefined) {
       toasts.push("error", refusal);
@@ -301,7 +375,6 @@ export function QueueStrip({
       await submitWithPendingTracking(
         {
           ref: sessionRef,
-          method: "drain",
           recoveryId: activeRecoveryId,
           text,
           attachments,
@@ -338,10 +411,34 @@ export function QueueStrip({
 
   async function handleRetry(record: MutationOutboxRecord): Promise<void> {
     setRowBusy(record.clientMutationId, true);
+    setRetryErrors((errors) => {
+      const next = new Map(errors);
+      next.delete(record.clientMutationId);
+      return next;
+    });
+    const reportFailure = (cause: string) =>
+      setRetryErrors((errors) => new Map(errors).set(record.clientMutationId, `Retry failed: ${cause}`));
     try {
-      await retryBlockedPendingTurn(record.clientMutationId, sessionRef);
+      if (!(await retryBlockedPendingTurn(record.clientMutationId, sessionRef))) {
+        // The projection is already refreshed at this point:
+        // retryBlockedPendingTurn is mutateThenRefresh, which awaits its refresh
+        // before resolving, so this decides on the state that refresh observed
+        // (issue #1722 - a second refresh here read the same durable rows and
+        // fed nothing).
+        const { outbox } = await readMutationPersistence(sessionRef);
+        const current = outbox.find((entry) => entry.clientMutationId === record.clientMutationId);
+        if (current?.state === "blockedUnknown")
+          reportFailure("Delivery still cannot be checked. The original message is kept; you can send a new message.");
+        else if (current?.state === "canceled")
+          // The refused-press counterpart for a canceled row: its release is
+          // the FIRST durable step of the retry, so a refusal leaves the row
+          // exactly as it was. The row itself still says what it is; this says
+          // the press did nothing (kata 2f41's rule that a refused control
+          // has to say so).
+          reportFailure("Still canceled by Stop. The original message is kept; press Retry again.");
+      }
     } catch (error) {
-      toasts.push("error", `Retry failed: ${errorText(error)}`);
+      reportFailure(errorText(error));
     } finally {
       setRowBusy(record.clientMutationId, false);
     }
@@ -436,7 +533,17 @@ export function QueueStrip({
                         : (controls.reason.drain ?? STEER_UNAVAILABLE)
                   }
                   onClick={() => {
-                    if (entryId !== undefined) void handlePromote(index, entryId);
+                    if (entryId !== undefined) {
+                      // The ghost's display text: the row's full text, or - for a
+                      // blank row - the same stripped preview the row renders
+                      // above: the image placeholder for an image-only row (its
+                      // whole content), and nothing for a skill-only row, where
+                      // the named markers carry the whole content and the raw
+                      // "[skill]" placeholder would only double it.
+                      const rowText = fullText ?? "";
+                      const displayText = rowText.trim() !== "" ? rowText : previewText;
+                      void handlePromote(index, entryId, displayText, entrySkillNames);
+                    }
                   }}
                 />
                 <ActionButton
@@ -473,13 +580,21 @@ export function QueueStrip({
         ))}
         {durableEntries.map(({ kind, record }) => {
           const rowBusy = busyEntryIds.has(record.clientMutationId);
-          if (kind === "blocked") {
+          const retryError = retryErrors.get(record.clientMutationId);
+          if (kind === "blocked" || kind === "canceled") {
+            // Delivery-uncertain rows and Stop-canceled rows share one slot
+            // (stop-cancellation-outbox §6 Display): both are this client's
+            // own undelivered submissions sitting in durable storage, and
+            // they differ only in the label - uncertain delivery versus a
+            // cancellation the user's own click wrote. The Retry affordance,
+            // its gating, and the error slot are identical.
             return (
               <li key={record.clientMutationId} className={CLASS.row}>
                 <span className={CLASS.rowText}>
-                  <span>Delivery uncertain</span>
+                  <span>{kind === "canceled" ? "Canceled by Stop" : "Delivery uncertain"}</span>
                   {" — "}
                   <span>{recordPreview(record)}</span>
+                  {retryError !== undefined && <span role="alert">{retryError}</span>}
                 </span>
                 <div className={CLASS.rowActions}>
                   <Button
@@ -487,14 +602,22 @@ export function QueueStrip({
                     variant="quiet"
                     disabled={
                       rowBusy ||
-                      !mutationAuthority ||
-                      !model ||
-                      model.status.type === "restartRequired" ||
-                      model.status.type === "notLoaded"
+                      // Retry is offered only when retryBlockedMutation can
+                      // actually act. Its snapshot-level refusals - every
+                      // notLoaded or restartRequired snapshot, any ref without
+                      // mutation authority, and a restart-blocking obligation
+                      // (a Stop, or a snapshot the daemon reports as
+                      // restartRequired/resumeRequired) - are shared with it as
+                      // retryBlockedBySnapshot (stores/threads.ts), so a
+                      // recovery-fenced local session keeps Retry disabled until
+                      // the explicit Resume action restores it; without the
+                      // obligation term an idle fenced row would offer a Retry
+                      // that always fails.
+                      retryBlockedBySnapshot(model?.status.type, mutationAuthority, recoveryObligated)
                     }
                     onClick={() => void handleRetry(record)}
                   >
-                    Retry
+                    {rowBusy ? "Retrying…" : "Retry"}
                   </Button>
                 </div>
               </li>

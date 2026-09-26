@@ -19,7 +19,7 @@
 //
 // Transcript chrome (TurnSeparator, SeenDivider, TurnFailureEndCap) is not
 // items and stays outside this map entirely; TurnBlock renders it directly.
-import type { ItemModel } from "@evener/appwire-client";
+import { type ItemModel, isUserAuthoredSteer } from "@evener/appwire-client";
 
 export type RowRole = "speaker" | "run";
 
@@ -43,7 +43,7 @@ export function rowRoleFor(item: ItemModel, opts: { opensExchange?: boolean }): 
   // margin-left: -speaker-gutter, which only exists under .runContent's
   // padding. So the condition asks the renderer's own question, kind included,
   // and not just `source`.
-  if (item.type === "steering" && item.source === "user" && item.steeringKind !== "human-note") {
+  if (item.type === "steering" && isUserAuthoredSteer(item)) {
     return "speaker";
   }
   if (item.type === "agentMessage" && opts.opensExchange === true) return "speaker";

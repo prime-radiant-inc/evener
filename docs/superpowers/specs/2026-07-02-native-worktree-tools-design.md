@@ -1144,7 +1144,12 @@ ever added, it and `isolation` must be mutually exclusive.)
 1. **At delegate creation**, the parent-side harness (not the child): resolves
    the main root; creates a managed worktree named `<delegate_id>` (e.g.
    `dlg_01H…` — the id is regex-legal under §2's underscore-inclusive rule and
-   needs no extra prefix), branched from the **parent's active HEAD** resolved
+   needs no extra prefix), whose **git branch** carries `delegate`'s optional
+   `name` argument — a parent-supplied mnemonic defaulting to the delegate id,
+   with every id-keyed surface staying id-keyed and every branch-acting
+   consumer resolving through the sidecar (see
+   `docs/superpowers/specs/2026-09-22-delegate-lane-branch-names.md`), branched
+   from the **parent's active HEAD** resolved
    per §2's active-root rule (`git -C <parent activeRoot> rev-parse
    --verify HEAD^{commit}`, SHA passed explicitly); writes the metadata
    sidecar with `delegate_id` and the parent's session id; **locks the

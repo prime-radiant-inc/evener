@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -96,10 +97,11 @@ func TestCovRun_HubErrorReturns1(t *testing.T) {
 // ---- run(): program.Run error returns 1 -------------------------------------
 
 func TestCovRun_ProgramErrorReturns1(t *testing.T) {
-	oldArgs, oldErr, oldGetenv, oldDirs, oldStart := processArgs, standardError, processGetenv, ensureUserConfigDirs, startHubClient
+	oldArgs, oldOut, oldErr, oldGetenv, oldDirs, oldStart := processArgs, standardOutput, standardError, processGetenv, ensureUserConfigDirs, startHubClient
 	oldProbe, oldInit, oldApply, oldReset, oldProgram := probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram
 	processArgs = func() []string { return []string{"evener-tui", "--state-dir=x"} }
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	standardOutput = &stdout
 	standardError = &stderr
 	processGetenv = func(string) string { return "" }
 	ensureUserConfigDirs = func() error { return nil }
@@ -114,7 +116,7 @@ func TestCovRun_ProgramErrorReturns1(t *testing.T) {
 		return &scriptedCovProgram{model: model, err: errors.New("program crash")}
 	}
 	t.Cleanup(func() {
-		processArgs, standardError, processGetenv, ensureUserConfigDirs = oldArgs, oldErr, oldGetenv, oldDirs
+		processArgs, standardOutput, standardError, processGetenv, ensureUserConfigDirs = oldArgs, oldOut, oldErr, oldGetenv, oldDirs
 		startHubClient = oldStart
 		probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
 	})
@@ -123,6 +125,10 @@ func TestCovRun_ProgramErrorReturns1(t *testing.T) {
 	}
 	if got, want := stderr.String(), "evener-tui: program crash\n"; got != want {
 		t.Fatalf("program error stderr = %q, want %q", got, want)
+	}
+	// A failed (or signal-driven) exit must still clear the terminal title.
+	if !strings.Contains(stdout.String(), "\x1b]2;\x07") {
+		t.Fatalf("program error exit did not clear the window title: stdout=%q", stdout.String())
 	}
 }
 
@@ -157,7 +163,8 @@ func TestCovRun_SuccessReturns0(t *testing.T) {
 	if code := run(); code != 0 {
 		t.Fatalf("run success = %d, want 0", code)
 	}
-	if got, want := stdout.String(), "goodbye\n"; got != want {
+	// The exit clears the terminal title before printing the restore hint.
+	if got, want := stdout.String(), "\x1b]2;\x07goodbye\n"; got != want {
 		t.Fatalf("success stdout = %q, want %q", got, want)
 	}
 	if stderr.Len() != 0 {

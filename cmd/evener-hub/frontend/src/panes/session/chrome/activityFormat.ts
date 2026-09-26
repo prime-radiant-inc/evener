@@ -60,3 +60,7 @@ export function jobStatusDotState(
     return "ended";
   return "idle";
 }
+
+// The shared package owns the job-status display words; re-export keeps the
+// web importers (rail, activity tree, job tools) on their existing path.
+export { jobStatusDisplay } from "@evener/appwire-client";

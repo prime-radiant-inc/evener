@@ -119,6 +119,7 @@ no router (reserved).
 | `evener/daemon/list` | hub | `DaemonListParams` | `DaemonListResponse` | Lists resident daemons with lifecycle and exact ownership identity, including archived, incompatible, and unresolved discovered processes. |
 | `evener/daemon/retire` | both | `DaemonRetireParams` | `DaemonRetireResponse` | Requests safe daemon retirement against exact ownership identity; reports whether the claim was accepted with the current lifecycle. |
 | `evener/daemon/status` | daemon | `DaemonStatusParams` | `DaemonStatusResponse` | Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility. |
+| `evener/daemon/idle-timeout/set` | daemon | `DaemonIdleTimeoutSetParams` | `DaemonIdleTimeoutSetResponse` | Retargets the automatic idle-retirement deadline (0 disables it) against exact ownership identity and answers with the current lifecycle; the Hub sets this from session archive decisions. |
 | `evener/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
 | `evener/subagentPreview` | hub | `EvenerSubagentPreviewParams` | `EvenerSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `evener/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
@@ -149,6 +150,7 @@ no router (reserved).
 | `evener/auth/list` | hub | `EmptyParams` | `AuthListResponse` | Lists auth status for all providers. |
 | `evener/auth/apiKey/set` | hub | `AuthApiKeySetParams` | `AuthStatusResponse` | Stores a provider API key; broadcasts evener/auth/updated. |
 | `evener/auth/apiKey/clear` | hub | `AuthApiKeyClearParams` | `AuthStatusResponse` | Clears a provider's stored file-layer key only, leaving any OAuth/ADC/env credential untouched; broadcasts evener/auth/updated. |
+| `evener/auth/apiKey/conditionalSet` | hub | `ApiKeyConditionalSetParams` | `ApiKeyConditionalSetResponse` | Conditionally stores a provider API key: re-resolves the instance's credential source and configuration revision under the credential write lock and refuses a stale revision or a non-writable scheme; broadcasts evener/auth/updated when it writes. |
 | `evener/auth/credentialJson/set` | hub | `AuthCredentialJsonSetParams` | `AuthStatusResponse` | Stores a Google credential JSON (service-account or application-default) for a gcp-adc instance after validating it; broadcasts evener/auth/updated. |
 | `evener/auth/device/start` | hub | `AuthDeviceStartParams` | `AuthDeviceStartResponse` | Begins a device-code auth flow (or signals fallback). |
 | `evener/auth/device/poll` | hub | `AuthDevicePollParams` | `AuthDevicePollResponse` | Polls a device-code flow; broadcasts evener/auth/updated when authorized. |
@@ -191,6 +193,13 @@ no router (reserved).
 | `evener/settings/agentsDoc/set` | hub | `AgentsDocSetParams` | `AgentsDocResponse` | Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
+| `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
+| `evener/host/add` | hub | `HostAddParams` | `HostRow` | Registers one sidecar host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots); validates like hub.toml loading and refuses a name hub.toml or the live set already holds. |
+| `evener/host/list` | hub | `EmptyParams` | `HostListResponse` | Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state. |
+| `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
+| `evener/host/remove` | hub | `HostRemoveParams` | `HostRemoveResponse` | Deregisters one sidecar host entry, stopping its supervisor and dropping its channel; hub.toml-declared names cannot be removed here. |
+| `evener/host/update` | hub | `HostUpdateParams` | `HostUpdateResponse` | Edits one live sidecar host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; hub.toml-declared names are refused. |
+| `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
 
 ## Notifications (server → client)
 
@@ -222,7 +231,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/job/finished` | `EvenerJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
 | `evener/delegate/updated` | `EvenerDelegateParams` | A stable delegate projection changed. |
 | `evener/jobs/treeUpdated` | `JobsTreeUpdatedParams` | The current-session activity tree changed; clients refresh the jobs tree. |
-| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
+| `evener/auth/updated` | `EvenerAuthUpdatedParams` | Broadcast after a successful auth mutation or provider-instance CRUD/live-model change. Clients refresh auth state and the instance list. |
 | `evener/launch/updated` | `EvenerLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
 | `evener/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `evener/navigation/invalidated` | `NavigationInvalidatedPayload` | Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources. |
@@ -281,6 +290,26 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `content` | `string` |  |  |
+
+
+### `ApiKeyConditionalSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `provider` | `string` |  |  |
+| `value` | `string` |  |  |
+| `expectedSource` | `string` | yes |  |
+| `expectedRevision` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
+
+
+### `ApiKeyConditionalSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `action` | `string` |  |  |
+| `reason` | `string` | yes |  |
+| `status` | `appwire.AuthStatusResponse` |  |  |
 
 
 ### `ArchiveParams`
@@ -459,6 +488,7 @@ An embedded type contributes its own fields inline.
 | `needsRefresh` | `bool` | yes |  |
 | `needsLogin` | `bool` | yes |  |
 | `error` | `string` | yes |  |
+| `configRevision` | `string` | yes |  |
 
 
 ### `AuthTestParams`
@@ -483,6 +513,21 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `commands` | `[]appwire.CommandDescriptor` |  |  |
+
+
+### `DaemonIdleTimeoutSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `identity` | `appwire.DaemonIdentity` |  |  |
+| `timeoutMillis` | `int64` |  |  |
+
+
+### `DaemonIdleTimeoutSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `lifecycle` | `appwire.DaemonLifecycle` |  |  |
 
 
 ### `DaemonListParams`
@@ -740,9 +785,68 @@ _(no fields)_
 | `data` | `[]appwire.HarnessDescriptor` |  |  |
 
 
+### `HostAddParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `entry` | `appwire.HostEntry` |  |  |
+
+
+### `HostAttachParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+
+
+### `HostAttachResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `attached` | `bool` |  |  |
+| `host` | `string` | yes |  |
+| `serverName` | `string` | yes |  |
+| `serverVersion` | `string` | yes |  |
+| `protocolVersion` | `string` | yes |  |
+| `hubVersion` | `string` | yes |  |
+| `os` | `string` | yes |  |
+| `arch` | `string` | yes |  |
+| `features` | `*appwire.FeatureSet` | yes |  |
+
+
+### `HostCredentialPushResult`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `instance` | `string` |  |  |
+| `action` | `string` |  |  |
+| `reason` | `string` | yes |  |
+
+
+### `HostEntry`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` | yes |  |
+| `address` | `string` |  |  |
+| `user` | `string` | yes |  |
+| `keyPath` | `string` | yes |  |
+| `evenerPath` | `string` | yes |  |
+| `configPath` | `string` | yes |  |
+| `addr` | `string` | yes |  |
+| `roots` | `[]string` | yes |  |
+
+
 ### `HostForwardedResult`
 
 _(no fields)_
+
+
+### `HostListResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `hosts` | `[]appwire.HostRow` |  |  |
 
 
 ### `HostNotificationParams`
@@ -754,6 +858,35 @@ _(no fields)_
 | `params` | `jsontext.Value` | yes |  |
 
 
+### `HostPushCredentialsParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+
+
+### `HostPushCredentialsResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+| `results` | `[]appwire.HostCredentialPushResult` |  |  |
+
+
+### `HostRemoveParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+
+
+### `HostRemoveResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `appwire.HostRow` |  |  |
+
+
 ### `HostRequestParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -761,6 +894,59 @@ _(no fields)_
 | `host` | `string` |  |  |
 | `method` | `string` |  |  |
 | `params` | `jsontext.Value` | yes |  |
+
+
+### `HostRow`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `address` | `string` | yes |  |
+| `user` | `string` | yes |  |
+| `keyPath` | `string` | yes |  |
+| `evenerPath` | `string` | yes |  |
+| `configPath` | `string` | yes |  |
+| `addr` | `string` | yes |  |
+| `roots` | `[]string` | yes |  |
+| `origin` | `string` |  |  |
+| `attached` | `bool` |  |  |
+| `serverName` | `string` | yes |  |
+| `serverVersion` | `string` | yes |  |
+| `hubVersion` | `string` | yes |  |
+| `os` | `string` | yes |  |
+| `arch` | `string` | yes |  |
+| `lastAttachError` | `string` | yes |  |
+| `midAttach` | `bool` |  |  |
+| `removed` | `bool` |  |  |
+
+
+### `HostStatusParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+
+
+### `HostStatusResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `appwire.HostRow` |  |  |
+
+
+### `HostUpdateParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `entry` | `appwire.HostEntry` |  |  |
+
+
+### `HostUpdateResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `appwire.HostRow` |  |  |
 
 
 ### `InitializeParams`
@@ -795,6 +981,7 @@ _(no fields)_
 | `vars` | `map[string]string` | yes |  |
 | `apiKeyEnv` | `string` | yes |  |
 | `credentialHeader` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceEditParams`
@@ -814,6 +1001,8 @@ _(no fields)_
 | `clearApiKeyEnv` | `bool` | yes |  |
 | `credentialHeader` | `string` | yes |  |
 | `clearCredentialHeader` | `bool` | yes |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceEntry`
@@ -840,7 +1029,9 @@ _(no fields)_
 | `hasStoredOAuth` | `bool` |  |  |
 | `envVar` | `string` | yes |  |
 | `shadowedEnvVar` | `string` | yes |  |
+| `renameLeavesRow` | `bool` | yes |  |
 | `storedEmail` | `string` | yes |  |
+| `configRevision` | `string` | yes |  |
 | `credentialRequired` | `bool` |  |  |
 | `warnings` | `[]string` | yes |  |
 | `models` | `[]appwire.InstanceModelEntry` | yes |  |
@@ -870,6 +1061,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceRemoveParams`
@@ -878,6 +1070,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
 | `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceSetDefaultParams`
@@ -885,6 +1078,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `InstanceSetModelDisabledParams`
@@ -894,6 +1088,7 @@ _(no fields)_
 | `name` | `string` |  |  |
 | `model` | `string` |  |  |
 | `disabled` | `bool` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `ItemLifecycleParams`
@@ -1742,6 +1937,7 @@ _(no fields)_
 | `statuses` | `[]string` | yes |  |
 | `sourceIds` | `[]string` | yes |  |
 | `includeSubagents` | `bool` | yes |  |
+| `statusOnly` | `bool` | yes |  |
 
 
 ### `ThreadListResponse`
@@ -1817,6 +2013,7 @@ _(no fields)_
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
 | `queue` | `appwire.QueueState` |  |  |
+| `consumedClientMutationIds` | `[]string` | yes |  |
 
 
 ### `ThreadReadParams`
@@ -1928,6 +2125,7 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `status` | `appwire.ThreadStatus` |  |  |
 | `failedToolCalls` | `*int` | yes |  |
+| `askPending` | `*bool` | yes |  |
 | `capabilities` | `*appwire.ThreadCapabilities` | yes |  |
 
 

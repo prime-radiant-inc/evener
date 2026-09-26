@@ -31,7 +31,7 @@ import { Disclosure } from "../../../widgets/disclosure";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { Markdown } from "../../../widgets/markdown";
 import { EntityRef } from "../transcript/EntityRef";
-import { formatQuietAge, quietAnchorMillis } from "./activityFormat";
+import { formatQuietAge, jobStatusDisplay, quietAnchorMillis } from "./activityFormat";
 import styles from "./activitypanel.module.css";
 import { useTreeNow } from "./treeNow";
 
@@ -209,6 +209,7 @@ function parseMillis(value: string | undefined): number | undefined {
 // delegateTiming rule.
 interface DetailSubject {
   status: string;
+  reason?: string;
   startedAt?: string;
   exitCode?: number;
   outputBytes: number;
@@ -221,6 +222,7 @@ function subjectOf(row: ActivityJobRow | ActivityDelegateRow, now: number): Deta
     const { job } = row;
     const subject: DetailSubject = {
       status: job.status,
+      reason: job.reason,
       startedAt: job.startedAt,
       outputBytes: job.outputBytes,
       quietForMs: now - quietAnchorMillis(job),
@@ -256,7 +258,9 @@ function metaText(row: ActivityJobRow | ActivityDelegateRow, now: number): strin
   const bytes = `${subject.outputBytes}b`;
   if (row.live) {
     const segments: string[] = [
-      subject.quietForMs !== undefined ? `${subject.status} ${formatQuietAge(subject.quietForMs)}` : subject.status,
+      subject.quietForMs !== undefined
+        ? `${jobStatusDisplay(subject.status, subject.reason)} ${formatQuietAge(subject.quietForMs)}`
+        : jobStatusDisplay(subject.status, subject.reason),
       bytes,
     ];
     const started = formatClockTime(subject.startedAt);
@@ -264,7 +268,7 @@ function metaText(row: ActivityJobRow | ActivityDelegateRow, now: number): strin
     return segments.join(" · ");
   }
   const segments: string[] = [];
-  if (subject.durationMs === undefined) segments.push(subject.status);
+  if (subject.durationMs === undefined) segments.push(jobStatusDisplay(subject.status, subject.reason));
   if (subject.exitCode !== undefined && subject.exitCode !== 0) segments.push(`exit ${subject.exitCode}`);
   segments.push(bytes);
   return segments.join(" · ");

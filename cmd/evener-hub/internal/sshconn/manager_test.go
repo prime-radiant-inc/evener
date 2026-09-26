@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -39,8 +40,8 @@ func goodStartFn(t *testing.T) func(context.Context, []string, io.Writer) (Stdio
 // gateHook replaces the fixed sleeps that used to order a test goroutine against
 // a host gate the test holds. Its hook signals arrival at the gate and parks the
 // caller until open, so the test decides which contender runs first rather than
-// hoping a sleep was long enough. It stays inert until armed, because the
-// manager is built — and usually attached — before the interleaving begins.
+// hoping a sleep was long enough. A test must arm it before triggering the race;
+// hook panics on an earlier call, so arming too late fails loudly.
 type gateHook struct {
 	arrived  chan struct{}
 	release  chan struct{}
@@ -53,15 +54,18 @@ func newGateHook() *gateHook {
 	return &gateHook{arrived: make(chan struct{}), release: make(chan struct{})}
 }
 
-// arm makes subsequent hook calls signal and park.
+// arm begins the interleaving the gate holds: from here hook calls signal and
+// park, and a hook call before it panics.
 func (g *gateHook) arm() { g.armed.Store(true) }
 
 // hook reports the first armed caller's arrival and parks it; a later contender
 // arriving before open proceeds without parking, since the arrival it would
-// report has already been observed.
+// report has already been observed. A call before arm is a test ordering bug —
+// the hook is not holding anything yet — so it panics rather than letting the
+// manager run past the gate unnoticed.
 func (g *gateHook) hook() {
 	if !g.armed.Load() {
-		return
+		panic("gateHook.hook called before arm: the test armed too late, so the hook is not holding the contender it means to")
 	}
 	var first bool
 	g.once.Do(func() {
@@ -85,6 +89,20 @@ func (g *gateHook) wait(t *testing.T, what string) {
 // open releases a parked caller. Idempotent, so a test can defer it and still
 // release explicitly once the interleaving is established.
 func (g *gateHook) open() { g.openOnce.Do(func() { close(g.release) }) }
+
+// A hook call before arm means the test armed too late: the hook would return
+// silently, the manager would run straight through the gate the test believes it
+// holds, and the mistake would surface only as a later timeout. Reproduce that
+// mistake directly and require it to be loud.
+func TestGateHookHookBeforeArmFailsLoudly(t *testing.T) {
+	g := newGateHook()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("gateHook.hook before arm returned quietly; the late-arm ordering bug would stay silent")
+		}
+	}()
+	g.hook()
+}
 
 // exitSignal turns "the supervisor stood down" into an observation. Tests that
 // used to sleep long enough to hope a supervisor had finished wait on it
@@ -206,7 +224,7 @@ func TestEnsureReplacesLinkLostChannel(t *testing.T) {
 
 	dead := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
 	dead.markLost()
-	m.publishChannel("alpha", dead)
+	m.publishChannel("alpha", dead, host)
 	if m.Attached("alpha") {
 		t.Fatal("link-lost channel reported attached")
 	}
@@ -241,7 +259,7 @@ func TestEnsureClosesEveryChannelItReplaces(t *testing.T) {
 	for round := range 3 {
 		dead := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
 		dead.markLost()
-		m.publishChannel(host.Name, dead)
+		m.publishChannel(host.Name, dead, host)
 
 		live, err := m.Ensure(context.Background(), host.Name)
 		if err != nil {
@@ -285,7 +303,7 @@ func TestManagerAttached(t *testing.T) {
 		t.Fatal("never-ensured host reported attached")
 	}
 	ch := &Channel{done: make(chan struct{}), lost: make(chan struct{})}
-	m.publishChannel("alpha", ch)
+	m.publishChannel("alpha", ch, host)
 	if !m.Attached("alpha") {
 		t.Fatal("live channel not reported attached")
 	}
@@ -303,6 +321,55 @@ func TestManagerAttached(t *testing.T) {
 	}
 	if m.Attached("missing") {
 		t.Fatal("unknown host reported attached")
+	}
+}
+
+// publishChannel must stamp a channel with the registration the caller
+// validated, not with whatever entry the registry holds when it runs: a re-read
+// there is a TOCTOU. An update landing between the caller's
+// hostreg.Registry.SameRegistration recheck and the publish would otherwise
+// stamp a channel built from the pre-update entry with the post-update one,
+// which MatchesRegistration then accepts for a row rendering the new
+// configuration — the same "a row adopts another generation's channel and
+// facts" defect the registration field exists to prevent, now on the publisher
+// side. The registry here already holds the re-added entry (identical content,
+// fresh generation) when the channel is published for the entry it was dialed
+// for, so the channel must still pair with the dialed entry and refuse the
+// visible one. Deterministic, no sleeps.
+func TestPublishChannelStampsTheValidatedRegistrationNotTheVisibleOne(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+	dialed, ok := reg.Get("alpha")
+	if !ok {
+		t.Fatal("reg.Get: not registered")
+	}
+	// The remove/re-add the in-flight attach raced: same content, advanced
+	// generation. This is what the registry holds when the publish runs, and
+	// what a re-read there would have stamped onto the channel.
+	if err := reg.Remove("alpha"); err != nil {
+		t.Fatalf("reg.Remove: %v", err)
+	}
+	if err := reg.Add(host); err != nil {
+		t.Fatalf("reg.Add after the remove: %v", err)
+	}
+	visible, ok := reg.Get("alpha")
+	if !ok {
+		t.Fatal("reg.Get after the re-add: not registered")
+	}
+	if hostreg.SameRegistration(dialed, visible) {
+		t.Fatal("the re-add did not advance the registration; the test would exercise nothing")
+	}
+
+	m := newTestManager(t, reg, &fakeRunner{}, Options{})
+	ch := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
+	if !m.publishChannel("alpha", ch, dialed) {
+		t.Fatal("publishChannel refused a live manager")
+	}
+	if !ch.MatchesRegistration(dialed) {
+		t.Fatal("the channel does not pair with the registration it was dialed for")
+	}
+	if ch.MatchesRegistration(visible) {
+		t.Fatal("the channel adopted the entry the registry holds now, not the one it was dialed for")
 	}
 }
 
@@ -634,8 +701,10 @@ func TestEnsureHonorsContextWhileWaitingForHostLock(t *testing.T) {
 		beforeHostGate: func(string) { arrival.hook() },
 	})
 
-	// Hold the host gate, the way a long preflight or attach does.
+	// Hold the host gate, the way a long preflight or attach does. The
+	// acquisition is paired so the gate entry comes back down with the test.
 	lock := m.hostLock("alpha")
+	defer m.releaseHostLock("alpha")
 	lock.Lock()
 	defer lock.Unlock()
 
@@ -859,6 +928,10 @@ func TestFailedEnsureDuringLinkDropStillRecovers(t *testing.T) {
 			events := make(chan Event, 128)
 			supGate := newGateHook()
 			ensureGate := newGateHook()
+			// beforeHostGate runs at the top of every Ensure, the initial attach
+			// below included. Only the contender may reach the gate: the initial
+			// attach has to run free, and gateHook.hook panics on a pre-arm call.
+			var attached atomic.Bool
 			opts := Options{
 				OnEvent:     func(ev Event) { events <- ev },
 				BackoffBase: time.Millisecond,
@@ -867,7 +940,11 @@ func TestFailedEnsureDuringLinkDropStillRecovers(t *testing.T) {
 				jitter:      func(d time.Duration) time.Duration { return d },
 			}
 			if tc.parkEnsure {
-				opts.beforeHostGate = func(string) { ensureGate.hook() }
+				opts.beforeHostGate = func(string) {
+					if attached.Load() {
+						ensureGate.hook()
+					}
+				}
 			} else {
 				opts.beforeSuperviseGate = func(string, *Channel) { supGate.hook() }
 			}
@@ -885,6 +962,7 @@ func TestFailedEnsureDuringLinkDropStillRecovers(t *testing.T) {
 				gate = ensureGate
 			}
 			gate.arm()
+			attached.Store(true)
 			defer gate.open()
 
 			// Armed before the drop: the supervisor reaches beforeSuperviseGate the
@@ -1215,6 +1293,7 @@ func TestAttachEventIsEmittedUnderTheHostLock(t *testing.T) {
 				return
 			}
 			lock := m.hostLock(ev.Host)
+			defer m.releaseHostLock(ev.Host)
 			acquired := lock.TryLock()
 			if acquired {
 				lock.Unlock()
@@ -2463,10 +2542,12 @@ func TestReconnectStandsDownForAMappedDroppedChannel(t *testing.T) {
 
 	ch := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
 	ch.markLost()
-	if !m.publishChannel("alpha", ch) {
+	if !m.publishChannel("alpha", ch, host) {
 		t.Fatal("publishChannel refused a live manager")
 	}
-	if got := m.reconnectOnce(context.Background(), host, m.hostLock("alpha")); got {
+	hostGate := m.hostLock("alpha")
+	defer m.releaseHostLock("alpha")
+	if got := m.reconnectOnce(context.Background(), host, hostGate); got {
 		t.Fatal("reconnectOnce reported work to do for a host another channel owns")
 	}
 	if starts := len(fr.recordedStarts()); starts != 0 {
@@ -3371,6 +3452,167 @@ func TestClientIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
 	}
 }
 
+// PreflightIfAttached is a test-only/convenience attached-only accessor: it
+// answers from the installed channel's captured preflight alone, never
+// preflighting or attaching a dormant host, and stops answering the moment
+// that channel drops or the manager closes.
+func TestPreflightIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BackoffBase: time.Hour,
+		BackoffMax:  time.Hour,
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+
+	if pf, ok := m.PreflightIfAttached("alpha"); ok {
+		t.Fatalf("PreflightIfAttached(unattached) = %+v, true; want zero, false", pf)
+	}
+	if pf, ok := m.PreflightIfAttached("ghost"); ok {
+		t.Fatalf("PreflightIfAttached(unknown host) = %+v, true; want zero, false", pf)
+	}
+	if runs, starts := len(fr.recordedRuns()), len(fr.recordedStarts()); runs != 0 || starts != 0 {
+		t.Fatalf("PreflightIfAttached attached a dormant host: %d runs, %d starts", runs, starts)
+	}
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	pf, ok := m.PreflightIfAttached("alpha")
+	if !ok {
+		t.Fatalf("PreflightIfAttached(attached) = %+v, false; want the live preflight, true", pf)
+	}
+	if !reflect.DeepEqual(pf, ch.Preflight()) {
+		t.Fatalf("PreflightIfAttached = %+v; want the installed channel's %+v", pf, ch.Preflight())
+	}
+	if pf, ok := m.PreflightIfAttached("  alpha  "); !ok || !reflect.DeepEqual(pf, ch.Preflight()) {
+		t.Fatalf("PreflightIfAttached did not normalize the name: %+v, %v", pf, ok)
+	}
+
+	ch.markLost()
+	if pf, ok := m.PreflightIfAttached("alpha"); ok {
+		t.Fatalf("PreflightIfAttached(a dropped channel) = %+v, true; want zero, false", pf)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if pf, ok := m.PreflightIfAttached("alpha"); ok {
+		t.Fatalf("PreflightIfAttached(a closed manager) = %+v, true; want zero, false", pf)
+	}
+}
+
+// HandshakeIfAttached is a test-only/convenience attached-only accessor: it
+// offers the InitializeResponse captured at attach for a live channel and
+// never dials.
+func TestHandshakeIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BackoffBase: time.Hour,
+		BackoffMax:  time.Hour,
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+
+	if hs, ok := m.HandshakeIfAttached("alpha"); ok {
+		t.Fatalf("HandshakeIfAttached(unattached) = %+v, true; want zero, false", hs)
+	}
+	if hs, ok := m.HandshakeIfAttached("ghost"); ok {
+		t.Fatalf("HandshakeIfAttached(unknown host) = %+v, true; want zero, false", hs)
+	}
+	if runs, starts := len(fr.recordedRuns()), len(fr.recordedStarts()); runs != 0 || starts != 0 {
+		t.Fatalf("HandshakeIfAttached attached a dormant host: %d runs, %d starts", runs, starts)
+	}
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	hs, ok := m.HandshakeIfAttached("alpha")
+	if !ok {
+		t.Fatalf("HandshakeIfAttached(attached) = %+v, false; want the captured handshake, true", hs)
+	}
+	if hs.ProtocolVersion != appwire.ProtocolVersion {
+		t.Fatalf("HandshakeIfAttached ProtocolVersion = %q, want %q", hs.ProtocolVersion, appwire.ProtocolVersion)
+	}
+	if !reflect.DeepEqual(hs, ch.Handshake()) {
+		t.Fatalf("HandshakeIfAttached = %+v; want the installed channel's %+v", hs, ch.Handshake())
+	}
+	if hs, ok := m.HandshakeIfAttached("  alpha  "); !ok || !reflect.DeepEqual(hs, ch.Handshake()) {
+		t.Fatalf("HandshakeIfAttached did not normalize the name: %+v, %v", hs, ok)
+	}
+
+	ch.markLost()
+	if hs, ok := m.HandshakeIfAttached("alpha"); ok {
+		t.Fatalf("HandshakeIfAttached(a dropped channel) = %+v, true; want zero, false", hs)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if hs, ok := m.HandshakeIfAttached("alpha"); ok {
+		t.Fatalf("HandshakeIfAttached(a closed manager) = %+v, true; want zero, false", hs)
+	}
+}
+
+// ChannelIfAttached is the atomic primitive the generation-guarded facts seams
+// read: one lookup yields one installed channel, so a caller can take the
+// client, preflight, and handshake from the same connection generation. It must
+// answer from the installed channel alone and stop the moment that channel
+// drops or the manager closes.
+func TestChannelIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BackoffBase: time.Hour,
+		BackoffMax:  time.Hour,
+		jitter:      func(d time.Duration) time.Duration { return d },
+	})
+
+	if ch, ok := m.ChannelIfAttached("alpha"); ok || ch != nil {
+		t.Fatalf("ChannelIfAttached(unattached) = %v, %v; want nil, false", ch, ok)
+	}
+	if ch, ok := m.ChannelIfAttached("ghost"); ok || ch != nil {
+		t.Fatalf("ChannelIfAttached(unknown host) = %v, %v; want nil, false", ch, ok)
+	}
+	if runs, starts := len(fr.recordedRuns()), len(fr.recordedStarts()); runs != 0 || starts != 0 {
+		t.Fatalf("ChannelIfAttached attached a dormant host: %d runs, %d starts", runs, starts)
+	}
+
+	ch, err := m.Ensure(context.Background(), "alpha")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	got, ok := m.ChannelIfAttached("alpha")
+	if !ok || got != ch {
+		t.Fatalf("ChannelIfAttached(attached) = %v, %v; want the installed channel", got, ok)
+	}
+	// The single value carries one generation: its client, preflight, and
+	// handshake all belong to the channel Ensure just installed.
+	if got.Client() != ch.Client() {
+		t.Fatal("ChannelIfAttached returned a channel whose client is not the installed one")
+	}
+	if client, ok := m.ClientIfAttached("alpha"); !ok || client != got.Client() {
+		t.Fatalf("ClientIfAttached disagrees with ChannelIfAttached: %v, %v", client, ok)
+	}
+	if pf, ok := m.PreflightIfAttached("alpha"); !ok || !reflect.DeepEqual(pf, got.Preflight()) {
+		t.Fatalf("PreflightIfAttached disagrees with ChannelIfAttached: %+v, %v", pf, ok)
+	}
+	if hs, ok := m.HandshakeIfAttached("alpha"); !ok || !reflect.DeepEqual(hs, got.Handshake()) {
+		t.Fatalf("HandshakeIfAttached disagrees with ChannelIfAttached: %+v, %v", hs, ok)
+	}
+
+	ch.markLost()
+	if got, ok := m.ChannelIfAttached("alpha"); ok || got != nil {
+		t.Fatalf("ChannelIfAttached(a dropped channel) = %v, %v; want nil, false", got, ok)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got, ok := m.ChannelIfAttached("alpha"); ok || got != nil {
+		t.Fatalf("ChannelIfAttached(a closed manager) = %v, %v; want nil, false", got, ok)
+	}
+}
+
 // exitGatedStdio is a bridge Stdio whose child exit the test releases directly,
 // rather than through Kill: the stdio pipes stay open, so the manager's read
 // loop keeps waiting and the child-wait goroutine's own liveness transition is
@@ -3699,7 +3941,7 @@ func TestLostAfterPublishDetachesThePredecessorOnClose(t *testing.T) {
 	// slot, while announced still records the predecessor as the channel whose
 	// Attached has no match.
 	replacement := &Channel{lost: make(chan struct{}), done: make(chan struct{})}
-	if !m.publishChannel("alpha", replacement) {
+	if !m.publishChannel("alpha", replacement, host) {
 		t.Fatal("publishChannel refused while the manager was open")
 	}
 	if err := m.Close(); err != nil {

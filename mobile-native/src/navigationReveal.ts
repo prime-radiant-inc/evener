@@ -4,8 +4,7 @@ import type {
 } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
-	materializeNavigationResource,
-	normalizedGraphFromSnapshot,
+	materializeSnapshot,
 	type ResourceKey,
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -35,12 +34,10 @@ export async function locateSession(
 		const key: ResourceKey = { kind: "location", ref };
 		const decoded = decodeNavigationResponse(key, undefined, response);
 		if (decoded.status === "snapshot")
-			location = materializeNavigationResource({
+			location = materializeSnapshot(
 				key,
-				graph: normalizedGraphFromSnapshot(decoded.snapshot),
-				version: decoded.version,
-				presence: "present",
-			}) as unknown as NavigationSessionLocation;
+				decoded,
+			) as unknown as NavigationSessionLocation;
 	} catch {
 		location = undefined;
 	}

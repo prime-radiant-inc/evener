@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,12 +15,14 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -272,6 +275,12 @@ func TestForceStopRejectsDiscoveryChangeDuringLockedRevalidation(t *testing.T) {
 
 // A failed ancillary discovery refresh cannot undo the verified exit.
 func TestForceStopPreservesSuccessAfterRosterRefreshFailure(t *testing.T) {
+	// Keep this top-level test sequential: captureHubLog uses the shared logger.
+	// Compare the entire output so unrelated or repeated warnings also fail.
+	logged := captureHubLog(t)
+	flags := log.Flags()
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetFlags(flags) })
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: "owner"})
 	roster := hubcore.NewRoster(runDir, failedRPCProber{})
@@ -298,6 +307,48 @@ func TestForceStopPreservesSuccessAfterRosterRefreshFailure(t *testing.T) {
 	}
 	if err := roster.RefreshAndWait(t.Context()); err == nil {
 		t.Fatal("fixture did not fail discovery")
+	}
+	const expected = "daemon stopped; roster refresh remains incomplete: decode rendezvous 4243.json: unexpected end of JSON input\n"
+	if got := logged.String(); got != expected {
+		t.Fatalf("expected exactly one incomplete-roster warning, got %q", got)
+	}
+}
+
+// TestConfirmedStoppedShortcutRefreshesAfterStop is the Low regression: the
+// confirmed-stopped fast path returns success without running the same
+// post-stop refresh/invalidation every other successful stop path runs, so the
+// roster, inputs, and attention are left stale.
+func TestConfirmedStoppedShortcutRefreshesAfterStop(t *testing.T) {
+	locks := hubcore.NewResumeLocks()
+	finish := locks.BeginForceStop([]string{webTestSessionID})
+	if err := locks.PersistForceStop([]string{webTestSessionID}, webTestSessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop(webTestSessionID); err != nil {
+		t.Fatal(err)
+	}
+	finish.Finish(true)
+	inputs := &hubcore.InputsVersion{}
+	poked := false
+	cfg := hubcore.WebConfig{
+		RunDir:        t.TempDir(),
+		ResumeLocks:   locks,
+		Inputs:        inputs,
+		PokeAttention: func() { poked = true },
+		DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+			t.Error("confirmed-stopped shortcut attempted process control")
+			return nil, errors.New("unexpected process control")
+		}),
+	}
+	before := inputs.Load()
+	if err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + webTestSessionID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !poked {
+		t.Error("confirmed-stopped shortcut did not invalidate attention")
+	}
+	if got := inputs.Load(); got <= before {
+		t.Errorf("confirmed-stopped shortcut did not bump inputs: %d <= %d", got, before)
 	}
 }
 
@@ -947,7 +998,7 @@ func TestSessionRecoveryRejectsOldActionsAfterExplicitResume(t *testing.T) {
 	if err := cfg.ResumeLocks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	epoch := sessionRecoveryState(cfg, "local:current", "").Epoch
 	if err := cfg.ResumeLocks.ExplicitResumeCompleted("current", epoch); err != nil {
 		t.Fatal(err)
@@ -962,7 +1013,7 @@ func TestSessionRecoveryRejectsOldActionsAfterExplicitResume(t *testing.T) {
 		t.Fatalf("fresh action refused: %v", err)
 	}
 	finish = cfg.ResumeLocks.BeginForceStop([]string{"stable", "current"})
-	finish(false)
+	finish.Finish(false)
 	if state := sessionRecoveryState(cfg, "local:stable", ""); state.ResumeRequired || state.Stopping != 0 {
 		t.Fatalf("failed stop declared session stopped: %+v", state)
 	}
@@ -976,7 +1027,7 @@ func TestTurnStartDoesNotRetryRecoveryRejectionAfterExplicitResume(t *testing.T)
 	if err := cfg.ResumeLocks.PersistForceStop([]string{"recovery-waiter"}, "recovery-waiter"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	if err := cfg.ResumeLocks.ExplicitResumeCompleted("recovery-waiter", cfg.ResumeLocks.RecoveryState("recovery-waiter").Epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -1159,7 +1210,7 @@ func TestRecoveryAdmissionUsesNativeTargetAndPreservesRetryEpoch(t *testing.T) {
 			if err := cfg.ResumeLocks.PersistForceStop([]string{"unrelated"}, "unrelated"); err != nil {
 				t.Fatal(err)
 			}
-			other(true)
+			other.Finish(true)
 			if err := sessionActionRecoveryError(t.Context(), cfg, "", tc.target, sessionRequestRecoveryEpoch(ctx, cfg, "", tc.target)); err != nil {
 				t.Fatalf("another session invalidated this admission: %v", err)
 			}
@@ -1167,7 +1218,7 @@ func TestRecoveryAdmissionUsesNativeTargetAndPreservesRetryEpoch(t *testing.T) {
 			if err := cfg.ResumeLocks.PersistForceStop([]string{tc.target}, tc.target); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			if err := cfg.ResumeLocks.ExplicitResumeCompleted(tc.target, cfg.ResumeLocks.RecoveryState(tc.target).Epoch); err != nil {
 				t.Fatal(err)
 			}
@@ -1239,7 +1290,7 @@ func TestSandboxApprovalCannotCrossSessionRecovery(t *testing.T) {
 				if err := cfg.ResumeLocks.PersistForceStop([]string{"owner"}, "owner"); err != nil {
 					t.Fatal(err)
 				}
-				finish(true)
+				finish.Finish(true)
 				if err := cfg.ResumeLocks.ExplicitResumeCompleted("owner", cfg.ResumeLocks.RecoveryState("owner").Epoch); err != nil {
 					t.Fatal(err)
 				}
@@ -1305,7 +1356,7 @@ func TestCapturedSessionActionsRejectAdmissionBeforeRecovery(t *testing.T) {
 			if err := cfg.ResumeLocks.PersistForceStop([]string{"admitted-session"}, "admitted-session"); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			if err := cfg.ResumeLocks.ExplicitResumeCompleted("admitted-session", cfg.ResumeLocks.RecoveryState("admitted-session").Epoch); err != nil {
 				t.Fatal(err)
 			}
@@ -1378,7 +1429,7 @@ func TestConnectionRecoveryFenceIncludesUnreadActionsAndConnectionsBornDuringSto
 	if err := cfg.ResumeLocks.PersistForceStop([]string{"stable", "current"}, "current"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	if err := cfg.ResumeLocks.ExplicitResumeCompleted("stable", cfg.ResumeLocks.RecoveryState("stable").Epoch); err != nil {
 		t.Fatal(err)
 	}
@@ -1417,7 +1468,7 @@ func TestConnectionRecoveryFenceIncludesUnreadActionsAndConnectionsBornDuringSto
 	if err := cfg.ResumeLocks.PersistForceStop([]string{"current"}, "current"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	fresh = admitSessionConnection(t.Context(), cfg)
 	if _, err := hubThreadAutoResume(fresh, cfg, appsource.NewRegistry(), appwire.ThreadResumeParams{Session: "current"}); err == nil {
 		t.Fatal("fresh connection automatically cleared explicit resume requirement")
@@ -1438,9 +1489,9 @@ func TestRecoveryAdmissionNamesBlockedDurableMutation(t *testing.T) {
 			}
 			finish := cfg.ResumeLocks.BeginForceStop([]string{"owner"})
 			if recovery == "active" {
-				defer finish(false)
+				defer finish.Finish(false)
 			} else {
-				finish(recovery == "completed")
+				finish.Finish(recovery == "completed")
 			}
 			server := newHubAppServer(cfg, appsource.NewRegistry())
 			params := appwire.TurnStartParams{Ref: "local:owner", ClientMutationID: "preserved-intent", ExpectedInstanceID: "known-instance", Input: []appwire.InputItem{{Type: "text", Text: "keep this input"}}}
@@ -1604,7 +1655,7 @@ func TestForceStopRejectsRecoveryAuthorityChangedAfterDiscovery(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"A", "B"}, "B"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 101, SessionID: "B", ThreadID: "B", WorkspaceRef: "local:A"})
 	var events []string
@@ -1615,7 +1666,7 @@ func TestForceStopRejectsRecoveryAuthorityChangedAfterDiscovery(t *testing.T) {
 		if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
 			t.Fatal(err)
 		}
-		finish(true)
+		finish.Finish(true)
 		return &forceStopProcess{events: &events}, nil
 	})}
 	if err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:B"}, nil); err == nil {
@@ -1635,7 +1686,7 @@ func TestForceStopRejectsSoleExitedMarkerForSupersededTarget(t *testing.T) {
 	if err := locks.PersistForceStop([]string{"B", "C"}, "C"); err != nil {
 		t.Fatal(err)
 	}
-	finish(true)
+	finish.Finish(true)
 	cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) { return nil, daemonprocess.ErrExited })}
 	writeRendezvous(t, cfg.RunDir, rendezvous.Entry{PID: 101, SessionID: "B", ThreadID: "B", WorkspaceRef: "local:A"})
 	if err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:B"}, nil); err == nil {
@@ -1914,4 +1965,568 @@ func exitedPID(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return command.Process.Pid
+}
+
+// TestConfirmedStopAdmissionBarrierDefersRegistrationDuringNoOp pins the
+// interleaving RoboRev found: ordinary shutdown's confirmed-stopped no-op holds
+// the session's alias reservation across its final HasActiveResume check and
+// its success return, but a new explicit Resume could still register inside
+// that window (RegisterResume only took the registry mutex), wait on the held
+// alias lock, and launch after shutdown had already reported success. The no-op
+// is blocked on the reservation here, so a registration admitted while that
+// reservation is held is exactly a registration landing in that window.
+func TestConfirmedStopAdmissionBarrierDefersRegistrationDuringNoOp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		sessionID := hubtest.SessionID(t)
+		finish := locks.BeginForceStop([]string{sessionID})
+		if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := locks.ConfirmForceStop(sessionID); err != nil {
+			t.Fatal(err)
+		}
+		finish.Finish(true)
+		cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
+		held := locks.For(sessionID)
+		held.Lock()
+		noopDone := make(chan struct{})
+		go func() {
+			if _, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, false, nil); err != nil {
+				t.Errorf("confirmed-stopped no-op: %v", err)
+			}
+			close(noopDone)
+		}()
+		synctest.Wait() // the no-op is now blocked acquiring the alias reservation
+		registered := make(chan error, 1)
+		go func() {
+			_, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+			registered <- err
+		}()
+		synctest.Wait() // a committed registration would now be admitted
+		select {
+		case err := <-registered:
+			held.Unlock()
+			<-noopDone
+			t.Fatalf("RegisterResume was admitted while the confirmed-stopped no-op held the alias reservation: %v", err)
+		default:
+		}
+		held.Unlock()
+		<-noopDone
+		// The no-op published its stopped decision while it held the
+		// reservation, so the registration that was waiting on the alias must
+		// re-admit on a snapshot taken after the decision instead of launching
+		// on one taken before shutdown reported success.
+		if err := <-registered; !errors.Is(err, hubcore.ErrResumeInvalidated) {
+			t.Fatalf("waiting registration after the no-op = %v, want ErrResumeInvalidated", err)
+		}
+		fresh, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		fresh.Complete(nil)
+	})
+}
+
+// TestConfirmedStopNoOpInvalidatesWaitingResumeRegistration pins the admission
+// race RoboRev found: ordinary shutdown's confirmed-stopped no-op only
+// serialized with RegisterResume, so a Resume registration already waiting for
+// the alias when the no-op decided could register with its pre-decision
+// snapshot the moment the no-op released — launching after shutdown had
+// already reported success. The no-op must invalidate that snapshot as it
+// publishes the decision; the waiter then re-admits afterwards.
+func TestConfirmedStopNoOpInvalidatesWaitingResumeRegistration(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		sessionID := hubtest.SessionID(t)
+		finish := locks.BeginForceStop([]string{sessionID})
+		if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := locks.ConfirmForceStop(sessionID); err != nil {
+			t.Fatal(err)
+		}
+		finish.Finish(true)
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Block the no-op on its first under-reservation deletion check, so it
+		// holds the alias reservation while the registration waits for it.
+		entered, release := make(chan struct{}), make(chan struct{})
+		blocked := false
+		original := deletionTargetState
+		deletionTargetState = func(*hubcore.DeletionStore, string, string) (hubcore.DeletionState, bool) {
+			if !blocked {
+				blocked = true
+				close(entered)
+				<-release
+			}
+			return "", false
+		}
+		defer func() { deletionTargetState = original }()
+		cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks, DeletionStore: store}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- shutdownThreadTolerateExited(t.Context(), cfg, appsource.NewRegistry(), appwire.ThreadShutdownParams{Ref: "local:" + sessionID})
+		}()
+		<-entered // the no-op holds the alias reservation
+		epochs := map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch}
+		registered := make(chan error, 1)
+		go func() {
+			_, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, epochs)
+			registered <- err
+		}()
+		synctest.Wait() // the registration is now waiting for the held alias
+		close(release)
+		if err := <-stopped; err != nil {
+			t.Fatalf("confirmed-stopped shutdown no-op: %v", err)
+		}
+		if err := <-registered; !errors.Is(err, hubcore.ErrResumeInvalidated) {
+			t.Fatalf("registration waiting across the no-op = %v, want ErrResumeInvalidated", err)
+		}
+		// The decision is published: a fresh admission snapshot registers.
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		active.Complete(nil)
+	})
+}
+
+// TestShutdownConfirmedStoppedRefreshesRoster pins the confirmed-stopped
+// shutdown fast path's parity with the force-stop shortcut: returning success
+// while cfg.Roster still advertises the session leaves the frontend's
+// live/stopped projection stale until the next watcher pass, so the fast path
+// must run the same refresh before returning.
+func TestShutdownConfirmedStoppedRefreshesRoster(t *testing.T) {
+	locks := hubcore.NewResumeLocks()
+	sessionID := hubtest.SessionID(t)
+	finish := locks.BeginForceStop([]string{sessionID})
+	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	finish.Finish(true)
+	refreshed := false
+	original := hubRosterRefresh
+	hubRosterRefresh = func(context.Context, *hubcore.Roster) error {
+		refreshed = true
+		return nil
+	}
+	defer func() { hubRosterRefresh = original }()
+	cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks, Roster: hubcore.NewRoster(t.TempDir(), nil)}
+	if err := shutdownThreadTolerateExited(t.Context(), cfg, appsource.NewRegistry(), appwire.ThreadShutdownParams{Ref: "local:" + sessionID}); err != nil {
+		t.Fatalf("confirmed-stopped shutdown no-op: %v", err)
+	}
+	if !refreshed {
+		t.Fatal("confirmed-stopped shutdown fast path returned success without refreshing the roster")
+	}
+}
+
+// TestForceStopResumeCleanupFailureIsUnavailable pins the force-stop boundary
+// classification: a retained child-cleanup failure from stop.Wait is a
+// retryable "cleanup remains unconfirmed" state and must reach the RPC layer as
+// Unavailable, not as a raw resumeCleanupError that maps to Internal.
+func TestForceStopResumeCleanupFailureIsUnavailable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		sessionID := hubtest.SessionID(t)
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cleanupErr := &resumeCleanupError{cause: errors.New("fixture child cleanup denied")}
+		cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, nil)
+		}()
+		synctest.Wait() // force stop canceled the registered Resume and is waiting on cleanup
+		active.Complete(cleanupErr)
+		err = <-stopped
+		if err == nil {
+			t.Fatal("unconfirmed cleanup reported success")
+		}
+		if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
+			t.Fatalf("force stop cleanup failure wire code = %d, want %d (Unavailable): %v", code, appwire.CodeUnavailable, err)
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("cleanup classification replaced a context error: %v", err)
+		}
+	})
+}
+
+// TestForceStopConfirmedStoppedCleanupFailureIsUnavailable pins the second
+// stop/cleanup boundary. confirmedStoppedWithoutClaim cancels and drains the
+// recovery group's in-flight Resume; when that retained child cleanup cannot be
+// confirmed, the error must reach the RPC layer as retryable Unavailable, not
+// raw. The Resume is registered on a sibling alias so the top-of-function stop
+// cannot see it and this path owns the failure.
+func TestForceStopConfirmedStoppedCleanupFailureIsUnavailable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		sessionID := hubtest.SessionID(t)
+		sibling := hubtest.SessionID(t)
+		finish := locks.BeginForceStop([]string{sessionID, sibling})
+		if err := locks.PersistForceStop([]string{sessionID, sibling}, sessionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := locks.ConfirmForceStop(sessionID); err != nil {
+			t.Fatal(err)
+		}
+		finish.Finish(true)
+		active, err := locks.RegisterResume(t.Context(), sibling, []string{sibling}, map[string]uint64{sibling: locks.RecoveryState(sibling).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, nil)
+		}()
+		synctest.Wait() // force stop reached the recovery group's cleanup wait
+		active.Complete(&resumeCleanupError{cause: errors.New("fixture child cleanup denied")})
+		err = <-stopped
+		if err == nil {
+			t.Fatal("unconfirmed cleanup reported success")
+		}
+		if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
+			t.Fatalf("confirmed-stopped cleanup failure wire code = %d, want %d (Unavailable): %v", code, appwire.CodeUnavailable, err)
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("cleanup classification replaced a context error: %v", err)
+		}
+	})
+}
+
+// TestForceStopPostDiscoveryCleanupFailureIsUnavailable pins the post-discovery
+// cancelActiveResumes boundary. A Resume that registered during process
+// discovery is reached through the verified entry's aliases, not the requested
+// ref alias; its retained child cleanup failure must classify as retryable
+// Unavailable, not raw.
+func TestForceStopPostDiscoveryCleanupFailureIsUnavailable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runDir := t.TempDir()
+		stable := hubtest.SessionID(t)
+		current := hubtest.SessionID(t)
+		entry := rendezvous.Entry{
+			PID: 4242, SessionID: current, ThreadID: current,
+			WorkspaceRef: "local:" + stable, StateDir: t.TempDir(),
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now(),
+		}
+		writeRendezvous(t, runDir, entry)
+		locks := hubcore.NewResumeLocks()
+		// Registered on the entry's current alias, so the top-of-function stop
+		// on the requested stable alias sees no active Resume.
+		active, err := locks.RegisterResume(t.Context(), current, []string{current}, map[string]uint64{current: locks.RecoveryState(current).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var events []string
+		cfg := hubcore.WebConfig{
+			RunDir: runDir, ResumeLocks: locks,
+			DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+				return &forceStopProcess{events: &events}, nil
+			}),
+		}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + stable}, nil)
+		}()
+		synctest.Wait() // force stop reached the post-discovery cleanup wait
+		active.Complete(&resumeCleanupError{cause: errors.New("fixture child cleanup denied")})
+		err = <-stopped
+		if err == nil {
+			t.Fatal("unconfirmed cleanup reported success")
+		}
+		if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
+			t.Fatalf("post-discovery cleanup failure wire code = %d, want %d (Unavailable): %v", code, appwire.CodeUnavailable, err)
+		}
+	})
+}
+
+// TestConfirmedStoppedNoOpToleratesDiscoveryErrorWhenNotStopping pins Low 3:
+// for the ordinary shutdown caller (!stopResumes) a transient strict-discovery
+// failure must fall through to the tolerant source attempt rather than failing
+// thread/shutdown for a session whose recovery state is already
+// ResumeRequired && ExitConfirmed. The destructive stopResumes path must keep
+// blocking on the same failure.
+func TestConfirmedStoppedNoOpToleratesDiscoveryErrorWhenNotStopping(t *testing.T) {
+	locks := hubcore.NewResumeLocks()
+	sessionID := hubtest.SessionID(t)
+	finish := locks.BeginForceStop([]string{sessionID})
+	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	finish.Finish(true)
+	runDir := t.TempDir()
+	// A pid-named but undecodable rendezvous file fails the strict read.
+	if err := os.WriteFile(filepath.Join(runDir, "9999.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rendezvous.ListStrict(runDir); err == nil {
+		t.Fatal("fixture discovery did not fail")
+	}
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks}
+	stopped, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, false, nil)
+	if err != nil {
+		t.Fatalf("ordinary shutdown no-op failed on a discovery error: %v", err)
+	}
+	if stopped {
+		t.Fatal("a corrupt discovery read must not prove the session stopped")
+	}
+	if _, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, true, nil); err == nil {
+		t.Fatal("force stop must block on a strict discovery failure")
+	} else if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
+		t.Fatalf("force stop discovery failure wire code = %d, want %d (Unavailable)", code, appwire.CodeUnavailable)
+	}
+}
+
+// TestForceStopStaleExpectedDaemonDoesNotCancelResume pins the cancellation
+// ordering contract: a force stop whose caller-rendered daemon identity no
+// longer matches the current owner must be refused before it installs any
+// cancellation fence, so the refusal cannot abort the in-flight explicit Resume
+// the frontend's stale resident row can no longer address.
+func TestForceStopStaleExpectedDaemonDoesNotCancelResume(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runDir := t.TempDir()
+		sessionID := hubtest.SessionID(t)
+		entry := rendezvous.Entry{
+			PID: 4301, SessionID: sessionID, ThreadID: sessionID, WorkspaceRef: "local:" + sessionID,
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now(),
+		}
+		writeRendezvous(t, runDir, entry)
+		expected := daemonIdentity(entry)
+		expected.Generation = "stale-rendered-identity"
+		locks := hubcore.NewResumeLocks()
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks}
+		completed := make(chan error, 1)
+		go func() {
+			completed <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID, ExpectedDaemon: &expected}, nil)
+		}()
+		synctest.Wait()
+		if err := active.Context().Err(); err != nil {
+			t.Errorf("stale force stop canceled the in-flight Resume: %v", err)
+		}
+		assertStaleIdentityConflict := func(err error) {
+			t.Helper()
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+				t.Fatalf("stale force stop error = %v, want conflict", err)
+			}
+		}
+		select {
+		case err := <-completed:
+			assertStaleIdentityConflict(err)
+		default:
+			// The refusal must come before any cancellation: a handler still
+			// draining the canceled Resume means the stale request aborted the
+			// Resume it could no longer address.
+			active.Complete(nil)
+			<-completed
+			t.Fatal("stale force stop canceled the in-flight Resume before refusing the identity conflict")
+		}
+		if active.Context().Err() != nil {
+			t.Fatal("stale force stop canceled the in-flight Resume before refusing the identity conflict")
+		}
+		active.Complete(nil)
+	})
+}
+
+// TestForceStopRevalidatesIdentityUnderFenceBeforeCancelingResume pins the
+// atomicity contract RoboRev found: the caller-rendered identity validation at
+// the top of forceStopThread is not atomic with the admission fence and
+// cancelActiveResumes, so a replacement claim landing between them used to be
+// detected only by the post-cancellation reread — after the stale request had
+// already aborted the replacement Resume it could no longer address. The
+// identity must be revalidated under the admission fence and alias
+// reservations, before any in-flight Resume is canceled.
+func TestForceStopRevalidatesIdentityUnderFenceBeforeCancelingResume(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runDir := t.TempDir()
+		sessionID := hubtest.SessionID(t)
+		entry := rendezvous.Entry{
+			PID: 4301, SessionID: sessionID, ThreadID: sessionID, WorkspaceRef: "local:" + sessionID,
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now(),
+		}
+		writeRendezvous(t, runDir, entry)
+		expected := daemonIdentity(entry)
+		replacement := entry
+		replacement.PID = 4302
+		replacement.StartedAt = entry.StartedAt.Add(time.Second)
+		locks := hubcore.NewResumeLocks()
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The replacement claim lands after the pre-fence validation but before
+		// the cancellation: the first under-reservation deletion check swaps the
+		// addressed marker for the replacement's. The replacement Resume itself
+		// registered while the request verified the process — the window the
+		// post-fence drain exists to close.
+		swapped := false
+		original := deletionTargetState
+		deletionTargetState = func(_ *hubcore.DeletionStore, ref, _ string) (hubcore.DeletionState, bool) {
+			if ref == "" && !swapped {
+				swapped = true
+				if err := rendezvous.Remove(runDir, entry.PID); err != nil {
+					t.Error(err)
+				}
+				if _, err := rendezvous.Write(runDir, replacement); err != nil {
+					t.Error(err)
+				}
+			}
+			return "", false
+		}
+		defer func() { deletionTargetState = original }()
+		var active *hubcore.ActiveResume
+		var events []string
+		cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DeletionStore: store, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+			events = append(events, "open")
+			registered, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+			if err != nil {
+				return nil, err
+			}
+			active = registered
+			return &forceStopProcess{events: &events}, nil
+		})}
+		completed := make(chan error, 1)
+		go func() {
+			completed <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID, ExpectedDaemon: &expected}, nil)
+		}()
+		synctest.Wait()
+		select {
+		case err := <-completed:
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+				t.Fatalf("replacement in the validation gap error = %v, want conflict", err)
+			}
+		default:
+			// A handler still draining the canceled replacement means the stale
+			// request aborted the Resume it could no longer address.
+			if active != nil {
+				active.Complete(nil)
+			}
+			<-completed
+			t.Fatal("stale force stop canceled the replacement Resume before refusing the identity conflict")
+		}
+		if active == nil {
+			t.Fatal("replacement Resume was not registered during process verification")
+		}
+		if active.Context().Err() != nil {
+			t.Fatal("stale force stop canceled the replacement Resume before refusing the identity conflict")
+		}
+		active.Complete(nil)
+		if slices.Contains(events, "kill") {
+			t.Fatalf("stale force stop killed a process: %v", events)
+		}
+	})
+}
+
+// TestForceStopFenceRefusalLeavesAdmissionEpochsUnchanged pins the other half
+// of the same Medium finding on the main force-stop path: BeginForceStop
+// advances the recovery admission epochs before the under-fence identity
+// recheck, and a stale request refused by a replacement claim used to leave
+// them advanced. The replacement Resume the refusal deliberately preserved
+// was admitted under the pre-fence epoch and could no longer complete its
+// recovery clear. A refusal that canceled nothing must restore the epochs its
+// fence advanced.
+func TestForceStopFenceRefusalLeavesAdmissionEpochsUnchanged(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runDir := t.TempDir()
+		sessionID := hubtest.SessionID(t)
+		entry := rendezvous.Entry{
+			PID: 4301, SessionID: sessionID, ThreadID: sessionID, WorkspaceRef: "local:" + sessionID,
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now(),
+		}
+		writeRendezvous(t, runDir, entry)
+		expected := daemonIdentity(entry)
+		replacement := entry
+		replacement.PID = 4302
+		replacement.StartedAt = entry.StartedAt.Add(time.Second)
+		locks := hubcore.NewResumeLocks()
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The replacement claim lands after the pre-fence validation but before
+		// the cancellation: the first under-reservation deletion check swaps the
+		// addressed marker for the replacement's. The replacement Resume itself
+		// registered while the request verified the process.
+		swapped := false
+		original := deletionTargetState
+		deletionTargetState = func(_ *hubcore.DeletionStore, ref, _ string) (hubcore.DeletionState, bool) {
+			if ref == "" && !swapped {
+				swapped = true
+				if err := rendezvous.Remove(runDir, entry.PID); err != nil {
+					t.Error(err)
+				}
+				if _, err := rendezvous.Write(runDir, replacement); err != nil {
+					t.Error(err)
+				}
+			}
+			return "", false
+		}
+		defer func() { deletionTargetState = original }()
+		var active *hubcore.ActiveResume
+		var events []string
+		resumeEpoch := uint64(0)
+		cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DeletionStore: store, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+			events = append(events, "open")
+			registered, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+			if err != nil {
+				return nil, err
+			}
+			active = registered
+			resumeEpoch = locks.RecoveryState(sessionID).Epoch
+			return &forceStopProcess{events: &events}, nil
+		})}
+		completed := make(chan error, 1)
+		// A connection established before the fence captured this sequence; a
+		// refusal that canceled nothing must not leave it stale.
+		connection := locks.RecoverySequence()
+		go func() {
+			completed <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID, ExpectedDaemon: &expected}, nil)
+		}()
+		synctest.Wait()
+		select {
+		case err := <-completed:
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+				t.Fatalf("replacement in the validation gap error = %v, want conflict", err)
+			}
+		default:
+			if active != nil {
+				active.Complete(nil)
+			}
+			<-completed
+			t.Fatal("stale force stop canceled the replacement Resume before refusing the identity conflict")
+		}
+		if active == nil {
+			t.Fatal("replacement Resume was not registered during process verification")
+		}
+		if active.Context().Err() != nil {
+			t.Fatal("stale force stop canceled the replacement Resume before refusing the identity conflict")
+		}
+		active.Complete(nil)
+		if got := locks.RecoveryState(sessionID).Epoch; got != resumeEpoch {
+			t.Fatalf("refused force stop left the recovery admission epoch advanced: got %d, want %d", got, resumeEpoch)
+		}
+		if got := locks.RecoveryState(sessionID).LastRecoverySequence; got > connection {
+			t.Fatalf("refused force stop left the connection-level sequence advanced: got %d, connection captured %d", got, connection)
+		}
+		if slices.Contains(events, "kill") {
+			t.Fatalf("stale force stop killed a process: %v", events)
+		}
+	})
 }

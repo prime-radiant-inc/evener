@@ -20,10 +20,7 @@ import (
 // write root to save the cwd, so it must be re-bound read-only AFTER the tmpfs.
 func TestBuildBwrapArgvReadOnlyRebindsTmpCwd(t *testing.T) {
 	home := t.TempDir()
-	cwd := MaterializeWorkspace(t, MainCheckout) // t.TempDir()-based, under /tmp
-	if !pathUnder(cwd, "/tmp") {
-		t.Skipf("test needs a /tmp-based cwd; TempDir gave %q", cwd)
-	}
+	cwd := tmpMainCheckout(t)
 	net := true
 	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: &net}, bwrapFacts(home), cwd)
 	if err != nil {
@@ -320,5 +317,92 @@ func TestBuildBwrapArgvBindsInfraReadRoots(t *testing.T) {
 	}
 	if seqIndex(args, "--bind", infra, infra) >= 0 {
 		t.Errorf("hook/MCP root %q must never be bound WRITABLE, got argv:\n%v", infra, args)
+	}
+}
+
+// A read-only cwd under /dev/shm sits beneath the fresh --dev tmpfs, which
+// would otherwise replace it with an empty private directory: writes "succeed"
+// and vanish, and the real workspace is unreadable. It must be re-bound
+// read-only after --dev, exactly as a /tmp cwd is after the /tmp tmpfs.
+func TestBuildBwrapArgvReadOnlyRebindsDevShmCwd(t *testing.T) {
+	cwd := devShmMainCheckout(t)
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: &net}, bwrapFacts(t.TempDir()), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	args := buildBwrapArgv(rp, "/tmp/evener-session", cwd)
+	devIdx := seqIndex(args, "--dev", "/dev")
+	rebindIdx := seqIndex(args, "--ro-bind", cwd, cwd)
+	if rebindIdx < 0 || devIdx < 0 || rebindIdx < devIdx {
+		t.Fatalf("read-only cwd under /dev/shm must be re-bound read-only after --dev (dev idx %d, rebind idx %d): %v", devIdx, rebindIdx, args)
+	}
+}
+
+// maskHandledByNamespace skips explicit masks only where a namespace mount
+// already hides the path. /dev/shm is not such a path: a read root under it is
+// re-bound after --dev, so its secrets need their masks.
+func TestMaskHandledByNamespaceExemptsOnlyTrulyHiddenPaths(t *testing.T) {
+	for path, handled := range map[string]bool{
+		"/proc":              true,
+		"/dev":               true,
+		"/dev/mem":           true,
+		"/dev/fd":            true,
+		"/dev/shm":           false,
+		"/dev/shm/work/.ssh": false,
+		"/home/someone/.ssh": false,
+		"/dev/shmother/x":    true,
+		"/tmp/work/.ssh":     false,
+	} {
+		if got := maskHandledByNamespace(path); got != handled {
+			t.Errorf("maskHandledByNamespace(%q) = %v, want %v", path, got, handled)
+		}
+	}
+}
+
+// /dev/shm itself, granted as the cwd, is shadowed by --dev exactly like a
+// directory beneath it, so it is re-bound read-only after --dev too.
+func TestBuildBwrapArgvReadOnlyRebindsDevShmItself(t *testing.T) {
+	if info, err := os.Stat("/dev/shm"); err != nil || !info.IsDir() || resolveCleanPath("/dev/shm") != "/dev/shm" {
+		t.Skip("this host has no /dev/shm directory of its own")
+	}
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: &net}, bwrapFacts(t.TempDir()), "/dev/shm")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	args := buildBwrapArgv(rp, "/tmp/evener-session", "/dev/shm")
+	devIdx := seqIndex(args, "--dev", "/dev")
+	rebindIdx := seqIndex(args, "--ro-bind", "/dev/shm", "/dev/shm")
+	if rebindIdx < 0 || devIdx < 0 || rebindIdx < devIdx {
+		t.Fatalf("a read-only /dev/shm cwd must be re-bound after --dev (dev idx %d, rebind idx %d): %v", devIdx, rebindIdx, args)
+	}
+}
+
+// A read-only root re-bound after --dev can contain the session tmp (a
+// /dev/shm workspace whose TMPDIR, and so session scratch, lives beneath it).
+// Its read-only mount must not cover the writable session tmp bound earlier:
+// the session tmp is bound again after the re-binds, so it stays writable.
+func TestBuildBwrapArgvSessionTmpStaysWritableUnderAReboundRoot(t *testing.T) {
+	cwd := devShmMainCheckout(t)
+	sessionTmp := filepath.Join(cwd, "session-tmp")
+	if err := os.Mkdir(sessionTmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	net := true
+	rp, err := Resolve(SandboxPolicy{Mode: ModeReadOnly, Network: &net}, bwrapFacts(t.TempDir()), cwd)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	args := buildBwrapArgv(rp, sessionTmp, cwd)
+	rebindIdx := seqIndex(args, "--ro-bind", cwd, cwd)
+	lastSessionBind := -1
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--bind" && args[i+1] == sessionTmp && args[i+2] == sessionTmp {
+			lastSessionBind = i
+		}
+	}
+	if rebindIdx < 0 || lastSessionBind < rebindIdx {
+		t.Fatalf("the writable session tmp must be bound after the read-only re-bind of its ancestor (rebind idx %d, last session bind idx %d): %v", rebindIdx, lastSessionBind, args)
 	}
 }

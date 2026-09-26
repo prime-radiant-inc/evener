@@ -1040,6 +1040,7 @@ func TestWorktreeRemove_CloseWaitsForTheOperationItInterrupts(t *testing.T) {
 	var cleanupDuringOp, holding atomic.Bool
 	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
 	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	closeAwaiting := observeCloseAwaitingEnvWork(r.s)
 
 	// Begin the close from inside the operation, at remove's first git command.
 	// Installed after the setup creates, and the close cannot have run one
@@ -1056,10 +1057,8 @@ func TestWorktreeRemove_CloseWaitsForTheOperationItInterrupts(t *testing.T) {
 					r.s.Close()
 				}()
 				<-closeBegun
-				select {
-				case <-cleanupObserved:
+				if closeWalkedPastHeldWork(t, closeAwaiting, cleanupObserved) {
 					cleanupDuringOp.Store(true)
-				case <-time.After(closeFenceProbe):
 				}
 			}
 			return inner(args...)
@@ -1108,6 +1107,7 @@ func TestWorktreeRemove_CloseDefersItsOwnLaneCleanupUntilTheOperationReturns(t *
 	var cleanupDuringOp, holding atomic.Bool
 
 	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
+	closeAwaiting := observeCloseAwaitingEnvWork(r.s)
 	base := r.s.cfg.testOnly.worktreeGitRunner
 	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 		inner := base(ctx, env)
@@ -1122,10 +1122,8 @@ func TestWorktreeRemove_CloseDefersItsOwnLaneCleanupUntilTheOperationReturns(t *
 					r.s.Close()
 				}()
 				<-closeBegun
-				select {
-				case <-ownLaneUnlocked:
+				if closeWalkedPastHeldWork(t, closeAwaiting, ownLaneUnlocked) {
 					cleanupDuringOp.Store(true)
-				case <-time.After(closeFenceProbe):
 				}
 			}
 			return inner(args...)

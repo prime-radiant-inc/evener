@@ -107,10 +107,14 @@ real install on **every merge**. It looked like sabotage from another
 agent twice before the cause was found. `.gitignore` does not help —
 ignore rules only govern untracked files, so once staged it went quiet.
 
-The sharing also means **every vitest run, in any worktree, rewrites the
-one real `node_modules/.vite` cache.** Anything that fingerprints or
-diffs `node_modules` while a fleet is running will see those bytes move
-and blame whatever it was guarding — `TestInstallHomeGeneratedHome`'s
+The sharing also means any Node tool that caches under the install writes to
+one directory every lane can see. The frontend's own dep cache no longer
+does: `cmd/evener-hub/frontend/vite.config.ts` pins Vite's `cacheDir` to
+`.vite-cache` inside the checkout (#1586), so vitest and the browser guards
+stop rewriting the shared `node_modules/.vite` — and stop racing each other
+on its `deps_temp_*` directory. Anything that still fingerprints or diffs
+`node_modules` while a fleet is running will see the shared install's caches
+move and blame whatever it was guarding — `TestInstallHomeGeneratedHome`'s
 install-mutation digest fired exactly this way during a 12-agent run and
 cost a root-cause investigation before the digest learned to skip
 `.vite`/`.vite-temp`. A guard over shared state must exclude the parts a

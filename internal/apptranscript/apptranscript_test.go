@@ -64,7 +64,7 @@ func TestItemTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 	}
 
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
+		return ProjectTurn(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
 	}
 	turns, err := ItemTurnsFromFile(path, 128<<20, project)
 	if err != nil {
@@ -128,7 +128,7 @@ func TestItemTurnsFromFilePreservesDistinctClientMutationIdentitiesForSameText(t
 	}
 
 	turns, err := ItemTurnsFromFile(path, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
+		return ProjectTurn(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
 	})
 	if err != nil {
 		t.Fatalf("ItemTurnsFromFile: %v", err)
@@ -187,7 +187,7 @@ func TestItemTurnsFromFileProjectorReceivesDecodedTurn(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		calls++
 		gotTurn = turn
-		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
+		return ProjectTurn(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
 	}
 	turns, err := ItemTurnsFromFile(path, 128<<20, project)
 	if err != nil {
@@ -225,7 +225,7 @@ func TestProjectTurnSteeringCarriesUserSource(t *testing.T) {
 		Timestamp:      time.Unix(1_700_000_000, 0).UTC(),
 		SteeringSource: "user",
 	}
-	items := ProjectTurn("turn_1", 1, userTurn, map[string]string{}, nil, nil)
+	items := ProjectTurn("turn_1", 1, userTurn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 || items[0].Type != "steering" {
 		t.Fatalf("items=%+v, want one steering item", items)
 	}
@@ -238,7 +238,7 @@ func TestProjectTurnSteeringCarriesUserSource(t *testing.T) {
 		Message:   llm.User("<SYSTEM-REMINDER>nudge</SYSTEM-REMINDER>"),
 		Timestamp: time.Unix(1_700_000_000, 0).UTC(),
 	}
-	items = ProjectTurn("turn_2", 2, sysTurn, map[string]string{}, nil, nil)
+	items = ProjectTurn("turn_2", 2, sysTurn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 || items[0].Source != "" {
 		t.Fatalf("system steering item.Source=%q, want empty", items[0].Source)
 	}
@@ -251,7 +251,7 @@ func TestProjectTurnSteeringCarriesUserSource(t *testing.T) {
 func TestProjectTurnSteeringCarriesKindOnReload(t *testing.T) {
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("done"))
 	turn.SteeringKind = events.SteeringKindTasksDone
-	items := ProjectTurn("turn_0", 0, turn, map[string]string{}, nil, nil)
+	items := ProjectTurn("turn_0", 0, turn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -272,7 +272,7 @@ func TestProjectTurnSteeringCarriesKindOnReload(t *testing.T) {
 func TestProjectTurnSteeringCarriesDirectAppendKindOnReload(t *testing.T) {
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("<SYSTEM-REMINDER>The user interrupted the previous turn before it completed.</SYSTEM-REMINDER>"))
 	turn.SteeringKind = events.SteeringKindInterrupted
-	items := ProjectTurn("turn_0", 0, turn, map[string]string{}, nil, nil)
+	items := ProjectTurn("turn_0", 0, turn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("got %d items, want 1", len(items))
 	}
@@ -297,7 +297,7 @@ func TestProjectTurnToolOnlyAssistantTurnHasNoAgentMessage(t *testing.T) {
 				Arguments: []byte(`{"path":"README.md"}`),
 			}},
 		}},
-	}, map[string]string{}, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 
 	if len(items) != 1 || items[0].Type != "commandExecution" {
 		t.Fatalf("items=%+v, want only the tool call", items)
@@ -305,7 +305,7 @@ func TestProjectTurnToolOnlyAssistantTurnHasNoAgentMessage(t *testing.T) {
 }
 
 func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 	start := ProjectTurn("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -376,7 +376,7 @@ func TestItemTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) 
 	}
 
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
+		return ProjectTurn(turnID, turnIndex, turn, NewToolCallRegistry(), nil, nil)
 	}
 	turns, err := ItemTurnsFromFile(path, 128<<20, project)
 	if err != nil {
@@ -397,7 +397,7 @@ func TestItemTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) 
 // TurnStatusFailed when the persisted tool result carries IsError, matching
 // the live path.
 func TestProjectTurnStampsFailedStatusOnErroredToolResult(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 	done := ProjectTurn("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -426,7 +426,7 @@ func TestProjectTurnStampsFailedStatusOnErroredToolResult(t *testing.T) {
 // non-error branch alongside the failed-status test above so both sides of
 // the status decision are exercised.
 func TestProjectTurnKeepsCompletedStatusOnSuccessfulToolResult(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 	done := ProjectTurn("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -452,7 +452,7 @@ func TestProjectTurnKeepsCompletedStatusOnSuccessfulToolResult(t *testing.T) {
 // internal/appprojector): a persisted tool result whose IsError came from a
 // pre-dispatch rejection must still say so after a page reload.
 func TestProjectTurnCarriesPrevalOnlyOnReload(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 	done := ProjectTurn("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -479,7 +479,7 @@ func TestProjectTurnCarriesPrevalOnlyOnReload(t *testing.T) {
 // a real execution failure's persisted result carries no PrevalOnly, and
 // reload must not default it true.
 func TestProjectTurnOmitsPrevalOnlyOnRealFailureReload(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 	done := ProjectTurn("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -505,7 +505,7 @@ func TestProjectTurnOmitsPrevalOnlyOnRealFailureReload(t *testing.T) {
 // promotes a shell tool's exit code from the persisted ToolState the same way
 // the live projector does.
 func TestProjectTurnMapsToolResultExitCode(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 	done := ProjectTurn("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -534,7 +534,7 @@ func TestProjectTurnMapsToolResultExitCode(t *testing.T) {
 // already holds by construction; pinned here so it can never silently
 // regress.
 func TestProjectTurnMapsToolResultZeroExitCode(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 	done := ProjectTurn("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -560,7 +560,7 @@ func TestProjectTurnMapsToolResultZeroExitCode(t *testing.T) {
 // a non-shell tool's ToolState carries no exit_code, so reload must leave
 // ExitCode nil rather than fabricating zero.
 func TestProjectTurnOmitsExitCodeForNonShellToolState(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 	done := ProjectTurn("turn_2", 2, schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -595,7 +595,7 @@ func TestProjectTurnProjectsToolResultOutputImages(t *testing.T) {
 		}}},
 	}
 
-	items := ProjectTurn("turn_1", 1, turn, map[string]string{}, nil, func(result *llm.ToolResultData) []appwire.OutputImage {
+	items := ProjectTurn("turn_1", 1, turn, NewToolCallRegistry(), nil, func(result *llm.ToolResultData) []appwire.OutputImage {
 		if result == nil || len(result.ImageData) == 0 {
 			return nil
 		}
@@ -630,7 +630,7 @@ func TestProjectTurnPreservesDelegateToolStateForColdReconciliation(t *testing.T
 		}}},
 	}
 
-	items := ProjectTurn("turn_1", 1, turn, map[string]string{"call_delegate": "delegate"}, nil, nil)
+	items := ProjectTurn("turn_1", 1, turn, &ToolCallRegistry{Names: map[string]string{"call_delegate": "delegate"}}, nil, nil)
 	if len(items) != 1 || items[0].Type != "commandExecution" || items[0].CallID != "call_delegate" {
 		t.Fatalf("items=%+v", items)
 	}
@@ -640,7 +640,7 @@ func TestProjectTurnPreservesDelegateToolStateForColdReconciliation(t *testing.T
 }
 
 func TestProjectTurnMapsThinkingContent(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 	items := ProjectTurn("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{
@@ -660,7 +660,7 @@ func TestProjectTurnMapsThinkingContent(t *testing.T) {
 }
 
 func TestProjectTurnMapsRedactedThinkingContent(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 	items := ProjectTurn("turn_1", 1, schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{
@@ -688,7 +688,7 @@ func TestProjectTurnProjectsWebSearchCall(t *testing.T) {
 				Raw:   json.RawMessage(`{"type":"web_search_call","status":"completed"}`),
 			}},
 		}},
-	}, map[string]string{}, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("expected 1 web_search item, got %+v", items)
 	}
@@ -711,7 +711,7 @@ func TestProjectTurnProjectsWebSearchResultsFromRaw(t *testing.T) {
 			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(
 				`{"type":"web_search_tool_result","content":[{"type":"web_search_result","url":"https://go.dev/blog/err","title":"Error Handling"},{"type":"web_search_result","url":"https://go.dev/ctx","title":"Context"}]}`)}},
 		}},
-	}, map[string]string{}, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 	if len(anthropic) != 1 || anthropic[0].Output == "" {
 		t.Fatalf("anthropic web_search results=%+v", anthropic)
 	}
@@ -727,7 +727,7 @@ func TestProjectTurnProjectsWebSearchResultsFromRaw(t *testing.T) {
 			{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(
 				`{"webSearchQueries":["golang generics"],"groundingChunks":[{"web":{"uri":"https://go.dev/generics","title":"Generics"}}]}`)}},
 		}},
-	}, map[string]string{}, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 	if len(gemini) != 1 {
 		t.Fatalf("gemini web_search=%+v", gemini)
 	}
@@ -759,7 +759,7 @@ func TestProjectTurnKeepsNonImagePartsOutOfImages(t *testing.T) {
 		items := ProjectTurn("turn_1", 1, schema.Turn{
 			Kind:    tc.kind,
 			Message: llm.Message{Content: content},
-		}, map[string]string{}, nil, nil)
+		}, NewToolCallRegistry(), nil, nil)
 		if len(items) != 1 || items[0].Type != tc.want {
 			t.Fatalf("%s: expected 1 %s, got %+v", tc.kind, tc.want, items)
 		}
@@ -777,7 +777,7 @@ func TestProjectTurnTagsCompactionSystemMessages(t *testing.T) {
 	items := ProjectTurn("turn_1", 1, schema.Turn{
 		Kind:    schema.TurnSummary,
 		Message: llm.Assistant("kept useful context"),
-	}, map[string]string{}, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 
 	if len(items) != 1 {
 		t.Fatalf("summary items=%+v, want 1", items)
@@ -1110,7 +1110,7 @@ func TestItemTurnsFromFile_StampsUsageFromEntry(t *testing.T) {
 // transcript reload doesn't show a duplicate. A communicate with DIFFERENT text
 // is still rendered. (Surfaced by FuzzHubReplayLiveVsReload.)
 func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
-	mkTurn := func(text, communicate string) schema.Turn {
+	mkAssistantTurn := func(text, communicate string) schema.Turn {
 		return schema.Turn{
 			Kind: schema.TurnAssistant,
 			Message: llm.Message{
@@ -1126,7 +1126,19 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 			},
 		}
 	}
-
+	mkResultTurn := func(callID string) schema.Turn {
+		return schema.Turn{
+			Kind: schema.TurnToolResults,
+			Message: llm.Message{Content: []llm.ContentPart{{
+				Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{
+					ToolCallID: callID,
+					Name:       "communicate",
+					IsError:    false,
+				},
+			}}},
+		}
+	}
 	agentMsgs := func(items []appwire.ThreadItem) []string {
 		var out []string
 		for _, it := range items {
@@ -1137,12 +1149,29 @@ func TestProjectTurnDedupsCommunicateEcho(t *testing.T) {
 		return out
 	}
 
-	echo := agentMsgs(ProjectTurn("t1", 0, mkTurn("Done.", "Done."), nil, nil, nil))
+	// Echo: the communicate message repeats the assistant text. The assistant
+	// turn renders the text agentMessage; the result turn's communicate message
+	// is suppressed by EchoesAssistantText. Both turns share one registry so
+	// LastAssistantText carries across.
+	echoReg := NewToolCallRegistry()
+	echoItems := append(
+		ProjectTurn("t1", 0, mkAssistantTurn("Done.", "Done."), echoReg, nil, nil),
+		ProjectTurn("t2", 1, mkResultTurn("c1"), echoReg, nil, nil)...,
+	)
+	echo := agentMsgs(echoItems)
 	if len(echo) != 1 || echo[0] != "Done." {
 		t.Fatalf("echoed communicate: got agentMessages %q, want exactly [\"Done.\"]", echo)
 	}
 
-	distinct := agentMsgs(ProjectTurn("t2", 0, mkTurn("Working...", "All set."), nil, nil, nil))
+	// Distinct: the communicate message differs from the assistant text, so
+	// both render: the assistant text agentMessage on the assistant turn, the
+	// communicate message agentMessage on the result turn.
+	distinctReg := NewToolCallRegistry()
+	distinctItems := append(
+		ProjectTurn("t3", 0, mkAssistantTurn("Working...", "All set."), distinctReg, nil, nil),
+		ProjectTurn("t4", 1, mkResultTurn("c1"), distinctReg, nil, nil)...,
+	)
+	distinct := agentMsgs(distinctItems)
 	if len(distinct) != 2 || distinct[0] != "Working..." || distinct[1] != "All set." {
 		t.Fatalf("distinct communicate: got agentMessages %q, want [\"Working...\" \"All set.\"]", distinct)
 	}
@@ -1164,7 +1193,7 @@ func TestProjectTurnRendersModelSwitchMarker(t *testing.T) {
 	out := ProjectTurn("turn_9", 9, schema.Turn{
 		Kind:    schema.TurnModelSwitch,
 		Message: llm.System("Switched model: openai/gpt-5.4 → anthropic/claude-opus-4-6"),
-	}, nil, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 
 	if len(out) != 1 {
 		t.Fatalf("items=%+v, want exactly one", out)
@@ -1194,7 +1223,7 @@ func TestProjectTurnModelSwitchMarkerEmptyTextOmitted(t *testing.T) {
 	out := ProjectTurn("turn_9", 9, schema.Turn{
 		Kind:    schema.TurnModelSwitch,
 		Message: llm.System("   "),
-	}, nil, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 	if out != nil {
 		t.Fatalf("items=%+v, want nil for blank marker text", out)
 	}
@@ -1208,7 +1237,7 @@ func TestProjectTurnRendersEnvironmentMarker(t *testing.T) {
 	out := ProjectTurn("turn_9", 9, schema.Turn{
 		Kind:    schema.TurnEnvironment,
 		Message: llm.User("<environment_context>\ncwd: \"/tmp\"\n</environment_context>"),
-	}, nil, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 
 	if len(out) != 1 {
 		t.Fatalf("items=%+v, want exactly one", out)
@@ -1238,7 +1267,7 @@ func TestProjectTurnEnvironmentMarkerEmptyTextOmitted(t *testing.T) {
 	out := ProjectTurn("turn_9", 9, schema.Turn{
 		Kind:    schema.TurnEnvironment,
 		Message: llm.User("   "),
-	}, nil, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 	if out != nil {
 		t.Fatalf("items=%+v, want nil for blank environment text", out)
 	}
@@ -1253,7 +1282,7 @@ func TestProjectTurnEnvironmentMarkerEmptyTextOmitted(t *testing.T) {
 func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
 	start := time.Unix(1_700_000_000, 0).UTC()
 	end := start.Add(3 * time.Second)
-	toolNames := map[string]string{}
+	toolNames := NewToolCallRegistry()
 
 	items := ProjectTurn("turn_1", 1, schema.Turn{
 		Kind:      schema.TurnAssistant,
@@ -1306,5 +1335,366 @@ func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
 	}, toolNames, nil, nil)
 	if len(items) != 1 || items[0].StartedAt != nil {
 		t.Fatalf("zero-timestamp tool call item StartedAt=%v, want nil", items[0].StartedAt)
+	}
+}
+
+// TestProjectTurn_RejectedCallShowsRawArguments verifies the hub/web/TUI thread
+// projection (ProjectTurn's reload path) shows the model's original raw
+// argument bytes in ArgumentsJSON for a rejected call rather than the
+// replay-safe {} placeholder the durable transcript records. When a call's
+// Arguments were not valid JSON, assistantHistoryMessage preserves them in
+// RawArguments and replaces Arguments with {}; the projection must prefer the
+// raw bytes (SentArguments precedence) so the thread shows what the model
+// actually sent. The Description (intent) must be empty for a rejected call,
+// mirroring doctor/transcript.go's treatment from #2162: parsing the {}
+// placeholder yields an empty intent anyway, so skipping the parse when
+// RawArguments is set preserves the current outcome.
+func TestProjectTurn_RejectedCallShowsRawArguments(t *testing.T) {
+	const rawArgs = `{command: "ls", }` // malformed JSON — the shape that rejects
+	toolNames := NewToolCallRegistry()
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_rejected",
+				Name:         "shell",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d: %+v", len(items), items)
+	}
+	if items[0].ArgumentsJSON != rawArgs {
+		t.Errorf("ArgumentsJSON = %q, want the model's raw arguments %q for a rejected call", items[0].ArgumentsJSON, rawArgs)
+	}
+	if items[0].Description != "" {
+		t.Errorf("Description = %q, want empty (intent from a {} placeholder is structurally empty; skip the parse for rejected calls)", items[0].Description)
+	}
+}
+
+// TestProjectTurn_WellFormedCallUnchanged verifies the SentArguments precedence
+// does not alter well-formed-call display: when RawArguments is empty,
+// ArgumentsJSON must still carry the recorded arguments verbatim and the
+// Description must still surface the intent. This pins the "do not alter
+// well-formed-call display" requirement from the brief.
+func TestProjectTurn_WellFormedCallUnchanged(t *testing.T) {
+	const args = `{"path":"README.md","intent":"inspect docs"}`
+	toolNames := NewToolCallRegistry()
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_ok",
+				Name:      "read_file",
+				Arguments: []byte(args),
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(items) != 1 {
+		t.Fatalf("want 1 item, got %d: %+v", len(items), items)
+	}
+	if items[0].ArgumentsJSON != args {
+		t.Errorf("ArgumentsJSON = %q, want unchanged %q for a well-formed call", items[0].ArgumentsJSON, args)
+	}
+	if items[0].Description != "inspect docs" {
+		t.Errorf("Description = %q, want intent %q for a well-formed call", items[0].Description, "inspect docs")
+	}
+}
+
+// TestProjectTurn_RepairedCommunicateRendersDeliveredMessage proves that a
+// healed-and-executed communicate (Arguments={}, RawArguments=malformed,
+// IsError=false) recovers its delivered message on reload. The durable record
+// stores Arguments={} + RawArguments, so CommunicateMessageFromArguments
+// returns "" — but repairing RawArguments with the same RepairJSON machinery
+// the live path used recovers the message, so reload renders the same text
+// live delivered. Before the fix the assistant turn emitted the raw malformed
+// bytes; after phase B it rendered nothing; this round fixes it to render the
+// healed message.
+func TestProjectTurn_RepairedCommunicateRendersDeliveredMessage(t *testing.T) {
+	const rawArgs = `{message: "hello"}` // malformed JSON — bare key (healed to {"message":"hello"})
+	reg := NewToolCallRegistry()
+	assistantItems := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_healed",
+				Name:         "communicate",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	// The assistant turn alone cannot distinguish rejected from healed, so it
+	// renders nothing — the raw bytes are deferred to the result turn.
+	if len(assistantItems) != 0 {
+		t.Fatalf("want 0 items from assistant turn (raw bytes deferred to result), got %d: %+v", len(assistantItems), assistantItems)
+	}
+
+	// The paired result confirms success (IsError=false). The raw bytes are
+	// repaired with RepairJSON, yielding {"message":"hello"}, and the message
+	// "hello" is rendered as an agentMessage — matching what live delivered.
+	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_healed",
+				Name:       "communicate",
+				IsError:    false,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	if len(resultItems) != 1 {
+		t.Fatalf("want 1 item (agentMessage with healed message), got %d: %+v", len(resultItems), resultItems)
+	}
+	if resultItems[0].Type != "agentMessage" {
+		t.Fatalf("Type = %q, want agentMessage", resultItems[0].Type)
+	}
+	if resultItems[0].Text != "hello" {
+		t.Errorf("Text = %q, want %q (the healed message, not the raw bytes)", resultItems[0].Text, "hello")
+	}
+}
+
+// TestProjectTurn_RejectedCommunicateRendersAsToolError verifies that a
+// rejected communicate (IsError=true, PrevalOnly=true) renders as a
+// commandExecution tool/error item, NOT an agentMessage. Live suppresses
+// rejected communicates entirely (no EventCommunicate), so reload must not
+// show an "assistant message" the assistant never said. The raw bytes appear
+// in the commandExecution's ArgumentsJSON, not as message text.
+func TestProjectTurn_RejectedCommunicateRendersAsToolError(t *testing.T) {
+	const rawArgs = `{message: "hello"}` // malformed JSON — bare key
+	reg := NewToolCallRegistry()
+	assistantItems := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_rej",
+				Name:         "communicate",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	// The assistant turn renders nothing — raw bytes are deferred.
+	if len(assistantItems) != 0 {
+		t.Fatalf("want 0 items from assistant turn, got %d: %+v", len(assistantItems), assistantItems)
+	}
+
+	// The result confirms rejection (IsError=true, PrevalOnly=true). The raw
+	// bytes surface as a commandExecution with TurnStatusFailed, not as an
+	// agentMessage.
+	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_rej",
+				Name:       "communicate",
+				IsError:    true,
+				PrevalOnly: true,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	if len(resultItems) != 1 {
+		t.Fatalf("want 1 item (commandExecution tool error), got %d: %+v", len(resultItems), resultItems)
+	}
+	if resultItems[0].Type != "commandExecution" {
+		t.Fatalf("Type = %q, want commandExecution (not agentMessage)", resultItems[0].Type)
+	}
+	if resultItems[0].Status != appwire.TurnStatusFailed {
+		t.Errorf("Status = %q, want %q", resultItems[0].Status, appwire.TurnStatusFailed)
+	}
+	if resultItems[0].ArgumentsJSON != rawArgs {
+		t.Errorf("ArgumentsJSON = %q, want %q", resultItems[0].ArgumentsJSON, rawArgs)
+	}
+	if resultItems[0].ToolName != "communicate" {
+		t.Errorf("ToolName = %q, want communicate", resultItems[0].ToolName)
+	}
+	if !resultItems[0].PrevalOnly {
+		t.Error("PrevalOnly = false, want true")
+	}
+}
+
+// TestProjectTurn_RejectedCommunicateNameOmittedStillResolves proves that a
+// communicate result with Name="" (omitempty) still resolves to "communicate"
+// via the Names map, not to deferred raw bytes. This is the core of finding 1:
+// the old code overloaded toolNames, so a Name="" result resolved to raw
+// malformed JSON and missed the communicate branch, rendering as a bogus
+// commandExecution with ToolName set to malformed JSON.
+func TestProjectTurn_RejectedCommunicateNameOmittedStillResolves(t *testing.T) {
+	const rawArgs = `{message: "hi"}` // malformed JSON — bare key
+	reg := NewToolCallRegistry()
+	// Project the assistant turn to seed the registry.
+	_ = ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_noname",
+				Name:         "communicate",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	// The result has Name="" (omitempty). The Names map (set on the assistant
+	// turn) resolves it to "communicate", not to the raw bytes in CommRawArgs.
+	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_noname",
+				Name:       "", // omitempty — not set on the wire
+				IsError:    true,
+				PrevalOnly: true,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	if len(resultItems) != 1 {
+		t.Fatalf("want 1 item, got %d: %+v", len(resultItems), resultItems)
+	}
+	if resultItems[0].Type != "commandExecution" {
+		t.Fatalf("Type = %q, want commandExecution (communicate branch reached via Names map)", resultItems[0].Type)
+	}
+	if resultItems[0].ToolName != "communicate" {
+		t.Errorf("ToolName = %q, want communicate (not raw bytes from CommRawArgs)", resultItems[0].ToolName)
+	}
+}
+
+// TestProjectTurn_RuntimeFailedCommunicateDoesNotShowRawArgs verifies that a
+// runtime execution failure (IsError=true, PrevalOnly=false) does NOT surface
+// the raw bytes. A runtime failure executed and returned an error; the raw
+// bytes are not the delivered message, and live did not emit them either.
+func TestProjectTurn_RuntimeFailedCommunicateDoesNotShowRawArgs(t *testing.T) {
+	const rawArgs = `{message: "hi"}` // malformed JSON — bare key
+	reg := NewToolCallRegistry()
+	_ = ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_runtimefail",
+				Name:         "communicate",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	// Runtime failure: IsError=true but PrevalOnly=false. The raw fallback
+	// must NOT fire — the call executed and failed, it was not rejected.
+	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_runtimefail",
+				Name:       "communicate",
+				IsError:    true,
+				PrevalOnly: false, // runtime failure, not pre-dispatch rejection
+			},
+		}}},
+	}, reg, nil, nil)
+
+	if len(resultItems) != 0 {
+		t.Fatalf("want 0 items (runtime failure must not surface raw args), got %d: %+v", len(resultItems), resultItems)
+	}
+}
+
+// TestProjectTurn_OversizedValidJSONSuppressesIntent verifies finding 4: an
+// oversized valid JSON tool call (within MaxToolArgumentBytes but over the cap)
+// must suppress intent on reload, matching the live path's suppression. Live
+// rejects oversized args via ValidateRawArguments (suppressing Description),
+// but the durable record has RawArguments="" for valid JSON, so without a
+// size-gate check on the projection side, reload would show intent.
+func TestProjectTurn_OversizedValidJSONSuppressesIntent(t *testing.T) {
+	// Build valid JSON over the MaxToolArgumentBytes cap with an "intent" key.
+	// Use argrepair.MaxToolArgumentBytes to avoid importing agent/internal.
+	large := strings.Repeat("x", 2*1024*1024+10)
+	oversizedArgs := []byte(`{"intent":"secret","bar":"` + large + `"}`)
+	reg := NewToolCallRegistry()
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_oversized",
+				Name:         "widget",
+				Arguments:    oversizedArgs,
+				RawArguments: "", // valid JSON — RawArguments not set
+			},
+		}}},
+	}, reg, nil, nil)
+
+	// The item must NOT contain the intent "secret": the live path suppresses
+	// Description for oversized valid JSON, so reload must too.
+	for _, item := range items {
+		if item.Description != "" {
+			t.Errorf("oversized valid JSON must suppress intent (Description=%q), got item: %+v", item.Description, item)
+		}
+	}
+}
+
+// TestProjectTurn_HealedCommunicateStringOutputRendersMessage (F2 round 5):
+// when the model sends a communicate call with output as a JSON-object string
+// (e.g. {"output":"{\"message\":\"hello\"}"}), the live path promotes the
+// string to an object and copies output.message into message, delivering
+// "hello". The reload path must replay the same normalization on the healed
+// bytes before extracting the message — CommunicateMessageFromArguments
+// alone only decodes output as an object, so a string-valued output yields
+// "" without the promotion.
+func TestProjectTurn_HealedCommunicateStringOutputRendersMessage(t *testing.T) {
+	// Malformed JSON (bare key) that RepairJSON heals. The healed form has
+	// output as a JSON-object string — the shape the live path promotes.
+	const rawArgs = `{output: "{\"message\":\"hello\"}"}`
+	reg := NewToolCallRegistry()
+	ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:           "call_comm_str_out",
+				Name:         "communicate",
+				Arguments:    []byte(`{}`),
+				RawArguments: rawArgs,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	resultItems := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_comm_str_out",
+				Name:       "communicate",
+				IsError:    false,
+			},
+		}}},
+	}, reg, nil, nil)
+
+	if len(resultItems) != 1 {
+		t.Fatalf("want 1 item (agentMessage with promoted message), got %d: %+v", len(resultItems), resultItems)
+	}
+	if resultItems[0].Type != "agentMessage" {
+		t.Fatalf("Type = %q, want agentMessage", resultItems[0].Type)
+	}
+	if resultItems[0].Text != "hello" {
+		t.Errorf("Text = %q, want %q (output string promoted and message extracted)", resultItems[0].Text, "hello")
 	}
 }

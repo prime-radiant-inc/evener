@@ -9,15 +9,15 @@
 // headers, bodies, transcript text, filenames, attachment bytes, speech text,
 // or provider payloads.
 
-import type {
-  EvenerDelegateInfo,
-  EvenerDiagnostics,
-  EvenerJobInfo,
-  EvenerThread,
-  EvenerUsage,
-  TaskAggregate,
-  Thread,
-  ThreadCapabilities,
+import {
+  type EvenerDelegateInfo,
+  type EvenerDiagnostics,
+  type EvenerJobInfo,
+  type TaskAggregate,
+  type Thread,
+  type ThreadCapabilities,
+  threadUsageSummary,
+  type UsageSummary,
 } from "@evener/appwire-client";
 
 // --- view model types --------------------------------------------------------
@@ -69,24 +69,6 @@ export interface WorkEntry {
   // Raw-identifier metadata — only shown inside diagnostics disclosure.
   readonly diagnostics?: RedactedDiagnostic;
 }
-
-// UsageSummary is the activity sheet's session accounting: EvenerThread's token
-// aggregate, cost and context fields plus the work duration. Values pass
-// straight through — an absent wire field stays undefined rather than becoming
-// a 0 that would read as a real measurement. The package's ThreadModel keeps
-// these as separate fields (usage/cost/contextUsed/...) and the web derives its
-// summary app-side (decision 4); D18 reconciles the two derivations.
-export type UsageSummary = Readonly<
-  EvenerUsage &
-    Pick<
-      EvenerThread,
-      | "cost"
-      | "contextUsed"
-      | "contextWindow"
-      | "contextRemaining"
-      | "contextPressure"
-    > & { durationMs?: number }
->;
 
 export interface ActivityView {
   readonly tasks: TaskGroup[];
@@ -142,6 +124,8 @@ const FAILED_STATUSES: ReadonlySet<string> = new Set([
   "failed",
   "error",
   "errored",
+  "command_exited_nonzero",
+  "command_killed",
   "cancelled",
   "canceled",
   "exhausted",
@@ -438,20 +422,6 @@ export function deriveOpenTaskCount(counts: {
   return Math.max(0, counts.total - counts.done - (counts.cancelled ?? 0));
 }
 
-// --- usage projection --------------------------------------------------------
-
-function projectUsageSummary(evener: Thread["evener"]): UsageSummary {
-  return {
-    ...evener.usage,
-    cost: evener.cost,
-    contextUsed: evener.contextUsed,
-    contextWindow: evener.contextWindow,
-    contextRemaining: evener.contextRemaining,
-    contextPressure: evener.contextPressure,
-    durationMs: evener.workMillis,
-  };
-}
-
 // --- top-level projection ----------------------------------------------------
 
 export function createActivityService(): ActivityService {
@@ -461,7 +431,7 @@ export function createActivityService(): ActivityService {
       return {
         tasks: projectTasks(evener.tasks),
         work: projectWork(evener.diagnostics),
-        usage: projectUsageSummary(evener),
+        usage: threadUsageSummary(evener),
         capabilities: evener.capabilities,
         reasoningEffort: evener.reasoningEffort,
         reasoningEffortLevels: evener.reasoningEffortLevels,

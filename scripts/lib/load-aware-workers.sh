@@ -125,9 +125,19 @@ load_aware_cgroup_relpath() {
 	awk -F: '$1 == "0" && $2 == "" { print $3; exit }' "$_law_file" 2>/dev/null
 }
 
-# load_aware_cgroup_mount FILE VERSION — print the mount point of the mount
-# that owns this process's CPU accounting.
-load_aware_cgroup_mount() {
+# load_aware_cgroup_unescape FIELD — decode mountinfo's octal escapes. A path
+# containing a space, tab, newline, or backslash is written as \040, \011,
+# \012, or \134, so its escaped form has no literal whitespace to split on and
+# names no directory until it is decoded.
+load_aware_cgroup_unescape() {
+	printf '%b' "${1-}"
+}
+
+# load_aware_cgroup_mount_fields FILE VERSION — print two lines for the mount
+# that owns this process's CPU accounting: its root (mountinfo field 4) and its
+# mount point (field 5), both still escaped so neither line can be broken by
+# whitespace inside the path.
+load_aware_cgroup_mount_fields() {
 	_law_file=${1-/proc/self/mountinfo}
 	_law_version=${2-v2}
 	[ -r "$_law_file" ] || { printf ''; return 0; }
@@ -140,7 +150,7 @@ load_aware_cgroup_mount() {
 				for (j = sep + 3; j <= NF; j++) {
 					n = split($j, controllers, ",")
 					for (k = 1; k <= n; k++) {
-						if (controllers[k] == "cpu") { print $5; exit }
+						if (controllers[k] == "cpu") { print $4; print $5; exit }
 					}
 				}
 			}' "$_law_file" 2>/dev/null
@@ -150,8 +160,24 @@ load_aware_cgroup_mount() {
 		{
 			sep = 0
 			for (i = 1; i <= NF; i++) { if ($i == "-") { sep = i; break } }
-			if (sep != 0 && $(sep + 1) == "cgroup2") { print $5; exit }
+			if (sep != 0 && $(sep + 1) == "cgroup2") { print $4; print $5; exit }
 		}' "$_law_file" 2>/dev/null
+}
+
+# load_aware_cgroup_mount FILE VERSION — print the mount point of the mount
+# that owns this process's CPU accounting, decoded.
+load_aware_cgroup_mount() {
+	_law_line="$(load_aware_cgroup_mount_fields "$@" | sed -n 2p)"
+	load_aware_cgroup_unescape "$_law_line"
+}
+
+# load_aware_cgroup_mount_root FILE VERSION — print that mount's root field,
+# decoded. Field 4 is where the mounted subtree begins in the hierarchy, so a
+# hierarchy-absolute membership path has already been "consumed" by this much
+# of the path before the mount point even enters the picture.
+load_aware_cgroup_mount_root() {
+	_law_line="$(load_aware_cgroup_mount_fields "$@" | sed -n 1p)"
+	load_aware_cgroup_unescape "$_law_line"
 }
 
 # load_aware_cgroup_level_cores DIR VERSION — the quota one hierarchy level
@@ -216,18 +242,72 @@ load_aware_cgroup_hierarchy_cores() {
 	_law_version=${3-v2}
 
 	_law_relpath="$(load_aware_cgroup_relpath "$_law_cg" "$_law_version")"
-	_law_mount="$(load_aware_cgroup_mount "$_law_mi" "$_law_version")"
-	if [ -z "$_law_relpath" ] || [ -z "$_law_mount" ]; then
+	# Command substitution strips trailing newlines, and a decoded mountinfo
+	# path can genuinely end in one (a mount point ending in the escape \012).
+	# Carry such a path out of its capture with a trailing sentinel and remove
+	# exactly one byte: appending one and stripping one preserves the value
+	# whether or not it ends in a newline, and whether or not the path itself
+	# ends in the sentinel. Producers that emit a line terminator (awk, sed,
+	# dirname) need none: the stripped newline there is the terminator, and the
+	# field itself cannot hold one.
+	_law_mpoint="$(load_aware_cgroup_mount "$_law_mi" "$_law_version"; printf X)"
+	_law_mpoint=${_law_mpoint%X}
+	if [ -z "$_law_relpath" ] || [ -z "$_law_mpoint" ]; then
 		printf ''
 		return 0
 	fi
 
-	# mountinfo field 5 is the mount point. The membership path is relative to
-	# the root the mount exposes AT that mount point, so the walk starts at
-	# mount point + membership and stops at the mount point itself. Field 4 is
-	# where that root already begins, not a directory beneath the mount.
-	set -- $_law_mount
+	# The membership path is relative to the cgroup namespace root when a
+	# namespace is in effect and hierarchy-absolute otherwise, and the two
+	# files cannot say which. So evaluate both readings and keep the most
+	# restrictive finite quota: the wrong one misses the limit the right one
+	# finds, and a missed limit reports more CPUs than the quota allows.
+	#
+	# Namespace-relative: the membership path starts at the mount point.
+	_law_relative="$(load_aware_cgroup_walk_cores "$_law_mpoint" "$_law_relpath" "$_law_version")"
+
+	# Hierarchy-absolute: the membership path starts at the hierarchy root, so
+	# the part the mount's root field already covers is not beneath the mount
+	# point and must be stripped before joining. A root of "/" is the hierarchy
+	# root, where the two readings coincide and this one adds nothing.
+	_law_root="$(load_aware_cgroup_mount_root "$_law_mi" "$_law_version"; printf X)"
+	_law_root=${_law_root%X}
+	_law_root=${_law_root%/}
+	_law_absolute=
+	case "$_law_root" in
+	''|/) ;;
+	*)
+		case "$_law_relpath" in
+		"$_law_root") _law_absolute=/ ;;
+		"$_law_root"/*) _law_absolute="${_law_relpath#"$_law_root"}" ;;
+		esac
+		;;
+	esac
+	_law_absolute_cores=
+	if [ -n "$_law_absolute" ]; then
+		_law_absolute_cores="$(load_aware_cgroup_walk_cores "$_law_mpoint" "$_law_absolute" "$_law_version")"
+	fi
+
+	_law_best=
+	for _law_candidate in "$_law_relative" "$_law_absolute_cores"; do
+		if [ -n "$_law_candidate" ]; then
+			if [ -z "$_law_best" ] || [ "$_law_candidate" -lt "$_law_best" ]; then
+				_law_best="$_law_candidate"
+			fi
+		fi
+	done
+	printf '%s' "$_law_best"
+}
+
+# load_aware_cgroup_walk_cores MOUNT RELPATH VERSION — the most restrictive
+# finite quota from RELPATH up to MOUNT in one hierarchy, or empty. The walk
+# begins at mount point + membership and stops at the mount point itself, where
+# the mounted subtree starts. MOUNT is already decoded, so it may hold spaces.
+load_aware_cgroup_walk_cores() {
 	_law_mpoint=${1-/}
+	_law_relpath=${2-}
+	_law_version=${3-v2}
+
 	_law_dir="$(load_aware_join "$_law_mpoint" "$_law_relpath")"
 	_law_dir=${_law_dir%/}
 	[ -n "$_law_dir" ] || _law_dir=/
@@ -253,9 +333,15 @@ load_aware_cgroup_hierarchy_cores() {
 	printf '%s' "$_law_best"
 }
 
+# load_aware_load1 — the one-minute load average, or LOAD_AWARE_LOAD1 in its
+# place when that is set. A dedicated CI runner sets LOAD_AWARE_LOAD1=0: its own
+# checkout and cache restore are still in the average when a gate starts, and
+# sizing against them halved every budget on a 4-core runner.
 load_aware_load1() {
 	_law_load=
-	if [ -r /proc/loadavg ]; then
+	if [ -n "${LOAD_AWARE_LOAD1+x}" ]; then
+		_law_load=$LOAD_AWARE_LOAD1
+	elif [ -r /proc/loadavg ]; then
 		_law_load="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)"
 	elif command -v sysctl >/dev/null 2>&1; then
 		_law_load="$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')"

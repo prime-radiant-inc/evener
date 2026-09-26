@@ -845,7 +845,7 @@ func TestCarrierClaimSkipsASteerInFlight(t *testing.T) {
 	}
 	recordSteerWithFailedIncorporation(t, s, "steer-in-flight")
 
-	if carrier, ok := s.claimSteeringCarrierInput(); ok {
+	if carrier, _ := s.claimSteeringCarrierInput(); carrier.SteeringCarrier {
 		t.Fatalf("claimSteeringCarrierInput claimed %q with only an in-flight steer in the store; the carrier would drain nothing and fail", carrier.ClientMutationID)
 	}
 	if got := s.clientMutations.snapshot().ActiveTurnID; got != "" {
@@ -857,9 +857,9 @@ func TestCarrierClaimSkipsASteerInFlight(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("steer: %v", err)
 	}
-	carrier, ok := s.claimSteeringCarrierInput()
-	if !ok || carrier.ClientMutationID != "steer-queued" {
-		t.Fatalf("claimSteeringCarrierInput = %q ok=%v, want the queued steer behind the in-flight one", carrier.ClientMutationID, ok)
+	carrier, _ := s.claimSteeringCarrierInput()
+	if !carrier.SteeringCarrier || carrier.ClientMutationID != "steer-queued" {
+		t.Fatalf("claimSteeringCarrierInput = %q ok=%v, want the queued steer behind the in-flight one", carrier.ClientMutationID, carrier.SteeringCarrier)
 	}
 }
 
@@ -1400,7 +1400,7 @@ func TestRestoreFinalizesARecordedSteerCompactedOutOfHistory(t *testing.T) {
 	recordSteerWithFailedIncorporation(t, crashed, "steer-compacted")
 	summary := schema.NewTurn(schema.TurnSummary, llm.Assistant("compacted context"))
 	crashed.recordTurn(summary, summary)
-	_, entries, _, err := readTranscript(crashed.TranscriptPath())
+	_, entries, _, err := readTranscript(crashed.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}

@@ -14,7 +14,13 @@ import {
   View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import { ActivityList, type ActivityRow, buildActivityRows, stableDelegateDisplayStatus } from "@evener/appwire-client";
+import {
+  ActivityList,
+  type ActivityRow,
+  buildActivityRows,
+  jobStatusDisplay,
+  stableDelegateDisplayStatus,
+} from "@evener/appwire-client";
 import { parseAnsiLines } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ActivityDelegateDetails } from "./ActivityDelegateDetails";
@@ -179,7 +185,7 @@ export function ActivitySheet({
           row.delegate.childRef);
     const status =
       row.kind === "job"
-        ? row.job.status
+        ? jobStatusDisplay(row.job.status, row.job.reason)
         : (stableDelegateDisplayStatus(row.delegate) ??
           row.delegate.child?.aggregate ??
           "unknown");

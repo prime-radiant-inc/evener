@@ -1,10 +1,11 @@
-// Optimistic send/steer/drain chips beside the composer. Reads the shared
+// Optimistic send chips beside the composer. Reads the shared
 // pendingTurnsStore (usePendingTurnEntries) and renders one compact chip per
-// pending entry whose method is send, steer, or drain - the "queue" method is
-// already chipped by QueueStrip, so it is filtered out here. Reconciliation
-// is owned entirely by pendingTurnsStore's durable outbox and authoritative
-// pending-mutation projection; this component adds no store state and imports
-// the hook read-only.
+// pending entry whose method is send - the strip keeps send only, because
+// steer/drain/promote render as ghosts in the transcript's trailing row per
+// the steering-ghost spec (docs/web-ui/specs/2026-09-20-steering-ghost-live-edge.md).
+// Reconciliation is owned entirely by pendingTurnsStore's durable outbox and
+// authoritative pending-mutation projection; this component adds no store
+// state and imports the hook read-only.
 //
 // Deliberately rendered here beside the composer, NOT injected into the
 // virtualized transcript: an optimistic item in the virtual list is beyond the
@@ -15,16 +16,16 @@
 import type { JSX } from "react";
 import { useMemo } from "react";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import type { PendingMethod, PendingTurnEntry } from "../composer/queue/pendingReconcile";
+import type { PendingTurnEntry } from "../composer/queue/pendingReconcile";
 import { usePendingTurnEntries } from "../composer/queue/pendingTurnsStore";
-import { queueEntryPreviewText, skillMarkers } from "../composer/queue/queueDisplay";
+import { pendingEntryPreview } from "../composer/queue/queueDisplay";
 import styles from "./pendingchips.module.css";
 
-type OptimisticMethod = Exclude<PendingMethod, "queue">;
-type OptimisticEntry = PendingTurnEntry & { method: OptimisticMethod };
-
-function isOptimistic(entry: PendingTurnEntry): entry is OptimisticEntry {
-  return entry.method !== "queue" && entry.state !== "blockedUnknown";
+function isOptimistic(entry: PendingTurnEntry): boolean {
+  // blockedUnknown and canceled rows are QueueStrip's durable rows, never
+  // in-flight chips: a canceled row would otherwise read as still Sending
+  // here while QueueStrip simultaneously reports it as canceled.
+  return entry.method === "send" && entry.state !== "blockedUnknown" && entry.state !== "canceled";
 }
 
 const CLASS = {
@@ -34,18 +35,12 @@ const CLASS = {
   text: requireClass(styles.text, "pendingchips.module.css", "text"),
 };
 
-// The three optimistic-submission methods this strip owns. "queue" is
-// excluded - QueueStrip renders those. Present-tense labels convey the
-// still-in-flight state a dimmed chip already hints at.
-const METHOD_LABEL: Record<OptimisticMethod, string> = {
-  send: "Sending",
-  steer: "Steering",
-  drain: "Draining",
-};
-
 export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Element | null {
   const entries = usePendingTurnEntries(sessionRef);
-  // Filter to the three composer-submission methods (QueueStrip owns "queue").
+  // Filter to the sends this strip owns - steer/drain/promote ghosts render
+  // in the transcript's trailing row (steering-ghost spec) and QueueStrip
+  // owns "queue". The one label this strip renders is present-tense: it
+  // conveys the still-in-flight state the dimmed chip already hints at.
   // Memoized against the store-stable entries array so an unrelated re-render
   // does not rebuild the list.
   const optimistic = useMemo(() => entries.filter(isOptimistic), [entries]);
@@ -56,15 +51,8 @@ export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Elemen
     <ul className={CLASS.chips} data-testid="pending-chips">
       {optimistic.map((entry) => (
         <li key={entry.id} className={CLASS.chip}>
-          <span className={CLASS.method}>{METHOD_LABEL[entry.method]}</span>
-          {/* Same text-plus-markers preview every queue row renders: a
-              slash-completed skill submission carries no prose, so the marker
-              is the chip's whole body. */}
-          <span className={CLASS.text}>
-            {[queueEntryPreviewText(entry.text, entry.imageCount), skillMarkers(entry.skillNames)]
-              .filter((part) => part !== "")
-              .join(" ")}
-          </span>
+          <span className={CLASS.method}>Sending</span>
+          <span className={CLASS.text}>{pendingEntryPreview(entry)}</span>
         </li>
       ))}
     </ul>

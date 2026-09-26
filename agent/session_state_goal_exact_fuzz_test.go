@@ -105,13 +105,13 @@ func fuzzExactState(t *testing.T) {
 	boundary.finishProcessingAtBoundary(context.WithValue(context.Background(), pendingWatchSendDrainFaultKey{}, errors.New("drain")), SessionIdle)
 
 	restored := &Session{state: SessionIdle, history: []schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))}}
-	restored.recomputeRestoredState()
+	restored.recomputeRestoredState(0)
 	if restored.state != SessionAwaiting {
 		t.Fatalf("restored state = %q", restored.state)
 	}
 	restored = &Session{state: SessionIdle, history: []schema.Turn{schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))}}
 	restored.enqueueJobNotification(jobNotification{JobID: "pending"})
-	restored.recomputeRestoredState()
+	restored.recomputeRestoredState(0)
 	if restored.state != SessionIdle {
 		t.Fatalf("autonomous restored state = %q", restored.state)
 	}

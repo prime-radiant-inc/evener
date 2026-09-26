@@ -1,30 +1,46 @@
 import { useEffect, useRef, useState } from "react";
 import { TextInput, View } from "react-native";
-import type {
-  InstanceEntry,
-  ProviderDescriptor,
-} from "@evener/appwire-client";
 import {
-  createProviderParams,
-  editProviderParams,
-  type ProviderDraft,
-} from "./providerForm";
-import type { ProviderInstances } from "./providerInstances";
+  isEndpointConflict,
+  type InstanceCreateParams,
+  type InstanceEditParams,
+  type InstanceEntry,
+  type ProviderDescriptor,
+} from "@evener/appwire-client";
+import type { LiveReadiness } from "./connectionDisplay";
+import { createProviderParams, editProviderParams, type ProviderDraft } from "./providerForm";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function ProviderEditor({
   instance,
   providers,
-  model,
+  onCreate,
+  onEdit,
   disabled,
+  canUseConnection,
   onSaved,
+  onEndpointConflict,
   onCancel,
 }: {
   instance?: InstanceEntry;
   providers: ProviderDescriptor[];
-  model: ProviderInstances;
+  // The screen owns the write gate (one write at a time, refused while the
+  // listing refuses configuration): the editor hands a validated draft back
+  // and the screen issues it against the credential core. Each resolves the
+  // core's applied verdict, so the editor reports success only on a confirmed
+  // write.
+  onCreate(params: InstanceCreateParams): Promise<boolean>;
+  onEdit(params: InstanceEditParams): Promise<boolean>;
   disabled: boolean;
+  /** The live readiness an issued save re-checks at invocation time: the
+   * `disabled` prop is a render-time snapshot, and a disconnect between the
+   * render and the press leaves it saying ready. Every other mutation entry
+   * on the providers screen guards through this same predicate (act's own
+   * entry check, whenReady around each control); the save is the one write
+   * the screen cannot wrap, so the editor guards it itself. */
+  canUseConnection: LiveReadiness;
   onSaved(name: string): void;
+  onEndpointConflict(name: string): void;
   onCancel(): void;
 }) {
   const colors = useColors();
@@ -43,6 +59,18 @@ export function ProviderEditor({
     apiKeyEnv: "",
     credentialHeader: "",
   });
+  // The save's assertion belongs to the row this editor was OPENED on, not
+  // whatever it resolves to now: the screen this editor lives in survives
+  // reconnects behind a banner (ProvidersScreen), so a row another client
+  // moved while this one was away republishes under the open editor with a
+  // new fingerprint - and an assertion read from the live row would approve
+  // a save against a destination the user never saw. Captured here, the
+  // moved row's refusal routes through the endpoint-conflict path: the
+  // editor closes, the list re-reads, the screen warns in its own words. The
+  // editor is keyed by instance name, so the ref lives exactly as long as
+  // this editor's target row; a row the hub could not fingerprint at open
+  // asserts nothing, as before.
+  const assertedFingerprint = useRef(instance?.endpointFingerprint);
   const [error, setError] = useState<string | null>(null);
   const [choosing, setChoosing] = useState(false);
   const [query, setQuery] = useState("");
@@ -72,12 +100,20 @@ export function ProviderEditor({
     );
   }
   async function save() {
-    if (busy) return;
+    // The invocation-time readiness guard, ahead of every state change: a
+    // save that cannot be sent bails before clearing the error slot or
+    // reporting a failure, so the draft stays exactly as typed for the
+    // connection's return instead of reading as a save that was tried.
+    if (busy || !canUseConnection()) return;
     setError(null);
     let create: ReturnType<typeof createProviderParams> | undefined;
     let edit: ReturnType<typeof editProviderParams> | undefined;
     try {
-      if (instance) edit = editProviderParams(instance, draft.baseUrl);
+      if (instance)
+        edit = editProviderParams(
+          { ...instance, endpointFingerprint: assertedFingerprint.current },
+          draft.baseUrl,
+        );
       else create = createProviderParams(draft, providers);
     } catch (failure) {
       setError(
@@ -87,14 +123,41 @@ export function ProviderEditor({
     }
     setSaving(true);
     try {
-      if (edit) await model.edit(edit);
-      else if (create) await model.create(create);
+      let applied: boolean;
+      if (edit) applied = await onEdit(edit);
+      else if (create) applied = await onCreate(create);
+      else {
+        // Neither an edit nor a create was built: there is no write to issue,
+        // so the draft is simply accepted as it stands.
+        if (alive.current) onSaved(instance?.name ?? draft.name.trim());
+        return;
+      }
+      if (!applied) {
+        // A newer listing superseded this save's answer: the write may have
+        // landed on the host, but the store cannot confirm it, so the editor
+        // does not close reporting success.
+        if (alive.current)
+          setError(
+            "Save could not be confirmed. Check the provider list before trying again.",
+          );
+        return;
+      }
       if (alive.current) onSaved(instance?.name ?? draft.name.trim());
-    } catch {
-      if (alive.current)
-        setError(
-          "Save could not be confirmed. Check the provider list before trying again.",
-        );
+    } catch (err) {
+      if (alive.current) {
+        if (isEndpointConflict(err)) {
+          // The hub refused the asserted destination: the row moved since this
+          // editor was opened, so nothing was written. Hand it to the screen,
+          // which clears this editor, re-reads the provider list, and warns in
+          // its own words - the rejection's text can echo submitted values and
+          // is never shown.
+          onEndpointConflict(instance?.name ?? draft.name.trim());
+        } else {
+          setError(
+            "Save could not be confirmed. Check the provider list before trying again.",
+          );
+        }
+      }
     } finally {
       if (alive.current) setSaving(false);
     }

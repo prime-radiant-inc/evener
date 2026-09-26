@@ -4,7 +4,7 @@ import type {
   InstanceListResponse,
   ProviderDescriptor,
 } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { ErrorEndpointConflict, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -159,6 +159,7 @@ describe("AddInstanceDialog", () => {
         base: "google-vertex-express",
         baseUrl: "",
         vars: { BASE_URL: "https://example.test/v1" },
+        originClientId: "test-tab",
       });
       return { instances: [], availableProviders: [] };
     });
@@ -205,7 +206,9 @@ describe("AddInstanceDialog", () => {
     await user.type(screen.getByLabelText("Name"), "work");
     await user.type(screen.getByLabelText(/credential header/i), "Authorization=Bearer secret");
     await user.click(screen.getByRole("button", { name: "Create" }));
-    expect(screen.getByText("Credential header must reference a $VARIABLE, never a literal secret.")).toBeTruthy();
+    expect(
+      screen.getByText("Credential header must reference a $VARIABLE or run a $(command), never a literal secret."),
+    ).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -217,6 +220,7 @@ describe("AddInstanceDialog", () => {
         base: "anthropic",
         baseUrl: "",
         credentialHeader: "Authorization=Bearer $PORTKEY_KEY",
+        originClientId: "test-tab",
       });
       return { instances: [], availableProviders: [] };
     });
@@ -232,7 +236,13 @@ describe("AddInstanceDialog", () => {
   test("api-key-env sends the bare variable name", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/create", (params) => {
-      expect(params).toEqual({ name: "work", base: "anthropic", baseUrl: "", apiKeyEnv: "PORTKEY_KEY" });
+      expect(params).toEqual({
+        name: "work",
+        base: "anthropic",
+        baseUrl: "",
+        apiKeyEnv: "PORTKEY_KEY",
+        originClientId: "test-tab",
+      });
       return { instances: [], availableProviders: [] };
     });
     const user = userEvent.setup();
@@ -252,6 +262,7 @@ describe("AddInstanceDialog", () => {
         base: "google-vertex-anthropic",
         baseUrl: "",
         vars: { GOOGLE_VERTEX_PROJECT: "my-proj" },
+        originClientId: "test-tab",
       });
       return { instances: [], availableProviders: [] };
     });
@@ -267,7 +278,7 @@ describe("AddInstanceDialog", () => {
   test("submit calls instanceCreate and, on success, toasts + calls onSuccess", async () => {
     const fake = connectFakeClient();
     fake.on("evener/instance/create", (params) => {
-      expect(params).toEqual({ name: "work", base: "anthropic", baseUrl: "https://x" });
+      expect(params).toEqual({ name: "work", base: "anthropic", baseUrl: "https://x", originClientId: "test-tab" });
       // The hub's create returns the full updated listing, so the applied
       // response carries the new row (the dialog verifies it).
       return { instances: [instance({ name: "work", providerId: "anthropic" })], availableProviders: [] };
@@ -819,6 +830,7 @@ describe("AddInstanceDialog", () => {
         baseUrl: "",
         protocol: "openai-responses",
         surface: "generic",
+        originClientId: "test-tab",
       });
       return { instances: [instance({ name: "work", providerId: "anthropic" })], availableProviders: [] };
     });
@@ -1214,7 +1226,7 @@ describe("ApiKeyDialog", () => {
         throw new WireError(
           "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
           -32013,
-          { evenerErrorInfo: "conflict" },
+          { evenerErrorInfo: ErrorEndpointConflict },
         );
       }
       return { provider: "work", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
@@ -1298,7 +1310,7 @@ describe("ApiKeyDialog", () => {
       throw new WireError(
         "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
         -32013,
-        { evenerErrorInfo: "conflict" },
+        { evenerErrorInfo: ErrorEndpointConflict },
       );
     });
     resetToastStoreForTests();

@@ -14,6 +14,11 @@
 // (panes/spawn/Spawn.tsx). Both get the identical affordance because it is the
 // identical component, which is the whole point of issue #198.
 //
+// The picker offers models and nothing else: no connect-provider entry on
+// either surface. Provider setup is not one of the choices, so it happens
+// where it has a real flow (the spawn pane's own notices, the credentials
+// pane), never mid-list.
+//
 // The picker's OVERLAY is viewport-selected (docs/web-ui/design-system.md §11):
 // a floating Popover with the search combobox on desktop, the same catalog
 // rows in a bottom Sheet with 48px tap targets and no search input on mobile.
@@ -22,13 +27,11 @@
 // way).
 
 import { friendlyLaunchErrorMessage, sessionActionHeadline } from "@evener/appwire-client";
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import {
   Button,
   Chevron,
-  Dialog,
-  Loader,
   type ModelCatalog,
   type ModelCatalogEntry,
   ModelCatalogPanel,
@@ -36,10 +39,6 @@ import {
   Sheet,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import {
-  ConnectProviderDialogBoundary,
-  useConnectProviderDialogChunk,
-} from "../../settings/sections/credentials/ConnectProviderDialogBoundary";
 import styles from "./modelswitch.module.css";
 
 export interface ModelSwitchTriggerProps {
@@ -62,8 +61,6 @@ export interface ModelSwitchTriggerProps {
   onPick: (entry: ModelCatalogEntry) => void;
   /** A new completion opens a fresh catalog scoped to the actual instance. */
   connectionRequest?: { name?: string };
-  /** Spawn owns its existing recoverable lazy connector and composer draft. */
-  onConnectProvider?: () => void;
   disabled?: boolean;
   /** Visually-hidden action suffix for the trigger's accessible name. */
   actionLabel?: string;
@@ -89,7 +86,6 @@ export function ModelSwitchTrigger({
   loadCatalog,
   onPick,
   connectionRequest,
-  onConnectProvider,
   disabled = false,
   actionLabel = "change model",
   "data-testid": testId,
@@ -100,16 +96,7 @@ export function ModelSwitchTrigger({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
-  const [connecting, setConnecting] = useState(false);
   const [providerFilter, setProviderFilter] = useState<string>();
-  // The connect dialog is a lazy chunk with its own recovery, shared with the
-  // spawn pane: a rejected import must not take the session UI with it.
-  const {
-    Dialog: ConnectProviderDialog,
-    retry: retryConnector,
-    reloadAvailable: connectorReloadAvailable,
-    version: connectorChunkVersion,
-  } = useConnectProviderDialogChunk();
   const handledConnection = useRef(connectionRequest);
   const triggerRef = useRef<HTMLButtonElement>(null);
   // Generation guard for the catalog load below: every open - and every
@@ -189,20 +176,6 @@ export function ModelSwitchTrigger({
     void startLoad(++loadGenerationRef.current, loadCatalog, true);
   }, [connectionRequest, loadCatalog, startLoad]);
 
-  function connectAnother(): void {
-    setOpen(false);
-    loadGenerationRef.current += 1;
-    if (onConnectProvider) onConnectProvider();
-    else setConnecting(true);
-  }
-
-  function connected(name?: string): void {
-    setConnecting(false);
-    setProviderFilter(name);
-    setCatalog(null);
-    openPicker(true);
-  }
-
   function closePicker(): void {
     setOpen(false);
     if (!isMobile) triggerRef.current?.focus();
@@ -245,9 +218,6 @@ export function ModelSwitchTrigger({
         onPick={handlePick}
         variant={isMobile ? "sheet" : "default"}
       />
-      <Button variant="quiet" onClick={connectAnother}>
-        Connect another provider
-      </Button>
     </>
   );
 
@@ -292,31 +262,6 @@ export function ModelSwitchTrigger({
     </button>
   );
 
-  const connector = connecting && (
-    <ConnectProviderDialogBoundary
-      key={connectorChunkVersion}
-      onRetry={retryConnector}
-      reloadAvailable={connectorReloadAvailable}
-      onClose={() => setConnecting(false)}
-    >
-      <Suspense
-        fallback={
-          <Dialog open title="Connect provider" onClose={() => setConnecting(false)}>
-            <Loader label="Loading…" />
-          </Dialog>
-        }
-      >
-        <ConnectProviderDialog
-          onClose={() => {
-            setConnecting(false);
-            triggerRef.current?.focus();
-          }}
-          onConnected={connected}
-        />
-      </Suspense>
-    </ConnectProviderDialogBoundary>
-  );
-
   if (isMobile) {
     return (
       <>
@@ -331,27 +276,23 @@ export function ModelSwitchTrigger({
         <Sheet open={open} side="bottom" onClose={closePicker} title="Choose model">
           <div className={CLASS.sheetBody}>{panel}</div>
         </Sheet>
-        {connector}
       </>
     );
   }
 
   return (
-    <>
-      <Popover
-        open={open}
-        onClose={closePicker}
-        // The picker's own list scrolls, and whatever sits behind it scrolls
-        // too: neither may dismiss a picker mid-interaction.
-        closeOnScroll={false}
-        // The panel's input owns focus and its own text selection - see
-        // closePicker for why FocusScope must not manage focus here.
-        autoFocus={false}
-        trigger={triggerButton}
-      >
-        <div className={CLASS.popoverPanel}>{panel}</div>
-      </Popover>
-      {connector}
-    </>
+    <Popover
+      open={open}
+      onClose={closePicker}
+      // The picker's own list scrolls, and whatever sits behind it scrolls
+      // too: neither may dismiss a picker mid-interaction.
+      closeOnScroll={false}
+      // The panel's input owns focus and its own text selection - see
+      // closePicker for why FocusScope must not manage focus here.
+      autoFocus={false}
+      trigger={triggerButton}
+    >
+      <div className={CLASS.popoverPanel}>{panel}</div>
+    </Popover>
   );
 }

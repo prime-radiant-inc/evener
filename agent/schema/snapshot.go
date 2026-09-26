@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -144,15 +146,20 @@ type SessionMeta struct {
 	// WithCheapModel ref ("provider/model" when cross-provider, else bare model).
 	// Empty when none is configured. Persisted so the cheap routing survives
 	// resume — launch args alone do not carry it across restart.
-	CheapModel               string          `json:"cheap_model,omitempty"`
-	VisionModel              string          `json:"vision_model,omitempty"`
-	Config                   ConfigSnapshot  `json:"config"`     // the session's configuration
-	EnvInfo                  EnvironmentInfo `json:"env_info"`   // captured environment description
-	CreatedAt                time.Time       `json:"created_at"` // when the session was first created
-	UpdatedAt                time.Time       `json:"updated_at"` // last time the meta was written
-	TurnCount                int             `json:"turn_count"` // number of model responses processed
-	AcceptedInputTurns       int             `json:"accepted_input_turns,omitempty"`
-	TurnBudgetWarningEmitted bool            `json:"turn_budget_warning_emitted,omitempty"`
+	CheapModel  string          `json:"cheap_model,omitempty"`
+	VisionModel string          `json:"vision_model,omitempty"`
+	Config      ConfigSnapshot  `json:"config"`     // the session's configuration
+	EnvInfo     EnvironmentInfo `json:"env_info"`   // captured environment description
+	CreatedAt   time.Time       `json:"created_at"` // when the session was first created
+	UpdatedAt   time.Time       `json:"updated_at"` // last time the meta was written
+	// Revision is a monotonic per-session counter bumped on every save, so two
+	// revisions that share a timestamp (a fork tag or an ObservedBy append
+	// re-saves without advancing UpdatedAt) can still be ordered. Zero on metas
+	// written before it existed.
+	Revision                 uint64 `json:"revision,omitempty"`
+	TurnCount                int    `json:"turn_count"` // number of model responses processed
+	AcceptedInputTurns       int    `json:"accepted_input_turns,omitempty"`
+	TurnBudgetWarningEmitted bool   `json:"turn_budget_warning_emitted,omitempty"`
 	// LastInputTokens is the prompt-token count from the most recent LLM call,
 	// used to display context-window pressure on resume.
 	LastInputTokens int `json:"last_input_tokens,omitempty"`
@@ -297,6 +304,84 @@ func SessionDisplayName(meta SessionMeta) string {
 
 const sessionsSubdir = "sessions"
 
+// SessionMetaTombstoneSuffix names the marker TombstoneSessionMeta leaves beside
+// a removed session so a writer that acquires the meta lock afterwards refuses
+// to recreate it. It is deliberately not a *.meta.json suffix, so the directory
+// scanners ignore it.
+const SessionMetaTombstoneSuffix = ".meta.json.deleted"
+
+// ErrSessionDeleted reports a write attempted against a session that has been
+// deleted (tombstoned). The write is dropped, not retried: the session no longer
+// exists, so the metadata change is intentionally lost. Callers own the policy
+// for surfacing it — the hub warns on an autosave and maps it to an internal
+// error on a rename — but none may retry the save, because a retry is refused
+// again by the same marker.
+var ErrSessionDeleted = errors.New("session meta deleted")
+
+// TombstoneSessionMeta writes a session's deletion marker while holding the same
+// in-process and cross-process locks every writer takes. A writer that acquires
+// the lock afterwards observes the tombstone and refuses to recreate the meta, so
+// an in-flight out-of-process autosave cannot resurrect a session the hub is
+// deleting. It does not remove the meta itself: the caller's artifact sweep owns
+// that, so a failed sweep still leaves the metadata for a resume. The tombstone
+// must be left in place by the caller once the metadata is durably removed;
+// UntombstoneSessionMeta reverses it when the sweep fails first.
+//
+// When the sessions dir is already gone there is nothing to fence, so the
+// tombstone is skipped rather than creating the directory: a marker write must
+// never resurrect a deleted project's state dir, which the PastIndex projects/*
+// glob would then surface as a live project. A daemon that recreates the dir
+// after the deletion is handled by the durable deletion record, not this marker.
+func TombstoneSessionMeta(dir, id string) error {
+	if err := ValidateSessionID(id); err != nil {
+		return err
+	}
+	lock := sessionMetaWriteLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	err := withExistingSessionsDirLock(sessionMetaFS, dir, id, func() error {
+		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
+		if err := afero.WriteFile(sessionMetaFS, tombstone, nil, 0o600); err != nil {
+			if os.IsNotExist(err) {
+				return errSessionsDirAbsent
+			}
+			return fmt.Errorf("write session tombstone: %w", err)
+		}
+		return nil
+	})
+	if errors.Is(err, errSessionsDirAbsent) {
+		return nil
+	}
+	return err
+}
+
+// UntombstoneSessionMeta removes a session's deletion marker under the same
+// in-process and cross-process locks TombstoneSessionMeta takes. A caller rolls
+// the marker back when a deletion fails before the metadata is durably removed:
+// while the meta still exists the session is still resumable and must stay
+// writable, whereas leaving the marker would make every later save — autosave,
+// rename, observer append — fail with ErrSessionDeleted for a session that was
+// never actually deleted. Removing an absent marker is a no-op.
+func UntombstoneSessionMeta(dir, id string) error {
+	if err := ValidateSessionID(id); err != nil {
+		return err
+	}
+	lock := sessionMetaWriteLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	err := withExistingSessionsDirLock(sessionMetaFS, dir, id, func() error {
+		tombstone := filepath.Join(dir, sessionsSubdir, id+SessionMetaTombstoneSuffix)
+		if err := sessionMetaFS.Remove(tombstone); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove session tombstone: %w", err)
+		}
+		return nil
+	})
+	if errors.Is(err, errSessionsDirAbsent) {
+		return nil
+	}
+	return err
+}
+
 // SessionsDirListable reports whether dir's sessions subdirectory can be
 // listed — the same gate ListSessionMetas applies before reading any metas
 // (a missing directory counts as listable: the list is simply empty). A
@@ -353,14 +438,19 @@ func appendSessionObservedByWithFS(fs afero.Fs, dir, workerSessionID, observerSe
 	lock := sessionMetaWriteLock(workerSessionID)
 	lock.Lock()
 	defer lock.Unlock()
-	meta, err := loadSessionMetaFS(fs, dir, workerSessionID)
-	if err != nil {
-		return err
-	}
-	// Only workerSessionID is validated: it names the file being written, while
-	// observerSessionID is persisted as data and never joined into a path here.
-	meta.ObservedBy = stableUnion(meta.ObservedBy, []string{observerSessionID})
-	return saveSessionMetaLocked(fs, dir, meta)
+	// The load must happen under the cross-process lock too: loading first and
+	// saving later would write this process's stale copy of every other field
+	// over a concurrent writer's newer one.
+	return withSessionMetaCrossProcessLock(fs, dir, workerSessionID, func() error {
+		meta, err := loadSessionMetaFS(fs, dir, workerSessionID)
+		if err != nil {
+			return err
+		}
+		// Only workerSessionID is validated: it names the file being written, while
+		// observerSessionID is persisted as data and never joined into a path here.
+		meta.ObservedBy = stableUnion(meta.ObservedBy, []string{observerSessionID})
+		return writeSessionMetaLocked(fs, dir, meta)
+	})
 }
 
 // LoadSessionMeta reads a SessionMeta from <dir>/sessions/<id>.meta.json.
@@ -386,15 +476,73 @@ func ListSessionMetas(dir string) ([]SessionMeta, error) {
 // the lock is striped, re-entering for a different session self-deadlocks only
 // on a stripe collision — a hang that would be rare enough to be untraceable.
 func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
-	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
-	if err == nil {
-		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
+	return withSessionMetaCrossProcessLock(fs, dir, meta.ID, func() error {
+		return writeSessionMetaLocked(fs, dir, meta)
+	})
+}
+
+// withSessionMetaCrossProcessLock runs fn with the session's cross-process meta
+// lock held (and the sessions dir ensured). The caller must already hold the
+// in-process striped lock. The lock covers fn's whole load/merge/increment/write
+// so a caller that reads the current meta before mutating it cannot race a
+// writer in another process.
+func withSessionMetaCrossProcessLock(fs afero.Fs, dir, id string, fn func() error) error {
 	sessDir := filepath.Join(dir, sessionsSubdir)
 	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
 		return fmt.Errorf("create sessions dir: %w", err)
+	}
+	return withExistingSessionsDirLock(fs, dir, id, fn)
+}
+
+// errSessionsDirAbsent reports that a marker-only lock path found the sessions
+// dir already gone. Callers treat it as "nothing to fence" rather than a
+// failure: there is no metadata to protect.
+var errSessionsDirAbsent = errors.New("sessions dir absent")
+
+// withExistingSessionsDirLock takes the same in-process and cross-process locks
+// as withSessionMetaCrossProcessLock but never creates the sessions dir. The
+// tombstone paths use it so deleting an already-removed session cannot recreate
+// the deleted project's state directory — which the PastIndex projects/* glob
+// would then surface as a live project. It reports errSessionsDirAbsent when
+// that dir is missing.
+func withExistingSessionsDirLock(fs afero.Fs, dir, id string, fn func() error) error {
+	// The Revision increment is a read-modify-write, and the daemon rewrites the
+	// same session's meta out of process, so the in-process striped lock alone
+	// cannot serialize it. Hold a file lock across the load/increment/rename.
+	release, _, err := lockSessionMetaCrossProcess(fs, dir, id)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return errSessionsDirAbsent
+		}
+		return fmt.Errorf("lock session meta: %w", err)
+	}
+	defer release()
+	return fn()
+}
+
+// writeSessionMetaLocked loads the current meta, unions ObservedBy, bumps
+// Revision, and writes atomically. It assumes the caller holds both locks, so
+// the read-modify-write cannot interleave with another writer.
+func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
+	// A deleted session's tombstone is written under this same lock; refuse to
+	// recreate the metadata so an in-flight out-of-process autosave cannot
+	// resurrect a session the hub just deleted.
+	if exists, err := afero.Exists(fs, filepath.Join(dir, sessionsSubdir, meta.ID+SessionMetaTombstoneSuffix)); err != nil {
+		return err
+	} else if exists {
+		return ErrSessionDeleted
+	}
+	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
+	if err == nil {
+		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
+		if previous.Revision == math.MaxUint64 {
+			return fmt.Errorf("session meta revision overflow for %s", meta.ID)
+		}
+		meta.Revision = previous.Revision + 1
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	} else {
+		meta.Revision = 1
 	}
 
 	data, err := marshalSessionMeta(meta)
@@ -402,7 +550,7 @@ func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 		return fmt.Errorf("marshal session meta: %w", err)
 	}
 
-	target := filepath.Join(sessDir, meta.ID+".meta.json")
+	target := filepath.Join(dir, sessionsSubdir, meta.ID+".meta.json")
 	tmp := target + ".tmp"
 
 	if err := afero.WriteFile(fs, tmp, data, 0o644); err != nil {
@@ -430,13 +578,43 @@ func stableUnion(existing, added []string) []string {
 	return out
 }
 
+// lstatIfPossible does Lstat when the fs implements afero.Lstater (OsFs returns
+// symlink-aware info), and falls back to Stat otherwise. MemMapFs implements
+// Lstater but LstatIfPossible does Stat internally (usedLstat=false) since it has
+// no symlinks; either way the returned FileInfo is correct for IsRegular checks.
+func lstatIfPossible(fs afero.Fs, path string) (os.FileInfo, error) {
+	if lstater, ok := fs.(afero.Lstater); ok {
+		info, _, err := lstater.LstatIfPossible(path)
+		return info, err
+	}
+	return fs.Stat(path)
+}
+
 // loadSessionMetaFS is the filesystem seam beneath LoadSessionMeta.
 func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 	if err := ValidateSessionID(id); err != nil {
 		return SessionMeta{}, err
 	}
 	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")
-	data, err := afero.ReadFile(fs, path)
+	// Finding 3: validate intermediate path components (e.g. sessions/) for
+	// symlinks. A symlinked sessions/ directory pointing outside the state
+	// root would surface metadata from an untrusted location. The leaf
+	// itself is NOT checked here — it is opened with O_NOFOLLOW by
+	// readMetaFile below (finding 6), which atomically refuses a symlink at
+	// the final component and closes the Lstat-then-open TOCTOU window the
+	// previous leaf-only guard left.
+	if err := metaComponentWalk(fs, path, dir); err != nil {
+		return SessionMeta{}, fmt.Errorf("read session meta %s: %w", id, err)
+	}
+	// Finding 6: open through a single no-follow descriptor and read from it,
+	// rather than Lstat-then-ReadFile. O_NOFOLLOW refuses a symlink at the
+	// leaf atomically (ELOOP); the descriptor is then read directly, so
+	// nothing can be swapped between the check and the bytes. Do NOT fstat
+	// for regular or use O_NONBLOCK: a FIFO at this path is a deliberate
+	// synchronization barrier in retirement tests and must be allowed to
+	// block the open. O_NOFOLLOW is harmless for FIFOs and regular files —
+	// it only refuses when the final component is a symlink.
+	data, err := readMetaFile(fs, path)
 	if err != nil {
 		return SessionMeta{}, fmt.Errorf("read session meta %s: %w", id, err)
 	}
@@ -448,6 +626,132 @@ func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 		return SessionMeta{}, fmt.Errorf("session meta ID %q does not match requested session ID %q", meta.ID, id)
 	}
 	return meta, nil
+}
+
+// metaComponentWalk Lstats each existing intermediate component of path between
+// root (exclusive) and the leaf (exclusive), returning an error if any is a
+// symlink. The leaf itself is NOT checked here — it is opened with O_NOFOLLOW
+// by readMetaFile, which atomically refuses a symlink at the final component.
+// Mirrors symlinkErrorDeep from package agent (transcript_lookup.go), scoped
+// to intermediates only and using the injected afero.Fs so it works on both
+// the real filesystem (Lstat detects symlinks) and in-memory test filesystems
+// (Stat, which never reports symlinks).
+func metaComponentWalk(fs afero.Fs, path, root string) error {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	dir := filepath.Dir(path)
+	for dir != root && dir != "" && dir != string(filepath.Separator) && dir != "." {
+		info, _ := lstatIfPossible(fs, dir)
+		if info != nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path %q traverses a symlink (%q): symlinks are not allowed on the meta read path", path, dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return nil
+}
+
+// readMetaFile reads the meta file through a no-follow descriptor when the
+// underlying filesystem is the real OS filesystem, closing the leaf TOCTOU
+// window (finding 6). The no-follow open must fire for every afero wrapper
+// that ultimately delegates to the OS, not just bare *afero.OsFs: ReadOnlyFs
+// and BasePathFs over OsFs pass reads through to os.Open (which follows leaf
+// symlinks), so matching only *afero.OsFs lets a symlinked .meta.json leaf
+// bypass the O_NOFOLLOW guard via any wrapper.
+//
+// The unwrap is conditional on the wrapped source being OS-backed. Both
+// ReadOnlyFs and BasePathFs keep their backing in an unexported "source" Fs
+// field with no public accessor, so the source is inspected via reflection
+// (type-only: no pointer arithmetic, no unsafe). The pre-fix code unwrapped
+// these wrappers unconditionally and called readFileNoFollowOS — the real OS
+// filesystem — even when the source was an in-memory filesystem. For
+// ReadOnlyFs(MemMapFs) or BasePathFs(MemMapFs) the identity/RealPath path is
+// not a real OS path, so the read silently hit the OS filesystem instead of
+// the in-memory FS, returning unrelated metadata or a spurious ENOENT.
+//
+// Routing:
+//   - *afero.OsFs and afero.OsFs (value receiver): the real OS filesystem —
+//     open the path directly with O_NOFOLLOW.
+//   - *afero.ReadOnlyFs and *afero.BasePathFs: inspect the wrapped source.
+//     OS-backed (an OsFs holds the source field) — the wrapper delegates to
+//     the OS, so the no-follow open must fire to close the leaf-symlink
+//     window (finding 1 of round 13): ReadOnlyFs passes paths through
+//     unchanged, so readFileNoFollowOS(path) is correct; BasePathFs remaps
+//     paths via RealPath, so resolve to the real OS path first. Non-OS-backed
+//     (e.g. MemMapFs) or unknown source — fall back to afero.ReadFile, the
+//     documented portable read, which reads the in-memory filesystem.
+//   - any other afero.Fs (bare MemMapFs, unknown wrappers): afero.ReadFile.
+//
+// RealPath on BasePathFs can fail on paths outside the base (os.ErrNotExist);
+// in that case the OS-backed branch falls back to afero.ReadFile so the caller
+// sees the same error the wrapper would produce.
+func readMetaFile(fs afero.Fs, path string) ([]byte, error) {
+	switch t := fs.(type) {
+	case *afero.OsFs, afero.OsFs:
+		return readFileNoFollowOS(path)
+	case *afero.ReadOnlyFs:
+		// ReadOnlyFs passes paths through unchanged. Only route to the
+		// no-follow OS open when the wrapped source is the real OS
+		// filesystem; otherwise read through the wrapper itself so an
+		// in-memory backing (MemMapFs) is read, not the OS filesystem.
+		if wrapperSourceIsOS(t) {
+			return readFileNoFollowOS(path)
+		}
+		return afero.ReadFile(fs, path)
+	case *afero.BasePathFs:
+		// BasePathFs remaps paths via RealPath. Only resolve to a real OS
+		// path and no-follow open when the wrapped source is the real OS
+		// filesystem; otherwise read through the wrapper itself.
+		if wrapperSourceIsOS(t) {
+			realPath, err := t.RealPath(path)
+			if err != nil {
+				// Path outside the base dir or other RealPath failure:
+				// fall back to the wrapper's own read so the caller sees
+				// the same error it would have gotten.
+				return afero.ReadFile(fs, path)
+			}
+			return readFileNoFollowOS(realPath)
+		}
+		return afero.ReadFile(fs, path)
+	default:
+		return afero.ReadFile(fs, path)
+	}
+}
+
+// wrapperSourceIsOS reports whether the afero wrapper's unexported "source" Fs
+// field holds an OsFs (pointer or value receiver). It is used by readMetaFile
+// to decide whether a wrapper delegates to the real OS filesystem — in which
+// case the no-follow open must fire to close the leaf-symlink window (round 13
+// finding 1) — or to an in-memory filesystem, in which case the read must go
+// through afero.ReadFile so the in-memory content comes back.
+//
+// Both ReadOnlyFs and BasePathFs keep their backing in an unexported "source"
+// field with no public accessor, so reflection is the only way to inspect it.
+// The inspection is type-only (Kind and Type comparisons); it never calls
+// Interface() on the unexported field, which would panic, and uses no unsafe.
+// An unknown source (nil, or a non-struct wrapper without a "source" field)
+// reports false, so the read falls back to the portable afero.ReadFile.
+func wrapperSourceIsOS(w afero.Fs) bool {
+	v := reflect.ValueOf(w)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return false
+	}
+	src := v.FieldByName("source")
+	if !src.IsValid() || src.Kind() != reflect.Interface {
+		return false
+	}
+	concrete := src.Elem()
+	if !concrete.IsValid() {
+		return false
+	}
+	ct := concrete.Type()
+	return ct == reflect.TypeFor[*afero.OsFs]() || ct == reflect.TypeFor[afero.OsFs]()
 }
 
 // listSessionMetasFS is the filesystem seam beneath ListSessionMetas.
@@ -463,7 +767,11 @@ func listSessionMetasFS(fs afero.Fs, dir string) ([]SessionMeta, error) {
 
 	var metas []SessionMeta
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta.json") {
+		// Reject non-regular files: a symlinked .meta.json pointing outside the
+		// state root would otherwise be loaded via afero.ReadFile which follows
+		// the link. afero.ReadDir on OsFs returns Lstat-based FileInfo, so
+		// symlinks carry ModeSymlink and IsRegular returns false.
+		if !e.Mode().IsRegular() || !strings.HasSuffix(e.Name(), ".meta.json") {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".meta.json")

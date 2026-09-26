@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,7 @@ import (
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/selfupdate"
@@ -934,7 +936,7 @@ func TestDeletionFenceRejectsSourceResolution(t *testing.T) {
 	}
 	sources := newHubSourceRegistry(cfg)
 
-	_, err = sourceForThreadWithDeletionFence(cfg, sources, ref, webTestSessionID)
+	_, err = sourceForThreadWithDeletionFence(t.Context(), cfg, sources, ref, webTestSessionID)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("deleting source resolution error = %T %v, want WireError", err, err)
@@ -1608,7 +1610,10 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := apptranscript.NewToolCallRegistry()
+	// Finding 1a (round 6): ALL communicates are deferred to the paired tool
+	// result, so the assistant turn alone renders no items — the message
+	// is recovered from CommRawArgs at the result turn.
 	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -1621,19 +1626,20 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 		}}},
 	}, toolNames)
 
-	if len(items) != 1 || items[0].Type != "agentMessage" || items[0].Text != "done" {
-		t.Fatalf("communicate items=%+v", items)
+	if len(items) != 0 {
+		t.Fatalf("assistant turn should defer communicate to result, got items=%+v", items)
 	}
 
+	// The result turn recovers the agentMessage from the seeded CommRawArgs.
 	results := appItemsFromReplayTurn("turn_2", 2, schema.Turn{
 		Kind: "TOOL_RESULTS",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind:       "tool_result",
-			ToolResult: &llm.ToolResultData{ToolCallID: "call_1", Content: `{"accepted":true}`},
+			ToolResult: &llm.ToolResultData{ToolCallID: "call_1", Name: "communicate", Content: `{"accepted":true}`},
 		}}},
 	}, toolNames)
-	if len(results) != 0 {
-		t.Fatalf("communicate tool results should be hidden, got %+v", results)
+	if len(results) != 1 || results[0].Type != "agentMessage" || results[0].Text != "done" {
+		t.Fatalf("communicate result should render agentMessage, got %+v", results)
 	}
 }
 
@@ -1649,7 +1655,7 @@ func TestAppItemsFromReplayTurnCarriesToolStateRaw(t *testing.T) {
 				ToolState:  []byte(`{"job_id":"job_1","status":"running"}`),
 			},
 		}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 || items[0].ToolName != "delegate_send" || items[0].Output != "started delegate turn" {
 		t.Fatalf("tool result items=%+v", items)
@@ -1668,7 +1674,7 @@ func TestAppItemsFromReplayTurnProjectsThinking(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 2 {
 		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
@@ -1690,7 +1696,7 @@ func TestAppItemsFromReplayTurnProjectsRedactedThinking(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 2 {
 		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
@@ -1708,7 +1714,7 @@ func TestAppItemsFromReplayTurnProjectsWebSearch(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 	if len(items) != 1 || items[0].Type != "commandExecution" || items[0].ToolName != "web_search" {
 		t.Fatalf("web_search items=%+v", items)
 	}
@@ -1735,7 +1741,7 @@ func TestAppItemsFromReplayTurnKeepsNonImagePartsOutOfImages(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 	if len(items) != 1 || items[0].Type != "userMessage" {
 		t.Fatalf("expected userMessage, got %+v", items)
 	}
@@ -1759,7 +1765,7 @@ func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 				Arguments: []byte(`{"file_path":"/tmp/example.txt"}`),
 			},
 		}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 0 {
 		t.Fatalf("legacy commandExecution transcript part should be ignored, got %+v", items)
@@ -1767,7 +1773,7 @@ func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := apptranscript.NewToolCallRegistry()
 	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -1801,7 +1807,7 @@ func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 				MediaType: "image/png",
 			},
 		}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1829,7 +1835,7 @@ func TestAppItemsFromReplayTurnSteeringCarriesUserSource(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_3", 3, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_3", 3, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1849,7 +1855,7 @@ func TestAppItemsFromReplayTurnSteeringWithoutSourceStaysAnonymous(t *testing.T)
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_4", 4, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_4", 4, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1863,7 +1869,7 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 	checkpoint := appItemsFromReplayTurn("turn_4", 4, schema.Turn{
 		Kind:    "CHECKPOINT",
 		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT CHECKPOINT]\nfirst compacted state"}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 	if len(checkpoint) != 1 {
 		t.Fatalf("checkpoint items=%+v", checkpoint)
 	}
@@ -1874,7 +1880,7 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 	summary := appItemsFromReplayTurn("turn_5", 5, schema.Turn{
 		Kind:    "SUMMARY",
 		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT SUMMARY]\nsecond compacted state"}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 	if len(summary) != 1 {
 		t.Fatalf("summary items=%+v", summary)
 	}
@@ -4247,8 +4253,9 @@ func relayTurnStartedNotification(t *testing.T, threadID, turnID string) appwire
 // hub-authored turn/completed(failed) kata 3h02 synthesizes once a mid-turn
 // daemon stops answering: the same shape TurnFailureEndCap already renders
 // for a real daemon failure (connection-class, so its "Reconnect & retry"
-// button appears).
-func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwire.Notification, wantTurnID, wantMessageContains string) {
+// button appears). It must name the relay's thread/ref, or a client routes
+// the frame nowhere (the reducer's target guard) and the synthesis is mute.
+func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef, wantTurnID, wantMessageContains string) {
 	t.Helper()
 	select {
 	case got := <-notifications:
@@ -4258,6 +4265,9 @@ func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwir
 		var params appwire.TurnCompletedParams
 		if err := json.Unmarshal(got.Params, &params); err != nil {
 			t.Fatalf("unmarshal turn/completed: %v", err)
+		}
+		if params.ThreadID != wantThreadID || params.Ref != wantRef {
+			t.Fatalf("turn/completed target threadId=%q ref=%q, want %q/%q", params.ThreadID, params.Ref, wantThreadID, wantRef)
 		}
 		if params.Turn.ID != wantTurnID {
 			t.Fatalf("turn.id=%q, want %q", params.Turn.ID, wantTurnID)
@@ -4279,13 +4289,78 @@ func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwir
 	}
 }
 
+// expectRelaySynthesizedIdleStatus asserts the companion status frame the
+// relay now broadcasts right behind the synthesized failure. The session
+// status belongs to thread/status/changed, so without this the reducer keeps
+// the session active (Stop and Steer still showing, Send withheld) after the
+// failure it was just told about. It must carry the relay's target. The action
+// set is the hub's own only for a local (resumable) session; a non-local
+// source must carry none, preserving the masked set it sent.
+func expectRelaySynthesizedIdleStatus(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string, wantCapabilities bool) {
+	t.Helper()
+	select {
+	case got := <-notifications:
+		if got.Method != appwire.NotifyThreadStatusChanged {
+			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyThreadStatusChanged)
+		}
+		var params appwire.ThreadStatusChangedParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal thread/status/changed: %v", err)
+		}
+		if params.ThreadID != wantThreadID || params.Ref != wantRef {
+			t.Fatalf("thread/status/changed target threadId=%q ref=%q, want %q/%q", params.ThreadID, params.Ref, wantThreadID, wantRef)
+		}
+		if params.Status.Type != appwire.ThreadStatusIdle {
+			t.Fatalf("status.type=%q, want %q", params.Status.Type, appwire.ThreadStatusIdle)
+		}
+		if !wantCapabilities {
+			if params.Capabilities != nil {
+				t.Fatalf("capabilities present for a non-local source, want absent: %+v", *params.Capabilities)
+			}
+		} else if params.Capabilities == nil {
+			t.Fatal("capabilities absent, want the hub's past-session set")
+		} else if !params.Capabilities.Send {
+			t.Fatal("capabilities.send=false, want true so the reader can resume the session")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the synthesized idle status")
+	}
+}
+
+// relayGaveUpCapabilities decides the action set the synthesized idle status
+// carries: the hub's past-session set for a local thread it can resume, and
+// nothing for a non-local source, whose own masked set must stand (absent
+// means "no update"). A federated source told it could Send or Compact would
+// be offered actions the hub cannot honour.
+func TestRelayGaveUpCapabilitiesOnlyForLocalThreads(t *testing.T) {
+	cfg := hubcore.WebConfig{}
+	local := appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:th_caps"}}
+	got := relayGaveUpCapabilities(cfg, "local:th_caps", local)
+	want := pastThreadCapabilities()
+	// No state dir and no past entry: the fork fence floors ForkFromTurn
+	// exactly as applyHubForkCapability does on a past read.
+	want.ForkFromTurn = false
+	if got == nil || *got != want {
+		t.Fatalf("local relay: capabilities=%v, want %+v", got, want)
+	}
+	for _, relayKey := range []string{"codex:th_caps", "host:th_caps"} {
+		thread := appwire.Thread{Evener: appwire.EvenerThread{Ref: relayKey}}
+		if nonLocal := relayGaveUpCapabilities(cfg, relayKey, thread); nonLocal != nil {
+			t.Fatalf("relay %q: capabilities=%+v, want nil (source keeps its own set)", relayKey, *nonLocal)
+		}
+	}
+}
+
 // TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFailures
 // covers kata 3h02: a daemon SIGKILLed mid-turn leaves the recovery loop
 // re-dialing a socket nothing answers, forever, with no diagnostic. After
 // relayGiveUpAfterFailures consecutive re-dial failures while a turn is
 // in-progress, the relay must synthesize a failed turn/completed for that
-// turn (source "hub") instead of retrying in total silence - and must fire
-// it exactly once per stall, not on every subsequent retry.
+// turn (source "hub") instead of retrying in total silence, followed by the
+// thread/status/changed(idle) frame that owns the session status (the status
+// is never turn/completed's) - and must fire the pair exactly once per stall,
+// not on every subsequent retry. Both frames must name the relay's target or
+// a client drops them at the routing guard.
 func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFailures(t *testing.T) {
 	const threadID = "th_dead_mid_turn"
 	const turnID = "turn_dead"
@@ -4360,18 +4435,19 @@ func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFai
 	// relay must stop retrying in silence and tell the reader the turn died.
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
-	expectRelaySynthesizedTurnFailure(t, client.Notifications(), turnID, "connection refused (3)")
+	expectRelaySynthesizedTurnFailure(t, client.Notifications(), threadID, "codex:"+threadID, turnID, "connection refused (3)")
+	expectRelaySynthesizedIdleStatus(t, client.Notifications(), threadID, "codex:"+threadID, false)
 	retryClock.releaseWait(t, 400*time.Millisecond)
 
 	// The loop keeps retrying afterward (recovery is still worth having if
 	// the reader clicks "Reconnect & retry" and a fresh relay never
 	// replaces this one before it retires) but must not re-broadcast the
-	// same failure it already reported.
+	// same pair it already reported.
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (4)")}
 	select {
 	case got := <-client.Notifications():
-		t.Fatalf("unexpected second notification after give-up: %+v", got)
+		t.Fatalf("unexpected third notification after give-up: %+v", got)
 	case <-time.After(150 * time.Millisecond):
 	}
 	retryClock.expectWait(t, 800*time.Millisecond)
@@ -10410,7 +10486,9 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	// Source, not Harness, names the host source: a harness naming a registered
+	// source is now refused (TestHubThreadStartRefusesHarnessNamingHostSource).
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Source: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
@@ -10461,7 +10539,9 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	// Source, not Harness, names the host source: a harness naming a registered
+	// source is now refused (TestHubThreadStartRefusesHarnessNamingHostSource).
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Source: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
@@ -11172,7 +11252,9 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 // TestHubRPCProjectsRecentReturnsMostRecentDirs covers the session creation
 // flows' recent-project source (issue #35): evener/projects/recent serves the
 // past index's distinct working dirs, most-recently-used first, defaulting to
-// the 15-option cap when the request carries no limit.
+// the 15-option cap when the request carries no limit. A managed worktree
+// lane (the newest session here) must never surface or consume one of those
+// slots: it is session machinery, not a project.
 func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	// RecentProjectDirs drops dirs that no longer exist on disk (issue #50),
 	// so every seeded WorkingDir must be a real directory.
@@ -11186,10 +11268,12 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	}
 	alpha := mkdir("alpha")
 	beta := mkdir("beta")
+	lane := mkdir("lane") // evener-managed worktree lane
 
 	past := hubcore.NewPastIndex("")
 	now := time.Now().UTC()
 	metas := []schema.SessionMeta{
+		{ID: "02wMz5Txv0ManagedLane1", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: lane}, WorktreePath: lane, WorktreeManaged: true},
 		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: alpha}},
 		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: beta}},
 		{ID: "02wMz5Txv5aIxgf9yVdd0N", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: alpha}}, // older dup — dropped
@@ -11220,6 +11304,9 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	}
 	if resp.Data[0] != alpha || resp.Data[1] != beta {
 		t.Fatalf("recent dirs[0:2]=%v, want [%s %s] (most recently used first)", resp.Data[:2], alpha, beta)
+	}
+	if slices.Contains(resp.Data, lane) {
+		t.Fatalf("recent dirs contain managed worktree lane %q", lane)
 	}
 
 	limited, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{Limit: 2})
@@ -11778,6 +11865,121 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 }
 
+// TestHubRPCInstanceBroadcastEchoesOriginClientId is the instance-side
+// counterpart of TestAuthApiKeySetBroadcastEchoesOriginClientId: a mutation
+// from a client that names itself must broadcast an evener/auth/updated
+// carrying that same id, so the originator recognizes its own echo by id
+// instead of treating its own mutation as another client's change and
+// refetching. Every registered instance mutation is covered, each against its
+// own hub so one case's write cannot perturb the next.
+func TestHubRPCInstanceBroadcastEchoesOriginClientId(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		params func(origin string) any
+	}{
+		{"create", appwire.MethodEvenerInstanceCreate, func(origin string) any {
+			return appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork", OriginClientId: origin}
+		}},
+		{"edit", appwire.MethodEvenerInstanceEdit, func(origin string) any {
+			return appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test", OriginClientId: origin}
+		}},
+		{"remove", appwire.MethodEvenerInstanceRemove, func(origin string) any {
+			return appwire.InstanceRemoveParams{Name: "base", OriginClientId: origin}
+		}},
+		{"setDefault", appwire.MethodEvenerInstanceSetDefault, func(origin string) any {
+			return appwire.InstanceSetDefaultParams{Name: "base", OriginClientId: origin}
+		}},
+		{"setModelDisabled", appwire.MethodEvenerInstanceSetModelDisabled, func(origin string) any {
+			return appwire.InstanceSetModelDisabledParams{Name: "base", Model: "claude-opus-4-6", Disabled: true, OriginClientId: origin}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newAuthOriginTestClient(t)
+
+			var resp appwire.InstanceListResponse
+			if err := client.Request(context.Background(), tc.method, tc.params("tab-a"), &resp); err != nil {
+				t.Fatalf("%s: %v", tc.method, err)
+			}
+
+			assertInstanceBroadcastShape(t, tc.method, waitForAuthUpdatedRaw(t, client), "tab-a")
+		})
+	}
+}
+
+// assertInstanceBroadcastShape requires an instance mutation's broadcast to echo
+// wantOrigin and to name no provider or active source. The emptiness is part of
+// the contract, not incidental: the SDK's own-echo correlation keys on the
+// absent provider to tell an instance echo from an auth one, so a stray
+// provider would reroute the notification into its auth fallback.
+func assertInstanceBroadcastShape(t *testing.T, method string, raw json.RawMessage, wantOrigin string) {
+	t.Helper()
+	// Key ABSENCE, not an empty value: a payload carrying `"provider":""` decodes
+	// to the same empty string as an omitted key, but the SDK routes an instance
+	// echo by `provider === undefined`, so an explicit empty provider would send
+	// it looking for a "" marker and read the client's own mutation as foreign.
+	// Only the raw bytes can pin that.
+	if bytes.Contains(raw, []byte("provider")) || bytes.Contains(raw, []byte("activeSource")) {
+		t.Errorf("%s params=%s, want neither the provider nor the activeSource key: an instance broadcast names no auth source",
+			method, raw)
+	}
+	var params appwire.EvenerAuthUpdatedParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		t.Fatalf("%s: decode params %s: %v", method, raw, err)
+	}
+	if params.OriginClientId != wantOrigin {
+		t.Errorf("%s params=%s: originClientId=%q, want %q", method, raw, params.OriginClientId, wantOrigin)
+	}
+}
+
+// TestHubRPCInstanceRefreshModelsBroadcastEchoesOriginClientId covers the sixth
+// mutation handler, whose success needs a live /models endpoint: its broadcast
+// must echo the caller's id like the other five.
+func TestHubRPCInstanceRefreshModelsBroadcastEchoesOriginClientId(t *testing.T) {
+	tomlPath := refreshGateway(t, `{"data":[{"id":"gpt-live"}]}`)
+	dir := filepath.Dir(tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { client.Close() })
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceRefreshModels,
+		appwire.InstanceRefreshModelsParams{Name: "gw", OriginClientId: "tab-a"}, &resp); err != nil {
+		t.Fatalf("evener/instance/refreshModels: %v", err)
+	}
+
+	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdatedRaw(t, client), "tab-a")
+}
+
+// TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone is the control
+// for TestHubRPCInstanceBroadcastEchoesOriginClientId: the identical
+// create with no id must broadcast an empty one, so the id the first test
+// observes is the caller's value rather than one the hub supplies on its own.
+func TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone(t *testing.T) {
+	client := newAuthOriginTestClient(t)
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate,
+		appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork"}, &resp); err != nil {
+		t.Fatalf("evener/instance/create: %v", err)
+	}
+
+	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdatedRaw(t, client), "")
+}
+
 // TestHubRPCInstanceEditBroadcastsAuthUpdated is the evener/instance/edit sibling
 // of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc comment for why
 // evener/auth/updated is the right (reused) notification.
@@ -11848,9 +12050,27 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 	}
 
 	var resp appwire.InstanceListResponse
-	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", NewName: "personal", OriginClientId: "tab-a"}, &resp)
 	if err == nil || !strings.Contains(err.Error(), "stored key not copied") {
 		t.Fatalf("evener/instance/edit = %v, want the leftover credential reported", err)
+	}
+	// The discriminator the web sheet keys on: the message alone is identical
+	// whether or not the error is wrapped in the evenerErrorInfo payload, so
+	// decode the wire data the client reads and pin it here.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode rename-persisted error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
 	}
 	// The file is the new name either way, which is what the other clients
 	// are now out of date against.
@@ -11858,14 +12078,11 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 		t.Fatal("the rename did not reach providers.toml")
 	}
 
-	select {
-	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyEvenerAuthUpdated {
-			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for evener/auth/updated after a rename whose credential move failed")
-	}
+	// A rename that persisted before it failed announces as loudly as a clean
+	// one - the error reply is not the only signal every other client's list is
+	// stale - but it names no origin: the caller's mutation errored, so its echo
+	// must not be consumable as that client's own success.
+	assertInstanceBroadcastShape(t, "rename whose credential move failed", waitForAuthUpdatedRaw(t, client), "")
 }
 
 // The sibling case: the credential move succeeded and the reload that follows
@@ -11916,6 +12133,24 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheFinalReloadFails(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "registry refused the reload after the credential move") {
 		t.Fatalf("evener/instance/edit = %v, want the failed reload reported", err)
 	}
+	// Same discriminator as the credential-move sibling, on the reload-failed
+	// half: the rename stood, so the client is told so through the wire data,
+	// not inferred from a message it shares with a plain failure.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode rename-persisted error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
+	}
 	if _, ok := readConfigProviders(t, tomlPath)["personal"]; !ok {
 		t.Fatal("the rename did not reach providers.toml")
 	}
@@ -11931,6 +12166,55 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheFinalReloadFails(t *testing.T)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for evener/auth/updated after a rename whose final reload failed")
 	}
+}
+
+// The third rename half: writeAndReload's own reload fails and the rollback
+// write that follows it fails too, so providers.toml carries the new name with
+// no rollback to undo it. The rename is as persisted as the two cases above and
+// the client must be steered to the new name, not told a plain failed save -
+// the same ErrorInstanceRenamePersisted discriminator. The seam is
+// newInstanceRollbackFixture: setting failReload makes the next registry reload
+// fail and blocks the providers.toml temp path, which is exactly the double
+// failure writeAndReload reports as write-applied.
+func TestHubRPCInstanceEditRenamePersistsWhenTheInitialReloadAndRollbackFail(t *testing.T) {
+	f := newInstanceRollbackFixture(t)
+	client := dialHubRPC(t, f.hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	f.failReload.Store(true)
+
+	var resp appwire.InstanceListResponse
+	err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit,
+		appwire.InstanceEditParams{Name: "base", NewName: "personal"}, &resp)
+	if err == nil || !strings.Contains(err.Error(), "restoring the previous config failed") {
+		t.Fatalf("evener/instance/edit = %v, want the reload-and-rollback double failure", err)
+	}
+	// The rename stood in providers.toml, so the client gets the discriminator
+	// rather than a plain failed save it would present as nothing happened.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.ErrorData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode rename-persisted error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
+	}
+	// The file is the new name: the rollback never landed, which is what makes
+	// this the persisted-rename case and not the ordinary refusal.
+	if _, ok := readConfigProviders(t, f.tomlPath)["personal"]; !ok {
+		t.Fatal("the rename did not reach providers.toml")
+	}
+
+	waitForAuthUpdatedBroadcast(t, client, "a rename whose initial reload and rollback both failed")
 }
 
 // TestHubRPCInstanceRemoveBroadcastsAuthUpdated is the evener/instance/remove
@@ -12409,6 +12693,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerAuthLogout,
 		appwire.MethodEvenerAuthList,
 		appwire.MethodEvenerAuthApiKeySet,
+		appwire.MethodEvenerAuthApiKeyConditionalSet,
 		appwire.MethodEvenerAuthApiKeyClear,
 		appwire.MethodEvenerAuthCredentialJsonSet,
 		appwire.MethodEvenerAuthDeviceStart,
@@ -12476,6 +12761,18 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerPluginPreview,
 		// Component 07a's remote-admin proxy.
 		appwire.MethodEvenerHostRequest,
+		// Component 06's explicit attach trigger (component 08's Connect).
+		appwire.MethodEvenerHostAttach,
+		// Component 08's host registry surface (add/list/status/remove/update):
+		// controller-local, never dials.
+		appwire.MethodEvenerHostAdd,
+		appwire.MethodEvenerHostList,
+		appwire.MethodEvenerHostStatus,
+		appwire.MethodEvenerHostRemove,
+		appwire.MethodEvenerHostUpdate,
+		// Component 07c's credential push: controller-local like the proxy, so a
+		// peer hub cannot make this hub push its credentials by forwarding it.
+		appwire.MethodEvenerHostPushCredentials,
 		appwire.MethodEvenerDaemonList,
 		appwire.MethodEvenerDaemonRetire,
 	}

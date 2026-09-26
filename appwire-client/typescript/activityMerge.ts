@@ -269,6 +269,15 @@ function mergeSession(
 }
 
 export function graftContinuationTree(current: ActivityTree, targetID: string, patch: ActivityTree): ActivityTree {
+  // A continuation page is minted against one revision of the tree: its cursor
+  // names a position in that revision's entry order. A page from a different
+  // revision is not graftable -- splicing its entries onto the retained tree
+  // would apply positions that no longer line up, and advancing the retained
+  // revision to the page's (the old Math.max behavior) hid the mismatch behind
+  // a tree that claimed to be newer than what it contained. Refuse instead and
+  // leave the tree untouched; the caller discards the page and re-fetches the
+  // root at the current revision.
+  if (patch.revision !== current.revision) return current;
   const contains = (session: ActivitySessionNode): boolean =>
     activityNodeID(session) === targetID ||
     session.entries.some(
@@ -278,8 +287,6 @@ export function graftContinuationTree(current: ActivityTree, targetID: string, p
     );
   if (!contains(current.root)) return current;
   const root = mergeSession(current.root, patch.root, targetID, false);
-  return {
-    revision: Math.max(current.revision, patch.revision),
-    root,
-  };
+  // Revisions are equal here (checked above), so the retained revision stands.
+  return { revision: current.revision, root };
 }

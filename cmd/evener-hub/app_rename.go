@@ -73,6 +73,17 @@ func mutateThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appso
 	if err := saveSessionMetaForRename(entry.StateDir, meta); err != nil {
 		return threadNameMutation{}, appwire.InternalError("save meta: " + err.Error())
 	}
+	// The save assigns a new Revision to the on-disk copy; the in-memory meta
+	// still carries the pre-save one. Reload the committed meta so the index gets
+	// the revision the save wrote, rather than letting a concurrent index advance
+	// make UpdateMeta's staleness guard reject this rename. Surface a reload
+	// failure instead of falling through with the stale in-memory revision, which
+	// would leave the index serving the old name with no error reported.
+	persisted, err := loadSessionMetaForRename(entry.StateDir, entry.ID)
+	if err != nil {
+		return threadNameMutation{}, appwire.InternalError("reload meta: " + err.Error())
+	}
+	meta = persisted
 	// UpdateMeta keeps the past index entry coherent with the saved meta; the
 	// OnChange notification it fires is consumed by the main wiring (see
 	// main.go), not by the rename completion below.

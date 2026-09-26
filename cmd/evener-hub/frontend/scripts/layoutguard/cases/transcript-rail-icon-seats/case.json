@@ -1,0 +1,19 @@
+{
+  "name": "transcript-rail-icon-seats",
+  "description": "transcript rail: the live thinking row's bulb, the content-free thinking row's Loader grid, and the notification head's status glyph all seat in one avatar column - above 700px every slot starts at the turn's left edge with its row's text at the content edge and a 10px speaker gap (the same seat ToolRow's kind icon occupies), and below it every slot leads its line inline with the text one full gutter later; no seat ever escapes the turn's box",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/railseat.module.css",
+    "panes/session/transcript/turnblock.module.css",
+    "widgets/loader/loader.module.css",
+    "panes/session/transcript/messages/notificationcard.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 1200, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "styles/railseat.module.css: the @media (min-width: 700px) .gutterPull { margin-left: calc(-1 * var(--speaker-gutter)) } shared pull reverted to 0 (one composed source now serves the Loader rail row and the notification head); separately, harness.html: the reproduced .thinkLabel pull reverted to 0",
+    "verified": "2026-09-21",
+    "expect": "fail",
+    "note": "Verified 2026-09-21 after the rail-seat consolidation, one pull at a time: reverting the shared .gutterPull fails the desktop leg's rail-origin assertion naming the loader row first (slot.left lands 34px right of turn.left; the notification row composes the same source behind it, proven by the same run passing when the source is intact), and reverting the harness's reproduced .thinkLabel pull fails the same assertion naming the think row. Each row is caught through its own source - the two linked rows through railseat.module.css, the reproduced row through the harness - so the cross-row comparisons and the per-row origin arithmetic both carry the case."
+  }
+}

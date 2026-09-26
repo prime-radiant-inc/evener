@@ -7,8 +7,7 @@
 // neighbour column) was fixed with one CSS property (min-width:0 on
 // formrow.module.css's .root). Its own regression test survives the mutation:
 // delete that property and the whole vitest suite stays green, because no
-// jsdom test can observe the layout it governs. 18 files rely on the same
-// property for the same reason. This runs a REAL browser (headless Chrome,
+// jsdom test can observe the layout it governs. This runs a REAL browser (headless Chrome,
 // its own throwaway profile+port - never the shared MCP Chrome, see kata
 // 8ecz) against the REAL tokens.css + component .module.css files, and
 // asserts a geometric relationship (box containment / non-overlap) with
@@ -29,7 +28,7 @@
 //
 // USAGE:
 //   node scripts/layoutguard/run.mjs            # run every case
-//   node scripts/layoutguard/run.mjs p6g8-formrow-overlap   # run one case
+//   node scripts/layoutguard/run.mjs xak9-diffline-overflow   # run one case
 //
 // ADDING A CASE: make a directory under cases/<name>/ with:
 //   - case.json    { "cssFiles": [...paths relative to frontend/src] } -
@@ -57,12 +56,13 @@
 //   - assert.mjs   default export (measurement) => { pass, reason }
 //
 // STATUS: this is a local pre-merge check and part of
-// `make test-web-browser` in CI; it is not wired into `make lint`. It only
-// covers the one case it has been proven against (p6g8) - it is
-// not a general guarantee about the other 17 files that share the same
-// min-width:0 dependency. Wiring more of those in is the same recipe as
-// p6g8-formrow-overlap; deliberately not done here (scope is "prove the
-// mechanism", not "cover 18 files" - see kata tzqz).
+// `make test-web-browser` in CI; it is not wired into `make lint`. It covers
+// only the contracts its cases reproduce - it is not a general guarantee about
+// every rule that shares a case's mechanism. A case whose markup stops
+// matching what its component renders, or whose recorded mutation stops
+// failing it, proves nothing and should be deleted rather than left green
+// (the p6g8 case that motivated this runner went that way: Spawn.tsx stopped
+// rendering the row it reproduced).
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,11 +71,12 @@ import {
   assertGuardOrigin,
   clearViewportOverride,
   connectPage,
+  createStartupDeadline,
   evaluate,
   forcePseudoStates,
+  harnessStylesheetsLoadedInPage,
   navigateTo,
   realizedViewport,
-  createStartupDeadline,
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
@@ -96,6 +97,22 @@ const SRC_DIR = path.join(FRONTEND, "src");
 // same way the old temp-dir copy did. The run dir is removed in finally;
 // PID-scoped so concurrent runs never collide on a shared checkout.
 const GENERATED_ROOT = path.join(FRONTEND, `layoutguard-generated-${process.pid}`);
+
+// The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
+// change can kill the dev-server burst mid-boot while the page still fires its
+// load event. A layoutguard case has no entry module that could leave a boot
+// global: harness.html is static and window.measure comes from an inline
+// script that always runs. The case's boot contract lives in the shared seam
+// (harnessStylesheetsLoadedInPage in browserGuardCdp.mjs): every document
+// linked its stylesheets and every link loaded, one document at a time. A page
+// whose stylesheets died measures a fontless, unstyled page - exactly the
+// "declares no web fonts" misfire - and a page that never recovers fails with
+// the boot cause.
+const BOOT = {
+  bootExpression: `(${harnessStylesheetsLoadedInPage.toString()})()`,
+  bootLabel:
+    "every document linked its stylesheets and every link loaded (tokens.css/resolved.css, plus fixture frames)",
+};
 
 // kata eevs (docs/developing-evener/testing.md: "a guard that has never failed is a
 // decoration"): every case here was mutation-tested once by hand - its
@@ -159,7 +176,7 @@ async function runCase(page, vitePort, caseDir, emulation) {
     emulation.viewportApplied = true;
   }
 
-  await navigateTo(page, url);
+  await navigateTo(page, url, BOOT);
   await assertGuardOrigin(page.send, `127.0.0.1:${vitePort}`);
   await waitForFonts(page.send);
 

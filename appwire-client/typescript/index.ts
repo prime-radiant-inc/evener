@@ -24,6 +24,7 @@ export {
   isFailedDelegateOutcome,
   isFailedJobOutcome,
   isTurnContainer,
+  jobStatusDisplay,
   parseActivityTree,
   reconcileActivityState,
 } from "./activityData";
@@ -78,6 +79,19 @@ export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
+export type {
+  DiscardedDraftFields,
+  DraftDiscardableFields,
+  PersistedDraftFields,
+} from "./checkpointedDraftEditor";
+export {
+  assertDraftDiscardable,
+  discardCheckpointedDraft,
+  persistCheckpointedDraft,
+} from "./checkpointedDraftEditor";
+// chunkViewBackingForTests is deliberately absent here; the white-box test hook
+// is published through the non-shipped testing/reducerHooks.ts instead.
+export { pendingTextJoined } from "./chunkview";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
@@ -100,9 +114,11 @@ export {
   FINGERPRINT_UNAVAILABLE_ERROR,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
+  fromEnvironment,
   groupByProvider,
   isEndpointConflict,
   keylessByDesign,
+  renameLeavesEnvironmentRow,
   safeCredentialTestMessage,
   safeCredentialTestResult,
   styleInfoText,
@@ -111,8 +127,8 @@ export {
 export type { DelegateModelFields, DelegateTiming, DelegateTimingFields } from "./delegateDetails";
 export { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
 export type { AskQuestionRef } from "./deriveAskQuestions";
-export { liveAskQuestions } from "./deriveAskQuestions";
-export type { DisclosureState, DisclosureStore } from "./disclosure";
+export { isUserAuthoredSteer, liveAskQuestions } from "./deriveAskQuestions";
+export type { DisclosureReadOptions, DisclosureState, DisclosureStore } from "./disclosure";
 export { createDisclosureStore, isDisclosureOpenIn, scopedDisclosureId } from "./disclosure";
 export {
   firstLine,
@@ -130,6 +146,8 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // host, and a consumer that supplies one (or spies on the module) wants the
 // module itself, so it is published at the "./docContent" subpath instead.
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
+export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
+export { canonicalJson } from "./draftCheckpointPort";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
@@ -137,26 +155,42 @@ export { buildEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./e
 export {
   ClientNotReadyError,
   ConnectionClosedError,
+  ErrorEndpointConflict,
+  ErrorInstanceRemoveApplied,
+  ErrorInstanceRenamePersisted,
+  ErrorInvalidHostField,
+  ErrorMarketplaceRemoveApplied,
   errorKind,
   errorText,
   friendlyErrorMessage,
   friendlyLaunchErrorMessage,
   GENERIC_ERROR_MESSAGE,
   HUB_UNREACHABLE_MESSAGE,
+  hostFieldError,
   isHubLaunchError,
+  isInstanceRemoveApplied,
+  isInstanceRenamePersisted,
   isStaleCursorError,
   mutationErrorData,
   RequestTimeoutError,
   sessionActionError,
   sessionActionHeadline,
   WireError,
+  wireRejectionPayload,
 } from "./errors";
 export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
 export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
 export type { ItemFailureSignals } from "./itemFailure";
-export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+export {
+  hasErrorText,
+  hasFailureStatus,
+  hasItemFailure,
+  isActiveItem,
+  isInProgressStatus,
+  isNonZeroExit,
+} from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
 export type { ActionId } from "./keybindingActions";
@@ -202,6 +236,7 @@ export type {
   KeybindingDraftCheckpoint,
   KeybindingDraftStorage,
   KeybindingsClient,
+  KeybindingsDraft,
   KeybindingsStore,
   KeybindingsStoreActions,
   KeybindingsStoreDeps,
@@ -209,7 +244,15 @@ export type {
   KeybindingsStoreState,
   KeybindingsSupport,
 } from "./keybindingsStore";
-export { createKeybindingsStore, fromWireOverrides, keybindingsSupport } from "./keybindingsStore";
+export {
+  createKeybindingsStore,
+  DRAFT_RESTORE_FAILED_MESSAGE,
+  decodeKeybindingDraftFields,
+  discardStoredKeybindingDraft,
+  fromWireOverrides,
+  isReadableKeybindingDraft,
+  keybindingsSupport,
+} from "./keybindingsStore";
 export type {
   KeybindingsPlatform,
   OverrideRule,
@@ -239,6 +282,7 @@ export {
   groupOptions,
   inactivePromptDependent,
   isCollectionKind,
+  isExactSafeInteger,
   isPromptCompositeWireField,
   listSupportsExplicitEmpty,
   matchesEnvCredentialError,
@@ -273,31 +317,50 @@ export {
   withGroupHeads,
 } from "./modelCatalogView";
 export type { PathPickableRow, PathRow } from "./pathRows";
-export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickableRows } from "./pathRows";
+export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
+export { isPlainObject } from "./plainObject";
 export { humanizeState } from "./railSessionState";
+export type { ReadyGenerationFence } from "./readyGenerationFence";
+export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
-export type { NotificationRoutingKey } from "./reducer";
-// chunkViewBackingForTests is deliberately absent: it reports the reducer's
-// internal chunk storage so a test can assert the view never copies it, which
-// is a test hook rather than protocol API. It belongs with the package's test
-// support, not the entry point.
+export type {
+  NotificationRoutingKey,
+  OlderItemPageMerge,
+  TurnHistoryFoldDetail,
+  TurnHistoryMergeResult,
+} from "./reducer";
 export {
   applyNotification,
   collectAuthoritativeMutationIds,
+  copyItemTextPresence,
+  foldWarningParams,
+  hasWarningText,
   hydrateThread,
   imageSessionRouteForSession,
+  isToolCallItemId,
+  isToolResultItemId,
+  itemIdentityMatches,
+  itemTextPresence,
+  joinedReasoningParagraphs,
+  joinWarningParts,
+  markItemIdentityOnly,
+  markItemTextOmitted,
   mergeOlderItemPage,
+  mergeOlderItemPageWithFolds,
+  mergeTurnHistory,
+  mergeTurnHistoryWithFolds,
   notificationRoutingKey,
   notificationTargetsThread,
-  pendingTextJoined,
   prependOlderTurns,
   resolvePendingEscalation,
 } from "./reducer";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
+export type { SettingsHubGeneration } from "./settingsHubGeneration";
+export { createSettingsHubGeneration } from "./settingsHubGeneration";
 export { canReadSharedNotes } from "./sharedNotesAvailability";
 export type {
   SlashEmbedding,
@@ -316,6 +379,7 @@ export {
 export { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./spawnHarnessModels";
 export type { PluginSelectionState } from "./spawnPluginSelectionState";
 export {
+  pluginSelectionFromOverrides,
   pluginSelectionIssues,
   reconcilePluginSelection,
   selectAllPlugins,
@@ -370,7 +434,9 @@ export {
   panelLoadFailure,
 } from "./taskPanelState";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
-export { insertMarker, markerText, stripMarker } from "./textareaMarkers";
+export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
+export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
+export { sessionTokens, threadUsageSummary, tokenUnitLabel, turnUsageTokens } from "./threadUsage";
 export {
   clip,
   clipJobID,
@@ -384,10 +450,9 @@ export {
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
-// TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) and
-// TranscriptDisplayAdvanced (the local advanced block, not yet V1-suffixed)
-// are deliberately absent: the root publishes the wire types of those names
-// from types.gen, which they would shadow.
+// TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) is
+// deliberately absent: the root publishes the wire type of that name from
+// types.gen, which it would shadow.
 export type {
   ContentLevel,
   ContentSelection,
@@ -398,10 +463,9 @@ export type {
   LegacyPreferenceKey,
   LegacyPreferenceValues,
   LegacyPreferenceWrites,
+  TranscriptDisplayAdvancedV1,
   TranscriptDisplayCategory,
   TranscriptDisplayConfigV1,
-  TranscriptHookExitDetail,
-  TranscriptLevel,
   TranscriptViewportClass,
   ViewportClass,
   VisibleCategoryInventory,
@@ -410,41 +474,24 @@ export {
   accessibleConfigSummary,
   advancedEnabledCount,
   CONTENT_LEVELS,
-  categoryInventory,
   configFingerprint,
-  configFromLegacyPrefs,
   configSummary,
-  configToWire,
   contentSummary,
-  decodeConfig,
-  decodeLocal,
   decodeLocalConfig,
-  defaultsToWire,
-  defaultToWire,
   dualWriteLegacyPreferences,
-  encodeConfig,
-  encodeLocal,
   encodeLocalConfig,
-  fingerprintConfig,
   fromWireConfig,
   fromWireDefault,
   fromWireDefaults,
-  fromWireTranscriptDisplayConfig,
   HOOK_EXIT_DETAILS,
   LEGACY_PREF_KEYS,
   legacyConfigFromValues,
-  legacyPrefsFromConfig,
   legacyWritesFromConfig,
   makeTranscriptDisplayConfig,
-  migrateLegacyConfig,
   normalizeConfig,
   normalizeContent,
-  parseLocalConfig,
   presetContent,
   resolveEffectiveConfig,
-  SHIPPED_DEFAULTS,
-  SHIPPED_DESKTOP_CONFIG,
-  SHIPPED_MOBILE_CONFIG,
   shippedConfig,
   shippedDefault,
   shippedDefaults,
@@ -453,12 +500,31 @@ export {
   toWireConfig,
   toWireDefault,
   toWireDefaults,
-  toWireTranscriptDisplayConfig,
   visibleCategoryInventory,
-  wireToConfig,
-  wireToDefault,
-  wireToDefaults,
 } from "./transcriptDisplayConfig";
+export type {
+  HubDefaultsByLayout,
+  TranscriptDisplayChange,
+  TranscriptDisplayClient,
+  TranscriptDisplayStore,
+  TranscriptDisplayStoreActions,
+  TranscriptDisplayStoreDeps,
+  TranscriptDisplayStoreFields,
+  TranscriptDisplayStoreState,
+  TranscriptDisplaySupport,
+  TranscriptDraft,
+  TranscriptDraftCheckpoint,
+  TranscriptDraftStorage,
+} from "./transcriptDisplayStore";
+export { createTranscriptDisplayStore, fromWireChange, transcriptDisplaySupport } from "./transcriptDisplayStore";
+export type {
+  ProjectedAnchor,
+  ProjectedEntry,
+  ProjectedTurn,
+  TranscriptMetadataVisibility,
+  TranscriptProjection,
+} from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, projectThread } from "./transcriptProjector";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";

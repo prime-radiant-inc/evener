@@ -68,6 +68,9 @@ type delegateIsolation struct {
 	ownsFreshEnv    bool
 	worktreePath    string
 	worktreeProject identifier.Project
+	// laneBranch is the git branch the lane was cut on. Rollback deletes this
+	// branch, never the id by assumption.
+	laneBranch string
 	// laneAdmission is the spawn's close-fence admission, carried here so a
 	// rollback can rename it as it begins.
 	laneAdmission envWorkID
@@ -75,15 +78,27 @@ type delegateIsolation struct {
 }
 
 type delegateQuietAttentionClaim struct {
-	token       uint64
-	lease       delegateLease
-	sequence    uint64
-	activityAt  time.Time
+	token      uint64
+	lease      delegateLease
+	sequence   uint64
+	activityAt time.Time
+	// notifiedAt is the tick instant that admitted this claim; a commit
+	// re-baselines the repeat cadence on it so the next wake is one further
+	// window out.
+	notifiedAt  time.Time
 	attentionID string
 	content     string
 	receiver    *Session
 	done        chan struct{}
 }
+
+// delegateActivityPublishInterval bounds how often activity alone publishes a
+// delegate's snapshot. A streaming child reports activity for every delta, and
+// each publication is a DELEGATE_UPDATED that the owning session re-samples its
+// diagnostics for (every job and delegate it has) and forwards to every
+// client, so publishing per delta made a parent's cost scale with its
+// children's token rate.
+const delegateActivityPublishInterval = time.Second
 
 func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Time) error {
 	return c.ReportActivityPhase(lease, at, "")
@@ -106,7 +121,7 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 		c.mu.Unlock()
 		return err
 	}
-	rearm := live.quietNotified || live.quietClaim != nil && live.quietClaim.sequence == live.quietSequence
+	rearm := live.quietRearmPendingLocked()
 	activityChanged := at.After(live.activityAt) || at.Equal(live.activityAt) && rearm
 	productiveChanged := phase != jobPhaseModelRetrying && at.After(live.productiveActivityAt)
 	if !activityChanged && !productiveChanged {
@@ -114,8 +129,7 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 		return nil
 	}
 	if activityChanged && rearm {
-		live.quietSequence++
-		live.quietNotified = false
+		live.rearmQuietCadenceLocked()
 	}
 	if activityChanged {
 		live.activityAt = at
@@ -124,10 +138,41 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 		live.productiveActivityAt = at
 	}
 	c.evidenceVersion++
+	// A rearm changes quiet state, so it publishes; plain activity waits out
+	// the interval and rides along with the next snapshot published.
+	if !rearm && at.Sub(live.activityPublishedAt) < delegateActivityPublishInterval {
+		c.mu.Unlock()
+		return nil
+	}
+	live.activityPublishedAt = at
 	plan := c.capturedPlanLocked(aggregate.DelegateID)
 	c.mu.Unlock()
 	c.emitDelegateUpdate(plan)
 	return nil
+}
+
+// quietRearmPendingLocked reports whether new activity must re-baseline the
+// quiet cadence: a wake was committed, or a first wake's claim is still in
+// flight for the current sequence. It is ReportActivityPhase's rearm predicate,
+// shared so the controller paths that advance activityAt directly (steer
+// persistence) rearm exactly the same way.
+func (live *delegateLiveState) quietRearmPendingLocked() bool {
+	return live.quietNotified || live.quietClaim != nil && live.quietClaim.sequence == live.quietSequence
+}
+
+// rearmQuietCadenceLocked clears a pending quiet wake and advances the stretch
+// identity so the next watchdog window is measured from fresh activity and gets
+// a fresh attention id. Advancing the sequence is what retires an in-flight
+// claim: CompleteQuietAttention rejects it as stale, and without the advance the
+// next wake would reuse the consumed id with a newer activity timestamp, which
+// folds as a permanent "conflicting content" failure.
+func (live *delegateLiveState) rearmQuietCadenceLocked() {
+	if !live.quietRearmPendingLocked() {
+		return
+	}
+	live.quietNotified = false
+	live.quietNotifiedAt = time.Time{}
+	live.quietSequence++
 }
 
 func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Time) error {
@@ -142,9 +187,19 @@ func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Tim
 	if deferred {
 		return s.delegateController.CompleteQuietAttention(claim, false)
 	}
+	return s.completeQuietWatchdogClaim(claim, appendErr)
+}
+
+// completeQuietWatchdogClaim commits an admitted quiet claim after its durable
+// append attempt and arms the wake. The append is durable even when completion
+// then finds the claim stale, so the wake is armed in that case too: a wake that
+// is never armed leaves the durable attention pending with nothing to deliver
+// it. armDelegateAttention is idempotent and no-ops when the attention is no
+// longer pending, so an identity retired by a covering stop is not resurrected.
+func (s *Session) completeQuietWatchdogClaim(claim *delegateQuietAttentionClaim, appendErr error) error {
 	completionErr := s.delegateController.CompleteQuietAttention(claim, appendErr == nil)
-	if appendErr == nil && completionErr == nil {
-		completionErr = s.armDelegateAttention(claim.attentionID)
+	if appendErr == nil {
+		completionErr = errors.Join(completionErr, s.armDelegateAttention(claim.attentionID))
 	}
 	return errors.Join(appendErr, completionErr)
 }
@@ -460,7 +515,21 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 	if now.IsZero() {
 		now = c.now()
 	}
-	if activityAt.IsZero() || now.Before(activityAt.Add(delegateQuietWindow)) || live.quietNotified || live.quietClaim != nil {
+	if activityAt.IsZero() || live.quietClaim != nil {
+		return nil, nil
+	}
+	// The quiet clock restarts at the last wake, not only at the last activity:
+	// a delegate that never reports activity again re-fires once per further
+	// delegateQuietWindow instead of going dark after one notification. Activity
+	// still rearms through ReportActivityPhase, which clears quietNotified so
+	// this baseline falls back to activityAt. The result is one bounded wake per
+	// window — never a burst — because each admission requires a further full
+	// delegateQuietWindow of silence.
+	quietSince := activityAt
+	if live.quietNotified {
+		quietSince = live.quietNotifiedAt
+	}
+	if now.Before(quietSince.Add(delegateQuietWindow)) {
 		return nil, nil
 	}
 	if live.quietSequence == 0 {
@@ -472,6 +541,7 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 		lease:       lease,
 		sequence:    live.quietSequence,
 		activityAt:  activityAt,
+		notifiedAt:  now,
 		attentionID: delegateQuietAttentionIDForStretch(lease, live.quietSequence),
 		content:     delegateQuietAttentionContent(lease, activityAt),
 		receiver:    receiver,
@@ -511,6 +581,11 @@ func (c *delegateTreeController) CompleteQuietAttention(claim *delegateQuietAtte
 			result = errDelegateStaleLease
 		} else {
 			live.quietNotified = true
+			live.quietNotifiedAt = claim.notifiedAt
+			// Advance the stretch identity so the next repeat carries a fresh
+			// attention id: a reused id would replay as a no-op and the repeat
+			// wake would be silently swallowed.
+			live.quietSequence++
 		}
 	}
 	c.evidenceVersion++
@@ -1044,15 +1119,24 @@ func (s *Session) drivePendingStableDelegateAttention() bool {
 		return false
 	}
 	escalated := s.escalateUnreachableDelegateAttention()
-	delegateID, _, pending := s.delegateController.nextIdleDelegateAttention()
+	delegateID, _, pending := s.delegateController.selectDelegateAttentionWake()
 	if !pending {
 		return escalated
 	}
+	// The selection already took this pass's hold under the controller lock,
+	// closing the selection-to-hold gap a release claim could slip through.
+	// The defer releases it on every pass exit — reservation committed or
+	// drive declined — so it can never pin the runtime warm, and overlapping
+	// passes each keep their own reference.
+	defer s.delegateController.releaseAttentionRestoreHold(delegateID)
 	owner, sub, err := s.restoreColdDelegateAttentionRuntime(delegateID)
 	if err != nil {
 		s.emit(events.EventWarning, warningDataFromError("restore delegate attention", err))
 		s.scheduleStableDelegateAttentionRetry()
 		return true
+	}
+	if hook := s.cfg.testOnly.afterDelegateAttentionRestore; hook != nil {
+		hook(delegateID, sub)
 	}
 	owner.driveStableDelegateAttention(sub)
 	if s.delegateController.hasPendingDelegateAttention() {
@@ -1117,11 +1201,24 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if maxWaitMS == 0 {
 		if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
 			_ = s.executeDelegateMutationPlans(plans)
+			name := ""
+			for _, update := range plans.updates {
+				for _, row := range update.rows {
+					if row.id == delegateID {
+						name = row.descriptor.Name
+						break
+					}
+				}
+				if name != "" {
+					break
+				}
+			}
 			return stableDelegateSendOutcome{result: sendMessageResult{
 				Target:              delegateID,
 				DelegateID:          delegateID,
 				Type:                delegateResourceType,
 				Status:              jobstore.StatusRunning,
+				Name:                name,
 				RunningInBackground: true,
 				Action:              "steered",
 			}}
@@ -1348,6 +1445,7 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 		Type:                delegateResourceType,
 		Status:              jobstore.StatusRunning,
 		AgentType:           started.descriptor.AgentType,
+		Name:                started.descriptor.Name,
 		Tools:               append([]string(nil), started.descriptor.ToolNameCeiling...),
 		RunningInBackground: true,
 		Action:              "started",
@@ -1406,6 +1504,9 @@ func populateStableDelegateSendResult(result *sendMessageResult, packet delegate
 	result.Warnings = append([]string(nil), packet.Warnings...)
 	var metadata delegateTerminalPacketMetadata
 	if err := json.Unmarshal(packet.Metadata, &metadata); err == nil {
+		if metadata.Name != "" {
+			result.Name = metadata.Name
+		}
 		result.Task = metadata.Task
 		result.Description = metadata.Description
 		result.AgentType = metadata.AgentType
@@ -1512,6 +1613,7 @@ func stableDelegateFailedSendResult(started delegateStartCommit, plans delegateM
 		Type:                delegateResourceType,
 		Status:              jobstore.StatusRunning,
 		AgentType:           started.descriptor.AgentType,
+		Name:                started.descriptor.Name,
 		Tools:               append([]string(nil), started.descriptor.ToolNameCeiling...),
 		Resumable:           &resumable,
 		RunningInBackground: false,
@@ -1769,6 +1871,9 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if agentType == "" {
 		agentType = "default"
 	}
+	if err := validateDelegateLabel(args.Name); err != nil {
+		return delegatestore.Descriptor{}, identifier.Project{}, err
+	}
 	agentName, rolePrompt := stableDelegateRole(selection, args.grantsDelegation(), s)
 	reasoningEffort := llm.NormalizeReasoningEffort(args.ReasoningEffort)
 	if reasoningEffort == "" {
@@ -1856,6 +1961,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		DelegationAllowance:           args.grantedAllowance(),
 		WorkingDir:                    s.currentEnv().WorkingDirectory(),
 		Isolation:                     isolationName,
+		Name:                          args.Name,
 		Sandbox:                       sandboxSnapshot,
 		Config:                        childConfig,
 		SharedTaskStoreOwnerSessionID: sharedTaskStoreOwnerSessionID,
@@ -1889,6 +1995,9 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 			return delegatestore.Descriptor{}, identifier.Project{}, err
 		}
 		descriptor.WorkingDir = filepath.Join(root, project.ID)
+		// Only a worktree lane has a branch to name; everywhere else the name
+		// stays the display label the descriptor already carries.
+		descriptor.WorktreeBranch = args.Name
 	}
 	return descriptor, project, nil
 }
@@ -1966,10 +2075,14 @@ func (runtime delegateRuntime) prepareIsolation(ctx context.Context, reservation
 			return isolation, fmt.Errorf(`delegate isolation:"worktree": %w`, errWorktreeOpWhileClosing)
 		}
 		defer s.endEnvWork(laneAdmission)
-		path, _, _, _, createdProject, err := s.createDelegateWorktree(ctx, reservation.delegateID)
+		// createDelegateWorktree owns the empty-means-id default and returns
+		// the branch it actually cut, so the isolation record never resolves
+		// the rule itself.
+		path, laneBranch, _, _, createdProject, err := s.createDelegateWorktree(ctx, reservation.delegateID, reservation.descriptor.WorktreeBranch)
 		if err != nil {
 			return isolation, err
 		}
+		isolation.laneBranch = laneBranch
 		isolation.worktreePath = path
 		isolation.worktreeProject = createdProject
 		if filepath.Clean(path) != filepath.Clean(workingDir) {
@@ -2032,17 +2145,13 @@ func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 		// no unpin API, and the root's retirement preparation would then refuse
 		// forever. Such an allocation is retained — its lease released, its
 		// directory kept — exactly as the restore-path teardowns do; only a
-		// fresh mint the manifest does not reference is disposed.
-		if s.ownsReferencedRetainedScratch(isolation.env) {
-			if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
-				local.RetainSessionScratch()
-			}
-		} else {
-			disposeUnadoptedScratch(isolation.env)
-		}
+		// fresh mint the manifest does not reference is disposed. The verdict
+		// is per kind, so an adopted allocation never holds its sibling fresh
+		// mint open with it (round 83).
+		s.settleOwnedScratchByManifest(isolation.env)
 	}
 	if isolation.worktreePath != "" {
-		s.rollbackFreshDelegateWorktree(delegateID, isolation.worktreePath, isolation.worktreeProject)
+		s.rollbackFreshDelegateWorktree(delegateID, isolation.laneBranch, isolation.worktreePath, isolation.worktreeProject)
 	}
 }
 
@@ -2181,11 +2290,6 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	// proves the environment held no scratch this restore could have mistaken
 	// for its own mint.
 	mintedScratch := ownsFresh
-	// adoptedScratch records that adoption below transferred a durable retained
-	// allocation onto an environment this restore created. ownsFresh says only
-	// that the environment is this restore's; after adoption it exposes a
-	// retained handle the manifest still references, never a mint to dispose.
-	adoptedScratch := false
 	defer func() {
 		// The construction below runs the child's git snapshot, which is what
 		// mints an unsandboxed environment's scratch, so a failure after that
@@ -2193,20 +2297,17 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		if !discardEnv {
 			return
 		}
-		switch {
-		case adoptedScratch:
-			// Release the lease the adoption took but keep the directory and its
-			// manifest reference, the handoff a retirement makes: the retained
-			// allocation is durable state a later restore reacquires.
-			if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
-				local.RetainSessionScratch()
-			}
-		case mintedScratch:
-			// Adoption can transfer one slot of the child's binding and then
-			// fail on another, and its recovery can pin a fresh mint; either
-			// way a blanket dispose would remove a directory the manifest still
-			// references. Settle it by what the manifest names.
-			s.settleFailedRestoreScratch(childEnv, descriptor.ChildSessionID)
+		if mintedScratch {
+			// Settle by what the manifest names, whether adoption transferred
+			// a durable allocation or not: the settlement retains every
+			// referenced directory with its lease released — the handoff a
+			// retirement makes — and disposes only unreferenced fresh state,
+			// including scratch a later construction step left on the
+			// environment beside a transferred allocation (round 30). A
+			// blanket retain here would leak exactly that newcomer.
+			// createdEnv (ownsFresh) tells the settle whether the environment
+			// is this restore's own or the live parent's shared object.
+			s.settleFailedRestoreScratch(childEnv, descriptor.ChildSessionID, ownsFresh)
 		}
 	}()
 	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
@@ -2217,32 +2318,31 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	// Binding the exact consumer here is what restores the child's allocation at
 	// its original absolute path instead of minting a replacement.
 	if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
-		// Adoption reports whether a retained allocation actually transferred,
-		// which is what the failure path keys its retain-vs-dispose decision on.
-		// Re-deriving that from SessionScratchDir() before/after is wrong for a
-		// sandboxed env, whose accessor reflects only the wrapper tmp and so
-		// hides a transferred unsandboxed slot.
-		adopted, err := s.adoptRestoredConsumerScratch(local, descriptor.ChildSessionID, ownsFresh)
-		if err != nil {
+		// Adoption reports whether a retained allocation actually transferred;
+		// the failure settlement no longer keys on that report — it classifies
+		// by the manifest, which names every durable allocation adoption moved
+		// (round 30). The error alone decides here.
+		if _, err := s.adoptRestoredConsumerScratch(local, descriptor.ChildSessionID, ownsFresh); err != nil {
 			return nil, false, fmt.Errorf("restore delegate scratch: %w", err)
 		}
 		// Ownership and failure-path disposal are separate concerns. A shared
 		// child must not own its parent's environment (ownsFresh stays false),
 		// but its construction still mints a scratch on that environment when
 		// none is there — and on base, where the same child got a fresh clone,
-		// that minted scratch was dropped on failure. Drop it here too, but
-		// only when the environment held none once the child's retained binding
-		// was installed: a scratch present before construction — the parent's
-		// own, or the child's adopted retained one — is never this restore's to
-		// dispose.
+		// that minted scratch was dropped on failure. On a shared parent the
+		// settle deliberately KEEPS the minted scratch instead (round 51: no
+		// post-hoc attribution can tell this construction's mint from a
+		// sibling's, and the parent environment holds the lease legitimately),
+		// so this branch only arms the settle's manifest-authoritative pass —
+		// the referenced-keep hand-back that releases and requeues what the
+		// manifest names — never a disposal. Do not read the base-clone
+		// wording above as this branch's contract: a fresh created
+		// environment (ownsFresh) is the only shape whose settle may dispose.
 		if !ownsFresh && local.SessionScratchDir() == "" {
 			mintedScratch = true
 		}
-		// Adoption filled an environment this restore created with a durable
-		// retained handle. That allocation is durable state, so the failure path
-		// must retain it, not dispose it.
-		if ownsFresh && adopted {
-			adoptedScratch = true
+		if hook := s.cfg.testOnly.scratchRestoreAfterAdoption; hook != nil {
+			hook(local)
 		}
 	}
 	activatedSkillBodies, err := restoreFrozenSkillBodies(descriptor.FrozenSkillNames, descriptor.FrozenSkillBodies)
@@ -2365,58 +2465,89 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 // consumer's binding owns a sandbox allocation at a different directory, rebuild
 // env's kernel wrapper around it BEFORE disposing the mint (so a host that
 // cannot wrap refuses while the mint is intact), dispose the mint, then adopt;
-// a failure after the disposal re-provisions the environment's own scratch. A
+// a failure after the disposal — or an adoption that claims nothing because
+// the pool detached between the slot read and the claim — re-provisions the
+// environment's own scratch. A
 // shared environment (ownsFresh false) belongs to the live parent, so its
 // already-owned kinds are left alone and its scratch is never disposed here.
+// A contended sandbox slot — its lease held in this process by the racing
+// idle-release teardown — is never a replacement target: the adoption could
+// not take its lease, and a disposed fresh scratch would leave the restored
+// delegate running on the retained directory unowned. The fresh scratch stays
+// for that cycle, and the next restore re-probes the settled contention and
+// resumes in the retained directory.
 func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnvironment, sessionID string, ownsFresh bool) (bool, error) {
 	if env == nil {
 		return false, nil
 	}
-	before := scratchRefDirs(env)
-	dir, ok := s.retainedConsumerScratchDir(sessionID, sandbox.ScratchKindSandbox)
-	if ownsFresh && ok && filepath.Clean(dir) != filepath.Clean(env.SessionScratchDir()) {
+	// The pool is an init-time snapshot; a delegate created after init, or one
+	// whose runtime an idle release retired, is not in it. Converge onto the
+	// live manifest first — the rows a fresh daemon would adopt from — so the
+	// adoption below restores the original scratch instead of silently leaving
+	// the fresh mint in place.
+	if err := s.refreshRetainedScratchConsumer(sessionID); err != nil {
+		return false, err
+	}
+	dir, ok, contended := s.retainedConsumerScratchSlot(sessionID, sandbox.ScratchKindSandbox)
+	if ownsFresh && ok && !contended && canonicalScratchDir(dir) != canonicalScratchDir(env.SessionScratchDir()) {
 		if err := s.rebuildSandboxWrapper(env, dir); err != nil {
 			return false, err
 		}
 		env.DisposeSandboxScratch()
-		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
-			return false, reprovisionDiscardedSandboxScratch(env, err)
+		_, transferred, err := s.adoptConsumerScratch(env, sessionID)
+		if err != nil {
+			return false, reprovisionAfterFailedAdoption(env, err)
 		}
-	} else if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
+		// The heal keys on the transfer the environment actually owns, not on
+		// what adoption installed: the guard's slot read and the claim take
+		// separate pool.mu holds, and a refresh fold racing the two can flip
+		// the slot to contended in between — the adoption then marks the kind
+		// pending and installs NO handle, and with the fresh mint already
+		// disposed the wrapper would run the session on the retained
+		// directory it holds no lease on (round 21). A lease-less borrow of a
+		// distinct consumer's allocation is the other install that is no
+		// transfer: the environment renders through the shared directory
+		// while its adopter keeps the lease, so the failure path must treat
+		// what the environment holds as a plain borrowed ref, not a durable
+		// adoption (round 22).
+		owned := envScratchRefDir(env, sandbox.ScratchKindSandbox)
+		if owned == "" {
+			return false, reprovisionUnclaimedSandboxScratch(env)
+		}
+		// The claim reads the pool's CURRENT rows, so the same racing fold can
+		// do more than flip contention: a consumer whose binding moved between
+		// the snapshot above and the claim adopts the moved allocation while
+		// the wrapper still names the pre-move snapshot's directory, and every
+		// command would run on a directory this environment owns nothing of.
+		// Converge the wrapper on the allocation the environment actually
+		// holds — the durable row the claim adopted (round 51).
+		if canonicalScratchDir(owned) != canonicalScratchDir(dir) {
+			if err := s.rebuildSandboxWrapper(env, owned); err != nil {
+				return false, err
+			}
+		}
+		// The SANDBOX kind's own transfer is the one durable adoption the
+		// failure path retains: the manifest references the allocation and
+		// the environment owns its lease. The report is per kind — the
+		// unsandboxed slot's claim can succeed while the sandbox slot's
+		// went contended in the same adoption, and an aggregate would mask
+		// exactly that: a successful return with the mint already disposed
+		// and the wrapper already pointing at a directory this environment
+		// holds no lease on (round 26). A borrow reads false here for the
+		// round-22 reason above.
+		return transferred[sandbox.ScratchKindSandbox], nil
+	}
+	_, transferred, err := s.adoptConsumerScratch(env, sessionID)
+	if err != nil {
 		return false, err
 	}
-	return scratchRefsGained(before, env), nil
-}
-
-// scratchRefDirs returns the set of canonical directories env currently owns,
-// one per scratch kind, for a before/after adoption comparison that sees every
-// kind rather than the single directory SessionScratchDir reports.
-func scratchRefDirs(env *execenv.LocalExecutionEnvironment) map[string]struct{} {
-	refs, err := env.ScratchRetentionReferences()
-	if err != nil || len(refs) == 0 {
-		return nil
-	}
-	dirs := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		if dir, err := filepath.Abs(ref.Dir); err == nil {
-			dirs[filepath.Clean(dir)] = struct{}{}
-		}
-	}
-	return dirs
-}
-
-// scratchRefsGained reports whether env owns a scratch directory it did not own
-// before adoption: the mark of a transferred retained handle. A no-op adoption
-// (a consumer binding with no slot to transfer) gains nothing and must not be
-// mistaken for one, or the failure path would retain a freshly minted scratch
-// it should dispose.
-func scratchRefsGained(before map[string]struct{}, env *execenv.LocalExecutionEnvironment) bool {
-	for dir := range scratchRefDirs(env) {
-		if _, ok := before[dir]; !ok {
-			return true
-		}
-	}
-	return false
+	// The shared-environment flavor of the same report: a borrow or a
+	// contended skip installs through the retained directory without
+	// transferring a lease, and only a transfer is the caller's
+	// retain-on-failure signal. The unsandboxed kind's transfer counts here —
+	// no disposal happened on this path, so any kind's real transfer is a
+	// lease the failure path must retain (round 26).
+	return len(transferred) > 0, nil
 }
 
 // sharedRestoreEnvironment resolves the parent environment a shared child
@@ -2565,7 +2696,7 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 	if err := child.appendTurnWithSyncedTranscriptMessage(schema.TurnUserInput, message, message); err != nil {
 		return err
 	}
-	data, err := readStrictChildTranscript(transcriptPath, child.ID(), child.strictTranscriptMaxLineBytes)
+	data, err := readStrictChildTranscript(transcriptPath, child.stateDir, child.ID(), child.strictTranscriptMaxLineBytes)
 	if err != nil {
 		return fmt.Errorf("read back child input transcript: %w", err)
 	}
@@ -2688,6 +2819,7 @@ func stableDelegateResult(descriptor delegatestore.Descriptor, delegateID string
 		ChildSessionID:      descriptor.ChildSessionID,
 		Type:                delegateResourceType,
 		Status:              status,
+		Name:                descriptor.Name,
 		AgentType:           descriptor.AgentType,
 		Tools:               append([]string(nil), descriptor.ToolNameCeiling...),
 		Resumable:           &resumable,
@@ -2971,7 +3103,7 @@ func missingDelegateRestoreInputReason(
 		}
 		return "", fmt.Errorf("stat child transcript %s: %w", childID, err)
 	}
-	if _, err := validateStrictChildTranscript(path, childID, 0); err != nil {
+	if _, err := validateStrictChildTranscript(path, stateDir, childID, 0); err != nil {
 		if delegateRestoreOperationalIOError(err) {
 			return "", fmt.Errorf("validate child transcript %s: %w", childID, err)
 		}

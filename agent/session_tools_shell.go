@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -208,7 +209,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if v, ok := args["case_insensitive"].(bool); ok {
 				ci = v
 			}
-			maxRes := 100
+			maxRes := execenv.DefaultGrepMaxResults
 			if v, ok := args["max_results"].(float64); ok && int(v) > 0 {
 				maxRes = int(v)
 			}
@@ -466,13 +467,14 @@ func marshalShellToolResult(res shellResult, maxChars int) (tool.StateResult, er
 	}
 
 	out := shellToolResult{
-		JobID:    res.JobID,
-		Type:     res.Type,
-		Status:   res.Status,
-		Reason:   shellStringPtrOrNil(res.Reason),
-		Mode:     string(shellModeForeground),
-		TimedOut: res.TimedOut,
-		ExitCode: res.ExitCode,
+		JobID:         res.JobID,
+		Type:          res.Type,
+		Status:        res.Status,
+		Reason:        shellStringPtrOrNil(res.Reason),
+		Mode:          string(shellModeForeground),
+		TimedOut:      res.TimedOut,
+		WaitElapsedMS: res.WaitElapsedMS,
+		ExitCode:      res.ExitCode,
 	}
 	if res.RunningInBackground {
 		out.Mode = string(shellModeBackground)
@@ -621,7 +623,7 @@ func formatShellResult(out shellToolResult) string {
 		}
 	case promoted:
 		foot = append(foot,
-			"the foreground wait ended, not the command",
+			foregroundWaitEndedLine(out.WaitElapsedMS),
 			fmt.Sprintf("output accumulates durably; read it with read_transcript(transcript_ref=%q)", "job:"+out.JobID),
 			"completion arrives by notification — do not relaunch or poll",
 		)
@@ -651,19 +653,36 @@ func formatShellResult(out shellToolResult) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// foregroundWaitEndedLine is the promoted-command footer line. When the caller
+// measured the foreground wait, it states how long the tool actually blocked
+// (e.g. "after 2m") so the model's pacing arithmetic uses the real wait
+// rather than the command's intended duration (#501). Without a measured wait
+// it keeps the unqualified wording.
+func foregroundWaitEndedLine(waitElapsedMS int64) string {
+	if waitElapsedMS <= 0 {
+		return "the foreground wait ended, not the command"
+	}
+	return fmt.Sprintf("the foreground wait ended after %s, not the command",
+		formatQuietWindow(time.Duration(waitElapsedMS)*time.Millisecond))
+}
+
 type shellToolResult struct {
-	JobID        string  `json:"job_id,omitempty"`
-	Type         string  `json:"type"`
-	Status       string  `json:"status"`
-	Reason       *string `json:"reason"`
-	Mode         string  `json:"mode"`
-	TimedOut     bool    `json:"timed_out"`
-	ExitCode     *int    `json:"exit_code,omitempty"`
-	Output       *string `json:"output,omitempty"`
-	Truncated    *bool   `json:"truncated,omitempty"`
-	TotalBytes   int64   `json:"total_bytes,omitempty"`
-	DroppedBytes int64   `json:"dropped_bytes,omitempty"`
-	OutputStatus string  `json:"output_status,omitempty"`
+	JobID    string  `json:"job_id,omitempty"`
+	Type     string  `json:"type"`
+	Status   string  `json:"status"`
+	Reason   *string `json:"reason"`
+	Mode     string  `json:"mode"`
+	TimedOut bool    `json:"timed_out"`
+	// WaitElapsedMS is the measured foreground wait (milliseconds) for a
+	// promoted command; see shellResult.WaitElapsedMS. Zero for every other
+	// result, so it is omitted from the JSON.
+	WaitElapsedMS int64   `json:"wait_elapsed_ms,omitempty"`
+	ExitCode      *int    `json:"exit_code,omitempty"`
+	Output        *string `json:"output,omitempty"`
+	Truncated     *bool   `json:"truncated,omitempty"`
+	TotalBytes    int64   `json:"total_bytes,omitempty"`
+	DroppedBytes  int64   `json:"dropped_bytes,omitempty"`
+	OutputStatus  string  `json:"output_status,omitempty"`
 }
 
 func shellStringPtrOrNil(s string) *string {

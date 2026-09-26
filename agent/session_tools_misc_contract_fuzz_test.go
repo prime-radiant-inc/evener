@@ -93,10 +93,10 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 		completed,
 	}
 
-	if state := deriveRestoredState(history); state != SessionAwaiting {
+	if state := deriveRestoredState(history, 0, nil); state != SessionAwaiting {
 		t.Fatalf("completed ask round restored as %q, want %q", state, SessionAwaiting)
 	}
-	pending, isAskRound := deriveRestoredAskPending(history)
+	pending, isAskRound := deriveRestoredAskPending(history, 0, nil)
 	if !isAskRound {
 		t.Fatal("completed ask round was not recognized during restore")
 	}
@@ -106,10 +106,10 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 
 	// A later user input resolves the hold regardless of earlier completed asks.
 	history = append(history, schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("answer")})
-	if state := deriveRestoredState(history); state != SessionIdle {
+	if state := deriveRestoredState(history, 0, nil); state != SessionIdle {
 		t.Fatalf("user reply restored as %q, want %q", state, SessionIdle)
 	}
-	if pending, isAskRound := deriveRestoredAskPending(history); isAskRound || len(pending) != 0 {
+	if pending, isAskRound := deriveRestoredAskPending(history, 0, nil); isAskRound || len(pending) != 0 {
 		t.Fatalf("user reply left pending ask state: pending=%#v isAskRound=%v", pending, isAskRound)
 	}
 
@@ -120,10 +120,10 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 		assistant,
 		stmToolResultsTurn(stmToolResult("ask-valid", "ask_user", true)),
 	}
-	if state := deriveRestoredState(errorOnly); state != SessionIdle {
+	if state := deriveRestoredState(errorOnly, 0, nil); state != SessionIdle {
 		t.Fatalf("error-only ask round restored as %q, want %q", state, SessionIdle)
 	}
-	if pending, isAskRound := deriveRestoredAskPending(errorOnly); isAskRound || len(pending) != 0 {
+	if pending, isAskRound := deriveRestoredAskPending(errorOnly, 0, nil); isAskRound || len(pending) != 0 {
 		t.Fatalf("error-only ask round created pending state: pending=%#v isAskRound=%v", pending, isAskRound)
 	}
 
@@ -133,10 +133,10 @@ func stmRunRestoreContracts(t *testing.T, program []byte) {
 		stmAssistantTurn(llm.ToolCallData{ID: "communicate", Name: "communicate", Arguments: json.RawMessage(`{"message":"done","end_turn":true}`), Type: "function"}),
 		stmToolResultsTurn(stmToolResult("communicate", "communicate", false)),
 	}
-	if state := deriveRestoredState(generic); state != SessionAwaiting {
+	if state := deriveRestoredState(generic, 0, nil); state != SessionAwaiting {
 		t.Fatalf("generic completed round restored as %q, want %q", state, SessionAwaiting)
 	}
-	if pending, isAskRound := deriveRestoredAskPending(generic); isAskRound || len(pending) != 0 {
+	if pending, isAskRound := deriveRestoredAskPending(generic, 0, nil); isAskRound || len(pending) != 0 {
 		t.Fatalf("generic completion created ask state: pending=%#v isAskRound=%v", pending, isAskRound)
 	}
 }

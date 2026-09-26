@@ -32,25 +32,42 @@
   gap: var(--space-2);
 }
 
+/* The kind label is the one eyebrow recipe (design-system §2): caption size,
+ * semibold, uppercase with the single tracking token, ink-mid. The copy stays
+ * sentence-case in EntityRef.tsx - the transform is presentation-only. */
 .kind {
-  color: var(--tooltip-fg);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
   font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-eyebrow);
 }
 
+/* Status is color-by-meaning (design-system §1), not decoration: failure
+ * reads danger, live work reads alive, and every terminal or neutral state
+ * stays on the ink ramp - the hue law reserves green for ACTIVE work, so a
+ * completed job is a fact, not a success signal. Hierarchy comes from ink
+ * steps, never from opacity fades. */
 .status {
-  color: var(--tooltip-fg);
-  opacity: 0.8;
+  color: var(--ink-mid);
+}
+
+.status[data-state="failed"] {
+  color: var(--danger-ink);
+}
+
+.status[data-state="running"] {
+  color: var(--alive-ink);
 }
 
 .caption {
   margin-left: auto;
-  color: var(--tooltip-fg);
+  color: var(--ink-low);
   font-size: var(--font-size-caption);
-  opacity: 0.7;
 }
 
 .summary {
-  color: var(--tooltip-fg);
+  color: var(--ink-hi);
   overflow-wrap: anywhere;
 }
 
@@ -67,14 +84,15 @@
   gap: var(--space-2);
 }
 
+/* The meta-table idiom (design-system §10): ink-mid labels, ink-hi values,
+ * mono for machine-shaped values via .mono. */
 .key {
-  color: var(--tooltip-fg);
-  opacity: 0.7;
+  color: var(--ink-mid);
 }
 
 .value {
   margin: 0;
-  color: var(--tooltip-fg);
+  color: var(--ink-hi);
   overflow-wrap: anywhere;
 }
 

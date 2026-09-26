@@ -53,7 +53,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 		ref := appRefFromRouteID(id)
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		source, err := sourceForThreadWithDeletionFence(s.cfg, s.sources, ref, "")
+		source, err := sourceForThreadWithDeletionFence(ctx, s.cfg, s.sources, ref, "")
 		if err != nil {
 			return WorkspaceData{}
 		}
@@ -200,7 +200,7 @@ func (s *WebServer) liveWorkspaceSnapshot(id string, fallback hubapi.SessionCapa
 	ref := appRefFromRouteID(id)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	source, err := sourceForThreadWithDeletionFence(s.cfg, s.sources, ref, "")
+	source, err := sourceForThreadWithDeletionFence(ctx, s.cfg, s.sources, ref, "")
 	if err != nil {
 		return fallback, ""
 	}
@@ -209,7 +209,6 @@ func (s *WebServer) liveWorkspaceSnapshot(id string, fallback hubapi.SessionCapa
 		return fallback, ""
 	}
 	caps := hubCapabilitiesFromAppwire(resp.Thread.Evener.Capabilities)
-	caps.Resume = fallback.Resume
 	return caps, activeTurnIDFromAppwireThread(resp.Thread)
 }
 

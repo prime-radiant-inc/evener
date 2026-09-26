@@ -36,6 +36,7 @@ import {
   requestBrowserClose,
 } from "../browserGuardProcess.mjs";
 import { connectPage, createStartupDeadline, devtoolsHttpURL, evaluate, navigateTo, waitForHttp } from "../browserGuardCdp.mjs";
+import { ReactionBudget } from "./budgets.mjs";
 
 const FRONTEND = path.resolve(path.dirname(import.meta.url), "..", "..");
 const PROFILE_PREFIX = "skillguard-chrome-";
@@ -48,18 +49,20 @@ const CHILD_EXIT_GRACE_MS = 2_000;
 // pinned, only sentinel data crossing the plumbing boundaries.
 const SKILL_NAME = "pkg:probe";
 const SKILL_TOKEN = "probe";
-const SKILL_MENU_ROW = "/pkg:probe";
 // What composerState reports for the one selected skill chip.
-const SKILL_CHIPS = [`${SKILL_NAME}\u00d7`];
+const SKILL_CHIPS = [`/${SKILL_NAME}`];
+const EDITOR = "[contenteditable='true'][role='textbox'][aria-label='Message']";
+const TWO_SKILLS = "Run /skill-1 and then /skill-2";
+const inlineText = (text) => `${text} /${SKILL_NAME}`;
 
 // The payload a send is expected to carry. Most of this guard's sends go out
 // with the skill chip attached and nothing staged, so that is the default and
 // a site that differs says so.
 function draft(text, { chips = SKILL_CHIPS, tiles = 0 } = {}) {
-  return { text, chips, tiles };
+  return { text: chips === SKILL_CHIPS ? inlineText(text) : text, chips, tiles };
 }
-const CHIP_REMOVE_PREFIX = "Remove skill pkg:probe";
 const REPLY_TEXT = "skillguard turn complete";
+const CHIP_REMOVE_PREFIX = "Remove skill pkg:probe";
 const PROSE = {
   canonical: "PROSE_ALPHA_14a run the fixture check on the gamma channel",
   draft: "PROSE_DRAFT_14b staged for the switch",
@@ -69,7 +72,6 @@ const PROSE = {
   attachment: "PROSE_ATTACH_14d inspect the attached image",
   steerTurn: "PROSE_STEER_TURN_14e open a long turn for steering",
   steer: "PROSE_STEER_14e redirect the running turn",
-  capabilityLoss: "PROSE_CAPLOSS_14f aimed at a lost capability",
   failTurn: "PROSE_FAIL_TURN_14g open a long turn for the failing claim",
   fail: "PROSE_FAIL_14h request the missing source",
   delay: "PROSE_DELAY_14i submitted then edited while held",
@@ -114,6 +116,17 @@ const TURN_IDLE_SETTLE_MS = envMillis("SKILLGUARD_TURN_IDLE_SETTLE_MS", 3_000);
 // of failing the scenario; it is still a hard bound, and a read that never
 // comes back fails with the last reading that stood in for a baseline.
 const TURN_BASELINE_RETRY_MS = envMillis("SKILLGUARD_TURN_BASELINE_TIMEOUT_MS", 45_000);
+
+// selectAll feeds a replacement edit -- the queue journey selects the draft a
+// queued entry returned and types over it -- so a caret the editor left at the
+// end of the text instead of the whole selection would send the next typeText
+// into the wrong place. Setting a DOM range is how a user selects text, and the
+// editor adopts it asynchronously, so selectAll confirms the editor actually
+// holds the whole-text selection before returning. The confirmation waits for
+// the editor to settle (a selection a render has not reset yet reads as held
+// once) and re-applies it a bounded number of times; an editor that will not
+// hold it fails loudly rather than being typed into.
+const SELECT_ALL_ATTEMPTS = 4;
 
 // envMillis reads a millisecond budget from the environment, defaulting when
 // unset or BLANK and refusing anything else non-numeric rather than silently
@@ -179,12 +192,56 @@ function parseArgs(argv) {
   return out;
 }
 
+// Read the actual rendered editor, including hard breaks. Ignore only PM's
+// non-content trailing caret BR; inline atom labels remain ordinary text here.
+function editorText(root) {
+  const read = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+    if (node.nodeName === "BR") return node.classList.contains("ProseMirror-trailingBreak") ? "" : "\n";
+    return [...node.childNodes].map(read).join("");
+  };
+  return [...root.childNodes].map((node, index) =>
+    (index > 0 && node.nodeName === "P" ? "\n" : "") + read(node)).join("");
+}
+
+// Offset selection for single-line editing cases. Never place a caret inside
+// an atom: its complete label contributes to plain-text offsets, but its DOM
+// boundary is the only selectable location.
+function selectEditorRange(editor, start, end) {
+  const positions = new Map([[0, [editor, 0]]]);
+  let offset = 0;
+  const walk = (node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      for (let i = 0; i <= node.length; i++) positions.set(offset + i, [node, i]);
+      offset += node.length;
+    } else if (node.nodeType === Node.ELEMENT_NODE && node.matches("[data-testid='composer-skill-chip']")) {
+      const index = [...node.parentNode.childNodes].indexOf(node);
+      positions.set(offset, [node.parentNode, index]);
+      offset += node.textContent.length;
+      positions.set(offset, [node.parentNode, index + 1]);
+    } else {
+      for (const child of node.childNodes) walk(child);
+    }
+  };
+  walk(editor);
+  if (!positions.has(start) || !positions.has(end)) throw new Error(`invalid editor boundary ${start}-${end}`);
+  editor.focus();
+  const range = document.createRange();
+  range.setStart(...positions.get(start)); range.setEnd(...positions.get(end));
+  const selection = window.getSelection(); selection.removeAllRanges(); selection.addRange(range);
+}
+
 export class Driver {
   constructor({ url, artifactDir, controlPath, milestonePath }) {
     this.url = url;
     this.artifactDir = artifactDir;
     this.controlPath = controlPath;
     this.milestonePath = milestonePath;
+    // How slow THIS machine has proven to be: every wait's budget is sized
+    // from the slowest reaction a completed wait has already observed, so a
+    // loaded runner gets a proportional hang tripwire instead of the fixed
+    // floor (see budgets.mjs).
+    this.reactions = new ReactionBudget();
     this.failures = [];
     this.chromeBinary = null;
     this.chromeArgv = [];
@@ -289,25 +346,31 @@ export class Driver {
 
   // ---- native input ----
 
-  // One composer's own reading of itself: the value, the selection that decides
-  // where the next edit lands, and whether it is the focused element. Resolved
-  // from the session's own composer rather than from document.activeElement --
-  // two composers are mounted, and reading "whatever has focus" would answer
-  // about the wrong session the moment focus moved.
-  composerEditStateExpr(ref) {
-    return `(() => {
-      const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
-      const ta = root && root.querySelector("textarea");
-      if (!ta) return null;
-      return {
-        value: ta.value,
-        start: ta.selectionStart ?? ta.value.length,
-        end: ta.selectionEnd ?? ta.value.length,
-        focused: document.activeElement === ta,
-      }; })()`;
+  editorExpr(ref) {
+    return `document.querySelector(${JSON.stringify(this.composerSelector(ref))})?.querySelector(${JSON.stringify(EDITOR)})`;
   }
 
-  // settleComposer waits until one session's textarea stops changing under it,
+  composerEditStateExpr(ref) {
+    return `(() => {
+      const editor = ${this.editorExpr(ref)};
+      if (!editor) return null;
+      const selection = window.getSelection();
+      const offset = (node, at) => {
+        if (!node || !editor.contains(node)) return null;
+        const range = document.createRange();
+        range.selectNodeContents(editor); range.setEnd(node, at);
+        return (${editorText.toString()})(range.cloneContents()).length;
+      };
+      const anchor = offset(selection.anchorNode, selection.anchorOffset);
+      const focus = offset(selection.focusNode, selection.focusOffset);
+      return { value: (${editorText.toString()})(editor),
+        start: anchor === null || focus === null ? null : Math.min(anchor, focus),
+        end: anchor === null || focus === null ? null : Math.max(anchor, focus),
+        focused: document.activeElement === editor };
+    })()`;
+  }
+
+  // settleComposer waits until one session's editor stops changing under it,
   // and returns the state it settled on. Two reads 80ms apart that agree is
   // the signal that the last render has landed; it is not a promise that no
   // further one is coming, which is why every caller re-checks afterwards.
@@ -317,7 +380,7 @@ export class Driver {
     let previous = null;
     for (;;) {
       const now = await evaluate(this.send, this.composerEditStateExpr(ref));
-      if (!now) throw new Error(`settleComposer(${ref}): no composer textarea`);
+      if (!now) throw new Error(`settleComposer(${ref}): no composer editor`);
       const key = JSON.stringify(now);
       if (key === previous) return now;
       previous = key;
@@ -328,162 +391,131 @@ export class Driver {
     }
   }
 
-  // typeText inserts text at one session's composer selection through the DOM.
-  //
-  // The composer's textarea is React-controlled, so a store update that
-  // re-renders it -- a drain committing, a turn clearing the draft -- will
-  // overwrite an edit that lands in the same tick. Three things answer that:
-  //
-  //   - the edit waits for that composer to settle, which removes the common
-  //     case of typing into one that is still re-rendering;
-  //   - the edit is a compare-and-swap against the value it settled on, so a
-  //     change arriving in the window after the settle declines the write
-  //     instead of overwriting it with content computed from a value the
-  //     composer no longer holds;
-  //   - the result is read back from a SETTLED read rather than from the same
-  //     evaluate that wrote it, so a render landing just after the write is
-  //     seen rather than missed.
-  //
-  // Every read and every write names the session's own composer, and refuses
-  // to touch it unless it is the focused element. Resolving
-  // document.activeElement instead would put the draft into whichever composer
-  // had focus at that instant, and with two mounted and both usually empty the
-  // compare-and-swap would not notice.
-  //
-  // The retry budget covers the swap and the post-write verification. A settle
-  // that never settles, a composer that is not there, or focus that has moved
-  // away fails outright: retrying a textarea that will not stop changing, or
-  // that the scenario is no longer typing into, only delays the same verdict
-  // with a worse message.
-  //
-  // What the retry does depends on what it finds, and the difference matters:
-  // once the text is in, the repair is the CARET alone. Recomputing an
-  // insertion from a base that already contains the text would type it twice.
-  async typeText(ref, text, { attempts = 4 } = {}) {
-    const selector = JSON.stringify(this.composerSelector(ref));
-    // Resolve, insist on focus, then act -- in one evaluate, so nothing moves
-    // between the check and the write.
-    const act = (body) => `(() => {
-      const root = document.querySelector(${selector});
-      const ta = root && root.querySelector("textarea");
-      if (!ta) return { error: "no composer textarea" };
-      if (document.activeElement !== ta) return { error: "composer is not the focused element" };
-      ${body} })()`;
-    // The typed run sitting where it was inserted is the question every retry
-    // turns on -- not equality with the value we wrote. An app that normalizes
-    // or pads its own draft after accepting ours has taken the text; only a
-    // value where the run is absent has not.
-    const runPresent = (state, at) => state.value.slice(at, at + text.length) === text;
-
-    let target = null;
-    for (let attempt = 1; ; attempt++) {
-      const settled = await this.settleComposer(ref);
-      if (!settled.focused) throw new Error(`typeText(${ref}): composer is not the focused element`);
-      let reason;
-      if (target && runPresent(settled, target.before.start)) {
-        // The text is in. Whatever else the value now holds is the app's, and
-        // the later payload assertions judge it; the repair here is the caret
-        // alone. Recomputing an insertion from a base that already contains
-        // the run would type it twice.
-        if (settled.start === target.caretWant && settled.end === target.caretWant) return;
-        const moved = await evaluate(
-          this.send,
-          act(`ta.selectionStart = ta.selectionEnd = ${target.caretWant};
-          return { placed: true };`),
-        );
-        if (!moved || moved.error) {
-          throw new Error(`typeText(${ref}): ${moved ? moved.error : "no result from the page (navigated or disconnected?)"}`);
-        }
-        const after = await this.settleComposer(ref);
-        if (runPresent(after, target.before.start) && after.start === target.caretWant && after.end === target.caretWant) {
-          return;
-        }
-        reason = `the caret would not stay at ${target.caretWant} (composer holds ${JSON.stringify(after.value)}, caret ${after.start}-${after.end})`;
-      } else {
-        // Where to insert from. A value back at the snapshot we typed into is
-        // a REVERT: re-apply the remembered result at the remembered
-        // selection, since the caret that came back with it is not where the
-        // scenario was typing. Anything else is a concurrent edit, and the
-        // insertion is recomputed from what the composer holds now.
-        let base;
-        let next;
-        let caretWant;
-        if (target && settled.value === target.before.value) {
-          base = target.before;
-          next = target.next;
-          caretWant = target.caretWant;
-        } else {
-          base = { value: settled.value, start: settled.start, end: settled.end };
-          next = base.value.slice(0, base.start) + text + base.value.slice(base.end);
-          caretWant = base.start + text.length;
-          target = { before: base, next, caretWant };
-        }
-        // The swap compares the VALUE only. A render that resets the selection
-        // without touching the text is the exact failure this guard hit, and
-        // recomputing the insertion point from a caret that render moved would
-        // type in the wrong place; the remembered selection is the one the
-        // scenario meant.
-        const applied = await evaluate(
-          this.send,
-          act(`if (ta.value !== ${JSON.stringify(base.value)}) return { swapped: false, value: ta.value };
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value").set;
-          setter.call(ta, ${JSON.stringify(next)});
-          ta.selectionStart = ta.selectionEnd = ${caretWant};
-          ta.dispatchEvent(new Event("input", { bubbles: true }));
-          return { swapped: true };`),
-        );
-        // A null comes back when the evaluate itself could not run -- a
-        // navigation between the send and the reply, or a CDP error -- and
-        // reading .swapped off it would report a TypeError from this line
-        // instead of that.
-        if (!applied || applied.error) {
-          throw new Error(`typeText(${ref}): ${applied ? applied.error : "no result from the page (navigated or disconnected?)"}`);
-        }
-        if (!applied.swapped) {
-          // The target is REMEMBERED across a decline. A swap can be declined
-          // because a render landed after the write as easily as before it,
-          // and forgetting here sent the next attempt past the presence check
-          // and into a recompute from a base that already held the run --
-          // typing it twice. Every attempt asks "is the run where I put it?"
-          // first; the target is replaced only when that says no and the value
-          // is not the snapshot either, which is a genuine concurrent edit.
-          reason = `the composer changed under the edit (holds ${JSON.stringify(applied.value)}, expected ${JSON.stringify(base.value)})`;
-        } else {
-          const after = await this.settleComposer(ref);
-          // The caret decides where the NEXT insert lands, so it is as much
-          // part of the edit as the text is.
-          if (runPresent(after, base.start)) {
-            if (after.start === caretWant && after.end === caretWant) return;
-            reason = `a render moved the caret to ${after.start}-${after.end}, expected ${caretWant}`;
-          } else {
-            reason = `a render landed on the edit (holds ${JSON.stringify(after.value)}, expected the text at ${base.start})`;
-          }
-        }
-      }
-      if (attempt >= attempts) {
-        throw new Error(`typeText(${ref}): ${reason} after ${attempts} attempts`);
-      }
-      console.error(`skillguard: ${ref}: ${reason}; retrying (attempt ${attempt + 1}/${attempts})`);
+  // Use Chrome's editing path, not value setters or synthetic input events.
+  // A render that loses native input or moves its caret is a product failure:
+  // do not repair/retype it in the driver and hide that failure.
+  async typeText(ref, text) {
+    const before = await evaluate(this.send, this.composerEditStateExpr(ref));
+    check(before?.focused, `typeText(${ref}): editor is not focused`);
+    check(before.start !== null && before.end !== null, `typeText(${ref}): selection is outside the editor`);
+    const want = before.value.slice(0, before.start) + text + before.value.slice(before.end);
+    const caret = before.start + text.length;
+    await this.send("Input.insertText", { text });
+    try {
+      await this.waitPage(`(() => { const state = ${this.composerEditStateExpr(ref)};
+        return state && state.value === ${JSON.stringify(want)} && state.start === ${caret} && state.end === ${caret} ? state : null; })()`,
+        { label: `native edit ${JSON.stringify(want)} with caret ${caret}` });
+    } catch (error) {
+      const after = await evaluate(this.send, this.composerEditStateExpr(ref));
+      throw new Error(`${error.message}; native state ${JSON.stringify({ before, after })}`, { cause: error });
     }
   }
 
-  // selectAll selects the whole draft in the composer textarea through the
-  // DOM, which is what the Backspace and typing key events that follow act
-  // on. A Ctrl+A key event is not a select-all keystroke on macOS Chrome, and
-  // a bare key event through the protocol is not guaranteed to run the
-  // editing command on Linux either; the selection itself is the contract.
+  // typeTextAgainstAtom delivers a run that lands directly against a skill
+  // atom's label, which the editor answers by separating the two with a space
+  // so the reference stays whole. The oracle is that separated result, caret
+  // included - not the raw insertion the browser handed over.
+  async typeTextAgainstAtom(ref, text, side) {
+    const before = await evaluate(this.send, this.composerEditStateExpr(ref));
+    check(before?.focused, `typeTextAgainstAtom(${ref}): editor is not focused`);
+    check(before.start !== null && before.end !== null, `typeTextAgainstAtom(${ref}): selection is outside the editor`);
+    const inserted = side === "before" ? `${text} ` : ` ${text}`;
+    const want = before.value.slice(0, before.start) + inserted + before.value.slice(before.end);
+    const caret = before.start + inserted.length;
+    await this.send("Input.insertText", { text });
+    try {
+      await this.waitPage(`(() => { const state = ${this.composerEditStateExpr(ref)};
+        return state && state.value === ${JSON.stringify(want)} && state.start === ${caret} && state.end === ${caret} ? state : null; })()`,
+        { label: `separated edit ${JSON.stringify(want)} with caret ${caret}` });
+    } catch (error) {
+      const after = await evaluate(this.send, this.composerEditStateExpr(ref));
+      throw new Error(`${error.message}; native state ${JSON.stringify({ before, after })}`, { cause: error });
+    }
+  }
+
+  async selectRange(ref, start, end = start) {
+    const selected = await evaluate(this.send, `(async () => {
+      const editor = ${this.editorExpr(ref)};
+      if (!editor) return false;
+      const changed = new Promise((resolve) => document.addEventListener("selectionchange", resolve, { once: true }));
+      (${selectEditorRange.toString()})(editor, ${start}, ${end});
+      await changed;
+      return true;
+    })()`);
+    check(selected, `selectRange(${ref}): editor missing`);
+  }
+
+  async moveCaret(ref, key) {
+    const changed = evaluate(this.send, `new Promise((resolve) => document.addEventListener("selectionchange", () => resolve(true), { once: true }))`);
+    await this.press(ref, key);
+    await changed;
+  }
+
   async selectAll(ref) {
-    const selected = await evaluate(
-      this.send,
-      `(() => { const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
-        const ta = root && root.querySelector("textarea"); if (!ta) return null;
-        ta.focus(); ta.select(); return ta.selectionEnd - ta.selectionStart === ta.value.length; })()`,
+    for (let attempt = 1; attempt <= SELECT_ALL_ATTEMPTS; attempt++) {
+      const state = await this.composerEditState(ref);
+      check(state, `selectAll(${ref}): editor missing`);
+      await this.selectRange(ref, 0, state.value.length);
+      // settleComposer returns the state the editor stopped changing on, so a
+      // selection a render is about to reset does not read as held.
+      const settled = await this.settleComposer(ref);
+      // Compared against the SETTLED text, not the length read before the
+      // range was placed: a draft that grew mid-flight would otherwise leave
+      // the selection covering only the old prefix and still read as held,
+      // and the next typeText would replace the prefix and strand the tail.
+      if (settled.start === 0 && settled.end === settled.value.length) return;
+      if (attempt < SELECT_ALL_ATTEMPTS) {
+        console.error(
+          `skillguard: ${ref}: a render reset the selection after selectAll; re-selecting (attempt ${attempt}/${SELECT_ALL_ATTEMPTS})`,
+        );
+      }
+    }
+    throw new Error(
+      `selectAll(${ref}): the editor would not hold the whole-text selection (${SELECT_ALL_ATTEMPTS} attempts)`,
     );
-    if (selected !== true) throw new Error(`selectAll: composer textarea for ${ref} did not select its draft`);
+  }
+
+  // composerEditState reads one session's editor state: its text, its selection
+  // as serialized-text offsets, and whether it holds focus.
+  async composerEditState(ref) {
+    return evaluate(this.send, this.composerEditStateExpr(ref));
+  }
+
+  // #1669: macOS Chrome does not hand a page the OS clipboard without a
+  // permission the guard's browser profile does not grant, so the copy/paste
+  // milestone cannot use the real chords there. It drives the same two events
+  // the browser would fire, each carrying a real DataTransfer, so the editor's
+  // own clipboard serializer (copy) and paste importer stay under test while
+  // only the OS clipboard itself is out of the loop. copySelection returns the
+  // text/plain the editor's clipboardTextSerializer wrote into that
+  // DataTransfer, which is the payload a real Ctrl+C would have put on the
+  // clipboard.
+  async copySelection(ref) {
+    return evaluate(this.send, `(() => {
+      const editor = ${this.editorExpr(ref)};
+      if (!editor) return null;
+      const dt = new DataTransfer();
+      editor.dispatchEvent(new ClipboardEvent("copy", { clipboardData: dt, bubbles: true, cancelable: true }));
+      return dt.getData("text/plain");
+    })()`);
+  }
+
+  // pasteText delivers `text` the way a real Ctrl+V would: a `paste` event
+  // carrying a DataTransfer with a text/plain payload, dispatched at the
+  // editor so its own paste handler imports it. The edit it causes is awaited
+  // by the caller's waitPage, exactly as the native chord was.
+  async pasteText(ref, text) {
+    return evaluate(this.send, `(() => {
+      const editor = ${this.editorExpr(ref)};
+      if (!editor) return null;
+      const dt = new DataTransfer();
+      dt.setData("text/plain", ${JSON.stringify(text)});
+      return editor.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    })()`);
   }
 
   // press sends a real key to one session's composer. The CDP event goes to
-  // whatever the page has focused, which is not necessarily the textarea this
+  // whatever the page has focused, which is not necessarily the editor this
   // scenario is driving, so focus is put back on that composer first -- in the
   // page, immediately before the key, rather than trusted from whatever ran
   // last. A Backspace delivered to the wrong element deletes the wrong draft.
@@ -492,8 +524,8 @@ export class Driver {
       this.send,
       `(() => {
         const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
-        const ta = root && root.querySelector("textarea");
-        if (!ta) return { error: "no composer textarea" };
+        const ta = root && root.querySelector(${JSON.stringify(EDITOR)});
+        if (!ta) return { error: "no composer contenteditable" };
         const already = document.activeElement === ta;
         if (!already) ta.focus();
         return { restored: !already, focused: document.activeElement === ta }; })()`,
@@ -508,6 +540,13 @@ export class Driver {
       Tab: { code: "Tab", keyCode: 9 },
       Escape: { code: "Escape", keyCode: 27 },
       Backspace: { code: "Backspace", keyCode: 8 },
+      Delete: { code: "Delete", keyCode: 46 },
+      ArrowLeft: { code: "ArrowLeft", keyCode: 37 },
+      ArrowRight: { code: "ArrowRight", keyCode: 39 },
+      z: { code: "KeyZ", keyCode: 90 },
+      y: { code: "KeyY", keyCode: 89 },
+      c: { code: "KeyC", keyCode: 67 },
+      v: { code: "KeyV", keyCode: 86 },
     }[key];
     await this.send("Input.dispatchKeyEvent", {
       type: "keyDown",
@@ -627,8 +666,23 @@ export class Driver {
   // deadline indefinitely, and a wait that cannot fail is worse than a slow one.
   async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0 } = {}) {
     const startedAt = Date.now();
-    let deadline = startedAt + timeoutMs;
+    // The caller's timeoutMs is the FLOOR of a hang tripwire, not a fixed
+    // budget: a run that has already proven this machine slow widens it (up to
+    // the ceiling), so a correct-but-slow reaction under load is not read as a
+    // wedged page. The wait is still released ONLY by the awaited condition --
+    // the budget decides only how long silence is tolerated (see budgets.mjs).
+    const budgetMs = this.reactions.deadline(timeoutMs);
+    let deadline = startedAt + budgetMs;
     let heldSince = null;
+    // A completed wait is the driver's observation of how slow the app is on
+    // this machine. With settleMs the reaction is the time to the FIRST hold --
+    // the settle window that follows is a proof barrier, not a reaction --
+    // and without it the condition held at this poll, which is now.
+    const settled = (value) => {
+      const reactedAt = settleMs > 0 ? heldSince : Date.now();
+      this.reactions.observe(reactedAt - startedAt);
+      return value;
+    };
     let settleAccounted = false;
     // When the previous poll ATTEMPT landed, success or failure: the span a
     // failure excludes from the proof is measured from here.
@@ -654,7 +708,7 @@ export class Driver {
       readAt = now;
       const held = !errored && value !== null && value !== undefined && value !== false;
       if (held) {
-        if (settleMs <= 0) return value;
+        if (settleMs <= 0) return settled(value);
         if (heldSince === null) {
           heldSince = now;
           if (!settleAccounted) {
@@ -662,7 +716,7 @@ export class Driver {
             deadline = Math.max(deadline, now + settleMs);
           }
         }
-        if (now - heldSince >= settleMs) return value;
+        if (now - heldSince >= settleMs) return settled(value);
       } else if (!errored) {
         heldSince = null;
       }
@@ -674,7 +728,7 @@ export class Driver {
         const seen = toast || this.lastToast ? `; toast: ${toast || this.lastToast}` : "";
         const settle = settleMs > 0 ? ` and hold for ${settleMs}ms (last held: ${held ? `yes, ${now - (heldSince ?? now)}ms` : "no"})` : "";
         throw new Error(
-          `timed out after ${timeoutMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
+          `timed out after ${budgetMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 80));
@@ -686,12 +740,13 @@ export class Driver {
       const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
       const pane = ${this.paneScopeExpr(ref)};
       if (!root || !pane) return null;
-      const textarea = root.querySelector("textarea");
-      const chips = [...pane.querySelectorAll("[data-testid='composer-skill-chip']")];
+      const editor = root.querySelector(${JSON.stringify(EDITOR)});
+      const chips = editor ? [...editor.querySelectorAll("[data-testid='composer-skill-chip']")] : [];
       return {
-        text: textarea ? textarea.value : null,
-        placeholder: textarea ? textarea.placeholder : null,
+        text: editor ? (${editorText.toString()})(editor) : null,
+        placeholder: editor ? editor.getAttribute("data-placeholder") : null,
         chips: chips.map((chip) => chip.textContent),
+        chipDetails: chips.map((chip) => ({ text: chip.textContent, title: chip.title, label: chip.getAttribute("aria-label"), editable: chip.getAttribute("contenteditable") })),
         removeLabels: [...pane.querySelectorAll("[data-testid='composer-skill-chip'] button")].map((b) => b.getAttribute("aria-label")),
         tiles: pane.querySelectorAll("[data-testid='attachment-tile']").length,
         submitDisabled: root.querySelector("[data-testid='composer-submit']")?.disabled ?? null,
@@ -856,37 +911,33 @@ export class Driver {
       { label: `composer for ${ref}` },
     );
     await this.waitPage(
-      `(() => { const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))}); const ta = root && root.querySelector("textarea"); return ta && !ta.hidden ? true : null; })()`,
-      { label: `visible textarea for ${ref}` },
+      `(() => { const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))}); const ta = root && root.querySelector(${JSON.stringify(EDITOR)}); return ta && !ta.hidden ? true : null; })()`,
+      { label: `visible contenteditable for ${ref}` },
     );
   }
 
   async focusComposer(ref) {
-    await this.click(`${this.composerSelector(ref)} textarea`);
-    // A click lands wherever the box's center is; with existing text that can
-    // be mid-string. The caret belongs at the END for every gesture this
-    // driver makes (typing always appends), so set it after the focus click.
-    await evaluate(
-      this.send,
-      `(() => { const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
-        const ta = root && root.querySelector("textarea"); if (!ta) return null;
-        ta.setSelectionRange(ta.value.length, ta.value.length); return true; })()`,
-    );
+    await this.click(`${this.composerSelector(ref)} ${EDITOR}`);
+    const state = await this.composerState(ref);
+    await this.selectRange(ref, state.text.length);
   }
 
   async selectSkillChip(ref) {
-    // Every selection starts from a focused composer: after e.g. a chip
-    // remove, focus sits on the removed chip's button and typed keys would
-    // never reach the textarea.
     await this.focusComposer(ref);
-    // Type the completion token as its own trailing token (a leading space —
-    // a mid-word slash never opens the menu); the inline slash menu opens
-    // with real matches.
-    await this.typeText(ref, ` /${SKILL_TOKEN}`);
+    const state = await this.composerState(ref);
+    await this.typeText(ref, `${state.text.endsWith(" ") ? "" : " "}/${SKILL_TOKEN}`);
+    await this.completeSkill(ref, SKILL_NAME);
+    // Completion at the end adds a separator. Remove only that character,
+    // leaving the canonical atom in its original sentence position.
+    await this.press(ref, "Backspace");
+  }
+
+  async completeSkill(ref, name) {
+    const row = `/${name}`;
     await this.waitPage(
       `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']"); if (!menu) return null;
-        return [...menu.querySelectorAll("button")].some((b) => b.textContent.includes(${JSON.stringify(SKILL_MENU_ROW)})) ? true : null; })()`,
-      { label: `slash menu row ${SKILL_MENU_ROW}` },
+        return [...menu.querySelectorAll("button")].some((b) => b.textContent.includes(${JSON.stringify(row)})) ? true : null; })()`,
+      { label: `slash menu row ${row}` },
     );
     // Click the skill's own row (native mouse events), not a keyboard commit,
     // so the scenario never depends on highlight ordering.
@@ -897,48 +948,32 @@ export class Driver {
     const rows = await evaluate(
       this.send,
       `(() => { const menu = document.querySelector("[data-testid='composer-slash-menu']");
-        return [...menu.querySelectorAll("button")].filter((b) => b.textContent.includes(${JSON.stringify(SKILL_MENU_ROW)})).map((b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }); })()`,
+        return [...menu.querySelectorAll("button")].filter((b) => b.textContent.includes(${JSON.stringify(row)})).map((b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }); })()`,
     );
-    if (!rows || rows.length === 0) throw new Error(`no ${SKILL_MENU_ROW} row in slash menu`);
+    if (!rows || rows.length === 0) throw new Error(`no ${row} row in slash menu`);
     await this.clickAt(rows[0].x, rows[0].y);
     await this.waitPage(
       `(() => { const pane = ${this.paneScopeExpr(ref)};
         const chips = pane ? [...pane.querySelectorAll("[data-testid='composer-skill-chip']")] : [];
-        return chips.some((c) => c.textContent.includes(${JSON.stringify(SKILL_NAME)})) ? chips.map((c) => c.textContent) : null; })()`,
-      { label: `chip ${SKILL_NAME}` },
+        return chips.some((c) => c.textContent.includes(${JSON.stringify(name)})) ? chips.map((c) => c.textContent) : null; })()`,
+      { label: `chip ${name}` },
     );
     await this.waitPage(
       `(() => document.querySelector("[data-testid='composer-slash-menu']") === null ? true : null)()`,
       { label: "slash menu closed after selection" },
     );
-    // Chip selection removes ONLY the completion token, so the leading space
-    // that made it a token is still in the text; delete it with a real
-    // Backspace so the composer holds exactly the prose every later
-    // assertion compares against.
-    await this.press(ref, "Backspace");
-    await this.waitPage(
-      `(() => { const root = document.querySelector(${JSON.stringify(this.composerSelector(ref))});
-        const ta = root && root.querySelector("textarea"); return ta && !ta.value.endsWith(" ") ? true : null; })()`,
-      { label: "trailing completion space removed" },
-    );
   }
 
   async removeSkillChip(ref) {
-    const labels = await evaluate(
-      this.send,
-      `(() => { const pane = ${this.paneScopeExpr(ref)};
-        const buttons = pane ? [...pane.querySelectorAll("[data-testid='composer-skill-chip'] button")].filter((b) => (b.getAttribute("aria-label") ?? "").startsWith(${JSON.stringify(CHIP_REMOVE_PREFIX)})) : [];
-        return buttons.map((b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: b.getAttribute("aria-label") }; }); })()`,
-    );
-    if (!labels || labels.length === 0) throw new Error("no chip remove button");
-    await this.clickAt(labels[0].x, labels[0].y);
-    await this.waitPage(
-      `(() => { const pane = ${this.paneScopeExpr(ref)};
-        const chips = pane ? [...pane.querySelectorAll("[data-testid='composer-skill-chip']")] : [];
-        return chips.some((c) => c.textContent.includes(${JSON.stringify(SKILL_NAME)})) ? null : true; })()`,
-      { label: "chip removed" },
-    );
-    return labels[0].label;
+    const before = await this.composerState(ref);
+    const at = before.text.indexOf(`/${SKILL_NAME}`);
+    check(at >= 0, "no inline skill atom to remove");
+    await this.selectRange(ref, at + SKILL_NAME.length + 1);
+    await this.press(ref, "Backspace");
+    await this.assertComposerDraft(ref, "atomic Backspace", {
+      text: before.text.slice(0, at) + before.text.slice(at + SKILL_NAME.length + 1),
+      chips: before.chips.filter((chip) => chip !== `/${SKILL_NAME}`), tiles: before.tiles,
+    });
   }
 
   // One staged attachment tile, removed through its own control. The tile's
@@ -1006,8 +1041,8 @@ export class Driver {
   }
 
   // A composer action click is lost when a re-render lands between the mouse
-  // press and release (no click event fires) — the roster refresh after a
-  // daemon death re-renders the shell exactly then. So each attempt is
+  // press and release (no click event fires) — any store update that
+  // re-renders the shell at that moment is enough. So each attempt is
   // verified by an OBSERVABLE effect (composer state changed, the button went
   // disabled, or a toast answered) and re-clicked when nothing happened. A
   // re-click while the first landed is harmless: actionPending disables the
@@ -1593,6 +1628,164 @@ function check(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+// These gestures operate on the production ProseMirror instance through
+// Chrome. No fixture editor, application hooks, or programmatic transactions.
+async function runInlineEditing(driver) {
+  const ref = driver.sessionA;
+  const two = { text: TWO_SKILLS, chips: ["/skill-1", "/skill-2"], tiles: 0 };
+  await driver.waitForTurnIdle(ref);
+  const modifier = await evaluate(driver.send, `/Mac/.test(navigator.platform) ? 4 : 2`);
+  await driver.focusComposer(ref);
+  // Resolve the first reference with an EXISTING whitespace suffix: completion
+  // must not add a second separator or shift the surrounding sentence.
+  await driver.typeText(ref, "Run  and then ");
+  const firstStart = TWO_SKILLS.indexOf("/skill-1");
+  const firstEnd = firstStart + "/skill-1".length;
+  await driver.selectRange(ref, firstStart);
+  await driver.typeText(ref, "/skill-1");
+  await driver.completeSkill(ref, "skill-1");
+  check((await driver.composerState(ref)).text === "Run /skill-1 and then ", "completion doubled the existing separator");
+  await driver.selectRange(ref, TWO_SKILLS.indexOf("/skill-2"));
+  await driver.typeText(ref, "/skill-2");
+  await driver.completeSkill(ref, "skill-2");
+  await driver.assertComposerDraft(ref, "completion separator at end", { ...two, text: `${TWO_SKILLS} ` });
+  await driver.press(ref, "Backspace");
+  await driver.assertComposerDraft(ref, "two original inline positions", two);
+
+  // A caret can cross the atom but cannot enter its label. Inserting on each
+  // side must leave the complete canonical reference intact.
+  await driver.selectRange(ref, firstStart);
+  await driver.moveCaret(ref, "ArrowRight");
+  let caret = await evaluate(driver.send, driver.composerEditStateExpr(ref));
+  check(caret.start === firstEnd && caret.end === firstEnd, `right arrow entered an atom: ${JSON.stringify(caret)}`);
+  await driver.moveCaret(ref, "ArrowLeft");
+  caret = await evaluate(driver.send, driver.composerEditStateExpr(ref));
+  check(caret.start === firstStart && caret.end === firstStart, `left arrow entered an atom: ${JSON.stringify(caret)}`);
+
+  await driver.selectRange(ref, firstEnd);
+  await driver.press(ref, "Backspace");
+  const removed = { ...two, text: "Run  and then /skill-2", chips: ["/skill-2"] };
+  await driver.assertComposerDraft(ref, "single Backspace removes atom", removed);
+  await driver.press(ref, "z", modifier);
+  await driver.assertComposerDraft(ref, "native undo restores atom and metadata", two);
+  await driver.press(ref, "z", modifier | 8);
+  await driver.assertComposerDraft(ref, "native redo removes atom", removed);
+  await driver.press(ref, "z", modifier);
+  await driver.selectRange(ref, firstStart);
+  await driver.press(ref, "Delete");
+  await driver.assertComposerDraft(ref, "single Delete removes atom", removed);
+  await driver.press(ref, "z", modifier);
+  await driver.assertComposerDraft(ref, "undo Delete", two);
+
+  await driver.selectRange(ref, firstStart, firstEnd);
+  await driver.typeText(ref, "REPLACED");
+  await driver.assertComposerDraft(ref, "selection replaces whole atom", { ...removed, text: "Run REPLACED and then /skill-2" });
+  await driver.press(ref, "z", modifier);
+  await driver.assertComposerDraft(ref, "undo selection replacement", two);
+
+  await driver.selectRange(ref, firstStart);
+  // Both runs end in a token character, so each is separated from the label
+  // rather than allowed to swallow it; the offsets below include that space.
+  await driver.typeTextAgainstAtom(ref, "BEFORE_", "before");
+  await driver.selectRange(ref, firstEnd + "BEFORE_".length + 1);
+  await driver.typeTextAgainstAtom(ref, "_AFTER", "after");
+  await driver.assertComposerDraft(ref, "typing around atom", { ...two, text: "Run BEFORE_ /skill-1 _AFTER and then /skill-2" });
+  await driver.selectRange(
+    ref,
+    firstEnd + "BEFORE_".length + 1,
+    firstEnd + "BEFORE_".length + 1 + "_AFTER".length + 1,
+  );
+  await driver.press(ref, "Backspace");
+  await driver.selectRange(ref, firstStart, firstStart + "BEFORE_".length + 1);
+  await driver.press(ref, "Backspace");
+  await driver.assertComposerDraft(ref, "surrounding edits preserve atoms", two);
+
+
+  // The OS clipboard needs a permission the guard's Chrome does not have on
+  // macOS (#1669), so the milestone drives the same two events the browser
+  // would fire, each carrying a real DataTransfer, instead of the copy/paste
+  // chords. The editor's serializer and importer are still under test: the copy
+  // event must emit the canonical display text, and the paste event must import
+  // that text as plain prose only, never activation metadata. Original atoms
+  // must survive while their pasted labels remain ordinary text.
+  await driver.selectAll(ref);
+  const copied = await driver.copySelection(ref);
+  check(copied === TWO_SKILLS, `copy serialized ${JSON.stringify(copied)}, expected ${JSON.stringify(TWO_SKILLS)}`);
+  await driver.focusComposer(ref);
+  await driver.typeText(ref, " ");
+  await driver.pasteText(ref, copied);
+  const pastedText = `${TWO_SKILLS} ${TWO_SKILLS}`;
+  await driver.waitPage(`(() => { const state = ${driver.composerStateExpr(ref)};
+    return state && state.text === ${JSON.stringify(pastedText)} ? state : null; })()`,
+    { label: "native clipboard preserves canonical display text" });
+  await driver.assertComposerDraft(ref, "paste text without importing activation", { ...two, text: pastedText });
+  await driver.selectRange(ref, TWO_SKILLS.length, pastedText.length);
+  await driver.press(ref, "Backspace");
+  await driver.assertComposerDraft(ref, "original atoms survive clipboard edits", two);
+  driver.milestone("inline-editing", await driver.composerState(ref));
+
+  // Wrapping and scrolling are real browser layout, not jsdom geometry. Long
+  // prose forces a wrap and then the editor's normal maximum-height scroller.
+  const secondStart = TWO_SKILLS.indexOf("/skill-2");
+  await driver.selectRange(ref, secondStart);
+  const longText = "WRAP_SCROLL_14k ".repeat(160);
+  await driver.typeText(ref, longText);
+  const layout = await driver.waitPage(`(() => {
+    const editor = ${driver.editorExpr(ref)};
+    const chips = [...editor.querySelectorAll("[data-testid='composer-skill-chip']")];
+    const rect = editor.getBoundingClientRect();
+    const range = document.createRange(); range.selectNodeContents(editor);
+    const lines = [...range.getClientRects()];
+    editor.scrollTop = editor.scrollHeight;
+    return { wrapped: lines.some((r) => r.top > lines[0].top),
+      chipWrapped: chips.length === 2 && chips[1].getBoundingClientRect().top > chips[0].getBoundingClientRect().top,
+      horizontalOverflow: editor.scrollWidth > editor.clientWidth + 1,
+      heightBounded: rect.height <= window.innerHeight * 0.5,
+      atoms: chips.map((chip) => ({ rects: chip.getClientRects().length, width: chip.getBoundingClientRect().width, inside: chip.getBoundingClientRect().right <= rect.right + 1 })),
+      scrollTop: editor.scrollTop, scrollHeight: editor.scrollHeight, clientHeight: editor.clientHeight };
+  })()`, { label: "composer wrapping and scrollable overflow" });
+  check(layout.wrapped && layout.chipWrapped && layout.heightBounded && layout.atoms.length === 2 && !layout.horizontalOverflow && layout.atoms.every((a) => a.rects === 1 && a.width > 0 && a.inside) && layout.scrollTop > 0,
+    `inline wrap/scroll layout failed: ${JSON.stringify(layout)}`);
+  driver.milestone("inline-layout", layout);
+  // Remove only the wrapping prose, retaining both original atoms.
+  await driver.selectRange(ref, secondStart, secondStart + longText.length);
+  await driver.press(ref, "Backspace");
+  await driver.assertComposerDraft(ref, "remove wrapping prose", two);
+
+  // CDP starts a genuine browser composition. Enter with the IME's legacy
+  // 229 code must not submit the message or accept a slash completion.
+  await driver.focusComposer(ref);
+  await driver.send("Input.imeSetComposition", { text: "あ", selectionStart: 1, selectionEnd: 1 });
+  await driver.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
+  await driver.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
+  await driver.send("Input.insertText", { text: "あ" });
+  // Composed straight against the last chip, which is exactly where a token
+  // character has to be separated from it.
+  await driver.assertComposerDraft(ref, "IME Enter retains draft", { ...two, text: `${TWO_SKILLS} あ` });
+  const ime = await driver.composerState(ref);
+  check(!ime.steerVisible, `IME Enter started a turn: ${JSON.stringify(ime)}`);
+  const durable = await evaluate(driver.send, driver.durableRecordsExpr());
+  check(![...durable.outbox, ...durable.optimistic, ...durable.recovery].some((record) => JSON.stringify(record.input).includes("あ")), "IME Enter persisted a submit");
+  driver.milestone("inline-ime", ime);
+  await driver.press(ref, "Backspace");
+  await driver.assertComposerDraft(ref, "composition cleanup", { ...two, text: `${TWO_SKILLS} ` });
+  // The composed character sat directly against the last chip, so the editor
+  // separated the two; drop that separator as well and the draft is back where
+  // it started.
+  await driver.press(ref, "Backspace");
+  await driver.assertComposerDraft(ref, "composition cleanup separator", two);
+
+  await driver.waitForTurnIdle(ref);
+  driver.milestone("submitted-two-skills", await driver.composerState(ref));
+  await driver.clickSubmit(ref, two);
+  await driver.waitForComposerCleared(ref);
+  // Match on the submitted prose: every scripted turn replies with the same
+  // sentinel, so only the turn carrying this sentence is evidence of its reply.
+  await driver.waitForReply(ref, TWO_SKILLS);
+  await driver.waitPage(`(() => [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => el.textContent.includes(${JSON.stringify(TWO_SKILLS)})) ? true : null)()`,
+    { label: "exact two-reference sentence in visible transcript" });
+}
+
 async function runScenarios(driver) {
   // ---- prelude: auth + app shell ----
   await navigateTo(driver.page, driver.url);
@@ -1624,13 +1817,13 @@ async function runScenarios(driver) {
   await driver.selectSkillChip(driver.sessionA);
   let state = await driver.composerState(driver.sessionA);
   check(state.chips.length === 1 && state.chips[0].includes(SKILL_NAME), `chip missing after selection: ${JSON.stringify(state)}`);
-  check(state.text === PROSE.canonical, `selection changed the prose: ${JSON.stringify(state.text)}`);
+  check(state.text === inlineText(PROSE.canonical), `selection changed the prose: ${JSON.stringify(state.text)}`);
   driver.milestone("chip-added", state);
-  const removeLabel = await driver.removeSkillChip(driver.sessionA);
+  await driver.removeSkillChip(driver.sessionA);
   state = await driver.composerState(driver.sessionA);
   check(state.chips.length === 0, "chip not removed");
-  check(state.text === PROSE.canonical, "removal changed the prose");
-  driver.milestone("chip-removed", { ...state, removeLabel });
+  check(state.text === `${PROSE.canonical} `, "removal changed the surrounding prose");
+  driver.milestone("chip-removed", state);
   await driver.selectSkillChip(driver.sessionA);
   state = await driver.composerState(driver.sessionA);
   check(state.chips.length === 1, "chip not re-selected");
@@ -1638,6 +1831,7 @@ async function runScenarios(driver) {
   driver.milestone("chip-labels", {
     chipText: state.chips,
     removeLabels: state.removeLabels,
+    chipDetails: state.chipDetails,
     prose: state.text,
   });
   // The durable outbox record is TRANSIENT — removed at the daemon's
@@ -1658,6 +1852,8 @@ async function runScenarios(driver) {
   driver.milestone("draft-after-commit", await evaluate(driver.send, driver.draftStorageExpr()));
   await driver.waitForReply(driver.sessionA, PROSE.canonical);
 
+  await runInlineEditing(driver);
+
   // ---- scenario: draft thread-switch / remount ----
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(driver.sessionA, PROSE.draft);
@@ -1669,14 +1865,13 @@ async function runScenarios(driver) {
   check(bState.text === "", `session B composer not fresh: ${JSON.stringify(bState)}`);
   await driver.openSession(driver.sessionA);
   state = await driver.composerState(driver.sessionA);
-  check(state.text === PROSE.draft, `draft text did not survive the switch: ${JSON.stringify(state)}`);
+  check(state.text === inlineText(PROSE.draft), `draft text did not survive the switch: ${JSON.stringify(state)}`);
   check(state.chips.some((c) => c.includes(SKILL_NAME)), `draft chips did not survive the switch: ${JSON.stringify(state)}`);
   driver.milestone("draft-remounted", { ...state, storage: await evaluate(driver.send, driver.draftStorageExpr()) });
-  // Clear the draft for the next scenario: select all + remove the chip.
+  // Select-all clears the text and inline atoms in one operation.
   await driver.focusComposer(driver.sessionA);
   await driver.selectAll(driver.sessionA);
   await driver.press(driver.sessionA, "Backspace");
-  await driver.removeSkillChip(driver.sessionA);
   state = await driver.composerState(driver.sessionA);
   check(state.text === "" && state.chips.length === 0, `draft not cleared: ${JSON.stringify(state)}`);
   driver.milestone("draft-cleared", state);
@@ -1713,8 +1908,7 @@ async function runScenarios(driver) {
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
   // Edit the queued entry: its text returns to the composer and the entry
-  // leaves the queue (the durable edit is a text-only recompose — the chip is
-  // re-staged by the user, which is the documented edit contract). The
+  // leaves the queue with its inline reference intact. The
   // click is effect-verified and retried: the strip re-renders as its
   // durable record settles and a single-shot click can be lost outright.
   await driver.clickQueueStripControl({
@@ -1723,7 +1917,9 @@ async function runScenarios(driver) {
       return state && state.text.includes(${JSON.stringify(PROSE.queue1)}) ? true : null; })()`,
     label: "Edit message",
   });
-  driver.milestone("queue-returned", await driver.composerState(driver.sessionA));
+  const returned = await driver.composerState(driver.sessionA);
+  check(returned.text === inlineText(PROSE.queue1), `queue edit moved the inline text: ${JSON.stringify(returned)}`);
+  driver.milestone("queue-returned", returned);
   await driver.selectAll(driver.sessionA);
   await driver.typeText(driver.sessionA, PROSE.queue2);
   await driver.selectSkillChip(driver.sessionA);
@@ -1867,43 +2063,9 @@ async function runScenariosPart2(driver) {
   });
   await driver.waitForReply(driver.sessionA, PROSE.attachment);
 
-  // ---- scenario: capability loss ----
-  await driver.openSession(driver.sessionB);
-  await driver.focusComposer(driver.sessionB);
-  await driver.typeText(driver.sessionB, PROSE.capabilityLoss);
-  await driver.selectSkillChip(driver.sessionB);
-  const staged = await driver.composerState(driver.sessionB);
-  driver.milestone("caploss-staged", staged);
-  // The Go owner shuts helper B down when it sees that milestone, then
-  // refreshes the real roster. The pane re-renders the thread as ended; the
-  // composer collapses to its follow-up invitation.
-  await driver.waitPage(
-    `(() => { const state = ${driver.composerStateExpr(driver.sessionB)}; return state && state.placeholder === "Send a follow-up…" ? true : null; })()`,
-    { timeoutMs: 30000, label: "session B rendered as ended" },
-  );
-  driver.milestone("caploss-ended", await driver.composerState(driver.sessionB));
-  await driver.focusComposer(driver.sessionB);
-  await driver.clickSubmit(driver.sessionB, draft(PROSE.capabilityLoss));
-  // The refusal keeps the draft: text and chips stay, and NOTHING durable is
-  // written for this mutation.
-  const refused = await driver.composerState(driver.sessionB);
-  check(refused.text.includes(PROSE.capabilityLoss), `draft text lost on refusal: ${JSON.stringify(refused)}`);
-  check(refused.chips.some((c) => c.includes(SKILL_NAME)), `draft chip lost on refusal: ${JSON.stringify(refused)}`);
-  const toast = await evaluate(driver.send, driver.toastExpr());
-  const durableB = await evaluate(driver.send, driver.durableRecordsExpr());
-  driver.milestone("caploss-refused", { ...refused, toast, durable: durableB });
-  // Clean the staged draft so later IndexedDB reads stay unambiguous.
-  await driver.focusComposer(driver.sessionB);
-  await driver.selectAll(driver.sessionB);
-  await driver.press(driver.sessionB, "Backspace");
-  await driver.removeSkillChip(driver.sessionB);
-  // The refusal toast renders OVER the composer card and swallows clicks
-  // aimed at its buttons; wait for it to dismiss before any later scenario
-  // drives the composer again.
-  await driver.waitPage(
-    `(() => { const toast = document.querySelector("section[aria-label='Notifications']"); return !toast || toast.textContent.trim() === "" ? true : null; })()`,
-    { timeoutMs: 20000, label: "refusal toast dismissed" },
-  );
+  // No capability-loss scenario: see skillGuardAssert in
+  // skill_composer_browser_test.go for why, and for where the composer's
+  // skillInput refusal is covered instead.
 
   // ---- scenario: failed activation + explicit retry ----
   await driver.openSession(driver.sessionA);

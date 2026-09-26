@@ -134,6 +134,28 @@ export function TranscriptPreferencesEditor({
 					<Copy muted>Loading display settings…</Copy>
 				) : null}
 				<ErrorMessage message={state.error} />
+				{state.draftUnreadable ? (
+					<View style={{ gap: 8 }}>
+						<Copy>
+							A saved transcript draft on this hub could not be read. Discard it
+							to edit these settings again.
+						</Copy>
+						<Action
+							// Live-model-only: unlike keybindings there is no store-free
+							// offline discard for transcripts, so a disconnected screen
+							// must not offer an action that could silently do nothing.
+							disabled={
+								!connected ||
+								state.loading ||
+								state.saving ||
+								state.writeUncertain
+							}
+							onPress={discard}
+						>
+							Discard unreadable draft
+						</Action>
+					</View>
+				) : null}
 				{state.writeUncertain ? (
 					<View style={{ gap: 8 }}>
 						<Copy>The last save could not be confirmed.</Copy>

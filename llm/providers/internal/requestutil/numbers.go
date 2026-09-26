@@ -15,6 +15,18 @@ func PositivePointerInt(value *int) int {
 	return 0
 }
 
+// FirstPositiveInt returns the first positive value, or zero when none are
+// positive. The OpenAI-shaped model listings use it to pick one limit out of
+// the spellings a provider may publish for it.
+func FirstPositiveInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
 // MinPositiveInt returns the smallest positive value, or zero when none are
 // positive.
 func MinPositiveInt(values ...int) int {

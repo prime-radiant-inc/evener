@@ -1,4 +1,4 @@
-import type { LaunchOption } from "@evener/appwire-client";
+import { isExactSafeInteger, type LaunchOption } from "@evener/appwire-client";
 export const scalarKinds = new Set([
   "text",
   "multilineText",
@@ -36,9 +36,11 @@ export function parseLaunchScalar(
     return value === "true";
   }
   if (option.kind === "integer") {
-    const number = Number(value);
-    if (!Number.isSafeInteger(number)) throw Error("Enter a whole number.");
-    return number;
+    // Share the web collectors' exact-decimal rule: Number(value) would round a
+    // value with more precision than a double holds (e.g. "1.0000000000000000001"
+    // becomes 1) before any safe-integer check could see it.
+    if (!isExactSafeInteger(value)) throw Error("Enter a whole number.");
+    return Number(value);
   }
   if (
     (option.kind === "select" || option.kind === "radio") &&

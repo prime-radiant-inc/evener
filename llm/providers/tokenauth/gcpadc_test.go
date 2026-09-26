@@ -68,7 +68,9 @@ func TestGCPADCReportsMissingCredentials(t *testing.T) {
 		return nil, errors.New("could not find default credentials")
 	}}
 	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
-	err := a.Apply(context.Background(), req, registry.Resolved{Instance: "vertex"})
+	// Source "none" is what the registry resolves for a gcp-adc instance with
+	// no credential at all: the fixture pins the branch the sentinel belongs to.
+	err := a.Apply(context.Background(), req, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "none"}})
 	var cfg *llm.ConfigurationError
 	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "vertex") || !strings.Contains(err.Error(), "default credentials") {
 		t.Fatalf("err = %v", err)
@@ -78,8 +80,32 @@ func TestGCPADCReportsMissingCredentials(t *testing.T) {
 	if !strings.Contains(err.Error(), "store a credential JSON") {
 		t.Fatalf("err = %v, want the remedy to offer a stored credential JSON", err)
 	}
+	// The failure is the no-credential class: the sentinel rides the chain so
+	// a caller can classify it without parsing the remedy prose.
+	if !errors.Is(err, llm.ErrNoCredential) {
+		t.Fatalf("err = %v, want the ErrNoCredential class", err)
+	}
 	if req.Header.Get("Authorization") != "" {
 		t.Fatal("no header on failure")
+	}
+}
+
+// A lookup failure for a credential the registry resolved as present
+// (Source "adc": an ADC file existed at resolution) is a broken-credential
+// failure, not an absent one: the sentinel would tell the picker "no
+// credential" and hide that the file exists but will not load.
+func TestGCPADCDistinguishesABrokenADCFromAnAbsentOne(t *testing.T) {
+	a := &GCPADC{FindCredentials: func(context.Context, ...string) (*google.Credentials, error) {
+		return nil, errors.New("google: could not parse credentials: invalid character 'x'")
+	}}
+	req, _ := http.NewRequest(http.MethodPost, "https://x", nil)
+	err := a.Apply(context.Background(), req, registry.Resolved{Instance: "vertex", Credential: registry.Credential{Source: "adc"}})
+	var cfg *llm.ConfigurationError
+	if !errors.As(err, &cfg) || !strings.Contains(err.Error(), "could not parse") {
+		t.Fatalf("err = %v", err)
+	}
+	if errors.Is(err, llm.ErrNoCredential) {
+		t.Fatalf("err = %v, want no ErrNoCredential class for a credential that exists but fails to load", err)
 	}
 }
 

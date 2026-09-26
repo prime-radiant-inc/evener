@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"testing"
 	"time"
 
@@ -55,7 +54,7 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 	served := make(chan struct{})
 	deps := mainDeps{
 		loadRegistry:    hermeticRegistryLoader,
-		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		loadConfig:      func(string, bool) (Config, error) { return cfg, nil },
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },
@@ -130,7 +129,7 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 
 	// The log line must carry a real, non-zero port - not the literal ":0"
 	// the caller asked for.
-	m := regexp.MustCompile(`listening on (\S+)`).FindStringSubmatch(captured)
+	m := hubListeningLine.FindStringSubmatch(captured)
 	if m == nil {
 		t.Fatalf("no 'listening on <addr>' line in stderr:\n%s", captured)
 	}

@@ -1134,6 +1134,138 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 	}
 }
 
+// TestCleanupProjectDeletionTargetRollsBackTombstoneOnSweepFailure pins the
+// failed-deletion boundary: when the artifact sweep fails while the metadata
+// survives, the tombstone must be rolled back so the still-resumable session
+// stays writable (autosave, rename, observer appends) instead of being fenced
+// forever with ErrSessionDeleted.
+func TestCleanupProjectDeletionTargetRollsBackTombstoneOnSweepFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	writeSession(t, stateDir, webTestSessionID, "/tmp/del-project")
+
+	oldRemove := removeProjectSessionFile
+	removeProjectSessionFile = func(path string) error {
+		if filepath.Base(path) == webTestSessionID+".future-artifact" {
+			return errors.New("forced sweep failure before metadata removal")
+		}
+		return oldRemove(path)
+	}
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+
+	runDir := filepath.Join(stateDir, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: hubcore.NewRosterWithEntries()})
+	if err := web.cleanupProjectDeletionTarget(stateDir, webTestSessionID); err == nil {
+		t.Fatal("expected the forced sweep failure to surface")
+	}
+	sessionsDir := filepath.Join(stateDir, "sessions")
+	if _, err := os.Stat(filepath.Join(sessionsDir, webTestSessionID+".meta.json")); err != nil {
+		t.Fatalf("metadata must survive a pre-metadata sweep failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sessionsDir, webTestSessionID+schema.SessionMetaTombstoneSuffix)); !os.IsNotExist(err) {
+		t.Fatalf("tombstone must be rolled back when the metadata survives: %v", err)
+	}
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: webTestSessionID, Name: "still writable"}); err != nil {
+		t.Fatalf("metadata survived but the session is not writable: %v", err)
+	}
+}
+
+// TestCleanupProjectDeletionTargetRemovesMetaLockOnSuccess pins the residue fix:
+// once a deletion completes, the per-session lock file is unlinked. The tombstone
+// remains as the resurrection fence, so the lock preserved during the sweep does
+// not need to outlive a successful deletion.
+func TestCleanupProjectDeletionTargetRemovesMetaLockOnSuccess(t *testing.T) {
+	stateDir := t.TempDir()
+	writeSession(t, stateDir, webTestSessionID, "/tmp/del-project")
+	runDir := filepath.Join(stateDir, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: hubcore.NewRosterWithEntries()})
+	if err := web.cleanupProjectDeletionTarget(stateDir, webTestSessionID); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	sessionsDir := filepath.Join(stateDir, "sessions")
+	if _, err := os.Stat(filepath.Join(sessionsDir, webTestSessionID+".meta.json.lock")); !os.IsNotExist(err) {
+		t.Fatalf("completed deletion left a meta lock file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sessionsDir, webTestSessionID+schema.SessionMetaTombstoneSuffix)); err != nil {
+		t.Fatalf("the tombstone fence must remain after a completed deletion: %v", err)
+	}
+}
+
+// TestCleanupProjectDeletionTargetIgnoresMetaLockRemovalFailure pins the low
+// finding: once the sweep has succeeded and the metadata is gone, a failure to
+// unlink the now-obsolete lock file must not fail the deletion — that would
+// report the dead session as "skipped" and retain its archive/favorite/pin
+// decisions. The lock has no functional role after the tombstone is in place.
+func TestCleanupProjectDeletionTargetIgnoresMetaLockRemovalFailure(t *testing.T) {
+	stateDir := t.TempDir()
+	writeSession(t, stateDir, webTestSessionID, "/tmp/del-project")
+	runDir := filepath.Join(stateDir, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldRemove := removeProjectSessionFile
+	removeProjectSessionFile = func(path string) error {
+		if filepath.Base(path) == webTestSessionID+".meta.json.lock" {
+			return errors.New("lock unlink failed")
+		}
+		return oldRemove(path)
+	}
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+
+	web := NewWebServer(hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: hubcore.NewRosterWithEntries()})
+	deleted, skip, _ := web.cleanupProjectDeletionTargetAndDecisions(stateDir, webTestSessionID)
+	if !deleted || skip != nil {
+		t.Fatalf("a lock-unlink failure must not fail the deletion: deleted=%v skip=%+v", deleted, skip)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); !os.IsNotExist(err) {
+		t.Fatalf("metadata must be removed by the successful sweep: %v", err)
+	}
+}
+
+// TestCleanupProjectDeletionTargetDoesNotRecreateAbsentStateDir pins the medium
+// at the hub boundary: deleting an already-removed session must not recreate the
+// project's state dir, which the PastIndex projects/* glob would surface as a
+// live project.
+func TestCleanupProjectDeletionTargetDoesNotRecreateAbsentStateDir(t *testing.T) {
+	base := t.TempDir()
+	stateDir := filepath.Join(base, "projects", "project-x-0123456789")
+	runDir := filepath.Join(base, "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{StateDir: base, RunDir: runDir, Roster: hubcore.NewRosterWithEntries()})
+	if err := web.cleanupProjectDeletionTarget(stateDir, webTestSessionID); err != nil {
+		t.Fatalf("cleanup of an already-removed session = %v, want nil", err)
+	}
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		t.Fatalf("cleanup recreated the deleted state dir: %v", err)
+	}
+}
+
+// TestSessionMetaFilePresentTreatsNonNotExistErrorAsPresent pins the low: only a
+// confirmed absence may count as "metadata absent", so a transient stat error
+// cannot skip the tombstone rollback and fence a live, resumable session.
+func TestSessionMetaFilePresentTreatsNonNotExistErrorAsPresent(t *testing.T) {
+	base := t.TempDir()
+	// A regular file where a directory is expected makes any child stat fail with
+	// ENOTDIR — a non-IsNotExist error.
+	blocker := filepath.Join(base, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionMetaFilePresent(blocker, webTestSessionID) {
+		t.Fatal("a non-IsNotExist stat error must read as metadata present")
+	}
+	if sessionMetaFilePresent(filepath.Join(base, "missing"), webTestSessionID) {
+		t.Fatal("a confirmed absence must read as metadata absent")
+	}
+}
+
 func TestProjectDeleteDeletionStateResumesAfterRestart(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "work")

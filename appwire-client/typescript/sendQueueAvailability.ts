@@ -7,7 +7,9 @@
 //   2. [DROPPED - see below]
 //   3. active && capabilities.queue === false explicitly -> both false
 //   4. active                    -> send=false, queue=true (queue-mode default)
-//   6. hasPendingSend            -> send=false, queue=true (see tier 6 below)
+//   6. hasPendingSend            -> send=false, queue=true (see tier 6 below);
+//                                  both false when the live snapshot's queue
+//                                  bit is false (the harness has no seam)
 //   5. else (idle/awaiting/...)  -> send=true,  queue=false (plain-send default)
 //
 // Tier 6 is this codebase's own addition and sits BETWEEN 4 and 5 rather than
@@ -22,15 +24,18 @@
 // IS live: thread/status/changed carries the set that goes with the status it
 // announces (kata 06t8), so the two always describe the same moment - and for
 // that fresh set, this table already computes exactly what reading it would.
-// The hub gates Send on "no turn in flight" and Queue on "a turn in flight"
-// (server/appwire_runtime.go's appCapabilities), which is tiers 4 and 5; the
-// one thing the status alone cannot say is whether the harness wired a queue
-// at all, and that is tier 3. A tier 2 would restate the table, not correct
-// it.
+// The hub advertises Send as "no turn in flight" and Queue as harness support
+// (server/appwire_runtime.go's appCapabilities); tiers 4 and 5 are that pair
+// with the status supplying the "turn in flight" half, and tier 3 reads the
+// harness-support bit for whether a queue is wired at all. A tier 2 would
+// restate the table, not correct it.
 //
-// Capability booleans are therefore still consulted ONLY in tier 3, which is
-// also where the legacy code treated them as authoritative (the "explicitly
-// known" queue-cap-false branch).
+// Capability booleans are therefore still consulted in tier 3, which is also
+// where the legacy code treated them as authoritative (the "explicitly known"
+// queue-cap-false branch) - and now in tier 6 too, whose live-snapshot check
+// reads `queue` to tell a harness with no seam from one the status has simply
+// not caught up with. Both reads are the same rule: the bit is the harness's,
+// the status is the client's.
 //
 // The active tier checks `statusType === "active"` ALONE - verified directly
 // against the cited renderer.js:479-513 (updateThreadState's sendBtn
@@ -75,6 +80,15 @@ const BOTH_UNAVAILABLE: SendQueueAvailability = { canSend: false, canQueue: fals
 const QUEUE_MODE: SendQueueAvailability = { canSend: false, canQueue: true };
 const PLAIN_SEND_MODE: SendQueueAvailability = { canSend: true, canQueue: false };
 
+// The statuses a LIVE daemon can be answering under, and therefore the ones
+// whose capability set is that daemon's own answer rather than a hub stub's.
+// They are exactly what appStatus can report for an open session below the
+// active/terminal cases handled above and below: idle, awaiting, and the two
+// degraded-but-live states warning and systemError. Everything else reaching
+// the pending-send tier - a "notLoaded" cold stub, a future unknown status - is
+// not a daemon's answer, so its false queue bit cannot be read as "no seam".
+const LIVE_SNAPSHOT_STATUSES = new Set(["idle", "awaiting", "warning", "systemError"]);
+
 export function deriveSendQueueAvailability({
   statusType,
   capabilities,
@@ -116,17 +130,21 @@ export function deriveSendQueueAvailability({
   // SendQueueAvailabilityInput, which no code here can enforce.
   //
   // It is a tier of its own, ABOVE the capability veto rather than inside the
-  // active branch, and that placement is the whole point. The capabilities in
-  // hand during this window are the IDLE ones, and an idle thread advertises
-  // queue:false (server/appwire_runtime.go's appCapabilities gates Queue on
-  // `active`, which is `processing || appReservedTurnID != ""`). Letting the
-  // veto see them turns this rule into BOTH_UNAVAILABLE and DISABLES the
-  // composer in exactly the window it exists to serve - worse than the bounce,
-  // which at least left a recovery row the user could resend from. An idle
-  // queue:false means "no turn to queue behind", not "this harness has no
-  // queue"; nothing in that snapshot distinguishes the two, so this tier does
-  // not consult it. A harness with no queue at all answers turn/queue with
-  // Unavailable, and the user sees that.
+  // active branch, so it answers the question the active branch would answer
+  // before the status says the turn is live. Queue advertises harness support
+  // alone (#1375), so for a LIVE snapshot - any status in
+  // LIVE_SNAPSHOT_STATUSES, not just idle - its bit is the harness's own
+  // answer: true still routes to the queue, and false means this harness has no
+  // queue seam, where turn/queue could only answer Unavailable. There this tier
+  // reports the both-false the active branch would report.
+  //
+  // Every other status reaching here - the "notLoaded" cold stub, a status this
+  // table does not know - is not a daemon's answer: the cold case is a thread
+  // the hub will RESUME on the first turn/start (app_threadread.go's
+  // pastThreadCapabilities), whose set in hand is the hub's stub, and a future
+  // status cannot be claimed as live. For both the false bit says nothing about
+  // the daemon the turn is about to wake, so the queue this tier exists for is
+  // still the route.
   //
   // The queue lands with no turn id because there is no turn id to send:
   // appwire v3 dropped expectedTurnId from turn/queue outright (appwire/
@@ -139,7 +157,10 @@ export function deriveSendQueueAvailability({
   // The terminal branch at the top answers with this same rule, for the same
   // reason - see its own comment for how a session the status calls finished
   // comes to be holding one of this client's sends.
-  if (hasPendingSend) return QUEUE_MODE;
+  if (hasPendingSend) {
+    const liveSnapshot = LIVE_SNAPSHOT_STATUSES.has(statusType);
+    return liveSnapshot && capabilities.queue === false ? BOTH_UNAVAILABLE : QUEUE_MODE;
+  }
 
   return PLAIN_SEND_MODE;
 }

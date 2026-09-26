@@ -22,6 +22,7 @@
 // keep an eager edge from this barrel to the 1605-line Rail module inside
 // AppShell's initial chunk, defeating the split. Importers take ./Rail (or
 // ./RailHost) directly.
+
 import {
   Component,
   type CSSProperties,
@@ -36,6 +37,7 @@ import {
 import { usePrefsStore } from "../../stores/prefs";
 import { Button, EmptyState } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { reloadPage } from "../pageReload";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY } from "./RailResizeHandle";
 import { noteRailWrapperMounted, noteRailWrapperUnmounted } from "./railController";
@@ -128,7 +130,7 @@ function RailFailureShell({
             {reloadAvailable && isStaleRailHostChunkError(failure) && (
               <>
                 {" "}
-                <Button size="sm" variant="quiet" onClick={() => window.location.reload()}>
+                <Button size="sm" variant="quiet" onClick={reloadPage}>
                   Reload page
                 </Button>
               </>

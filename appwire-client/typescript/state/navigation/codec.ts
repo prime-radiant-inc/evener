@@ -11,6 +11,8 @@ import type {
 } from "../../types.gen";
 import { cloneAndDeepFreezeJSON } from "./immutable";
 import {
+  NAVIGATION_CATALOG_LIMIT,
+  NAVIGATION_SECTION_LIMIT,
   NavigationBaseInvalidError,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
@@ -376,7 +378,8 @@ function manifestMetadata(value: Record<string, unknown>): boolean {
 
 function effectiveLimit(key: ResourceKey): number {
   if (!("limit" in key)) return 0;
-  const maximum = key.kind === "pin_catalog" || key.kind === "catalog" ? 100 : 50;
+  const maximum =
+    key.kind === "pin_catalog" || key.kind === "catalog" ? NAVIGATION_CATALOG_LIMIT : NAVIGATION_SECTION_LIMIT;
   return key.limit === 0 || key.limit > maximum ? maximum : key.limit;
 }
 
@@ -740,6 +743,29 @@ const emptyMaterializedChildren = Object.freeze([]) as readonly MaterializedValu
 
 function sameIdentities(left: readonly unknown[], right: readonly unknown[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+/** The normalized resource a decoded snapshot stands for, built by hand at
+ * five call sites before this. */
+export function snapshotResource(
+  key: ResourceKey,
+  decoded: Extract<DecodedNavigationResponse, { status: "snapshot" }>,
+): NormalizedResource {
+  return {
+    key,
+    graph: normalizedGraphFromSnapshot(decoded.snapshot),
+    version: decoded.version,
+    presence: "present",
+  };
+}
+
+/** The rows a decoded snapshot renders as, for a one-shot reader with no
+ * previous resource to reconcile against. */
+export function materializeSnapshot(
+  key: ResourceKey,
+  decoded: Extract<DecodedNavigationResponse, { status: "snapshot" }>,
+): MaterializedValue {
+  return materializeNavigationResource(snapshotResource(key, decoded));
 }
 
 /** Convert the normalized graph back to the resource-shaped view consumed by

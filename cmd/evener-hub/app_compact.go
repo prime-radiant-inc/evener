@@ -63,7 +63,9 @@ func clearThreadWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *
 	return withSessionResume(ctx, cfg, sources, params.Ref, params.ClientMutationID, func() (appwire.ThreadClearResponse, error) {
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
-			return appwire.ThreadClearResponse{}, err
+			// Resolution failed before anything reached a source, so a resume
+			// retry that fails the same way proves nothing was dispatched.
+			return appwire.ThreadClearResponse{}, preDispatchRefusalError{err}
 		}
 		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "clear"); err != nil {
 			return appwire.ThreadClearResponse{}, err

@@ -19,6 +19,7 @@ import type {
 } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -29,25 +30,8 @@ import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
 import { renderPalette as render, scriptSearch } from "./paletteTestUtils";
 
-// See stores/prefs.test.ts: Node 26 shadows jsdom's localStorage.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const CAPS: ThreadCapabilities = {
@@ -119,7 +103,7 @@ function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  useCommandCatalog.setState({ commands: [], loaded: false });
+  useCommandCatalog.setState(useCommandCatalog.getInitialState());
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
@@ -284,7 +268,6 @@ test("the palette scopes catalog commands to active diagnostics without mutating
       { name: "secret", pluginName: "excluded", source: "plugin" },
       { name: "whoami", source: "user" },
     ],
-    loaded: true,
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "enabled" }] } });
   render(<CommandPalette />);
@@ -722,6 +705,40 @@ test("Enter on an unknown slash command sends the raw query - the escape hatch f
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
+// RoboRev Low (PR 1393 fresh review, 0708b9b): the slash fallthrough fired the
+// raw text at the focused session with `void` - on a recovery-fenced local
+// session the store's shared admission refuses the send, and the unhandled
+// rejection closed the palette and silently lost the typed input. The
+// fallthrough must keep the composer's failure contract for a refused send:
+// surface why the text went nowhere (the fenced admission's own refusal among
+// the reasons) and keep the palette open so the input survives.
+test("Enter on an unknown slash command against a fenced session toasts the refusal and keeps the palette open", async () => {
+  const user = userEvent.setup();
+  focusSession("local:ref_a");
+  // A Stop in flight arms the fence while the snapshot still reads idle -
+  // the window the liveControls predicate exists for.
+  act(() => {
+    threadsStore.setState((state) => ({
+      restartBlockingObligations: new Map(state.restartBlockingObligations).set("local:ref_a", Symbol()),
+    }));
+  });
+  render(
+    <>
+      <CommandPalette />
+      <Toast />
+    </>,
+  );
+  act(() => openPalette("/frobnicate main"));
+
+  await user.keyboard("{Enter}");
+
+  // The refusal surfaces as the recovery-unavailable toast, the palette stays
+  // open with the typed text, and the rejection never escapes unhandled.
+  expect(await screen.findByText("Send isn't available until this session is resumed")).toBeTruthy();
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  expect((screen.getByRole("combobox") as HTMLInputElement).value).toBe("/frobnicate main");
+});
+
 // 2026-08-14: a picked session-scoped command - built-in OR plugin catalog -
 // no longer runs from the palette at all (nor, for a plugin command, sends
 // its qualified form immediately). Both now resolve to the SAME single
@@ -739,7 +756,6 @@ test("selecting a plugin catalog entry's handoff row inserts the raw typed text 
   send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
-    loaded: true,
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
@@ -765,7 +781,6 @@ test("Enter on a plugin command with arguments hands off the FULL typed text, ar
   send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
-    loaded: true,
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
@@ -785,7 +800,6 @@ test("two catalog entries sharing a name still collapse to ONE handoff row, not 
       { name: "review", pluginName: "p", source: "plugin" },
       { name: "review", pluginName: "q", source: "plugin" },
     ],
-    loaded: true,
   });
   focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }, { name: "q" }] } });
   render(<CommandPalette />);

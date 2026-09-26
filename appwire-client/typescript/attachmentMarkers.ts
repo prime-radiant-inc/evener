@@ -22,12 +22,12 @@
 // identity also survives edits no positional rule can follow - a marker the
 // user hand-deleted while leaving its attachment staged, one they moved ahead
 // of its siblings, one they copied.
+import { markerPattern } from "./textareaMarkers";
+
 export interface MarkerAttachment {
   marker: number;
   name?: string;
 }
-
-const MARKER = /\[image (\d+)\]/g;
 
 // translateAttachmentMarkers is the ONE transformation applied to the
 // composer's text on its way to the wire (floor §1.12: otherwise sent
@@ -39,7 +39,7 @@ const MARKER = /\[image (\d+)\]/g;
 // model can at least see is a leftover.
 export function translateAttachmentMarkers(text: string, attachments?: readonly MarkerAttachment[]): string {
   const staged = new Map((attachments ?? []).map((attachment) => [attachment.marker, attachment]));
-  return text.replace(MARKER, (literal, digits: string) => {
+  return text.replace(markerPattern(), (literal, digits: string) => {
     const marker = Number(digits);
     const attachment = staged.get(marker);
     if (!attachment) return literal;

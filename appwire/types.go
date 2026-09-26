@@ -65,6 +65,7 @@ const (
 	MethodEvenerDaemonList               = "evener/daemon/list"
 	MethodEvenerDaemonRetire             = "evener/daemon/retire"
 	MethodEvenerDaemonStatus             = "evener/daemon/status"
+	MethodEvenerDaemonIdleTimeoutSet     = "evener/daemon/idle-timeout/set"
 	MethodEvenerThreadNameSet            = "evener/thread/name/set"
 	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
 	MethodEvenerSubagentPreview          = "evener/subagentPreview"
@@ -96,6 +97,7 @@ const (
 	MethodEvenerAuthList                 = "evener/auth/list"
 	MethodEvenerAuthApiKeySet            = "evener/auth/apiKey/set"
 	MethodEvenerAuthApiKeyClear          = "evener/auth/apiKey/clear"
+	MethodEvenerAuthApiKeyConditionalSet = "evener/auth/apiKey/conditionalSet"
 	MethodEvenerAuthCredentialJsonSet    = "evener/auth/credentialJson/set"
 	MethodEvenerAuthDeviceStart          = "evener/auth/device/start"
 	MethodEvenerAuthDevicePoll           = "evener/auth/device/poll"
@@ -144,6 +146,42 @@ const (
 	// remote host's hub (component 07a). Host is the component-03 source ID;
 	// Method must be in the proxy's exact allow-list. See HostRequestParams.
 	MethodEvenerHostRequest = "evener/host/request"
+	// MethodEvenerHostAttach explicitly attaches one configured remote host
+	// (component 06's Connect action, component 08's host management surface).
+	// It is the browser-reachable trigger that wraps the Ensure-backed dialing
+	// seam; every other remote path is attached-only. See HostAttachParams.
+	MethodEvenerHostAttach = "evener/host/attach"
+	// MethodEvenerHostAdd registers one sidecar host entry (component 08 slice
+	// 1: name + SSH address + key path). hub.toml stays authoritative for its
+	// own names; a duplicate of a live name is refused. See HostAddParams.
+	MethodEvenerHostAdd = "evener/host/add"
+	// MethodEvenerHostList returns every known host with truthful online state
+	// (component 08 slice 1). Attached rows report live channel facts; rows
+	// without a live channel render last-known state as offline. See
+	// HostListResponse.
+	MethodEvenerHostList = "evener/host/list"
+	// MethodEvenerHostStatus returns one host's row (component 08 slice 1): the
+	// same HostRow evener/host/list serves, for a single named host. Never
+	// dials. See HostStatusParams.
+	MethodEvenerHostStatus = "evener/host/status"
+	// MethodEvenerHostRemove deregisters one sidecar host entry (component 08
+	// slice 1): its supervisor stops, its channel drops, and the name is gone
+	// until re-added. hub.toml-declared names cannot be removed here. See
+	// HostRemoveParams.
+	MethodEvenerHostRemove = "evener/host/remove"
+	// MethodEvenerHostUpdate edits one live sidecar host entry in place: every
+	// field except the name is mutable, the name is the request's target, and
+	// the entry's advancement of the registry generation retires the host's
+	// channel. hub.toml-declared names are refused (edit the file). See
+	// HostUpdateParams.
+	MethodEvenerHostUpdate = "evener/host/update"
+	// MethodEvenerHostPushCredentials copies the controller's local
+	// provider-instance keys to one named remote host (component 07c). The unit
+	// of the push is the local credentials-store entry; each key is sent
+	// verbatim as the Provider value only to the two provider-keyed auth
+	// methods, and the host's own conditional set does the write. See
+	// HostPushCredentialsParams.
+	MethodEvenerHostPushCredentials = "evener/host/pushCredentials"
 )
 
 const (
@@ -839,12 +877,19 @@ type QueueState struct {
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged
-// (kata r80p). It mirrors the queue field on EvenerThread so consumers can
-// store it verbatim on the cached thread state.
+// (kata r80p). Queue mirrors the queue field on EvenerThread so consumers can
+// store it verbatim on the cached thread state. ConsumedClientMutationIDs
+// does NOT belong on Queue: it is a one-shot fact about THIS push's own
+// transition (currently: a drain folding the queue into steering), never a
+// property of the durable queue a client caches — a client settles those
+// optimistic records by positive evidence instead of inferring consumption
+// from sequence order (issue #1704). Absent on old daemons and on every push
+// that is not the consuming transition.
 type ThreadQueueChangedParams struct {
-	ThreadID string     `json:"threadId"`
-	Ref      string     `json:"ref"`
-	Queue    QueueState `json:"queue"`
+	ThreadID                  string     `json:"threadId"`
+	Ref                       string     `json:"ref"`
+	Queue                     QueueState `json:"queue"`
+	ConsumedClientMutationIDs []string   `json:"consumedClientMutationIds,omitempty"`
 }
 
 // TaskUpdatedParams is the params shape for evener/task/updated: the session's
@@ -986,9 +1031,10 @@ type ThreadCapabilities struct {
 	// ChangeVisionModel advertises support for thread/vision-model/set. True for
 	// a live evener session whose daemon wires a vision-model hook.
 	ChangeVisionModel bool `json:"changeVisionModel"`
-	// Queue advertises support for turn/queue (kata 111a). True when a turn
-	// is currently in flight and the session can accept enqueued user
-	// messages for processing after the active turn completes.
+	// Queue advertises harness support for turn/queue (kata 111a, #1375): true
+	// when the daemon wires a queue seam and the thread is not closed, not when
+	// a turn happens to be in flight. The client applies the status, so
+	// turn/queue is still meaningful only mid-turn.
 	Queue bool `json:"queue"`
 	// Goal advertises support for goal/set (the /goal objective engine). True
 	// for a evener session that can accept a goal; false for sources that do not
@@ -1007,9 +1053,12 @@ type ThreadCapabilities struct {
 	// meta); false for non-local/source-backed threads that do not advertise it.
 	Rename bool `json:"rename"`
 	// SkillInput advertises support for canonical {type:"skill", name} input
-	// items on the input-bearing turn mutations. False everywhere until
-	// runtime consumption is wired per endpoint; ValidateSkillInputSupport
-	// keeps skill items rejected wherever this capability is false.
+	// items on the input-bearing turn mutations. A live daemon advertises it
+	// when all of those endpoints are wired; the hub's cold projections
+	// (past reads, close and gave-up frames, and list rows) advertise the same
+	// current-daemon floor, since each input-bearing mutation re-verifies
+	// against the live daemon. ValidateSkillInputSupport keeps skill items
+	// rejected wherever this capability is false.
 	SkillInput bool `json:"skillInput,omitempty"`
 }
 
@@ -1025,7 +1074,7 @@ type EvenerDiagnostics struct {
 	Tools      []EvenerToolInfo        `json:"tools,omitempty"`
 	MCP        []EvenerMCPServerInfo   `json:"mcp,omitempty"`
 	Skills     []EvenerSkillInfo       `json:"skills,omitempty"`
-	Plugins    []EvenerPluginInfo      `json:"plugins,omitempty"`
+	Plugins    []EvenerPluginInfo      `json:"plugins,omitzero"` // nil (a source that cannot report plugins) is absent; empty is sent as []
 	HookEvents []EvenerHookEventStatus `json:"hookEvents,omitempty"`
 	Jobs       []EvenerJobInfo         `json:"jobs,omitempty"`
 	Delegates  []EvenerDelegateInfo    `json:"delegates,omitempty"`
@@ -1047,31 +1096,6 @@ type EvenerDiagnostics struct {
 	// SkillDiagnostics is the explicit source-detail view, so the two never
 	// borrow each other's identity.
 	SkillDiagnostics []EvenerSkillDiagnostic `json:"skillDiagnostics,omitempty"`
-}
-
-// MarshalJSON preserves an explicit empty plugin inventory while keeping a
-// nil inventory absent for old or unwired sources that cannot report it.
-func (d EvenerDiagnostics) MarshalJSON() ([]byte, error) {
-	type alias EvenerDiagnostics
-	a := alias(d)
-	a.Plugins = nil
-	raw, err := json.Marshal(a)
-	if err != nil {
-		return nil, err
-	}
-	if d.Plugins == nil {
-		return raw, nil
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		return nil, err
-	}
-	plugins, err := json.Marshal(d.Plugins)
-	if err != nil {
-		return nil, err
-	}
-	fields["plugins"] = plugins
-	return json.Marshal(fields)
 }
 
 type EvenerToolInfo struct {
@@ -1447,8 +1471,10 @@ type ThreadItem struct {
 	Description          string              `json:"description,omitempty"`
 	Output               string              `json:"output,omitempty"`
 	Error                string              `json:"error,omitempty"`
-	OutputImages         []OutputImage       `json:"outputImages,omitempty"`
-	Status               string              `json:"status,omitempty"`
+	// OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.
+	// Images stays omitempty: nothing removes an item's input images.
+	OutputImages []OutputImage `json:"outputImages,omitzero"`
+	Status       string        `json:"status,omitempty"`
 	// PrevalOnly is true when Error came from a pre-dispatch rejection (an
 	// unknown tool name, or arguments that failed schema validation even
 	// after repair) rather than the tool's own execution - the call never
@@ -1529,6 +1555,11 @@ type ThreadListParams struct {
 	Statuses         []string `json:"statuses,omitempty"`
 	SourceIDs        []string `json:"sourceIds,omitempty"`
 	IncludeSubagents bool     `json:"includeSubagents,omitempty"`
+	// StatusOnly asks a daemon for the diagnostics a liveness probe reads and
+	// nothing else: each row's Diagnostics carries only Jobs, Watches, and
+	// Delegates reduced to delegateId, childSessionId and lifecycle. A daemon
+	// that predates the field, and a hub, ignore it and return the full answer.
+	StatusOnly bool `json:"statusOnly,omitempty"`
 }
 
 type ThreadListResponse struct {
@@ -1779,6 +1810,14 @@ type MutationReceipt struct {
 	TurnID           string                  `json:"turnId,omitempty"`
 	QueueEntryIDs    []string                `json:"queueEntryIds,omitempty"`
 	ProjectionState  MutationProjectionState `json:"projectionState"`
+	// ConsumedClientMutationIDs names the client mutation ids a drain's OWN
+	// transition consumed (currently the only mutation that folds other
+	// queued entries into itself). It rides the durable mutation result, so
+	// a replayed disposition carries the same ids the first execution did —
+	// unlike queueChanged's own copy of this fact, a replay needs no live
+	// push to settle those records (issue #1704). Absent on every receipt
+	// that is not a drain's.
+	ConsumedClientMutationIDs []string `json:"consumedClientMutationIds,omitempty"`
 }
 
 type PendingMutation struct {
@@ -2128,6 +2167,13 @@ type JobActivitySession struct {
 	Branch      JobActivityBranchState `json:"branch"`
 }
 
+// JobActivityTree is ONE bounded page of a session's job-activity tree, not a
+// complete snapshot: Root.Branch carries a continuation token when the page
+// stopped short of what the session retains. Revision identifies the page
+// generation the page was rendered against; a continuation is only meaningful
+// within the revision it was minted from, so a client that receives a page at a
+// different revision must discard it and fetch a fresh root page rather than
+// splice its positions into the tree it already holds.
 type JobActivityTree struct {
 	Revision uint64             `json:"revision"`
 	Root     JobActivitySession `json:"root"`
@@ -2375,6 +2421,22 @@ type AuthStatusResponse struct {
 	NeedsRefresh   bool   `json:"needsRefresh,omitempty"`
 	NeedsLogin     bool   `json:"needsLogin,omitempty"`
 	Error          string `json:"error,omitempty"`
+	// ConfigRevision is this instance's effective credential-configuration
+	// revision: a stable, keyed MAC the host re-resolves from the same state a
+	// credential write lands in (cmd/evener-hub/app_auth.go +
+	// hubcore.CredentialConfigRevision). It is keyed with the hub-held secret
+	// the endpoint fingerprints use, so a reader who can see it cannot recover a
+	// secret the covered destination carries - a base URL can hold one in its
+	// userinfo or query string, which this field must not expose. The remote
+	// credential push captures it from this read and echoes it as
+	// ApiKeyConditionalSetParams.ExpectedRevision, so the host can refuse a
+	// write prepared against a configuration that has since changed. It is
+	// deliberately empty (JSON-omitted) when the host cannot resolve the
+	// instance or cannot key a revision: the zero value asserts no revision
+	// fence to a client, but a host that cannot key one refuses the conditional
+	// set rather than reading that zero as permission, and the source fence
+	// still applies.
+	ConfigRevision string `json:"configRevision,omitempty"`
 }
 
 type AuthLoginStartParams struct {
@@ -2493,16 +2555,29 @@ type ThreadStatusChangedParams struct {
 	// hydrate legitimately gave it. Absence at HYDRATE is where "nobody
 	// counted" is expressed.
 	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
+	// AskPending carries EvenerThread.AskPending — "this session is waiting on
+	// a human answer" — for the reason the failure count rides along above: it
+	// is otherwise snapshot-only, so after the user answers, every OTHER
+	// client keeps showing "question waiting" until its next read (#1613). The
+	// pending set clears only at a turn boundary (a resolving user turn, an
+	// interrupted turn: agent/session_tools_ask.go), which is exactly when a
+	// status change is announced, so this refreshes it when it can have moved
+	// and never polls.
+	//
+	// ABSENT MEANS "NO UPDATE" (an old daemon omits it), never "no question
+	// waiting": a client that cleared the flag on absence would stop showing a
+	// question the hydrate legitimately gave it.
+	AskPending *bool `json:"askPending,omitempty"`
 	// Capabilities carries the action set that goes WITH the status being
 	// announced (see EvenerThread.Capabilities), for the same reason the failure
-	// count rides along above: it is otherwise snapshot-only, and three of its
-	// entries — Send, Steer, Queue — are defined by whether a turn is in
-	// flight. A client that read the thread while it was idle therefore holds
-	// steer=false/queue=false for the whole turn that follows, and renders a
-	// session it KNOWS is active with no Steer, no Stop and a dead Send until
-	// the page is reloaded (kata 06t8). A status transition is exactly when
-	// those flip, so the set refreshes there and nowhere else — no polling, no
-	// re-read of the transcript.
+	// count rides along above: it is otherwise snapshot-only, and Send is the
+	// entry defined by whether a turn is in flight (Steer, Interrupt and Queue
+	// advertise harness support and do not move with the status, #1363/#1375).
+	// A client that read the thread while it was idle therefore holds send=true
+	// for the whole turn that follows, and renders a session it KNOWS is active
+	// with a Send it must not offer until the page is reloaded (kata 06t8). A
+	// status transition is exactly when Send flips, so the set refreshes there
+	// and nowhere else — no polling, no re-read of the transcript.
 	//
 	// ABSENT MEANS "NO UPDATE", same as the count. Non-local/source-backed
 	// threads may omit capabilities their source does not advertise. A client
@@ -2716,14 +2791,16 @@ type EvenerJobParams struct {
 type EvenerAuthUpdatedParams struct {
 	Provider     string `json:"provider,omitempty"`
 	ActiveSource string `json:"activeSource,omitempty"`
-	// OriginClientId is the echoed OriginClientId of the auth mutation that
-	// caused this broadcast - the identity of the client whose change it
-	// announces, so that client can recognize its own echo by id instead of
-	// by provider plus timing. Optional: a mutation from a client that sends
-	// none (an older build, the TUI) leaves the broadcast without an id, and
-	// a consumer matching a broadcast against its own mutation then falls
-	// back to provider-plus-timing correlation. Absent for a
-	// provider-instance broadcast, which echoes no auth mutation.
+	// OriginClientId is the echoed OriginClientId of the mutation that caused
+	// this broadcast - an auth write or a provider-instance CRUD change - the
+	// identity of the client whose change it announces, so that client can
+	// recognize its own echo by id instead of by provider plus timing.
+	// Optional: a mutation from a client that sends none (an older build, the
+	// TUI) leaves the broadcast without an id. A consumer matching a broadcast
+	// against its own mutation then falls back to provider-plus-timing
+	// correlation for a provider-bearing auth echo only; an id-less
+	// provider-instance broadcast names no provider to correlate on and is
+	// treated as a foreign change.
 	OriginClientId string `json:"originClientId,omitempty"`
 }
 
@@ -2981,6 +3058,60 @@ type AuthApiKeyClearParams struct {
 	OriginClientId string `json:"originClientId,omitempty"`
 }
 
+// ApiKeyConditionalSetParams is the params for
+// evener/auth/apiKey/conditionalSet: the host-side conditional (compare-and-set)
+// credential write (design §07 "credential push"). It replaces the racy
+// read-evener/auth/status, classify, then evener/auth/apiKey/set pair: the host
+// re-resolves the instance's credential source and effective-configuration
+// revision inside one credentialWrite critical section and applies the write
+// only when they still match what the client observed. Provider is the
+// instance name, and the write lands in the host's own store under it.
+type ApiKeyConditionalSetParams struct {
+	Provider string `json:"provider"`
+	Value    string `json:"value"`
+	// ExpectedSource is the ActiveSource the client observed for Provider when
+	// it prepared this write (AuthStatusResponse.ActiveSource /
+	// InstanceEntry.ActiveSource). The host re-resolves the source under its
+	// credential write lock and refuses a non-empty value that no longer
+	// matches; empty asserts no source fence. The resolved source also decides
+	// the classification (see ApiKeyConditionalSetResponse.Action).
+	ExpectedSource string `json:"expectedSource,omitempty"`
+	// ExpectedRevision is the ConfigRevision the client observed for Provider.
+	// The host re-resolves it under the same lock and refuses a non-empty value
+	// that no longer matches, so a write prepared against a configuration that
+	// changed underneath it is never applied. Empty asserts no revision fence;
+	// the source fence still applies.
+	ExpectedRevision string `json:"expectedRevision,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast a landed write triggers, so the originator
+	// can recognize its own echo by id instead of by provider plus timing.
+	// Optional: empty (an older build, the TUI) leaves the broadcast without an
+	// id and consumers on the provider-plus-timing fallback.
+	OriginClientId string `json:"originClientId,omitempty"`
+}
+
+// The Action values of ApiKeyConditionalSetResponse: what the host did with a
+// conditional set. A "skipped" is a successful typed response, not a wire
+// error — the host refused to write because the instance's live credential is
+// one a pushed file-layer key must not shadow, and Reason says why.
+const (
+	ApiKeyConditionalSetActionAdded   = "added"
+	ApiKeyConditionalSetActionUpdated = "updated"
+	ApiKeyConditionalSetActionSkipped = "skipped"
+)
+
+// ApiKeyConditionalSetResponse is the result of
+// evener/auth/apiKey/conditionalSet. Action is one of the
+// ApiKeyConditionalSetAction* values, Reason is a human-readable explanation
+// (chiefly for a skip), and Status is the instance's post-write
+// AuthStatusResponse — the state the host resolved under the same lock, which a
+// skip leaves unchanged.
+type ApiKeyConditionalSetResponse struct {
+	Action string             `json:"action"`
+	Reason string             `json:"reason,omitempty"`
+	Status AuthStatusResponse `json:"status"`
+}
+
 // AuthCredentialJsonSetParams is the params for evener/auth/credentialJson/set:
 // a Google credential JSON (service-account key or application-default
 // authorized_user file) for a gcp-adc instance.
@@ -3065,8 +3196,14 @@ type InstanceEntry struct {
 	// ahead of them, and the entry omits any header it refuses.
 	APIKeyEnv        string `json:"apiKeyEnv,omitempty"`
 	CredentialHeader string `json:"credentialHeader,omitempty"`
-	// Implicit is true for an instance that exists from the environment
-	// alone: it has no entry in providers.toml, so it cannot be removed.
+	// Implicit is true for an instance with no authored entry in
+	// providers.toml: a curated provider that exists because the environment
+	// supplies it (an API-key variable, the ADC file) or because the user
+	// filed a credential for it through the UI (a stored key, a signed-in
+	// Codex record). It says nothing by itself about removal: an instance the
+	// environment supplies comes back with it, while one holding the user's
+	// credential is taken away by deleting that credential
+	// (cmd/evener-hub/app_instances.go's environmentBacked).
 	Implicit bool `json:"implicit"`
 	// Hidden marks a provider with no resolvable base URL in this
 	// environment (its *_BASE_URL variable is unset).
@@ -3082,7 +3219,23 @@ type InstanceEntry struct {
 	// store, spec §10); empty when no such variable is set, including when
 	// an env source is itself what resolves.
 	ShadowedEnvVar string `json:"shadowedEnvVar,omitempty"`
-	StoredEmail    string `json:"storedEmail,omitempty"`
+	// RenameLeavesRow is true when renaming this instance leaves an instance
+	// resolving under its old name, because the environment re-supplies what
+	// the rename moves: the row is environment-backed as the removal refusal
+	// computes it, or the old name is a curated provider id that re-derives
+	// without the user's moved credential (a set variable, the ADC file, or a
+	// keyless scheme). The hub computes it (renameLeavesRow) because a client
+	// cannot see ADC availability or the curated set; the rename note keys on
+	// it.
+	RenameLeavesRow bool   `json:"renameLeavesRow,omitempty"`
+	StoredEmail     string `json:"storedEmail,omitempty"`
+	// ConfigRevision is the same effective credential-configuration revision
+	// AuthStatusResponse.ConfigRevision carries for this instance (see its doc).
+	// The remote credential push can capture it from an evener/instance/list
+	// entry instead of a separate evener/auth/status read (the
+	// implicit-provider fallback) and echo it as
+	// ApiKeyConditionalSetParams.ExpectedRevision.
+	ConfigRevision string `json:"configRevision,omitempty"`
 	// CredentialRequired is false when this instance has no credential to
 	// look for at all — auth = none or optional-bearer — so an absent
 	// credential is not a missing one. It is never omitted: false is the
@@ -3094,13 +3247,16 @@ type InstanceEntry struct {
 	Warnings []string `json:"warnings,omitempty"`
 	// Models is the instance's known models with their effective
 	// disabled state, for the sheet's per-model toggles: exact catalog
-	// rows plus cached live ids. Empty for an instance with no rows.
+	// rows plus cached live ids, alias rows included. Empty for an
+	// instance with no rows.
 	Models []InstanceModelEntry `json:"models,omitempty"`
 }
 
 // InstanceModelEntry is one row of an instance's model inventory: the
-// catalog id and whether the config layer disabled it. The Providers pane's
-// instance sheet renders one toggle per row.
+// catalog id and whether the config layer disabled it, alias rows included.
+// The Providers pane's instance sheet renders one toggle per row; every
+// listed id names a row setModelDisabled can write, and a cross-provider
+// alias toggles on this instance without touching the provider it names.
 type InstanceModelEntry struct {
 	ID       string `json:"id"`
 	Disabled bool   `json:"disabled,omitempty"`
@@ -3161,6 +3317,12 @@ type InstanceCreateParams struct {
 	Vars             map[string]string `json:"vars,omitempty"`
 	APIKeyEnv        string            `json:"apiKeyEnv,omitempty"`
 	CredentialHeader string            `json:"credentialHeader,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this create triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // InstanceEditParams is the params for evener/instance/edit. Editing an
@@ -3204,6 +3366,19 @@ type InstanceEditParams struct {
 	ClearAPIKeyEnv        bool              `json:"clearApiKeyEnv,omitempty"`
 	CredentialHeader      string            `json:"credentialHeader,omitempty"`
 	ClearCredentialHeader bool              `json:"clearCredentialHeader,omitempty"`
+	// ExpectedEndpointFingerprint is the endpoint this client showed the user
+	// for Name (InstanceEntry.endpointFingerprint), checked the way
+	// InstanceRemoveParams's is. The edit is applied to the row the client
+	// listed, so a name another client has re-pointed since - or replaced with a
+	// different instance - must not have its replacement edited or renamed.
+	// Empty asserts nothing.
+	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this edit triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // InstanceRemoveParams is the params for evener/instance/remove.
@@ -3215,11 +3390,23 @@ type InstanceRemoveParams struct {
 	// client listed, so a name another client has re-pointed since must not
 	// have its replacement instance removed. Empty asserts nothing.
 	ExpectedEndpointFingerprint string `json:"expectedEndpointFingerprint,omitempty"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this removal triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // InstanceSetDefaultParams is the params for evener/instance/setDefault.
 type InstanceSetDefaultParams struct {
 	Name string `json:"name"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this change triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // InstanceRefreshModelsParams is the params for
@@ -3227,6 +3414,12 @@ type InstanceSetDefaultParams struct {
 // answer with the updated list (exact catalog rows plus cached live ids).
 type InstanceRefreshModelsParams struct {
 	Name string `json:"name"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this refresh triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // InstanceSetModelDisabledParams is the params for
@@ -3237,6 +3430,12 @@ type InstanceSetModelDisabledParams struct {
 	Name     string `json:"name"`
 	Model    string `json:"model"`
 	Disabled bool   `json:"disabled"`
+	// OriginClientId is the client identity the hub echoes into the
+	// evener/auth/updated broadcast this toggle triggers, so the originator
+	// recognizes its own echo by id instead of refetching as if another client
+	// changed the list. Optional: empty (an older build, the TUI) leaves the
+	// broadcast without an id.
+	OriginClientId string `json:"originClientId,omitempty"`
 }
 
 // CommandDescriptor describes one slash command — plugin-provided or
@@ -3488,6 +3687,40 @@ type MarketplaceEntry struct {
 // client can re-render from the response without a separate list round-trip.
 type MarketplaceListResponse struct {
 	Marketplaces []MarketplaceEntry `json:"marketplaces"`
+}
+
+// MarketplaceUnregisteredCloneRemainsData is the WireError.Data payload for
+// ErrorMarketplaceUnregisteredCloneRemains: the removal APPLIED (Applied
+// carries the updated marketplace list, with the target already gone) but
+// removing its clone from disk failed. Clients should reconcile from Applied
+// instead of treating the removal as rejected - the same rule
+// KeybindingsPostRenameData carries for keybindings. Re-listing to build
+// Applied is itself a fresh read that can fail on its own account, unrelated
+// to the removal that already landed; when it does, AppliedUnavailable is
+// true and Applied is the zero value - a client must not read that as "every
+// marketplace gone" and must not retry the removal as a fresh attempt either,
+// since it already applied.
+type MarketplaceUnregisteredCloneRemainsData struct {
+	EvenerErrorInfo    ErrorInfo               `json:"evenerErrorInfo"`
+	Applied            MarketplaceListResponse `json:"applied"`
+	AppliedUnavailable bool                    `json:"appliedUnavailable,omitempty"`
+}
+
+// MarketplaceRemoveAppliedData is the WireError.Data payload for
+// ErrorMarketplaceRemoveApplied: the removal APPLIED (the unregister save
+// landed and the clone cleanup that follows it completed) but the fresh read
+// that would carry the updated list to the caller failed. AppliedUnavailable
+// is true on this path - the failed read is the whole reason this outcome
+// exists - so a consumer reconciling the removal must not read the missing
+// list as "every marketplace gone", and must not retry: the removal already
+// applied, so a retry finds ErrMarketplaceNotFound. Applied is deliberately
+// absent (unlike MarketplaceUnregisteredCloneRemainsData, whose read can
+// succeed): no snapshot was read, and the wire carries no substitute for one.
+// The consumer binding is deliberately deferred to the marketplace
+// reconciliation successors (#1954 SDK, #1960 web).
+type MarketplaceRemoveAppliedData struct {
+	EvenerErrorInfo    ErrorInfo `json:"evenerErrorInfo"`
+	AppliedUnavailable bool      `json:"appliedUnavailable,omitempty"`
 }
 
 // MarketplaceAddParams is the params for evener/marketplace/add. Name is
@@ -3777,6 +4010,199 @@ type HostRequestParams struct {
 // not landed here. Read this marker as "an opaque JSON object the proxy passes
 // through", never as an empty result.
 type HostForwardedResult struct{}
+
+// HostPushCredentialsParams is the evener/host/pushCredentials payload
+// (component 07c): the component-03 source ID of one configured remote host to
+// copy the controller's local provider-instance keys to. The push reads the
+// controller's local store and writes only the host's; the unit of the push is
+// the local credentials-store entry, whose key is the instance name.
+type HostPushCredentialsParams struct {
+	Host string `json:"host"`
+}
+
+// HostPushCredentialsResponse is the per-instance report of one push: exactly
+// one HostCredentialPushResult for every entry the local credentials store
+// listed, in the store's sorted name order, plus the host the push targeted. An
+// entry whose value was cleared before it could be read is still reported (a
+// skip), so the row count always matches the store's entry count — a report
+// that silently omitted an entry would read as "nothing was there to push".
+type HostPushCredentialsResponse struct {
+	Host    string                     `json:"host"`
+	Results []HostCredentialPushResult `json:"results"`
+}
+
+// HostCredentialPushResult is one local entry's outcome. Action is one of the
+// HostCredentialPush* values; Reason explains a skip or names the failure and
+// is empty for a write that landed.
+type HostCredentialPushResult struct {
+	Instance string `json:"instance"`
+	// Action is "added" | "updated" | "skipped" | "failed". "added" and
+	// "updated" are the host's own conditional-set actions; "skipped" is the
+	// host's classification (a source a pushed key must not shadow, or a scheme
+	// that reads no key), or a controller-side skip whose Reason names why (no
+	// matching instance on the host, or a local value that is not an API key);
+	// "failed" is a per-instance failure (chiefly a refused or stale-revision
+	// conditional set) that does not abort the remaining entries.
+	Action string `json:"action"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// The Action values of HostCredentialPushResult.
+const (
+	HostCredentialPushAdded   = "added"
+	HostCredentialPushUpdated = "updated"
+	HostCredentialPushSkipped = "skipped"
+	HostCredentialPushFailed  = "failed"
+)
+
+// HostAttachParams is the evener/host/attach payload (component 06's Connect
+// action): the component-03 source ID of one configured remote host to attach.
+//
+// Host is the host's configured name (component 06 §"Go changes" item 5:
+// "Params: HostAttachParams{Host string} — a component-03 source ID"). The
+// handler resolves it through the controller's host registry, so an unknown
+// name is InvalidParams, and calls the Ensure-backed attach seam. Attaching an
+// already-attached host is idempotent and returns its current state.
+type HostAttachParams struct {
+	Host string `json:"host"`
+}
+
+// HostAttachResponse is evener/host/attach's result: the post-attach state of
+// one remote host. Attached is true once a live channel exists (always true on
+// a successful response). Host is the attached host's configured identity;
+// ServerName/ServerVersion are the attach handshake's ServerInfo, so the
+// controller can render the row as online without a second probe. The remaining
+// fields are the host's post-attach facts (preflight-owned): they are omitted
+// when the host's facts seam is not wired.
+//
+// ServerVersion is the handshake's ServerInfo.Version — the hub's protocol
+// server version constant ("0.1.0"), NOT the host's build identity. The host's
+// running build is HubVersion, which the preflight facts carry.
+type HostAttachResponse struct {
+	Attached        bool        `json:"attached"`
+	Host            string      `json:"host,omitempty"`
+	ServerName      string      `json:"serverName,omitempty"`
+	ServerVersion   string      `json:"serverVersion,omitempty"`
+	ProtocolVersion string      `json:"protocolVersion,omitempty"`
+	HubVersion      string      `json:"hubVersion,omitempty"`
+	OS              string      `json:"os,omitempty"`
+	Arch            string      `json:"arch,omitempty"`
+	Features        *FeatureSet `json:"features,omitempty"`
+}
+
+// HostEntry is one host's effective configuration as a mutation carries it
+// (component 08 slice 2): the six mutable HostConfig fields under slice 1's
+// wire spellings — Address is the schema's `ssh`, EvenerPath the schema's
+// `evener_path`, ConfigPath the schema's `config_path` — plus KeyPath, the one
+// field slice 1 added that hub.toml's schema has no spelling for (the dial needs
+// a key path, and hostreg's Host says a file-declared host never sets one).
+//
+// Name is carried by the ADD entry, which has no other place to put the new
+// host's name. The update entry omits it: a rename is not a thing this wire
+// offers, and the update's target is HostUpdateParams.Name. Both paths accept
+// the same field set, so the dialog's inputs and a refusal's field name are the
+// same strings on both sides.
+type HostEntry struct {
+	Name       string   `json:"name,omitempty"`
+	Address    string   `json:"address"`
+	User       string   `json:"user,omitempty"`
+	KeyPath    string   `json:"keyPath,omitempty"`
+	EvenerPath string   `json:"evenerPath,omitempty"`
+	ConfigPath string   `json:"configPath,omitempty"`
+	Addr       string   `json:"addr,omitempty"`
+	Roots      []string `json:"roots,omitempty"`
+}
+
+// HostAddParams is the evener/host/add payload (component 08 slice 1, reshaped
+// by slice 2): one sidecar host entry. The nested entry is the design record's
+// own shape, so the guard fields the pipeline slice adds land on a wire this
+// slice already matches instead of reshaping it a second time. The handler
+// validates exactly like hub.toml loading and refuses a name hub.toml or the
+// live set already holds.
+type HostAddParams struct {
+	Entry HostEntry `json:"entry"`
+}
+
+// HostUpdateParams is the evener/host/update payload (component 08 slice 2): the
+// name of the live sidecar entry to edit, and the entry that replaces it. Name
+// is the immutable target — it identifies which host to edit, and nothing in the
+// request can rename one. hub.toml-declared names are refused (edit the file);
+// unknown names are InvalidParams.
+type HostUpdateParams struct {
+	Name  string    `json:"name"`
+	Entry HostEntry `json:"entry"`
+}
+
+// HostUpdateResponse is evener/host/update's result: the updated row, which the
+// dialog's caller re-reads like every other mutation's result. An edit never
+// dials, so the row's live state is whatever the teardown left it.
+type HostUpdateResponse struct {
+	Host HostRow `json:"host"`
+}
+
+// HostRow is one host as evener/host/list and evener/host/status render it
+// (component 08 slice 2): the effective entry plus live state. A dialog prefills
+// from this row, and list/status remain the one source of truth for what a host
+// currently is. Origin names the entry's source: "hub.toml" for file-declared
+// entries, "sidecar" for UI-added ones. Attached reports a live channel right
+// now; offline rows carry the last-known facts below when any were recorded.
+// Optional entry fields and facts stay absent — never null — when unknown.
+type HostRow struct {
+	Name          string   `json:"name"`
+	Address       string   `json:"address,omitempty"`
+	User          string   `json:"user,omitempty"`
+	KeyPath       string   `json:"keyPath,omitempty"`
+	EvenerPath    string   `json:"evenerPath,omitempty"`
+	ConfigPath    string   `json:"configPath,omitempty"`
+	Addr          string   `json:"addr,omitempty"`
+	Roots         []string `json:"roots,omitempty"`
+	Origin        string   `json:"origin"`
+	Attached      bool     `json:"attached"`
+	ServerName    string   `json:"serverName,omitempty"`
+	ServerVersion string   `json:"serverVersion,omitempty"`
+	HubVersion    string   `json:"hubVersion,omitempty"`
+	OS            string   `json:"os,omitempty"`
+	Arch          string   `json:"arch,omitempty"`
+	LastAttachErr string   `json:"lastAttachError,omitempty"`
+	MidAttach     bool     `json:"midAttach"`
+	Removed       bool     `json:"removed"`
+}
+
+// HostListResponse is evener/host/list's result (component 08 slice 1): every
+// known host in name-sorted order — the registry's own order; the origin field
+// distinguishes hub.toml entries from sidecar ones. It never dials: attached
+// rows read the live channel, offline rows render last-known state.
+type HostListResponse struct {
+	Hosts []HostRow `json:"hosts"`
+}
+
+// HostStatusParams is the evener/host/status payload (component 08 slice 1):
+// the component-03 source ID of one known host. Unknown names are
+// InvalidParams. Never dials.
+type HostStatusParams struct {
+	Name string `json:"name"`
+}
+
+// HostStatusResponse is evener/host/status's result (component 08 slice 1):
+// the host's list row.
+type HostStatusResponse struct {
+	Host HostRow `json:"host"`
+}
+
+// HostRemoveParams is the evener/host/remove payload (component 08 slice 1):
+// the component-03 source ID of one sidecar host. hub.toml-declared names are
+// refused (edit the file); unknown names are InvalidParams. Removing an
+// attached host stops its supervisor and drops its channel.
+type HostRemoveParams struct {
+	Name string `json:"name"`
+}
+
+// HostRemoveResponse is evener/host/remove's result (component 08 slice 1):
+// the removed row, rendered detached. Removed stays removed: the name is gone
+// until re-added.
+type HostRemoveResponse struct {
+	Host HostRow `json:"host"`
+}
 
 // HostNotificationParams is the evener/host/notification payload (component
 // 07a): one host-owned config notification re-emitted to the controller's

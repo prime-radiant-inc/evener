@@ -47,9 +47,8 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
   run=$(mktemp -d -t evener-e2e-attn-XXXXXX)
   go build -o "$run/evener"     ./cmd/evener
   go build -o "$run/evener" ./cmd/evener
-  export HOME="$run/home"
-  mkdir -p "$HOME"
-  unset XDG_STATE_HOME
+  . scripts/lib/e2e-lib.sh
+  e2e_isolate_home "$run"
   "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
   HUBPID=$!
   for i in $(seq 1 50); do
@@ -59,7 +58,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
     sleep 0.1
   done
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.evener/auth-token")
+  TOKEN=$(cat "$HOME/.local/state/evener/auth-token")
   ```
 - `ANTHROPIC_API_KEY` in the environment; the cheap model is
   `anthropic/claude-haiku-4-5-20251001` (this repo's standard cheap-model convention).

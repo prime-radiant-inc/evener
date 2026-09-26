@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/remoteinstall"
 )
 
 // TestRound11EmbeddedInstallerMatchesTheReviewedScript pins the round-eleven
@@ -24,19 +25,19 @@ import (
 // claim — a future edit to install.sh fails here until the embedded copy is
 // re-copied from the reviewed file, so the copy cannot drift silently.
 func TestRound11EmbeddedInstallerMatchesTheReviewedScript(t *testing.T) {
-	if len(installerScript) == 0 {
+	if len(remoteinstall.Script) == 0 {
 		t.Fatal("the embedded installer is empty")
 	}
-	if !bytes.HasPrefix(installerScript, []byte("#!/bin/sh\n")) {
-		t.Fatalf("the embedded installer does not start with a /bin/sh shebang: %q", installerScript)
+	if !bytes.HasPrefix(remoteinstall.Script, []byte("#!/bin/sh\n")) {
+		t.Fatalf("the embedded installer does not start with a /bin/sh shebang: %q", remoteinstall.Script)
 	}
 	reviewed, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "install.sh"))
 	if err != nil {
 		t.Fatalf("read the repository's install.sh: %v", err)
 	}
-	if !bytes.Equal(installerScript, reviewed) {
-		t.Fatalf("the embedded installer (%d bytes) differs from the repository's install.sh (%d bytes); the fix is to re-copy the reviewed script into cmd/evener-hub/internal/sshconn/install.sh",
-			len(installerScript), len(reviewed))
+	if !bytes.Equal(remoteinstall.Script, reviewed) {
+		t.Fatalf("the embedded installer (%d bytes) differs from the repository's install.sh (%d bytes); the fix is to re-copy the reviewed script into internal/remoteinstall/install.sh",
+			len(remoteinstall.Script), len(reviewed))
 	}
 }
 
@@ -86,8 +87,8 @@ func TestRound11InstallerFallbackStreamsTheEmbeddedScript(t *testing.T) {
 	if !installerRan {
 		t.Fatal("the installer fallback never ran")
 	}
-	if !bytes.Equal(installerStdin, installerScript) {
-		t.Fatalf("the host received %d bytes on stdin, want the embedded installer's %d bytes", len(installerStdin), len(installerScript))
+	if !bytes.Equal(installerStdin, remoteinstall.Script) {
+		t.Fatalf("the host received %d bytes on stdin, want the embedded installer's %d bytes", len(installerStdin), len(remoteinstall.Script))
 	}
 	for _, forbidden := range []string{"http://", "https://", "curl", "raw.githubusercontent.com"} {
 		if strings.Contains(installerJoined, forbidden) {

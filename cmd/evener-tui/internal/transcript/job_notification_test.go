@@ -97,6 +97,48 @@ func TestParseJobNotificationHeadlines(t *testing.T) {
 	})
 }
 
+func TestParseJobNotificationCommandOutcome(t *testing.T) {
+	// A command-outcome frame is an error on its status alone — the
+	// exit_code attribute is optional on the wire — and headlines the
+	// display words, never the 23-char machine status.
+	text := `<job-notification job_id="job_C1" job_type="shell" status="command_exited_nonzero"></job-notification>` +
+		`<job-notification job_id="job_C2" job_type="shell" status="command_killed"></job-notification>`
+	ties := ParseJobNotificationHeadlines(text)
+	if len(ties) != 2 {
+		t.Fatalf("len(ties) = %d, want 2: %+v", len(ties), ties)
+	}
+	if !ties[0].IsError {
+		t.Fatal("command_exited_nonzero IsError = false, want true without an exit_code attr")
+	}
+	if ties[0].Headline != "Command failed" {
+		t.Fatalf("Headline = %q, want Command failed", ties[0].Headline)
+	}
+	if !ties[1].IsError {
+		t.Fatal("command_killed IsError = false, want true without an exit_code attr")
+	}
+	if ties[1].Headline != "Command killed" {
+		t.Fatalf("Headline = %q, want Command killed", ties[1].Headline)
+	}
+}
+
+func TestParseJobNotificationLegacyFailedReason(t *testing.T) {
+	// A pre-split record carries status="failed" with the command's own
+	// outcome in the reason attr; the headline joins the display words so
+	// durable history reads the same as the notification card.
+	text := `<job-notification job_id="job_L1" job_type="shell" status="failed" reason="exit_nonzero"></job-notification>` +
+		`<job-notification job_id="job_L2" job_type="shell" status="failed" reason="killed_by_signal: SIGTERM"></job-notification>`
+	ties := ParseJobNotificationHeadlines(text)
+	if len(ties) != 2 {
+		t.Fatalf("len(ties) = %d, want 2: %+v", len(ties), ties)
+	}
+	if ties[0].Headline != "Command failed" {
+		t.Fatalf("L1 Headline = %q, want Command failed", ties[0].Headline)
+	}
+	if ties[1].Headline != "Command killed" {
+		t.Fatalf("L2 Headline = %q, want Command killed", ties[1].Headline)
+	}
+}
+
 // TestParseJobNotificationHeadlineDelegatesToPlural pins the single-block
 // entry point (still used directly in a couple of call sites and tests) to
 // the same per-block parsing the multi-block entry point uses, so the two

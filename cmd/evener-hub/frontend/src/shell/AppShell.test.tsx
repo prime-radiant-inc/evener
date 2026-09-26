@@ -19,6 +19,8 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { OpenTranscriptButton } from "../panes/session/transcript/openTranscript";
+import { StubResizeObserver } from "../resizeObserverTestUtils";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { credentialsStore } from "../stores/credentials";
 import {
@@ -28,6 +30,7 @@ import {
   resetNavigationStoreForTests,
 } from "../stores/navigation/store";
 import { resetPrefsStoreForTests } from "../stores/prefs";
+import { resetSettingsHostForTests, settingsHostStore } from "../stores/settingsHost";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";
 import { DockHost } from "./DockHost";
@@ -291,35 +294,6 @@ function installNeedsYouRows(): void {
   navigationStore.setState({ mode: "v2", resources });
 }
 
-// jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
-// auto-resizing) and, separately, Node 26's own global `localStorage`
-// accessor shadows jsdom's real one without --localstorage-file - both
-// verified via a live probe, duplicated here rather than shared since this
-// project has no cross-test-file test-utils module (see stores/
-// threads.test.ts's own identical note on duplicating a helper for the same
-// reason). See DockHost.test.tsx's own comments for the full detail on
-// each.
-class StubResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 const appShellCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "AppShell.module.css"), "utf8").replace(
   /\/\*[\s\S]*?\*\//g,
   "",
@@ -410,10 +384,7 @@ async function warmRoute(
 // with a widened findBy deadline.
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
-  // @ts-expect-error MemoryStorage deliberately implements only the Storage
-  // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
-  // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   await import("../panes/welcome/Welcome");
   await import("../panes/session/Session");
   await import("../panes/settings/Settings");
@@ -439,14 +410,14 @@ beforeEach(() => {
   navigationStore.setState({ mode: "v2" });
   // afterEach restores Vitest globals; recreate deterministic storage before
   // clearing it so DockHost cannot restore the prior test's layout.
-  // @ts-expect-error MemoryStorage implements the subset used by DockHost.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   localStorage.clear();
   // The settings pane's last-visited-section memory (prefs.ts's
   // lastSettingsSection) is a module-singleton field backed by this same
   // storage: rehydrate against the cleared storage, or one test's settings
   // visit picks the next test's bare-/settings landing section.
   resetPrefsStoreForTests();
+  resetSettingsHostForTests();
 });
 
 afterEach(() => {
@@ -4344,4 +4315,33 @@ test("a second press adopts an in-flight demand whose guards went stale", async 
     resolve(wireV2(params, { sessions: [LIVE_CYCLE_B], remaining: 0, truncated: false }, '"test"'));
   });
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Alive-b"));
+});
+
+// M1 (round 6): the settings selection must be synchronized with the route at the
+// popstate itself, before React mounts the settings pane. Otherwise a Back/Forward
+// into a host-scoped settings URL mounts that pane on the previous (local)
+// selection and renders - and reads - for a host the route does not name.
+test("a popstate into a host-scoped settings URL selects the host before the pane mounts", async () => {
+  window.history.pushState({}, "", "/");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  expect(settingsHostStore.getState().host).toBe("local");
+
+  // Read the selection during the popstate dispatch: after the shell's own route
+  // listener has run, but before React can mount the settings pane.
+  let hostAtDispatch: string | null = null;
+  const probe = () => {
+    hostAtDispatch = settingsHostStore.getState().host;
+  };
+  window.addEventListener("popstate", probe);
+  try {
+    act(() => {
+      window.history.pushState({}, "", "/settings/credentials?host=beta");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+  } finally {
+    window.removeEventListener("popstate", probe);
+  }
+
+  expect(hostAtDispatch).toBe("beta");
 });

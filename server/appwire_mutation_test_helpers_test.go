@@ -7,6 +7,26 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+// wireRetrySafeCapabilities installs the retry-safe steer, queue and interrupt
+// seams the AppWire handlers actually dispatch through (handleAppTurnSteer,
+// handleAppTurnQueue, handleAppTurnInterrupt). Capabilities follow those
+// registrations; the legacy SetSteerFunc/SetQueueFunc/SetCancelFunc setters are
+// wired alongside them and read by no RPC handler, so a fixture that sets only
+// the legacy pair advertises an action the RPC would answer Unavailable.
+func wireRetrySafeCapabilities(s *Server) {
+	s.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Steer: func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+			return appwire.TurnSteerResponse{}, nil
+		},
+		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+			return appwire.TurnQueueResponse{}, nil
+		},
+		Interrupt: func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+			return appwire.TurnInterruptResponse{}, nil
+		},
+	})
+}
+
 // installProjectedMutationCallbacksForTest keeps older projector-focused tests
 // explicit about their fake mutation authority. Production AppWire handlers do
 // not consult these server projections; the callback bundle below is the test

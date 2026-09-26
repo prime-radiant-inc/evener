@@ -105,7 +105,9 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 
 	// The supervisor's own iteration must stand down. If this returned true the
 	// reconnect loop would repeat the terminal refusal forever.
-	if more := m.reconnectOnce(context.Background(), host, m.hostLock(host.Name)); more {
+	hostGate := m.hostLock(host.Name)
+	defer m.releaseHostLock(host.Name)
+	if more := m.reconnectOnce(context.Background(), host, hostGate); more {
 		t.Fatal("reconnectOnce asked for another attempt, so the supervisor would loop on the terminal refusal")
 	}
 	if builds != 0 {
@@ -272,7 +274,7 @@ func TestRound13WaitHealthyRequiresProofAUnverifiableRestartTook(t *testing.T) {
 				sleep: func(context.Context, time.Duration) error { return nil },
 			})
 
-			err := m.waitHealthy(context.Background(), host, tc.expected, tc.replaced)
+			err := m.waitHealthy(context.Background(), host, tc.expected, "", tc.replaced)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("waitHealthy = %v, wantErr %v", err, tc.wantErr)
 			}

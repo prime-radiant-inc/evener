@@ -491,10 +491,18 @@ An **instance** is a named, usable provider. Instances come from two places:
 
 Implicit instances are computed identically by every process from the same
 inputs; the hub no longer materializes `providers.toml` at startup and passes
-nothing to children beyond `EVENER_PROVIDERS_CONFIG` when a file exists. The
-hub lists implicit instances flagged *from environment*; editing one or
-making it the default writes a shadowing explicit entry; removing one is
-refused with a message naming the variable or record that makes it exist.
+nothing to children beyond `EVENER_PROVIDERS_CONFIG` when a file exists. An
+implicit instance is flagged *from environment* only when the host's
+environment is what supplies it — an API-key variable, the ADC file, or a
+keyless local default — and removing one of those is refused with a message
+naming the variable or record that makes it exist. An implicit instance whose
+credential the user added through the UI (a stored key, a signed-in Codex
+record) is the user's own: it carries no such flag, and removing it deletes
+that credential, which is what takes the instance away (amended 2026-09-16).
+Editing an implicit instance, and making one the default, write a shadowing
+explicit entry. Renaming any instance writes one under the new name; for an
+instance the environment supplies, the old row stays, because nothing in the
+rename can move a shell variable or the ADC file (amended 2026-09-16).
 
 The **default instance** is `default` from `providers.toml` when set; else
 the first instance, explicit or implicit, that has a `DefaultModel` in this
@@ -976,15 +984,21 @@ A row the config layer disabled (`disabled = true` on the exact row or a
 matching glob, §10) fails `Resolve` with `ErrModelDisabled`, which every
 listing already drops as a resolve error: `Client.Models`, `launch-check
 --models`, the `model/list` RPC, and the session startup snapshot all omit
-it, and `FindModel` skips it. Aliases stay in lockstep with their target:
-disabling a target disables aliases resolving through it, and an alias's
-own exact-row or glob flags never apply — the flag lives on the target
-row alone. Toggling an alias writes through to its target
-(`Registry.AliasTarget`), and a region-prefixed or dated-suffix spelling
-of an alias id routes the same way (§7.2's steps 3-4 land on the alias
-row); a dangling alias, a glob id, and a cross-provider target are
-refusals. The sheet inventory lists no alias rows, so every toggle maps
-one-to-one onto the row it writes.
+it, and `FindModel` skips it. Alias rows follow their target, with one
+distinction. A same-provider alias is lockstep: the flag lives on the
+target row alone, so disabling a target disables every alias resolving
+through it and the alias's own exact-row or glob flags never apply. A
+cross-provider alias carries its own row on the instance that names it,
+and the verdict it inherits from the target is only the default: a flag on
+the alias's own row (exact row or glob) overrides it both ways, so each
+connection disables or re-enables the model without touching the record
+the alias points at. `Registry.AliasTarget` names the row a toggle writes —
+the target for a same-provider alias, the alias row itself across
+providers — and a region-prefixed or dated-suffix spelling of an alias id
+routes the same way (§7.2's steps 3-4 land on the alias row); a dangling
+alias and a glob id are refusals. The sheet inventory lists alias rows and
+every listed row is toggleable, so each switch maps onto the row it writes —
+a dangling alias stays out of it, since it names no row a toggle could write.
 `default_model`/`cheap_model` naming a disabled model get no
 special validation; they fail at use with the same error. There is no
 grandfathering: a session whose model is disabled afterwards errors on next
@@ -1748,6 +1762,9 @@ so a glob kill plus exact exceptions composes; later layers beat earlier
 ones, so user config always wins. The hub's `evener/instance/setModelDisabled`
 writes the explicit bool on the exact row — authoring the row when the model
 exists only as a curated entry — so the choice survives catalog refreshes.
+An alias row takes the flag per §7.2: a same-provider alias's toggle lands
+on its target, a cross-provider alias's on its own row on this instance,
+which is what lets each connection carry its own choice.
 
 Rules, enforced at load with errors that name the instance and key:
 
@@ -1773,17 +1790,19 @@ Rules, enforced at load with errors that name the instance and key:
   `registry` restates rather than importing from `llm` — `llm` imports
   `registry`, and the clamp passes an unrankable level through untouched, so
   an unchecked typo would reach the provider
-- `$ENV` expansion in `api_key`, `credential_headers`, and `vars` uses
-  today's `$NAME` / `${NAME}` / `$$` rules and happens at resolve time, so one
-  instance's missing variable never blocks another. An unset variable in
-  `api_key` or `credential_headers` yields an empty `Credential` with
-  `Warnings: no credential (<NAME> unset)` and the first-request error
-  (§5.2, so `inspect` keeps working); an unset variable in `vars` or a
-  template yields `Warnings: unresolved variable <NAME>` and the
-  first-request error (§4.2). In `headers` an unset variable **drops the header**
-  (that is how the optional `OpenAI-Organization`/`OpenAI-Project` headers
-  work; today it is an error, `apikey.go:261-276`); an empty-string value
-  removes an inherited header of that name.
+- `$ENV` expansion in `api_key`, `credential_headers`, `headers`, and
+  `vars` uses the $-expression grammar in §10.1 and happens at resolve
+  time, so one instance's missing expression never blocks another. A
+  missing variable in `api_key` or `credential_headers` yields an empty
+  `Credential` with `Warnings: no credential (<NAME> unset)` and the
+  first-request error (§5.2, so `inspect` keeps working); a missing
+  variable in `vars` or a template yields `Warnings: unresolved variable
+  <NAME>` and the first-request error (§4.2). In `headers` an unresolved
+  expression **drops the header** (that is how the optional
+  `OpenAI-Organization`/`OpenAI-Project` headers work); in
+  `credential_headers` it drops the header with a warning naming it, so an
+  auth failure has a local explanation. An empty-string value removes an
+  inherited header of that name.
 - **credential inheritance stops at the endpoint**: an instance that sets
   a literal `base_url` different from its base's `base_url` (compared after
   substituting the curated defaults, so copying the default URL verbatim
@@ -1826,11 +1845,136 @@ instance's key into the child (`env.go:56-60`, deleted with the roster).
 The remedy is by hand: edit the file or move it aside; the hub never
 rewrites or deletes it.
 
+### 10.1 The $-expression grammar
+
+One parser owns the grammar — `internal/valueexpr` — and every config
+surface that expands `$` expressions uses it: `api_key`,
+`credential_headers`, `headers`, and `vars` here, and every field MCP
+server config expands (command, args, env values, url, headers). That is
+why providers.toml and MCP config accept the same forms.
+
+The forms:
+
+- `$NAME` and `${NAME}` — an environment variable reference. A variable
+  that is unset or empty-but-set counts as missing: an empty credential
+  never resolves as a present one.
+- `${NAME:-default}` — a reference with a default, POSIX `:-` semantics:
+  the default fills a missing (unset or empty) variable, and is literal
+  text, never re-expanded. A default that fills in nothing but an auth
+  scheme word carries no credential: `${KEY:-Bearer}` with KEY unset
+  resolves as no credential with a warning, because a bare scheme word
+  is never credential material.
+- `$(command)` — a command expression. The interior is opaque to the
+  parser — the shell owns its syntax at run time — and the command's
+  whitespace-trimmed stdout is the value, verbatim: extracting the exact
+  value is the command's job, which is why a gateway's "run this to get a
+  token" recipe pipes through what it needs. The expression ends at the
+  first `)` that brings the paren depth back to zero; quotes are not
+  parsed, so a literal `)` inside a quoted argument ends the expression
+  early — restructure the command or wrap it in a helper script.
+- `$$` — a literal `$`.
+
+Evaluation. References and commands expand when the value's other
+expressions expand: at resolve time, per request on the agent path. A
+command runs through the host shell with the process environment, no TTY,
+a closed stdin (a prompting command reads EOF instead of hanging), and a
+30-second deadline that kills the whole process group; a bounded drain
+grace (at most five seconds) then closes captured pipes a straggler
+still holds, so the caller's worst-case wait is thirty-five seconds
+(amended 2026-09-23: the drain grace is part of the documented bound).
+Platforms that cannot put a command's whole tree in one process group —
+the builds outside linux and darwin — refuse a `$(command)` at
+evaluation rather than run it uncontained (amended 2026-09-23): a
+deadline kill that reaches only the direct child would leave the run's
+bounds a fiction.
+Results are cached
+per command text — instances sharing a command share one mint — until a
+JWT `exp` claim's refresh margin (60 seconds) or, absent a claim, a
+five-minute TTL; concurrent callers single-flight onto one run.
+The hub resolves command expressions only on the agent path: the launch
+preflight, the instance listings, and the load-time fingerprints all count
+a command-bearing credential as present — or, for a fingerprint, as its
+authored text — and never execute it, and the hub's live-model prefetch
+is refused outright for a command-credentialed instance, whose listing
+the hub cannot fetch without spending the mint — the last-known rows
+stay. (Amended 2026-09-23: the pane's credential-test probe is the one
+deliberate exception — the user asks the hub to exercise the credential,
+so the probe resolves the command once, on demand, and carries the mint
+on its one model-list request; every other hub-side resolution is
+automatic and refused.)
+The child alone runs credential commands, so a hub-side execution would
+mint a second token for stateful or one-time commands and prompt the
+user's password manager with no session launched, a transient failure
+there would block a launch the child's own retry would survive, and a
+fingerprint keyed on the minted value would rotate with the cache TTL and
+prune the cached live rows on every rollover (amended 2026-09-22: the
+contract now covers the listings, the live-model prefetch, and the
+fingerprints, not only the preflight).
+
+Failure. A failed command behaves like an unset variable: the value
+resolves to nothing and the warning carries the command's exit status and
+first stderr line, so an auth failure has a local explanation; the next
+resolution retries, nothing is negatively cached.
+
+Security. A command's output is a credential: it is cached in memory
+exactly like a resolved key, never logged, never serialized. A failure
+carries the exit status and the command's own stderr — never its stdout,
+and never the command text. Commands run with the evener process's
+environment and privileges, not under a session sandbox: the config file
+is trusted input, the same trust as an `api_key` line, and that includes
+a sandboxed session's token command running unsandboxed. Trusted input is
+the whole of the rule (amended 2026-09-22): in providers.toml only the
+credential fields — `api_key` and `credential_headers` — accept a
+`$(command)`, because only their values are treated as secrets; display
+`headers` and transport `vars` refuse one at load, since their values
+reach URLs and logs as ordinary text. In MCP config only the layers the
+user authors directly — the global `mcp.json` and `--mcp-config` files —
+accept one: the project's `.evener/mcp.json` is model-writable and plugin
+configs are third-party content, so both refuse a command at load rather
+than run it on the host.
+
+Authoring. The hub's authoring surfaces accept `$VARIABLE` references and
+`$(command)` expressions alike, plus a single auth-scheme word ahead of
+the credential material, separated from it by whitespace, and an
+auth-scheme word as a reference's default; a command is authored config, not a secret. The placement rules
+read order through the scanner's pieces, so a literal word behind
+credential material and a second literal word stay refused. The
+stored-key form is the one surface that refuses command expressions:
+the store never expands them, so one stored there would be sent as the
+literal text — the refusal points at the credential-header field
+(amended 2026-09-22).
+
+Compatibility (amended 2026-09-21 with the shared parser; 2026-09-22 with
+the row-merged credential slot):
+
+- `$` followed by `(` used to be silently literal in every value; it is
+  a command expression now. Escape with `$$`: `$$(echo)` writes a literal
+  `$(echo)`.
+- `${NAME:-default}` used to be a load error in providers.toml; it is a
+  reference form now.
+- MCP config: a bare `$NAME` used to pass through as literal text and now
+  expands; an unterminated `${` used to pass through as literal text and
+  is a load error now; a `:-` default filled only an unset variable and
+  now fills an empty one too (POSIX `:-`); and the contents of a
+  `${...}` used to be looked up verbatim, so a brace text outside
+  `[A-Za-z_][A-Za-z0-9_]*` — `${MY-VAR}`, `${MY.VAR}` — used to expand
+  (or fill its default) and is a load error now: the shared parser
+  validates reference names (added 2026-09-22).
+- Both files gain the `$$` escape.
+- The credential slot used to read `credential_headers.Authorization`
+  unconditionally; it now comes from the header the row-merged transport
+  sends (`Authorization` for the bearer schemes, the `auth_header` entry
+  for header auth, case-insensitive), so a row whose transport overrides
+  `auth_header` moves the credential slot with it.
+
 Credential resolution order, for every scheme that takes a key: the
 instance's own `api_key` (a literal or `$VAR`, today's
-`load_client.go:74-77` rule that the file wins); else a
-`credential_headers.Authorization` (which also suppresses any bearer); else
-the credentials-store file entry under the instance name; else the
+`load_client.go:74-77` rule that the file wins); else the credential
+header the launch's merged transport names —
+`credential_headers.Authorization` for the bearer schemes, the
+`auth_header` entry for header auth, matched case-insensitively (which
+also suppresses any bearer); else the credentials-store file entry under
+the instance name; else the
 environment: the instance's resolved `APIKeyEnv` (which the endpoint stop
 above empties), plus `<NAME>_API_KEY` under the §6.2 uppercase rule **only
 for instance names that are not registry ids** (so `[providers.anthropic]
@@ -1890,14 +2034,18 @@ The hub's instance CRUD (`cmd/evener-hub/app_instances.go`) calls the same
 functions, with the implicit-instance semantics of §5.1 (edit and
 set-default write a shadowing entry that carries only the fields the user
 changed, never a literal `base_url` the form merely displayed, so §10's
-credential-inheritance stop does not fire on an untouched URL; remove is
-refused). The appwire types
+credential-inheritance stop does not fire on an untouched URL; rename does the
+same under the new name; remove is refused only where the environment supplies
+the instance, since deleting the credential is what takes a user-added one
+away — amended 2026-09-16). The appwire types
 change shape (`appwire/types.go:2488-2523`): `InstanceEntry` drops `Type` and
 `APIStyle` and gains `Base`, `Protocol`, `Surface`, `Vars`, `Auth`,
 `Implicit`, and `Models` — the instance's known models (exact catalog rows
-plus cached live ids) with their effective disabled state
-(`InstanceModels`), which the sheet renders as one toggle per row driving
-`evener/instance/setModelDisabled`. The hub prefetches every instance's
+plus cached live ids, alias rows included) with their effective disabled
+state (`InstanceModels`), which the sheet renders as one toggle per row
+driving `evener/instance/setModelDisabled`; every listed row is toggleable,
+with a cross-provider alias toggling on that instance alone (§7.2). The
+hub prefetches every instance's
 live listing at startup and every few minutes after, so the sheet reads
 cached inventory; a Refresh button drives `evener/instance/refreshModels`
 for one instance on demand. Toggling a live-only id authors an

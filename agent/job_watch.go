@@ -105,8 +105,10 @@ const (
 )
 
 // delegateQuietWindow is how long a running delegate may emit no
-// parent-observable activity before the quiet-job watchdog fires one owner
-// notification. delegateQuietCheckInterval is how often the watchdog goroutine
+// parent-observable activity before the quiet-job watchdog fires an owner
+// notification, and the cadence on which that notification repeats while the
+// delegate stays silent-and-running (one wake per further window, never a
+// burst). delegateQuietCheckInterval is how often the watchdog goroutine
 // re-evaluates quiet duration. Both are package vars ONLY so tests can scale
 // watchdog timing down; they are not config knobs. The production window is the
 // 10 minutes the model-facing message names.
@@ -407,7 +409,10 @@ type watchResult struct {
 	// unmatched one. Status carries the target's terminal status.
 	TerminalCatchup bool
 	// Status carries the watched job's terminal status for a terminal catch-up
-	// (spec §7.1). Empty for live installs.
+	// (spec §7.1). Empty for live installs. Reason carries the producer's
+	// terminal reason beside it, so display surfaces can join the card's
+	// command-outcome words for legacy pre-split records.
+	Reason string
 	Status string
 }
 
@@ -757,7 +762,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 		// be a no-op success rather than target_terminal. A genuinely-missing
 		// target still returns its original target_not_found.
 		if a.Clear {
-			if _, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target); statusErr == nil && terminal {
+			if _, _, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target); statusErr == nil && terminal {
 				return jm.clearWatch(key)
 			}
 			return watchResult{}, err
@@ -768,7 +773,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 		// keep their original error. terminalWatchTargetStatus resolves the terminal
 		// status directly rather than parsing the error string.
 		if watchArgsIsOutputMatchOnly(a) {
-			status, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target)
+			status, reason, terminal, statusErr := jm.terminalWatchTargetStatus(a.Target)
 			if statusErr != nil {
 				return watchResult{}, statusErr
 			}
@@ -778,7 +783,7 @@ func (jm *jobManager) configureWatchWithHooks(a watchArgs, hooks watchConfigureH
 						return watchResult{}, sendErr
 					}
 				}
-				return jm.runTerminalCatchup(a, key, status)
+				return jm.runTerminalCatchup(a, key, status, reason)
 			}
 		}
 		return watchResult{}, err
@@ -1153,41 +1158,41 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 // before ownership, so a terminal nested-owned job surfaces as target_terminal
 // here. Mirroring that ownership rejection keeps catch-up from scanning or firing
 // on a job the caller is forbidden to watch.
-func (jm *jobManager) terminalWatchTargetStatus(target string) (status jobstore.Status, terminal bool, err error) {
+func (jm *jobManager) terminalWatchTargetStatus(target string) (status jobstore.Status, reason string, terminal bool, err error) {
 	if isWatchSessionTarget(target) {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	jm.mu.Lock()
 	run := jm.running[target]
 	if run != nil && run.terminal != nil {
 		s := run.terminal.status
 		jm.mu.Unlock()
-		return s, true, nil
+		return s, run.terminal.reason, true, nil
 	}
 	if run != nil {
 		// Running or finalizing: not catch-up-eligible (see doc comment).
 		jm.mu.Unlock()
-		return "", false, nil
+		return "", "", false, nil
 	}
 	jm.mu.Unlock()
 
 	recs, err := jm.store.Load()
 	if err != nil {
-		return "", false, err
+		return "", "", false, err
 	}
 	rec := recs[target]
 	if rec == nil {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if rec.OwnerSessionID != "" && rec.OwnerSessionID != jm.sessionID {
 		// Owned by a nested session: not watchable from here, so not catch-up-
 		// eligible. Fall through to the original validateWatchTarget error.
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if rec.Status.IsTerminal() {
-		return rec.Status, true, nil
+		return rec.Status, rec.Reason, true, nil
 	}
-	return "", false, nil
+	return "", "", false, nil
 }
 
 func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error {
@@ -2484,6 +2489,38 @@ func (jm *jobManager) watchListToolResultForReceiver(receiverSessionID, receiver
 	return formatWatchListInspectResult(pending, history)
 }
 
+// watchListToolResultForReceiverShapes returns the receiver-keyed list rows for
+// both receiver-key shapes: the delegate-keyed
+// (receiverSessionID, receiverDelegateID) pair, and — when a delegate id is
+// present — the session-keyed (receiverSessionID, "") pair that
+// configureDescendantReceiverWatch installs. A config's receiverDelegateID is
+// either empty or the delegate, never both, so the two row sets are disjoint.
+// It matches both shapes in ONE snapshot pass: the history ring is walked
+// latest-first, and formatting each shape separately before concatenating would
+// interleave an older entry ahead of a newer one.
+func (jm *jobManager) watchListToolResultForReceiverShapes(receiverSessionID, receiverDelegateID string) jobWatchListToolResult {
+	receiverSessionID = strings.TrimSpace(receiverSessionID)
+	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
+	if receiverSessionID == "" {
+		return jobWatchListToolResult{}
+	}
+	matches := func(sessionID, delegateID string) bool {
+		if sessionID != receiverSessionID {
+			return false
+		}
+		return delegateID == receiverDelegateID || (receiverDelegateID != "" && delegateID == "")
+	}
+	pending, history := jm.watchInspectSnapshots(
+		func(cfg *watchConfig) bool {
+			return cfg != nil && matches(cfg.receiverSessionID, cfg.receiverDelegateID)
+		},
+		func(h watchHistoryEntry) bool {
+			return matches(h.receiverSessionID, h.receiverDelegateID)
+		},
+	)
+	return formatWatchListInspectResult(pending, history)
+}
+
 // watchInspectMatch is one inspected watch, copied under jm.mu, plus which of
 // the three sources it came from so the caller can format it after the lock is
 // released.
@@ -2560,6 +2597,19 @@ func (jm *jobManager) inspectReceiverWatchByID(watchID, receiverSessionID, recei
 		return match.result(), true
 	}
 	return jobWatchInspectToolResult{}, false
+}
+
+// inspectReceiverWatchByIDShapes is inspectReceiverWatchByID over both
+// receiver-key shapes, for the same reason
+// watchListToolResultForReceiverShapes queries both.
+func (jm *jobManager) inspectReceiverWatchByIDShapes(watchID, receiverSessionID, receiverDelegateID string) (jobWatchInspectToolResult, bool) {
+	if inspect, ok := jm.inspectReceiverWatchByID(watchID, receiverSessionID, receiverDelegateID); ok {
+		return inspect, true
+	}
+	if strings.TrimSpace(receiverDelegateID) == "" {
+		return jobWatchInspectToolResult{}, false
+	}
+	return jm.inspectReceiverWatchByID(watchID, receiverSessionID, "")
 }
 
 func inspectResultFromWatchConfig(cfg *watchConfig) jobWatchInspectToolResult {
@@ -3070,12 +3120,16 @@ func watchListEntryLess(entries []watchListEntry) func(i, j int) bool {
 func (jm *jobManager) liveWatchSummariesForReceiver(receiverSessionID, receiverDelegateID string) []watchListEntry {
 	receiverSessionID = strings.TrimSpace(receiverSessionID)
 	receiverDelegateID = strings.TrimSpace(receiverDelegateID)
-	if receiverSessionID == "" || receiverDelegateID == "" {
+	if receiverSessionID == "" {
 		return nil
 	}
-	return formatWatchSummaries(jm.watchConfigSnapshotsWhere(func(cfg *watchConfig) bool {
+	entries := formatWatchSummaries(jm.watchConfigSnapshotsWhere(func(cfg *watchConfig) bool {
 		return watchConfigMatchesReceiver(cfg, receiverSessionID, receiverDelegateID)
 	}))
+	if len(entries) == 0 {
+		return nil
+	}
+	return entries
 }
 
 func watchConfigMatchesReceiver(cfg *watchConfig, receiverSessionID, receiverDelegateID string) bool {
@@ -3636,7 +3690,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 // terminalFlush via rememberDetachedPendingLocked — exactly how
 // expireJobWatchesLocked parks a terminal output_match send — so drains, restore,
 // and pendingWatchSendDeliveries can see and settle it.
-func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobstore.Status) (watchResult, error) {
+func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobstore.Status, terminalReason string) (watchResult, error) {
 	// Build the one-shot detached config up front: it validates and compiles
 	// output_match into its matcher (wrapping a bad pattern as
 	// "invalid_request: output_match:"), and the send branch reuses it to carry
@@ -3647,7 +3701,7 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 		return watchResult{}, err
 	}
 
-	result := watchResult{Source: cfg.sourcePublic, Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status)}
+	result := watchResult{Source: cfg.sourcePublic, Target: key.Target, Watching: false, TerminalCatchup: true, Status: string(status), Reason: terminalReason}
 
 	// maxJobOutputRetentionBytes caps retention, so it doubles as the scan budget.
 	data, _, _, err := jm.readOutput(key.Target, maxJobOutputRetentionBytes)
@@ -3659,10 +3713,10 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 		return result, nil
 	}
 	result.Fired = true
-	reason := "output_match: " + last
+	matchReason := "output_match: " + last
 
 	if a.Send == nil {
-		jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, key.Target, reason, jobProvenanceForWatch(jm, key.Target))})
+		jm.enqueueWatchNotifications([]jobNotification{jm.watchNotificationFromWatch(cfg, key.Target, matchReason, jobProvenanceForWatch(jm, key.Target))})
 		return result, nil
 	}
 	result = watchResultFromConfig(cfg, false)
@@ -3670,10 +3724,11 @@ func (jm *jobManager) runTerminalCatchup(a watchArgs, key watchKey, status jobst
 	result.Fired = true
 	result.TerminalCatchup = true
 	result.Status = string(status)
+	result.Reason = terminalReason
 
 	root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, key.Target)}
 	jm.mu.Lock()
-	delivery := jm.watchSendSnapshot(cfg, key.Target, reason, root)
+	delivery := jm.watchSendSnapshot(cfg, key.Target, matchReason, root)
 	delivery.allowAfterTerminalExpiry = true
 	jm.rememberDetachedPendingLocked(cfg)
 	jm.mu.Unlock()
@@ -5689,9 +5744,9 @@ func (s *Session) directStableDelegateForChildSession(childSessionID string) (de
 	if s == nil || s.delegateController == nil || childSessionID == "" {
 		return delegateSnapshot{}, false
 	}
-	for _, visible := range stableDelegateRowsForSession(s, false) {
-		if visible.snapshot.descriptor.ChildSessionID == childSessionID {
-			return visible.snapshot, true
+	for _, row := range s.delegateController.snapshotsForChildSession(childSessionID) {
+		if delegateRowVisibleTo(s, row.parentID, row.descriptor.OwnerSessionID) {
+			return row, true
 		}
 	}
 	return delegateSnapshot{}, false
@@ -6195,6 +6250,7 @@ func writeJobNotificationWatchEvent(b *strings.Builder, data events.JobFinishedD
 	writeWatchFrameOptionalField(b, "job_type", data.JobType)
 	writeWatchFrameOptionalField(b, "status", data.Status)
 	writeWatchFrameOptionalField(b, "reason", data.Reason)
+	writeWatchFrameOptionalField(b, "intent", data.Intent)
 	if data.ExitCode != nil {
 		writeWatchFrameOptionalField(b, "exit_code", strconv.Itoa(*data.ExitCode))
 	}

@@ -37,6 +37,12 @@ func fetchInstanceLive(ctx context.Context, holder *hubcore.ProviderRegistry, na
 	if reg == nil {
 		return nil
 	}
+	if reg.LaunchMintsCredentialCommand(name) {
+		// The hub never executes a credential command (spec §10.1): an
+		// instance whose launch sends command material has no fetchable
+		// live listing here, and the holder keeps its last-known rows.
+		return nil
+	}
 	// Call-scoped authenticator: this fetch's requests bind a Codex
 	// value carrying reg's state root, so no global rewire — from any
 	// concurrent fetch, probe, or model-list RPC — can move the

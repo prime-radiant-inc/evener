@@ -1,16 +1,21 @@
 package hub
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/sandbox/sandboxtest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtestenv"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/devtool/shardrun"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -28,6 +33,21 @@ func TestMain(m *testing.M) {
 		runDetachFakeDaemon()
 		os.Exit(0)
 	}
+	// When evener dev hub-shards launches this binary as a shard, its
+	// -test.run regex arrives through a file (see shardrun). flag.Parse must
+	// run first so the command line's (absent) -test.run cannot clobber it.
+	flag.Parse()
+	if err := shardrun.ConfigureRunFile(); err != nil {
+		fmt.Fprintf(os.Stderr, "evener-hub TestMain: %v\n", err)
+		os.Exit(2)
+	}
+	// Collects the session scratch and temp containers that sessions under test
+	// retain at close; testEnv's root is created inside it.
+	hostTemp, err := sandboxtest.RedirectHostTemp("evener-hub-test-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "evener-hub TestMain: %v\n", err)
+		os.Exit(2)
+	}
 	testEnv = hubtestenv.Redirect("evener-hub-test-env-")
 	// Refuse to start when a default root still resolves outside the throwaway
 	// env: every test from here on would otherwise read and write the
@@ -37,11 +57,18 @@ func TestMain(m *testing.M) {
 	if escaped := defaultRootsOutsideTestEnv(); len(escaped) > 0 {
 		fmt.Fprintf(os.Stderr, "evener-hub test env: default roots resolve outside %s:\n  %s\n", testEnv.Root, strings.Join(escaped, "\n  "))
 		testEnv.Discard()
+		_ = hostTemp.Discard()
 		os.Exit(1)
 	}
 
 	code := m.Run()
 	testEnv.Discard()
+	if err := hostTemp.Discard(); err != nil {
+		fmt.Fprintf(os.Stderr, "evener-hub TestMain: %v\n", err)
+		if code == 0 {
+			code = 1
+		}
+	}
 	os.Exit(code)
 }
 
@@ -208,8 +235,64 @@ func TestEvenerEnvScrubHelper(t *testing.T) {
 		t.Skip("re-executed helper for TestHostEvenerEnvNeverReachesTheTestEnvironment")
 	}
 	for _, v := range hubtestenv.ProductEvenerEnvVars() {
+		if sandboxtest.Redirected(v) {
+			continue // the test rig's own value, which replaced the seeded one
+		}
 		if value, ok := os.LookupEnv(v.Name); ok {
 			t.Errorf("%s=%q survived TestMain; the hub, its daemons and `evener launch-check` all inherit it", v.Name, value)
 		}
 	}
+}
+
+// TestTestMainLeavesTheHostTempRedirectForChildren guards the order TestMain
+// runs in: RedirectHostTemp exports EVENER_HOST_TEMP_BASES before
+// hubtestenv.Redirect clears the product variables, and that clear must keep
+// the value. Cleared, every evener and evener serve the non-short suite starts
+// would sweep the developer's /tmp and /var/tmp at startup and reclaim other
+// sessions' abandoned scratch.
+func TestTestMainLeavesTheHostTempRedirectForChildren(t *testing.T) {
+	if !sandboxtest.Redirected(envvars.EVENERHostTempBases) {
+		t.Fatalf("%s = %q after TestMain, want the host temp redirect's own base", envvars.EVENERHostTempBases.Name, envvars.EVENERHostTempBases.Getenv())
+	}
+}
+
+// chdirTemp is testing.T.Chdir minus the os.Open(".") the standard
+// implementation performs first: the test log records it as a relative "open
+// .", cmd/go resolves that against this package's directory and hashes the
+// whole directory into the test cache key, so churn there -- frontend/dist is
+// rebuilt unconditionally and is go:embed-pinned -- re-ran every test in this
+// package. Changing directory with a saved path keeps the same isolation
+// without that enumeration. It lives in this file so the next test that wants
+// a different working directory finds it rather than reaching for t.Chdir.
+func chdirTemp(t *testing.T, dir string) {
+	t.Helper()
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Set PWD before changing directory: t.Setenv carries T.Chdir's
+	// parallel-test guard (checkParallel), and it has to fire while the process
+	// is still where it started, or a parallel test could resolve relative
+	// paths against the changed directory in the window before the panic.
+	t.Setenv("PWD", abs)
+	// Registered before the chdir so a failed one cannot leave the process in
+	// the new directory.
+	t.Cleanup(func() {
+		if err := os.Chdir(old); err != nil {
+			t.Errorf("restore working directory to %s: %v", old, err)
+		}
+	})
+	if err := os.Chdir(abs); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestMainAppliesTheShardRunFile pins the TestMain wiring evener dev
+// hub-shards depends on to hand each shard its tests.
+func TestMainAppliesTheShardRunFile(t *testing.T) {
+	shardrun.RequireTestMainAppliesRunFile(t)
 }

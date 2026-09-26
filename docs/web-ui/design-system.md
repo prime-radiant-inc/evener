@@ -345,7 +345,7 @@ during implementation (noted inline); this table is the one to trust.
 | **EmptyState** | `{title: string; hint?: string; action?: ReactNode; size?: "default"\|"display"}` | `size="display"` sets the title at `--font-size-display` for the one pane whose empty state IS the page (Welcome); everything else keeps `--font-size-pane-title`. `action` is optional (an early plan sketch showed it required; a pane with nothing actionable — e.g. a read-only empty log — is an ordinary case, and every sibling slot-style prop this wave is optional, so this was kept optional as the more consistent, more correct shape). |
 | **Table** | `{columns: TableColumn<Row>[]; rows: Row[]; rowKey(row); sortKey?; sortDir?: "ascending"\|"descending"; onSortChange?; filters?: {key,label,active}[]; onFilterToggle?; empty?}` | Controlled sort + filter; semantic `<table>`, `aria-sort` on sortable headers, filter chips compose Chip, horizontal overflow scrolls inside the widget. Ported from Beautiful UI's Records/Filter Table. |
 | **DiffTable** | `{columns: {key,label}[]; rows: {key; cells: Record<string,{value; proposed?}>}[]}` | Tabular proposed edits: struck-through old value beside the new one on the neutral `--diff-add-bg` wash — same hue-gate exemption as DiffBlock. Ported from Beautiful UI's Diff Table. |
-| **Loader** | `{label?; startedAt?; now?}` | Indeterminate-wait indicator (pixel grid + mm:ss elapsed); prop-driven like Cadence, no internal timers. Its animation is the sanctioned exception for user-initiated waits — never agent liveness — and lives entirely inside the reduced-motion gate. Ported from Beautiful UI's Loading State. |
+| **Loader** | `{label?; rail?; startedAt?; now?}` | Indeterminate-wait indicator (pixel grid + mm:ss elapsed); prop-driven like Cadence, no internal timers. Its animation is the sanctioned exception for user-initiated waits — never agent liveness — and lives entirely inside the reduced-motion gate. `rail` seats the grid in the transcript's icon-rail slot (the content-free "Thinking…" row's status glyph). Ported from Beautiful UI's Loading State. |
 | **InsightCard** | `{insights: {title; body; series?: number[]}[]; page; onPageChange}` | Paged insights with an inline SVG sparkline (aria-hidden + visually-hidden min/max alternative); pagination composes IconButton. Ported from Beautiful UI's Insight Cards. |
 | **RecommendationCard** | `{title; body; confidence?; onAccept?; onReject?; alternatives?}` | Agent-suggested action: micro-label eyebrow, confidence meter (`--accent` on `--field`; not the hue-gated Meter), Accept/Dismiss compose Button. Ported from Beautiful UI's Recommendation Card. |
 | **ContextCard** | `{source; snippet; meta?; href?}` | Retrieved-knowledge chunk: inset card, ToolIcon source glyph, 3-line snippet clamp; renders as a link when `href` given. Ported from Beautiful UI's Context Cards. |
@@ -389,6 +389,40 @@ folds at all, and a failure, a call still in flight, an auto-expanding card or a
 breaks the run rather than being spanned by it. Disclosure state goes through the shared
 disclosure store, so a reader's choice survives re-projection and the transcript's
 expand-all/collapse-all baselines reach it; the body mounts only while open.
+
+**Task status renders through one glyph family, shared by both task surfaces.** `TaskCheck`
+(`src/panes/session/transcript/tools/taskCheck.tsx`) is also transcript grammar rather than a
+widget, but unlike ToolRunGroup it serves TWO surfaces: the transcript's inline task card
+(`tools/taskCard.tsx`) and the tasks pane (`chrome/TasksPanel.tsx`), which the 2026-09
+task-rendering rework put on one grammar. It is a 16px square box drawn in the same line-art
+contract ToolIcon uses (stroke currentColor, 1.75, round caps/joins), the inner mark naming the
+state: plus = added, check = done, ✕ = cancelled, arrow = started, empty box = pending (not
+started yet — distinct from cancelled's ✕, so "won't happen" reads differently from "hasn't
+happened yet"). The glyph alone carries subtle semantic colour — the one scoped, user-approved
+exception to the cards' neutral ground (2026-07-31 tasklist renderer spec): done = `--alive`,
+started = `--accent`, added/cancelled/pending = `--ink-mid`. Text stays on the ink scale;
+done and cancelled read through strikethrough + low ink, never colour, and a cancelled glyph
+stays neutral — the attention hues are off limits for a routine reprioritization.
+
+The inline card is a WINDOW onto the plan, not a changelog (2026-09 rework, Jesse's ruleset):
+it settles folded at every verbosity level (descriptor `foldByDefault` — the level's
+expand-details default does not open it, only the reader's click does, which then persists
+through the shared disclosure store), so a run of task updates reads as quiet one-liners. The
+folded summary line names only the most recent update, mark + label (`→ Build the harness`);
+opening the row swaps that line for a recap sentence of the call's whole change
+(`Completed "Decide the folded line"; started "Build the harness"` — verbs Completed, Started,
+Added, Dropped, sentence case) and the body shows at most three slots joined by a hairline
+spine: most-recently-settled (done or cancelled; timestamps order it, list position breaks
+ties), in-progress, next. A note renders only when THIS call added it, set in the prose face —
+the note is the agent's own sentence. The footer keeps the aggregate sentence + meter and
+carries the whole-list affordance: an "Open task list" control that opens (and focuses) the
+session's Tasks pane and never closes it — an open operation, not the `/tasks` palette
+command's toggle — hidden where no session owns the card. An update
+that changes no task status renders nothing at all. The tasks pane keeps its grouped
+full-list structure — settled/in-progress/open groups, timestamps, meta, prompt disclosure,
+the full notes timeline — but renders its rows on the same TaskCheck family, its live row's
+latest note bare in the prose face (the "latest" label chip is gone), and its notes timeline
+in the same prose treatment.
 
 ---
 

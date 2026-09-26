@@ -22,8 +22,8 @@ export default function Welcome({ params, focused }: PaneProps<WelcomePaneParams
   // The note is rendered by EmptyState's hint (the original rendering path,
   // so the existing "shows params.note as a hint" test stays green). It is
   // NOT also passed to WelcomeContent here: WelcomeContent.note is the
-  // reusable slot for consumers that don't wrap it in EmptyState (the mobile
-  // welcome panel); passing it here too would render the note twice.
+  // reusable slot for consumers that don't wrap it in EmptyState; passing it
+  // here too would render the note twice.
   return (
     <PaneScaffold title="Welcome">
       <EmptyState

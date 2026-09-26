@@ -554,13 +554,13 @@ func reconstructEntries(source reconstructionSource, meta schema.SessionMeta, mu
 		for _, c := range calls[m.ID] {
 			turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: c.ID, Name: c.Name, Arguments: json.RawMessage(c.Arguments)}})
 		}
-		entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), Turn: turn})
+		entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), Turn: turn, MachineryFlagged: true})
 	}
 	if len(entries) == 0 || h.SystemPrompt == "" {
 		return fail(errors.New("archive lacks conversation entries or initial system prompt"))
 	}
 	note := fmt.Sprintf("[SESSION RECONSTRUCTION]\nThis session was reconstructed from the AgentsView archive through %s. Later conversation may be missing; metadata was last updated %s. %d tool-result bodies were not retained and carry explicit unavailable notices. The original live processes were interrupted; archived claims about running processes, jobs, delegates, or test status are historical evidence only. Recheck the working tree and current state before continuing. Media and provider replay signatures were not retained. Full recovery provenance is in the staged report.json.", source.EndedAt, meta.UpdatedAt.Format(time.RFC3339Nano), report.MissingToolOutputs)
-	entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), Turn: schema.Turn{Kind: schema.TurnSteering, Message: llm.User(note), Timestamp: time.Now().UTC()}})
+	entries = append(entries, transcript.Entry{Kind: "entry", Seq: len(entries), MachineryFlagged: true, Turn: schema.Turn{Kind: schema.TurnSteering, Message: llm.UserMachinery(note), Timestamp: time.Now().UTC()}})
 	return h, entries, nil
 }
 
@@ -572,6 +572,12 @@ func validArchivedResultStatus(toolName, status string) bool {
 		// AgentsView uses delegate lifecycle as the status of successful calls
 		// to these tools. A failed delegate is not a failed status query.
 		return toolName == "delegate" || toolName == "delegate_send" || toolName == "job_status"
+	case "command_exited_nonzero", "command_killed":
+		// The command-outcome statuses are shell-job statuses: a job_status
+		// result may carry one (the supervised command exited nonzero or was
+		// signalled, still a successful query about a finished job), but a
+		// delegate's own lifecycle never does.
+		return toolName == "job_status"
 	default:
 		return false
 	}

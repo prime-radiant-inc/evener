@@ -38,7 +38,9 @@ func costFor(reg *hubcore.ProviderRegistry, instance, model string) *registry.Co
 	if r == nil {
 		return nil
 	}
-	res, err := r.Resolve(instance + "/" + model)
+	// The cost is a fact of the row, not a credential: resolving at facts
+	// depth prices the session without ever materializing one (spec §10.1).
+	res, err := r.ResolveInstanceModelFacts(instance, model)
 	if err != nil {
 		return nil
 	}
@@ -263,7 +265,13 @@ func liveThreadCanMergeLocalPast(live appwire.Thread) bool {
 	return true
 }
 
-func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, live appwire.Thread) (appwire.Thread, error) {
+// mergePastThreadForRead merges a saved session's metadata (and, when
+// includePastTurns asks for it, its full turns projection) into a live read's
+// thread. The thread/read handler owns the includePastTurns decision because
+// only it knows whether the windowed past item page will supply the turns
+// instead — passing false there is what keeps a past session's click off the
+// O(transcript) full-turn projection (see registerThreadHandlers).
+func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, live appwire.Thread, includePastTurns bool) (appwire.Thread, error) {
 	if !liveThreadCanMergeLocalPast(live) {
 		return live, nil
 	}
@@ -284,7 +292,6 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	// A live window is authoritative. Read saved turns only as the compatibility
 	// fallback for a live source that returned none; the metadata merged below
 	// does not use pastThreadForRead's full-transcript usage or failure scans.
-	includePastTurns := params.IncludeTurns && len(live.Turns) == 0
 	past, err := pastEntryThread(ctx, cfg, entry, includePastTurns)
 	if err != nil {
 		return appwire.Thread{}, err
@@ -334,7 +341,7 @@ func mergePastThreadForRead(ctx context.Context, cfg hubcore.WebConfig, params a
 	if live.Evener.Diagnostics == nil {
 		live.Evener.Diagnostics = past.Evener.Diagnostics
 	}
-	if params.IncludeTurns && len(live.Turns) == 0 {
+	if includePastTurns && len(live.Turns) == 0 {
 		live.Turns = past.Turns
 	}
 	return live, nil
@@ -487,19 +494,32 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread, owne
 	if err != nil || ref.SourceID != "local" {
 		return false
 	}
-	// A daemon's recovery flags reach the hub only through the roster: the local
-	// source builds its listed threads from roster entries that carry no status
-	// flags, and a live thread/read is answered by the daemon itself, whose
-	// response has never carried them either. Asking the roster is what keeps
-	// this projection and fork admission on one answer, since admission decides
-	// the same signal with the same predicate.
+	return hubForkIdentityFenced(cfg, ref.ThreadID, owner)
+}
+
+// hubForkIdentityFenced reports whether one identity a fork touches is fenced
+// by the recovery signals the hub reads directly for it: a daemon announcing
+// recovery in the roster, and the hub's own recovery locks. The capability
+// projection and the fork RPC both decide these per identity, so one predicate
+// keeps them from describing the same identity differently. The live-delegate
+// signal stays its own shared predicate, hubForkLiveDelegateFenced, because an
+// explicit thread/resume cannot clear it and so it carries its own refusal.
+//
+// A daemon's recovery flags reach the hub only through the roster: the local
+// source builds its listed threads from roster entries that carry no status
+// flags, and a live thread/read is answered by the daemon itself, whose response
+// has never carried them either. Asking the roster is what keeps this projection
+// and fork admission on one answer. owner is the roster's answer for threadID,
+// resolved by the caller so a pass that needs it more than once asks the roster
+// once; the predicate itself never probes a daemon.
+func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThreadOwner) bool {
 	if owner.statusFenced() {
 		return true
 	}
 	if cfg.ResumeLocks == nil {
 		return false
 	}
-	state := cfg.ResumeLocks.RecoveryState(ref.ThreadID)
+	state := cfg.ResumeLocks.RecoveryState(threadID)
 	return state.ResumeRequired || state.Stopping > 0
 }
 
@@ -610,14 +630,10 @@ func hubForkResolvedSessionFenced(cfg hubcore.WebConfig, threadID, sessionID str
 	if sessionID == "" || sessionID == threadID {
 		return false
 	}
-	if hubForkLiveDelegateFenced(cfg, sessionID) || hubForkLiveStatusFenced(cfg, sessionID) {
+	if hubForkLiveDelegateFenced(cfg, sessionID) {
 		return true
 	}
-	if cfg.ResumeLocks == nil {
-		return false
-	}
-	state := cfg.ResumeLocks.RecoveryState(sessionID)
-	return state.ResumeRequired || state.Stopping > 0
+	return hubForkIdentityFenced(cfg, sessionID, forkThreadOwnerFor(cfg, sessionID))
 }
 
 // hubForkDeletionFenced reports whether the thread a client is holding, or the
@@ -642,11 +658,14 @@ func hubForkDeletionFenced(cfg hubcore.WebConfig, ref, threadID, sessionID strin
 
 // pastThreadCapabilities is what the hub can carry out for a thread with no
 // daemon behind it: the resume-and-retry session mutations (compact, clear,
-// change model, shutdown) plus the always-available ones (send, fork, goal,
-// rename), all of them landing once qp94's auto-resume runs. Steer, Interrupt
-// and Queue stay false — they gate on an active turn a cold thread has none of,
-// so the hub deliberately does not resume for them (kata xr4x trues this up to
-// qp94's wiring).
+// change model, shutdown, and the two the user speaks through — send and
+// queue) plus the always-available ones (fork, goal, rename), all of them
+// landing once qp94's auto-resume runs. Steer and Interrupt stay false because
+// the hub cannot carry them out for a thread with no daemon: they need a turn
+// that is already running, and a cold session has none, so a cold set that
+// advertised them would promise a turn action nothing is there to take (kata
+// xr4x trues this up to qp94's wiring). Queue is advertised because the hub now
+// resumes behind it the same way it does for send.
 //
 // It is the hub's answer to "what can still be done with this thread", which is
 // why the relay hands the same set to a client at the moment a session closes
@@ -656,6 +675,7 @@ func hubForkDeletionFenced(cfg hubcore.WebConfig, ref, threadID, sessionID strin
 func pastThreadCapabilities() appwire.ThreadCapabilities {
 	caps := appwire.ThreadCapabilities{
 		Send:         true,
+		Queue:        true,
 		ForkFromTurn: true,
 		Compact:      true,
 		Clear:        true,
@@ -664,6 +684,16 @@ func pastThreadCapabilities() appwire.ThreadCapabilities {
 		Goal:         true,
 		SharedNotes:  true,
 		Rename:       true,
+		// SkillInput is the same resume story Send tells: a resumed daemon runs
+		// current code, wires all four input-bearing turn mutations, and consumes
+		// skill selections. Withholding it while the same read attaches the
+		// session's skill catalog (attachPastThreadSkillCatalog) made the web
+		// composer offer those skills and then refuse them. The advertisement is
+		// harness-support truth only: every input-bearing mutation re-verifies
+		// against the live daemon (ensureSkillInputSupported, the relay's
+		// prepareRelay recheck, and thread/start's spawn-read gate), so a daemon
+		// that genuinely lacks the support still refuses each selection.
+		SkillInput: true,
 	}
 	caps.ChangeVisionModel = caps.ChangeModel
 	return caps
@@ -758,8 +788,14 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		Path:          filepath.Base(cwd),
 		CWD:           cwd,
 		Source:        "local",
+		// A past session has no live daemon, so it has no instance id of its own;
+		// InstanceID falls back to the thread id, the same rule the daemon-backed
+		// read uses. Frontends key their fork/queue affordances on instanceId, and
+		// the hub advertises forkFromTurn on these sessions, so the wire must carry
+		// one. AskPending stays false: a past session has no live ask to be pending.
 		Evener: appwire.EvenerThread{
 			Ref:          ref,
+			InstanceID:   entry.Meta.ID,
 			ParentRef:    parentRef,
 			Kind:         kind,
 			Profile:      entry.Meta.ProfileID,
@@ -1053,15 +1089,23 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 	return filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 }
 
-func pastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
+// computePastEntryTurns projects a saved session's whole transcript into full
+// wire turns.
+func computePastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
-	toolNames := map[string]string{}
+	reg := apptranscript.NewToolCallRegistry()
 	turns, err := pastTranscriptCache.ItemTurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		return appItemsFromReplayTurn(turnID, entryIndex, turn, toolNames)
+		return appItemsFromReplayTurn(turnID, entryIndex, turn, reg)
 	})
 	if err != nil {
 		return nil, err
 	}
+	// Flush unpaired communicates the way the server's full read does
+	// (server/appwire_turns.go): a session whose last assistant turn issues a
+	// communicate call with no paired result turn must render the trailing
+	// agentMessage. The paged read (pastEntryLatestItems) flushes internally via
+	// the item-window path; the full read must flush explicitly so both agree.
+	apptranscript.FlushUnpairedCommunicates(&turns, reg)
 	stampSessionImageURLs(entry.Meta.ID, turns)
 	// ItemTurnsFromFile only has the per-round usage persisted in the transcript;
 	// it doesn't know the session's instance and model, so the cost estimate
@@ -1070,11 +1114,16 @@ func pastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.T
 	return turns, nil
 }
 
+// This function is intentionally behind a package variable, like
+// discoverPastThreadSkillCatalog above, so tests can observe (and pin the
+// absence of) the O(transcript) projection on read paths that must not pay it.
+var pastEntryTurns = computePastEntryTurns
+
 // projectBoundedPastTranscriptTurn projects an already-decoded transcript turn
 // (decoded once by apptranscript's own reader, not here — kata j13r) into
 // AppWire items.
-func projectBoundedPastTranscriptTurn(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	return appItemsFromReplayTurn(turnID, entryIndex, turn, toolNames)
+func projectBoundedPastTranscriptTurn(turn schema.Turn, turnID string, entryIndex int, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
+	return appItemsFromReplayTurn(turnID, entryIndex, turn, reg)
 }
 
 // decodeTranscriptTurn reads one saved transcript line into the turn the daemon
@@ -1101,8 +1150,8 @@ func reconcileAndEnrichPastThread(entry hubcore.PastEntry, thread appwire.Thread
 	return enrichThreadFileBackedOutputImages(thread)
 }
 
-func appItemsFromReplayTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string) []appwire.ThreadItem {
-	return apptranscript.ProjectTurn(turnID, turnIndex, turn, toolNames, projectReplayInputImage, apptranscript.ToolResultOutputImages)
+func appItemsFromReplayTurn(turnID string, turnIndex int, turn schema.Turn, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
+	return apptranscript.ProjectTurn(turnID, turnIndex, turn, reg, projectReplayInputImage, apptranscript.ToolResultOutputImages)
 }
 
 // projectReplayInputImage stamps the sha and size the client needs to fetch an
@@ -1265,7 +1314,7 @@ func delegateJobIDFromRaw(raw json.RawMessage) string {
 
 func isTerminalHistoricalJobStatus(status string) bool {
 	switch status {
-	case "completed", "failed", "cancelled", "stopped", "exhausted":
+	case "completed", "failed", "cancelled", "stopped", "exhausted", "command_exited_nonzero", "command_killed":
 		return true
 	default:
 		return false

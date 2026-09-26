@@ -9,6 +9,7 @@ import { initNotifications, resetNotificationsForTests } from "../notifications"
 import { connectionStore } from "../stores/connection";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
+import * as pageReload from "./pageReload";
 
 // The "defaults to constructing a real AppwireClient..." test below (and any
 // other in this file that lets handleRetry's default createClient run) dials
@@ -278,8 +279,7 @@ describe("clicking Retry", () => {
     expect(replaced).toEqual([]);
   });
   test("never calls window.location.reload", async () => {
-    const reloadSpy = vi.fn();
-    vi.stubGlobal("location", { ...window.location, reload: reloadSpy });
+    const reloadSpy = vi.spyOn(pageReload, "reloadPage").mockImplementation(() => {});
     const fresh = new FakeClient("ready");
 
     const user = userEvent.setup();

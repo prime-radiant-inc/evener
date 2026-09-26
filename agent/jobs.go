@@ -220,20 +220,16 @@ type jobManager struct {
 var defaultCloseGrace = 5 * time.Second
 
 // Delegate-lane disposal tunables (auto-delegate-lane-disposal spec §Constants).
-// Package vars, not consts, so tests can override and restore them without
-// waiting wall-clock time.
+// Package vars hold the mutex and override stack so tests can shorten the
+// shipped budget without waiting wall-clock time.
+const defaultLaneClosePassBudget = 30 * time.Second
+
 var (
-	// LaneClosePassBudget bounds the P0 close disposal and the P3 close pass
-	// TOGETHER — one shared deadline per close cascade (ensureCloseBudget mints
-	// it), and since #382 it also bounds close's WaitGroup joins. It bounds
-	// git/history work only; the budget-exempt touch+unlock tail runs after
-	// expiry, so shutdown never blocks on git yet no lane is left locked.
-	//
-	// Exported for the same reason as DrainStallTimeout: the only end-to-end
-	// shape that exercises a teardown blocked on an uncancellable operation is a
-	// whole one-shot `evener run`, which lives in another module. Nothing in
-	// production assigns it.
-	LaneClosePassBudget = 30 * time.Second
+	laneClosePassBudgetMu sync.RWMutex
+	// laneClosePassBudgetOverrides holds the active temporary budgets. The
+	// override pointers let each restore closure remove its own entry even when
+	// nested scopes finish out of order.
+	laneClosePassBudgetOverrides []*closePassBudgetOverride
 	// laneTailWarnThreshold is the lane count above which the budget-exempt
 	// touch+unlock tail earns a second aggregated warning (a pathological
 	// session leaked far more lanes than a close pass can collect).
@@ -248,6 +244,43 @@ var (
 	// stays untouched until the hand-off window has passed.
 	laneGrace = 30 * time.Minute
 )
+
+type closePassBudgetOverride struct {
+	budget time.Duration
+}
+
+func laneClosePassBudget() time.Duration {
+	laneClosePassBudgetMu.RLock()
+	defer laneClosePassBudgetMu.RUnlock()
+	if n := len(laneClosePassBudgetOverrides); n > 0 {
+		return laneClosePassBudgetOverrides[n-1].budget
+	}
+	return defaultLaneClosePassBudget
+}
+
+// SetLaneClosePassBudget installs a temporary close-cascade budget and returns
+// a restore function. The restore is safe to call once, and overrides can be
+// restored in any order without clobbering a still-active nested scope. This
+// is intended for end-to-end tests that need to shorten the shipped budget
+// without racing a close already running in the background.
+func SetLaneClosePassBudget(d time.Duration) (restore func()) {
+	override := &closePassBudgetOverride{budget: d}
+	laneClosePassBudgetMu.Lock()
+	laneClosePassBudgetOverrides = append(laneClosePassBudgetOverrides, override)
+	laneClosePassBudgetMu.Unlock()
+
+	return sync.OnceFunc(func() {
+		laneClosePassBudgetMu.Lock()
+		defer laneClosePassBudgetMu.Unlock()
+		for i, active := range laneClosePassBudgetOverrides {
+			if active != override {
+				continue
+			}
+			laneClosePassBudgetOverrides = slices.Delete(laneClosePassBudgetOverrides, i, i+1)
+			return
+		}
+	})
+}
 
 func (jm *jobManager) setParentJobID(jobID string) {
 	jm.mu.Lock()
@@ -523,6 +556,10 @@ type jobNotification struct {
 	// payload: a job.notification watch carries the completed job's status.
 	Kind                                                       jobNotificationKind
 	JobID, JobType, Status, Reason, Description, TranscriptRef string
+	// Intent is the caller's stated rationale for the run (the shell tool
+	// call's `intent` argument), projected from the job record. The web card
+	// renders it on the head line beside the title.
+	Intent string
 	// TerminalGen is the exact durable terminal generation this terminal
 	// notification represents.
 	TerminalGen      string
@@ -844,7 +881,7 @@ func (jm *jobManager) releaseQuiescentRuntime() error {
 	}
 	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
-	if len(jm.running) != 0 || len(jm.terminalFlush) != 0 {
+	if jm.hasRuntimeObligationsLocked() {
 		jm.mu.Unlock()
 		jm.watchNotifyMu.Unlock()
 		return errors.New("job manager still has runtime obligations")
@@ -867,6 +904,30 @@ func (jm *jobManager) releaseQuiescentRuntime() error {
 	case <-deadline.C():
 	}
 	return jm.closeStoreOnly()
+}
+
+// hasRuntimeObligationsLocked is the single definition of the work
+// releaseQuiescentRuntime refuses to abandon: a running job or a pending
+// terminal flush. releaseQuiescentRuntime consults it under watchNotifyMu plus
+// jm.mu, hasRuntimeObligations under jm.mu alone, and the idle-release
+// pre-gate through the latter — so a new obligation kind reaches every
+// refusal at once and the pre-gate can never stop being a superset that lets
+// a mid-release refusal strand an already-spent teardown pass.
+func (jm *jobManager) hasRuntimeObligationsLocked() bool {
+	return len(jm.running) != 0 || len(jm.terminalFlush) != 0
+}
+
+// hasRuntimeObligations reports whether the manager still holds work that
+// releaseQuiescentRuntime refuses to abandon. Callers gate a non-terminal
+// runtime release on this so the refusal cannot fire mid-release, after the
+// single teardown pass was spent.
+func (jm *jobManager) hasRuntimeObligations() bool {
+	if jm == nil {
+		return false
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.hasRuntimeObligationsLocked()
 }
 
 func (jm *jobManager) abandonRunningJobs() {
@@ -1145,6 +1206,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 	background := false
 	command := ""
 	parentDelegateID := e.ParentDelegateID
+	intent := ""
 	if run != nil {
 		if run.rec != nil {
 			if run.rec.Type != "" {
@@ -1154,6 +1216,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 			command = run.rec.Command
 			parentDelegateID = envvars.FirstNonEmpty(run.rec.ParentDelegateID, parentDelegateID)
 			task = envvars.FirstNonEmpty(run.rec.Task, task)
+			intent = run.rec.Intent
 			originTurnID = envvars.FirstNonEmpty(run.rec.OriginTurnID, originTurnID)
 			originToolCallID = envvars.FirstNonEmpty(run.rec.OriginToolCallID, originToolCallID)
 			originItemID = envvars.FirstNonEmpty(run.rec.OriginItemID, originItemID)
@@ -1170,6 +1233,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 		Command:          command,
 		ParentDelegateID: parentDelegateID,
 		Task:             task,
+		Intent:           intent,
 		TranscriptRef:    shellTranscriptRef(e.JobID),
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
@@ -1188,6 +1252,8 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 	originItemID := e.OriginItemID
 	background := false
 	command := ""
+	description := ""
+	intent := ""
 	parentDelegateID := e.ParentDelegateID
 	if run != nil && run.rec != nil {
 		if run.rec.Type != "" {
@@ -1195,6 +1261,8 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		}
 		background = run.rec.Background
 		command = run.rec.Command
+		description = run.rec.Description
+		intent = run.rec.Intent
 		parentDelegateID = envvars.FirstNonEmpty(run.rec.ParentDelegateID, parentDelegateID)
 		task = envvars.FirstNonEmpty(run.rec.Task, task)
 		originTurnID = envvars.FirstNonEmpty(run.rec.OriginTurnID, originTurnID)
@@ -1218,6 +1286,8 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		Command:          command,
 		ParentDelegateID: parentDelegateID,
 		Task:             task,
+		Description:      envvars.FirstNonEmpty(description, task),
+		Intent:           intent,
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
 		OriginItemID:     originItemID,
@@ -1466,19 +1536,18 @@ func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*job
 			return err
 		}
 		if jm.enqueue != nil {
-			jm.enqueue(jobNotification{
-				JobID:            finished.JobID,
-				TerminalGen:      finished.TerminalGen,
-				JobType:          string(rec.Type),
-				Status:           string(finished.Status),
-				Reason:           finished.Reason,
-				ExhaustionBudget: finished.ExhaustionBudget,
-				ExhaustionLimit:  finished.ExhaustionLimit,
-				TranscriptRef:    jobTranscriptRef(rec),
-				OutputBytes:      finished.OutputBytes,
-				ExitCode:         finished.ExitCode,
-				Provenance:       provenance.Clone(rec.Provenance),
-			})
+			// The reconcile event's terminal facts are fresher than the
+			// loaded record's; every other field projects from the record
+			// through the shared constructor.
+			notification := jobNotificationFromRecord(rec)
+			notification.TerminalGen = finished.TerminalGen
+			notification.Status = string(finished.Status)
+			notification.Reason = finished.Reason
+			notification.ExhaustionBudget = finished.ExhaustionBudget
+			notification.ExhaustionLimit = finished.ExhaustionLimit
+			notification.OutputBytes = finished.OutputBytes
+			notification.ExitCode = finished.ExitCode
+			jm.enqueue(notification)
 		}
 	}
 	return nil
@@ -2094,19 +2163,18 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		// an empty queue and the delivery slips a boundary. The watch settlements
 		// collected above ride the same enqueue, in the documented order — watch
 		// notices first, then the terminal.
-		ownNotices = append(ownNotices, jobNotification{
-			JobID:            run.rec.JobID,
-			TerminalGen:      terminal.generation,
-			JobType:          string(run.rec.Type),
-			Status:           string(terminal.status),
-			Reason:           terminal.reason,
-			ExhaustionBudget: terminal.exhaustionBudget,
-			ExhaustionLimit:  terminal.exhaustionLimit,
-			TranscriptRef:    jobTranscriptRef(run.rec),
-			OutputBytes:      terminal.outputBytes,
-			ExitCode:         terminal.exitCode,
-			Provenance:       provenance.Clone(run.rec.Provenance),
-		})
+		// The terminal struct's facts are fresher than the start-time
+		// record; every other field projects from the record through the
+		// shared constructor.
+		ownNotice := jobNotificationFromRecord(run.rec)
+		ownNotice.TerminalGen = terminal.generation
+		ownNotice.Status = string(terminal.status)
+		ownNotice.Reason = terminal.reason
+		ownNotice.ExhaustionBudget = terminal.exhaustionBudget
+		ownNotice.ExhaustionLimit = terminal.exhaustionLimit
+		ownNotice.OutputBytes = terminal.outputBytes
+		ownNotice.ExitCode = terminal.exitCode
+		ownNotices = append(ownNotices, ownNotice)
 	}
 	flushNotices()
 	run.delegateShell.finish()
@@ -2248,19 +2316,7 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 			continue
 		}
 		if jm.enqueue != nil {
-			jm.enqueue(jobNotification{
-				JobID:            rec.JobID,
-				TerminalGen:      rec.TerminalGen,
-				JobType:          string(rec.Type),
-				Status:           string(rec.Status),
-				Reason:           rec.Reason,
-				ExhaustionBudget: rec.ExhaustionBudget,
-				ExhaustionLimit:  rec.ExhaustionLimit,
-				TranscriptRef:    jobTranscriptRef(rec),
-				OutputBytes:      rec.OutputBytes,
-				ExitCode:         rec.ExitCode,
-				Provenance:       provenance.Clone(rec.Provenance),
-			})
+			jm.enqueue(jobNotificationFromRecord(rec))
 		}
 	}
 	return nil

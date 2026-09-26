@@ -1,4 +1,9 @@
-import type { EntityView, ThreadModel } from "@evener/appwire-client";
+import type {
+  EntityView,
+  ThreadModel,
+  TranscriptMetadataVisibility,
+  TranscriptProjection,
+} from "@evener/appwire-client";
 import {
   type ContentVector,
   configFingerprint,
@@ -10,7 +15,6 @@ import {
 import { createContext, type ReactNode, useContext, useLayoutEffect, useMemo, useRef } from "react";
 import { beginDisclosureBaseline } from "../widgets/disclosure/disclosureStore";
 import { EntityViewsProvider } from "./entityViews";
-import type { TranscriptMetadataVisibility, TranscriptProjection } from "./projector";
 
 export type TranscriptSurface = "live" | "readOnly" | "preview";
 

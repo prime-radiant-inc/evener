@@ -13,8 +13,10 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -89,16 +91,16 @@ func covThreadReadSeed(t *testing.T) {
 	for _, thread := range []appwire.Thread{{}, {Source: "local"}, {Source: "remote"}, {Evener: appwire.EvenerThread{Ref: "bad"}}, {Evener: appwire.EvenerThread{Ref: "local:x"}}} {
 		_ = liveThreadCanMergeLocalPast(thread)
 	}
-	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{ID: "x"})
-	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{SessionID: "x"})
-	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:x"}})
-	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{}, appwire.Thread{Source: "remote"})
-	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{IncludeTurns: true}, appwire.Thread{ID: session, SessionID: session, Preview: session})
-	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{ThreadID: session}, appwire.Thread{ID: session})
-	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{IncludeTurns: true}, appwire.Thread{SessionID: session})
+	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{ID: "x"}, false)
+	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{SessionID: "x"}, false)
+	_, _ = mergePastThreadForRead(context.Background(), hubcore.WebConfig{}, appwire.ThreadReadParams{}, appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:x"}}, false)
+	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{}, appwire.Thread{Source: "remote"}, false)
+	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{IncludeTurns: true}, appwire.Thread{ID: session, SessionID: session, Preview: session}, true)
+	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{ThreadID: session}, appwire.Thread{ID: session}, false)
+	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{IncludeTurns: true}, appwire.Thread{SessionID: session}, true)
 	full := past
 	full.Name, full.ModelProvider, full.Path, full.CWD, full.Source, full.Evener.Profile = "n", "m", "p", cwd, "local", "profile"
-	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{ThreadID: session, IncludeTurns: true}, full)
+	_, _ = mergePastThreadForRead(context.Background(), web.cfg, appwire.ThreadReadParams{ThreadID: session, IncludeTurns: true}, full, len(full.Turns) == 0)
 
 	parts := []llm.ContentPart{
 		{Kind: llm.ContentText, Text: "text"},
@@ -113,9 +115,9 @@ func covThreadReadSeed(t *testing.T) {
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c", ImageData: []byte("img")}},
 	}
 	turn := schema.Turn{Kind: "assistant", Message: llm.Message{Role: "assistant", Content: parts}}
-	_ = appItemsFromReplayTurn("turn", 0, turn, map[string]string{})
-	_ = appItemsFromReplayTurn("user", 1, schema.Turn{Kind: "USER_INPUT", Message: llm.Message{Role: "user", Content: []llm.ContentPart{{Kind: "image", Image: &llm.ImageData{}}, {Kind: "image", Image: &llm.ImageData{Data: []byte("named")}}}}}, map[string]string{})
-	_ = appItemsFromReplayTurn("tool", 2, schema.Turn{Kind: "TOOL_RESULTS", Message: llm.Message{Role: "tool", Content: []llm.ContentPart{{Kind: "tool_result"}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{}}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{ImageData: []byte("x"), ImageMediaType: "image/jpeg"}}}}}, map[string]string{})
+	_ = appItemsFromReplayTurn("turn", 0, turn, apptranscript.NewToolCallRegistry())
+	_ = appItemsFromReplayTurn("user", 1, schema.Turn{Kind: "USER_INPUT", Message: llm.Message{Role: "user", Content: []llm.ContentPart{{Kind: "image", Image: &llm.ImageData{}}, {Kind: "image", Image: &llm.ImageData{Data: []byte("named")}}}}}, apptranscript.NewToolCallRegistry())
+	_ = appItemsFromReplayTurn("tool", 2, schema.Turn{Kind: "TOOL_RESULTS", Message: llm.Message{Role: "tool", Content: []llm.ContentPart{{Kind: "tool_result"}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{}}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{ImageData: []byte("x"), ImageMediaType: "image/jpeg"}}}}}, apptranscript.NewToolCallRegistry())
 
 	_ = enrichThreadFileBackedOutputImages(appwire.Thread{})
 	_ = enrichThreadFileBackedOutputImages(appwire.Thread{ID: "x"})

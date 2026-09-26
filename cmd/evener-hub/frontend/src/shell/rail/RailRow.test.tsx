@@ -38,6 +38,7 @@ import {
 import railStyles from "./RailRow.module.css";
 import type {
   CompletedJobsFoldRailNode,
+  HostRailNode,
   InactiveFoldRailNode,
   JobRailNode,
   LoadingRailNode,
@@ -48,6 +49,7 @@ import type {
   SessionRailNode,
   WatchRailNode,
 } from "./railNodes";
+import { RailTickProvider } from "./railNow";
 import { RailRenderObserver } from "./railRenderObserver";
 
 // "Pin this session…" mounts the real PinSectionPicker, which reads
@@ -214,6 +216,12 @@ function apiNode(overrides: Partial<RailSession> = {}): RailSession {
   };
 }
 
+/** The updated_at anchor a fixture's relative age is measured from: an ISO
+ * instant `minutes` before now. Zero is "just updated", which reads as "now". */
+function minutesAgo(minutes: number): string {
+  return new Date(Date.now() - minutes * 60_000).toISOString();
+}
+
 function apiProject(overrides: Partial<RailProject> = {}): RailProject {
   return {
     key: "p1",
@@ -253,6 +261,17 @@ function overflowRailNode(count: number): OverflowRailNode {
 
 function inactiveFoldRailNode(count: number): InactiveFoldRailNode {
   return { id: "inactive:parent", kind: "inactiveFold", count, expanded: false, children: [] };
+}
+
+function hostGroupNode(overrides: Partial<HostRailNode> = {}): HostRailNode {
+  return {
+    id: "host:devbox",
+    kind: "host",
+    host: { id: "devbox", label: "devbox", online: true },
+    expanded: true,
+    children: [],
+    ...overrides,
+  };
 }
 
 function jobRailNode(overrides: Partial<JobRailNode["job"]> = {}): JobRailNode {
@@ -760,7 +779,7 @@ describe("watch row", () => {
 // ellipsis sacrifice - and ellipsis can therefore never eat it.
 describe("watch count on the summary line", () => {
   test("shows on an otherwise-quiet watch-bearing row", () => {
-    const session = apiNode({ state: "idle", age: "2m", watches: [watchSummary()] });
+    const session = apiNode({ state: "idle", updated_at: minutesAgo(2), watches: [watchSummary()] });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-watches").textContent).toBe("1 watch");
     // The watch-only line is just the count: the state word "idle" beside it
@@ -773,7 +792,7 @@ describe("watch count on the summary line", () => {
     const child = apiNode({ row_id: "child", ref: "child", state: "idle", watches: [watchSummary({ id: "c1" })] });
     const parent = apiNode({
       state: "idle",
-      age: "1m",
+      updated_at: minutesAgo(1),
       watches: [watchSummary({ id: "p1" })],
       children: [child],
     });
@@ -784,7 +803,7 @@ describe("watch count on the summary line", () => {
   test("reports the retained total with the armed count, so a fired row is still counted", () => {
     const session = apiNode({
       state: "idle",
-      age: "2m",
+      updated_at: minutesAgo(2),
       watches: [watchSummary({ id: "armed" }), watchSummary({ id: "fired", active: false })],
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
@@ -797,7 +816,7 @@ describe("watch count on the summary line", () => {
   test("pluralizes the count", () => {
     const session = apiNode({
       state: "idle",
-      age: "2m",
+      updated_at: minutesAgo(2),
       watches: [watchSummary({ id: "w1" }), watchSummary({ id: "w2" }), watchSummary({ id: "w3" })],
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
@@ -807,7 +826,7 @@ describe("watch count on the summary line", () => {
   test("surfaces omitted watches so the row never silently undercounts", () => {
     const session = apiNode({
       state: "idle",
-      age: "2m",
+      updated_at: minutesAgo(2),
       watches: [watchSummary()],
       omitted_watches: 2,
     });
@@ -822,7 +841,7 @@ describe("watch count on the summary line", () => {
     // than the retained 32.
     const session = apiNode({
       state: "idle",
-      age: "2m",
+      updated_at: minutesAgo(2),
       watches: Array.from({ length: 32 }, (_, i) => watchSummary({ id: `armed-${i}` })),
       omitted_watches: 8,
       omitted_armed_watches: 8,
@@ -856,7 +875,7 @@ describe("watch count on the summary line", () => {
   test("renders nothing for a session with no watches", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", age: "2m" }))}
+        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(2) }))}
         info={info({ depth: 1 })}
         actions={actions()}
       />,
@@ -1004,6 +1023,52 @@ describe("job rows", () => {
     expect(screen.getByTitle(`${long} · running`)).toBeTruthy();
   });
 
+  // A command that exited nonzero or died on a signal must keep the failure
+  // signal it carried as `failed` before the status split (RoboRev round 2).
+  // The classification is the shared activity danger set (isActivityFailure),
+  // so the rail and the activity tree can never disagree about which job
+  // statuses read as failures.
+  test.each(["command_exited_nonzero", "command_killed", "failed", "exhausted"] as const)(
+    "a %s job row renders the failure signal",
+    (status) => {
+      render(<RailRow node={{ ...jobRailNode({ status }), active: false }} info={info()} actions={actions()} />);
+      expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+    },
+  );
+
+  test("a cleanly finished job row stays quiet (no signal dot)", () => {
+    render(
+      <RailRow node={{ ...jobRailNode({ status: "completed" }), active: false }} info={info()} actions={actions()} />,
+    );
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+  });
+
+  test("a command-outcome job row states the card's display words, not raw snake_case", () => {
+    const node = {
+      ...jobRailNode({ status: "command_exited_nonzero", command: "go test ./...", intent: "Find the failure" }),
+      active: false,
+    };
+    render(<RailRow node={node} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("Command failed");
+    // The hover tooltip carries the same display words.
+    expect(screen.getByTitle("go test ./... · Find the failure · Command failed")).toBeTruthy();
+  });
+
+  test("pre-existing statuses keep their raw words in the status line", () => {
+    const node = { ...jobRailNode({ status: "completed", command: "make check" }), active: false };
+    render(<RailRow node={node} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("completed");
+  });
+
+  test("a legacy failed job row joins the display words by its reason", () => {
+    const node = {
+      ...jobRailNode({ status: "failed", reason: "exit_nonzero", command: "go test ./..." }),
+      active: false,
+    };
+    render(<RailRow node={node} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-job-status").textContent).toBe("Command failed");
+  });
+
   test("renders a separate completed-jobs disclosure", () => {
     const toggle = vi.fn();
     render(
@@ -1102,11 +1167,12 @@ describe("session row", () => {
     );
     expect(screen.getByTestId("favorite-star")).toBeTruthy();
 
-    // depth 0: the flat Live and named-pin-section tiers - being listed there
-    // already says the session is pinned, so the star is pure redundancy.
+    // A cross-project tier root (the flat Live and named-pin-section rows):
+    // being listed there already says the session is pinned, so the star is
+    // pure redundancy - the mark says so wherever host grouping nests it.
     rerender(
       <RailRow
-        node={sessionRailNode(apiNode({ pin_section_id: "research" }))}
+        node={sessionRailNode(apiNode({ pin_section_id: "research" }), { crossProjectTier: true })}
         info={info({ depth: 0 })}
         actions={actions()}
       />,
@@ -1121,6 +1187,58 @@ describe("session row", () => {
       />,
     );
     expect(screen.queryByTestId("favorite-star")).toBeNull();
+  });
+
+  // Host grouping nests a Live tier's rows under host subheaders, so a row's
+  // tier can no longer be inferred from nesting depth: the node carries the
+  // cross-project mark (railNodes' sessionNodes sets it) and RailRow reads
+  // the mark, not the depth.
+  test("a grouped Live row (cross-project mark, nested depth) still names its project", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", project: "prime-radiant" }), { crossProjectTier: true })}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("prime-radiant")).toBeTruthy();
+  });
+
+  test("a pinned grouped Live row (cross-project mark, nested depth) carries no star", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ pin_section_id: "research" }), { crossProjectTier: true })}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("favorite-star")).toBeNull();
+  });
+
+  // A CLUSTER row's own host_id is the synthetic scope prefix of its id
+  // ("cluster", from hubcore's nodeKind fallback), which names no machine -
+  // the row names its members' host instead, the same resolver the grouping
+  // uses, so it cannot sit under a devbox group wearing a "cluster" chip.
+  test("a cluster row names its members' host, not the synthetic cluster id", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(
+          apiNode({
+            row_id: "navigation:cluster:ab",
+            ref: "cluster:ab",
+            session_id: "ab",
+            kind: "cluster",
+            host_id: "cluster",
+            children: [
+              apiNode({ row_id: "navigation:devbox:m1", ref: "devbox:m1", session_id: "m1", host_id: "devbox" }),
+            ],
+          }),
+        )}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-host").textContent).toBe("devbox");
   });
 
   // vbh8/§2.2: a derived amber count of needs-you descendants - distinct
@@ -1148,7 +1266,7 @@ describe("session row", () => {
   // subagent tree - a right-aligned relative timestamp OR the Task-7 Badge,
   // whichever slot applies, plus (on a signal row) the gloss line.
   test("shows a humanized activity line and a relative timestamp", () => {
-    const session = apiNode({ state: "active", age: "2m" });
+    const session = apiNode({ state: "active", updated_at: minutesAgo(2) });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/working/i);
     expect(screen.getByTestId("rail-row-time").textContent).toBe("2m");
@@ -1168,7 +1286,7 @@ describe("session row", () => {
     const session = apiNode({
       state: "idle",
       branch: "fix/thing",
-      age: "2m",
+      updated_at: minutesAgo(2),
       children: [apiNode({ state: "idle", children: [apiNode({ state: "active" })] }), apiNode({ state: "active" })],
     });
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
@@ -1188,7 +1306,7 @@ describe("session row", () => {
   test("keeps a quiet row without active descendants one line", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", age: "2m" }))}
+        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(2) }))}
         info={info({ depth: 1 })}
         actions={actions()}
       />,
@@ -1271,7 +1389,7 @@ describe("session row", () => {
   test("a turn-ended subagent row shows no dot, no gloss - just title + age", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ kind: "subagent", state: "awaiting", age: "4m" }))}
+        node={sessionRailNode(apiNode({ kind: "subagent", state: "awaiting", updated_at: minutesAgo(4) }))}
         info={info({ depth: 1 })}
         actions={actions()}
       />,
@@ -1309,7 +1427,11 @@ describe("session row", () => {
     "a quiet, nested row (%s, depth > 0) is title + age on one line, with no gloss at all",
     (state) => {
       render(
-        <RailRow node={sessionRailNode(apiNode({ state, age: "3h" }))} info={info({ depth: 1 })} actions={actions()} />,
+        <RailRow
+          node={sessionRailNode(apiNode({ state, updated_at: minutesAgo(180) }))}
+          info={info({ depth: 1 })}
+          actions={actions()}
+        />,
       );
       expect(screen.queryByTestId("rail-row-activity")).toBeNull();
       expect(screen.getByText("Fix flaky test")).toBeTruthy();
@@ -1317,15 +1439,17 @@ describe("session row", () => {
     },
   );
 
-  // kata hxjn: the exception above, in the flat Live/Pinned tiers (depth 0).
-  // A quiet row there still names its project, since a flat list gives it no
-  // other way to say which project it belongs to.
+  // kata hxjn: the exception above, in the flat cross-project tiers. A quiet
+  // row there still names its project, since a flat list gives it no other
+  // way to say which project it belongs to.
   test.each(["idle", "ended", "notLoaded", ""] as const)(
-    "a quiet, top-level row (%s, depth 0) names its project on a second line",
+    "a quiet, cross-project tier root (%s) names its project on a second line",
     (state) => {
       render(
         <RailRow
-          node={sessionRailNode(apiNode({ state, age: "3h", project: "prime-radiant" }))}
+          node={sessionRailNode(apiNode({ state, updated_at: minutesAgo(180), project: "prime-radiant" }), {
+            crossProjectTier: true,
+          })}
           info={info({ depth: 0 })}
           actions={actions()}
         />,
@@ -1379,13 +1503,15 @@ describe("session row", () => {
     expect(screen.getByTestId("rail-row-activity").textContent).toBe("working · fix/thing");
   });
 
-  // kata hxjn: a top-level (depth 0) signal row's gloss leads with the
-  // project, then the usual state · branch join - project answers "where",
-  // the rest answers "what's happening", in that reading order.
+  // kata hxjn: a cross-project tier root's gloss leads with the project,
+  // then the usual state · branch join - project answers "where", the rest
+  // answers "what's happening", in that reading order.
   test("a top-level signal row's gloss leads with the project, then state and branch", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "active", branch: "fix/thing", project: "prime-radiant" }))}
+        node={sessionRailNode(apiNode({ state: "active", branch: "fix/thing", project: "prime-radiant" }), {
+          crossProjectTier: true,
+        })}
         info={info({ depth: 0 })}
         actions={actions()}
       />,
@@ -1399,7 +1525,7 @@ describe("session row", () => {
   test("a top-level signal row with an empty project has no orphaned leading separator", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "active", project: "" }))}
+        node={sessionRailNode(apiNode({ state: "active", project: "" }), { crossProjectTier: true })}
         info={info({ depth: 0 })}
         actions={actions()}
       />,
@@ -1437,7 +1563,7 @@ describe("session row", () => {
   test("a dormant row says it has not started, in place of an age that would read as activity", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", age: "4m", dormant: true }))}
+        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(4), dormant: true }))}
         info={info()}
         actions={actions()}
       />,
@@ -1449,7 +1575,7 @@ describe("session row", () => {
   test("a session that has run keeps its age", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", age: "4m", dormant: false }))}
+        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(4), dormant: false }))}
         info={info()}
         actions={actions()}
       />,
@@ -1478,12 +1604,14 @@ describe("session row", () => {
   });
 
   // kata hxjn: a dormant row still needs its project named when it's a
-  // top-level Live/Pinned row - dormancy says nothing about which project a
+  // cross-project tier root - dormancy says nothing about which project a
   // flat row belongs to.
   test("a dormant, top-level row still names its project, with no dot", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", dormant: true, project: "prime-radiant" }))}
+        node={sessionRailNode(apiNode({ state: "idle", dormant: true, project: "prime-radiant" }), {
+          crossProjectTier: true,
+        })}
         info={info({ depth: 0 })}
         actions={actions()}
       />,
@@ -1500,7 +1628,7 @@ describe("session row", () => {
     (state) => {
       render(
         <RailRow
-          node={sessionRailNode(apiNode({ state, age: "now", dormant: true }))}
+          node={sessionRailNode(apiNode({ state, updated_at: minutesAgo(0), dormant: true }))}
           info={info()}
           actions={actions()}
         />,
@@ -1515,12 +1643,39 @@ describe("session row", () => {
   test("a dormant row's tooltip keeps the age its visible line gave up", () => {
     render(
       <RailRow
-        node={sessionRailNode(apiNode({ state: "idle", age: "4m", dormant: true }))}
+        node={sessionRailNode(apiNode({ state: "idle", updated_at: minutesAgo(4), dormant: true }))}
         info={info()}
         actions={actions()}
       />,
     );
     expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · not started · 4m");
+  });
+
+  // ...and that age is a clock like the visible stamp, not a snapshot the model
+  // froze: the tooltip is the row's other place a time is shown.
+  test("a dormant row's tooltip age advances with the rail clock", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-01-01T00:00:00Z");
+      vi.setSystemTime(start);
+      const session = apiNode({
+        state: "idle",
+        dormant: true,
+        updated_at: new Date(start - 1_000).toISOString(),
+      });
+      render(
+        <RailTickProvider>
+          <RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />
+        </RailTickProvider>,
+      );
+      expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · not started · now");
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · not started · 1m");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // --- what the visible row drops stays reachable on hover --------------
@@ -1571,7 +1726,7 @@ describe("session row", () => {
   test("a needs-you count takes the right slot instead of the timestamp", () => {
     const session = apiNode({
       state: "active",
-      age: "2m",
+      updated_at: minutesAgo(2),
       children: [apiNode({ row_id: "child", ref: "local:child", state: "awaiting" })],
     });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
@@ -1580,14 +1735,38 @@ describe("session row", () => {
   });
 
   test("shows no timestamp when the session carries no age", () => {
-    render(
-      <RailRow
-        node={sessionRailNode(apiNode({ state: "active", age: undefined }))}
-        info={info()}
-        actions={actions()}
-      />,
-    );
+    render(<RailRow node={sessionRailNode(apiNode({ state: "active" }))} info={info()} actions={actions()} />);
     expect(screen.queryByTestId("rail-row-time")).toBeNull();
+  });
+
+  // The stamp is a CLOCK, not a snapshot. An idle session produces no further
+  // navigation data, so a label derived only when its summary arrives freezes
+  // at the value it read then ("now") until a full page refresh. The row has to
+  // derive it from the summary's updated_at anchor against the rail clock.
+  test("an idle row's age advances with the rail clock, with no new data", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-01-01T00:00:00Z");
+      vi.setSystemTime(start);
+      // One second old at mount: the label reads "now"...
+      const session = apiNode({
+        state: "idle",
+        updated_at: new Date(start - 1_000).toISOString(),
+      });
+      render(
+        <RailTickProvider>
+          <RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />
+        </RailTickProvider>,
+      );
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("now");
+      // ...and a minute later it must have clicked forward on its own.
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("1m");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("menu offers 'Pin this session…' for an unassigned top-level session, assigning through onPinSession", async () => {
@@ -1797,7 +1976,7 @@ describe("session row", () => {
   // a row. It rides the gloss line, which ellipsizes on its own; the title keeps
   // the whole main line minus the (short, fixed) age.
   test("keeps the branch out of the title's line, on the gloss line instead", () => {
-    const session = apiNode({ state: "active", branch: "main", age: "47m" });
+    const session = apiNode({ state: "active", branch: "main", updated_at: minutesAgo(47) });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
 
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/main/);
@@ -1856,12 +2035,13 @@ describe("session row", () => {
   // was already correct with no rail-side code change; pinned explicitly
   // here (rather than left to incidental coverage from fixtures that never
   // set tier at all) since a live row is the realistic shape a reviewer
-  // would specifically want proof for. The star stays hidden: a depth-0 row
-  // (Live, like a named pin section) never carries the pin star at all.
+  // would specifically want proof for. The star stays hidden: a
+  // cross-project tier root (Live, like a named pin section) never carries
+  // the pin star at all.
   test("Unpin and Rename work on a live-tier duplicate, and its pin star stays hidden", async () => {
     const acts = actions();
     const session = apiNode({ tier: "live", pin_section_id: "research", rename: true });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
+    render(<RailRow node={sessionRailNode(session, { crossProjectTier: true })} info={info()} actions={acts} />);
 
     expect(screen.queryByTestId("favorite-star")).toBeNull();
     const user = await openMenu(/actions for/i);
@@ -1999,6 +2179,99 @@ describe("project row", () => {
     window.history.replaceState({}, "", "/");
   });
 
+  // A host-first copy's + button must launch on the host the copy nests
+  // under, or every host's copy silently spawns on this hub.
+  test("a project copy's New-session button prefills the copy's host", async () => {
+    seedSources([
+      { id: "local", label: "this host", kind: "local", online: true },
+      { id: "devbox", label: "devbox", kind: "appwire", online: true },
+    ]);
+    render(
+      <RailRow
+        node={
+          {
+            ...projectRailNode(apiProject({ working_dir: "/repo/next" })),
+            id: "projectnode:p1@devbox",
+            spawnHost: "devbox",
+          } as ProjectRailNode
+        }
+        info={info({ hasChildren: true })}
+        actions={actions()}
+      />,
+    );
+    await userEvent.setup().click(screen.getByRole("button", { name: "New session in Proj" }));
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new?dir=%2Frepo%2Fnext&host=devbox");
+    window.history.replaceState({}, "", "/");
+    // The copy's own menu makes the same host claim.
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "New session" }));
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new?dir=%2Frepo%2Fnext&host=devbox");
+    window.history.replaceState({}, "", "/");
+  });
+
+  // The Spawn picker refuses an offline host; the copy's own affordances
+  // must not offer a launch that would silently fall back to this hub with
+  // the remote working_dir.
+  test("an offline host copy offers no New-session launch", async () => {
+    seedSources([
+      { id: "local", label: "this host", kind: "local", online: true },
+      { id: "ci-runner", label: "ci-runner", kind: "appwire", online: false },
+    ]);
+    const offlineCopy = {
+      ...projectRailNode(apiProject()),
+      id: "projectnode:p1@ci-runner",
+      spawnHost: "ci-runner",
+    } as ProjectRailNode;
+    render(<RailRow node={offlineCopy} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.queryByRole("button", { name: "New session in Proj" })).toBeNull();
+    await openMenu(/actions for/i);
+    expect(screen.queryByRole("menuitem", { name: "New session" })).toBeNull();
+  });
+
+  // A host the manifest no longer names must not offer a launch either:
+  // Spawn's settled list would refuse the prefilled host and silently start
+  // the session on this hub, with the remote working_dir. The display
+  // default (unknown reads online) is for chips, not launch decisions.
+  test("a copy whose host the manifest no longer names offers no New-session launch", async () => {
+    seedSources([{ id: "local", label: "this host", kind: "local", online: true }]);
+    const removedCopy = {
+      ...projectRailNode(apiProject()),
+      id: "projectnode:p1@devbox",
+      spawnHost: "devbox",
+    } as ProjectRailNode;
+    render(<RailRow node={removedCopy} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.queryByRole("button", { name: "New session in Proj" })).toBeNull();
+    await openMenu(/actions for/i);
+    expect(screen.queryByRole("menuitem", { name: "New session" })).toBeNull();
+  });
+
+  // A local copy's + must claim its host too: the same project's copies
+  // share one working_dir, so the draft's last-chosen host (say devbox)
+  // must not survive a launch from this hub's copy.
+  test("a local copy's New-session button names this hub, not the draft's last choice", async () => {
+    seedSources([{ id: "local", label: "this host", kind: "local", online: true }]);
+    const localCopy = {
+      ...projectRailNode(apiProject({ working_dir: "/repo/next" })),
+      id: "projectnode:p1@local",
+      spawnHost: "local",
+    } as ProjectRailNode;
+    render(<RailRow node={localCopy} info={info({ hasChildren: true })} actions={actions()} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "New session in Proj" }));
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new?dir=%2Frepo%2Fnext&host=local");
+    window.history.replaceState({}, "", "/");
+  });
+
+  test("a local copy's launch survives a manifest in flight (this hub is always launchable)", () => {
+    seedSources([], { loading: true });
+    const localCopy = {
+      ...projectRailNode(apiProject()),
+      id: "projectnode:p1@local",
+      spawnHost: "local",
+    } as ProjectRailNode;
+    render(<RailRow node={localCopy} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.getByRole("button", { name: "New session in Proj" })).toBeTruthy();
+  });
+
   test("changed TreeRowInfo and actions identities still invoke the project RailRow and replace handlers", async () => {
     const observer = vi.fn();
     const firstInfo = info({ hasChildren: true });
@@ -2099,6 +2372,85 @@ describe("project row", () => {
 
     rerender(<RailRow node={projectRailNode(apiProject({ rollup_attn: 0 }))} info={info()} actions={actions()} />);
     expect(screen.queryByText("0")).toBeNull();
+  });
+
+  // A host-first copy claims no aggregate rollup: rollup_state and rollup_attn
+  // are project-wide wire facts, and an honest per-host count would need wire
+  // support the manifest does not carry - the same line the host group row
+  // itself draws. The attention rows still surface in Needs-you.
+  test("a host copy shows no project rollup signal or badge", () => {
+    const copy = {
+      ...projectRailNode(apiProject({ rollup_state: "warning", rollup_attn: 3 })),
+      id: "projectnode:p1@devbox",
+      spawnHost: "devbox",
+    } as ProjectRailNode;
+    render(<RailRow node={copy} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    expect(screen.queryByText("3")).toBeNull();
+  });
+
+  // The canonical copy - the first in rail order, the same copy that
+  // renders the project's overflow - is the one place the project-wide
+  // rollup reads, so a collapsed host-first project still shows its
+  // attention without claiming per-host counts under every host.
+  test("the canonical copy carries the project's rollup, the one place it reads once", () => {
+    const copy = {
+      ...projectRailNode(apiProject({ rollup_state: "warning", rollup_attn: 3 })),
+      id: "projectnode:p1@local",
+      spawnHost: "local",
+      canonicalCopy: true,
+    } as ProjectRailNode;
+    render(<RailRow node={copy} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+    expect(screen.getByText("3")).toBeTruthy();
+  });
+
+  // railNodes mints a fresh node when the canonical flip happens with the
+  // copy's own id unchanged (a host-order change moved the first copy), so
+  // the memo comparator must read the fields ProjectRow reads or the
+  // memoized row keeps rendering the stale rollup.
+  test("a canonical flip re-renders the memoized row, moving the rollup with it", () => {
+    const project = apiProject({ rollup_state: "warning", rollup_attn: 3 });
+    const before = {
+      ...projectRailNode(project),
+      id: "projectnode:p1@devbox",
+      spawnHost: "devbox",
+    } as ProjectRailNode;
+    const after = {
+      ...projectRailNode(project),
+      id: "projectnode:p1@devbox",
+      spawnHost: "devbox",
+      canonicalCopy: true,
+    } as ProjectRailNode;
+    // Stable info/actions identities, the way Rail's Tree hands them down:
+    // the node is the only thing that changed, so the memo decision rides
+    // the node comparator alone.
+    const rowInfo = info();
+    const acts = actions();
+    const { rerender } = render(<RailRow node={before} info={rowInfo} actions={acts} />);
+    expect(screen.queryByText("3")).toBeNull();
+    rerender(<RailRow node={after} info={rowInfo} actions={acts} />);
+    expect(screen.getByText("3")).toBeTruthy();
+  });
+
+  // Project mutations are keyed by (source, project ID) - the row's menu
+  // closes over the project object - so an ownership change (a host
+  // attached or detached) must re-render the row or its actions fire with
+  // the stale source list.
+  test("an ownership change re-renders the memoized row, so actions carry the new sources", async () => {
+    const before = {
+      ...projectRailNode(apiProject({ sources: ["local", "devbox"] })),
+      id: "projectnode:p1",
+    } as ProjectRailNode;
+    const afterProject = apiProject({ sources: ["local"] });
+    const after = { ...projectRailNode(afterProject), id: "projectnode:p1" } as ProjectRailNode;
+    const acts = actions();
+    const rowInfo = info();
+    const { rerender } = render(<RailRow node={before} info={rowInfo} actions={acts} />);
+    rerender(<RailRow node={after} info={rowInfo} actions={acts} />);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    expect(acts.onToggleFavoriteProject).toHaveBeenCalledWith(afterProject);
   });
 
   test("menu offers 'Archive project' for an active project and calls onToggleArchiveProject", async () => {
@@ -2546,9 +2898,9 @@ describe("shared right slot (RailRow.module.css)", () => {
 // before pinning was scoped, or by a direct API call - and rendering the star
 // there is a dead end: the menu offers no way to take it off. Suppressing it
 // keeps "only top-level sessions can be pinned" true in both directions.
-// Depth 0 rows are rendered at depth 1 here so the KIND gate alone decides -
-// the depth-0 flat tiers (Live, named pin sections) never show the star at
-// all (see "shows a pin star on a nested row…" above).
+// Rows render unmarked here so the KIND gate alone decides - the marked
+// cross-project tier roots (Live, named pin sections) never show the star
+// at all (see "shows a pin star on a nested row…" above).
 describe("pin star follows the same scoping as the pin action", () => {
   test("a top-level session shows its star", () => {
     render(
@@ -2684,4 +3036,86 @@ test("an offline host's badge survives a manifest revalidation", () => {
   // longer names is the unchanged "unknown host" case and reads as online.
   act(() => seedSources([{ id: "local", label: "Local", kind: "local", online: true }]));
   expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+});
+
+// The rail's organize-by host group row (a "Host, then project" top group, a
+// "Project, then host" branch inside a project, or a Live-section
+// subheader): a synthetic branch row with the project row's anatomy, a drawn
+// host glyph where the signal dot would sit, and the session rows' own
+// offline convention.
+describe("host group row", () => {
+  test("leads with the drawn host glyph and names the host by its id", () => {
+    render(<RailRow node={hostGroupNode()} info={info({ hasChildren: true })} actions={actions()} />);
+    const glyph = screen.getByTestId("rail-row-host-glyph");
+    expect(glyph.tagName.toLowerCase()).toBe("svg");
+    expect(glyph.getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByText("devbox")).toBeTruthy();
+  });
+
+  test("names a host by its manifest label rather than its id, in the tooltip too", () => {
+    const online = render(
+      <RailRow
+        node={hostGroupNode({ id: "host:local", host: { id: "local", label: "this host", online: true } })}
+        info={info({ hasChildren: true })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("this host")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-host-group").getAttribute("title")).toBe("Host this host");
+    online.unmount();
+    render(
+      <RailRow
+        node={hostGroupNode({ id: "host:local", host: { id: "local", label: "this host", online: false } })}
+        info={info({ hasChildren: true })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-host-group").getAttribute("title")).toBe("Host this host is offline");
+  });
+
+  test("an online host reads plain and its tooltip names just the host", () => {
+    render(<RailRow node={hostGroupNode()} info={info({ hasChildren: true })} actions={actions()} />);
+    const label = screen.getByText("devbox");
+    expect(label.className).not.toContain(railStyles.hostOffline as string);
+    expect(screen.queryByTestId("rail-row-host-group-offline")).toBeNull();
+    expect(screen.getByTestId("rail-row-host-group").getAttribute("title")).toBe("Host devbox");
+  });
+
+  test("an offline host reads italic-dimmed with an '(offline)' suffix and says so in its tooltip", () => {
+    render(
+      <RailRow
+        node={hostGroupNode({ id: "host:ci-runner", host: { id: "ci-runner", label: "ci-runner", online: false } })}
+        info={info({ hasChildren: true })}
+        actions={actions()}
+      />,
+    );
+    const label = screen.getByText("ci-runner");
+    expect(label.className).toContain(railStyles.hostOffline as string);
+    expect(screen.getByTestId("rail-row-host-group-offline").textContent).toBe(" (offline)");
+    expect(screen.getByTestId("rail-row-host-group").getAttribute("title")).toBe("Host ci-runner is offline");
+  });
+
+  test("activates on label click, like its sibling rows", async () => {
+    const rowInfo = info({ hasChildren: true });
+    render(<RailRow node={hostGroupNode()} info={rowInfo} actions={actions()} />);
+    await userEvent.setup().click(screen.getByText("devbox"));
+    expect(rowInfo.activate).toHaveBeenCalledTimes(1);
+  });
+
+  test("carries a trailing chevron that toggles", async () => {
+    const rowInfo = info({ hasChildren: true, expanded: false });
+    render(<RailRow node={hostGroupNode()} info={rowInfo} actions={actions()} />);
+    await userEvent.setup().click(screen.getByTestId("rail-chevron"));
+    expect(rowInfo.toggle).toHaveBeenCalledTimes(1);
+  });
+
+  // A host is infrastructure, not triage: no state dot, no rollup badge (the
+  // manifest carries no per-host attention count), and nothing to act on -
+  // the rows under the group keep their own signals and menus.
+  test("carries no signal dot, no badge, and nothing to click but itself", () => {
+    render(<RailRow node={hostGroupNode()} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.queryByTestId("rail-row-signal")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByTestId("rail-row-host-group").textContent).toBe("devbox");
+  });
 });

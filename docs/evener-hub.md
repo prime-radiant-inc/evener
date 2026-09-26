@@ -381,6 +381,61 @@ Running session daemons keep the binary they were spawned from (see the
 "Existing daemons keep the `evener` binary" note below); restart a session
 to move it to the new build.
 
+### Deploying to remote hosts
+
+A host that runs a build other than the hub's is upgraded on attach **when the
+hub has a build to install**: it installs its own build over the host's
+`evener`, restarts the host's hub, and attaches only after the running build
+matches. With no build to install the host keeps its own build and attaches
+anyway, because the appwire protocol — not the build label — decides
+compatibility, and the hub logs the difference. Two startup flags give it a
+build to push:
+
+- `-deploy-binary <path>` — a pre-built `evener` for the host's target. The hub
+  reads the artifact's own `GOOS`/`GOARCH` and refuses a mismatch before
+  anything is pushed; the refusal is permanent, since a retry re-reads the same
+  file. The artifact must be executable, and it must be evener: the hub reads
+  the executable's main package from its buildinfo and refuses any other Go
+  program before anything is pushed, so a stray binary cannot replace the
+  host's `evener`. This path needs no Go toolchain and no source tree on the
+  controller.
+- `-build-source <path>` — an evener checkout's module root. The hub
+  cross-compiles the host's target on the controller, so this path needs Go and
+  the source there; it refuses a dirty tree, an ignored-but-compiled `.go` file,
+  and a path that is not an evener checkout.
+
+When both are set, `-deploy-binary` wins and the hub logs the choice. A deploy
+writes the path the host runs (`evener_path` when the entry sets it, else what
+`command -v evener` resolves to, else the installer's default
+`~/.local/bin/evener`) atomically — a staged temp file on the host, its length
+verified, then a single `mv` into place — so a failed or interrupted deploy
+never leaves a partial binary. The `-build-source` path stamps the controller's
+build identity in-process, so the installed binary's `launch-check` version is
+exactly the controller's; a `-deploy-binary` artifact instead carries whatever
+identity the operator built. That difference is checked where it can be seen:
+after a deploy the controller re-reads the launch contract on the host, and if
+the host still reports a build other than the controller's it refuses terminally
+instead of attaching — the artifact was not built from the controller's tree, and
+retrying would re-push the same file. So a mismatched artifact is refused before
+attach, and the hub never serves a host on a build it did not stamp.
+
+With neither flag the push path is unavailable. A release or snapshot
+controller still installs through `install.sh` on the host (the installer
+fallback); where that is refused — a dev or dirty controller, or a release
+build with no stamped tag — nothing is installed, so the host keeps its own
+build and attaches, and the hub logs which build it kept. The fallback is also
+refused for a snapshot
+controller once the mutable `snapshot` tag has moved past this controller's
+commit. For a snapshot controller the fallback writes the binary before its
+commit is proven, so prefer `-deploy-binary` or `-build-source`; the push path
+is the one the refusal names.
+
+When a deploy fails, the refusal lands in that host's attach error — its row in
+Settings — naming the flag to set. A host that attached on its own build raises
+no error; the hub's log line is where its build is recorded. Set one of the two
+flags when you want such a host moved onto the hub's build: that is what makes
+the hub converge it.
+
 ### Trace browser AppWire traffic
 
 Use `--appwire-trace` to diagnose excessive browser WebSocket traffic. The flag

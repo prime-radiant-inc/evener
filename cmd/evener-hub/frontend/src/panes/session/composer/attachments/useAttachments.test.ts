@@ -117,14 +117,20 @@ interface FakeEditor extends TextEditor {
   getCursor(): number;
 }
 
-function makeFakeEditor(initialText = "", initialCursor = initialText.length): FakeEditor {
+function makeFakeEditor(
+  initialText = "",
+  initialCursor = initialText.length,
+  initialSelection: { start: number; end: number } = { start: initialCursor, end: initialCursor },
+): FakeEditor {
   let text = initialText;
   let cursor = initialCursor;
+  let selection: { start: number; end: number } = initialSelection;
   return {
-    read: () => ({ text, cursor }),
+    read: () => ({ text, cursor, selection }),
     write: (nextText, nextCursor) => {
       text = nextText;
       cursor = nextCursor;
+      selection = { start: nextCursor, end: nextCursor };
     },
     getText: () => text,
     getCursor: () => cursor,
@@ -143,6 +149,25 @@ async function flush(): Promise<void> {
     await Promise.resolve();
   });
 }
+
+test("an accepted attachment replaces a non-collapsed selection with its marker", async () => {
+  const editor = makeFakeEditor("keep SELECTED tail", 13, { start: 5, end: 13 });
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("shot.png")], () => {});
+  });
+
+  // The selection is replaced, not pushed aside: everything outside it survives
+  // and the cursor lands after the marker.
+  expect(editor.getText()).toBe("keep [image 1] tail");
+  expect(editor.getCursor()).toBe("keep [image 1]".length);
+
+  // ingestFiles also starts the encode; drain it so the test leaves nothing
+  // settling after it returns, as its siblings in this file do.
+  await flush();
+  expect(result.current.items[0]).toMatchObject({ pending: false });
+});
 
 test("replaceWithSettled hydrates recovery attachments without re-encoding", () => {
   const editor = makeFakeEditor();

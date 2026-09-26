@@ -46,46 +46,58 @@ type delegateTreeControllerConfig struct {
 type delegateTreeController struct {
 	mu sync.Mutex
 
-	store       *delegatestore.Store
-	durable     delegatestore.State
-	live        map[string]*delegateLiveState
-	rootRuntime *Session
+	store   *delegatestore.Store
+	durable delegatestore.State
+	// delegateChildren is the parent→children edge set over durable — the
+	// index subtreeMembersLocked walks instead of re-scanning every durable
+	// record per tree level. The constructor derives it from the folded
+	// journal and appendLocked maintains it on accepted delegate_created
+	// events, the only event kind that writes parentage, so it stays a pure
+	// function of durable. Root-level delegates contribute no edge: no
+	// delegate carries the empty id, so a membership walk never follows a
+	// ""-keyed edge. Guarded by mu.
+	delegateChildren map[string]map[string]struct{}
+	live             map[string]*delegateLiveState
+	rootRuntime      *Session
 
-	rootSessionID       string
-	stateDir            string
-	worktreeRoot        string
-	now                 func() time.Time
-	newDelegateID       func() string
-	turnLimit           int
-	driveLimit          int
-	maxRetainedTerminal int
-	turnsInUse          int
-	drivesInUse         int
-	nextToken           uint64
-	reservations        map[uint64]*delegateStartRecord
-	inputClaims         map[uint64]delegateLease
-	steeringClaims      map[uint64]*delegateSteeringClaim
-	modelClaims         map[uint64]*delegateModelRequestClaim
-	settlementClaims    map[uint64]*delegateSettlementClaim
-	work                map[uint64]*delegateShellWork
-	deliveries          map[uint64]*delegateDeliveryAdmission
-	deliveryClaims      map[string]*delegateDeliveryClaim
-	quietClaims         map[uint64]*delegateQuietAttentionClaim
-	attentionWakeIDs    map[string]map[string]struct{}
-	watchEnqueues       map[uint64]*delegateWatchReceipt
-	watchDeliveries     map[uint64]*delegateWatchReceipt
-	reclamations        map[uint64]*delegateRuntimeReclamationClaim
-	reclaiming          map[string]uint64
-	stop                *delegateStopState
-	stopDriver          *delegateStopDriver
-	evidenceVersion     uint64
-	retirementClaim     *RetirementClaim
-	closing             bool
-	reconcileOrder      []delegateLease
-	runStarts           map[delegateLease]delegatestore.RunTrigger
-	owedAdmission       bool
-	emitUpdate          func(delegateUpdatePlan)
-	attentionOpen       delegateAttentionWriterOpener
+	rootSessionID         string
+	stateDir              string
+	worktreeRoot          string
+	now                   func() time.Time
+	newDelegateID         func() string
+	turnLimit             int
+	driveLimit            int
+	maxRetainedTerminal   int
+	turnsInUse            int
+	drivesInUse           int
+	nextToken             uint64
+	reservations          map[uint64]*delegateStartRecord
+	inputClaims           map[uint64]delegateLease
+	steeringClaims        map[uint64]*delegateSteeringClaim
+	modelClaims           map[uint64]*delegateModelRequestClaim
+	settlementClaims      map[uint64]*delegateSettlementClaim
+	work                  map[uint64]*delegateShellWork
+	deliveries            map[uint64]*delegateDeliveryAdmission
+	deliveryClaims        map[string]*delegateDeliveryClaim
+	quietClaims           map[uint64]*delegateQuietAttentionClaim
+	attentionWakeIDs      map[string]map[string]struct{}
+	attentionRestoreHolds map[string]int
+	idleReleaseTimers     map[string]idleReleaseTimerHandle
+	idleReleaseArmSeq     uint64
+	watchEnqueues         map[uint64]*delegateWatchReceipt
+	watchDeliveries       map[uint64]*delegateWatchReceipt
+	reclamations          map[uint64]*delegateRuntimeReclamationClaim
+	reclaiming            map[string]uint64
+	stop                  *delegateStopState
+	stopDriver            *delegateStopDriver
+	evidenceVersion       uint64
+	retirementClaim       *RetirementClaim
+	closing               bool
+	reconcileOrder        []delegateLease
+	runStarts             map[delegateLease]delegatestore.RunTrigger
+	owedAdmission         bool
+	emitUpdate            func(delegateUpdatePlan)
+	attentionOpen         delegateAttentionWriterOpener
 }
 
 type delegateActor struct {
@@ -158,9 +170,19 @@ type delegateLiveState struct {
 	recoveryRunnerPending bool
 	activityAt            time.Time
 	productiveActivityAt  time.Time
-	quietSequence         uint64
-	quietNotified         bool
-	quietClaim            *delegateQuietAttentionClaim
+	// activityPublishedAt is the activity time ReportActivityPhase last
+	// published a snapshot for; see delegateActivityPublishInterval.
+	activityPublishedAt time.Time
+	quietSequence       uint64
+	quietNotified       bool
+	// quietNotifiedAt is when the current stretch's most recent quiet wake was
+	// admitted. It re-baselines the repeat cadence: while quietNotified holds,
+	// the next wake is due one more delegateQuietWindow after this instant, so a
+	// permanently silent delegate keeps surfacing once per window instead of
+	// going dark after a single notification. Activity clears quietNotified via
+	// ReportActivityPhase, which resets the baseline to activityAt.
+	quietNotifiedAt time.Time
+	quietClaim      *delegateQuietAttentionClaim
 }
 
 type delegateSnapshot struct {
@@ -261,6 +283,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 	c := &delegateTreeController{
 		store:               cfg.store,
 		durable:             durable,
+		delegateChildren:    deriveDelegateChildrenIndex(durable),
 		live:                make(map[string]*delegateLiveState),
 		rootRuntime:         cfg.rootRuntime,
 		rootSessionID:       cfg.rootSessionID,
@@ -282,6 +305,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		deliveryClaims:      make(map[string]*delegateDeliveryClaim),
 		quietClaims:         make(map[uint64]*delegateQuietAttentionClaim),
 		attentionWakeIDs:    make(map[string]map[string]struct{}),
+		idleReleaseTimers:   make(map[string]idleReleaseTimerHandle),
 		watchEnqueues:       make(map[uint64]*delegateWatchReceipt),
 		watchDeliveries:     make(map[uint64]*delegateWatchReceipt),
 		reclamations:        make(map[uint64]*delegateRuntimeReclamationClaim),
@@ -322,6 +346,12 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 			// tree the activity clock is that fence, so a shape change moves
 			// it exactly as a job starting or finishing does.
 			c.rootRuntime.noteJobTreeShapeChange()
+			// delegate_created is the only event kind that writes parentage,
+			// so maintaining the children index here keeps it a pure
+			// function of durable.
+			if aggregate := c.durable[event.DelegateID]; aggregate != nil {
+				c.addChildEdgeLocked(event.DelegateID, aggregate.Descriptor.ParentDelegateID)
+			}
 		}
 	}
 	return appended, nil
@@ -398,7 +428,7 @@ func (c *delegateTreeController) ownedStableWorktreeSnapshots(owner *Session) []
 // delegateIsAncestorLocked reports whether ancestorID is receiverID or any of
 // its transitive parents in the delegate tree. Callers must hold c.mu. The
 // walk is cycle-guarded: a corrupt journal with a parent loop cannot hang the
-// controller mutex (the same property subtreeMembersLocked's fixed-point
+// controller mutex (the same property subtreeMembersLocked's visited-set
 // closure provides downward).
 func (c *delegateTreeController) delegateIsAncestorLocked(ancestorID, receiverID string) bool {
 	if ancestorID == "" || receiverID == "" {
@@ -423,18 +453,39 @@ func (c *delegateTreeController) delegateIsAncestorLocked(ancestorID, receiverID
 	return false
 }
 
-// subtreeReceiverKeysForDelegate returns the (childSessionID, delegateID)
-// receiver keys for delegateID and every member of the subtree rooted at it —
-// the identities a stop of delegateID leaves with surviving watches. Takes
-// c.mu itself.
-func (c *delegateTreeController) subtreeReceiverKeysForDelegate(delegateID string) map[string]string {
+// receiverWatchKey is one receiver identity an armed watch may be keyed to. A
+// delegate-keyed watch (the observer shape) carries both the member session and
+// its delegate; a session-keyed watch (the configureDescendantReceiverWatch
+// shape) carries only the session.
+type receiverWatchKey struct {
+	sessionID  string
+	delegateID string
+}
+
+// subtreeReceiverKeysForDelegate returns the receiver keys for delegateID and
+// every member of the subtree rooted at it — the identities a stop of
+// delegateID leaves with surviving watches. Each member contributes its
+// delegate-keyed pair (session, delegate) and its session-keyed pair
+// (session, ""); each member's live runtime also contributes a session-keyed key
+// for every ordinary nested subagent session below it, because a
+// configureDescendantReceiverWatch installed by such a subagent keys the watch
+// to that subagent's session, which is never any delegate's ChildSessionID.
+//
+// Takes c.mu for the durable walk, then releases it before walking the runtime
+// trees (liveSubagentSessions takes subagent locks, which must not nest under
+// c.mu).
+func (c *delegateTreeController) subtreeReceiverKeysForDelegate(delegateID string) []receiverWatchKey {
 	if c == nil || delegateID == "" {
 		return nil
 	}
+	type memberReceiver struct {
+		delegateID string
+		sessionID  string
+		runtime    *Session
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	members := c.subtreeMembersLocked(delegateID)
-	keys := make(map[string]string, len(members))
+	memberReceivers := make([]memberReceiver, 0, len(members))
 	for id, aggregate := range c.durable {
 		if aggregate == nil {
 			continue
@@ -442,24 +493,151 @@ func (c *delegateTreeController) subtreeReceiverKeysForDelegate(delegateID strin
 		if _, member := members[id]; !member {
 			continue
 		}
-		if child := aggregate.Descriptor.ChildSessionID; child != "" {
-			keys[id] = child
+		child := aggregate.Descriptor.ChildSessionID
+		if child == "" {
+			continue
+		}
+		receiver := memberReceiver{delegateID: id, sessionID: child}
+		if live := c.live[id]; live != nil {
+			receiver.runtime = live.runtime
+		}
+		memberReceivers = append(memberReceivers, receiver)
+	}
+	_, delegateSessions := c.liveDelegateRuntimesLocked()
+	c.mu.Unlock()
+
+	keys := make([]receiverWatchKey, 0, 2*len(memberReceivers))
+	seenSessions := make(map[string]struct{}, 2*len(memberReceivers))
+	addSessionKey := func(sessionID string) {
+		if sessionID == "" {
+			return
+		}
+		if _, seen := seenSessions[sessionID]; seen {
+			return
+		}
+		seenSessions[sessionID] = struct{}{}
+		keys = append(keys, receiverWatchKey{sessionID: sessionID})
+	}
+	for _, receiver := range memberReceivers {
+		keys = append(keys, receiverWatchKey{sessionID: receiver.sessionID, delegateID: receiver.delegateID})
+		addSessionKey(receiver.sessionID)
+		if receiver.runtime == nil {
+			continue
+		}
+		for _, descendant := range receiver.runtime.liveSubagentSessionsBounded(delegateSessions) {
+			if descendant == nil {
+				continue
+			}
+			addSessionKey(descendant.ID())
 		}
 	}
 	return keys
 }
 
+// liveDelegateRuntimesLocked returns delegateID -> live runtime session and the
+// set of session IDs that are themselves live delegate runtimes (from each
+// live runtime's ID and every durable delegate's ChildSessionID). Takes c.mu.
+func (c *delegateTreeController) liveDelegateRuntimesLocked() (map[string]*Session, map[string]struct{}) {
+	runtimes := make(map[string]*Session, len(c.live))
+	delegateSessions := make(map[string]struct{}, len(c.live))
+	for id, live := range c.live {
+		if live == nil || live.runtime == nil {
+			continue
+		}
+		runtimes[id] = live.runtime
+		if sessionID := live.runtime.ID(); sessionID != "" {
+			delegateSessions[sessionID] = struct{}{}
+		}
+	}
+	for _, aggregate := range c.durable {
+		if aggregate == nil {
+			continue
+		}
+		if sessionID := aggregate.Descriptor.ChildSessionID; sessionID != "" {
+			delegateSessions[sessionID] = struct{}{}
+		}
+	}
+	return runtimes, delegateSessions
+}
+
+// delegateAnchoringSession returns the delegate whose receiver authority covers
+// sessionID: the delegate whose ChildSessionID is sessionID, or the delegate
+// whose live runtime's ordinary-subagent subtree contains it. Returns "" when no
+// durable delegate anchors it (for example an ordinary subagent of the root
+// runtime). Resolves the runtime-tree walk outside c.mu because
+// liveSubagentSessions takes subagent locks, which must not nest under c.mu. The
+// walk stops at live delegate runtimes, so a session belongs to exactly its
+// NEAREST delegate ancestor and the result does not depend on map order.
+func (c *delegateTreeController) delegateAnchoringSession(sessionID string) string {
+	if c == nil || sessionID == "" {
+		return ""
+	}
+	c.mu.Lock()
+	if owner := c.delegateOwnerOfSessionLocked(sessionID); owner != "" {
+		c.mu.Unlock()
+		return owner
+	}
+	runtimes, delegateSessions := c.liveDelegateRuntimesLocked()
+	c.mu.Unlock()
+	for id, runtime := range runtimes {
+		for _, descendant := range runtime.liveSubagentSessionsBounded(delegateSessions) {
+			if descendant != nil && descendant.ID() == sessionID {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// delegateOwnerOfSessionLocked returns the delegate whose descriptor names
+// sessionID as its child session, or "" when no durable delegate owns it. A
+// delegate's ChildSessionID is freshly minted (identifier.MustNewSessionID), so
+// at most one durable delegate owns a session and the walk is deterministic.
+// Takes c.mu.
+func (c *delegateTreeController) delegateOwnerOfSessionLocked(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	for id, aggregate := range c.durable {
+		if aggregate != nil && aggregate.Descriptor.ChildSessionID == sessionID {
+			return id
+		}
+	}
+	return ""
+}
+
 // watchClearAuthority reports whether the calling session may clear a
-// receiver-keyed watch whose receiver is receiverDelegateID: the receiver must
-// be the session's own delegate or a descendant of it. Clear authority follows
-// receiver direction — a source delegate may NOT clear its ancestor's watch on
-// it, and a sibling may not clear another sibling's. actorSessionID verifies
-// root identity directly: an empty owningDelegateID alone is NOT evidence of
-// being the root (a non-delegate subagent that inherits the controller also
-// has one), so only the session that IS the root runtime gets the root grant.
-func (c *delegateTreeController) watchClearAuthority(actorSessionID, actorDelegateID, receiverDelegateID string) bool {
-	if c == nil || receiverDelegateID == "" {
+// receiver-keyed watch. Clear authority follows receiver direction — a source
+// delegate may NOT clear its ancestor's watch on it, and a sibling may not
+// clear another sibling's. actorSessionID verifies root identity directly: an
+// empty owningDelegateID alone is NOT evidence of being the root (a
+// non-delegate subagent that inherits the controller also has one), so only the
+// session that IS the root runtime gets the root grant.
+//
+// For a delegate-keyed receiver the actor must be the receiver delegate's
+// ancestor (or root). For a session-keyed receiver (empty receiverDelegateID,
+// the configureDescendantReceiverWatch shape) the receiver session itself may
+// always clear, root may clear any, and a delegate may clear when it is an
+// ancestor of the delegate that anchors the receiver session — the delegate that
+// owns it directly, or the nearest delegate ancestor of an ordinary nested
+// subagent session. Both shapes resolve to one anchor delegate, so the
+// root/ancestor rule is applied once.
+func (c *delegateTreeController) watchClearAuthority(actorSessionID, actorDelegateID, receiverSessionID, receiverDelegateID string) bool {
+	if c == nil {
 		return false
+	}
+	anchor := receiverDelegateID
+	if anchor == "" {
+		if receiverSessionID == "" {
+			return false
+		}
+		// The receiving session may always clear a watch that delivers to it.
+		if receiverSessionID == actorSessionID {
+			return true
+		}
+		// Resolved before taking c.mu: the runtime-tree walk takes subagent
+		// locks, which must not nest under c.mu.
+		anchor = c.delegateAnchoringSession(receiverSessionID)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -474,7 +652,7 @@ func (c *delegateTreeController) watchClearAuthority(actorSessionID, actorDelega
 		// (authorizeMutationLocked admits only direct children, plus root).
 		return true
 	}
-	return c.delegateIsAncestorLocked(actorDelegateID, receiverDelegateID)
+	return anchor != "" && c.delegateIsAncestorLocked(actorDelegateID, anchor)
 }
 
 func (c *delegateTreeController) stableWorktreeSnapshotForOwner(owner *Session, delegateID string) (stableDelegateWorktreeSnapshot, error) {
@@ -769,6 +947,27 @@ func (c *delegateTreeController) Snapshot() delegateUpdatePlan {
 		rows = append(rows, c.captureDelegateSnapshotLocked(id))
 	}
 	return delegateUpdatePlan{rows: rows}
+}
+
+// snapshotsForChildSession captures, in id order, only the delegates whose
+// descriptor names childSessionID. The per-child drive gates ask for one
+// child's row every round, so capturing the whole tree here would make a
+// round cost O(children^2) deep copies.
+func (c *delegateTreeController) snapshotsForChildSession(childSessionID string) []delegateSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var ids []string
+	for id, aggregate := range c.durable {
+		if aggregate != nil && aggregate.Descriptor.ChildSessionID == childSessionID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	rows := make([]delegateSnapshot, 0, len(ids))
+	for _, id := range ids {
+		rows = append(rows, c.captureDelegateSnapshotLocked(id))
+	}
+	return rows
 }
 
 // blockingDelegateIDs returns this session's direct child delegates whose

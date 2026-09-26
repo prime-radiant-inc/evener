@@ -200,9 +200,15 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// The read is under the transcript door, so no session append can poison the
 	// writer between here and the entries below -- every one of them goes
 	// through this lock.
-	if s.attachedTranscript().Poisoned() {
+	//
+	// A closed writer is refused the same way: its ordinary appends are silent
+	// no-ops, so the entries that make the fold survive a restart would not land
+	// either, and the fold would be announced and lost exactly as it is under
+	// poison. Both facts come from the one helper so the gate cannot know fewer
+	// than the claims do.
+	if refusal := refuseOnUnhealthyTranscript(s.attachedTranscript()); refusal != nil {
 		s.attentionMu.Unlock()
-		return nil, false, errTranscriptRefusesRecords()
+		return nil, false, refusal
 	}
 	s.mu.Lock()
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
@@ -230,8 +236,24 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// fold still in flight must re-snapshot to publish after this
 	// one (its revision check fails otherwise), so no older snapshot can
 	// need the pruned entries — and snapAppends >= persistedAppendLogBase
-	// for the same reason, since only publications advance the base.
-	rewriteTail := append([]schema.Turn(nil), s.persistedAppendLog[snapAppends-s.persistedAppendLogBase:]...)
+	// for the same reason, since only publications advance the base. A pair
+	// whose write failed cleanly becomes a tombstone in place
+	// (tombstoneLastPairPersistedLocked) precisely so these positions stay
+	// stable across a snapshot taken mid-write; the empty marker turns are
+	// filtered out below and never reach the transcript. The start clamp
+	// bounds both ends as invariant armor, not an expected path: the floor
+	// keeps a negative index from panicking the slice should the base
+	// invariant ever break, and the ceiling keeps a shrunk log from doing
+	// the same to a stale snapshot's start.
+	tailStart := snapAppends - s.persistedAppendLogBase
+	tailStart = max(0, min(tailStart, len(s.persistedAppendLog)))
+	rewriteTail := make([]schema.Turn, 0, len(s.persistedAppendLog)-tailStart)
+	for _, persisted := range s.persistedAppendLog[tailStart:] {
+		if persisted.Kind == "" {
+			continue // a tombstone: its write recorded nothing, so nothing re-appends
+		}
+		rewriteTail = append(rewriteTail, persisted)
+	}
 	s.persistedAppendLogBase += len(s.persistedAppendLog)
 	s.persistedAppendLog = nil
 	if onPublishLocked != nil {

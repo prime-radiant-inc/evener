@@ -719,7 +719,9 @@ func TestSkillDelivery_FailedReloadNotifiesNextDispatch(t *testing.T) {
 	explanationSeen := false
 	for _, msg := range adapter.Requests()[0].Messages {
 		for _, part := range msg.Content {
-			if part.Kind == llm.ContentText && strings.Contains(part.Text, `Skill "opaque" is no longer available from `+missing) {
+			// The explanation is machinery the session manufactured; its
+			// part must carry the flag.
+			if part.Kind == llm.ContentText && strings.Contains(part.Text, `Skill "opaque" is no longer available from `+missing) && part.Machinery {
 				explanationSeen = true
 			}
 		}

@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Idea C — Boundary beacon · steering almost-delivered</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --surface-0: #191918;
+    --surface-canvas: #1D1D1B;
+    --surface-1: #232320;
+    --surface-2: #232320;
+    --surface-inset: #20201E;
+    --hover-1: #2B2B28;
+    --hover-2: #33332F;
+    --field: #292926;
+    --edge: #34342F;
+    --edge-strong: #51514A;
+    --ink-hi: #F2F1EB;
+    --ink-mid: #B0AFA6;
+    --ink-low: #99998F;
+    --attention: #F68F3C;
+    --alive: #3DBB72;
+    --danger: #EE5C61;
+    --accent: #3D9AFF;
+    --accent-ink: #459EFF;
+    --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-prose: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --session-measure: 44rem;
+    --speaker-gap: 10px;
+    --speaker-gutter: 34px;
+    --radius-chip: 3px;
+    --radius-control: 4px;
+    --radius-pane: 4px;
+  --radius-pill: 999px;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: #111110; }
+  body { font-family: var(--font-sans); font-size: 15px; color: var(--ink-hi); display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 32px 24px 64px; }
+
+  .ideahead { max-width: 1440px; width: 100%; }
+  .ideahead .eyebrow { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-low); font-weight: 500; }
+  .ideahead h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; margin: 6px 0 4px; }
+  .ideahead .thesis { color: var(--ink-mid); max-width: 68ch; line-height: 1.6; }
+  .ideahead ul { margin-top: 10px; color: var(--ink-low); font-size: 13px; line-height: 1.7; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+  .ideahead li::before { content: "— "; color: var(--edge-strong); }
+
+  .frame { width: 1440px; height: 900px; flex: none; background: var(--surface-0); border: 1px solid #0c0c0b; box-shadow: 0 24px 80px #00000099; display: grid; grid-template-columns: 260px 1fr; overflow: hidden; border-radius: 6px; }
+
+  .rail { background: var(--surface-canvas); border-right: 1px solid var(--edge); }
+  .rail .actions { display: flex; gap: 8px; padding: 12px; align-items: center; }
+  .rail .actions .act { font-size: 13px; color: var(--ink-mid); }
+  .rail .actions .new { color: var(--ink-hi); font-weight: 500; }
+  .railgroup { padding: 8px 12px; }
+  .railgroup .grouplabel { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-low); font-weight: 500; margin-bottom: 6px; }
+  .sess { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius-control); font-size: 13px; }
+  .sess .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .sess .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess .meta { font-family: var(--font-mono); font-size: 11px; color: var(--ink-low); }
+  .sess.live-selected { background: var(--hover-2); }
+  .sess .dot.working { background: var(--alive); }
+  .sess .dot.needs { background: var(--attention); }
+  .sess .dot.idle { border: 1px solid var(--edge-strong); }
+  .sess.dim { color: var(--ink-low); }
+
+  .pane { display: flex; flex-direction: column; min-width: 0; position: relative; }
+  .titlebar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--edge); }
+  .titlebar .title { font-size: 15px; font-weight: 600; }
+  .modelchip { font-family: var(--font-mono); font-size: 11px; color: var(--ink-mid); background: var(--surface-1); border: 1px solid var(--edge); padding: 2px 6px; border-radius: var(--radius-chip); }
+  .titlebar .right { margin-left: auto; display: flex; gap: 8px; }
+  .titlebar .ghostbtn { font-size: 13px; color: var(--ink-mid); }
+
+  .transcript { flex: 1; overflow: hidden; padding: 20px 32px 12px; }
+  .column { max-width: var(--session-measure); display: flex; flex-direction: column; }
+  .column > * + * { margin-top: 8px; }
+
+  .speaker { display: flex; gap: var(--speaker-gap); align-items: flex-start; padding: 4px 0; }
+  .speaker.opens-exchange { margin-top: 24px; }
+  .avatar { width: 24px; height: 24px; border-radius: 6px; flex: none; background: linear-gradient(160deg, #4d5058, #2e2f33); color: #E8EAF0; font-size: 11px; font-weight: 600; display: grid; place-items: center; }
+  .avatar.you { background: var(--accent); color: #0d2238; }
+  .col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .speakerhead { display: flex; align-items: baseline; gap: 8px; font-size: 15px; }
+  .speakerhead .name { font-weight: 600; }
+  .speakerhead .time { font-size: 13px; color: var(--ink-mid); }
+  .bubble { width: fit-content; max-width: 100%; padding: 8px 12px; background: var(--accent-bg); border-radius: var(--radius-control); }
+  .bubble .btext { font-family: var(--font-prose); font-size: 18px; line-height: 1.6; color: var(--ink-hi); white-space: pre-wrap; overflow-wrap: break-word; }
+  .prose { font-family: var(--font-prose); font-size: 18px; line-height: 1.6; color: var(--ink-hi); }
+
+  .think { display: flex; align-items: center; gap: 8px; margin-left: var(--speaker-gutter); padding: 2px 0; color: var(--ink-low); font-size: 13px; }
+  .think .label { font-weight: 500; color: var(--ink-mid); }
+  .think .preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 56ch; }
+  .think .chev { font-size: 11px; }
+
+  .cluster { margin-left: var(--speaker-gutter); display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-low); padding: 2px 0; }
+  .cluster .check { color: var(--alive); }
+  .cluster .path { font-family: var(--font-mono); font-size: 12px; }
+  .cluster .expand { color: var(--ink-low); }
+
+  .tool { margin-left: var(--speaker-gutter); padding: 8px 0; }
+  .tool .row { display: flex; align-items: baseline; gap: 8px; }
+  .tool .purpose { font-size: 15px; font-weight: 500; color: var(--ink-hi); }
+  .tool .cmd { font-family: var(--font-mono); font-size: 12px; color: var(--ink-mid); background: var(--surface-inset); border: 1px solid var(--edge); padding: 2px 7px; border-radius: var(--radius-chip); }
+  .tool .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--alive); border-top-color: transparent; animation: spin 0.9s linear infinite; flex: none; align-self: center; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .tool .elapsed { font-family: var(--font-mono); font-size: 12px; color: var(--alive); margin-left: auto; }
+  .tool .out { margin-top: 6px; font-family: var(--font-mono); font-size: 12px; line-height: 1.55; color: var(--ink-low); }
+  .tool .out .hit { color: var(--ink-mid); }
+
+  /* ---- IDEA C: the boundary beacon ---- */
+  .beacon {
+    margin-left: var(--speaker-gutter);
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12.5px; color: var(--ink-mid);
+    background: var(--surface-1);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-pill);
+    padding: 4px 12px 4px 10px;
+  }
+  .beacon .diamond { width: 10px; height: 10px; flex: none; }
+  .beacon .count { color: var(--accent-ink); font-weight: 600; }
+  .beacon .whatis { color: var(--ink-hi); font-weight: 500; }
+  .beacon .open-ch { font-size: 10px; color: var(--ink-low); margin-left: 2px; }
+
+  .popover {
+    position: absolute;
+    left: calc(32px + var(--speaker-gutter));
+    top: 470px;
+    width: 520px;
+    background: var(--surface-2);
+    border-radius: var(--radius-pane, 4px);
+    box-shadow: 0 0 0 1px var(--edge-strong), 0 8px 28px #00000057;
+    padding: 8px;
+    z-index: 10;
+  }
+  .popover .pophead { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; font-weight: 500; color: var(--ink-low); padding: 4px 8px 6px; }
+  .popover .item { display: flex; gap: 10px; padding: 8px; border-radius: var(--radius-control); align-items: baseline; }
+  .popover .item:hover { background: var(--hover-1); }
+  .popover .item .pos { font-family: var(--font-mono); font-size: 11px; color: var(--ink-low); flex: none; width: 26px; }
+  .popover .item .msg { flex: 1 1 auto; font-size: 13px; color: var(--ink-hi); line-height: 1.5; }
+  .popover .item .heldfor { font-family: var(--font-mono); font-size: 11px; color: var(--ink-low); flex: none; }
+
+  /* chips row stays as today (C layers on top of the current UX) */
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 2px 8px; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 8px; border-radius: var(--radius-control); background: var(--surface-2); font-size: 12px; opacity: 0.6; max-width: 100%; }
+  .chip .method { flex: 0 0 auto; color: var(--ink-mid); font-weight: 500; }
+  .chip .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-hi); }
+
+  /* ---- footer ---- */
+  .footer { border-top: 1px solid var(--edge); padding: 10px 16px 12px; background: var(--surface-0); }
+  .liveness { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-low); padding: 0 2px 8px; }
+  .liveness .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--alive); animation: softpulse 2.4s ease-in-out infinite; }
+  .liveness .t { font-family: var(--font-mono); color: var(--ink-mid); }
+  @keyframes softpulse { 0%, 100% { opacity: .4 } 50% { opacity: 1 } }
+  .composer { display: flex; align-items: center; gap: 8px; background: var(--field); border: 1px solid var(--edge); border-radius: var(--radius-control); box-shadow: inset 0 1px 2px #00000066; padding: 4px 6px 4px 10px; }
+  .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .composer .placeholder { flex: 1; color: var(--ink-low); font-size: 15px; line-height: 1.6; padding: 6px 0; }
+  .composer .plus { color: var(--ink-low); font-size: 15px; padding: 0 4px; }
+  .composer .btn { font-size: 13px; font-weight: 500; border-radius: var(--radius-control); border: 1px solid transparent; padding: 4px 10px; }
+  .composer .btn.quiet { background: var(--surface-1); border-color: var(--edge); color: var(--ink-hi); }
+  .composer .btn.dangerquiet { background: transparent; color: var(--danger); }
+  .composer .btn.primary { background: var(--accent); color: #0d2238; position: relative; }
+  .composer .btn.primary .badge { position: absolute; top: -7px; right: -7px; background: var(--accent); color: #0d2238; font-size: 10px; font-weight: 600; border: 2px solid var(--surface-0); border-radius: var(--radius-pill); width: 17px; height: 17px; display: grid; place-items: center; }
+
+
+  /* ---- storyboard ---- */
+  .storyboard { width: 1440px; }
+  .storyboard h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .storyboard .sub { color: var(--ink-low); font-size: 13px; margin-bottom: 16px; }
+  .stages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .stage { border: 1px solid #262623; border-radius: 6px; overflow: hidden; background: var(--surface-0); }
+  .stage .shot { height: 350px; padding: 14px 18px; overflow: hidden; position: relative; }
+  .stage .caption { border-top: 1px solid var(--edge); padding: 10px 14px; font-size: 12.5px; color: var(--ink-mid); line-height: 1.55; }
+  .stage .caption .num { color: var(--ink-hi); font-weight: 600; margin-right: 6px; }
+  .stage .caption .delta { color: var(--accent-ink); }
+</style>
+</head>
+<body>
+
+<header class="ideahead">
+  <div class="eyebrow">Steering, almost delivered — direction C of 3</div>
+  <h1>Boundary beacon</h1>
+  <p class="thesis">Annotate the blocker instead of the message. The running step itself carries what waits behind it: a quiet pill beneath the live tool call — ◇ 2 messages steer this turn when this finishes — expandable to the held messages and their wait times. At the boundary the pill dissolves in the same frame the injected messages appear right below it, so the causal chain is one visible motion. Today's dimmed chips stay; the beacon is the transcript-side statement of what they mean.</p>
+  <ul>
+    <li>Most explanatory: it teaches the boundary rule at the exact place it applies — the step that is holding delivery.</li>
+    <li>Least ink in the transcript; collapses to a count until it matters.</li>
+    <li>Tradeoff: the message text is one interaction away — a status, not the message in place.</li>
+  </ul>
+</header>
+
+<div class="frame">
+  <aside class="rail">
+    <div class="actions">
+      <span class="act new">＋ New</span>
+      <span class="act">Search ⌘K</span>
+      <span class="act">Settings</span>
+    </div>
+    <div class="railgroup">
+      <div class="grouplabel">Live (2)</div>
+      <div class="sess live-selected"><span class="dot working"></span><span class="name">Refactor auth token cache</span><span class="meta">1:12</span></div>
+      <div class="sess"><span class="dot needs"></span><span class="name">Audit error handling</span><span class="meta">needs you</span></div>
+    </div>
+    <div class="railgroup">
+      <div class="grouplabel">Recent</div>
+      <div class="sess dim"><span class="dot idle"></span><span class="name">Fix flaky CI</span><span class="meta">3h</span></div>
+      <div class="sess dim"><span class="dot idle"></span><span class="name">Docs pass on appwire</span><span class="meta">2d</span></div>
+    </div>
+  </aside>
+
+  <main class="pane">
+    <div class="titlebar">
+      <span class="title">Refactor auth token cache</span>
+      <span class="modelchip">gpt-5.5</span>
+      <div class="right"><span class="ghostbtn">Details</span><span class="ghostbtn">Interrupt</span></div>
+    </div>
+
+    <div class="transcript">
+      <div class="column">
+
+        <div class="speaker opens-exchange">
+          <div class="avatar you">J</div>
+          <div class="col">
+            <div class="speakerhead"><span class="name">You</span><span class="time">5:58 PM</span></div>
+            <div class="bubble"><div class="btext">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too.</div></div>
+          </div>
+        </div>
+
+        <div class="think"><span class="label">Thought for 6s</span><span class="preview">The eviction probably keys off the wrong timestamp…</span><span class="chev">▾</span></div>
+
+        <div class="speaker">
+          <div class="avatar">E</div>
+          <div class="col">
+            <div class="speakerhead"><span class="name">Evener</span><span class="time">5:59 PM</span></div>
+            <div class="prose">I'll trace how the cache is used, then fix the eviction logic. Looking at the cache and its callers now.</div>
+          </div>
+        </div>
+
+        <div class="cluster"><span class="check">✓</span><span>4 steps ·</span><span class="path">read cache.go · grep callers · ran tests</span><span class="expand">expand</span></div>
+
+        <div class="tool">
+          <div class="row">
+            <span class="spinner"></span>
+            <span class="purpose">Find every evictExpired call site</span>
+            <span class="cmd">rg "evictExpired(" --type go</span>
+            <span class="elapsed">0:42</span>
+          </div>
+          <div class="out">
+            agent/session_cache.go<span class="hit">:118: func (c *tokenCache) evictExpired(</span><br>
+            agent/session_cache_test.go<span class="hit">:64:</span>
+          </div>
+        </div>
+
+        <!-- THE BEACON -->
+        <div class="beacon">
+          <svg class="diamond" viewBox="0 0 10 10" aria-hidden="true"><path d="M5 1.1 L8.9 5 L5 8.9 L1.1 5 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+          <span><span class="count">2</span> <span class="whatis">messages steer this turn</span> when this finishes</span>
+          <span class="open-ch">▾</span>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- THE POPOVER, shown open -->
+    <div class="popover">
+      <div class="pophead">Steering this turn · 2 held</div>
+      <div class="item">
+        <span class="pos">1st</span>
+        <span class="msg">also add a regression test for the idle-but-valid case</span>
+        <span class="heldfor">0:42</span>
+      </div>
+      <div class="item">
+        <span class="pos">2nd</span>
+        <span class="msg">and check the callers in mobile-native too</span>
+        <span class="heldfor">0:07</span>
+      </div>
+    </div>
+
+    <div class="footer">
+      <div class="liveness"><span class="dot"></span><span>working</span><span class="t">1:12</span></div>
+      <div class="chips">
+        <span class="chip"><span class="method">Steering</span><span class="text">also add a regression test for the idle-but-valid case</span></span>
+        <span class="chip"><span class="method">Steering</span><span class="text">and check the callers in mobile-native too</span></span>
+      </div>
+      <div class="composer">
+        <span class="plus">＋</span>
+        <span class="placeholder">Message the agent…</span>
+        <button class="btn dangerquiet">Stop</button>
+        <button class="btn quiet">Send</button>
+        <button class="btn primary">Steer<span class="badge">2</span></button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<section class="storyboard">
+  <h2>Lifecycle</h2>
+  <div class="sub">The beacon counts what the chips hold. It hands off at the boundary: the pill dissolves as the messages land beneath it.</div>
+  <div class="stages">
+
+    <div class="stage">
+      <div class="shot">
+        <div class="tool" style="margin-left:0">
+          <div class="row"><span class="spinner"></span><span class="purpose">Find every evictExpired call site</span><span class="cmd">rg …</span><span class="elapsed">0:42</span></div>
+        </div>
+        <div class="beacon" style="margin-left:0; margin-top:8px">
+          <svg class="diamond" viewBox="0 0 10 10"><path d="M5 1.1 L8.9 5 L5 8.9 L1.1 5 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+          <span><span class="count">1</span> <span class="whatis">message steers this turn</span> when this finishes</span>
+          <span class="open-ch">▾</span>
+        </div>
+      </div>
+      <div class="caption"><span class="num">1</span><b>Pressed.</b> <span class="delta">The beacon appears under the running step the moment a steer is held</span> — count 1, in the same frame the composer clears.</div>
+    </div>
+
+    <div class="stage">
+      <div class="shot">
+        <div class="tool" style="margin-left:0">
+          <div class="row"><span class="spinner"></span><span class="purpose">Find every evictExpired call site</span><span class="cmd">rg …</span><span class="elapsed">1:20</span></div>
+        </div>
+        <div class="beacon" style="margin-left:0; margin-top:8px">
+          <svg class="diamond" viewBox="0 0 10 10"><path d="M5 1.1 L8.9 5 L5 8.9 L1.1 5 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+          <span><span class="count">2</span> <span class="whatis">messages steer this turn</span> when this finishes</span>
+          <span class="open-ch">▾</span>
+        </div>
+        <div class="popover" style="position: static; margin-top: 10px; width: auto; box-shadow: none; border: 1px solid var(--edge);">
+          <div class="pophead">Steering this turn · 2 held</div>
+          <div class="item"><span class="pos">1st</span><span class="msg">also add a regression test…</span><span class="heldfor">0:42</span></div>
+          <div class="item"><span class="pos">2nd</span><span class="msg">and check the callers in mobile-native too</span><span class="heldfor">0:07</span></div>
+        </div>
+      </div>
+      <div class="caption"><span class="num">2</span><b>Held.</b> <span class="delta">Expand names the messages and their waits</span>; the count alone is the resting state. If the turn ends first, the beacon moves to the liveness line: "steering next turn · 1 message."</div>
+    </div>
+
+    <div class="stage">
+      <div class="shot">
+        <div class="cluster" style="margin-left:0"><span class="check">✓</span><span>Find every evictExpired call site · 7 hits</span></div>
+        <div class="speaker" style="margin-left:0; margin-top:10px">
+          <div class="avatar you">J</div>
+          <div class="col">
+            <div class="speakerhead"><span class="name">You</span><span class="time">6:01 PM</span></div>
+            <div class="bubble"><div class="btext">also add a regression test for the idle-but-valid case</div></div>
+          </div>
+        </div>
+        <div class="speaker" style="margin-left:0">
+          <div class="avatar you">J</div>
+          <div class="col">
+            <div class="speakerhead"><span class="name">You</span><span class="time">6:01 PM</span></div>
+            <div class="bubble"><div class="btext">and check the callers in mobile-native too</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="caption"><span class="num">3</span><b>Delivered.</b> The tool collapsed and the beacon dissolved in the same frame — the messages it counted are the ones that appeared directly beneath it.</div>
+    </div>
+
+  </div>
+</section>
+
+</body>
+</html>

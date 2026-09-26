@@ -975,6 +975,54 @@ func TestJobWatchTerminalOutputMatchCatchupThroughTool(t *testing.T) {
 	if !strings.Contains(noMatchJSON, `"fired":false`) {
 		t.Fatalf("non-matching catch-up must report explicit fired:false (contract §7.1): %s", noMatchJSON)
 	}
+
+	// A terminal catch-up on a command-outcome job reports the reason the
+	// producer stamped, so display surfaces can join the card's words.
+	failRec := newManualRunningJob(t, s)
+	appendManualJobOutput(s.jobManager, failRec.JobID, "exit 3\n")
+	failExit := 3
+	if err := s.jobManager.finalize(failRec.JobID, jobstore.StatusCommandExitedNonzero, "exit_nonzero", &failExit); err != nil {
+		t.Fatalf("finalize manual failed job: %v", err)
+	}
+	waitForShellDone(t, s.jobManager, failRec.JobID)
+	failRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch3",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"operation":"create","source":%q,"output_match":"exit 3"}`, failRec.JobID)),
+	})
+	if failRes.IsError {
+		t.Fatalf("command-outcome catch-up must not error: %s", failRes.Output)
+	}
+	var failMatched struct {
+		Fired           bool   `json:"fired"`
+		TerminalCatchup bool   `json:"terminal_catchup"`
+		Status          string `json:"status"`
+		Reason          string `json:"reason"`
+	}
+	if err := json.Unmarshal(toolResultJSON(failRes), &failMatched); err != nil {
+		t.Fatalf("unmarshal failed-job catch-up output: %v (%s)", err, failRes.Output)
+	}
+	if !failMatched.Fired || !failMatched.TerminalCatchup || failMatched.Status != "command_exited_nonzero" ||
+		failMatched.Reason != "exit_nonzero" {
+		t.Fatalf("failed-job catch-up result = %+v, want fired+terminal_catchup+command_exited_nonzero+exit_nonzero reason", failMatched)
+	}
+
+	// The send branch rebuilds the result, so it needs its own pin: the
+	// terminal reason must survive the rebuild. Send watches are created at
+	// the manager level — the job_watch tool schema has no send property —
+	// so this arm goes through configureWatch directly.
+	sendRes, sendErr := s.jobManager.configureWatch(watchArgs{
+		Target:      failRec.JobID,
+		OutputMatch: "exit 3",
+		Send:        &watchSendArgs{To: runtimeMessageAliasCaller, Message: "observe"},
+	})
+	if sendErr != nil {
+		t.Fatalf("send catch-up must not error: %v", sendErr)
+	}
+	if !sendRes.Fired || !sendRes.TerminalCatchup || sendRes.Status != string(jobstore.StatusCommandExitedNonzero) ||
+		sendRes.Reason != "exit_nonzero" {
+		t.Fatalf("send catch-up result = %+v, want fired+terminal_catchup+command_exited_nonzero+exit_nonzero reason", sendRes)
+	}
 }
 
 func TestJobWatchNoConditionErrors(t *testing.T) {

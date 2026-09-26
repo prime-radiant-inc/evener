@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -622,8 +621,11 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 // startHubStackOnProviderWithEvener is startHubStackOnProvider with the
 // evener binary left to the caller, so a test can run the hub from a
 // purpose-built binary (e.g. a snapshot-channel build of this branch)
-// instead of the repo build liveStackBinaries produces.
-func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evenerBin string) hubStack {
+// instead of the repo build liveStackBinaries produces. extraHubArgs are
+// appended to the hub command line verbatim, so a test can boot the hub with
+// the flags its behavior under test needs (the deploy live check passes
+// -build-source / -deploy-binary this way).
+func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evenerBin string, extraHubArgs ...string) hubStack {
 	t.Helper()
 
 	home := t.TempDir()
@@ -657,19 +659,13 @@ func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evene
 		t.Fatalf("write workspace file: %v", err)
 	}
 
-	// Bind, read the address back, then release it so the hub can take it.
-	// The window is tiny and far smaller than the collision risk of a fixed
-	// port (the same reasoning as e2e_test.go and kata 68fm).
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("allocate hub port: %v", err)
-	}
-	hubAddr := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatalf("release hub port: %v", err)
-	}
-
-	hub := exec.Command(evenerBin, "hub", "--addr", hubAddr, "--evener", evenerBin)
+	// The hub binds an ephemeral port itself and announces it (see
+	// awaitHubListening). Reserving a port here and releasing it for the hub
+	// left a window in which another process could take it, and a dial that
+	// reached that process passed for the hub being ready.
+	hubArgs := []string{"hub", "--addr", "127.0.0.1:0", "--evener", evenerBin}
+	hubArgs = append(hubArgs, extraHubArgs...)
+	hub := exec.Command(evenerBin, hubArgs...)
 	hub.Env = append(os.Environ(),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+configDir,
@@ -714,7 +710,7 @@ func startHubStackOnProviderWithEvener(t *testing.T, providersTOML, model, evene
 		}
 	})
 
-	awaitHubReady(t, hubAddr)
+	hubAddr := awaitHubListening(t, logPath)
 
 	token, err := os.ReadFile(filepath.Join(stateDir, "evener", "auth-token"))
 	if err != nil {
@@ -789,18 +785,28 @@ func waitForProcessExit(proc *os.Process, timeout time.Duration) bool {
 	return false
 }
 
-func awaitHubReady(t *testing.T, addr string) {
+// hubListeningLine is the hub's startup announcement of the address its
+// listener actually bound (main.go prints it after resolving a :0 bind).
+var hubListeningLine = regexp.MustCompile(`\[hub\] evener-hub \S+ listening on (\S+) \(run_dir=`)
+
+// awaitHubListening returns the address the hub under test announces in its
+// log. The hub binds before it prints that line, so the address is the hub's
+// own listener; a bare TCP dial could not tell it from another process's.
+func awaitHubListening(t *testing.T, logPath string) string {
 	t.Helper()
+	// The announcement is the only completion the hub reports; the deadline is
+	// a tripwire for a hub that never gets there.
 	deadline := time.Now().Add(30 * time.Second)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", addr, time.Second)
+	for {
+		body, err := os.ReadFile(logPath)
 		if err == nil {
-			_ = conn.Close()
-			return
+			if m := hubListeningLine.FindSubmatch(body); m != nil {
+				return string(m[1])
+			}
 		}
-		lastErr = err
+		if time.Now().After(deadline) {
+			t.Fatalf("hub never announced its listener in %s (read err=%v):\n%s", logPath, err, body)
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("hub never became reachable on %s: %v", addr, lastErr)
 }

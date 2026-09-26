@@ -35,9 +35,13 @@ import (
 // else, so every diagnostic goes to stderr.
 
 type attachOptions struct {
-	stdio      bool
-	addr       string
-	configPath string
+	stdio bool
+	addr  string
+	// configExplicit records whether the operator (or the controller that
+	// spawned this bridge) named the path with --config: a named path must
+	// load, while the implicit default path may be absent.
+	configExplicit bool
+	configPath     string
 }
 
 // errNonLoopbackAddr refuses a hub address that would carry the capability token
@@ -74,6 +78,13 @@ func parseAttachOptions(args []string, stderr io.Writer) (attachOptions, error) 
 	if fs.NArg() != 0 {
 		return opts, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
+	// fs.Visit reports the flags that were actually set, so a path the operator
+	// named is distinguishable from the implicit default before it is loaded.
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "config" {
+			opts.configExplicit = true
+		}
+	})
 	if !opts.stdio {
 		return opts, errors.New("attach requires --stdio")
 	}
@@ -93,7 +104,7 @@ func runAttach(args []string, stderr io.Writer, deps mainDeps) error {
 	}
 	// The address and state root come from the hub's own config machinery, not
 	// a re-derived path, so a hub.toml override moves the bridge with it.
-	cfg, err := deps.loadConfig(opts.configPath)
+	cfg, err := deps.loadConfig(opts.configPath, opts.configExplicit)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
@@ -142,6 +153,13 @@ func proxyAppWire(ctx context.Context, addr, token string, stream appwire.Transp
 	if token != "" {
 		header.Set("Authorization", "Bearer "+token)
 	}
+	// Mark the connection remote-originated for the hub it dials (component 05,
+	// §"The origin signal is an explicit bridge marker on the connection"): the
+	// hub stamps this role into every request's context, so its host-routing
+	// origin guard can refuse a remote dispatch — including an attach that would
+	// make the host hub dial yet another host — instead of an honest A→B→A cycle
+	// recursing past depth 1. The marker is cooperative only.
+	header.Set(bridgeOriginHeader, "1")
 	dialCtx, cancel := context.WithTimeout(ctx, attachDialTimeout)
 	defer cancel()
 	ws, err := appwire.DialWebSocketWithHeaders(dialCtx, hubURL, attachDialClient, header)

@@ -57,7 +57,11 @@ models and which take a plugin selection), the built-in slash invocation
 matcher and argument lookup both composers run a draft through before sending
 it, the transcript display configuration both apps resolve (local over hub
 over shipped), encode for local storage and summarize a transcript's content
-level and advanced toggles with, the keybinding group both apps' shortcut settings are built on (the action
+level and advanced toggles with, the transcript projector
+(`projectThread(model, config)`) that turns a thread's turns and items into
+the rows a transcript renders - content-level filtering, the critical/intent/
+thinking/hidden decision per item, disclosure eligibility and anchors - over
+the same config, framework-free and with no host global, the keybinding group both apps' shortcut settings are built on (the action
 ids, the chord AST with its overlap predicate, the default binding map, the
 display rows, the override primitives and the semantic override validation) -
 its registry is a framework-free store factory, `createKeybindingsRegistry(parse)`
@@ -75,8 +79,13 @@ one hub's `evener/settings/keybindings` get/patch/changed posture, reconciled
 into the host's registry as a delta when it has one, with a checkpointed draft
 editor over an injected storage port for a host that edits offline; the host
 drives the connection lifecycle through `setSupport`, `beginReadyGeneration`,
-`endReadyGeneration` and `detachHub`) - and the doc-pane URL builders, which hang
-their hrefs off a base origin the host supplies (empty for a same-origin web
+`endReadyGeneration` and `detachHub`); the ready-generation fence that store
+fences every await on (`createReadyGenerationFence(isSupported)`: the
+generation, read-serial and write-token bookkeeping behind `liveHub`,
+`readStillMine` and `writeStillMine`, so a reply arriving after the generation
+ended, support dropped or the hub was replaced lands nothing) - and the doc-pane
+URL builders, which hang their hrefs off a base origin the host supplies (empty
+for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
 with a fetch: the package issues no request of its own and names neither an
@@ -95,8 +104,18 @@ Besides the root, `package.json` `exports` publishes these subpaths:
 
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`.
-- `@evener/appwire-client/state/navigation` - the navigation state layer both
-  apps' navigation stores are built on: the resource-key vocabulary and
+- `@evener/appwire-client/state/connection` - the connection state layer:
+  `createConnectionStore()` is a framework-free store holding one host's wired
+  `AppwireClientLike`, the `ConnectionState` mirror that follows it, and plain
+  settable `serverInfo`/`features` fields the host writes from its own
+  handshake read. `connect(client)` swaps the wired client with a reentrancy
+  guard and a detach of the outgoing client's connection-state listener, so a
+  replaced client never keeps a live subscription; `onConnectionNotification(store, handler)`
+  follows whichever client the store holds across a swap. No handshake, no
+  view binding. Resolves to `state/connection/index.ts`, a barrel.
+- `@evener/appwire-client/state/navigation` - the navigation state layer the
+  web app's navigation store is built on, adoptable by native if it ever
+  gains one: the resource-key vocabulary and
   classifiers (`types`), the snapshot and delta codec (`codec`), the graph
   merge (`merge`), the deep-freeze helpers they share (`immutable`), the rule
   matching a hub invalidation target to a loaded resource and the revision it
@@ -109,15 +128,31 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   the rail's expand state - over a `connect`/`request`/`onNotification`/`onReady`
   client port handed to `init(client)` and a `NavigationPersistence` port
   (`readExpansion`/`writeExpansion`) for expansion, with `projectNodeExpansionKey`
-  naming a project's row. The subpath resolves to `state/navigation/index.ts`,
-  a barrel that re-exports the seven modules whole.
+  naming a project's row, and the selectors the web app reads that state
+  through (`selectors`): launch sources, section rows with their remaining
+  count and next offset, pin-section summaries, the project catalog and a
+  session summary found by ref, each pure over `NavigationStoreState` and
+  adoptable by native if it ever gains a store. The subpath
+  resolves to `state/navigation/index.ts`, a barrel that re-exports the eight
+  modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
   apps' plugin settings surfaces are built on: the marketplaces store
   (`createMarketplacesStore(client)`, a framework-free store over a
   `request`/`onNotification` client port holding a hub's marketplace list and
-  one cached browse result per marketplace, where fetches record their failure
-  in state and mutations reject), with the installed-plugin and directory
-  stores to follow. The subpath resolves to `state/extensions/index.ts`, a
+  one cached browse result per marketplace), the installed-plugins store
+  (`createPluginsStore(client)`, the same port, holding a hub's installed
+  plugins, their six mutations and a `pluginRevision` that moves as the hub
+  announces a change), the global launch-layer store
+  (`createLaunchLayerStore(client)`, the one `LaunchConfigLayer` the plugin and
+  skill directory lists and the MCP server list are four fields of, read and
+  written at cwd `/` and layer `global`), and the pieces they are built over:
+  `createListRevision`, the fence on a list every response replaces whole, and
+  `createStoreLifecycle`, the notification subscription, debounced refetch,
+  `connectionChanged` recovery (a list a host has read is read again when the
+  connection is ready again, because the hub's broadcast only reaches clients
+  that were connected) and the `start`/`reset`/`dispose` trio a host drives
+  from its screen. In every store fetches record their failure in state and
+  mutations reject. The subpath resolves to `state/extensions/index.ts`, a
   barrel over the layer's modules.
 - `@evener/appwire-client/state/credentials` - the credentials state layer:
   `createCredentialInstancesStore({ ownClientId })` is the framework-free
@@ -129,6 +164,56 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `foreignListingChange` predicate both hosts gate a credential probe on, and
   `listingEstablished` in the state. Resolves to
   `state/credentials/index.ts`, a barrel.
+- `@evener/appwire-client/state/mutation` - the mutation state layer: the
+  durable record shapes both apps' outboxes store (`MutationIntent`,
+  `MutationRecord`, `MutationOutboxRecord`, `MutationOptimisticRecord`,
+  `MutationRecoveryRecord`), generic over the attachment type so a host's own
+  attachment bytes (the web's `Blob`) never enter the package, and the client
+  provenance a shared outbox's readers need. `createClientIdentity(storage,
+  randomSource)` is a factory, not a module singleton - the package names no
+  browser global, so a host builds one instance over its own
+  `ClientIdentityStorage` port (the web passes a lazy `sessionStorage`
+  adapter; a host with none gets a per-process identity) and gets back
+  `{ ownClientId, isOwnMutationRecord }`, each memoized per instance.
+  `isOwnMutationRecord` claims an unattributed record (written before the
+  field existed) as well as this instance's own. `createSecureUUID(source)`
+  is the strong identifier source both the record shapes' `clientMutationId`
+  convention and a generated client identity use; both take their
+  `SecureRandomSource` (`randomUUID?`/`getRandomValues?`, both optional) as a
+  required parameter with no default - `globalThis.crypto` is named nowhere
+  in the package, so a host with no global Web Crypto (React Native without a
+  polyfill) passes its own source (the web's lazily-read, guarded `crypto`;
+  `expo-crypto` for native) rather than the package assuming one exists.
+  `createSecureUUID` documents its own fallback for a source with neither
+  method: a non-cryptographic id, not UUID-shaped, rather than a throw. The
+  layer also carries `MutationOutbox`, the discovery half of an outbox: a class
+  that enqueues through a `MutationOutboxStorage` port (the 14 calls this layer
+  and the dispatcher make; the web's IndexedDB adapter implements it and stays
+  in the app), announces a commit to sibling clients, and re-scans when a host
+  says a scan is worth doing. Every host-shaped capability is an option - the
+  channel, the lifecycle and visibility targets, the timer - and none defaults
+  to a browser global, so no DOM type lives here. It carries
+  `MutationDispatcher` too: one attempt at a time per target ref over the same
+  port, a receipt reconciled into storage before the next attempt, a refusal
+  turned into a recovery record with the daemon's own reason, and an outcome
+  nobody can vouch for left `blockedUnknown` rather than replayed - the rule a
+  client must not break after a lost connection. Every reaction to an outcome (a
+  blocked mutation, a clear's response, a shared note's authority) is a callback
+  the app supplies. Its pure reconciliation (`reconcilePendingEntries`) turns
+  those durable records plus a live `ThreadModel` into the `PendingTurnEntry`
+  rows a composer's queue renders - identity-based, so an authoritative
+  projection replaces the same outbox entry rather than duplicating it - and
+  the pending-turns projection store built on that reconciliation:
+  `createPendingTurnsStore({ threads, draft, identity })` is a framework-free
+  store holding a host's own outbox/optimistic/recovery records plus the
+  submission bookkeeping (`submittingRefs`, `submittedHere`) over a
+  `PendingTurnsThreadsPort` (a ref's current `ThreadModel`), a
+  `PendingTurnsDraftPort` (a ref's composer-draft revision, content and
+  clear) and the host's own `ClientIdentity` (`isOwnMutationRecord`),
+  generic over the attachment type like the records above. No storage
+  adapter lives here either - just the shapes, the identity, the rules, the
+  attempts, the reconciliation and the store built on them. Resolves to
+  `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure

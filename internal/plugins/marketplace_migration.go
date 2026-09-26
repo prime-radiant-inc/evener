@@ -35,11 +35,18 @@ import (
 // marker to read.
 
 // loadMigratedMarketplaces reads the marketplaces file without the store lock
-// and hands back what a lock holder would see. A name the store refuses means
-// no lock holder has migrated this store yet (lockStore), so this takes the
-// lock — which migrates — and reads back what that left; a second reader that
-// arrives meanwhile finds nothing left to do once it holds the lock. On a
-// migrated store nothing is locked, so a listing never queues behind a fetch.
+// and hands back what a lock holder would see. A name the store refuses, or a
+// marker a run left in flight, means the file on disk is not what a lock
+// holder would see, so this takes the lock — which migrates and recovers —
+// and reads back what that left; a second reader that arrives meanwhile finds
+// nothing left to do once it holds the lock. On a migrated store with no
+// marker nothing is locked, so a listing never queues behind a fetch.
+//
+// A refused name means no lock holder has migrated this store yet (lockStore).
+// A marker alone (renameMarkerPending) means one did and stopped between a
+// rename's last write and dropping the marker, so every recorded name is one
+// the store accepts while the rename is still in flight. Both are what the
+// lock's recovery finishes, so both send this through it.
 //
 // The barrier is what a listing runs behind rather than a value it needs: the
 // marketplace listing returns it, and the plugin listing takes the lock only
@@ -51,11 +58,14 @@ import (
 // inline on the connection's serial worker, so a disconnected client's wait
 // on the lock has to stop with the client. The same branch creates the
 // store's .lock file in a store that had none, and a listing that finds
-// nothing to migrate never reaches it.
+// neither a refused name nor a marker never reaches it.
 func (m *Manager) loadMigratedMarketplaces(ctx context.Context, acquire lockAcquirer) (Marketplaces, error) {
 	mk, err := m.loadMarketplaces()
-	if err != nil || len(refusedMarketplaceNames(mk)) == 0 {
+	if err != nil {
 		return mk, err
+	}
+	if len(refusedMarketplaceNames(mk)) == 0 && !m.renameMarkerPending() {
+		return mk, nil
 	}
 	release, err := m.lockStore(ctx, acquire, 30*time.Second)
 	if err != nil {
@@ -63,6 +73,17 @@ func (m *Manager) loadMigratedMarketplaces(ctx context.Context, acquire lockAcqu
 	}
 	defer release()
 	return m.loadMarketplaces()
+}
+
+// renameMarkerPending reports whether the store holds a marker, the file that
+// names the rename or merge a run left in flight (renameMarker). A marker that
+// cannot be read counts as pending: it sits where one a run left would, and
+// only the lock's recovery (recoverMarkedRename) can say what it names or fail
+// the reading over it. A store that finished every operation has no marker and
+// this costs one read of a name that is not there.
+func (m *Manager) renameMarkerPending() bool {
+	marker, err := m.loadRenameMarker()
+	return err != nil || marker != nil
 }
 
 // migrateMarketplaceNames finishes the rename an interrupted run left in
@@ -218,7 +239,7 @@ func (m *Manager) recoverMarkedRename() error {
 		return m.finishMarkedMerge(mk, *marker)
 	}
 	fail := func(err error) error {
-		return fmt.Errorf("finishing the rename of marketplace %q to %q, which an earlier run left unfinished: %w", marker.From, marker.To, err)
+		return m.migrationFailed(marker.From, marker.To, err)
 	}
 	if _, taken := mk[marker.To]; taken && marker.To != marker.From {
 		path, err := m.storePath(renameMarkerFileName)
@@ -246,7 +267,7 @@ func (m *Manager) recoverMarkedRename() error {
 		// rename leaves it — recording that clone would have a later Browse or
 		// Install parse a partial clone instead of clearing and re-cloning.
 		recordedLocation := ref.InstallLocation
-		if ref, reg, undo, err = m.moveMarketplace(marker.From, marker.To, ref, reg, owners); err != nil {
+		if ref, reg, undo, err = m.moveMarketplace(marker.From, marker.To, ref, mk, reg, owners, false); err != nil {
 			return fail(err)
 		}
 		if ref.Source.Kind != SourceDirectory && recordedLocation != "" {
@@ -319,7 +340,7 @@ func (m *Manager) recoverMarkedRename() error {
 // record it would have to invent. The caller must hold the store lock.
 func (m *Manager) finishMarkedMerge(mk Marketplaces, marker renameMarker) error {
 	fail := func(err error) error {
-		return fmt.Errorf("finishing the merge of marketplace %q into %q, which an earlier run left unfinished: %w", marker.From, marker.To, err)
+		return m.migrationFailed(marker.From, marker.To, err)
 	}
 	if _, into := mk[marker.To]; !into {
 		path, err := m.storePath(renameMarkerFileName)
@@ -397,11 +418,11 @@ func (m *Manager) loadRenameMarker() (*renameMarker, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, m.storeFileFailed(err, "reading %s", renameMarkerFileName)
 	}
 	var marker renameMarker
 	if err := json.Unmarshal(data, &marker); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+		return nil, m.storeFileFailed(err, "parsing %s", renameMarkerFileName)
 	}
 	return &marker, nil
 }
@@ -418,7 +439,10 @@ func (m *Manager) writeRenameMarker(marker renameMarker) error {
 	if err != nil {
 		return fmt.Errorf("marshalling the marker recording marketplace %q as %q: %w", marker.From, marker.To, err)
 	}
-	return marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644)
+	if err := marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644); err != nil {
+		return m.storeFileFailed(err, "writing %s", renameMarkerFileName)
+	}
+	return nil
 }
 
 // removeRenameMarker drops the marker once the rename it names is recorded or
@@ -493,11 +517,11 @@ func (m *Manager) loadMigrationRecord() (migrationRecord, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return migrationRecord{}, nil
 		}
-		return migrationRecord{}, fmt.Errorf("reading %s: %w", path, err)
+		return migrationRecord{}, m.storeFileFailed(err, "reading %s", migrationRecordFileName)
 	}
 	var rec migrationRecord
 	if err := json.Unmarshal(data, &rec); err != nil {
-		return migrationRecord{}, fmt.Errorf("parsing %s: %w", path, err)
+		return migrationRecord{}, m.storeFileFailed(err, "parsing %s", migrationRecordFileName)
 	}
 	return rec, nil
 }
@@ -517,7 +541,10 @@ func (m *Manager) saveMigrationRecord(rec migrationRecord) error {
 	if err != nil {
 		return fmt.Errorf("marshalling %s: %w", migrationRecordFileName, err)
 	}
-	return marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644)
+	if err := marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644); err != nil {
+		return m.storeFileFailed(err, "writing %s", migrationRecordFileName)
+	}
+	return nil
 }
 
 // removeMigrationRecord drops the record once it names no family the store can
@@ -911,7 +938,7 @@ func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, r
 		// tell a save that reached neither file from one that reached both:
 		// the marker stays, and the next lock holder makes the merge from
 		// whatever this left.
-		return registryAsFound, errors.Join(err, m.markerLeftForRecovery("merge"))
+		return registryAsFound, m.migrationFailed(name, recorded, errors.Join(err, m.markerLeftForRecovery("merge")))
 	}
 	m.removeRenameMarker()
 	return reg, nil
@@ -950,8 +977,8 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]stri
 	}
 	var undo []func() error
 	if itsOwn {
-		if ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg, owners); err != nil {
-			return registryAsFound, m.markerAfterFailedMove(err)
+		if ref, reg, undo, err = m.moveMarketplace(name, newName, ref, mk, reg, owners, false); err != nil {
+			return registryAsFound, m.markerAfterFailedMove(name, newName, err)
 		}
 	} else {
 		// An entry whose directories another marketplace owns leaves that
@@ -965,7 +992,7 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]stri
 		if owner == "" {
 			reg = rekeyRegistry(reg, owners, name, newName, "", "")
 		} else if reg, undo, err = m.movePluginCachesToNewName(reg, name, newName, owners); err != nil {
-			return registryAsFound, m.markerAfterFailedMove(err)
+			return registryAsFound, m.markerAfterFailedMove(name, newName, err)
 		}
 	}
 	if err := m.saveRename(mk, name, newName, ref, reg, registryAsFound); err != nil {
@@ -980,7 +1007,7 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]stri
 			m.removeRenameMarker()
 			return registryAsFound, err
 		}
-		return registryAsFound, errors.Join(err, undoErr, m.markerLeftForRecovery("rename"))
+		return registryAsFound, m.migrationFailed(name, newName, errors.Join(err, undoErr, m.markerLeftForRecovery("rename")))
 	}
 	m.removeRenameMarker()
 	return reg, nil
@@ -992,12 +1019,12 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]stri
 // resume, so the marker goes and the failure is reported as it stands; one that
 // could not leaves the store between the two names, which is what the marker is
 // for, so it stays and the error names it for the next lock holder.
-func (m *Manager) markerAfterFailedMove(err error) error {
-	if errors.Is(err, errRenameRollbackIncomplete) {
-		return errors.Join(err, m.markerLeftForRecovery("rename"))
+func (m *Manager) markerAfterFailedMove(from, to string, err error) error {
+	if !errors.Is(err, errRenameRollbackIncomplete) {
+		m.removeRenameMarker()
+		return m.migrationFailed(from, to, err)
 	}
-	m.removeRenameMarker()
-	return err
+	return m.migrationFailed(from, to, errors.Join(err, m.markerLeftForRecovery("rename")))
 }
 
 // dirsUnder reports whether either directory a name derives is in the store. A

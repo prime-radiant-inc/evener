@@ -51,7 +51,7 @@ Call the `doctor_evener` tool — the in-process equivalent of the `evener
 doctor` CLI, running against this session's own state root by default (no
 shell, no PATH, no cwd dependence; the CLI shell-out failed with
 `command not found` when the binary wasn't installed). Its `selector` argument
-is the CLI's first positional: `local:<id>`, `proj:<hash>:<id>`, or a bare
+is the CLI's first positional: `local:<id>`, `proj:<project-id>:<id>`, or a bare
 `<id>` (searched across buckets). `state_dir` targets a different root.
 Results are the CLI's `--json` struct shapes. The same commands also run as
 `evener doctor <cmd>` for humans and scripts.
@@ -86,6 +86,17 @@ from the stored body for those rows (adds `recomputed_txt`/`recomputed_tools`
 columns and a `recomputed_nonempty` total) before trusting an empty-response
 verdict on pre-fix logs.
 
+## Live interrogation: the WHY that durable state cannot hold
+
+Transcripts, api logs, and jobs answer WHAT a session did. When the question
+is WHY the model made (or skipped) a choice, or whether an affordance ever
+crossed the provider gateway, resume the real session ON A COPY and ask it:
+`evener --state-dir <copy> --resume-with <id> --api-log on --max-rounds 2`,
+with a three-part question (recite the schema, quote the affordance, explain
+the choice). The verbatim recitation proves delivery; the account is belief
+evidence; the new api.jsonl is wire truth. Full procedure and the proven
+Action-Fusion example: `references/session-interrogation.md`.
+
 ## The Finding contract (in brief)
 
 A Finding is structured JSON with: `signature` (a stable dedup key), `severity`,
@@ -102,6 +113,7 @@ FYI/PASS noise. **Healthy ⇒ zero findings.** Full schema:
 - "I'm about to emit a finding" → `references/finding-contract.md`
 - "I'm writing or registering a runbook" → `references/writing-runbooks.md`
 - "I want to repair a runbook, a doctor tool, or a core skill" → **`references/repair-guardrails.md`** (ALWAYS, before any repair)
+- "The transcript shows WHAT the model chose, but not WHY — or whether an affordance ever reached it through the provider gateway" → **`references/session-interrogation.md`** (copy the state dir first; one live call)
 
 ## Anti-patterns
 
@@ -117,3 +129,5 @@ FYI/PASS noise. **Healthy ⇒ zero findings.** Full schema:
 | Treat any self-influenced delivery as a bug, or re-derive a loop from the `Chain` | Self-influence is normal; flag only a runaway — read the recorded breaker telemetry (`max_self_influence_depth`, `runaway_drops`) via `doctor_evener` `watches` with `self_loops: true` |
 | Emit a PASS / FYI / "looks fine" finding | Emit only confirmed, actionable problems; healthy ⇒ zero |
 | Silently apply a core-skill or doctor-tool repair | Propose only, behind review + the validation gate (`repair-guardrails.md`) |
+| Resume a collected or measurement session in place to question it | Copy the state dir first (`references/session-interrogation.md`); the corpus is an input you cannot regenerate, and the retention manifest refuses a moved full resume anyway |
+| Treat the model's self-account as wire truth | A verbatim schema recitation proves delivery; the api log is ground truth about the wire; cite the two separately |

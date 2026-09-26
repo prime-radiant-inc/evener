@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -25,49 +26,55 @@ type bucket struct {
 // there is no second selector dialect.
 //
 // stateBase is the already-resolved state root (the cmd layer applies the
-// --state-dir / EVENER_STATE_DIR / XDG precedence). Locate auto-detects whether
-// stateBase is an XDG state home (it contains evener/projects/<project-id> buckets) or
-// is itself a single bucket (an override / E2E scratch root with sessions/
-// directly under it). It resolves by globbing the on-disk layout — it never
+// --state-dir / EVENER_STATE_DIR / XDG precedence). Locate auto-detects the
+// base's shape via resolveBuckets: an XDG state home, a project bucket
+// directory, or a single override / scratch bucket (sessions/ directly
+// under it). It resolves by globbing the on-disk layout — it never
 // recomputes a project ID.
 func Locate(stateBase, selector string) (Paths, error) {
 	sel, err := parseSelector(selector)
 	if err != nil {
 		return Paths{}, err
 	}
-	buckets, err := resolveBuckets(stateBase)
+	buckets, stateRoot, err := resolveBuckets(stateBase)
 	if err != nil {
 		return Paths{}, err
 	}
 
 	if sel.projectID != "" {
-		return locateInBucket(stateBase, buckets, sel)
+		return locateInBucket(buckets, stateRoot, sel)
 	}
-	return locateAcrossBuckets(stateBase, buckets, sel)
+	return locateAcrossBuckets(buckets, stateRoot, sel)
 }
 
-// locateInBucket resolves a proj:<project-id>:<sid> selector to its named bucket.
-func locateInBucket(stateBase string, buckets []bucket, sel selector) (Paths, error) {
-	for _, b := range buckets {
-		if b.projectID == sel.projectID {
-			if !sessionInBucket(b, sel.sid) {
-				return Paths{}, fmt.Errorf("session %s not found in project %s", sel.sid, sel.projectID)
-			}
-			return pathsFor(b, sel.sid), nil
+// locateInBucket resolves a proj:<project-id>:<sid> selector to its named
+// bucket. A project id that names no enumerated bucket is an explicit
+// not-found error carrying the state root and the scan breadth — never a
+// silent empty result.
+func locateInBucket(buckets []bucket, stateRoot string, sel selector) (Paths, error) {
+	if b, ok := bucketByProjectID(buckets, sel.projectID); ok {
+		if !sessionInBucket(b, sel.sid) {
+			return Paths{}, fmt.Errorf("session %s not found in project %s under %s", sel.sid, sel.projectID, stateRoot)
 		}
-	}
-	// Bucket was not enumerated (e.g. addressed directly under an XDG home that
-	// has no other buckets yet); construct the path and verify it exists.
-	b := bucket{dir: filepath.Join(stateBase, "evener", "projects", sel.projectID), projectID: sel.projectID}
-	if sessionInBucket(b, sel.sid) {
 		return pathsFor(b, sel.sid), nil
 	}
-	return Paths{}, fmt.Errorf("session %s not found in project %s", sel.sid, sel.projectID)
+	return Paths{}, fmt.Errorf("project %s not found %s", sel.projectID, scannedUnder(stateRoot, len(buckets)))
+}
+
+// bucketByProjectID finds the one bucket a proj:<project-id> selector or a
+// sessions bucket filter names.
+func bucketByProjectID(buckets []bucket, projectID string) (bucket, bool) {
+	for _, b := range buckets {
+		if b.projectID == projectID {
+			return b, true
+		}
+	}
+	return bucket{}, false
 }
 
 // locateAcrossBuckets resolves a bare <sid> (or local:<sid>) by searching every
 // bucket; a sid present in more than one bucket is reported as ambiguous.
-func locateAcrossBuckets(stateBase string, buckets []bucket, sel selector) (Paths, error) {
+func locateAcrossBuckets(buckets []bucket, stateRoot string, sel selector) (Paths, error) {
 	var found []bucket
 	for _, b := range buckets {
 		if sessionInBucket(b, sel.sid) {
@@ -76,7 +83,7 @@ func locateAcrossBuckets(stateBase string, buckets []bucket, sel selector) (Path
 	}
 	switch len(found) {
 	case 0:
-		return Paths{}, fmt.Errorf("session %s not found under %s", sel.sid, stateBase)
+		return Paths{}, fmt.Errorf("session %s not found %s", sel.sid, scannedUnder(stateRoot, len(buckets)))
 	case 1:
 		return pathsFor(found[0], sel.sid), nil
 	default:
@@ -90,30 +97,55 @@ func locateAcrossBuckets(stateBase string, buckets []bucket, sel selector) (Path
 	}
 }
 
-// resolveBuckets returns the project buckets under stateBase, auto-detecting the
-// layout: an XDG state home enumerates evener/projects/*, while an override /
-// scratch root (sessions/ directly under it) is itself the single bucket.
-func resolveBuckets(stateBase string) ([]bucket, error) {
-	projects := filepath.Join(stateBase, "evener", "projects")
-	if isDir(projects) {
-		matches, err := globProjectBuckets(filepath.Join(projects, "*"))
-		if err != nil {
-			return nil, fmt.Errorf("glob project buckets: %w", err)
-		}
-		buckets := make([]bucket, 0, len(matches))
-		for _, m := range matches {
-			if isDir(m) {
-				projectID := filepath.Base(m)
-				if identifier.ValidateProjectID(projectID) != nil {
-					continue
-				}
-				buckets = append(buckets, bucket{dir: m, projectID: projectID})
-			}
-		}
-		return buckets, nil
+// resolveBuckets returns the project buckets a selector can resolve into, plus
+// the state root they were enumerated under (the root not-found errors name).
+// Three base shapes are auto-detected, keyed on the on-disk layout the runtime
+// itself writes and never on bucket names:
+//
+//   - a state home (the doctor's default resolution chain): buckets are the
+//     directories under <base>/evener/projects, root is the base itself;
+//   - a project bucket directory (the daemon's per-session state dir — see
+//     userdirs.StateHomeForBucketDir): the sweep up-walks to the state home
+//     and enumerates the same sibling set, root is that state home;
+//   - an override / scratch root (sessions/ directly under it): it is itself
+//     the single bucket, root is the base.
+func resolveBuckets(stateBase string) ([]bucket, string, error) {
+	// A project-bucket base sweeps its state root's buckets; every other
+	// base is enumerated as itself. The up-walk counts only when the base
+	// itself is an existing directory and the walk lands on a real projects
+	// dir, so a phantom bucket-dir spelling (<state>/evener/projects/missing)
+	// stays the ordinary single-bucket miss instead of sweeping siblings a
+	// nonexistent base cannot contain.
+	stateRoot := stateBase
+	if home := userdirs.StateHomeForBucketDir(stateBase); home != "" && isDir(stateBase) && isDir(filepath.Join(home, "evener", "projects")) {
+		stateRoot = home
 	}
-	// Override / scratch layout: stateBase is itself the bucket.
-	return []bucket{{dir: stateBase, projectID: ""}}, nil
+	projects := filepath.Join(stateRoot, "evener", "projects")
+	if isDir(projects) {
+		buckets, err := globBuckets(projects)
+		return buckets, stateRoot, err
+	}
+	// Override / scratch layout: stateBase is itself the single bucket.
+	return []bucket{{dir: stateBase, projectID: ""}}, stateBase, nil
+}
+
+// globBuckets enumerates the bucket directories under a projects dir. Every
+// directory is a bucket: bucket identity is the actual directory name, and
+// filtering on identifier.ValidateProjectID would hide a legacy- or
+// foreign-named bucket that holds real sessions — a forensic sweep must see
+// what is on disk.
+func globBuckets(projects string) ([]bucket, error) {
+	matches, err := globProjectBuckets(filepath.Join(projects, "*"))
+	if err != nil {
+		return nil, fmt.Errorf("glob project buckets: %w", err)
+	}
+	buckets := make([]bucket, 0, len(matches))
+	for _, m := range matches {
+		if isDir(m) {
+			buckets = append(buckets, bucket{dir: m, projectID: filepath.Base(m)})
+		}
+	}
+	return buckets, nil
 }
 
 // pathsFor builds the resolved Paths for a session in a bucket. The jobs.jsonl
@@ -137,11 +169,33 @@ func pathsFor(b bucket, sid string) Paths {
 }
 
 // refFor builds the transcript ref: proj:<project-id>:<sid> for a project bucket,
-// or local:<sid> for an override / scratch root.
+// or local:<sid> for an override / scratch root. A bucket whose directory
+// name the shared agent ref grammar cannot consume gets NO ref —
+// identifier.ValidateProjectID is exactly the token the agent-side
+// transcript tools' parsers admit (agent/transcript_ref.go's validIDToken
+// rules out the separators and dots ValidateProjectID's alphabet already
+// excludes), so a ref emitted for any other name would hand the model a
+// handle read_transcript and find_session_transcripts reject. Such sessions
+// stay fully locatable (session id, bucket, paths) and remain addressable
+// through the doctor's own selector grammar — a bare id sweeps to them, and
+// an explicit proj:<name>:<sid> parses for every traversal-safe name.
 func refFor(projectID, sid string) string {
 	if projectID == "" {
 		return "local:" + sid
 	}
+	if identifier.ValidateProjectID(projectID) != nil {
+		return ""
+	}
+	return projRef(projectID, sid)
+}
+
+// projRef builds the proj:<projectID>:<sid> selector form. refFor calls
+// it after identifier.ValidateProjectID accepts the name (the canonical
+// [A-Za-z0-9-] alphabet); followSelector calls it after safeTokenForRepro
+// accepts the name (a wider comma- and shell-safety check that also
+// covers non-canonical legacy names like hex-style bucket directories).
+// The grammar-safety check stays at each call site.
+func projRef(projectID, sid string) string {
 	return "proj:" + projectID + ":" + sid
 }
 

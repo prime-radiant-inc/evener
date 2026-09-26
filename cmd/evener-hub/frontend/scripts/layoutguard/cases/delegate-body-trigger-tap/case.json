@@ -1,0 +1,22 @@
+{
+  "name": "delegate-body-trigger-tap",
+  "description": "On a phone-width viewport the two-level body trigger sometimes is the row's ONLY control (a summary-less delegate row, issue #1253) and must meet the --tap-min touch floor (tokens.css, decision 4), not be a bare 14px chevron. At 390px the trigger is at least 44x44, its center is owned by its own button, and the bare content line (.intentLine: rail icon, status dot, and intent as one flex item) still shares its first line - so the max-width reservation reserves the trigger's grown --tap-min width AND bounds the icon's full outer width, which below the 700px breakpoint is not cancelled by the .rowIcon negative-gutter pull (roborev). The chevron is centered in the grown hit target (the base align-items: baseline would seat it at the box top).",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/railseat.module.css",
+    "panes/session/transcript/toolcallitem.module.css"
+  ],
+  "viewport": {
+    "width": 390,
+    "height": 844,
+    "deviceScaleFactor": 2,
+    "mobile": true
+  },
+  "mutation": {
+    "declaration": "toolcallitem.module.css: remove the @media (max-width: 899px) .row[data-intent-trailing=\"true\"] > .bodyTrigger min-width/min-height/align-items block",
+    "verified": "2026-09-18",
+    "expect": "fail",
+    "note": "Without the phone block the trigger measures the chevron's ~14px box in both axes (below the 44px floor) and the chevron is no longer centered (align-items returns to baseline)."
+  }
+}

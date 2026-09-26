@@ -1,12 +1,16 @@
 import {
 	presetContent,
+	sessionTokens,
+	tokenUnitLabel,
+	type EvenerUsage,
+	type SessionTokens,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type {
 	ActivityMember,
 	MobileConversation,
 	MobileTimelineItem,
-} from "../../mobile/src/conversation/project";
+} from "./projectedRows";
 
 export type ActivityPresentation = {
 	mode: "full" | "intent" | "critical";
@@ -14,11 +18,50 @@ export type ActivityPresentation = {
 };
 
 // The session accounting the transcript footer shows: the conversation's
-// token aggregate and cost (the package ThreadModel's usage/cost fields), each
-// null when the display config hides it or the daemon reported none.
+// token total (the package's turn-summed sessionTokens derivation, shared
+// with the web details panel), the thread's own cumulative cache/total
+// breakdown, and cost - each undefined/null when the display config hides it
+// or the daemon reported none.
+//
+// cacheReadTokens/totalTokens are read independently of inputTokens/
+// outputTokens/scope: the wire's EvenerUsage permits a sparse cumulative
+// object (cache or total alone, with no input/output pair at all), and
+// sessionTokens has no per-turn equivalent for them, so they must survive
+// even when sessionTokens falls back to summing turns or returns null
+// outright. They are always whole-session figures (EvenerThread.Usage is not
+// windowed the way turns are), so they carry no scope of their own and must
+// never inherit whatever scope the derived input/output pair got.
 export interface SessionAccounting {
-	usage: MobileConversation["usage"];
+	usage:
+		| (Partial<SessionTokens> & Pick<EvenerUsage, "cacheReadTokens" | "totalTokens">)
+		| null;
 	cost: string | null;
+}
+
+export interface UsageRow {
+	label: "Input" | "Output" | "Cached" | "Total";
+	value: number;
+	unit: string;
+}
+
+// usageRows picks the footer's visible rows and labels each with what it
+// actually counts. Input/Output take the derived pair's own scope (a
+// truncated turn window says so); Cached/Total are always the thread's whole
+// -session cumulative figures, so they always read plainly, independent of
+// whatever scope the derived pair got.
+export function usageRows(usage: SessionAccounting["usage"]): UsageRow[] {
+	if (!usage) return [];
+	const derivedUnit = tokenUnitLabel(usage.scope);
+	const cumulativeUnit = tokenUnitLabel(undefined);
+	const candidates: [UsageRow["label"], number | undefined, string][] = [
+		["Input", usage.inputTokens, derivedUnit],
+		["Output", usage.outputTokens, derivedUnit],
+		["Cached", usage.cacheReadTokens, cumulativeUnit],
+		["Total", usage.totalTokens, cumulativeUnit],
+	];
+	return candidates
+		.filter((row): row is [UsageRow["label"], number, string] => row[1] !== undefined)
+		.map(([label, value, unit]) => ({ label, value, unit }));
 }
 
 export interface NativeTranscriptPresentation {
@@ -30,26 +73,6 @@ export interface NativeTranscriptPresentation {
 }
 
 const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
-const PROMPT_EVENTS = new Set(["system_prompt", "prompt_loaded"]);
-const KNOWN_EVENTS = new Set([
-	"system_prompt",
-	"plugin_loaded",
-	"skill_activated",
-	"hook_completed",
-	"prompt_loaded",
-	"context_compaction",
-	"compaction",
-	"turn_limit",
-	"loop_detection",
-	"goal_ended",
-	"fork_summary",
-	"round_timings",
-	"tool_repair",
-	"model_switch",
-	"error",
-	"environment",
-]);
-const CRITICAL_EVENTS = new Set(["error", "tool_repair"]);
 const MAX_ACTION_DETAIL_LENGTH = 256;
 
 function writeFileActionSummary(
@@ -84,21 +107,30 @@ function actionSummary(
 	);
 }
 
-function isCritical(item: MobileTimelineItem): boolean {
-	if (item.kind === "activity")
-		return item.state === "failed" || item.state === "running";
-	return (
-		item.kind === "failure" ||
-		item.kind === "question" ||
-		(item.kind === "notice" && item.tone === "warning")
-	);
+// An activity that is running or failed is attention-worthy. Notice criticality
+// is timeline.ts's isCriticalNotice, not a rule of this layer.
+function activityIsCritical(
+	item: Extract<MobileTimelineItem, { kind: "activity" }>,
+): boolean {
+	return item.state === "failed" || item.state === "running";
 }
 
-function activityMode(
+// How an activity row renders. This is a RENDERING hint only: which rows
+// exist at all is the shared projector's decision at the user's display
+// config, made once inside the store's seam (D24-6 retired this layer's own
+// config-driven row filtering — the projector subsumed it). What remains
+// here is the mode each surviving row renders in:
+//   - a running or failed activity renders as attention: its summary line
+//     above an expandable body (tools carry the summary; reasoning rows do
+//     not — their body is the thought) — the attention rule outranks the
+//     summarization, so a failed call never collapses to a bare line;
+//   - a summary-only row (the projector's intent entry; the operator's
+//     summary-only ruling) renders its summary line, nothing to expand;
+//   - everything else renders in full.
+function presentationFor(
 	item: Extract<MobileTimelineItem, { kind: "activity" }>,
-	config: TranscriptDisplayConfigV1,
-): ActivityPresentation | null {
-	if (isCritical(item))
+): ActivityPresentation {
+	if (activityIsCritical(item)) {
 		return {
 			mode: "critical",
 			...(item.family === "tool"
@@ -107,29 +139,16 @@ function activityMode(
 					}
 				: {}),
 		};
-	if (item.family === "unknown") return { mode: "full" };
-	const content =
-		config.content.kind === "preset"
-			? presetContent(config.content.level)
-			: config.content;
-	if (item.family === "reasoning")
-		return content.reasoning ? { mode: "full" } : null;
-	if (!item.detail.description?.trim() && content.toolCalls)
-		return { mode: "critical", summary: actionSummary(item) };
-	if (content.toolCalls) return { mode: "full" };
-	if (content.toolIntent)
-		return {
-			mode: "intent",
-			summary: actionSummary(item),
-		};
-	if (item.family === "tool" && !item.detail.description?.trim())
-		return { mode: "critical", summary: actionSummary(item) };
-	return null;
+	}
+	if (item.summaryOnly === true) {
+		return { mode: "intent", summary: actionSummary(item) };
+	}
+	return FULL_PRESENTATION;
 }
 
-// Without transcript preferences nothing is hidden or summarised: every
-// activity shows in full until the hub's config arrives, or forever on a hub
-// that does not support it.
+// Without transcript preferences nothing is summarised: every activity shows
+// in full until the hub's config arrives, or forever on a hub that does not
+// support it.
 // One object stands under every activity id in that map, so it is readonly:
 // nothing may edit one row's presentation and move the rest with it.
 const FULL_PRESENTATION = { mode: "full" } as const;
@@ -144,27 +163,19 @@ function memberItem(
 		family: member.family,
 		state: member.state,
 		detail: member.detail,
+		...(member.summaryOnly ? { summaryOnly: member.summaryOnly } : {}),
 		...(member.transcriptKey ? { transcriptKey: member.transcriptKey } : {}),
 		...(member.position ? { position: member.position } : {}),
 	};
 }
 
-function eventVisible(
-	item: Extract<MobileTimelineItem, { kind: "notice" }>,
-	config: TranscriptDisplayConfigV1,
-): boolean {
-	if (item.tone === "warning" || item.family === "warning") return true;
-	const event = item.eventKind;
-	if (!event || !KNOWN_EVENTS.has(event)) return true;
-	if (CRITICAL_EVENTS.has(event)) return true;
-	if (event === "hook_completed") {
-		if (config.advanced.hookExits === "all") return true;
-		if (item.exitCode !== undefined && item.exitCode !== 0) return true;
-		return config.advanced.hookExits === "successful" && item.exitCode === 0;
-	}
-	if (PROMPT_EVENTS.has(event)) return config.advanced.promptEvents;
-	if (event === "round_timings") return config.advanced.roundTimings;
-	return config.advanced.systemEvents;
+// A cumulative field's Go zero value ("0") signals absence, not a real
+// measurement of zero — the same rule sessionTokens applies to inputTokens/
+// outputTokens (threadUsage.ts). cacheReadTokens/totalTokens get no such
+// derivation of their own (they are read straight off the wire), so that
+// rule is applied here, once, at the point they are read.
+function noZero(value: number | undefined): number | undefined {
+	return value === 0 ? undefined : value;
 }
 
 function accountingFor(
@@ -172,8 +183,18 @@ function accountingFor(
 	config: TranscriptDisplayConfigV1,
 ): SessionAccounting | null {
 	if (!conversation) return null;
+	const tokens = config.advanced.tokenCounts ? sessionTokens(conversation) : null;
+	const cacheReadTokens = config.advanced.tokenCounts ? noZero(conversation.usage?.cacheReadTokens) : undefined;
+	const totalTokens = config.advanced.tokenCounts ? noZero(conversation.usage?.totalTokens) : undefined;
 	return {
-		usage: config.advanced.tokenCounts ? conversation.usage : null,
+		usage:
+			tokens || cacheReadTokens !== undefined || totalTokens !== undefined
+				? {
+						...(tokens ?? {}),
+						...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+						...(totalTokens !== undefined ? { totalTokens } : {}),
+					}
+				: null,
 		cost: config.advanced.estimatedCost ? (conversation.cost ?? null) : null,
 	};
 }
@@ -209,6 +230,12 @@ export function projectNativeTranscript(
 // and the trailing rows those came from are dropped. Both the configured path
 // and the no-config fallback emit through this, so the two cannot disagree
 // about adjacency; without a config every activity is simply shown in full.
+//
+// Every row the seam projected reaches the renderer: the shared projector
+// decided at the user's config which rows exist (D24-6), so this pass only
+// reshapes what survived — unrolling clustered members and seating
+// attachments beside the member that produced them — and computes each
+// activity's rendering mode.
 function projectTimeline(
 	source: MobileTimelineItem[],
 	config: TranscriptDisplayConfigV1 | null | undefined,
@@ -239,31 +266,22 @@ function projectTimeline(
 		if (item.kind === "activity" && item.members?.length) {
 			for (const member of item.members) {
 				const projected = memberItem(member);
-				const presentation = config
-					? activityMode(projected, config)
-					: FULL_PRESENTATION;
-				if (presentation) {
-					activityPresentation.set(projected.id, presentation);
-					projectedItems.push(projected);
-				}
+				activityPresentation.set(
+					projected.id,
+					config ? presentationFor(projected) : FULL_PRESENTATION,
+				);
+				projectedItems.push(projected);
 				// Attachments keep their source position even when that activity is hidden.
 				projectedItems.push(
 					...(attachmentsByKey.get(member.transcriptKey ?? member.id) ?? []),
 				);
 			}
 		} else if (item.kind === "activity") {
-			const presentation = config
-				? activityMode(item, config)
-				: FULL_PRESENTATION;
-			if (presentation) {
-				activityPresentation.set(item.id, presentation);
-				projectedItems.push(item);
-			}
-		} else if (
-			item.kind === "notice" &&
-			config &&
-			!eventVisible(item, config)
-		) {
+			activityPresentation.set(
+				item.id,
+				config ? presentationFor(item) : FULL_PRESENTATION,
+			);
+			projectedItems.push(item);
 		} else if (
 			item.kind === "attachments" &&
 			item.sourceTranscriptKey &&

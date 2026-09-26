@@ -4,6 +4,7 @@ import type {
   NavigationProjectResource,
   NavigationProjectSummary,
   NavigationSessionSummary,
+  Source,
 } from "@evener/appwire-client";
 import { canReadSharedNotes, errorText } from "@evener/appwire-client";
 import {
@@ -24,21 +25,24 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { useConnectionStore } from "../../stores/connection";
+import { LOCAL_HOST } from "../../stores/hostRouting";
 import {
-  relativeAge,
   selectAttentionSummary,
+  selectDisplaySources,
   selectPinSectionSummaries,
   selectPinSections,
   selectRailModel,
 } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { type SidebarGroupingPref, usePrefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import {
@@ -49,6 +53,8 @@ import {
   EmptyState,
   IconButton,
   Input,
+  Popover,
+  RadioGroup,
   Skeleton,
   Tooltip,
   useToasts,
@@ -80,26 +86,33 @@ import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import dialogStyles from "./railDialog.module.css";
 import { loadExpansion, saveExpansion } from "./railExpansion";
-import { GearIcon, SearchIcon, SidebarIcon } from "./railIcons";
+import { GearIcon, SearchIcon, SidebarIcon, TuneIcon } from "./railIcons";
 import {
   archivedCount,
   archivedProjectNodes,
   archivedSessionGroups,
   catalogOverflowNode,
+  hostProjectNodes,
+  type IsExpanded,
+  liveNodesGroupedByHost,
   type OverflowPage,
   type OverflowRailNode,
   overrideLookup,
   pinSectionDisclosureID,
   pinSectionOverflowNode,
-  projectNodeIdForSessionRef,
+  projectLoadExpansionKeys,
   projectNodes,
+  projectNodesWithHostBranches,
+  type RailGroupingMode,
   type RailNode,
   type RailPinSection,
   type RailProject,
   type RailSession,
+  revealExpansionIds,
   sectionOverflowNode,
   sessionNodes,
 } from "./railNodes";
+import { RailTickProvider } from "./railNow";
 import { applyPending, buildPinSourceIndex, type PendingOp, type RailResources } from "./railPending";
 
 const CLASS = {
@@ -117,6 +130,8 @@ const CLASS = {
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
   sectionHeadingRow: requireClass(styles.sectionHeadingRow, "Rail.module.css", "sectionHeadingRow"),
   sectionHeadingAction: requireClass(styles.sectionHeadingAction, "Rail.module.css", "sectionHeadingAction"),
+  organizeRow: requireClass(styles.organizeRow, "Rail.module.css", "organizeRow"),
+  organizePanel: requireClass(styles.organizePanel, "Rail.module.css", "organizePanel"),
   dialogField: requireClass(dialogStyles.dialogField, "railDialog.module.css", "dialogField"),
   dialogActions: requireClass(dialogStyles.dialogActions, "railDialog.module.css", "dialogActions"),
   pickerError: requireClass(dialogStyles.pickerError, "railDialog.module.css", "pickerError"),
@@ -184,6 +199,52 @@ function SectionHeading({ label, open, onToggleOpen, staticLabel, action }: Sect
     </div>
   );
 }
+
+// The rail's organize-by switcher: an icon-only quiet trigger opening the
+// RadioGroup popover. The Tooltip carries the name the icon drops, and the
+// popover's checked option plus the re-titled section below state the
+// current mode, so nothing else on the row needs to. Rendered hard right in
+// its own row between the Live section and the Hosts/Projects section it
+// controls, so it reads as a toolbar for the section below and never as a
+// Live affordance.
+function OrganizeByControl({
+  mode,
+  onChange,
+}: {
+  mode: SidebarGroupingPref;
+  onChange: (mode: SidebarGroupingPref) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover
+      open={open}
+      onClose={() => setOpen(false)}
+      trigger={
+        <Tooltip label="Organize by">
+          <IconButton
+            label="Organize by"
+            icon={<TuneIcon />}
+            variant="quiet"
+            size="sm"
+            onClick={() => setOpen((current) => !current)}
+          />
+        </Tooltip>
+      }
+    >
+      <div className={CLASS.organizePanel}>
+        <RadioGroup
+          label="Organize by"
+          value={mode}
+          onChange={(value) => onChange(value as SidebarGroupingPref)}
+          options={[
+            { value: "host-project", label: "Host, then project" },
+            { value: "project-host", label: "Project, then host" },
+          ]}
+        />
+      </div>
+    </Popover>
+  );
+}
 interface NavigationRailRowProps {
   node: RailNode;
   info: TreeRowInfo;
@@ -241,6 +302,49 @@ function isPassiveRailNode(node: RailNode): boolean {
     node.kind === "watch" ||
     (node.kind === "overflow" && node.passive === true)
   );
+}
+
+/** The catalogs' "+N more projects" row, appended to whatever the section's
+ * own nodes are - flat project rows today, host groups under the organize-by
+ * setting. */
+function withCatalogOverflow(
+  nodes: RailNode[],
+  overflow?: { remaining: number; offset: number; limit: number },
+  overflowId?: string,
+  overflowCatalog?: "projects" | "archived_projects" | "test_runs",
+): RailNode[] {
+  if (overflow && overflowId && overflowCatalog && overflow.remaining > 0) {
+    return [
+      ...nodes,
+      ...catalogOverflowNode(overflowId, overflowCatalog, overflow.remaining, overflow.offset, overflow.limit),
+    ];
+  }
+  return nodes;
+}
+
+/** The Projects tier under the organize-by setting: ONE decision pairs the
+ * section's title with its node shape, so they cannot drift apart (the same
+ * one-decision doctrine as projectPlacement below). Test runs stay flat -
+ * that tier is a catalog, not the work surface the setting addresses. */
+function projectsTierFor(
+  mode: RailGroupingMode,
+  projects: readonly RailProject[],
+  sources: readonly Source[],
+  isExpanded: IsExpanded,
+): { title: string; nodes: RailNode[] } {
+  switch (mode) {
+    case "host-project":
+      return { title: "Hosts", nodes: hostProjectNodes(projects, sources, isExpanded) };
+    case "project-host":
+      return { title: "Projects", nodes: projectNodesWithHostBranches(projects, sources, isExpanded) };
+    default:
+      // Flat rows name their launch host too: the display sources resolve
+      // it (a local project to this hub, a remote-owned one to its host),
+      // so a stale spawn draft cannot redirect the click and a host the
+      // manifest has not named cannot fall back to this hub with the
+      // remote working_dir.
+      return { title: "Projects", nodes: projectNodes(projects, isExpanded, sources) };
+  }
 }
 
 // One shared Tree wrapper for the rail's sections: the rail renders on
@@ -393,7 +497,6 @@ function summarySession(
     tier,
     pin_section_id: pinSectionID,
     project_key: projectKey,
-    age: relativeAge(summary.updated_at),
     children,
   };
   let entries = sessionModelCache.get(summary as object);
@@ -886,6 +989,23 @@ function NavigationRail({
   const resourcesState = useNavigationStore((state) => state.resources);
   const expanded = useNavigationStore((state) => state.expanded);
   const attention = useNavigationStore((state) => selectAttentionSummary(state));
+  // The rail's organize-by setting. Host grouping turns on only when the
+  // manifest has named a remote source, and the decision reads the DISPLAY
+  // list (last-known): grouping is a layout fact, and the settled list
+  // (selectSources) empties for the length of any revalidation, which would
+  // blink the whole rail flat and back. Launchability stays on the settled
+  // list where it belongs - the spawn picker reads it - so a host the fresh
+  // manifest removed is still never launchable; the rail's SHAPE merely
+  // keeps the last-known hosts until the read settles. The builders read
+  // the display list too: a host group's online flag and label are display
+  // facts, and a revalidation must not flip groups offline for the length
+  // of the refresh (the same sticky contract the session rows' host chips
+  // read). A hub with no configured hosts keeps today's rail exactly.
+  const grouping = usePrefsStore((state) => state.sidebarGrouping);
+  const setGrouping = usePrefsStore((state) => state.setSidebarGrouping);
+  const displaySources = useNavigationStore(selectDisplaySources);
+  const hostGrouping = displaySources.some((source) => source.id !== LOCAL_HOST);
+  const groupingMode: RailGroupingMode = hostGrouping ? grouping : "flat";
   const serverInfo = useConnectionStore((state) => state.serverInfo);
   const toasts = useToasts();
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
@@ -1052,7 +1172,9 @@ function NavigationRail({
       rootGeneration.current = generation;
     }
     for (const project of [...resources.projects, ...resources.archivedProjects, ...resources.testRuns]) {
-      const expanded = isExpanded(projectNodeExpansionKey(project.key), project.default_expanded ?? false);
+      const expanded = projectLoadExpansionKeys(project, groupingMode).some((id) =>
+        isExpanded(id, project.default_expanded ?? false),
+      );
       if (
         !expanded ||
         project.loaded === true ||
@@ -1065,7 +1187,7 @@ function NavigationRail({
         continue;
       loadProjectRoot(project.key);
     }
-  }, [navigationMode, resources, isExpanded, loadProjectRoot]);
+  }, [navigationMode, resources, isExpanded, loadProjectRoot, groupingMode]);
   useEffect(() => {
     if (!revealTarget) return;
     const row = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
@@ -1076,12 +1198,19 @@ function NavigationRail({
       consumeReveal();
       return;
     }
-    const projectID = projectNodeIdForSessionRef(
-      [...resources.projects, ...resources.testRuns, ...resources.archivedProjects],
-      revealTarget,
-    );
-    if (projectID && expandedOverrides.get(projectID) !== true) {
-      setExpanded(projectID, true);
+    // The chain must name folds that actually render: only the Projects
+    // section honors the grouping, so grouped ids apply to it alone while
+    // the always-flat tiers keep flat ids whatever the mode. A test run's
+    // archived rows still route to the archived-group fold; a whole-archived
+    // project renders every row under its own node instead.
+    const chain = [
+      ...revealExpansionIds(resources.projects, resources.live, revealTarget, groupingMode),
+      ...revealExpansionIds(resources.testRuns, [], revealTarget, "flat"),
+      ...revealExpansionIds(resources.archivedProjects, [], revealTarget, "flat", { rowsUnderProjectNode: true }),
+    ];
+    const nextFold = chain.find((id) => expandedOverrides.get(id) !== true);
+    if (nextFold) {
+      setExpanded(nextFold, true);
       return;
     }
     const currentState = navigationStore.getState();
@@ -1162,6 +1291,7 @@ function NavigationRail({
     revealTarget,
     resources,
     expandedOverrides,
+    groupingMode,
     consumeReveal,
     setExpanded,
     requestRevealResource,
@@ -1173,7 +1303,17 @@ function NavigationRail({
     if (isPassiveRailNode(node)) return;
     const value = !node.expanded;
     setExpanded(node.id, value);
-    if (!value && node.kind === "project") rootLoadsInFlight.current.delete(node.project.key);
+    if (!value && node.kind === "project") {
+      // The in-flight guard is project-wide but one project renders several
+      // nodes (host-first copies): clear it only when no other copy stays
+      // expanded, or the load effect re-fires a duplicate concurrent load.
+      // node.id is excluded because the memoized lookup still reads the
+      // pre-toggle map, where this copy counts as expanded.
+      const stillExpanded = projectLoadExpansionKeys(node.project, groupingMode).some(
+        (id) => id !== node.id && isExpanded(id, node.project.default_expanded ?? false),
+      );
+      if (!stillExpanded) rootLoadsInFlight.current.delete(node.project.key);
+    }
     if (
       value &&
       node.kind === "project" &&
@@ -1561,8 +1701,9 @@ function NavigationRail({
           .map((p) => [p.key, p]),
       ),
       isExpanded,
+      displaySources,
     ),
-    ...archivedSessionGroups(unarchived, isExpanded),
+    ...archivedSessionGroups(unarchived, isExpanded, displaySources),
   ];
   if (resources.catalogOverflow?.archived_projects) {
     const ov = resources.catalogOverflow.archived_projects;
@@ -1570,22 +1711,82 @@ function NavigationRail({
       ...catalogOverflowNode("catalog:archived_projects", "archived_projects", ov.remaining, ov.offset, ov.limit),
     );
   }
-  const projectRailNodes = (
-    projects: readonly RailProject[],
-    overflow?: { remaining: number; offset: number; limit: number },
-    overflowId?: string,
-    overflowCatalog?: "projects" | "archived_projects" | "test_runs",
-  ): RailNode[] => {
-    const nodes: RailNode[] = projectNodes(projects, isExpanded);
-    if (overflow && overflowId && overflowCatalog && overflow.remaining > 0) {
-      nodes.push(
-        ...catalogOverflowNode(overflowId, overflowCatalog, overflow.remaining, overflow.offset, overflow.limit),
-      );
+  const projectsTier = projectsTierFor(groupingMode, resources.projects, displaySources, isExpanded);
+  const projectsSectionNodes = withCatalogOverflow(
+    projectsTier.nodes,
+    resources.catalogOverflow?.projects,
+    "catalog:projects",
+    "projects",
+  );
+  // A host-grouping fold born mid-session opens itself: a project-first
+  // host branch, or a host-first copy that just gained rows. Left closed,
+  // the branch hides rows that were visible a render ago (the project's
+  // flat children) and the copy hides rows the reveal just brought -
+  // either reads as data loss. Only folds born after the first render:
+  // the first render keeps the collapsed per-host shape the grouping
+  // ships with, and a fold that leaves and returns still respects an
+  // explicit collapse from its earlier life. A layout effect so the rows
+  // never paint a frame behind a closed fold.
+  const seenHostFolds = useRef<ReadonlySet<string> | null>(null);
+  const hostFoldIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const node of projectsSectionNodes) {
+      // Project-first: the host branches inside a project row. A branch
+      // renders only once it holds loaded rows, so its id arrives together
+      // with the rows it must not hide.
+      if (node.kind === "project") {
+        for (const child of node.children) if (child.kind === "host") ids.add(child.id);
+        continue;
+      }
+      // Host-first: the project copies inside a host group. A copy renders
+      // as soon as the project claims the host, empty or not, so gate on
+      // the rows: a copy with no session rows folds nothing away, while
+      // one that just gained them must not stay closed.
+      if (node.kind === "host") {
+        for (const copy of node.children) {
+          if (copy.kind === "project" && copy.children.some((row) => row.kind === "session")) {
+            ids.add(copy.id);
+          }
+        }
+      }
     }
-    return nodes;
-  };
+    return ids;
+  }, [projectsSectionNodes]);
+  useLayoutEffect(() => {
+    const handled = seenHostFolds.current;
+    if (handled === null) {
+      // The first DATA-BEARING render is the at-rest shape: nothing
+      // auto-opens. The rail mounts before navigation data arrives (the
+      // store starts with no manifest and no resources), so seeding on
+      // the empty first commit would mark every fold that lands with
+      // the data as a birth and auto-open the whole section on every
+      // fresh load.
+      if (projectsSectionNodes.length === 0) return;
+      seenHostFolds.current = new Set(hostFoldIds);
+      return;
+    }
+    // One fold per pass, the reveal idiom: setExpanded closes over this
+    // render's override map, so a second call in one pass would clobber the
+    // first. The override change re-runs this effect and opens the rest,
+    // all before paint.
+    const next = [...hostFoldIds].find((id) => !handled.has(id) && expandedOverrides.get(id) !== false);
+    if (next) {
+      seenHostFolds.current = new Set([...handled, next]);
+      setExpanded(next, true);
+      return;
+    }
+    // Nothing pending: every current fold is handled, and ids that left
+    // the tree drop out so a fold that returns re-opens (its rows came
+    // back).
+    seenHostFolds.current = new Set(hostFoldIds);
+  }, [projectsSectionNodes, hostFoldIds, expandedOverrides, setExpanded]);
   const liveNodes = [
-    ...sessionNodes(resources.live, isExpanded),
+    // Live answers "which machine" the same way in either mode: rows group
+    // under host subheaders exactly while they span more than one host
+    // (liveNodesGroupedByHost keeps a single-host list flat, byte for byte).
+    ...(groupingMode !== "flat"
+      ? liveNodesGroupedByHost(sessionNodes(resources.live, isExpanded), displaySources, isExpanded)
+      : sessionNodes(resources.live, isExpanded)),
     ...sectionOverflowNode(
       "section:live",
       "live",
@@ -1654,94 +1855,100 @@ function NavigationRail({
           </Button>
         </div>
       </div>
-      <div className={parentOwnsScroll ? `${CLASS.body} ${CLASS.parentScrollBody}` : CLASS.body} ref={bodyRef}>
-        {loading && !displayed && <Skeleton lines={6} />}
-        {!loading && !displayed && loadError && (
-          <EmptyState
-            title="Couldn't load sessions"
-            hint={loadError}
-            action={
-              <Button size="sm" onClick={() => void navigationStore.getState().loadManifest()}>
-                Retry
-              </Button>
-            }
-          />
-        )}
-        {!loading && !displayed && !loadError && manifest && (
-          <EmptyState title="No sessions yet" hint="Start one with the button above." />
-        )}
-        {displayed && (
-          <>
-            <RailSection
-              title="Live"
-              nodes={liveNodes}
-              open={isExpanded(LIVE_SECTION_KEY, true)}
-              onToggleOpen={() => toggleSection(LIVE_SECTION_KEY, true)}
-              onToggle={handleToggle}
-              onActivate={handleActivate}
-              actions={rowActions}
-              projectRetryCallback={projectRetryCallback}
+      {/* The rail's clock (railNow.tsx): rows derive their relative stamps from
+          it. It wraps the tree only - the header and the dialogs render no
+          clock-derived value - so clock-derived chrome added later has to move
+          inside this boundary to tick. */}
+      <RailTickProvider>
+        <div className={parentOwnsScroll ? `${CLASS.body} ${CLASS.parentScrollBody}` : CLASS.body} ref={bodyRef}>
+          {loading && !displayed && <Skeleton lines={6} />}
+          {!loading && !displayed && loadError && (
+            <EmptyState
+              title="Couldn't load sessions"
+              hint={loadError}
+              action={
+                <Button size="sm" onClick={() => void navigationStore.getState().loadManifest()}>
+                  Retry
+                </Button>
+              }
             />
-            {pinSections.map((section) => (
-              <PinnedRailSection
-                key={section.id}
-                section={section}
-                open={isExpanded(pinSectionDisclosureID(section.id), true)}
-                onToggleOpen={() => toggleSection(pinSectionDisclosureID(section.id), true)}
-                onRename={() => openSectionRename(section)}
-                onDelete={() => void requestSectionDelete(section)}
-                isExpanded={isExpanded}
+          )}
+          {!loading && !displayed && !loadError && manifest && (
+            <EmptyState title="No sessions yet" hint="Start one with the button above." />
+          )}
+          {displayed && (
+            <>
+              <RailSection
+                title="Live"
+                nodes={liveNodes}
+                open={isExpanded(LIVE_SECTION_KEY, true)}
+                onToggleOpen={() => toggleSection(LIVE_SECTION_KEY, true)}
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
                 projectRetryCallback={projectRetryCallback}
               />
-            ))}
-            <RailSection
-              title="Projects"
-              nodes={projectRailNodes(
-                resources.projects,
-                resources.catalogOverflow?.projects,
-                "catalog:projects",
-                "projects",
+              {pinSections.map((section) => (
+                <PinnedRailSection
+                  key={section.id}
+                  section={section}
+                  open={isExpanded(pinSectionDisclosureID(section.id), true)}
+                  onToggleOpen={() => toggleSection(pinSectionDisclosureID(section.id), true)}
+                  onRename={() => openSectionRename(section)}
+                  onDelete={() => void requestSectionDelete(section)}
+                  isExpanded={isExpanded}
+                  onToggle={handleToggle}
+                  onActivate={handleActivate}
+                  actions={rowActions}
+                  projectRetryCallback={projectRetryCallback}
+                />
+              ))}
+              {hostGrouping && (
+                <div className={CLASS.organizeRow}>
+                  <OrganizeByControl mode={grouping} onChange={setGrouping} />
+                </div>
               )}
-              open={isExpanded(PROJECTS_SECTION_KEY, true)}
-              onToggleOpen={() => toggleSection(PROJECTS_SECTION_KEY, true)}
-              onToggle={handleToggle}
-              onActivate={handleActivate}
-              actions={rowActions}
-              projectRetryCallback={projectRetryCallback}
-            />
-            <RailSection
-              title="Test runs"
-              nodes={projectRailNodes(
-                resources.testRuns,
-                resources.catalogOverflow?.test_runs,
-                "catalog:test_runs",
-                "test_runs",
-              )}
-              open={isExpanded(TEST_RUNS_SECTION_KEY, true)}
-              onToggleOpen={() => toggleSection(TEST_RUNS_SECTION_KEY, true)}
-              onToggle={handleToggle}
-              onActivate={handleActivate}
-              actions={rowActions}
-              projectRetryCallback={projectRetryCallback}
-            />
-            {archivedNodes.length > 0 && (
-              <ArchivedSection
-                count={archivedCount(resources.archivedProjects, unarchived)}
-                open={archivedOpen}
-                onToggleOpen={() => toggleSection(ARCHIVED_SECTION_KEY, false)}
-                nodes={archivedNodes}
+              <RailSection
+                title={projectsTier.title}
+                nodes={projectsSectionNodes}
+                open={isExpanded(PROJECTS_SECTION_KEY, true)}
+                onToggleOpen={() => toggleSection(PROJECTS_SECTION_KEY, true)}
                 onToggle={handleToggle}
                 onActivate={handleActivate}
                 actions={rowActions}
                 projectRetryCallback={projectRetryCallback}
               />
-            )}
-          </>
-        )}
-      </div>
+              <RailSection
+                title="Test runs"
+                nodes={withCatalogOverflow(
+                  projectNodes(resources.testRuns, isExpanded, displaySources),
+                  resources.catalogOverflow?.test_runs,
+                  "catalog:test_runs",
+                  "test_runs",
+                )}
+                open={isExpanded(TEST_RUNS_SECTION_KEY, true)}
+                onToggleOpen={() => toggleSection(TEST_RUNS_SECTION_KEY, true)}
+                onToggle={handleToggle}
+                onActivate={handleActivate}
+                actions={rowActions}
+                projectRetryCallback={projectRetryCallback}
+              />
+              {archivedNodes.length > 0 && (
+                <ArchivedSection
+                  count={archivedCount(resources.archivedProjects, unarchived)}
+                  open={archivedOpen}
+                  onToggleOpen={() => toggleSection(ARCHIVED_SECTION_KEY, false)}
+                  nodes={archivedNodes}
+                  onToggle={handleToggle}
+                  onActivate={handleActivate}
+                  actions={rowActions}
+                  projectRetryCallback={projectRetryCallback}
+                />
+              )}
+            </>
+          )}
+        </div>
+      </RailTickProvider>
       {sectionRenameTarget && (
         <Dialog
           open

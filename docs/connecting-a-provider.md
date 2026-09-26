@@ -4,8 +4,9 @@
 
 1. Open **New session**. Choose a working directory and, optionally, write your
    task. These stay in the composer while you connect a provider.
-2. Select **Connect provider**, then choose a provider. **All providers** searches
-   the complete catalogue; local and custom endpoints have their own routes.
+2. Select **Connect provider**, then choose a provider. **Show all providers**
+   reveals the complete catalogue and its search; local and custom endpoints have
+   their own routes.
 3. For a standard API connection, paste the **actual API key**, not an
    environment-variable name. The field is masked. Use **Get an API key** beside
    the form, or these provider pages:
@@ -26,13 +27,13 @@
 
 **Subscriptions are not API keys.** Claude, ChatGPT, and Gemini subscriptions
 do not automatically include separately billed API access. OpenAI API keys and
-**ChatGPT / Codex** sign-in are separate connections. For the latter, choose its
+**OpenAI Codex** sign-in are separate connections. For the latter, choose its
 sign-in route and follow the device or browser/redirect instructions instead of
 pasting an API key. Availability depends on your account and provider terms.
 
 ## Other access routes
 
-- **Cloud providers:** use **All providers**, choose Azure, Vertex, Bedrock, or
+- **Cloud providers:** use **Show all providers**, choose Azure, Vertex, Bedrock, or
   another provider, then **Configure provider** when offered. Supply the required
   project/resource/region or endpoint variables. The full editor retains
   protocol, surface, header, and custom-name controls. Vertex can use credential
@@ -43,17 +44,17 @@ pasting an API key. Availability depends on your account and provider terms.
   required credentials. An empty optional key means keep resolved host access,
   not disable authentication. See [Ollama](ollama.md) for local discovery.
 - **Already configured on this host:** expand **Already configured access on
-  this host?** and choose **Manage existing connections**. Inspect the instance
-  and test its current access. The guided form also offers **Use existing host
-  access** under **Advanced settings**. Review the displayed destination and
-  credential source before contacting the provider.
+  this host?** and choose **Manage existing connections**. The connect dialog
+  closes and Settings → Providers & credentials opens; each instance row there
+  opens the complete inspector, where you can review the displayed destination
+  and credential source and test current access before contacting the provider.
+  The guided form also offers **Use existing host access** under **Advanced
+  settings**.
 - **Advanced management:** Settings → Providers & credentials → **Connect provider** uses the
-  same connector. Existing rows still open the complete instance inspector.
-  From the connector, management → **Full provider settings** retains the full
-  add/editor route, including custom instances, rename, reset overrides,
-  replace/clear stored credentials, logout, source inspection, and explicit
-  default management. The session model chooser also offers **Connect another
-  provider**; only an explicit model pick requests a session model switch.
+  same connector. The instance rows are the real editor, with custom instances,
+  rename, reset overrides, replace/clear stored credentials, logout, source
+  inspection, and explicit default management. In the session model chooser,
+  only an explicit model pick requests a session model switch.
 
 ## Repair or return
 

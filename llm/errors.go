@@ -23,6 +23,12 @@ type Error interface {
 	Raw() any
 }
 
+// ErrNoCredential is the sentinel a missing-credential ConfigurationError
+// carries (missingCredential in authenticators.go): it lets a caller classify
+// the failure without parsing the message, whose text is remediation prose
+// for the reader, not a contract.
+var ErrNoCredential = errors.New("no credential")
+
 // ConfigurationError reports a configuration problem (e.g. invalid or missing
 // setup) and carries an optional underlying Cause. It satisfies the Error
 // interface with empty provider, status code, and error code, and is never

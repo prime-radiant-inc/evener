@@ -970,9 +970,18 @@ func (m *Manager) reclaimBundledStoreDebt(dir string) {
 // path built from that root would be relative to the process's working
 // directory. cmdutil owns evener's config-root fallback and already depends on
 // this package, so there is no fallback to share here.
+//
+// Each reason is its own path-free sentinel, so a caller that scrubs a failed
+// operation (EditMarketplace's editFailed) can re-attach the one a client can
+// act on - fix the store root - without re-attaching a path.
+var (
+	errStoreRootUnset       = errors.New("no plugin store root is configured")
+	errStoreRootNotAbsolute = errors.New("plugin store root is not an absolute path")
+)
+
 func (m *Manager) storeRootError() error {
 	if m.Root == "" {
-		return errors.New("no plugin store root is configured")
+		return errStoreRootUnset
 	}
 	// A relative root is resolved the same way an absent one is: against
 	// whatever directory the process happens to be in, which is somebody's
@@ -981,7 +990,7 @@ func (m *Manager) storeRootError() error {
 	// --plugin-root, a store that moves with the working directory is not one
 	// this can read or write.
 	if !filepath.IsAbs(m.Root) {
-		return fmt.Errorf("plugin store root %q is not an absolute path", m.Root)
+		return fmt.Errorf("plugin store root %q is unusable: %w", m.Root, errStoreRootNotAbsolute)
 	}
 	return nil
 }

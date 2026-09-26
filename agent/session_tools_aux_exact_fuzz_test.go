@@ -141,7 +141,7 @@ func auxAskExact(t *testing.T) {
 		stmAssistantTurn(nonAsk, badJSON, badSemantic),
 		stmToolResultsTurn(stmToolResult("bad-json", "ask_user", false), stmToolResult("bad-sem", "ask_user", false)),
 	}
-	if got, ask := deriveRestoredAskPending(history); !ask || len(got) != 0 {
+	if got, ask := deriveRestoredAskPending(history, 0, nil); !ask || len(got) != 0 {
 		t.Fatalf("invalid restored asks = %#v, %v", got, ask)
 	}
 	if got := questionsFromAskCalls([]schema.Turn{{Kind: schema.TurnUserInput}}, 1, map[string]bool{"x": true}); got != nil {
@@ -264,15 +264,16 @@ func auxFindExact(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = collectCandidates([]string{bad}, good)
-	if buckets, scope := findBuckets(good, scopeAllProjects); len(buckets) != 1 || scope != scopeCurrentProject {
+	if buckets, scope, _ := findBuckets(good, scopeAllProjects); len(buckets) != 1 || scope != scopeCurrentProject {
 		t.Fatalf("flat buckets = %#v %q", buckets, scope)
 	}
-	// The bucket dir name must be a VALID project id (identifier.ValidateProjectID,
-	// enforced by validLocalBucketDir since the identifier refactor): a readable
-	// portion plus a 10-character base62 suffix. A bare stand-in like "current"
-	// is rejected by design and would degrade the scope probe to nil buckets.
+	// The bucket dir name is a well-formed project id (readable portion plus a
+	// 10-character base62 suffix). After FU3, buckets under evener/projects
+	// are no longer filtered by name, so a bare stand-in like "current" would
+	// also be accepted; the valid name is kept here to match the real layout
+	// the scope probe encounters in practice.
 	nested := filepath.Join(root, "home", "evener", "projects", "current-abcdefghij")
-	if buckets, scope := findBucketsWithEnumerate(nested, scopeAllProjects, func(string) ([]string, error) { return nil, errors.New("enumerate") }); len(buckets) != 1 || scope != scopeCurrentProject {
+	if buckets, scope, _ := findBucketsWithEnumerate(nested, scopeAllProjects, func(string) ([]string, error) { return nil, errors.New("enumerate") }); len(buckets) != 1 || scope != scopeCurrentProject {
 		t.Fatalf("failed enumeration = %#v %q", buckets, scope)
 	}
 

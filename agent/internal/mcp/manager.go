@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/mcphttp"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/sandbox"
@@ -808,7 +808,7 @@ func transportForConfigWithEnv(cfg mcpconfig.ServerConfig, environ func() []stri
 		}
 		t := &mcpsdk.SSEClientTransport{Endpoint: cfg.URL}
 		if len(cfg.Headers) > 0 {
-			t.HTTPClient = httpClientWithHeaders(cfg.Headers)
+			t.HTTPClient = mcphttp.ClientWithHeaders(nil, cfg.URL, cfg.Headers)
 		}
 		return t, nil
 
@@ -818,7 +818,7 @@ func transportForConfigWithEnv(cfg mcpconfig.ServerConfig, environ func() []stri
 		}
 		t := &mcpsdk.StreamableClientTransport{Endpoint: cfg.URL}
 		if len(cfg.Headers) > 0 {
-			t.HTTPClient = httpClientWithHeaders(cfg.Headers)
+			t.HTTPClient = mcphttp.ClientWithHeaders(nil, cfg.URL, cfg.Headers)
 		}
 		return t, nil
 
@@ -854,27 +854,4 @@ func mergeEnvInto(base []string, extra map[string]string) []string {
 		filtered = append(filtered, k+"="+v)
 	}
 	return filtered
-}
-
-// headerRoundTripper wraps an http.RoundTripper to inject headers into requests.
-type headerRoundTripper struct {
-	base    http.RoundTripper
-	headers map[string]string
-}
-
-func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	for k, v := range h.headers {
-		req.Header.Set(k, v)
-	}
-	return h.base.RoundTrip(req)
-}
-
-// httpClientWithHeaders returns an *http.Client that injects the given headers.
-func httpClientWithHeaders(headers map[string]string) *http.Client {
-	return &http.Client{
-		Transport: &headerRoundTripper{
-			base:    http.DefaultTransport,
-			headers: headers,
-		},
-	}
 }

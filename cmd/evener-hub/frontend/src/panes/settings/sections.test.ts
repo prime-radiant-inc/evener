@@ -14,8 +14,8 @@ import {
 // four sections with no legacy counterpart, "keybindings", "about", "mobile", and
 // "agents-md" (see sections.ts's own doc comment).
 
-test("has exactly 19 sections", () => {
-  expect(SETTINGS_SECTIONS).toHaveLength(19);
+test("has exactly 20 sections", () => {
+  expect(SETTINGS_SECTIONS).toHaveLength(20);
 });
 
 test("every section id is unique", () => {
@@ -54,10 +54,10 @@ test('the "Extensions" cluster has exactly these 4 sections, in order, right aft
   expect(SETTINGS_SECTIONS.slice(11, 15)).toEqual(cluster);
 });
 
-test('the "Daemon" cluster has exactly these 4 sections, in order, last', () => {
+test('the "Daemon" cluster has exactly these 5 sections, in order, last', () => {
   const cluster = SETTINGS_SECTIONS.filter((s) => s.cluster === "daemon");
-  expect(cluster.map((s) => s.label)).toEqual(["Hub", "Mobile app", "Storage", "About"]);
-  expect(SETTINGS_SECTIONS.slice(15, 19)).toEqual(cluster);
+  expect(cluster.map((s) => s.label)).toEqual(["Hosts", "Hub", "Mobile app", "Storage", "About"]);
+  expect(SETTINGS_SECTIONS.slice(15, 20)).toEqual(cluster);
 });
 
 test('"About" is the very last section overall', () => {

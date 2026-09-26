@@ -220,6 +220,39 @@ func TestRenderSubagentRailConsolidates(t *testing.T) {
 	}
 }
 
+func TestSubagentRailClass_CommandOutcomes(t *testing.T) {
+	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
+		if got := subagentRailClass(status); got != "failed" {
+			t.Fatalf("%s rail class = %q, want failed", status, got)
+		}
+	}
+}
+
+func TestSubagentRunBody_CommandOutcomeDisplayWords(t *testing.T) {
+	withTestColorProfile(t)
+	for _, tc := range []struct {
+		status string
+		want   string
+	}{
+		{status: "command_exited_nonzero", want: "Command failed"},
+		{status: "command_killed", want: "Command killed"},
+	} {
+		run := transcript.SubagentRunInfo{
+			JobType:  "shell",
+			Command:  "make check",
+			Status:   tc.status,
+			Terminal: true,
+		}
+		body := SubagentRunBody(run, 80)
+		if !strings.Contains(body, "("+tc.want+")") {
+			t.Fatalf("%s body = %q, want %q", tc.status, body, tc.want)
+		}
+		if strings.Contains(body, tc.status) {
+			t.Fatalf("%s body leaks the raw machine status: %q", tc.status, body)
+		}
+	}
+}
+
 func TestSubagentRailClass_Exhausted(t *testing.T) {
 	if got := subagentRailClass("exhausted"); got != "failed" {
 		t.Fatalf("exhausted rail class = %q, want failed", got)

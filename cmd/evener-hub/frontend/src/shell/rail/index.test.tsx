@@ -1,7 +1,8 @@
 import { cleanup, type RenderOptions, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Component, type ReactNode } from "react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import * as pageReload from "../pageReload";
 import { RailHost, resetRailChunkForTests } from "./index";
 import * as railHostChunk from "./railHostChunk";
 import { resetRailHostLoaderForTests } from "./railHostChunk";
@@ -140,8 +141,8 @@ test("a retry that fails again offers a page reload instead of stranding the sid
   const chunkError = new Error(CHUNK_ERROR);
   const onCaughtError = captureExpectedError(chunkError);
   vi.mocked(loadRailHost).mockRejectedValue(chunkError);
-  const reload = vi.fn();
-  vi.stubGlobal("location", { ...window.location, reload });
+  const reload = vi.spyOn(pageReload, "reloadPage").mockImplementation(() => {});
+  onTestFinished(() => reload.mockRestore());
   const user = userEvent.setup();
 
   render(<RailHost />, { onCaughtError });

@@ -374,6 +374,24 @@ describe("ActivityService — projectActivity", () => {
       expect(firstWork(view).tone).toBe("failed");
     });
 
+    it("marks a command_exited_nonzero job as failed tone without an exit code", () => {
+      const diag: EvenerDiagnostics = {
+        jobs: [job({ jobId: "job-1", status: "command_exited_nonzero" })],
+      };
+      const t = thread({ evener: evenerThread({ diagnostics: diag }) });
+      const view = service.projectActivity(t);
+      expect(firstWork(view).tone).toBe("failed");
+    });
+
+    it("marks a command_killed job as failed tone without an exit code", () => {
+      const diag: EvenerDiagnostics = {
+        jobs: [job({ jobId: "job-1", status: "command_killed" })],
+      };
+      const t = thread({ evener: evenerThread({ diagnostics: diag }) });
+      const view = service.projectActivity(t);
+      expect(firstWork(view).tone).toBe("failed");
+    });
+
     it("marks a terminal delegate as terminal tone", () => {
       const diag: EvenerDiagnostics = {
         delegates: [

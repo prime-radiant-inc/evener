@@ -16,6 +16,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
@@ -582,4 +584,369 @@ func TestPlugins_Marketplace_RemoveAndRefreshRefusalsAreWireErrors(t *testing.T)
 			t.Fatalf("RemoveMarketplace = %v, want an InvalidParams wire error", err)
 		}
 	})
+}
+
+// TestPlugins_Marketplace_RemoveCloneRemovalFailureReturnsALitterWireError
+// verifies the applied-with-litter wire outcome: RemoveMarketplace's
+// unregister save has already landed
+// (plugins.ErrMarketplaceUnregisteredCloneRemains) by the time its
+// clone-removal cleanup fails. The distinct WireError carries the updated
+// list in Data.Applied so the caller can reconcile instead of retrying a
+// removal whose registry entry is already gone.
+func TestPlugins_Marketplace_RemoveCloneRemovalFailureReturnsALitterWireError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on a Unix directory permission to force a real removal failure")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permission this test relies on")
+	}
+	ctl := newTestPluginsController(t)
+	ctx := context.Background()
+
+	store := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "plugins")
+	clone := filepath.Join(store, "marketplaces", "acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Write permission on the clone directory itself is what lets RemoveAll
+	// unlink the file inside it; without it, the removal fails partway and
+	// the clone is left as litter.
+	if err := os.Chmod(clone, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(clone, 0o755) })
+	body, err := json.Marshal(map[string]any{"acme": map[string]any{
+		"source":          map[string]any{"source": "url", "url": "https://example.invalid/acme.git"},
+		"installLocation": clone,
+		"lastUpdated":     "2031-04-01T00:00:00Z",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store, "known_marketplaces.json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = ctl.RemoveMarketplace(ctx, appwire.MarketplaceNameParams{Name: "acme"})
+	if err == nil {
+		t.Fatal("RemoveMarketplace = nil, want the failed clone removal reported")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("RemoveMarketplace = %v, want a WireError classifying the applied-with-litter outcome", err)
+	}
+	if wire.Code != appwire.CodeInternalError {
+		t.Fatalf("wire.Code = %d, want %d", wire.Code, appwire.CodeInternalError)
+	}
+	data, ok := wire.Data.(appwire.MarketplaceUnregisteredCloneRemainsData)
+	if !ok {
+		t.Fatalf("wire.Data = %#v (%T), want appwire.MarketplaceUnregisteredCloneRemainsData", wire.Data, wire.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorMarketplaceUnregisteredCloneRemains {
+		t.Fatalf("data.EvenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorMarketplaceUnregisteredCloneRemains)
+	}
+	if len(data.Applied.Marketplaces) != 0 {
+		t.Fatalf("data.Applied.Marketplaces = %+v, want acme gone despite the clone litter", data.Applied.Marketplaces)
+	}
+	if strings.Contains(wire.Message, clone) {
+		t.Fatalf("wire.Message = %q, want no absolute path", wire.Message)
+	}
+
+	listResp, listErr := ctl.ListMarketplaces(ctx)
+	if listErr != nil {
+		t.Fatalf("ListMarketplaces: %v", listErr)
+	}
+	if len(listResp.Marketplaces) != 0 {
+		t.Fatalf("ListMarketplaces = %+v, want acme gone despite the clone litter", listResp.Marketplaces)
+	}
+}
+
+// TestPlugins_Marketplace_RemoveCloneRemovalFailureSurvivesAReconcileListFailure
+// verifies that the typed applied-with-litter outcome survives a failure in
+// the fresh read used to build Data.Applied. The read is unrelated to whether
+// the unregister-then-clone-cleanup already applied, so the hub keeps the
+// typed WireError and marks the applied snapshot unavailable. The seam breaks
+// that one read with a real permission-denied without touching
+// RemoveMarketplace's own successful unregister and failed clone cleanup.
+func TestPlugins_Marketplace_RemoveCloneRemovalFailureSurvivesAReconcileListFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on a Unix file permission to force a real read failure")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the file permission this test relies on")
+	}
+	ctl := newTestPluginsController(t)
+	ctx := context.Background()
+
+	store := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "plugins")
+	clone := filepath.Join(store, "marketplaces", "acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(clone, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(clone, 0o755) })
+	body, err := json.Marshal(map[string]any{"acme": map[string]any{
+		"source":          map[string]any{"source": "url", "url": "https://example.invalid/acme.git"},
+		"installLocation": clone,
+		"lastUpdated":     "2031-04-01T00:00:00Z",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryFile := filepath.Join(store, "known_marketplaces.json")
+	if err := os.WriteFile(registryFile, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	original := hubPluginsReconcileAfterCloneLitter
+	hubPluginsReconcileAfterCloneLitter = func() {
+		// RemoveMarketplace's own unregister-then-clone-cleanup already ran
+		// and already read/wrote this same file successfully; this breaks
+		// only the reconcile read that comes after.
+		_ = os.Chmod(registryFile, 0o000)
+	}
+	t.Cleanup(func() {
+		hubPluginsReconcileAfterCloneLitter = original
+		_ = os.Chmod(registryFile, 0o644)
+	})
+
+	_, err = ctl.RemoveMarketplace(ctx, appwire.MarketplaceNameParams{Name: "acme"})
+	if err == nil {
+		t.Fatal("RemoveMarketplace = nil, want the failed clone removal reported")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("RemoveMarketplace = %v, want the typed WireError preserved even though the reconcile read failed", err)
+	}
+	if wire.Code != appwire.CodeInternalError {
+		t.Fatalf("wire.Code = %d, want %d", wire.Code, appwire.CodeInternalError)
+	}
+	data, ok := wire.Data.(appwire.MarketplaceUnregisteredCloneRemainsData)
+	if !ok {
+		t.Fatalf("wire.Data = %#v (%T), want appwire.MarketplaceUnregisteredCloneRemainsData", wire.Data, wire.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorMarketplaceUnregisteredCloneRemains {
+		t.Fatalf("data.EvenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorMarketplaceUnregisteredCloneRemains)
+	}
+	if !data.AppliedUnavailable {
+		t.Fatalf("data.AppliedUnavailable = false, want true: the reconcile read failed, so Applied cannot be trusted as an empty list")
+	}
+	if len(data.Applied.Marketplaces) != 0 {
+		t.Fatalf("data.Applied = %+v, want the zero value when unavailable", data.Applied)
+	}
+}
+
+// TestPlugins_Marketplace_RemoveCloneRemovalFailureLogsTheReconcileListFailure
+// verifies the observability the typed litter WireError cannot carry itself:
+// its message stays path-scrubbed (cloneRemovalFailed's text), so when the
+// reconcile read that builds Data.Applied also fails, the discarded list
+// failure must still leave a server-side diagnostic on the hub's stderr - the
+// same [hub] log surface the success path's own failed re-list uses (#1951) -
+// naming the marketplace and carrying the read failure's own text, while the
+// wire result stays the typed applied-with-litter outcome.
+func TestPlugins_Marketplace_RemoveCloneRemovalFailureLogsTheReconcileListFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on a Unix file permission to force a real read failure")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the file permission this test relies on")
+	}
+	ctl := newTestPluginsController(t)
+	ctx := context.Background()
+
+	store := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "plugins")
+	clone := filepath.Join(store, "marketplaces", "acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clone, "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Write permission on the clone directory itself is what lets RemoveAll
+	// unlink the file inside it; without it, the removal fails partway and
+	// the clone is left as litter.
+	if err := os.Chmod(clone, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(clone, 0o755) })
+	body, err := json.Marshal(map[string]any{"acme": map[string]any{
+		"source":          map[string]any{"source": "url", "url": "https://example.invalid/acme.git"},
+		"installLocation": clone,
+		"lastUpdated":     "2031-04-01T00:00:00Z",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryFile := filepath.Join(store, "known_marketplaces.json")
+	if err := os.WriteFile(registryFile, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	original := hubPluginsReconcileAfterCloneLitter
+	hubPluginsReconcileAfterCloneLitter = func() {
+		// RemoveMarketplace's own unregister-then-clone-cleanup already ran
+		// and already read/wrote this same file successfully; this breaks
+		// only the reconcile read that comes after.
+		_ = os.Chmod(registryFile, 0o000)
+	}
+	t.Cleanup(func() {
+		hubPluginsReconcileAfterCloneLitter = original
+		_ = os.Chmod(registryFile, 0o644)
+	})
+
+	// The hub's diagnostic surface for a failed re-list is stderr; capture it
+	// so the discarded read failure can be asserted instead of lost to the
+	// test runner's own stream.
+	stderr, err := os.CreateTemp(t.TempDir(), "clone-litter-stderr-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousStderr := os.Stderr
+	os.Stderr = stderr
+	t.Cleanup(func() {
+		os.Stderr = previousStderr
+		_ = stderr.Close()
+	})
+
+	_, err = ctl.RemoveMarketplace(ctx, appwire.MarketplaceNameParams{Name: "acme"})
+	// Restore stderr before reading the capture back so nothing further
+	// lands in it.
+	os.Stderr = previousStderr
+	if err == nil {
+		t.Fatal("RemoveMarketplace = nil, want the failed clone removal reported")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("RemoveMarketplace = %v, want the typed WireError preserved even though the reconcile read failed", err)
+	}
+	if wire.Code != appwire.CodeInternalError {
+		t.Fatalf("wire.Code = %d, want %d", wire.Code, appwire.CodeInternalError)
+	}
+	data, ok := wire.Data.(appwire.MarketplaceUnregisteredCloneRemainsData)
+	if !ok {
+		t.Fatalf("wire.Data = %#v (%T), want appwire.MarketplaceUnregisteredCloneRemainsData", wire.Data, wire.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorMarketplaceUnregisteredCloneRemains {
+		t.Fatalf("data.EvenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorMarketplaceUnregisteredCloneRemains)
+	}
+	if !data.AppliedUnavailable {
+		t.Fatal("data.AppliedUnavailable = false, want true: the reconcile read failed, so Applied cannot be trusted as an empty list")
+	}
+	if len(data.Applied.Marketplaces) != 0 {
+		t.Fatalf("data.Applied = %+v, want the zero value when unavailable", data.Applied)
+	}
+	if strings.Contains(wire.Message, store) {
+		t.Fatalf("wire.Message = %q, want the path-scrubbed clone-litter text unchanged", wire.Message)
+	}
+
+	captured, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hubLine string
+	for line := range strings.SplitSeq(string(captured), "\n") {
+		if strings.HasPrefix(line, "[hub] marketplace ") {
+			hubLine = line
+		}
+	}
+	if hubLine == "" {
+		t.Fatalf("missing [hub] diagnostic for the failed reconcile read: %q", captured)
+	}
+	if !strings.HasPrefix(hubLine, "[hub] marketplace \"acme\": reading the updated list after unregistration failed:") {
+		t.Fatalf("[hub] diagnostic = %q, want the failed reconcile read named", hubLine)
+	}
+	if !strings.Contains(hubLine, "known_marketplaces.json") {
+		t.Fatalf("[hub] diagnostic = %q, want it to carry the reconcile read failure's own text", hubLine)
+	}
+}
+
+// TestPlugins_Marketplace_RemoveSuccessListReadFailureStaysApplied verifies the
+// other post-apply removal outcome: RemoveMarketplace's unregister save has
+// landed and its clone cleanup (none here) completed, so the removal APPLIED,
+// but the fresh read that builds the response fails. The handler must not drop
+// back to a plain error indistinguishable from an ordinary refusal - a client
+// would report the removal failed, and a retry would land on ErrMarketplaceNotFound
+// - so it keeps a typed post-apply WireError with the snapshot marked unavailable.
+func TestPlugins_Marketplace_RemoveSuccessListReadFailureStaysApplied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on a Unix file permission to force a real read failure")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the file permission this test relies on")
+	}
+	ctl := newTestPluginsController(t)
+	ctx := context.Background()
+
+	dir := t.TempDir()
+	writeTestMarketplace(t, dir)
+	addTestMarketplace(t, ctl, dir)
+
+	store := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "plugins")
+	registryFile := filepath.Join(store, "known_marketplaces.json")
+
+	original := hubPluginsReconcileAfterAppliedRemove
+	hubPluginsReconcileAfterAppliedRemove = func() {
+		// RemoveMarketplace's own unregister read and write of this file
+		// already succeeded; this breaks only the read that builds the
+		// response, after the removal has applied.
+		_ = os.Chmod(registryFile, 0o000)
+	}
+	t.Cleanup(func() {
+		hubPluginsReconcileAfterAppliedRemove = original
+		_ = os.Chmod(registryFile, 0o644)
+	})
+
+	_, err := ctl.RemoveMarketplace(ctx, appwire.MarketplaceNameParams{Name: "acme"})
+	if err == nil {
+		t.Fatal("RemoveMarketplace = nil, want the failed list read reported")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("RemoveMarketplace = %v, want a WireError classifying the applied removal", err)
+	}
+	if wire.Code != appwire.CodeInternalError {
+		t.Fatalf("wire.Code = %d, want %d", wire.Code, appwire.CodeInternalError)
+	}
+	data, ok := wire.Data.(appwire.MarketplaceRemoveAppliedData)
+	if !ok {
+		t.Fatalf("wire.Data = %#v (%T), want appwire.MarketplaceRemoveAppliedData", wire.Data, wire.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorMarketplaceRemoveApplied {
+		t.Fatalf("data.EvenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorMarketplaceRemoveApplied)
+	}
+	if !data.AppliedUnavailable {
+		t.Fatal("data.AppliedUnavailable = false, want true: the list read failed, so there is no snapshot to hand back")
+	}
+	if strings.Contains(wire.Message, registryFile) || strings.Contains(wire.Message, store) {
+		t.Fatalf("wire.Message = %q, want no absolute store path", wire.Message)
+	}
+	if !strings.Contains(wire.Message, "acme") {
+		t.Fatalf("wire.Message = %q, want the marketplace named", wire.Message)
+	}
+
+	// The removal itself applied: once the read is restored the marketplace is
+	// gone, and a retry reports not-found instead of repeating the removal.
+	if chmodErr := os.Chmod(registryFile, 0o644); chmodErr != nil {
+		t.Fatal(chmodErr)
+	}
+	listResp, listErr := ctl.ListMarketplaces(ctx)
+	if listErr != nil {
+		t.Fatalf("ListMarketplaces: %v", listErr)
+	}
+	if len(listResp.Marketplaces) != 0 {
+		t.Fatalf("ListMarketplaces = %+v, want acme gone: the reported failure must not un-apply the removal", listResp.Marketplaces)
+	}
+	_, retryErr := ctl.RemoveMarketplace(ctx, appwire.MarketplaceNameParams{Name: "acme"})
+	var retryWire appwire.WireError
+	if !errors.As(retryErr, &retryWire) || retryWire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("retry RemoveMarketplace = %v, want an InvalidParams not-found wire error", retryErr)
+	}
 }

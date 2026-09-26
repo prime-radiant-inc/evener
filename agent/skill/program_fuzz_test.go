@@ -229,10 +229,14 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 			t.Fatal("shared-cache publish failure was not reported")
 		}
 		// The bundled skills survive the failure: resolution serves the
-		// process-lifetime extraction instead of nothing.
-		processSkills, err := EmbeddedSkills()
-		if err != nil || len(processSkills) == 0 {
-			t.Fatalf("EmbeddedSkills publish failure = %d entries, %v", len(processSkills), err)
+		// process-lifetime extraction instead of nothing. A platform that refuses
+		// its process root (Windows) fails closed instead, so its harness case
+		// asserts only the reported publish failure above.
+		if !processCopyRootRefused(os.TempDir()) {
+			processSkills, err := EmbeddedSkills()
+			if err != nil || len(processSkills) == 0 {
+				t.Fatalf("EmbeddedSkills publish failure = %d entries, %v", len(processSkills), err)
+			}
 		}
 
 		skillProgramAssertExtractionFailures(t)

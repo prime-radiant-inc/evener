@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,11 +32,13 @@ import (
 // marketplaces and the plugin cache, and the bundled cache's own lock for
 // readying <Root>/bundled — and flock serializes by open-file-description
 // rather than by process, so it correctly serializes concurrent in-process
-// goroutines too — Manager itself holds no other mutable state a
-// controller-level mutex could protect. A controller mutex here would add
-// nothing but contention: it would be held across the manager's own blocking
-// (up to 30s) lock acquisition, serializing otherwise-independent mutations
-// (e.g. two unrelated marketplaces) behind whichever one is slowest.
+// goroutines too. Manager does hold one other piece of mutable state — the
+// current lock session's accumulated StoreChanged (store_changed.go) — but
+// that already guards itself with its own mutex (storeChangedMu, paths.go),
+// so a controller mutex here would add nothing but contention: it would be
+// held across the manager's own blocking (up to 30s) lock acquisition,
+// serializing otherwise-independent mutations (e.g. two unrelated
+// marketplaces) behind whichever one is slowest.
 type hubPluginsController struct {
 	mgr              *plugins.Manager
 	launchConfigRoot string
@@ -242,7 +245,8 @@ func marketplaceRefusalToWire(err error) error {
 	case errors.Is(err, plugins.ErrMarketplaceExists):
 		return appwire.Conflict(err.Error())
 	case errors.Is(err, plugins.ErrMarketplaceNotFound), errors.Is(err, plugins.ErrInvalidName),
-		errors.Is(err, plugins.ErrMarketplaceSourceInStore):
+		errors.Is(err, plugins.ErrMarketplaceSourceInStore),
+		errors.Is(err, plugins.ErrMarketplaceSourceUnsupported):
 		return appwire.InvalidParams(err.Error())
 	}
 	return err
@@ -259,13 +263,102 @@ func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwir
 	return c.listMarketplaces(ctx)
 }
 
+// hubPluginsReconcileAfterCloneLitter runs immediately before RemoveMarketplace's
+// litter path re-lists the marketplaces to build its WireError's Data.Applied -
+// a no-op in production, and a seam for a test to break that specific read
+// (e.g. a permission change) without touching RemoveMarketplace's own
+// already-successful unregister-then-clone-cleanup, matching
+// credentialWriteBetween's and the navigation service's between-step hooks.
+var hubPluginsReconcileAfterCloneLitter = func() {}
+
+// hubPluginsReconcileAfterAppliedRemove runs immediately before
+// RemoveMarketplace's success path re-lists the marketplaces to build its
+// response - a no-op in production, and a seam for a test to break that
+// specific read (e.g. a permission change) without touching
+// RemoveMarketplace's own already-successful unregister-then-clone-cleanup,
+// matching hubPluginsReconcileAfterCloneLitter's shape.
+var hubPluginsReconcileAfterAppliedRemove = func() {}
+
 // RemoveMarketplace unregisters a marketplace and returns the updated list.
 // Its one refusal, an unknown name, is classified by marketplaceRefusalToWire.
+// A clone-removal failure after the unregister has already landed is not
+// that refusal: the marketplace is already gone, so folding it into the same
+// plain-error path would read as "removal failed" when it applied, and a
+// retry would then land on ErrMarketplaceNotFound instead of ever surfacing
+// the litter. Its own WireError carries the updated list in Data.Applied
+// instead - the shape ErrorKeybindingsPostRename established for an
+// applied-then-a-durable-step-fails outcome - so the caller reconciles from
+// Applied instead of retrying. Re-listing to build Applied is itself a fresh
+// read that can fail on its own account (a fault landing in the narrow window
+// after RemoveMarketplace already returned), unrelated to whether the
+// removal applied; that must never drop the typed outcome back to a plain
+// error indistinguishable from an ordinary failure, so it sets
+// Data.AppliedUnavailable instead and keeps the same WireError shape. The
+// discarded read's own text is logged to the hub's stderr - the same
+// server-side diagnostic the success path's failed re-list uses (#1951) - so
+// the secondary failure leaves a trace. The success path's own re-list can
+// fail the same way, after an unregister and a
+// clone cleanup that both completed; it too must never read as "removal
+// failed" (a retry would land on ErrMarketplaceNotFound), so it answers with
+// its own post-apply outcome, ErrorMarketplaceRemoveApplied - the same
+// reconcile-don't-retry rule minus the litter warning, which had no cause
+// here. Binding that outcome in a consumer is deliberately deferred to the
+// marketplace reconciliation successors (#1954 SDK, #1960 web); until one
+// lands, a client treats the unclassified error as a failed removal.
 func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 	if err := c.mgr.RemoveMarketplace(ctx, params.Name); err != nil {
+		if errors.Is(err, plugins.ErrMarketplaceUnregisteredCloneRemains) {
+			data := appwire.MarketplaceUnregisteredCloneRemainsData{
+				EvenerErrorInfo: appwire.ErrorMarketplaceUnregisteredCloneRemains,
+			}
+			hubPluginsReconcileAfterCloneLitter()
+			if applied, listErr := c.listMarketplaces(ctx); listErr != nil {
+				// The read failure must leave a diagnostic behind: the wire
+				// error deliberately keeps only the path-scrubbed
+				// clone-litter text, so without this line the discarded
+				// listErr would vanish - the same server-side log the
+				// success path's failed re-list already uses.
+				fmt.Fprintf(os.Stderr, "[hub] marketplace %q: reading the updated list after unregistration failed: %v\n", params.Name, listErr)
+				data.AppliedUnavailable = true
+			} else {
+				data.Applied = applied
+			}
+			return appwire.MarketplaceListResponse{}, appwire.WireError{
+				Code:    appwire.CodeInternalError,
+				Message: err.Error(),
+				Data:    data,
+			}
+		}
 		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
-	return c.listMarketplaces(ctx)
+	// The unregister save landed and the clone cleanup that follows it
+	// completed, so the removal APPLIED. Reading the updated list is a fresh
+	// read that can fail on its own account (a fault landing in the narrow
+	// window after RemoveMarketplace already returned), unrelated to whether
+	// the removal applied; folding it into the plain-error path would read as
+	// "removal failed" when it applied, and a retry would then land on
+	// ErrMarketplaceNotFound instead of ever surfacing this read failure. Its
+	// own WireError carries the same post-apply distinction as the litter
+	// branch's, but as its own discriminator - nothing is left on disk here,
+	// so a client must not warn about leftover clone files. The read failure's
+	// own text can carry this machine's absolute plugin-store path
+	// (marketplaceReadFile's *fs.PathError names it), so it goes to the hub's
+	// log instead of the client-facing message, the split cloneRemovalFailed
+	// keeps for the litter branch's own cause.
+	hubPluginsReconcileAfterAppliedRemove()
+	applied, listErr := c.listMarketplaces(ctx)
+	if listErr != nil {
+		fmt.Fprintf(os.Stderr, "[hub] marketplace %q: reading the updated list after removal failed: %v\n", params.Name, listErr)
+		return appwire.MarketplaceListResponse{}, appwire.WireError{
+			Code:    appwire.CodeInternalError,
+			Message: fmt.Sprintf("marketplace %q: removed, but the updated list could not be read", params.Name),
+			Data: appwire.MarketplaceRemoveAppliedData{
+				EvenerErrorInfo:    appwire.ErrorMarketplaceRemoveApplied,
+				AppliedUnavailable: true,
+			},
+		}
+	}
+	return applied, nil
 }
 
 // RefreshMarketplace pulls a marketplace's latest catalog and returns the

@@ -46,7 +46,7 @@ func TestThreadLifecycleLoggingResumeAliasTerminalCorrelation(t *testing.T) {
 			if err := locks.ConfirmForceStop(currentID); err != nil {
 				t.Fatal(err)
 			}
-			finish(true)
+			finish.Finish(true)
 			cfg.ResumeLocks = locks
 			var output bytes.Buffer
 			ctx, trace := withThreadLifecycleLog(t.Context(), "resume", requestedID, &output)

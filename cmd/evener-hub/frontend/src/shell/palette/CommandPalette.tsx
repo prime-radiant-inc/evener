@@ -573,10 +573,23 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       }
       // Slash fallthrough: forward the raw text to the session (TUI parity) -
       // reached only when NOTHING in the registry, global or session-scoped,
-      // recognizes this text at all.
+      // recognizes this text at all. The send's rejection is handled like the
+      // composer handles a refused send: on a recovery-fenced local session
+      // the store's shared admission refuses it (as it does for every direct
+      // caller), and a refusal means the text went NOWHERE - so the reason
+      // surfaces as a toast (the admission's own refusal text among them) and
+      // the palette stays open with the typed input instead of silently
+      // closing over a lost message. Only a durably accepted send closes.
       if (firstToken !== "" && ctx.sessionRef) {
-        void threadsStore.getState().send(ctx.sessionRef, query);
-        closePalette();
+        void threadsStore
+          .getState()
+          .send(ctx.sessionRef, query)
+          .then(
+            () => closePalette(),
+            (err) => {
+              toasts.push("error", commandErrorMessage(err));
+            },
+          );
       }
       return;
     }

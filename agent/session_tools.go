@@ -89,6 +89,7 @@ type stableDelegateCreateResult struct {
 	ChildSessionID string                      `json:"child_session_id"`
 	Type           string                      `json:"type"`
 	Status         string                      `json:"status"`
+	Name           string                      `json:"name,omitempty"`
 	AgentType      string                      `json:"agent_type,omitempty"`
 	Tools          []string                    `json:"tools,omitempty"`
 	Reason         string                      `json:"reason,omitempty"`
@@ -193,6 +194,7 @@ func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]a
 		ChildSessionID: result.ChildSessionID,
 		Type:           result.Type,
 		Status:         string(result.Status),
+		Name:           result.Name,
 		AgentType:      result.AgentType,
 		Tools:          append([]string(nil), result.Tools...),
 		Reason:         result.Reason,
@@ -327,7 +329,12 @@ type visionSideChannelStats struct {
 const (
 	visionSideChannelStatsOpen  = "<evener:vision_side_channel_stats>"
 	visionSideChannelStatsClose = "</evener:vision_side_channel_stats>"
-	visionRequestContract       = "Observe the image faithfully and answer the caller's request. Vision is non-authoritative for exact text or bytes; use OCR or the source when exactness matters."
+	// visionStructuralClaims is the shared non-text hazard clause (#486): the
+	// vision caveats must cover exact structural claims — piece placement, axis
+	// values, wire connections — not rendered text alone.
+	visionStructuralClaims = "structural claims (such as piece placement, axis values, or connections)"
+	visionRequestContract  = "Observe the image faithfully and answer the caller's request. Vision is non-authoritative for exact text, bytes, or " + visionStructuralClaims + "; use OCR or inspect the source when exactness matters."
+	visionConsumerReminder = "Vision output is model-generated and is not byte-exact OCR. It may omit, misread, or silently normalize rendered text, and may misread exact " + visionStructuralClaims + ", even when asked to transcribe them. Do not treat it as authoritative for exact-match, byte-exact transcription, or exact " + visionStructuralClaims + "; use a real OCR tool or inspect the source instead."
 )
 
 func visionUnavailableSteering(path string) string {
@@ -666,6 +673,22 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	nameMap := s.currentProfile().ToolNameMap()
 	visibleNames := providerVisibleToolNames(s.reg.Names(), nameMap)
 	requestedVisible := providerToolName(call.Name, nameMap)
+	// Snapshot the model's original argument bytes before prepareToolCall may
+	// replace them with the repaired form. The live tool-call events carry
+	// these bytes so they agree with the reload path, which uses
+	// SentArguments() (RawArguments when the original was invalid JSON, else
+	// the recorded Arguments). For VALID JSON the reload path's recorded
+	// Arguments are the transcript-persisted canonical form (compacted and
+	// HTML-escaped by encoding/json), so canonicalize valid bytes the same
+	// way here; preserve the exact original bytes only for INVALID JSON (the
+	// malformed cases where reload surfaces RawArguments verbatim).
+	originalArgs := call.Arguments
+	argsJSON := string(originalArgs)
+	if json.Valid(originalArgs) {
+		if canonical, err := json.Marshal(originalArgs); err == nil {
+			argsJSON = string(canonical)
+		}
+	}
 	prep := prepareToolCall(call, s.reg.Get(call.Name), visibleNames, requestedVisible, s.resultToolName(), finishReason)
 	call = prep.Call
 	prevalidated := true
@@ -731,16 +754,15 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		return skippedToolResult(call, err)
 	}
 
-	argsJSON, _ := json.Marshal(call.Arguments)
 	startData := events.ToolCallStartData{
 		ToolName:      call.Name,
 		CallID:        call.ID,
-		ArgumentsJSON: string(argsJSON),
+		ArgumentsJSON: argsJSON,
 	}
 	// Promote intent to the top-level event field for observability.
 	var args map[string]any
-	if !prep.RawArgumentsRejected && len(call.Arguments) > 0 {
-		_ = json.Unmarshal(call.Arguments, &args)
+	if !prep.RawArgumentsRejected && len(originalArgs) > 0 && json.Valid(originalArgs) {
+		_ = json.Unmarshal(originalArgs, &args)
 	}
 	if d := toolStartDescription(args); d != "" {
 		startData.Description = d
@@ -768,7 +790,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
 			ToolName:      res.ToolName,
 			CallID:        res.CallID,
-			ArgumentsJSON: string(call.Arguments),
+			ArgumentsJSON: argsJSON,
 			Error:         res.FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
@@ -824,7 +846,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
 			ToolName:      call.Name,
 			CallID:        call.ID,
-			ArgumentsJSON: string(call.Arguments),
+			ArgumentsJSON: argsJSON,
 			Error:         skippedToolResult(call, err).FullOutput,
 		})
 		s.responseSideEffectsMu.Unlock()
@@ -848,7 +870,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	endData := events.ToolCallEndData{
 		ToolName:      res.ToolName,
 		CallID:        res.CallID,
-		ArgumentsJSON: string(call.Arguments),
+		ArgumentsJSON: argsJSON,
 		ToolState:     res.ToolState,
 		OutputRef:     outputRef,
 	}
@@ -1375,7 +1397,11 @@ func wireToolDef(td llm.ToolDefinition, nameMap map[string]string, resultToolNam
 	if isResultToolDefinition(canonicalName, td.Name, resultToolName) {
 		return tool.WithoutIntentParameter(td)
 	}
-	return tool.WithIntentParameter(td)
+	// Work tools advertise intent as REQUIRED: the wire schema carries the
+	// mandate. The registry's own validation schema keeps the property-only
+	// form (WithIntentParameter at Register), so a call that omits the
+	// rationale still validates at dispatch.
+	return tool.WithIntentParameterRequired(td)
 }
 
 func isResultToolDefinition(canonicalName, wireName, resultToolName string) bool {
@@ -1460,7 +1486,9 @@ func (s *Session) rebuildToolDefsCache() {
 		if isResultToolDefinition(defs[i].Name, defs[i].Name, s.resultToolName()) {
 			defs[i] = tool.WithoutIntentParameter(defs[i])
 		} else {
-			defs[i] = tool.WithIntentParameter(defs[i])
+			// Same wire contract as wireToolDef: intent is required in the
+			// advertised schema, optional in the registry's validation schema.
+			defs[i] = tool.WithIntentParameterRequired(defs[i])
 		}
 	}
 

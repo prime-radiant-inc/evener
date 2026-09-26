@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
@@ -53,10 +55,18 @@ type favoriteRemoteOwnership struct {
 }
 
 type remoteThreadFetch struct {
-	threads    []appwire.Thread
-	complete   bool
-	sources    map[string]hubcore.RemoteSourceSnapshot
-	generation uint64
+	threads  []appwire.Thread
+	complete bool
+	sources  map[string]hubcore.RemoteSourceSnapshot
+	// sourceGenerations is the per-source identity generation the walk
+	// captured immediately before it read each source — the read-time
+	// capture the background refresher hands to StoreWalkSnapshot, so a
+	// remove or remove/re-add between a source's read and the publish
+	// moves the live generation and the read's rows drop. A source absent
+	// from the map was unregistered when the
+	// walk read it; the publish drops its rows as unowned.
+	sourceGenerations map[string]uint64
+	generation        uint64
 }
 
 // pokeMutationAttention nudges the attention watcher (if configured). It exists for
@@ -496,16 +506,70 @@ func (s *WebServer) refreshRemoteThreads(ctx context.Context) []appwire.Thread {
 
 func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThreadFetch {
 	if s.sources == nil {
-		return remoteThreadFetch{complete: true, sources: map[string]hubcore.RemoteSourceSnapshot{}}
+		return remoteThreadFetch{
+			complete:          true,
+			sources:           map[string]hubcore.RemoteSourceSnapshot{},
+			sourceGenerations: map[string]uint64{},
+		}
 	}
 	var threads []appwire.Thread
 	complete := true
 	sources := make(map[string]hubcore.RemoteSourceSnapshot)
+	// readGenerations is the walk's read-time capture: one entry per source,
+	// taken immediately before the walk reads it.
+	readGenerations := make(map[string]uint64)
+	remoteHosts := remoteHostNames(s.cfg)
 	for _, source := range s.sources.All() {
 		if source.ID() == "local" {
 			continue
 		}
-		listed, listComplete := s.listRemoteSourceWithFallbackState(ctx, source)
+		// Row ownership follows the generation at READ time, not at walk
+		// start: a host that registers mid-walk is
+		// captured here, under the registration that owns the rows about to
+		// be read, so it still publishes on this tick — while a remove or
+		// remove/re-add that lands between this capture and the publish moves
+		// the live generation, and the publish drops these rows instead of
+		// letting the old registration's rows outlive it or publish under a
+		// re-added identity. A source with no generation here was already
+		// removed when the walk reached it (the registry snapshot lags the
+		// removal); it stays uncaptured, and the publish drops its rows as
+		// unowned. Unattached sources are captured too — the last-known-good
+		// rows below publish like a live read's.
+		var readGeneration uint64
+		var captured bool
+		if s.cfg.RemoteThreadCache != nil {
+			if generation, ok := s.cfg.RemoteThreadCache.SourceGeneration(source.ID()); ok {
+				readGenerations[source.ID()] = generation
+				readGeneration, captured = generation, true
+			}
+		}
+		// The background walk must not force attachment: an unattached remote host
+		// is skipped without a call, so the 30s ticker cannot dial every configured
+		// host (component 06, §"What already exists"). The gate is the attached-only
+		// lookup, not a check-then-Ensure: a host that drops between the check and
+		// the source's own (attached-only) resolution is skipped, never re-attached.
+		// A skipped host contributes no fresh rows but keeps the last-known-good
+		// rows it already contributed (none for a never-attached host), so its
+		// sessions do not blink out of the tree between ticks.
+		var listed remoteSourceFetch
+		var listComplete bool
+		if remoteSourceAttached(s.cfg, remoteHosts, source.ID()) {
+			// The retention store joins the read-time generation rule the
+			// publish already follows: listRemoteSourceWithFallbackState
+			// stores only after ListThreads returns, so a remove whose
+			// forgetLastGoodThreads already dropped this source's retained
+			// rows — the removal commits while the list is in flight — must
+			// not be undone by the late store; the source is gone from the
+			// registry, so no later walk would ever prune the entry.
+			// Without a cache the store fences on the source instance the
+			// walk read under — the read-time identity token the nil-cache
+			// shape captures instead of a generation.
+			listed, listComplete = s.listRemoteSourceWithFallbackState(ctx, source, func(rows []appwire.Thread) {
+				s.storeLastGoodThreadsIfCurrent(source, readGeneration, captured, rows)
+			})
+		} else {
+			listed = remoteSourceFetch{threads: s.lastGoodThreadsForSource(source.ID())}
+		}
 		if !listComplete {
 			complete = false
 		}
@@ -562,7 +626,7 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 			IncompleteIDs: invalid,
 		}
 	}
-	return remoteThreadFetch{threads: threads, complete: complete, sources: sources}
+	return remoteThreadFetch{threads: threads, complete: complete, sources: sources, sourceGenerations: readGenerations}
 }
 
 // sourceThreadLister is the minimal slice of appsource.Source that
@@ -584,7 +648,9 @@ func (s *WebServer) listThreadsWithFallback(ctx context.Context, source sourceTh
 }
 
 func (s *WebServer) listThreadsWithFallbackState(ctx context.Context, source sourceThreadLister) ([]appwire.Thread, bool) {
-	result, complete := s.listRemoteSourceWithFallbackState(ctx, source)
+	// nil retain: this direct-lister seam carries no read-time capture
+	// to fence the store with, so a completed list retains unconditionally.
+	result, complete := s.listRemoteSourceWithFallbackState(ctx, source, nil)
 	return result.threads, complete
 }
 
@@ -592,7 +658,15 @@ type remoteSourceFetch struct {
 	threads []appwire.Thread
 }
 
-func (s *WebServer) listRemoteSourceWithFallbackState(ctx context.Context, source sourceThreadLister) (remoteSourceFetch, bool) {
+// listRemoteSourceWithFallbackState lists source's threads across cursor
+// pages, retaining the complete result as last-known-good: through retain
+// when the walk supplies one — a store fenced on the registration the read
+// happened under, storeLastGoodThreadsIfCurrent — or unconditionally when
+// retain is nil. The store runs only after the final page's ListThreads
+// returns, which is the window the fence exists for: a removal can commit
+// mid-round-trip, after the walk captured its generation but before the
+// list came back.
+func (s *WebServer) listRemoteSourceWithFallbackState(ctx context.Context, source sourceThreadLister, retain func(rows []appwire.Thread)) (remoteSourceFetch, bool) {
 	var threads []appwire.Thread
 	cursor := ""
 	seenCursors := make(map[string]struct{})
@@ -604,7 +678,11 @@ func (s *WebServer) listRemoteSourceWithFallbackState(ctx context.Context, sourc
 		threads = append(threads, resp.Data...)
 		next := strings.TrimSpace(resp.NextCursor)
 		if next == "" {
-			s.storeLastGoodThreads(source.ID(), threads)
+			if retain != nil {
+				retain(threads)
+			} else {
+				s.storeLastGoodThreads(source.ID(), threads)
+			}
 			return remoteSourceFetch{threads: append([]appwire.Thread(nil), threads...)}, true
 		}
 		if _, repeated := seenCursors[next]; repeated {
@@ -627,10 +705,107 @@ func (s *WebServer) lastGoodThreadsForSource(sourceID string) []appwire.Thread {
 func (s *WebServer) storeLastGoodThreads(sourceID string, threads []appwire.Thread) {
 	s.lastGoodMu.Lock()
 	defer s.lastGoodMu.Unlock()
+	s.setLastGoodThreadsLocked(sourceID, threads)
+}
+
+// storeLastGoodThreadsIfCurrent retains threads as source's last-known-good
+// rows only while the registration the walk read under still owns the name.
+// The walk's read-time identity capture is the cache's SourceGeneration when a
+// cache is configured — the same generation the publish compares under the
+// cache's lock — and the source instance itself when one is
+// not: the nil-cache shape has no generation store to compare against, and
+// the instance is the identity the registry hands out before the name becomes
+// enumerable (registerSource and newHubSourceRegistry build the source, then
+// Add), so "the name still maps to the instance the walk read" makes the same
+// ownership claim a generation match makes. The
+// check and the write share lastGoodMu, so a retention store and a removal's
+// forgetLastGoodThreads serialize: the removal drops the identity first —
+// RemoveSource and the source registration's own Remove both run before the
+// forget in the remove finish phase — so a store that runs after the removal
+// sees the moved or missing identity and skips, while a store that wins the
+// race is deleted by the forget that follows. Either order leaves no entry,
+// so a host removed while its list was in flight cannot leave its rows
+// retained under a name no later walk enumerates — nothing else ever deletes
+// an entry, so they would otherwise sit for the process lifetime, and
+// across a re-add they would render as the re-added
+// host's sessions until its own first successful list.
+func (s *WebServer) storeLastGoodThreadsIfCurrent(source appsource.Source, generation uint64, captured bool, threads []appwire.Thread) {
+	s.lastGoodMu.Lock()
+	defer s.lastGoodMu.Unlock()
+	if !s.lastGoodRegistrationOwned(source, generation, captured) {
+		return
+	}
+	s.setLastGoodThreadsLocked(source.ID(), threads)
+}
+
+// lastGoodRegistrationOwned reports whether the read-time capture still
+// matches the source's live registration. Callers hold lastGoodMu; the
+// identity lookups nest inside it, which is safe because no path takes the
+// two locks in the reverse order — the removal calls RemoveSource,
+// sources.Remove, and forgetLastGoodThreads sequentially, never nested.
+func (s *WebServer) lastGoodRegistrationOwned(source appsource.Source, generation uint64, captured bool) bool {
+	if s.cfg.RemoteThreadCache == nil {
+		// No cache means no generation store to compare against; the source
+		// instance the walk enumerated is the identity token. A removed host
+		// has no registration to match, and a re-added name maps to the fresh
+		// instance its re-add registered — both fail the comparison exactly
+		// the way a moved or missing generation does on the cached path.
+		current, ok := s.sources.Source(source.ID())
+		return ok && sameSourceInstance(current, source)
+	}
+	if !captured {
+		return false
+	}
+	current, ok := s.cfg.RemoteThreadCache.SourceGeneration(source.ID())
+	return ok && current == generation
+}
+
+// sameSourceInstance reports whether two registrations are the same source
+// instance without comparing the interface values head-on: an interface
+// comparison panics when both hold the same uncomparable dynamic type, and a
+// Source implemented as a struct carrying a slice or a map is free to be one.
+// Every source the hub registers itself is a pointer, where the dynamic type is
+// comparable and the comparison is the address — the identity this fence is
+// after. A dynamic type with no comparable identity reports "not the same
+// instance", the conservative answer: the fence drops the stale retention
+// rather than panicking on a tree read, and a registration whose rows were
+// captured under a different instance is exactly what it must refuse.
+func sameSourceInstance(a, b appsource.Source) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if reflect.TypeOf(a) != reflect.TypeOf(b) {
+		return false
+	}
+	if !reflect.TypeOf(a).Comparable() {
+		return false
+	}
+	return a == b
+}
+
+func (s *WebServer) setLastGoodThreadsLocked(sourceID string, threads []appwire.Thread) {
 	if s.lastGoodThreads == nil {
 		s.lastGoodThreads = map[string][]appwire.Thread{}
 	}
 	s.lastGoodThreads[sourceID] = append([]appwire.Thread(nil), threads...)
+}
+
+// forgetLastGoodThreads drops sourceID's retained last-known-good rows. The
+// host manager's remove finish phase calls it beside
+// remoteCache.RemoveSource, so a removed host's last successful list leaves
+// with every other piece of its per-name state instead of sitting in the map
+// for the process lifetime — nothing else ever deleted an entry, so churning
+// distinct host names grew the map without bound.
+// A missing key — a host whose walk never completed a list — is a no-op, as
+// is a nil map: delete treats both alike. A walk parked inside ListThreads
+// while the remove commits cannot resurrect the entry afterwards: the walk's
+// store carries the read-time identity capture and skips names whose
+// registration the removal dropped (storeLastGoodThreadsIfCurrent), so the
+// late store leaves the forgotten entry forgotten.
+func (s *WebServer) forgetLastGoodThreads(sourceID string) {
+	s.lastGoodMu.Lock()
+	defer s.lastGoodMu.Unlock()
+	delete(s.lastGoodThreads, sourceID)
 }
 
 func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.LiveEntry, bool) {
@@ -781,7 +956,6 @@ func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionC
 		Interrupt:   caps.Interrupt,
 		Compact:     caps.Compact,
 		Clear:       caps.Clear,
-		Fork:        caps.ForkFromTurn,
 		Shutdown:    caps.Shutdown,
 		ChangeModel: caps.ChangeModel,
 		Queue:       caps.Queue,
@@ -790,7 +964,12 @@ func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionC
 
 func (s *WebServer) isLive(sessionID string) bool {
 	if !isLocalRouteID(sessionID) {
-		_, err := sourceForThreadWithDeletionFence(s.cfg, s.sources, appRefFromRouteID(sessionID), "")
+		// A tree projection has no request context of its own; bound the
+		// ownership wait the same way the relay publication guard does, so a
+		// pending Resume cannot block the render indefinitely.
+		ctx, cancel := context.WithTimeout(context.Background(), hubTransientOwnershipBudget)
+		defer cancel()
+		_, err := sourceForThreadWithDeletionFence(ctx, s.cfg, s.sources, appRefFromRouteID(sessionID), "")
 		return err == nil
 	}
 	if s.cfg.Roster == nil {
@@ -1162,14 +1341,11 @@ func (s *WebServer) apiSessionCapabilities(id string, live bool) hubapi.SessionC
 	if s.cfg.Past != nil {
 		_, pastExists = s.cfg.Past.Find(id)
 	}
-	caps := hubapi.SessionCapabilities{
-		Fork:   pastExists,
-		Resume: pastExists,
-	}
+	var caps hubapi.SessionCapabilities
 	if !live && s.cfg.Spawner != nil && pastExists {
 		caps.Send = true
 	}
-	if !caps.Send && !caps.Steer && !caps.Interrupt && !caps.Compact && !caps.Clear && !caps.Fork && !caps.Resume && !caps.Shutdown && !caps.ChangeModel {
+	if !caps.Send && !caps.Steer && !caps.Interrupt && !caps.Compact && !caps.Clear && !caps.Shutdown && !caps.ChangeModel {
 		if live {
 			caps.ReadOnlyReason = "live session source is unavailable"
 		} else {

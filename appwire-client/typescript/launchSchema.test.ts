@@ -441,6 +441,30 @@ describe("buildFormState (populate) + collectConfig (collect) round-trip", () =>
     state.scalars.systemPromptText = "be nice";
     expect(collectConfig(options, state).systemPromptText).toBe("be nice");
   });
+
+  test("collectConfig drops an integer that is not an exact safe integer (NaN, fractions, unsafe magnitudes)", () => {
+    const state = buildFormState(options, {});
+    state.scalars.maxRounds = "12abc";
+    expect(collectConfig(options, state).maxRounds).toBeUndefined();
+    state.scalars.maxRounds = "12.5";
+    expect(collectConfig(options, state).maxRounds).toBeUndefined();
+    // Rounds to 1 if you Number() the string first - it must be validated
+    // exactly and dropped instead of sent as an integer nobody typed.
+    state.scalars.maxRounds = "1.0000000000000000001";
+    expect(collectConfig(options, state).maxRounds).toBeUndefined();
+    // 2^53 + 1 is not exactly representable, so it is dropped rather than
+    // rounding to 9007199254740992 (also outside the safe range).
+    state.scalars.maxRounds = "9007199254740993";
+    expect(collectConfig(options, state).maxRounds).toBeUndefined();
+    state.scalars.maxRounds = "1e21";
+    expect(collectConfig(options, state).maxRounds).toBeUndefined();
+    state.scalars.maxRounds = " 12 ";
+    expect(collectConfig(options, state).maxRounds).toBe(12);
+    state.scalars.maxRounds = "9007199254740991";
+    expect(collectConfig(options, state).maxRounds).toBe(9007199254740991);
+    state.scalars.maxRounds = "-9007199254740991";
+    expect(collectConfig(options, state).maxRounds).toBe(-9007199254740991);
+  });
 });
 
 describe("resolvedDefaultLabel with runtime-resolved effective layers", () => {

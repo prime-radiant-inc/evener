@@ -92,6 +92,7 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 	clone.Turns[0].Error.CodexErrorInfo.(json.RawMessage)[0] = '['
 	clone.Turns[0].Items[0].Images[0].Data[0] = 'X'
 	clone.Turns[0].Items[0].Images[0].Metadata["key"] = "changed"
+	clone.Turns[0].Items[0].OutputImages[0].Name = "changed"
 	*clone.Turns[0].Items[0].StartedAt = 107
 	clone.Turns[0].Items[0].Position.Entry = 99
 	clone.Turns[0].Items[0].Raw[0] = '['
@@ -113,7 +114,7 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 	if original.Status.ActiveFlags[0] != "active" || original.GitInfo.Branch != "main" || *original.Turns[0].StartedAt != 1 || original.Turns[0].Usage.InputTokens != 13 {
 		t.Fatal("thread state was changed through its clone")
 	}
-	if string(original.Turns[0].Error.CodexErrorInfo.(json.RawMessage)) != `{"kind":"provider"}` || original.Turns[0].Error.Cause.Status != 500 || original.Turns[0].Items[0].Images[0].Data[0] != 'i' || original.Turns[0].Items[0].Images[0].Metadata["key"] != "value" || *original.Turns[0].Items[0].StartedAt != 4 || original.Turns[0].Items[0].Position.Entry != 8 || original.Turns[0].Items[0].Raw[0] != '{' {
+	if string(original.Turns[0].Error.CodexErrorInfo.(json.RawMessage)) != `{"kind":"provider"}` || original.Turns[0].Error.Cause.Status != 500 || original.Turns[0].Items[0].Images[0].Data[0] != 'i' || original.Turns[0].Items[0].Images[0].Metadata["key"] != "value" || original.Turns[0].Items[0].OutputImages[0].Name != "output" || *original.Turns[0].Items[0].StartedAt != 4 || original.Turns[0].Items[0].Position.Entry != 8 || original.Turns[0].Items[0].Raw[0] != '{' {
 		t.Fatal("turn or item state was changed through its clone")
 	}
 	if *original.Evener.Diagnostics.Jobs[0].Resumable != true || *original.Evener.Diagnostics.Jobs[0].ExitCode != 8 || *original.Evener.Diagnostics.Delegates[0].RunningForMS != 9 || original.Evener.Diagnostics.Delegates[0].Worktree.Branch != "feature" || string(original.Evener.Diagnostics.Delegates[0].Message) != `{"message":true}` || original.Evener.Diagnostics.Delegates[0].Warnings[0] != "warning" {

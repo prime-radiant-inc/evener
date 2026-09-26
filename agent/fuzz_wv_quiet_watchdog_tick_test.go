@@ -13,7 +13,8 @@ import (
 // Oracles (beyond never-panic):
 //   - identical controller states make the same admission decision;
 //   - quiet attention is admitted only at or beyond the inclusive window;
-//   - an already-notified stretch never admits another attention;
+//   - a notified stretch re-arms: after a committed first wake, it admits the
+//     repeat only once one more full window of continued silence has elapsed;
 //   - an outstanding claim suppresses duplicates; and
 //   - aborting persistence re-arms the same durable attention identity.
 func FuzzWvQuietWatchdogTick(f *testing.F) {
@@ -28,9 +29,25 @@ func FuzzWvQuietWatchdogTick(f *testing.F) {
 		elapsed := time.Duration(elapsedSec%int64((24*time.Hour)/time.Second)) * time.Second
 		begin := func() (*delegateQuietAttentionClaim, *delegateTreeController, *Session, delegateLease) {
 			root, controller, lease, clock := newStableQuietSupervisionHarness(t)
-			controller.mu.Lock()
-			controller.live[lease.delegateID].quietNotified = alreadyNotified
-			controller.mu.Unlock()
+			// The notified case must reach the repeat state the way production
+			// does: admit and commit one wake at the first window boundary. That
+			// sets quietNotified, the quietNotifiedAt baseline, and advances
+			// quietSequence to 2, so the fuzzed elapsed time below measures the
+			// repeat window from the first wake rather than from the activity.
+			if alreadyNotified {
+				seedAt := clock.Now().Add(delegateQuietWindow)
+				seed, err := controller.BeginQuietAttention(root, lease, seedAt)
+				if err != nil {
+					t.Fatalf("seed notified claim: %v", err)
+				}
+				if seed == nil {
+					t.Fatal("seed notified claim was not admitted at the window boundary")
+				}
+				if err := controller.CompleteQuietAttention(seed, true); err != nil {
+					t.Fatalf("commit seed notified claim: %v", err)
+				}
+				clock.Advance(delegateQuietWindow)
+			}
 			clock.Advance(elapsed)
 			claim, err := controller.BeginQuietAttention(root, lease, clock.Now())
 			if err != nil {
@@ -52,7 +69,10 @@ func FuzzWvQuietWatchdogTick(f *testing.F) {
 			t.Fatalf("non-deterministic quiet admission: first=%q second=%q", firstID, secondID)
 		}
 
-		wantClaim := elapsed >= delegateQuietWindow && !alreadyNotified
+		// Notification state no longer suppresses forever: a notified delegate
+		// re-fires after one further full window, so admission depends only on
+		// the elapsed quiet time from the active baseline.
+		wantClaim := elapsed >= delegateQuietWindow
 		if (first != nil) != wantClaim {
 			t.Fatalf("quiet admission at %v with notified=%v: claim=%#v want=%v", elapsed, alreadyNotified, first, wantClaim)
 		}
@@ -64,17 +84,24 @@ func FuzzWvQuietWatchdogTick(f *testing.F) {
 		if first == nil {
 			return
 		}
-		if first.attentionID != delegateQuietAttentionID(firstLease) {
-			t.Fatalf("quiet attention id = %q, want %q", first.attentionID, delegateQuietAttentionID(firstLease))
+		wantSequence := uint64(1)
+		if alreadyNotified {
+			wantSequence = 2
 		}
-		duplicate, err := firstController.BeginQuietAttention(firstRoot, firstLease, first.activityAt.Add(elapsed))
+		if want := delegateQuietAttentionIDForStretch(firstLease, wantSequence); first.attentionID != want {
+			t.Fatalf("quiet attention id = %q, want %q", first.attentionID, want)
+		}
+		// Probe at the instant the first claim was actually admitted: for the
+		// notified case that instant is one window past the seed wake, so it
+		// clears the repeat baseline just as a real boundary tick would.
+		duplicate, err := firstController.BeginQuietAttention(firstRoot, firstLease, first.notifiedAt)
 		if err != nil || duplicate != nil {
 			t.Fatalf("outstanding quiet claim admitted duplicate=%#v err=%v", duplicate, err)
 		}
 		if err := firstController.CompleteQuietAttention(first, false); err != nil {
 			t.Fatalf("abort quiet claim: %v", err)
 		}
-		retry, err := firstController.BeginQuietAttention(firstRoot, firstLease, first.activityAt.Add(elapsed))
+		retry, err := firstController.BeginQuietAttention(firstRoot, firstLease, first.notifiedAt)
 		if err != nil || retry == nil {
 			t.Fatalf("retry quiet admission = %#v, %v", retry, err)
 		}

@@ -243,12 +243,20 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	if err := dm.RemoveMarketplace(context.Background(), "x"); err != nil {
 		t.Fatal(err)
 	}
+	// The metadata save lands before the clone removal that follows it, so a
+	// clone-removal failure here (the save itself succeeds) is returned as
+	// an error - the marketplace is gone from the listing either way (see
+	// TestRemoveMarketplaceCloneRemovalFailureNamesNoPath).
 	removeBody, _ := json.Marshal(Marketplaces{"x": {Source: Source{Kind: SourceURL, URL: "u"}, InstallLocation: "old"}})
 	marketplaceReadFile = func(string) ([]byte, error) { return removeBody, nil }
 	marketplaceRemoveAll = func(string) error { return fail }
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return nil }
-	if err := NewManager(t.TempDir()).RemoveMarketplace(context.Background(), "x"); err != nil {
+	removeManager := NewManager(t.TempDir())
+	if err := os.MkdirAll(removeManager.marketplaceDir("x"), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	if err := removeManager.RemoveMarketplace(context.Background(), "x"); err == nil {
+		t.Fatal("remove clone-removal error accepted")
 	}
 	reset()
 

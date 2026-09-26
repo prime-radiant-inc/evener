@@ -7,6 +7,7 @@
 // backs off exponentially up to a cap.
 
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
+import { isPlainObject } from "./plainObject";
 import type { WebSocketLike } from "./transport";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
 
@@ -22,6 +23,14 @@ export interface AppwireClientOptions {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+// Explicit Resume is completion-owned: a legitimate restore can run for
+// minutes, so it must not fail on the ordinary 30s transport budget. It still
+// needs an upper bound, because a hub that accepts the socket and answers
+// heartbeats while its resume handler never replies would otherwise leave
+// resumeThread's promise — and resumePending — unsettled forever. This cap is
+// far beyond any real restore, but finite, so the pane recovers without a
+// reload.
+export const RESUME_REQUEST_TIMEOUT_MS = 10 * 60_000;
 export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v5";
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
@@ -80,6 +89,14 @@ export const RECONNECT_MAX_MS = 5_000;
 // send even while connecting/reconnecting.
 const READY_EXEMPT_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["initialize", "ping"]);
 
+// Methods whose response is owned by the operation the request starts, not by
+// an ordinary transport deadline: a pending call carries its own (longer)
+// budget, and its presence must not suppress silent-drop detection for that
+// lifetime. The request timeout and the heartbeat's ordinary-request scan both
+// consult this one set so a method cannot gain one exemption without the
+// other.
+const COMPLETION_OWNED_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["thread/resume"]);
+
 function defaultSocketFactory(url: string): WebSocketLike {
   // The DOM WebSocket type is structurally richer than WebSocketLike (its
   // event objects carry many more fields), so TS can't verify the assignment
@@ -129,10 +146,6 @@ const FEATURE_KEYS = [
 const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings"] as const;
 const NAVIGATION_CAPABILITY_KEYS = ["version", "generationId", "sequence"] as const;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function hasRequiredAndOptionalKeys(
   value: Record<string, unknown>,
   required: readonly string[],
@@ -146,7 +159,7 @@ function hasRequiredAndOptionalKeys(
 /** Runtime boundary for the untyped JSON-RPC initialize result. */
 export function decodeInitializeResponse(value: unknown): InitializeResponse {
   if (
-    !isRecord(value) ||
+    !isPlainObject(value) ||
     !hasRequiredAndOptionalKeys(value, INITIALIZE_RESPONSE_KEYS, INITIALIZE_RESPONSE_OPTIONAL_KEYS)
   ) {
     throw new InitializeValidationError("response");
@@ -155,7 +168,7 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
   const features = value.features;
   const navigation = value.navigation;
   if (
-    !isRecord(serverInfo) ||
+    !isPlainObject(serverInfo) ||
     !hasRequiredAndOptionalKeys(serverInfo, ["name", "version"]) ||
     typeof serverInfo.name !== "string" ||
     serverInfo.name.trim() === "" ||
@@ -171,7 +184,7 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
     throw new InitializeValidationError("sourceId");
   }
   if (
-    !isRecord(features) ||
+    !isPlainObject(features) ||
     !hasRequiredAndOptionalKeys(features, FEATURE_KEYS, FEATURE_OPTIONAL_KEYS) ||
     FEATURE_KEYS.some((key) => typeof features[key] !== "boolean") ||
     FEATURE_OPTIONAL_KEYS.some((key) => Object.hasOwn(features, key) && typeof features[key] !== "boolean")
@@ -180,7 +193,7 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
   }
   if (Object.hasOwn(value, "navigation")) {
     if (
-      !isRecord(navigation) ||
+      !isPlainObject(navigation) ||
       !hasRequiredAndOptionalKeys(navigation, NAVIGATION_CAPABILITY_KEYS, ["readVersions"])
     ) {
       throw new InitializeValidationError("navigation");
@@ -324,7 +337,10 @@ export class AppwireClient {
 
   // Explicit Resume discards the old transport backlog before acknowledging
   // recovery. Pending requests fail normally; they are never replayed here.
-  async resumeThread(ref: string): Promise<MethodTypes["thread/resume"]["result"]> {
+  async resumeThread(
+    ref: string,
+    options?: { beforeRequest?: () => void },
+  ): Promise<MethodTypes["thread/resume"]["result"]> {
     if (this.resumePending) throw new Error("A session resume is already pending");
     const socket = this.socket;
     if (this.connectionState !== "ready" || !socket) throw new Error("Connect to the hub before resuming this session");
@@ -351,6 +367,14 @@ export class AppwireClient {
       }
       this.retryNow();
       await connected;
+      // Runs after the reconnect settles and synchronously before the resume
+      // RPC so a canceled action sends nothing. A throw here releases
+      // listeners, the timer, and resumePending through the finally below
+      // without tearing down the now-healthy primary connection.
+      options?.beforeRequest?.();
+      clearTimeout(timeout);
+      stopReady();
+      stopState();
       return await this.request("thread/resume", { ref });
     } finally {
       clearTimeout(timeout);
@@ -400,11 +424,32 @@ export class AppwireClient {
     if (!socket) {
       return Promise.reject(new Error(`AppwireClient: cannot call "${method}"; not connected`));
     }
-    const timeoutMs = opts?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    // Restore completion is not an ordinary transport deadline, but it is not
+    // unbounded either: a legitimate minutes-long restore must not fail on the
+    // 30s budget, and a hub that never answers must not leave the correlation
+    // (and resumePending) forever. An explicit caller budget still wins, and
+    // every other method retains its ordinary request deadline.
+    const timeoutMs =
+      opts?.timeoutMs ??
+      (COMPLETION_OWNED_METHODS.has(method) ? RESUME_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS);
     const id = this.nextId++;
     return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        // The default completion-owned cap must free the hub's operation, not
+        // only this promise: the hub learns an abandoned resume when its
+        // transport drops, so retire it the same way resumeThread's refresh
+        // does, and let the reconnect machinery rebuild for the retry. An
+        // explicit caller deadline is the caller owning abandonment
+        // semantics themselves; it rejects only, transport untouched.
+        if (opts?.timeoutMs === undefined && COMPLETION_OWNED_METHODS.has(method)) {
+          this.handleSocketLoss(socket, 1000);
+          try {
+            socket.close();
+          } catch {
+            /* The retired transport is already closing. */
+          }
+        }
         reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       this.pending.set(id, { method, resolve: resolve as (result: unknown) => void, reject, timer });
@@ -672,7 +717,9 @@ export class AppwireClient {
 
   private hasPendingOrdinaryRequest(): boolean {
     for (const slot of this.pending.values()) {
-      if (slot.method !== "ping") return true;
+      // The hub answers ping outside its serial queue. A pending Resume must
+      // not suppress silent-drop detection for its completion-owned lifetime.
+      if (slot.method !== "ping" && !COMPLETION_OWNED_METHODS.has(slot.method)) return true;
     }
     return false;
   }

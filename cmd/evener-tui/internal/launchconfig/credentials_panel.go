@@ -52,14 +52,49 @@ type CredentialsPanel struct {
 	// formBaseURLWas is the base URL the edited instance already had, so the
 	// form can tell "left blank" from "cleared".
 	formBaseURLWas string
+	// formEndpointFingerprint is the endpoint the edited instance resolved to
+	// when the form was opened (InstanceEntry.EndpointFingerprint). It travels
+	// with the edit so the hub refuses a save whose name another client has
+	// re-pointed since the form was read. Empty (a row the hub could not
+	// fingerprint) asserts nothing.
+	formEndpointFingerprint string
 
 	testPending    map[string]bool
 	testResults    map[string]appwire.AuthTestResponse
 	testGeneration uint64
+
+	// followInstance is the instance name the next listing naming it should
+	// select. An applied rename sets it, so the panel follows the instance to
+	// the name providers.toml now carries even when the hub's registry lags and
+	// the first refreshed listing still omits it; it is held until a listing
+	// names the instance.
+	followInstance string
 }
 
 func NewCredentialsPanel() CredentialsPanel {
 	return CredentialsPanel{loading: true}
+}
+
+// FollowInstance asks the panel to select the instance named name when a
+// listing carries it. A rename that applied before a later step failed
+// renames the instance in providers.toml, and the refreshed registry can lag
+// that write (the hub's own reload or rollback failed), so the request is held
+// across listings that still omit the name rather than dropped by the first
+// one: the discriminator is the authoritative fact, and following it must not
+// depend on one listing's verdict.
+func (p *CredentialsPanel) FollowInstance(name string) {
+	p.followInstance = strings.TrimSpace(name)
+}
+
+// instanceRowIndex returns the row index naming instance, or -1 when no row
+// carries that name.
+func (p CredentialsPanel) instanceRowIndex(name string) int {
+	for i, row := range p.rows {
+		if !row.header && row.entry != nil && row.entry.Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func (p CredentialsPanel) Init() tea.Cmd { return nil }
@@ -146,6 +181,12 @@ func (p CredentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Clamp or reset cursor to a selectable row.
 		if p.cursor >= len(p.rows) || (len(p.rows) > 0 && p.rows[p.cursor].header) {
 			p.cursor = max(firstSelectableRow(p.rows), 0)
+		}
+		if m.Err == nil && p.followInstance != "" {
+			if idx := p.instanceRowIndex(p.followInstance); idx >= 0 {
+				p.cursor = idx
+				p.followInstance = ""
+			}
 		}
 		return p, nil
 
@@ -266,7 +307,8 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return p, nil
 			}
 			name := cur.Name
-			return p, func() tea.Msg { return InstanceRemoveMsg{Name: name} }
+			fingerprint := cur.EndpointFingerprint
+			return p, func() tea.Msg { return InstanceRemoveMsg{Name: name, EndpointFingerprint: fingerprint} }
 		case "n":
 			p.formOpen = true
 			p.formEditing = false
@@ -276,6 +318,7 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.formProtocol = ""
 			p.formBaseURL = ""
 			p.formBaseURLWas = ""
+			p.formEndpointFingerprint = ""
 			return p, nil
 		case "e":
 			cur := p.selectedInstance()
@@ -290,6 +333,7 @@ func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			p.formProtocol = cur.Protocol
 			p.formBaseURL = cur.BaseURL
 			p.formBaseURLWas = cur.BaseURL
+			p.formEndpointFingerprint = cur.EndpointFingerprint
 			return p, nil
 		}
 	}
@@ -319,8 +363,9 @@ func (p CredentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p.formOpen = false
 		if p.formEditing {
 			params := appwire.InstanceEditParams{
-				Name:     p.formName,
-				Protocol: p.formProtocol,
+				Name:                        p.formName,
+				Protocol:                    p.formProtocol,
+				ExpectedEndpointFingerprint: p.formEndpointFingerprint,
 			}
 			switch {
 			case strings.TrimSpace(p.formBaseURL) == strings.TrimSpace(p.formBaseURLWas):

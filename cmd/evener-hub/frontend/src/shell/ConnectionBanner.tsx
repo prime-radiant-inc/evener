@@ -5,6 +5,7 @@ import { checkAuthStatus, SIGN_IN_PROMPT_MESSAGE } from "../auth";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import { Banner } from "../widgets/banner";
 import { checkWebNotBuilt, NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
+import { reloadPage } from "./pageReload";
 
 export interface ConnectionBannerProps {
   state: ConnectionState;
@@ -230,7 +231,7 @@ export function ConnectionBanner({
   // server rejected); every other close can be retried with a fresh client.
   const action =
     closedReason === "protocol"
-      ? { label: "Reload", onClick: () => window.location.reload() }
+      ? { label: "Reload", onClick: reloadPage }
       : { label: "Retry", onClick: () => void handleRetry(), inFlight: retrying };
 
   return <Banner tone="danger" message={message} action={action} />;

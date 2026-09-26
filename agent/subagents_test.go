@@ -133,7 +133,7 @@ func TestFrozenSubagentToolNamesIncludeRecoveryReader(t *testing.T) {
 	releasePreparedTreeSlot(prepared)
 	defer prepared.sub.sess.Close()
 	got := prepared.frozenToolNames
-	if !slices.Equal(got, []string{"read_file", "task_list", "compact_context", "read_transcript"}) {
+	if !slices.Equal(got, []string{"read_file", "task_list", "compact_context", "use_skill", "read_transcript"}) {
 		t.Fatalf("frozen names = %v", got)
 	}
 }

@@ -113,7 +113,9 @@ func FuzzRootTUIMain(f *testing.F) {
 			t.Fatal("alternate-screen option mismatch")
 		}
 		_ = sent
-		if selector%9 >= 5 && strings.TrimSpace(stdout.String()) != "goodbye" {
+		// Every exit clears the terminal title (OSC 2), then prints the restore
+		// hint.
+		if selector%9 >= 5 && strings.TrimSpace(stdout.String()) != "\x1b]2;\x07goodbye" {
 			t.Fatalf("stdout=%q", stdout.String())
 		}
 		if selector%9 == 4 && !strings.Contains(stderr.String(), "program") {

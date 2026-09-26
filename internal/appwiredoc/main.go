@@ -114,6 +114,7 @@ func build() docData {
 		register(v)
 	}
 	register(appwire.EvenerDelegateInfo{})
+	register(appwire.HostEntry{})
 	// InstanceEntry never appears as a method's own Params/Result - only
 	// nested inside InstanceListResponse.Instances - so without this it
 	// would never get a field table of its own, and a field documented on
@@ -123,6 +124,12 @@ func build() docData {
 	// InstanceModelEntry likewise only nests inside InstanceEntry.models,
 	// so it needs the same explicit registration for its own table.
 	register(appwire.InstanceModelEntry{})
+	// HostCredentialPushResult is the element type of
+	// HostPushCredentialsResponse.Results, never a method's own Params/Result,
+	// so it needs the same explicit registration: without it the push report's
+	// instance/action/reason fields have no field table at all while
+	// types.gen.ts still emits the interface (roborev review of the 07c push).
+	register(appwire.HostCredentialPushResult{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{

@@ -30,12 +30,22 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { buildComposerInput, humanizeState, parseSlashToken, spliceSlashCommand } from "@evener/appwire-client";
-import type { AskBatch } from "@evener/appwire-client";
+import {
+	type AskBatch,
+	buildComposerInput,
+	humanizeState,
+	parseSlashToken,
+	spliceSlashCommand,
+	type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
+import {
+	createConversationMutationPendingPort,
+	type ConversationMutationSubmitter,
+} from "../../mobile/src/state/conversationMutation";
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
@@ -43,6 +53,7 @@ import { CommandCompletion } from "./CommandCompletion";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
 import { useConnection } from "./ConnectionProvider";
+import { ConnectionStatus } from "./ConnectionStatus";
 import {
 	CommandArgumentError,
 	composerCommand,
@@ -57,9 +68,23 @@ import { goalObjective, submitGoalCommand } from "./goalCommand";
 import { HubEditor } from "./HubEditor";
 import { ImageAttachments } from "./ImageAttachments";
 import { ImageSelection } from "./imageSelection";
+import {
+	MutationRecoveryPanel,
+	shouldOfferRecoveryEntry,
+	useRecoveryPanel,
+} from "./MutationRecoveryPanel";
 import { useNativePreferences } from "./NativePreferencesProvider";
 import { drafts } from "./nativeDrafts";
 import { nativeImagePicker } from "./nativeImagePicker";
+import {
+	createNativeMutationHost,
+	createDurableSubmitter,
+	type NativeMutationHost,
+} from "./nativeMutationHost";
+import {
+	getNativeMutationRuntime,
+	nativeMutationTargetKey,
+} from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import { ProjectSessionsList } from "./ProjectSessionsList";
@@ -74,6 +99,7 @@ import {
 	composeQuestionAnswers,
 	pendingQuestions,
 	type QuestionSelections,
+	questionsIdentity,
 } from "./questionAnswers";
 import { QuestionBatches } from "./questionBatches";
 import {
@@ -142,31 +168,6 @@ export type Routes = {
 	NewSession: { hubId: string; hubName: string };
 	Conversation: { hubId: string; ref: string; title: string };
 };
-
-function ConnectionStatus({ inset = 16 }: { inset?: number } = {}) {
-	const { state, error, retry, activeProfile } = useConnection();
-	return (
-		<View style={{ paddingHorizontal: inset }}>
-			<View
-				style={[
-					styles.row,
-					// Reserve the reconnect action's height so offscreen header changes
-					// do not shift the conversation underneath the reader.
-					{ minHeight: Platform.OS === "ios" ? 44 : 48 },
-				]}
-			>
-				<View style={styles.fill}>
-					<Copy muted>
-						{activeProfile?.name ?? "No hub selected"} ·{" "}
-						{state === "ready" ? "Connected" : state}
-					</Copy>
-				</View>
-				{state !== "ready" ? <Action onPress={retry}>Reconnect</Action> : null}
-			</View>
-			<ErrorMessage message={error} />
-		</View>
-	);
-}
 
 export function HubsScreen({
 	navigation,
@@ -827,18 +828,68 @@ export function ConversationScreen({
 	const [viewportHeight, setViewportHeight] = useState(windowHeight);
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
 	const headerHeight = useHeaderHeight();
+	// The durable-mutation wiring: the store admits every mutation through a
+	// lazily-acquired process runtime (a screen that never sends never opens the
+	// mutations database), and a connected host effect binds this screen's
+	// client and target to that same runtime. The host owns the registration and
+	// the read fence; the runtime owns dispatch and the recovery row a
+	// rejection produces.
+	const mutationHostRef = useRef<NativeMutationHost | null>(null);
+	// The submitter refuses while no host is live, so a mutation is never
+	// durably accepted (and its draft cleared) while this screen has no
+	// registered client to dispatch it.
+	const mutationSubmitter = useMemo<ConversationMutationSubmitter>(
+		() => createDurableSubmitter(() => mutationHostRef.current),
+		[],
+	);
+	// The transcript display config the conversation projects at (the hub's
+	// evener/settings/transcriptDisplay settings; the shipped mobile default
+	// — intent — when the hub stores none). The store owns the level it
+	// projects at and re-projects through its display boundary when it
+	// changes; the service reads the CURRENT value at each read it projects,
+	// so the ref (not the render value) is what it closes over — the store is
+	// not recreated per config change.
+	const preferences = useNativePreferences();
+	const displayConfig =
+		preferences.hubId === route.params.hubId ? preferences.config : null;
+	const displayConfigRef = useRef<TranscriptDisplayConfigV1 | null>(displayConfig);
+	displayConfigRef.current = displayConfig;
+	const resolveDisplayConfig = useCallback(
+		() => displayConfigRef.current,
+		[],
+	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
 	const store = useMemo(
-		() => createConversationStore(),
-		[route.params.hubId, route.params.ref],
+		() =>
+			createConversationStore({
+				mutationHubId: route.params.hubId,
+				mutationSubmitter,
+				displayConfig,
+			}),
+		[mutationSubmitter, route.params.hubId, route.params.ref],
 	);
+	// A config change reaches the live store as a level change, not a
+	// rebinding: setDisplayConfig re-projects the conversation at the new
+	// level through the same display boundary (an equal value is a no-op).
+	useEffect(() => {
+		store.getState().setDisplayConfig(displayConfig);
+	}, [store, displayConfig]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Activity lifetime follows its conversation binding.
 	const activity = useMemo(() => createActivityStore(), [store]);
 	// The conversation store validates the exact bound sink object on refresh.
 	const activitySink = useMemo(() => activity.getState(), [activity]);
 	const service = useMemo(
-		() => (client ? createConversationService(client) : null),
-		[client],
+		() =>
+			client
+				? createConversationService(client, {
+						resolveDisplayConfig,
+						onReadStart: (ref, expectedThreadId) =>
+							mutationHostRef.current?.beginRead(ref, expectedThreadId),
+						onReadComplete: (lease, response) =>
+							mutationHostRef.current?.reconcileRead(lease, response),
+					})
+				: null,
+		[client, resolveDisplayConfig],
 	);
 	const currentDestination = useRef({ store, client });
 	currentDestination.current = { store, client };
@@ -961,6 +1012,51 @@ export function ConversationScreen({
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
+	// The recovery surface: this exact hub/conversation target's durable
+	// recovery rows, mounted in the recovery modal below. useRecoveryPanel
+	// acquires the runtime only once the conversation is connected (the
+	// singleton opens the mutations database), so a screen that never reaches a
+	// live conversation never constructs one - what the landed render fence
+	// (useNativeMutationRecovery.render.test.tsx) requires of this screen.
+	const recovery = useRecoveryPanel({
+		connected,
+		hubId: route.params.hubId,
+		targetRef: route.params.ref,
+	});
+	const deliveryConcern = Boolean(
+		snapshot.error || actionError || unconfirmedSend !== null,
+	);
+	// Bind this screen's client and target to the runtime for the connected
+	// lifetime: the service's read fence calls through mutationHostRef, and the
+	// runtime's dispatch gate opens on this screen's own authoritative read and
+	// retires with the mount. A failed startup keeps the registration: the
+	// runtime retries its own start on the next submission, and a durable
+	// admission must always have this screen's client bound.
+	useEffect(() => {
+		if (!client || !connected) return;
+		let host: NativeMutationHost;
+		try {
+			host = createNativeMutationHost(
+				getNativeMutationRuntime(),
+				route.params.hubId,
+				route.params.ref,
+				client,
+			);
+		} catch {
+			// The mutations database or the client binding could not be created.
+			// Leave the screen mounted with no host rather than crashing the
+			// conversation; a later reconnect or remount retries, and a mutation
+			// submitted meanwhile surfaces its own failure through the store.
+			mutationHostRef.current = null;
+			return;
+		}
+		mutationHostRef.current = host;
+		void host.start().catch(() => undefined);
+		return () => {
+			if (mutationHostRef.current === host) mutationHostRef.current = null;
+			host.dispose();
+		};
+	}, [client, connected, route.params.hubId, route.params.ref]);
 	useEffect(() => () => store.getState().close(), [store]);
 	// Thread reads replace the connection's subscription. Returning from a
 	// child or editor must reacquire this screen's stream and current snapshot.
@@ -968,12 +1064,53 @@ export function ConversationScreen({
 		if (!service || !connected || !focused) return;
 		void store
 			.getState()
-			.resumeProjected(service, activitySink, route.params.ref);
+			.resumeProjected(service, activitySink, route.params.ref)
+			.catch((error) => {
+				// The store surfaces a failed resume in its own state; this only
+				// keeps the rejection from going unobserved.
+				console.error("ConversationScreen: resume failed", error);
+			});
 		return () => {
 			store.getState().suspendProjected();
 			service.close();
 		};
 	}, [service, store, activitySink, connected, focused, route.params.ref]);
+	// The durable pending-row seam. The store retires it on EVERY thread open,
+	// and `openProjected` runs from more than the resume effect: the /clear
+	// command's cleared callback, the refresh paths, and resumeProjected's own
+	// fall-through all reopen the thread. Key the rebind on the conversation
+	// generation so any host-initiated (re)open re-establishes the seam once the
+	// store has retired it, while a suspend/rehydrate generation bump that did
+	// not retire it leaves the live subscription untouched (the store's
+	// bindPendingMutationsIfUnbound is idempotent). The store's own close/reset
+	// retires the seam on unmount, so this effect needs no cleanup.
+	useEffect(() => {
+		if (!client || !connected || !focused) return;
+		try {
+			store.getState().bindPendingMutationsIfUnbound(
+				createConversationMutationPendingPort(
+					getNativeMutationRuntime(),
+					nativeMutationTargetKey(route.params.hubId, route.params.ref),
+				),
+			);
+		} catch (error) {
+			// The mutations database could not be opened. The conversation stays
+			// usable; a later reconnect or remount retries, and the failure is
+			// logged so it is not silent.
+			console.error(
+				"ConversationScreen: durable pending seam bind failed",
+				error,
+			);
+		}
+	}, [
+		store,
+		client,
+		connected,
+		focused,
+		route.params.hubId,
+		route.params.ref,
+		snapshot.conversationGeneration,
+	]);
 	async function refresh() {
 		if (!service || !connected || !focused || refreshing) return;
 		setRefreshing(true);
@@ -1252,14 +1389,13 @@ export function ConversationScreen({
 			navigation.setParams({ title: currentName });
 	}, [navigation, currentName, route.params.title]);
 	const conversation = snapshot.conversation;
-	const preferences = useNativePreferences();
+	// The conversation's rows are already level-correct: the store projected
+	// them at displayConfig (D24-6's seam routing), so the presentation layer
+	// only reshapes (member unrolling, attachment adjacency) and computes the
+	// footer's accounting — no second, screen-level projection.
 	const presentation = useMemo(
-		() =>
-			projectNativeTranscript(
-				conversation,
-				preferences.hubId === route.params.hubId ? preferences.config : null,
-			),
-		[conversation, preferences.hubId, preferences.config, route.params.hubId],
+		() => projectNativeTranscript(conversation, displayConfig),
+		[conversation, displayConfig],
 	);
 	const timelineRows = useMemo(
 		() => groupTimeline(presentation.items),
@@ -1883,7 +2019,7 @@ export function ConversationScreen({
 			) : null}
 			{batches.map((batch, index) => (
 				<QuestionSheet
-					key={batch.id + JSON.stringify(batch.questions)}
+					key={batch.id + questionsIdentity(batch.questions)}
 					visible={questionsOpen && index === 0}
 					destination={{
 						hubId: route.params.hubId,
@@ -2517,10 +2653,7 @@ export function ConversationScreen({
 										{draft.loaded ? "Retry saving" : "Retry loading draft"}
 									</Action>
 								) : null}
-								{!connected ||
-								snapshot.error ||
-								actionError ||
-								unconfirmedSend !== null ? (
+								{!connected || deliveryConcern ? (
 									<Action
 										tone="quiet"
 										onPress={() => {
@@ -2537,6 +2670,22 @@ export function ConversationScreen({
 											: !connected
 												? "Reconnect"
 												: "Review error"}
+									</Action>
+								) : null}
+								{shouldOfferRecoveryEntry({
+									connected,
+									deliveryConcern,
+									count: recovery.count,
+									failed: recovery.failed,
+								}) ? (
+									<Action
+										tone="quiet"
+										onPress={() => {
+											Keyboard.dismiss();
+											setRecoveryOpen(true);
+										}}
+									>
+										Recovery
 									</Action>
 								) : null}
 								{permitted?.stop ? (
@@ -2580,6 +2729,29 @@ export function ConversationScreen({
 								</View>
 								<ScrollView contentContainerStyle={{ padding: 20, gap: 12 }}>
 									<ConnectionStatus inset={0} />
+									<MutationRecoveryPanel
+										targetKey={recovery.targetKey}
+										snapshot={recovery.snapshot}
+										error={recovery.error}
+										onRetry={recovery.retry}
+										loading={recovery.loading}
+										actions={{
+											canRestore: () => document.canRestoreRecoveredDraft(),
+											restoreHint: () => document.recoveredRestoreHint(),
+											onRestore: (row) => {
+												// Clear any prior action error first, like every other
+												// action handler here, so a successful restore never
+												// leaves a stale error banner (or hides the Recovery
+												// entry, which keys on deliveryConcern).
+												setActionError(null);
+												if (!document.restoreRecoveredDraft(row.text))
+													setActionError(
+														"This message could not be restored to the draft.",
+													);
+											},
+											onDiscard: recovery.discard,
+										}}
+									/>
 									<ErrorMessage
 										message={snapshot.error || actionError || draft.error}
 									/>

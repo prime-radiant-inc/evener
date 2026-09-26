@@ -4,6 +4,7 @@
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
+    "styles/railseat.module.css",
     "panes/session/transcript/toolcallitem.module.css",
     "widgets/button/button.module.css",
     "widgets/iconbutton/iconbutton.module.css",

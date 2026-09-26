@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -225,41 +226,396 @@ func ignoreScopeForPatterns(patterns []string) []ignoreScope {
 	return scopes
 }
 
-// readIgnoreFile reads one .gitignore under the call's byte budgets. It stops
-// one byte past the per-file cap rather than reading the whole file, so an
+// readIgnoreFile reads one .gitignore under the call's budgets. It stops one
+// byte past the per-file cap rather than reading the whole file, so an
 // enormous rules file is refused without first being materialized, and it
-// charges what it keeps against the call-wide retention budget because the
-// compiled matcher lives as long as the call does.
+// charges what the file costs the call against the call-wide ignore budget:
+// its path entry, each compiled rule and the source that rule was written as,
+// and the source it read. Every successfully read file is charged, rule-free
+// ones included, so the budget bounds the aggregate source a call reads and not
+// only the matchers it retains.
 //
-// It answers three ways: a refusal, which the caller propagates; nil data
-// with no error for a file that is missing or unreadable, which the caller
-// skips as it always has; and the bytes otherwise.
-func readIgnoreFile(ctx context.Context, fsys fs.FS, path string, budget *GlobBudget) ([]byte, error) {
+// It answers three ways: a refusal, which the caller propagates; nil lines
+// with no error, which the caller skips; and the rule lines otherwise, ready to
+// compile. The second return value reports whether the file was actually read:
+// true for a file that was read even if it compiles no rule, false for one that
+// is missing or unreadable. A caller caches only the paths it actually read, so
+// a failed read is neither remembered nor charged, and one that compiles no
+// rule is remembered and charged like any other file, though it contributes no
+// matcher because its matcher would match nothing.
+func readIgnoreFile(ctx context.Context, fsys fs.FS, path string, budget *GlobBudget) ([]string, bool, error) {
 	f, err := fsys.Open(path)
 	if err != nil {
 		// A cancelled open is not an unreadable .gitignore: swallowing it
 		// here would let the discovery walk keep traversing after
 		// cancellation and report whatever partial rule set it assembled.
 		if cerr := ctx.Err(); cerr != nil {
-			return nil, cerr
+			return nil, false, cerr
 		}
-		return nil, nil //nolint:nilerr // best-effort: skip a missing or unreadable .gitignore
+		return nil, false, nil //nolint:nilerr // best-effort: skip a missing or unreadable .gitignore
 	}
 	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, int64(maxGlobIgnoreFileBytes)+1))
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
-			return nil, cerr
+			return nil, false, cerr
 		}
-		return nil, nil //nolint:nilerr // best-effort: skip an unreadable .gitignore
+		return nil, false, nil //nolint:nilerr // best-effort: skip an unreadable .gitignore
 	}
 	if berr := budget.tooManyRuleBytes(path, len(data)); berr != nil {
-		return nil, berr
+		return nil, false, berr
 	}
-	if berr := budget.retainRuleBytes(len(data)); berr != nil {
-		return nil, berr
+	// Count and charge from the raw bytes before any line is materialized: a
+	// split allocates a string header per line, so a near-cap file of newlines
+	// would allocate tens of megabytes before a refusal that could have been
+	// made from the bytes alone. Only the lines that will actually compile are
+	// collected afterwards, and only for a file that stayed within budget, so a
+	// blank- or comment-heavy file never has those lines materialized.
+	cost := compiledIgnoreRules(data)
+	cost.path = len(path)
+	cost.source = len(data)
+	if berr := budget.retainIgnoreFile(cost); berr != nil {
+		return nil, false, berr
 	}
-	return data, nil
+	if cost.rules == 0 {
+		return nil, true, nil
+	}
+	return ignoreRuleLines(data), true, nil
+}
+
+// ignoreRuleLines collects the lines of a .gitignore that
+// go-gitignore.CompileIgnoreLines will compile, leaving out the blank and
+// comment lines it would drop anyway. It runs only after the budget has been
+// charged, so a file that is refused, or that compiles no rule, never has its
+// lines materialized. It is a variable so a test can observe that directly.
+var ignoreRuleLines = func(data []byte) []string {
+	var lines []string
+	eachIgnoreLine(data, func(line []byte) {
+		lines = append(lines, string(line))
+	})
+	return lines
+}
+
+// compiledIgnoreRules counts, from a .gitignore's raw bytes, the lines
+// go-gitignore.CompileIgnoreLines tries to turn into a matcher and reports what
+// those lines expand into: their source, the source and stars inside a counted
+// repetition, their glob stars, and their Unicode property escapes. Each of
+// those compiles to far more instructions than the source that wrote it — a
+// repetition because `regexp` expands it, a star because the library rewrites
+// each one to a group, a property escape because it carries a whole rune table
+// — so the charge is driven by the constructs the line actually holds rather
+// than by its length. Counting happens before any line is materialized.
+//
+// The count is an upper bound, not an exact match, on the matchers the library
+// retains: a line whose generated regexp fails to compile (an unterminated
+// character class, say) is still counted here but yields no pattern there.
+// Over-counting is the safe direction — it can refuse a call early but never
+// under-charge one — and it can never turn a zero-rule file into a retained
+// matcher, since such a file has no such line at all. The alternative,
+// exact-matching the library, would mean reaching into its unexported pattern
+// list from production code.
+func compiledIgnoreRules(data []byte) ignoreFileCost {
+	var c ignoreFileCost
+	eachIgnoreLine(data, func(line []byte) {
+		c.rules++
+		expansion := classifyIgnoreLine(line)
+		c.expansionUnits = satAdd(c.expansionUnits, expansion.units)
+	})
+	return c
+}
+
+// ignoreLineExpansion is what one rule line compiles into, in units of one
+// compiled instruction. It is computed by a single forward parse so that a
+// nested quantifier multiplies the units inside its element and no byte is ever
+// re-scanned.
+type ignoreLineExpansion struct {
+	units int64 // compiled instruction units the line expands into
+}
+
+// globStarUnits is the instruction cost of one glob star. go-gitignore rewrites
+// each `*` to a capture, a character class and a split before compiling, which
+// measured about five instructions.
+const globStarUnits = 5
+
+// globUnicodeUnits is the instruction-unit charge for one Unicode property
+// escape. The recorded cost is globIgnoreUnicodeClassBytes for the property's
+// rune table, expressed in units so that it rides the same atom and is
+// multiplied by any counted or nested repetition around it, exactly as the
+// compiled table is.
+const globUnicodeUnits = (globIgnoreUnicodeClassBytes + globIgnoreUnitBytes - 1) / globIgnoreUnitBytes
+
+// classifyIgnoreLine parses line once, left to right, and reports the compiled
+// instruction units it expands into. An escaped byte is literal, so `\*` is not
+// a star and `\{` is not a quantifier; so is anything inside a character class,
+// so `[*]` is not a star, and `\p`/`\P` is a Unicode property.
+//
+// This estimate is best-effort, not a proof of the budget it feeds. It accounts
+// for every expansion vector found so far — a literal, a glob star, a counted
+// repetition and its nesting, an optional branch, a capturing group, and a
+// Unicode property escape, including inside a character class and under a
+// repetition — and it cannot bound a construct whose compiled size it misses.
+// The charge is produced by a second parser that has to agree byte-for-byte
+// with go-gitignore's rewrite plus Go's regexp/syntax, and there is no fixed
+// point short of reimplementing that parser, so a later construct can still slip
+// past. The follow-up is to charge the real compiled program size instead; see
+// issue #1971.
+//
+// A quantifier multiplies the units of the element it follows, and because a
+// group's units are accumulated before the group's own quantifier is seen, a
+// nested quantifier multiplies everything inside it: `(a{900}){900}` records
+// 810,000 units from one source byte. A malformed line — an unmatched `)` or a
+// group left open at the end — is treated as literal bytes, and nothing scans
+// backwards, so the parse is linear in the line length.
+func classifyIgnoreLine(line []byte) ignoreLineExpansion {
+	var e ignoreLineExpansion
+	type frame struct{ units int64 }
+	stack := []frame{{}}
+	flush := func(units int64) {
+		top := len(stack) - 1
+		stack[top].units = satAdd(stack[top].units, units)
+	}
+	// pending holds the units of the atom just completed, waiting for a
+	// quantifier; -1 means no atom is waiting.
+	pending := int64(-1)
+	finish := func() {
+		if pending >= 0 {
+			flush(pending)
+			pending = -1
+		}
+	}
+	for i := 0; i < len(line); i++ {
+		switch line[i] {
+		case '\\':
+			finish()
+			units := int64(1)
+			if i+1 < len(line) {
+				if line[i+1] == 'p' || line[i+1] == 'P' {
+					units += globUnicodeUnits
+					// A property escape is `\pL` or `\p{Greek}`, one atom whose
+					// quantifier must attach to the whole escape rather than to
+					// the letter after `\p`.
+					i = ignorePropertyEnd(line, i)
+				} else {
+					i++ // the escaped byte is literal
+				}
+			}
+			pending = units
+		case '[':
+			finish()
+			end, _ := ignoreClassEnd(line, i)
+			pending = int64(end-i+1) + int64(countUnicodeClasses(line[i:end+1]))*globUnicodeUnits
+			i = end
+		case '(':
+			finish()
+			// A capturing group compiles to its own instruction, and a
+			// quantifier after the group repeats that instruction too, so the
+			// capture is the frame's starting cost. Go emits a bracket pair per
+			// capture, so it is charged as two units.
+			stack = append(stack, frame{units: 2})
+		case ')':
+			finish()
+			if len(stack) > 1 {
+				top := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				pending = top.units
+			} else {
+				pending = 1 // unmatched, so a literal byte
+			}
+		case '*':
+			finish()
+			pending = globStarUnits
+		case '{':
+			if factor, end, ok := countedRepetitionFactor(line, i); ok && pending >= 0 {
+				pending = satMul(pending, factor)
+				i = end
+				continue
+			}
+			finish()
+			pending = 1 // literal brace byte
+		default:
+			finish()
+			pending = 1
+		}
+	}
+	finish()
+	// A group left open at the end still holds units that compile.
+	for len(stack) > 1 {
+		top := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		dest := len(stack) - 1
+		stack[dest].units = satAdd(stack[dest].units, top.units)
+	}
+	e.units = stack[0].units
+	return e
+}
+
+// ignoreClassEnd returns the index of the `]` that closes the character class
+// opening at line[i], or the last index of the line when it never closes, and
+// whether it closed. An escaped byte inside the class cannot close it, and a
+// `]` in the first position (or right after a `^`) is literal, as `regexp`
+// treats it: the class `[])]` holds `]` and `)` and closes at the last `]`.
+func ignoreClassEnd(line []byte, i int) (end int, closed bool) {
+	j := i + 1
+	if j < len(line) && line[j] == '^' {
+		j++
+	}
+	if j < len(line) && line[j] == ']' {
+		j++ // the first `]` is a member of the class
+	}
+	for ; j < len(line); j++ {
+		switch line[j] {
+		case '\\':
+			j++
+		case ']':
+			return j, true
+		}
+	}
+	return len(line) - 1, false
+}
+
+// ignorePropertyEnd returns the index of the last byte of the `\p`/`\P` escape
+// that starts at line[i], so a quantifier after it attaches to the whole escape.
+// The name is either one letter (`\pL`) or a braced name (`\p{Greek}`).
+func ignorePropertyEnd(line []byte, i int) int {
+	j := i + 2 // past `\` and `p`/`P`
+	if j < len(line) && line[j] == '{' {
+		for k := j + 1; k < len(line); k++ {
+			if line[k] == '}' {
+				return k
+			}
+		}
+		return len(line) - 1
+	}
+	if j < len(line) {
+		return j
+	}
+	return i + 1
+}
+
+// countUnicodeClasses counts the `\p`/`\P` property escapes inside a character
+// class. A class holding one carries the same rune table as the bare escape, so
+// it costs the same.
+func countUnicodeClasses(class []byte) int {
+	n := 0
+	for k := 0; k < len(class); k++ {
+		if class[k] != '\\' {
+			continue
+		}
+		if k+1 < len(class) && (class[k+1] == 'p' || class[k+1] == 'P') {
+			n++
+		}
+		k++
+	}
+	return n
+}
+
+// countedRepetitionFactor reports the multiplicative factor of a quantifier
+// opening at line[i], the index of its closing `}`, and whether it is a
+// quantifier at all. `regexp` compiles `{n}` to n copies, `{n,m}` to m copies
+// plus m-n optional copies, and `{n,}` to n copies plus a star, so the factor is
+// max + (max-min); a brace with no valid bounds — `{cache}`, `{js,map}`, `foo{`
+// — and one that expands to nothing, `{0}` or `{0,0}`, is a literal instead.
+// A bound with a leading zero, like `{01}` or `{00,1000}`, is literal too, as
+// `regexp` treats it: the only valid zero is a bare `0`.
+func countedRepetitionFactor(line []byte, i int) (factor int64, end int, ok bool) {
+	j := i + 1
+	start := j
+	for j < len(line) && line[j] >= '0' && line[j] <= '9' {
+		j++
+	}
+	if j == start {
+		return 0, 0, false
+	}
+	if !validRepetitionBound(line[start:j]) {
+		return 0, 0, false
+	}
+	lo := repetitionBound(line[start:j])
+	hiBound := lo
+	if j < len(line) && line[j] == ',' {
+		j++
+		hiStart := j
+		for j < len(line) && line[j] >= '0' && line[j] <= '9' {
+			j++
+		}
+		if j == hiStart {
+			// `regexp` treats `{n,` as a quantifier only when the terminator is
+			// present; otherwise the `{` is literal. Checking here also stops
+			// the classifier from consuming whatever byte follows the comma.
+			if j >= len(line) || line[j] != '}' {
+				return 0, 0, false
+			}
+			// `{n,}` compiles to n copies followed by a star loop of constant
+			// size, not to n plus 1000 more copies: that is `{n,m}`'s behavior.
+			// Charging the loop as a constant keeps a valid `{1,}` rule from
+			// exhausting the budget.
+			return int64(lo) + globStarUnits, j, true
+		}
+		if !validRepetitionBound(line[hiStart:j]) {
+			return 0, 0, false
+		}
+		hiBound = repetitionBound(line[hiStart:j])
+	}
+	if j >= len(line) || line[j] != '}' {
+		return 0, 0, false
+	}
+	if hiBound == 0 {
+		return 0, 0, false
+	}
+	if hiBound < lo {
+		hiBound = lo
+	}
+	return int64(hiBound) + int64(hiBound-lo), j, true
+}
+
+// validRepetitionBound reports whether digits are a repetition bound `regexp`
+// accepts: the sole digit `0`, or a decimal with no leading zero. `{00}`,
+// `{01}` and `{00,1000}` are not repetitions to it, so they stay literal.
+func validRepetitionBound(digits []byte) bool {
+	if len(digits) == 0 {
+		return false
+	}
+	return len(digits) == 1 || digits[0] != '0'
+}
+
+// repetitionBound parses a decimal repetition bound. A malformed or overlong
+// bound saturates high, which is the conservative direction: it is charged as
+// an expansion rather than dismissed as a literal.
+func repetitionBound(digits []byte) int {
+	n := 0
+	for _, d := range digits {
+		n = n*10 + int(d-'0')
+		if n > 1<<20 {
+			return 1 << 20
+		}
+	}
+	return n
+}
+
+// eachIgnoreLine calls visit for every line of a .gitignore that
+// go-gitignore.CompileIgnoreLines will try to compile, passing the line with
+// its trailing carriage return removed. A line is skipped when it is a comment
+// in column zero or, after trimming spaces from both ends, is empty, which
+// mirrors the library's getPatternFromLine exactly; an indented comment is not
+// skipped, because the library does not treat it as one. Walking the bytes
+// rather than splitting is what lets a caller count or collect only the lines
+// that compile, without materializing the rest.
+func eachIgnoreLine(data []byte, visit func(line []byte)) {
+	for len(data) > 0 {
+		var line []byte
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			line, data = data[:i], data[i+1:]
+		} else {
+			line, data = data, nil
+		}
+		line = bytes.TrimRight(line, "\r")
+		if len(line) > 0 && line[0] == '#' {
+			continue
+		}
+		if len(bytes.Trim(line, " ")) == 0 {
+			continue
+		}
+		visit(line)
+	}
 }
 
 // loadIgnoreSet collects every .gitignore rule that can affect a path under
@@ -300,9 +656,13 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
 	set := &ignoreSet{}
 	scopes := narrowIgnoreScopes(scope)
 
-	// loadedRules keys every .gitignore this call has already taken, so
-	// partially overlapping scopes cannot read one twice: a duplicate would
-	// compile a second matcher, retain it, and charge its bytes again.
+	// loadedRules keys every .gitignore this call has read, so no scope reads
+	// one twice: a second read would charge the file's path and source again,
+	// and a file that contributed rules would compile and retain a second
+	// matcher. Each remembered path is charged globIgnoreFileOverheadBytes, so
+	// the map itself is bounded by the budget rather than growing with the
+	// tree. A path that could not be read is not remembered — it is neither
+	// cached nor charged, and re-trying it costs one failed open.
 	loadedRules := make(map[string]bool)
 	for _, sc := range scopes {
 		dirs := ignoreAncestors(sc.prefix)
@@ -333,7 +693,6 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
 			if loadedRules[p] {
 				continue
 			}
-			loadedRules[p] = true
 			// Masking is per path, so an unmasked directory can still hold a
 			// masked .gitignore, and the base itself is never masked while a
 			// .gitignore directly inside it can be. secureDirFS enforces
@@ -348,14 +707,20 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
 			if cerr := ctx.Err(); cerr != nil {
 				return set, cerr
 			}
-			data, berr := readIgnoreFile(ctx, fsys, p, budget)
+			lines, read, berr := readIgnoreFile(ctx, fsys, p, budget)
 			if berr != nil {
 				return set, berr
 			}
-			if data == nil {
+			// Only a path that was actually read is remembered: a missing or
+			// unreadable file keeps nothing, so it is neither cached nor
+			// charged, and a later scope merely tries it again cheaply.
+			if read {
+				loadedRules[p] = true
+			}
+			if lines == nil {
 				continue
 			}
-			matcher := gitignore.CompileIgnoreLines(strings.Split(string(data), "\n")...)
+			matcher := gitignore.CompileIgnoreLines(lines...)
 			set.dirs = append(set.dirs, ignoreDir{rel: dir, matcher: matcher})
 		}
 	}
@@ -450,17 +815,19 @@ func loadIgnoreSet(ctx context.Context, fsys fs.FS, skip func(relPath string) bo
 			if loadedRules[p] {
 				return nil
 			}
-			loadedRules[p] = true
-			data, berr := readIgnoreFile(ctx, fsys, p, budget)
+			lines, read, berr := readIgnoreFile(ctx, fsys, p, budget)
 			if berr != nil {
 				budgetErr = berr
 				return berr
 			}
-			if data == nil {
+			if read {
+				loadedRules[p] = true
+			}
+			if lines == nil {
 				return nil
 			}
 			dir := path.Dir(p)
-			matcher := gitignore.CompileIgnoreLines(strings.Split(string(data), "\n")...)
+			matcher := gitignore.CompileIgnoreLines(lines...)
 			set.dirs = append(set.dirs, ignoreDir{rel: dir, matcher: matcher})
 			return nil
 		})

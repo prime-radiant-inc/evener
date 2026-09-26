@@ -112,8 +112,7 @@ import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
 // and loads on first open.
 //
 // A rejected chunk lands on ConnectProviderDialogBoundary from
-// settings/sections/credentials/ConnectProviderDialogBoundary (shared with the
-// session chrome's model-switch trigger, which opens the same dialog), scoped
+// settings/sections/credentials/ConnectProviderDialogBoundary, scoped
 // to the dialog so the lazy() rethrow does not bubble into this pane's own
 // workspace-failure boundary. The Suspense fallback is a real dialog reading
 // "Loading…": a null fallback would leave the click that opened the dialog
@@ -140,6 +139,23 @@ const NO_EFFORT_LEVELS: string[] = [];
 // path into one load, short enough that the ladder is right by the time anyone
 // opens the select.
 const CATALOG_SETTLE_MS = 250;
+
+// CONNECT_ATTACH_TIMEOUT_MS bounds the Connect action's `evener/host/attach`
+// RPC. The AppWire client's default request timeout is 30s
+// (DEFAULT_REQUEST_TIMEOUT_MS in appwire-client/typescript/client.ts), but the
+// Ensure seam behind the handler runs sequential bounded phases far beyond
+// that: up to three deployLimit phases (deploy + restart + launch-contract
+// refresh, 10 minutes each — deployLimit in
+// cmd/evener-hub/internal/sshconn/manager.go), up to three attemptLimit phases
+// (preflight, running-hub probe, hub-presence probe; 70s by default: 4x10s
+// connect + 30s init), and the attach handshake itself (initTimeout, 30s) —
+// about 34 minutes worst case. 35 minutes clears that server bound with
+// headroom, the same shape as hubUpdate's APPLY_TIMEOUT_MS over its server
+// bound: a slow but valid deploy resolves instead of failing the toast at 30s
+// while the server-side attach still succeeds. There is no attach-status RPC
+// to poll instead (adding one would touch the router catalog), so the explicit
+// long timeout is the whole fix.
+export const CONNECT_ATTACH_TIMEOUT_MS = 35 * 60_000;
 
 // The effort levels a catalog entry authorizes: the model's own named ladder
 // when it has one, an EMPTY list when the catalog says the model cannot
@@ -187,6 +203,10 @@ const CLASS = {
   // per-option disabled flag, and an offline host must be RENDERED yet not
   // selectable (Component 06b). The class only borrows the visual treatment.
   hostSelect: requireClass(selectStyles.select, "select.module.css", "select"),
+  // The Connect affordance beside the picker: one button per offline remote
+  // host, an enabled control so a never-attached host is reachable rather
+  // than dead UI (component 06 §"Connecting a configured host").
+  hostConnectRow: requireClass(styles.hostConnectRow, "spawn.module.css", "hostConnectRow"),
 };
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
@@ -289,6 +309,46 @@ function SpawnForm({
     if (sources.length > 0 && source !== hostChoice) setSource(hostChoice);
   }, [sources.length, source, hostChoice, setSource]);
 
+  // The explicit attach trigger (component 06's Connect action). A configured
+  // host with no live channel is listed offline and its spawn option is
+  // disabled, and every implicit path is attached-only by design (the snapshot
+  // walk and the non-explicit thread/list fan-out skip an unattached source),
+  // so nothing else the picker does can attach it. This is the one shipped
+  // client that issues `evener/host/attach`, the browser-reachable method that
+  // dials the host through the manager's Ensure seam. It is fire-and-forget:
+  // the hub's attach event flips the manifest's online flag (and invalidates
+  // navigation), so success needs no local bookkeeping beyond clearing the
+  // pending marker; a failure is surfaced rather than leaving a dead row.
+  const [connectingHosts, setConnectingHosts] = useState<ReadonlySet<string>>(() => new Set());
+  // The in-flight guard is a ref, not the state above: setConnectingHosts is
+  // asynchronous, so two activations in the same tick both read the pre-update
+  // `connectingHosts` set and double-dial. The ref is mutated synchronously, so
+  // the second activation sees the first one already in flight. The state stays
+  // for rendering (the Connect button's disabled state and label).
+  const connectingHostsRef = useRef<Set<string>>(new Set());
+  const connectHost = useCallback(
+    (host: string) => {
+      if (isLocalHost(host) || connectingHostsRef.current.has(host)) return;
+      connectingHostsRef.current.add(host);
+      setConnectingHosts((current) => new Set(current).add(host));
+      void client
+        .request("evener/host/attach", { host }, { timeoutMs: CONNECT_ATTACH_TIMEOUT_MS })
+        .catch((error: unknown) => {
+          toasts.push("error", `Connect ${host} failed: ${friendlyLaunchErrorMessage(error)}`);
+        })
+        .finally(() => {
+          connectingHostsRef.current.delete(host);
+          setConnectingHosts((current) => {
+            if (!current.has(host)) return current;
+            const next = new Set(current);
+            next.delete(host);
+            return next;
+          });
+        });
+    },
+    [client, toasts],
+  );
+
   // Every host-dependent discovery/validation call below is issued against
   // submittedSource (component 07b): remote hosts read models, harnesses,
   // launch config, paths, projects, the slash catalog, git HEAD, plugin
@@ -333,9 +393,8 @@ function SpawnForm({
     },
     [providerSetup.retry],
   );
-  // The shared chunk hook owns the lazy payload and its cache-busted retry
-  // state, so this pane and the model-switch trigger cannot drift apart on
-  // recovery behavior; see ConnectProviderDialogBoundary.tsx.
+  // The chunk hook owns the lazy payload and its cache-busted retry state;
+  // see ConnectProviderDialogBoundary.tsx.
   const {
     Dialog: ProviderDialog,
     retry: retryProviderDialog,
@@ -488,9 +547,13 @@ function SpawnForm({
   // the settle window after a cwd/harness change — or while a credential
   // change-triggered refresh is pending — modelCatalog still holds the
   // previous snapshot, and a value valid only there must not validate.
-  // null means never successfully loaded (or the last refresh failed):
-  // validation fail-closes through that window instead of accepting a
-  // value the current scope never offered.
+  // null means never successfully loaded (or the last refresh failed): a
+  // /model value then cannot be validated against this scope at all, so the
+  // pre-start check treats it as "don't know" and forwards a shape-valid value
+  // for thread/start to judge (effort falls back to its ladder). Only a
+  // scope/loader MISMATCH is proven staleness and still fail-closes: there
+  // modelCatalog holds the previous snapshot, and a value valid only in that
+  // scope must not validate.
   const [modelCatalogStamp, setModelCatalogStamp] = useState<{
     scope: string;
     loader: () => Promise<ModelCatalog>;
@@ -578,11 +641,14 @@ function SpawnForm({
   const slashActiveIndex = slashOpen ? Math.min(slashHighlighted, slashItems.length - 1) : -1;
   const slashActiveId = slashActiveIndex >= 0 ? slashOptionId(slashListboxId, slashActiveIndex) : null;
 
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   // Textarea (widgets/textarea) takes no aria-activedescendant/aria-controls
   // prop - it's a shared widget outside this stream's manifest - so this
   // component sets both directly on the native node it already refs for
   // cursor restoration below, the same imperative-DOM idiom the cursor-
-  // restore layout effect already uses on the identical ref.
+  // restore layout effect already uses on the identical ref. Only
+  // slashActiveId gates the effect: the ref is stable and slashListboxId is a
+  // constant, so neither belongs in the dependency list.
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
@@ -614,7 +680,6 @@ function SpawnForm({
   // so a late decode-failure callback never reverts newer typing.
   const textRef = useRef(prompt);
   textRef.current = prompt;
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cursorRef = useRef<number | null>(null);
   // kata 61v2: `busy` state alone is not a re-entrancy guard. Three clicks
@@ -711,12 +776,14 @@ function SpawnForm({
   });
 
   const textEditor: TextEditor = {
-    read: () => ({
-      text: draft.fields.getState().prompt,
-      cursor: isCurrentDraft()
+    read: () => {
+      const text = draft.fields.getState().prompt;
+      const cursor = isCurrentDraft()
         ? (cursorRef.current ?? textareaRef.current?.selectionStart ?? draft.fields.getState().prompt.length)
-        : draft.fields.getState().prompt.length,
-    }),
+        : draft.fields.getState().prompt.length;
+      // Preserve Spawn's existing insertion-at-caret behavior.
+      return { text, cursor, selection: { start: cursor, end: cursor } };
+    },
     write: (next, cursor) => {
       updatePrompt(next);
       if (isCurrentDraft()) cursorRef.current = cursor;
@@ -1372,6 +1439,13 @@ function SpawnForm({
     modelCatalogStamp.loader === loadCatalog
       ? modelCatalog
       : null;
+  // Proven staleness: a snapshot committed for a DIFFERENT scope or loader.
+  // Unlike a never-committed catalog (stamp null), this is positive knowledge
+  // that the snapshot on hand belongs elsewhere, so validation fail-closes on
+  // it rather than treating the value as "don't know".
+  const modelCatalogScopeMismatch =
+    modelCatalogStamp !== null &&
+    (modelCatalogStamp.scope !== `${harness}\0${cwd}` || modelCatalogStamp.loader !== loadCatalog);
 
   // Branch HEAD resolution (floor §1.7): the readout is read-only, so HEAD is
   // its ONLY source - re-resolved on every working-dir change with no
@@ -1719,20 +1793,26 @@ function SpawnForm({
   // A valid /model invocation supplies the missing model itself, so it
   // bootstraps past the required-model guard: the value rides thread/start
   // (doSpawn's launch-scalar path below), and neither the button nor
-  // handleSpawn may refuse a submit that CAN succeed. Unknown values still
-  // fail in doSpawn's own pre-start validation with the blocked toast. The
-  // catalog half is load-bearing: an unloaded catalog resolves zero items,
-  // so a known value typed before it lands does NOT bootstrap (and doSpawn
-  // fail-closes it the same way) - the user picks a model once the list
-  // they validated against exists.
+  // handleSpawn may refuse a submit that CAN succeed.
+  //
+  // A catalog that never committed for this scope (stamp null and no scope
+  // mismatch) cannot vouch for the value, so - parallel to doSpawn - a
+  // shape-valid `provider/model` still bootstraps and thread/start judges it;
+  // withholding Start here would dead-end the ~250ms settle window (or a
+  // failed refresh) for a value that would succeed. A scope-matched catalog
+  // still has to list the value, and proven staleness (another scope/loader's
+  // stamp) still withholds Start.
   const slashModelBootstrap =
     modelRequired && pluginSelectionSupported && attachments.items.length === 0
       ? (() => {
           const match = matchBuiltinInvocation(prompt, spawnBuiltinCommands());
           if (match?.command.id !== "model" || match.argsText.trim() === "") return null;
-          return findBuiltinArgument(resolveSpawnModelItems(scopedModelCatalog), match.argsText) !== undefined
-            ? match.argsText.trim()
-            : null;
+          const value = match.argsText.trim();
+          if (scopedModelCatalog === null && !modelCatalogScopeMismatch) {
+            const { provider, model: modelId } = splitModelId(value);
+            return provider !== "" && modelId !== "" ? value : null;
+          }
+          return findBuiltinArgument(resolveSpawnModelItems(scopedModelCatalog), value) !== undefined ? value : null;
         })()
       : null;
 
@@ -1845,9 +1925,6 @@ function SpawnForm({
         // status quo. Conflating "don't know" with "known empty" would
         // refuse valid values whenever the catalog lists the model without
         // ladder details.
-        const scopeMismatch =
-          modelCatalogStamp !== null &&
-          (modelCatalogStamp.scope !== `${harness}\0${cwd}` || modelCatalogStamp.loader !== loadCatalog);
         const scopedEffortEntry =
           effortModel === ""
             ? undefined
@@ -1859,8 +1936,19 @@ function SpawnForm({
         // validate a value the new scope never offered. Passing "" keeps the
         // stale chip out of the candidate set (bare effort fails closed on
         // the empty query regardless).
-        const scopedEffortLevels = scopeMismatch ? [] : (scopedKnownEffortLevels ?? FALLBACK_EFFORT_LEVELS);
-        const scopedEffortCurrent = scopeMismatch ? "" : reasoningEffort;
+        const scopedEffortLevels = modelCatalogScopeMismatch ? [] : (scopedKnownEffortLevels ?? FALLBACK_EFFORT_LEVELS);
+        const scopedEffortCurrent = modelCatalogScopeMismatch ? "" : reasoningEffort;
+        // A model value cannot be validated against a catalog that never
+        // committed for the current scope: during the ~250ms CATALOG_SETTLE_MS
+        // window after mount - or after a failed refresh - resolveSpawnModelItems
+        // resolves zero items for EVERY value, known or not, so fail-closing
+        // here toasts a spurious "unknown value" for a model the scope does
+        // offer. Treat it as "don't know" and forward the typed value as the
+        // launch scalar, letting the start call's own check decide. Only PROVEN
+        // staleness (a stamp for another scope/loader) and a scope-matched
+        // catalog that omits the value still fail closed.
+        const modelCatalogUnknown =
+          builtinMatch.command.id === "model" && scopedModelCatalog === null && !modelCatalogScopeMismatch;
         const items =
           builtinMatch.command.id === "model"
             ? resolveSpawnModelItems(scopedModelCatalog)
@@ -1875,7 +1963,7 @@ function SpawnForm({
           builtinMatch.command.id === "reasoning-effort" && value === ""
             ? undefined
             : findBuiltinArgument(items, builtinMatch.argsText);
-        if (!matched) {
+        if (!matched && !modelCatalogUnknown) {
           const message = value
             ? `/${builtinMatch.command.id}: unknown value "${value}"`
             : `/${builtinMatch.command.id} needs a value`;
@@ -1885,8 +1973,21 @@ function SpawnForm({
           setBusyStartedAt(null);
           return;
         }
-        if (builtinMatch.command.id === "model" && matched) {
-          const { provider, model: modelId } = splitModelId(matched.id);
+        if (builtinMatch.command.id === "model") {
+          // A forwarded-but-unvalidated value (modelCatalogUnknown) is RAW user
+          // text, not a provider/model catalog id: "foo" splits to provider
+          // "foo" with an empty model, and the launch would carry no model at
+          // all. Refuse the same way the remote path above does rather than
+          // silently drop the request - this is a shape check, not a catalog
+          // judgment, so it holds even while the catalog is unknown.
+          const { provider, model: modelId } = splitModelId(matched ? matched.id : value);
+          if (provider === "" || modelId === "") {
+            toasts.push("error", `/${builtinMatch.command.id}: unknown value "${value}"`);
+            busyRef.current = false;
+            setBusy(false);
+            setBusyStartedAt(null);
+            return;
+          }
           slashScalars = { modelProvider: provider, model: modelId };
         } else if (builtinMatch.command.id === "reasoning-effort" && matched) {
           slashScalars = { reasoningEffort: matched.id };
@@ -2142,6 +2243,76 @@ function SpawnForm({
           </div>
         )}
 
+        {/* Host picker (Component 06b): rendered only when the manifest lists a
+            non-local source, so the common single-host form is byte-for-byte
+            unchanged. Local is preselected (the draft default). An offline host
+            still renders - the reader can see it exists - but its option is
+            disabled and carries the reason in its own label. The row sits
+            ABOVE the working directory: the folder list, recents, and
+            validation all come from the selected machine (hostRequest), so
+            the form reads pick-the-machine first, then the folder on it. */}
+        {displayRemoteHosts.length > 0 && (
+          <FormRow
+            label="Host"
+            htmlFor="spawn-host"
+            help={
+              displayRemoteHosts.some((candidate) => !candidate.online)
+                ? "Where the session runs. Offline hosts can't be selected."
+                : "Where the session runs."
+            }
+          >
+            <select
+              id="spawn-host"
+              className={CLASS.hostSelect}
+              value={displayHostChoice}
+              // A submit snapshots this choice (handleSpawn's closure carries
+              // the submittedSource/remoteLaunch that thread/start and
+              // saveDefaults receive) and then awaits the local directory
+              // preflight, so a change mid-submit would silently diverge from
+              // what actually launches and from which defaults are saved.
+              // Disabled while busy; the guard also covers the same-tick window
+              // before that attribute commits (kata 61v2's busyRef discipline).
+              disabled={busy}
+              onChange={(event) => {
+                if (busyRef.current) return;
+                const next = event.target.value;
+                setSource(next);
+                // Selecting a host is never itself an attach request: an online
+                // row is already attached (a dial would only be redundant), and
+                // an offline row's option is disabled, so a select event cannot
+                // name it — the Connect affordance below is the single path that
+                // reaches an offline host.
+              }}
+            >
+              {displaySources.map((candidate) => (
+                <option key={candidate.id} value={candidate.id} disabled={!candidate.online}>
+                  {candidate.online ? candidate.label : `${candidate.label} (offline)`}
+                </option>
+              ))}
+            </select>
+            {displayRemoteHosts.some((candidate) => !candidate.online) && (
+              <div className={CLASS.hostConnectRow}>
+                {displayRemoteHosts
+                  .filter((candidate) => !candidate.online)
+                  .map((candidate) => (
+                    <Button
+                      key={candidate.id}
+                      variant="quiet"
+                      size="xs"
+                      type="button"
+                      disabled={connectingHosts.has(candidate.id)}
+                      onClick={() => connectHost(candidate.id)}
+                    >
+                      {connectingHosts.has(candidate.id)
+                        ? `Connecting ${candidate.label}…`
+                        : `Connect ${candidate.label}`}
+                    </Button>
+                  ))}
+              </div>
+            )}
+          </FormRow>
+        )}
+
         <div className={CLASS.cfgDir}>
           <button
             type="button"
@@ -2181,47 +2352,6 @@ function SpawnForm({
               setDirectoryOpen(false);
             }}
           />
-        )}
-
-        {/* Host picker (Component 06b): rendered only when the manifest lists a
-            non-local source, so the common single-host form is byte-for-byte
-            unchanged. Local is preselected (the draft default). An offline host
-            still renders - the reader can see it exists - but its option is
-            disabled and carries the reason in its own label. */}
-        {displayRemoteHosts.length > 0 && (
-          <FormRow
-            label="Host"
-            htmlFor="spawn-host"
-            help={
-              displayRemoteHosts.some((candidate) => !candidate.online)
-                ? "Where the session runs. Offline hosts can't be selected."
-                : "Where the session runs."
-            }
-          >
-            <select
-              id="spawn-host"
-              className={CLASS.hostSelect}
-              value={displayHostChoice}
-              // A submit snapshots this choice (handleSpawn's closure carries
-              // the submittedSource/remoteLaunch that thread/start and
-              // saveDefaults receive) and then awaits the local directory
-              // preflight, so a change mid-submit would silently diverge from
-              // what actually launches and from which defaults are saved.
-              // Disabled while busy; the guard also covers the same-tick window
-              // before that attribute commits (kata 61v2's busyRef discipline).
-              disabled={busy}
-              onChange={(event) => {
-                if (busyRef.current) return;
-                setSource(event.target.value);
-              }}
-            >
-              {displaySources.map((candidate) => (
-                <option key={candidate.id} value={candidate.id} disabled={!candidate.online}>
-                  {candidate.online ? candidate.label : `${candidate.label} (offline)`}
-                </option>
-              ))}
-            </select>
-          </FormRow>
         )}
 
         <div className={CLASS.promptIntro} data-testid="spawn-prompt-intro">
@@ -2323,7 +2453,6 @@ function SpawnForm({
                       loadCatalog={loadCatalog}
                       onPick={handleModelPickEntry}
                       connectionRequest={modelHandoff}
-                      onConnectProvider={openProviderSetup}
                       data-testid="spawn-model-trigger"
                       valueTestId="spawn-model-value"
                     />

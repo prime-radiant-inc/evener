@@ -567,30 +567,46 @@ func fuzzScenarioLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
 	}
 }
 
-func fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) {
-	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
-		return []LocalDaemonEntry{
-			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
-			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: appwire.ThreadStatusActive},
-		}
-	}, nil)
+// harnessSupportRosterEntries is the idle/active/closed roster the
+// harness-support list tests share: one entry per status the capability
+// derivation keys on.
+func harnessSupportRosterEntries() []LocalDaemonEntry {
+	return []LocalDaemonEntry{
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/closed", ThreadID: "th_closed", SessionID: "sess_closed"}, Status: appwire.ThreadStatusClosed},
+	}
+}
+
+func fuzzScenarioLocalDaemonSourceListAdvertisesQueueAsHarnessSupport(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", harnessSupportRosterEntries, nil)
 
 	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
 	if err != nil {
 		t.Fatalf("ListThreads: %v", err)
 	}
-	if len(resp.Data) != 2 {
-		t.Fatalf("threads len=%d, want 2: %+v", len(resp.Data), resp.Data)
+	if len(resp.Data) != 3 {
+		t.Fatalf("threads len=%d, want 3: %+v", len(resp.Data), resp.Data)
 	}
 	capsByID := map[string]appwire.ThreadCapabilities{}
 	for _, thread := range resp.Data {
 		capsByID[thread.ID] = thread.Evener.Capabilities
 	}
-	if capsByID["th_idle"].Queue {
-		t.Fatalf("idle thread advertised queue capability: %+v", capsByID["th_idle"])
+	// Queue is harness support, not "a turn in flight" (#1375): every open
+	// entry advertises it, and the client applies the status. A status-folded
+	// projection here made ListThreads disagree with ThreadRead for one session.
+	for _, id := range []string{"th_idle", "th_processing"} {
+		if !capsByID[id].Queue {
+			t.Fatalf("%s did not advertise the queue capability: %+v", id, capsByID[id])
+		}
 	}
-	if !capsByID["th_processing"].Queue {
-		t.Fatalf("processing thread did not advertise queue capability: %+v", capsByID["th_processing"])
+	// A closed entry is the exception: the daemon withholds steer, interrupt
+	// and queue support once closed (appCapabilitiesLocked's `!closed`), so the
+	// roster must too, or the same session reads differently from ListThreads
+	// and from ThreadRead.
+	closed := capsByID["th_closed"]
+	if closed.Queue || closed.Steer || closed.Interrupt {
+		t.Fatalf("closed entry advertised turn actions: %+v", closed)
 	}
 }
 
@@ -642,6 +658,153 @@ func TestLocalDaemonSourceListAdvertisesSharedNotes(t *testing.T) {
 	}
 	if aliasRestart != (appwire.ThreadCapabilities{}) {
 		t.Fatalf("read-only restart-required alias advertised capabilities: %+v", aliasRestart)
+	}
+}
+
+// TestLocalDaemonSourceListAdvertisesSkillInput guards the roster path the
+// same way the shared-notes pin does: a live local session's harness supports
+// skill selections, so ListThreads must advertise the capability instead of
+// making list-derived models report it unsupported until hydration.
+func TestLocalDaemonSourceListAdvertisesSkillInput(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", harnessSupportRosterEntries, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	capsByID := map[string]appwire.ThreadCapabilities{}
+	for _, thread := range resp.Data {
+		capsByID[thread.ID] = thread.Evener.Capabilities
+	}
+	for _, id := range []string{"th_idle", "th_processing"} {
+		if !capsByID[id].SkillInput {
+			t.Fatalf("%s did not advertise the skillInput capability: %+v", id, capsByID[id])
+		}
+	}
+	// A closed row keeps the capability for the same reason the daemon's read
+	// does, while the actions that would carry a selection stay withheld.
+	if !capsByID["th_closed"].SkillInput {
+		t.Fatalf("closed entry withheld skillInput: %+v", capsByID["th_closed"])
+	}
+	// The daemon does not close-gate skillInput, but it does close-gate
+	// changeVisionModel (appCapabilitiesLocked), so the closed row must not
+	// advertise the one while keeping the other — a closed row that differs
+	// from the read of the same session is the drift this file exists to
+	// remove.
+	if capsByID["th_closed"].ChangeVisionModel {
+		t.Fatalf("closed entry advertised changeVisionModel: %+v", capsByID["th_closed"])
+	}
+}
+
+// TestLocalDaemonSourceListFallbackFoldsDaemonStatus pins the unprobed
+// fallback's folding against the daemon's own derivations
+// (appCapabilitiesLocked, clearBlockedReasonLocked): activity withholds
+// Send and Clear but no turn action (#1363, #1375), closed withholds
+// every mutating bit while Shutdown and skillInput — the two the daemon
+// does not close-gate — stay advertised, and unresolved approval work (an
+// unanswered ask, a blocked escalation) withholds Clear the way the
+// daemon's clear gate does. A fallback that overstated these offered the
+// same offer-then-refuse drift the probed path was fixed for.
+func TestLocalDaemonSourceListFallbackFoldsDaemonStatus(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: appwire.ThreadStatusActive},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/closed", ThreadID: "th_closed", SessionID: "sess_closed"}, Status: appwire.ThreadStatusClosed},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/ask", ThreadID: "th_ask", SessionID: "sess_ask"}, Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/escalation", ThreadID: "th_escalation", SessionID: "sess_escalation"}, Status: appwire.ThreadStatusIdle, PendingEscalation: true},
+		}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	capsByID := map[string]appwire.ThreadCapabilities{}
+	for _, thread := range resp.Data {
+		capsByID[thread.ID] = thread.Evener.Capabilities
+	}
+
+	// Every expected literal is the daemon's whole answer at that row's
+	// status, so no bit — present or added later — goes unpinned. Awaiting
+	// keeps Send (only activity and closure move it) but withholds Clear on
+	// the unanswered ask, and the escalation row folds Clear on the
+	// roster's escalation flag alone.
+	wantActive := appwire.ThreadCapabilities{
+		Steer: true, Interrupt: true, Compact: true, Shutdown: true,
+		ChangeModel: true, ChangeVisionModel: true, Queue: true,
+		Goal: true, SharedNotes: true, Rename: true, SkillInput: true,
+	}
+	wantClearWithheld := appwire.ThreadCapabilities{
+		Send: true, Steer: true, Interrupt: true, Compact: true, Shutdown: true,
+		ChangeModel: true, ChangeVisionModel: true, Queue: true,
+		Goal: true, SharedNotes: true, Rename: true, SkillInput: true,
+	}
+	if got := capsByID["th_processing"]; got != wantActive {
+		t.Fatalf("active row = %+v, want the daemon's active answer (Send and Clear folded): %+v", got, wantActive)
+	}
+	if got := capsByID["th_ask"]; got != wantClearWithheld {
+		t.Fatalf("awaiting row with an unanswered ask = %+v, want Clear folded on the approval work: %+v", got, wantClearWithheld)
+	}
+	if got := capsByID["th_escalation"]; got != wantClearWithheld {
+		t.Fatalf("idle row with a blocked escalation = %+v, want Clear folded on the approval work: %+v", got, wantClearWithheld)
+	}
+	if got := capsByID["th_closed"]; got != (appwire.ThreadCapabilities{Shutdown: true, SkillInput: true}) {
+		t.Fatalf("closed row = %+v, want only Shutdown and SkillInput, the bits the daemon does not close-gate", got)
+	}
+}
+
+// TestLocalDaemonSourceListUsesProbedCapabilities pins the probe-carried row:
+// when the roster's probe captured the daemon's own capability set, the list
+// row mirrors it rather than the fallback approximation — the same one-answer
+// rule the status follows (#1840), fork included: the daemon hardwires that
+// bit false and the hub's applyHubForkCapability owns turning it on. The
+// restart-required and read-only alias branches keep replacing the set
+// wholesale.
+func TestLocalDaemonSourceListUsesProbedCapabilities(t *testing.T) {
+	// An under-wired daemon's idle answer, a set the fallback approximation
+	// would never produce: no steer, no queue, no skill-input surface, but its
+	// vision-model seam is wired.
+	probed := appwire.ThreadCapabilities{
+		Send: true, Compact: true, Clear: true, Shutdown: true,
+		ChangeModel: true, ChangeVisionModel: true, Rename: true,
+		Goal: true, SharedNotes: true,
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probed", ThreadID: "th_probed", SessionID: "sess_probed"},
+				Status: "idle", Capabilities: probed, CapabilitiesKnown: true},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/unprobed", ThreadID: "th_unprobed", SessionID: "sess_unprobed"},
+				Status: "idle"},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probedrestart", ThreadID: "th_probed_restart", SessionID: "sess_probed_restart"},
+				Status: appwire.ThreadStatusRestartRequired, Capabilities: probed, CapabilitiesKnown: true},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/probedalias", ThreadID: "th_probed_alias"},
+				SessionID: "sess_probed_alias", OwnerSessionID: "sess_probed", Status: "idle",
+				ReadOnlyAlias: true, Capabilities: probed, CapabilitiesKnown: true},
+		}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	// Keyed by session: an alias's thread id derives from the session it
+	// mirrors, which is not the id this test names it by.
+	capsBySession := map[string]appwire.ThreadCapabilities{}
+	for _, thread := range resp.Data {
+		capsBySession[thread.SessionID] = thread.Evener.Capabilities
+	}
+	if got := capsBySession["sess_probed"]; got != probed {
+		t.Fatalf("probed row capabilities = %+v, want the probe's set mirrored verbatim %+v", got, probed)
+	}
+	unprobed := capsBySession["sess_unprobed"]
+	if !unprobed.SkillInput || !unprobed.Queue || !unprobed.ChangeVisionModel {
+		t.Fatalf("unprobed row lost the fallback advertisement: %+v", unprobed)
+	}
+	if restart := capsBySession["sess_probed_restart"]; restart != (appwire.ThreadCapabilities{SharedNotes: true}) {
+		t.Fatalf("restart-required row must replace even a probed set with the read-only one: %+v", restart)
+	}
+	if alias := capsBySession["sess_probed_alias"]; alias != (appwire.ThreadCapabilities{}) {
+		t.Fatalf("read-only alias must zero even a probed set: %+v", alias)
 	}
 }
 

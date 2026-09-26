@@ -19,7 +19,7 @@ func TestRunShardsBuildFailurePrintsBuildLog(t *testing.T) {
 	t.Setenv("GOWORK", "off")
 	var stdout, stderr bytes.Buffer
 	cfg := shardsConfig{
-		agentDir: fixtureModule(t),
+		label: "agent", envPrefix: "AGENT", pkgDir: fixtureModule(t),
 		count:    2,
 		parallel: 1,
 		cacheDir: filepath.Join(t.TempDir(), "cache"),
@@ -38,7 +38,7 @@ func TestRunShardsBuildFailurePrintsBuildLog(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(brokenDir, "broken_test.go"), []byte("package broken\n\nfunc TestBroken(t *testing.T) {\n\tx := undefinedVar\n}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg.agentDir = brokenDir
+	cfg.pkgDir = brokenDir
 
 	rc := runShards(cfg)
 	if rc != 1 {
@@ -54,7 +54,7 @@ func TestRunShardsBuildFailurePrintsBuildLog(t *testing.T) {
 // the function falls through to `go env GOCACHE`. This covers lines 412-413.
 func TestCachedSurveyPathWithGOCACHE(t *testing.T) {
 	// Ensure GOCACHE resolves — the test should get a non-empty path.
-	cfg := shardsConfig{cacheDir: ""}
+	cfg := shardsConfig{label: "agent", envPrefix: "AGENT", cacheDir: ""}
 	// Set a GOCACHE that actually works
 	gocache, err := exec.Command("go", "env", "GOCACHE").Output()
 	if err != nil {
@@ -133,7 +133,7 @@ func TestRunShardsNoTestsFound(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	cfg := shardsConfig{
-		agentDir: emptyDir,
+		label: "agent", envPrefix: "AGENT", pkgDir: emptyDir,
 		count:    2,
 		parallel: 1,
 		noSurvey: true,
@@ -162,7 +162,7 @@ func TestSignalHandlerNonSyscallSignal(t *testing.T) {
 	signals := make(chan os.Signal, 2)
 	var stdout, stderr bytes.Buffer
 	cfg := shardsConfig{
-		agentDir: fixtureModule(t),
+		label: "agent", envPrefix: "AGENT", pkgDir: fixtureModule(t),
 		count:    2,
 		parallel: 1,
 		noSurvey: true,

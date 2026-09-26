@@ -1,19 +1,13 @@
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { DraftDocument } from "./draftDocument";
-import { type DraftDatabase, DraftRepository } from "./draftRepository";
+import { DraftRepository } from "./draftRepository";
+import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "./sqliteSync.testkit";
 
-const databases: DatabaseSync[] = [];
+const databases: SqliteDoubleDatabase[] = [];
 function setup() {
-	const db = new DatabaseSync(":memory:");
+	const { database: db, port } = openSqliteSyncDouble();
 	databases.push(db);
-	const adapter: DraftDatabase = {
-		execSync: (sql) => db.exec(sql),
-		runSync: (sql, ...params) => db.prepare(sql).run(...params),
-		getFirstSync: <T>(sql: string, ...params: string[]) =>
-			(db.prepare(sql).get(...params) as T | undefined) ?? null,
-	};
-	const repository = new DraftRepository(adapter);
+	const repository = new DraftRepository(port);
 	const destination = { hubId: "studio", sessionRef: "local/session-42" };
 	return {
 		db,

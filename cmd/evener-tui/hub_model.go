@@ -163,11 +163,66 @@ type hubModel struct {
 	authLoginProvider string
 	authLoginFlowID   string
 
-	credentialsPanel     *launchconfig.CredentialsPanel
-	launchSettingsPanel  *launchconfig.LaunchSettingsPanel
-	pluginsPanel         *launchconfig.PluginsPanel
-	followupModal        *tuipick.TextInputModal
-	launchOverridesModal *launchconfig.LaunchOverridesModal
+	credentialsPanel    *launchconfig.CredentialsPanel
+	launchSettingsPanel *launchconfig.LaunchSettingsPanel
+	pluginsPanel        *launchconfig.PluginsPanel
+	// marketplaceRemovePending fences a remove until its outcome is settled.
+	// An applied-with-litter outcome clears the identity right away - its own
+	// snapshot is authoritative - and schedules the replacement read that
+	// confirms the post-removal state; an unavailable or removed outcome
+	// keeps the fence until that confirming read lands.
+	marketplaceRemovePending       string
+	marketplaceReconcilePending    bool
+	marketplaceReconcileGeneration uint64
+	// marketplaceOutcomeWarning is the standing marketplace-removal outcome
+	// account — the warning a landed removal outcome raised (clone-remains
+	// applied, clone-remains unconfirmed, or removed-and-refreshing). Only a
+	// removal outcome writes it (a newer outcome replaces an older one), and
+	// only the reconciliation settle rewrites or retires it: the
+	// removed-outcome account clears at its settle, the unconfirmed suffix
+	// strips at its settle, and the clone-remains fact stands — nothing
+	// re-derives it, so no fresh response may erase it. The transient slot
+	// is separate; an ordinary failure never touches this account.
+	marketplaceOutcomeWarning error
+	// marketplaceListReadsOrdered turns on the first time a marketplace
+	// removal lands on the hub, whatever the outcome carried. Every list
+	// read is generation-tagged from the first one the model issues, so
+	// this flag no longer governs tagging: it only arms the floor that
+	// rejects every read whose generation predates the latest landed
+	// removal - such a read was issued before that removal stood and can
+	// never describe the post-removal state, so accepting it - however
+	// late it arrives - would resurrect the removed marketplace's row.
+	marketplaceListReadsOrdered bool
+	// marketplaceListReadIssued is the generation of the newest list read
+	// this model has issued. The reconciliation gate holds back failed
+	// reads older than it, so only the newest list read's own failure
+	// reaches the panel: an add or refresh issuance shares the ordering
+	// counter but never moves this marker, and can never outrank a read's
+	// failure - which is the panel's only way out of its loading state.
+	//
+	// marketplaceListFloor is the read generation at the moment the latest
+	// marketplace removal landed. Reads at or below it were issued before
+	// that landing and are stale by construction; reads above it were issued
+	// after and carry post-removal truth.
+	//
+	// marketplaceListApplied is the generation of the newest read whose
+	// successful response has been accepted. A smaller generation arriving
+	// later was issued before that one and carries a snapshot the applied
+	// read already superseded, so it is rejected however late it arrives -
+	// failures never advance it, so an outstanding reconciliation's success
+	// still settles while a newer request has merely been issued or failed.
+	marketplaceListReadIssued uint64
+	marketplaceListFloor      uint64
+	marketplaceListApplied    uint64
+	// marketplaceListAppliedRows is the marketplace list of the newest
+	// applied state. It is updated wherever marketplaceListApplied
+	// advances and wherever a landed removal's certainty strips its
+	// name, so a removal response older than the newest applied read can
+	// merge down to the applied rows instead of resurrecting what that
+	// read dropped.
+	marketplaceListAppliedRows []appwire.MarketplaceEntry
+	followupModal              *tuipick.TextInputModal
+	launchOverridesModal       *launchconfig.LaunchOverridesModal
 
 	// questionOverlay is the ctrl+q-opened ask_user answering flow
 	// (question_overlay.go). Opened ONLY by the ctrl+q keypress
@@ -337,6 +392,21 @@ func newSpawnDirInput() textinput.Model {
 	return input
 }
 
+// prominentErrors returns every live account the hub model should render as
+// an error line, transient first, then the standing marketplace-removal
+// outcome warning. It is nil-safe: a model with no live account renders
+// nothing.
+func (m hubModel) prominentErrors() []error {
+	var errs []error
+	if m.err != nil {
+		errs = append(errs, m.err)
+	}
+	if m.marketplaceOutcomeWarning != nil {
+		errs = append(errs, m.marketplaceOutcomeWarning)
+	}
+	return errs
+}
+
 func (m hubModel) Init() tea.Cmd {
 	if m.client == nil {
 		return nil
@@ -346,11 +416,18 @@ func (m hubModel) Init() tea.Cmd {
 
 func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.updateImpl(msg)
-	if hm, ok := next.(hubModel); ok && hm.mode == hubModeSession {
-		hm.syncSessionViewport()
-		return hm, cmd
+	hm, ok := next.(hubModel)
+	if !ok {
+		return next, cmd
 	}
-	return next, cmd
+	if hm.mode == hubModeSession {
+		hm.syncSessionViewport()
+	}
+	// tea.Batch leaves cmd untouched when the title does not move (compactCmds
+	// returns the single non-nil command), so this adds a SetWindowTitle only
+	// on the updates that actually move the title. windowTitleCmd does not
+	// mutate hm, so evaluating it beside hm in the return is well defined.
+	return hm, tea.Batch(cmd, hm.windowTitleCmd(m))
 }
 
 func (m hubModel) View() string {

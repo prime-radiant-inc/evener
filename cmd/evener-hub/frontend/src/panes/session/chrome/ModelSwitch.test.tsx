@@ -8,17 +8,9 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../../stores/connection";
-import { resetCredentialsStoreForTests } from "../../../stores/credentials";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { resetConnectDialogChunkForTests } from "../../settings/sections/credentials/ConnectProviderDialogBoundary";
-import {
-  type ConnectDialogModule,
-  resetConnectDialogLoaderForTests,
-  setConnectDialogImporterForTests,
-} from "../../spawn/connectDialogChunk";
-import { openConnectDialog } from "./connectDialogTestUtils";
 import { ModelSwitch } from "./ModelSwitch";
 import rawStyles from "./modelswitch.module.css";
 
@@ -126,10 +118,6 @@ afterEach(() => {
   // failures must retire its singleton queue before another isolate:false
   // file mounts the notification region.
   resetToastStoreForTests();
-  // The connect dialog is a module-scoped lazy chunk with a module-scoped test
-  // importer seam; both outlive cleanup() and must not leak into a later test.
-  resetConnectDialogLoaderForTests();
-  resetConnectDialogChunkForTests();
 });
 
 // The trigger is addressed by a stable testid rather than by its accessible
@@ -140,129 +128,6 @@ afterEach(() => {
 function trigger(): HTMLButtonElement {
   return screen.getByTestId("model-switch-trigger") as HTMLButtonElement;
 }
-
-test("keyless connection refreshes the warmed real session catalog without switching until a pick", async () => {
-  resetCredentialsStoreForTests();
-  const fake = connectFakeClient();
-  let connected = false;
-  fake.on("model/list", () =>
-    connected
-      ? {
-          data: [...modelListResponse().data, { provider: "team-local", model: "served-model" }],
-        }
-      : modelListResponse(),
-  );
-  fake.on("evener/instance/list", () => ({
-    instances: [
-      {
-        name: "team-local",
-        providerId: "ollama",
-        protocol: "openai-chat",
-        auth: "none",
-        implicit: false,
-        isDefault: false,
-        activeSource: "none",
-        hasStoredOAuth: false,
-        credentialRequired: false,
-      },
-    ],
-    availableProviders: [],
-  }));
-  fake.on("evener/auth/test", ({ provider }) => {
-    connected = true;
-    return { provider, status: "success", message: "" };
-  });
-  fake.on("thread/model/set", () => ({}));
-  render(<ModelSwitch sessionRef="remote:original" model={testModel()} />);
-  const user = userEvent.setup();
-  await user.click(trigger());
-  await screen.findByRole("option", { name: /claude-sonnet-4-5/ });
-  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
-  await openConnectDialog(user);
-  await user.click(await screen.findByText("Already configured access on this host?"));
-  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
-  await user.click(await screen.findByRole("button", { name: "Test connection" }));
-  const option = await screen.findByRole("option", { name: /served-model/ });
-  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(2);
-  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
-  expect(fake.calls.filter((call) => call.method === "thread/model/set")).toEqual([]);
-  expect(fake.calls.filter((call) => call.method === "evener/instance/setDefault")).toEqual([]);
-  await user.click(option);
-  await waitFor(() =>
-    expect(fake.calls.filter((call) => call.method === "thread/model/set")).toEqual([
-      {
-        method: "thread/model/set",
-        params: { ref: "remote:original", modelProvider: "team-local", model: "served-model" },
-      },
-    ]),
-  );
-});
-
-// The same opening flow with the connect-dialog chunk's arrival under the
-// test's control rather than on a clock: an import that has not landed must
-// not fail the flow, because openConnectDialog waits on the import itself.
-// Before that wait existed this is exactly the #1369 flake - the
-// "Already configured access on this host?" query times out at 1000ms while
-// the chunk is still arriving, which is what the reported run saw under a
-// loaded machine. Parking the import instead of sleeping past the budget makes
-// that structural: no real time passes, and the dialog can appear only once the
-// test lets the chunk through.
-test("a connect-dialog chunk held pending still opens the dialog once it lands", async () => {
-  resetCredentialsStoreForTests();
-  // The seam hands the test the parked import: the FIRST call - the helper's
-  // preload - waits on it, so the dialog cannot render until the test resolves
-  // it. Later calls (the boundary's own, once the click happens) load the real
-  // module, already evaluated by then.
-  let releaseImport!: (module: ConnectDialogModule) => void;
-  const pendingImport = new Promise<ConnectDialogModule>((resolve) => {
-    releaseImport = resolve;
-  });
-  let imports = 0;
-  setConnectDialogImporterForTests(() => {
-    imports += 1;
-    return imports === 1 ? pendingImport : import("../../settings/sections/credentials/ConnectProviderDialog");
-  });
-  // A fresh lazy() so the boundary's lazily-mounted render is not served from a
-  // module an earlier test already resolved: an already-resolved lazy() caches
-  // its module for the life of the module, and would otherwise render from
-  // cache and never issue the parked import this test exercises.
-  resetConnectDialogChunkForTests();
-  const fake = new FakeClient("ready");
-  connectionStore.getState().connect(fake);
-  fake.on("model/list", () => modelListResponse());
-  fake.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
-  fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
-
-  render(<ModelSwitch sessionRef="remote:original" model={testModel()} />);
-  const user = userEvent.setup({ delay: null });
-  await user.click(trigger());
-  await screen.findByRole("option", { name: /claude-sonnet-4-5/ });
-
-  const opened = openConnectDialog(user);
-  // While the import is parked, the dialog's content cannot be on screen -
-  // the state the pre-fix flow asserted through and timed out on.
-  expect(screen.queryByText("Already configured access on this host?")).toBeNull();
-
-  // The open must still be waiting on the chunk. Remove openConnectDialog's
-  // wait and it has already returned by now: the red this test exists for.
-  let settled = false;
-  void opened.then(() => {
-    settled = true;
-  });
-  // Let an unblocked open prove it finished: the click path's own timed steps
-  // (RTL's findByRole polls on a timer) need a macrotask turn, not a duration.
-  // With the chunk parked the open structurally cannot finish, so this holds no
-  // wall-clock dependence - a few zero-delay turns, never a sleep.
-  for (let turn = 0; turn < 8 && !settled; turn += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  expect(settled).toBe(false);
-
-  // Let the chunk land: the open completes and the dialog renders.
-  releaseImport(await import("../../settings/sections/credentials/ConnectProviderDialog"));
-  await opened;
-  expect(await screen.findByText("Already configured access on this host?")).toBeTruthy();
-});
 
 test("shows the current model label alongside a Change-model trigger", () => {
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);

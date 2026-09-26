@@ -6,14 +6,7 @@
 // descriptors registered under tools/.
 
 import type { ItemModel, ThreadModel } from "@evener/appwire-client";
-import {
-  hasErrorText,
-  parseArgs,
-  parseJSONObject,
-  scopedDisclosureId,
-  stableDelegateDisplayStatus,
-  str,
-} from "@evener/appwire-client";
+import { hasErrorText, parseArgs, scopedDisclosureId, str } from "@evener/appwire-client";
 import { memo, useId, useLayoutEffect, useState } from "react";
 import { useThreadsStore } from "../../../stores/threads";
 import {
@@ -31,42 +24,31 @@ import { ImageGallery } from "./flow/ImageGallery";
 import { OpenTranscriptButton } from "./openTranscript";
 import { statedIntentOf, ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
-import { toolCallFailed, toolRendererFor } from "./toolRenderers";
+import { type ToolRendererDescriptor, toolCallFailed, toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
 import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
-  effectiveRowKind,
+  delegateStableState,
   removeSubagentRow,
   rowKeyForDelegateItem,
+  type SubagentRowKind,
   turnScopeKey,
   upsertSubagentRow,
 } from "./tools/subagentModuleStore";
-import delegateStyles from "./tools/subagentmodule.module.css";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
   body: requireClass(styles.body, "toolcallitem.module.css", "body"),
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
-  lifecycle: requireClass(delegateStyles.lifecycle, "subagentmodule.module.css", "lifecycle"),
 };
 
-type DelegateStatusKey = "running" | "done" | "stopped" | "failed" | "unknown";
-
-const DELEGATE_INDICATOR_STATE: Record<DelegateStatusKey, CadenceState> = {
+const DELEGATE_INDICATOR_STATE: Record<SubagentRowKind, CadenceState> = {
   running: "working",
   done: "ended",
   stopped: "ended",
   failed: "failed",
   unknown: "idle",
-};
-
-const DELEGATE_LABEL: Record<DelegateStatusKey, string> = {
-  running: "Running",
-  done: "Idle · reported",
-  stopped: "Stopped",
-  failed: "Failed",
-  unknown: "Status unavailable",
 };
 
 const DELEGATE_INTENT_PREVIEW_MAX = 120;
@@ -84,6 +66,13 @@ function delegateIntentOf(item: ItemModel): string | undefined {
   // Transcripts recorded before the rename carry the brief under `task`.
   const brief = (str(args, "prompt") ?? str(args, "task"))?.replace(/\s+/g, " ").trim();
   return brief === undefined || brief === "" ? undefined : clipDelegateIntent(brief, DELEGATE_INTENT_PREVIEW_MAX);
+}
+
+// summaryWhenExpanded resolves through one seam: a fixed string passes
+// through, a per-item function (the task card's recap of THIS call) is
+// applied to the item - so the render body below stays flat.
+function callWhen(when: ToolRendererDescriptor["summaryWhenExpanded"], item: ItemModel): string | undefined {
+  return typeof when === "function" ? when(item) : when;
 }
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -104,31 +93,11 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
   const isDelegate = item.toolName === "delegate";
-  const delegateOutput = isDelegate ? parseJSONObject(item.output) : undefined;
-  const stableDelegateId = delegateOutput ? str(delegateOutput, "delegate_id") : undefined;
-  const stableDelegate = thread?.delegates?.find((delegate) => {
-    if (sessionRef === undefined || stableDelegateId === undefined) return false;
-    return delegate.delegateId === stableDelegateId;
-  });
-  const delegateKind = effectiveRowKind({ launching: live || item.status === "inProgress" }, stableDelegate);
+  const delegateState = isDelegate ? delegateStableState(item, live, sessionRef, thread) : undefined;
   const delegateStatus =
-    isDelegate && delegateKind !== "unknown" ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
-  const lifecycleStatus = stableDelegate ? stableDelegateDisplayStatus(stableDelegate) : undefined;
-  const lifecycle = isDelegate ? (
-    <div
-      className={CLASS.lifecycle}
-      data-testid="delegate-lifecycle"
-      data-kind={delegateKind}
-      data-attention={stableDelegate?.needsAttention ? "true" : undefined}
-    >
-      {lifecycleStatus === "exhausted"
-        ? "Exhausted"
-        : lifecycleStatus === "idle"
-          ? "Idle"
-          : DELEGATE_LABEL[delegateKind]}
-      {stableDelegate?.needsAttention && <span>◆ Needs attention</span>}
-    </div>
-  ) : null;
+    isDelegate && delegateState !== undefined && delegateState.kind !== "unknown" ? (
+      <StatusDot state={DELEGATE_INDICATOR_STATE[delegateState.kind]} />
+    ) : undefined;
   const delegateScopeKey = turnScopeKey(sessionRef, item.turnId);
 
   useLayoutEffect(() => {
@@ -212,9 +181,6 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // tool whose failure shows up only in the shape of its output.
   const failed = toolCallFailed(item);
   const showErrorText = hasErrorText(item);
-  // Rendered in TWO places, deliberately: the collapsed row's hover title (a
-  // glance) and the expanded body as real text (the keyboard-reachable copy).
-  const detail = descriptor.detail?.(item);
 
   // summarySuffix (kata h70z) reads the FULL thread model, not just this
   // item - ask_user's "— answered: ..." recap lives in a separate, LATER
@@ -292,20 +258,50 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const superseded = supersededBySuccess(item, thread);
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   const bodyId = useId();
-  const configDefault = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
-  const disclosureFallback = configDefault || (autoDefault && !superseded);
-  const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
+  // foldByDefault opts the body out of every open-by-default posture: the
+  // level's expand-details default (activity/full force-expand every body
+  // otherwise), the full preset's open baseline - the strongest form of
+  // that default, which an ordinary fallback can never beat, so the read
+  // below skips it for these rows - and the descriptor's own autoExpand
+  // nudge, which is just another fallback. The one carve-out is failure:
+  // a failed call's force-open is attribution, not posture ("only failure
+  // earns the eye"), so an error never hides behind the fold - hence the
+  // `failed` term in the fallback below, read reactively like superseded so
+  // a row that settled before its failure was corroborated still opens the
+  // moment it is. Otherwise the fallback stays closed at every level, so
+  // only the reader's own toggle opens it - and that explicit store entry
+  // still wins over everything afterward.
+  const configDefault = descriptor.foldByDefault
+    ? false
+    : expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
+  const disclosureFallback = configDefault || ((failed || (!descriptor.foldByDefault && autoDefault)) && !superseded);
+  const expanded = isDisclosureOpen(
+    disclosureKey,
+    disclosureFallback,
+    descriptor.foldByDefault ? { ignoreBaseline: true } : undefined,
+  );
+
+  // The descriptor's statusLine hook renders the row's standalone status
+  // line in the slot below the summary; the delegate descriptor is the one
+  // with one, and it owns whether the line renders at all (it returns null
+  // while its expanded card carries the status).
+  const StatusLine = descriptor.statusLine;
+  const statusLine = StatusLine ? (
+    <StatusLine item={item} live={live} sessionRef={sessionRef} cwd={cwd} expanded={expanded} thread={thread} />
+  ) : null;
 
   // A descriptor whose summary duplicates what its expanded body shows
   // (shell: the raw one-line command vs the body's pretty-printed block)
-  // swaps its summary text for a placeholder while the row is open. The
-  // summary line itself stays - hiding it lifted the disclosure chevron off
-  // the line it rides (onto the intent line, or adrift on an intent-less
-  // row) - and the swap keeps the call from appearing twice. The placeholder
-  // outranks the projected fallback the same way the descriptor's own summary
-  // does: a real line about the call beats a neutral "unavailable" one
-  // while the open body below shows the command whole.
-  const expandedSummary = expanded ? descriptor.summaryWhenExpanded : undefined;
+  // swaps its summary text for a placeholder while the row is open - a
+  // fixed string, or a per-item function when the open line recaps THIS call
+  // (the task card's change sentence). The summary line itself stays -
+  // hiding it lifted the disclosure chevron off the line it rides (onto the
+  // intent line, or adrift on an intent-less row) - and the swap keeps the
+  // call from appearing twice. The placeholder outranks the projected
+  // fallback the same way the descriptor's own summary does: a real line
+  // about the call beats a neutral "unavailable" one while the open body
+  // below shows the command whole.
+  const expandedSummary = expanded ? callWhen(descriptor.summaryWhenExpanded, item) : undefined;
   const summary =
     expandedSummary !== undefined ? expandedSummary : useProjectedSummary ? projectedSummary : descriptorSummary;
   // The summary text the row would actually SHOW once its summary line is
@@ -340,6 +336,21 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const summaryFallback = summaryConfigDefault || (failed && !superseded && hasSummaryText);
   const summaryDisclosureOpen = isDisclosureOpen(summaryDisclosureKey, summaryFallback);
   const summaryOpen = statedIntent === undefined ? true : summaryDisclosureOpen;
+  // The intent-only density hook (toolcallitem.module.css's
+  // [data-intent-only] override): true exactly while the row presents its
+  // stated intent line and nothing else - no summary line, no status line
+  // below the row, no expanded body. That shape is one line of ink in a
+  // two-line slot, so the stylesheet halves the item rhythm for it and a
+  // run of collapsed intent rows reads as a dense list; every open state
+  // drops the hook, and the full rhythm returns with the reader's own
+  // expansion (Jesse's Tufte call: whitespace groups, it does not pad).
+  // A body-less row always renders its summary line (the branch below
+  // never gates it on summaryOpen), so it counts as showing that line -
+  // and statusLine is a live delegate's second line even while collapsed.
+  const bodyless = (!Body || descriptor.hasBody?.(item) === false) && !hasOutputImages && !failed;
+  const summaryLineShown = hasSummaryText && (bodyless || summaryOpen);
+  const intentOnly =
+    statedIntentOf({ description: intent }) !== undefined && !summaryLineShown && !expanded && statusLine === null;
   // The open affordances ride the tool-call summary line (ToolRow's grammar).
   // Withhold them when that line is hidden and no body is open - the row then
   // shows its stated intent alone, and the control must not trail the
@@ -359,9 +370,14 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // expandable disclosure. A descriptor may also report per-item that its
   // body renders nothing (hasBody) — a summary-only rendering offers no
   // disclosure that would open to nothing.
-  if ((!Body || descriptor.hasBody?.(item) === false) && !hasOutputImages && !failed) {
+  if (bodyless) {
     return (
-      <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
+      <div
+        className={CLASS.call}
+        data-testid="tool-call-item"
+        data-tool-name={item.toolName ?? ""}
+        data-intent-only={intentOnly ? "true" : undefined}
+      >
         <ToolRow
           summary={rowSummaryText}
           summaryLink={summaryLink}
@@ -374,9 +390,8 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
           expanded={false}
           trailing={trailingControls}
           trailingAfter={trailingAfter}
-          title={detail}
         />
-        {lifecycle}
+        {statusLine}
       </div>
     );
   }
@@ -400,6 +415,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
       // recedes (success is glyph-less).
       data-failed={failed ? "true" : undefined}
       data-attention={failed ? "error" : undefined}
+      data-intent-only={intentOnly ? "true" : undefined}
     >
       <ToolRow
         // The summary text is the descriptor's own - or its expanded
@@ -416,6 +432,11 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         status={delegateStatus}
         expandable
         expanded={expanded}
+        // A delegate row renders no summary text (subagentModule owns its
+        // presentation), so ToolRow must know there is nothing for the intent
+        // button to disclose and keep the row single-level even at verbosity
+        // levels that default the summary line open (#1253).
+        hasSummaryText={hasSummaryText}
         // toggleDisclosure writes an explicit store entry against this
         // session-scoped item key, so the user's own choice wins over
         // autoDefault (the fallback) from here on and survives a remount.
@@ -424,26 +445,15 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
         onToggleSummary={() => toggleDisclosure(summaryDisclosureKey, summaryFallback)}
         trailing={trailingVisible ? trailingControls : null}
         trailingAfter={trailingVisible ? trailingAfter : undefined}
-        title={detail}
         bodyId={bodyId}
       />
-      {lifecycle}
+      {statusLine}
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next
           open, and a collapsed row costs nothing to render. */}
       {expanded && (
         <div id={bodyId} className={CLASS.body} data-testid="tool-call-body">
-          {/* descriptor.detail() (currently only shell's exit code) rides the
-              collapsed row's hover title ONLY (see `title={detail}` above) - it
-              is not echoed here as a second copy. A title alone is mouse-only,
-              but for shell that is not a reachability gap: the daemon bakes the
-              same "[exit N]" fact into the captured output itself
-              (agent/session_tools_shell.go's formatShellResult - the model
-              reads that same text as its tool result), so it is already real,
-              keyboard/screen-reader-reachable text at the tail of the body
-              below. Echoing detail() here too duplicated that fact on screen
-              (kata wksf) instead of adding a second way to reach it. */}
           {showErrorText && <div className={CLASS.error}>{item.error}</div>}
           {Body && <Body item={item} live={live} sessionRef={sessionRef} cwd={cwd} />}
           <ImageGallery images={item.outputImages} size={descriptor.outputImageSize} />

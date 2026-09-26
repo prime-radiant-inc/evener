@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -55,7 +57,7 @@ func e2eConfig(t *testing.T) (shardsConfig, *bytes.Buffer, *bytes.Buffer, string
 	}
 	var stdout, stderr bytes.Buffer
 	return shardsConfig{
-		agentDir: fixtureModule(t),
+		label: "agent", envPrefix: "AGENT", pkgDir: fixtureModule(t),
 		count:    2,
 		parallel: 1,
 		cacheDir: filepath.Join(t.TempDir(), "cache"),
@@ -94,6 +96,11 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 	}
 	if strings.Contains(out+stderr.String(), "full logs:") {
 		t.Fatalf("green run reported retained logs:\n%s\n%s", out, stderr)
+	}
+	// A green survey prints no failure excerpt: the block exists to explain a
+	// failure, and the summary must not grow an empty one.
+	if stderr.Len() != 0 {
+		t.Fatalf("green run wrote a failure excerpt to stderr:\n%s", stderr)
 	}
 	if left := scratchLeftovers(t, tmp); len(left) != 0 {
 		t.Fatalf("green run left scratch behind: %v", left)
@@ -428,6 +435,12 @@ func TestAgentShardsReplayIsByVerdictNotMarker(t *testing.T) {
 	}
 }
 
+// TestAgentShardsRedSurveyFailsLoudly pins what a red survey prints. The
+// survey has no per-shard verdict to sort by, so its excerpt is the whole
+// diagnosis -- and a CI job summary sees only that excerpt, because the log it
+// points at is runner-local and dies with the runner. The failing test's own
+// assertion text therefore has to be in it (issue #2121): a marker line names
+// the test and never says why it failed.
 func TestAgentShardsRedSurveyFailsLoudly(t *testing.T) {
 	cfg, stdout, stderr, tmp := e2eConfig(t)
 	t.Setenv("SHARD_FIXTURE_FAIL", "beta")
@@ -439,12 +452,20 @@ func TestAgentShardsRedSurveyFailsLoudly(t *testing.T) {
 	errOut := stderr.String()
 	for _, want := range []string{
 		"agent-shards: the survey pass failed — the suite is red",
+		"failing as instructed by SHARD_FIXTURE_FAIL",
 		"--- FAIL: TestFixtureBeta",
 		"full log: ",
 	} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("red-survey stderr missing %q:\n%s", want, errOut)
 		}
+	}
+	// The assertion is read as the block it explains, so it must print with
+	// its verdict rather than apart from it.
+	assertion := strings.Index(errOut, "failing as instructed by SHARD_FIXTURE_FAIL")
+	verdict := strings.Index(errOut, "--- FAIL: TestFixtureBeta")
+	if assertion > verdict {
+		t.Fatalf("the assertion printed after the verdict it explains:\n%s", errOut)
 	}
 	if len(scratchLeftovers(t, tmp)) != 1 {
 		t.Fatalf("red survey should retain its scratch for diagnosis")
@@ -480,29 +501,135 @@ func TestAgentShardsSkipReachesTheShardsToo(t *testing.T) {
 	}
 }
 
+// TestAgentShardsBoundsTotalShardConcurrency is the issue #1191 regression:
+// each shard is one OS process, and the runner used to start all of them at
+// once. AGENT_SHARD_PARALLEL therefore bounded only the tests within a shard,
+// and a one-CPU cgroup still got one live process per shard.
+//
+// The fixture reports the peak population of live shard binaries and waits for
+// its peers' markers rather than sleeping a fixed time. Uncapped, both shards
+// reach each other. Capped, the runner itself says when it holds the second
+// shard back: its slotWait seam writes a marker the moment a shard has to wait
+// for a free slot, and a live shard that sees it records a capped observation
+// instead of waiting for a peer that must not come. No time window decides
+// either case: a runner that ignored the cap would never wait for a slot, so
+// both shards would run and the peak would read 2. A timeout marker means the
+// probe could not measure, and fails either case.
+func TestAgentShardsBoundsTotalShardConcurrency(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		concurrency int
+		wantPeak    int
+		wantCapped  bool
+	}{
+		{"uncapped runs every shard at once", 0, 2, false},
+		{"capped serializes the shards", 1, 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, stdout, stderr, _ := e2eConfig(t)
+			cfg.noSurvey = true
+			cfg.concurrency = tc.concurrency
+			liveDir := t.TempDir()
+			runnerWaiting := filepath.Join(liveDir, "runner-waiting")
+			cfg.slotWait = func() { _ = os.WriteFile(runnerWaiting, nil, 0o644) }
+			t.Setenv("SHARD_FIXTURE_LIVE_DIR", liveDir)
+			t.Setenv("SHARD_FIXTURE_LIVE_EXPECT", "2")
+			t.Setenv("SHARD_FIXTURE_RUNNER_WAITING", runnerWaiting)
+			if rc := runShards(cfg); rc != 0 {
+				t.Fatalf("run rc = %d, want 0\nstdout:\n%s\nstderr:\n%s", rc, stdout, stderr)
+			}
+			if got := peakLiveShards(t, liveDir); got != tc.wantPeak {
+				t.Fatalf("peak concurrent shard processes = %d, want %d\nstdout:\n%s", got, tc.wantPeak, stdout)
+			}
+			if timeouts := len(globMarkers(t, liveDir, "timeout.*")); timeouts > 0 {
+				t.Fatalf("timeout markers = %d; the probe could not measure\nstdout:\n%s", timeouts, stdout)
+			}
+			if capped := len(globMarkers(t, liveDir, "capped.*")); (capped > 0) != tc.wantCapped {
+				t.Fatalf("capped markers = %d, wantCapped %v\nstdout:\n%s", capped, tc.wantCapped, stdout)
+			}
+		})
+	}
+}
+
+// globMarkers returns the files matching pattern in dir.
+func globMarkers(t *testing.T, dir, pattern string) []string {
+	t.Helper()
+	markers, err := filepath.Glob(filepath.Join(dir, pattern))
+	if err != nil {
+		t.Fatalf("globbing %s: %v", pattern, err)
+	}
+	return markers
+}
+
+// peakLiveShards is the largest population any shard binary observed while it
+// was alive, read from the markers announceLiveShard left behind.
+func peakLiveShards(t *testing.T, dir string) int {
+	t.Helper()
+	seen := globMarkers(t, dir, "seen.*")
+	peak := 0
+	for _, file := range seen {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("reading %s: %v", file, err)
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			t.Fatalf("parsing %s: %v", file, err)
+		}
+		if n > peak {
+			peak = n
+		}
+	}
+	if peak == 0 {
+		t.Fatalf("no shard binary reported its liveness; the probe never ran")
+	}
+	return peak
+}
+
 func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 	cfg, _, stderr, _ := e2eConfig(t)
-	cfg.agentDir = filepath.Join(t.TempDir(), "no-such-module")
+	cfg.pkgDir = filepath.Join(t.TempDir(), "no-such-module")
 	if rc := runShards(cfg); rc != 2 {
 		t.Fatalf("missing agent dir rc = %d, want 2", rc)
 	}
-	if !strings.Contains(stderr.String(), "agent-shards: no agent dir") {
+	// The refusal names the directory it looked for, not the runner's label.
+	if !strings.Contains(stderr.String(), "agent-shards: no "+cfg.pkgDir+" dir") {
 		t.Fatalf("missing agent dir not explained:\n%s", stderr)
 	}
 }
 
-// buildEvenerDev compiles the real evener-dev binary (whose `dev` subcommand
-// runs agent-shards) for signal-delivery scenarios.
+// buildEvenerDev returns the evener-dev binary, compiled once per package run
+// into TestMain's directory: the tests that exec it only need the same binary,
+// and linking it again for each cost seconds apiece. The build gets the
+// isolated toolchain env explicitly and always builds in the repo workspace:
+// whichever test builds first must not pass on its own GOWORK (a fixture
+// test's GOWORK=off cannot resolve the workspace's sibling modules). Each
+// caller still isolates its own env for the commands it runs next.
 func buildEvenerDev(t *testing.T) string {
 	t.Helper()
 	isolateToolchainEnv(t)
-	bin := filepath.Join(t.TempDir(), "evener-dev")
-	cmd := exec.Command("go", "build", "-o", bin, "../evener-dev/bin")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("building evener-dev: %v\n%s", err, out)
+	evenerDevBuild.once.Do(func() {
+		bin := filepath.Join(evenerDevBinDir, "evener-dev")
+		cmd := exec.Command("go", "build", "-o", bin, "../evener-dev/bin")
+		cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool {
+			return strings.HasPrefix(kv, "GOWORK=")
+		}), "GOENV=off", "GOFLAGS=")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			evenerDevBuild.err = fmt.Errorf("building evener-dev: %w\n%s", err, out)
+			return
+		}
+		evenerDevBuild.bin = bin
+	})
+	if evenerDevBuild.err != nil {
+		t.Fatal(evenerDevBuild.err)
 	}
-	return bin
+	return evenerDevBuild.bin
+}
+
+var evenerDevBuild struct {
+	once sync.Once
+	bin  string
+	err  error
 }
 
 func TestServeDevUsageAndUnknownSubcommand(t *testing.T) {
@@ -535,6 +662,8 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 		{"AGENT_SHARD_COUNT", "banana"},
 		{"AGENT_SHARD_COUNT", "0"},
 		{"AGENT_SHARD_PARALLEL", "-3"},
+		{"AGENT_SHARD_CONCURRENCY", "banana"},
+		{"AGENT_SHARD_CONCURRENCY", "-1"},
 	} {
 		cmd := exec.Command(bin, "dev", "agent-shards")
 		cmd.Dir = workRoot
@@ -547,5 +676,149 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 		if !strings.Contains(string(out), tc.name) {
 			t.Fatalf("%s=%s not named in error:\n%s", tc.name, tc.value, out)
 		}
+	}
+}
+
+// hubFixtureRoot lays the shard fixture out the way the repository holds
+// cmd/evener-hub: a module root with the package in cmd/evener-hub, which is
+// where hub-shards builds from and runs in.
+func hubFixtureRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	pkg := filepath.Join(root, "cmd", "evener-hub")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fixture := fixtureModule(t)
+	for src, dst := range map[string]string{
+		"go.mod":          filepath.Join(root, "go.mod"),
+		"fixture_test.go": filepath.Join(pkg, "fixture_test.go"),
+		"tagged_on.go":    filepath.Join(pkg, "tagged_on.go"),
+		"tagged_off.go":   filepath.Join(pkg, "tagged_off.go"),
+	} {
+		data, err := os.ReadFile(filepath.Join(fixture, src))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// hubFixtureToolchainEnv is the child environment a hub-shards run over
+// hubFixtureRoot needs, appended after the ambient one so it wins: a private
+// TMPDIR and survey cache, and a toolchain that resolves the fixture's own
+// go.mod rather than an ambient GOWORK, GOENV or GOFLAGS.
+func hubFixtureToolchainEnv(t *testing.T) []string {
+	t.Helper()
+	return []string{"TMPDIR=" + t.TempDir(), "HUB_SHARD_CACHE_DIR=" + t.TempDir(), "GOWORK=off", "GOENV=off", "GOFLAGS="}
+}
+
+// TestHubShardsReadsItsOwnVariablesAndPackage pins the hub-shards entry point:
+// it shards cmd/evener-hub under the repository root, reads HUB_SHARD_* rather
+// than the agent's variables, and names itself "hub" in its verdicts, so a gate
+// running both shard sets side by side can tell their lines apart.
+func TestHubShardsReadsItsOwnVariablesAndPackage(t *testing.T) {
+	bin := buildEvenerDev(t)
+	workRoot := hubFixtureRoot(t)
+	runArgs := func(args []string, env ...string) (string, error) {
+		cmd := exec.Command(bin, append([]string{"dev", "hub-shards"}, args...)...)
+		cmd.Dir = workRoot
+		cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t), env...)...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	run := func(env ...string) (string, error) { return runArgs(nil, env...) }
+
+	for _, tc := range []struct{ name, value string }{
+		{"HUB_SHARD_COUNT", "banana"},
+		{"HUB_SHARD_PARALLEL", "-3"},
+		{"HUB_SHARD_CONCURRENCY", "-1"},
+	} {
+		out, err := run(tc.name + "=" + tc.value)
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("%s=%s exit = %v, want 1", tc.name, tc.value, err)
+		}
+		if !strings.Contains(out, "hub-shards: ") || !strings.Contains(out, tc.name) {
+			t.Fatalf("%s=%s not refused by hub-shards by name:\n%s", tc.name, tc.value, out)
+		}
+	}
+
+	// Run outside a checkout, the refusal names the package directory it
+	// looked for.
+	missing := exec.Command(bin, "dev", "hub-shards")
+	missing.Dir = t.TempDir()
+	missing.Env = append(os.Environ(), hubFixtureToolchainEnv(t)...)
+	if out, err := missing.CombinedOutput(); err == nil || !strings.Contains(string(out), "hub-shards: no "+filepath.Join("cmd", "evener-hub")+" dir") {
+		t.Fatalf("hub-shards outside a checkout = %v, want a refusal naming cmd/evener-hub:\n%s", err, out)
+	}
+
+	// A refused flag points at the hub's own variable, never the agent's.
+	out, err := runArgs([]string{"-skip", "^TestFixtureBeta$"})
+	if err == nil || !strings.Contains(out, "HUB_SHARD_SKIP") || strings.Contains(out, "AGENT_") {
+		t.Fatalf("hub-shards -skip = %v, want a refusal naming HUB_SHARD_SKIP and no AGENT_ variable:\n%s", err, out)
+	}
+
+	// The fixture's beta test fails on demand; HUB_SHARD_SKIP must keep it out.
+	out, err = run("HUB_SHARD_COUNT=2", "SHARD_FIXTURE_FAIL=beta", "HUB_SHARD_SKIP=^TestFixtureBeta$", "AGENT_SHARD_COUNT=banana")
+	if err != nil {
+		t.Fatalf("green hub-shards run failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{"PASS  hub:0", "PASS  hub:1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("hub-shards output lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestHubShardsResolvesBuildFlagPathsFromTheModuleRoot pins where hub-shards
+// builds: cmd/evener-hub is a package of the root module, and the gate's root
+// `go test` resolves path-valued build flags (-overlay, -modfile, -pgo) from
+// the repository root, so hub-shards must too. The fixture is laid out like
+// the repository, and a relative -overlay adds a test that fails with a marker
+// only when the overlay reached the build.
+func TestHubShardsResolvesBuildFlagPathsFromTheModuleRoot(t *testing.T) {
+	bin := buildEvenerDev(t)
+	workRoot := hubFixtureRoot(t)
+	pkg := filepath.Join(workRoot, "cmd", "evener-hub")
+	overlaid := filepath.Join(workRoot, "overlaid_test.go.src")
+	if err := os.WriteFile(overlaid, []byte("package shardfixture\n\nimport \"testing\"\n\nfunc TestOverlayReachedTheBuild(t *testing.T) { t.Fatal(\"OVERLAY-REACHED-THE-BUILD\") }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overlay := fmt.Sprintf(`{"Replace":{%q:%q}}`, filepath.Join(pkg, "overlaid_test.go"), overlaid)
+	if err := os.WriteFile(filepath.Join(workRoot, "overlay.json"), []byte(overlay), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(bin, "dev", "hub-shards", "-overlay=overlay.json")
+	cmd.Dir = workRoot
+	cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t), "HUB_SHARD_COUNT=2")...)
+	out, _ := cmd.CombinedOutput()
+	if !strings.Contains(string(out), "OVERLAY-REACHED-THE-BUILD") {
+		t.Fatalf("a repository-relative -overlay did not reach the hub build:\n%s", out)
+	}
+}
+
+// TestCLIShardsReadsItsOwnVariables pins the cli-shards entry point: it shards
+// cmd/evener and reads CLI_SHARD_* (the shared machinery is covered by the hub
+// and agent tests), refusing a bad value by its own name.
+func TestCLIShardsReadsItsOwnVariables(t *testing.T) {
+	bin := buildEvenerDev(t)
+	cmd := exec.Command(bin, "dev", "cli-shards")
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), append(hubFixtureToolchainEnv(t), "CLI_SHARD_COUNT=banana")...)
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(out), "cli-shards: CLI_SHARD_COUNT") {
+		t.Fatalf("cli-shards CLI_SHARD_COUNT=banana = %v, want exit 1 naming CLI_SHARD_COUNT:\n%s", err, out)
+	}
+	missing := exec.Command(bin, "dev", "cli-shards")
+	missing.Dir = t.TempDir()
+	missing.Env = append(os.Environ(), hubFixtureToolchainEnv(t)...)
+	if out, err := missing.CombinedOutput(); err == nil || !strings.Contains(string(out), "cli-shards: no "+filepath.Join("cmd", "evener")+" dir") {
+		t.Fatalf("cli-shards outside a checkout = %v, want a refusal naming cmd/evener:\n%s", err, out)
 	}
 }

@@ -283,6 +283,14 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 			// being deferred to a deploy that can never run.
 			return pf, nil
 		}
+		if errors.Is(err, errExecutableMissing) {
+			// The host has no evener at the resolved path and no deploy path is
+			// configured (the branch above defers the same error when one is), so
+			// nothing can install the binary. Call it terminally with the remedy this
+			// refusal carries: the hub's flags when it supplied Options.DeployHelp,
+			// else the library's own field.
+			return pf, fmt.Errorf("%w: %s", err, m.deployHelp())
+		}
 		return pf, err
 	}
 	pf.LaunchCheckKnown = true
@@ -322,6 +330,15 @@ func (m *Manager) probeLaunchCheck(ctx context.Context, host hostreg.Host) (laun
 // contract as unknown and lets the installer fallback install a binary at a known
 // location, instead of refusing the host outright.
 var errExecutableMissing = errors.New("sshconn: evener executable not found on the host")
+
+// ErrExecutableMissing is the exported alias for the terminal
+// missing-executable refusal (errExecutableMissing, above): the host has no
+// evener at the resolved path and, when no deploy path exists either, there is
+// nothing the controller can install. It is terminal like ErrVersionMismatch
+// (isTerminal), and it is exported so a caller — the hub's attach handler — can
+// match it with errors.Is and surface it as a typed deploy/launch failure
+// (appwire.HubLaunchError) rather than a generic internal error.
+var ErrExecutableMissing = errExecutableMissing
 
 // executableMissing reports whether a failed evener invocation failed because the
 // executable could not be found. POSIX shells exit 127 for a command that cannot

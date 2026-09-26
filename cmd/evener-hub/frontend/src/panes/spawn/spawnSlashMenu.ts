@@ -84,12 +84,6 @@ export async function runSpawnBuiltinAfterStart(
     },
   };
 
-  if (command.unavailableReason) {
-    const message = `/${command.id} is ${command.unavailableReason}`;
-    toasts.push("error", message);
-    return { ok: false, message };
-  }
-
   try {
     if (!command.args) {
       const result = await command.run?.(wrappedCtx);

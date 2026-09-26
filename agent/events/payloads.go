@@ -342,25 +342,26 @@ const SteeringSourceUser = "user"
 // carried to the UI so a label is ground truth rather than a guess at the
 // message's prose. Absent kind means "unknown" and the UI claims nothing.
 const (
-	SteeringKindInterrupted       = "interrupted"
-	SteeringKindAgentMessage      = "agent-message"
-	SteeringKindHookContext       = "hook-context"
-	SteeringKindPrecompactHook    = "precompact-hook"
-	SteeringKindCompactNudge      = "compact-nudge"
-	SteeringKindImageDescription  = "image-description"
-	SteeringKindNoToolCalls       = "no-tool-calls"
-	SteeringKindLoopDetected      = "loop-detected"
-	SteeringKindTasksDone         = "tasks-done"
-	SteeringKindTaskNudge         = "task-nudge"
-	SteeringKindTaskInactive      = "task-inactive"
-	SteeringKindNoteHandoff       = "note-handoff"
-	SteeringKindGoalObjective     = "goal-objective"
-	SteeringKindTranscriptPointer = "transcript-pointer"
-	SteeringKindCurrentTask       = "current-task"
-	SteeringKindTaskList          = "task-list"
-	SteeringKindNotification      = "notification"
-	SteeringKindProviderFailure   = "provider-failure"
-	SteeringKindHumanNote         = "human-note"
+	SteeringKindInterrupted        = "interrupted"
+	SteeringKindInterruptedSalvage = "interrupted-salvage"
+	SteeringKindAgentMessage       = "agent-message"
+	SteeringKindHookContext        = "hook-context"
+	SteeringKindPrecompactHook     = "precompact-hook"
+	SteeringKindCompactNudge       = "compact-nudge"
+	SteeringKindImageDescription   = "image-description"
+	SteeringKindNoToolCalls        = "no-tool-calls"
+	SteeringKindLoopDetected       = "loop-detected"
+	SteeringKindTasksDone          = "tasks-done"
+	SteeringKindTaskNudge          = "task-nudge"
+	SteeringKindTaskInactive       = "task-inactive"
+	SteeringKindNoteHandoff        = "note-handoff"
+	SteeringKindGoalObjective      = "goal-objective"
+	SteeringKindTranscriptPointer  = "transcript-pointer"
+	SteeringKindCurrentTask        = "current-task"
+	SteeringKindTaskList           = "task-list"
+	SteeringKindNotification       = "notification"
+	SteeringKindProviderFailure    = "provider-failure"
+	SteeringKindHumanNote          = "human-note"
 )
 
 // AllSteeringKinds is every kind a call site may emit. Task 3's coverage test
@@ -369,6 +370,7 @@ const (
 // deleted read-only classifier rule demonstrated).
 var AllSteeringKinds = []string{
 	SteeringKindInterrupted,
+	SteeringKindInterruptedSalvage,
 	SteeringKindAgentMessage,
 	SteeringKindHookContext,
 	SteeringKindPrecompactHook,
@@ -450,6 +452,14 @@ type QueueChangedData struct {
 	// editing or returning a queued entry can restore its chips — a queued
 	// {type:"skill"} item is otherwise unrecoverable by any path.
 	SkillNames [][]string `json:"skill_names,omitempty"`
+	// ConsumedClientMutationIDs names the queued entries THIS push's
+	// transition just consumed (currently: a drain folding the queue into
+	// steering) so a client can settle those optimistic records by positive
+	// evidence instead of inferring consumption from sequence order (issue
+	// #1704). It is a one-shot transition fact about this push, never a
+	// property of the durable queue itself — unset on every push that is not
+	// the consuming transition.
+	ConsumedClientMutationIDs []string `json:"consumed_client_mutation_ids,omitempty"`
 }
 
 // TaskSummaryData is the current task summary carried by a TaskUpdatedData
@@ -623,6 +633,7 @@ type JobStartedData struct {
 	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
 	DelegateID       string `json:"delegate_id,omitempty"`
 	Task             string `json:"task,omitempty"`
+	Intent           string `json:"intent,omitempty"`
 	TranscriptRef    string `json:"transcript_ref,omitempty"`
 	OriginTurnID     string `json:"origin_turn_id,omitempty"`
 	OriginToolCallID string `json:"origin_tool_call_id,omitempty"`
@@ -649,6 +660,8 @@ type JobFinishedData struct {
 	ParentDelegateID string `json:"parent_delegate_id,omitempty"`
 	DelegateID       string `json:"delegate_id,omitempty"`
 	Task             string `json:"task,omitempty"`
+	Description      string `json:"description,omitempty"`
+	Intent           string `json:"intent,omitempty"`
 	OriginTurnID     string `json:"origin_turn_id,omitempty"`
 	OriginToolCallID string `json:"origin_tool_call_id,omitempty"`
 	OriginItemID     string `json:"origin_item_id,omitempty"`

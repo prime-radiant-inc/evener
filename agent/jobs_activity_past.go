@@ -339,13 +339,7 @@ func LoadSessionJobActivityTree(ctx context.Context, stateDir, sessionID string,
 		return appwire.JobActivityTree{}, err
 	}
 	root := activitySessionLocator{stateDir: stateDir, sessionID: sessionID}
-	// loadActivitySnapshotForParamsWithCache, not the cache-discarding
-	// loadActivitySnapshotForParams: the revision computation below
-	// re-walks the whole tree from the root, and must share this SAME
-	// cache (and so the same work-unit budget) rather than starting a
-	// second, independently-fresh one — see
-	// loadActivitySnapshotForParamsWithCache's doc comment.
-	snapshot, startDepth, resumeIndex, cache, err := loadActivitySnapshotForParamsWithCache(ctx, root, params)
+	snapshot, startDepth, resumeIndex, err := loadActivitySnapshotForParams(ctx, root, params)
 	if err != nil {
 		return appwire.JobActivityTree{}, err
 	}
@@ -353,13 +347,27 @@ func LoadSessionJobActivityTree(ctx context.Context, stateDir, sessionID string,
 	if rootRevisionID == "" {
 		rootRevisionID = sessionID
 	}
+	// A continuation page reports the revision its token was minted against,
+	// NOT one recomputed here. A historical revision is a max over a bounded,
+	// work-budget-shaped snapshot (activitySnapshotPersistedRevision), so
+	// recomputing it on resume can yield a different number for the same, valid
+	// continuation: resolving the token's path hops spends budget before the
+	// walk, so it can visit a smaller set of sessions than the root request
+	// did, and a descendant that appended between the two requests moves the
+	// max the other way. A consumer that fences a page by revision (the
+	// Activity Panel) would then discard a valid page and refetch the root
+	// forever, so pagination would never advance on exactly the large-history
+	// trees this bound exists for. Echoing the token's revision keeps the
+	// number stable across the whole walk; the page's entries are still fenced
+	// by the per-journal epochs checked on resume, which is what actually says
+	// whether a position is safe to resume from.
 	revision := activitySnapshotPersistedRevision(snapshot, rootRevisionID)
-	if strings.TrimSpace(params.Continuation) != "" {
-		full, err := buildActivityFullSnapshot(root, map[string]bool{sessionID: true}, false, cache, 0)
+	if token := strings.TrimSpace(params.Continuation); token != "" {
+		cont, err := decodeActivityContinuation(token, sessionID)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
-		revision = activitySnapshotPersistedRevision(full, rootRevisionID)
+		revision = cont.Revision
 	}
 	return projectBoundedActivityTree(*snapshot, sessionID, startDepth, resumeIndex, revision, time.Now().UTC())
 }

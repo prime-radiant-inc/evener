@@ -19,6 +19,10 @@ const KINDS: { kind: ToolIconKind; label: string }[] = [
   { kind: "person", label: "person (user avatar)" },
   { kind: "wrench", label: "wrench (default/MCP)" },
   { kind: "thought", label: "thought (thinking row)" },
+  { kind: "check", label: "check (notification success)" },
+  { kind: "cross", label: "cross (notification error)" },
+  { kind: "alert", label: "alert (notification warning)" },
+  { kind: "info", label: "info (notification neutral)" },
 ];
 
 export default function ToolIconGallerySection() {

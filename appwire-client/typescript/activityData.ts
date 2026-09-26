@@ -1,6 +1,7 @@
 // Strict client-side parser and disclosure-state helpers for recursive
 // evener/jobs/list activity trees. Wire truth: appwire-client/typescript/types.gen.ts's
 // JobActivity* interfaces and docs/appwire-protocol.md's json field catalog.
+import { isPlainObject } from "./plainObject";
 
 export interface ActivityCounts {
   active: number;
@@ -16,6 +17,9 @@ export interface ActivityCounts {
 // as "failure"; a stable delegate carries its delegatestore outcome verbatim,
 // so a failure arrives as "failed" or "exhausted". These are the one definition
 // per kind, shared by the rows and by the merged summaries.
+// The status fallback below serves readers with no outcome (the activity
+// tree's status dot): it knows the daemon's failure statuses, including the
+// command-outcome statuses a nonzero exit or a signal death ends in.
 export function isFailedJobOutcome(outcome: string | undefined): boolean {
   return outcome === "failure";
 }
@@ -27,7 +31,39 @@ export function isFailedDelegateOutcome(outcome: string | undefined): boolean {
 export function isActivityFailure(outcome: string | undefined, status: string | undefined): boolean {
   if (isFailedJobOutcome(outcome) || isFailedDelegateOutcome(outcome)) return true;
   const normalized = status?.trim().toLowerCase();
-  return normalized === "failed" || normalized === "exhausted" || normalized === "error";
+  return (
+    normalized === "failed" ||
+    normalized === "exhausted" ||
+    normalized === "error" ||
+    normalized === "command_exited_nonzero" ||
+    normalized === "command_killed"
+  );
+}
+
+// The display word for a daemon job status. Rows state a job's status by
+// design (the searchable, honest machine vocabulary) - EXCEPT the two
+// command-outcome statuses, whose 23-char snake_case form ellipsizes
+// mid-word in the rail's narrow column and disagrees with the words the
+// notification card already ruled for them ("Command failed" /
+// "Command killed", steeringClassify's terminalJobTitle). Those two, and
+// only those, render under the card's display words. A legacy pre-split
+// "failed" record joins them when its reason names the command's own
+// outcome, so durable history reads the same across every surface.
+export function jobStatusDisplay(status: string, reason?: string): string {
+  switch (status) {
+    case "command_exited_nonzero":
+      return "Command failed";
+    case "command_killed":
+      return "Command killed";
+    case "failed": {
+      const trimmedReason = reason?.trim() ?? "";
+      if (trimmedReason === "exit_nonzero") return "Command failed";
+      if (trimmedReason.startsWith("killed_by_signal")) return "Command killed";
+      return status;
+    }
+    default:
+      return status;
+  }
 }
 
 export interface ActivityBranchState {
@@ -208,12 +244,6 @@ type TreeIndex = {
   ids: Set<string>;
   parents: Map<string, string>;
 };
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
 
 function readString(object: Record<string, unknown>, key: string): string | null {
   const value = object[key];

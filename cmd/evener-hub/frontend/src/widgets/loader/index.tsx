@@ -5,6 +5,14 @@ import styles from "./loader.module.css";
 export interface LoaderProps {
   /** Visible + accessible label. Defaults to "Loading". */
   label?: string;
+  /** Seat the grid in the transcript's icon rail (the same column the
+   * speaker avatars, tool-row kind glyphs, and the thinking row's bulb
+   * occupy): the grid centres in a --speaker-avatar-size slot with the
+   * standard speaker gap after it, and above the 700px breakpoint the whole
+   * row pulls one --speaker-gutter left, so the label lands at the content
+   * edge exactly where every other run row's text does. Opt-in: the default
+   * loader keeps its own tighter inline geometry. */
+  rail?: boolean;
   /** Epoch-ms instant the wait began. Paired with `now` to render an mm:ss
    * elapsed readout; omit either one and no readout renders at all. */
   startedAt?: number;
@@ -20,11 +28,17 @@ const CELL_COUNT = 9;
 
 const BASE_CLASS = {
   loader: requireClass(styles.loader, "loader.module.css", "loader"),
+  rail: requireClass(styles.rail, "loader.module.css", "rail"),
   grid: requireClass(styles.grid, "loader.module.css", "grid"),
   cell: requireClass(styles.cell, "loader.module.css", "cell"),
   label: requireClass(styles.label, "loader.module.css", "label"),
   elapsed: requireClass(styles.elapsed, "loader.module.css", "elapsed"),
 };
+
+// Both operands are module constants fixed at init, so the joined name is
+// built once too - requireClass's own rule for class lookups: build them at
+// module scope, never inside render.
+const RAIL_CLASS_NAME = `${BASE_CLASS.loader} ${BASE_CLASS.rail}`;
 
 function formatElapsed(startedAt: number, now: number): string {
   const clampedMs = Math.max(0, now - startedAt); // clock-skew guard, same stance as Cadence's ticksFor
@@ -52,12 +66,12 @@ function formatElapsed(startedAt: number, now: number): string {
  * dim grid under reduced motion - the elapsed readout keeps ticking either
  * way, since it's driven by props, not by the animation.
  */
-export function Loader({ label, startedAt, now }: LoaderProps) {
+export function Loader({ label, rail, startedAt, now }: LoaderProps) {
   const accessibleLabel = label ?? "Loading";
   const showElapsed = startedAt !== undefined && now !== undefined;
 
   return (
-    <span className={BASE_CLASS.loader} role="status" aria-label={accessibleLabel}>
+    <span className={rail ? RAIL_CLASS_NAME : BASE_CLASS.loader} role="status" aria-label={accessibleLabel}>
       <span data-testid="loader-grid" aria-hidden="true" className={BASE_CLASS.grid}>
         {Array.from({ length: CELL_COUNT }, (_, i) => (
           // Interchangeable, content-free, decorative cells - same

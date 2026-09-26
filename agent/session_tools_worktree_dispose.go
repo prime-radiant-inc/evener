@@ -198,16 +198,27 @@ func (s *Session) disposeStableDelegateLane(ctx context.Context, id string, forc
 		return s.disposeAlreadyDisposedRemnants(run, id, lanePath, metaDir, sc), nil
 	}
 	gateConsumed = true
-	return s.disposeStableExecute(budgetCtx, run, state, lanePath, metaDir, sub, laneDirPresent, st, forceDirty, alreadyDisposed)
+	return s.disposeStableExecute(budgetCtx, run, state, lanePath, metaDir, sc.BranchOrName(), sub, laneDirPresent, st, forceDirty, alreadyDisposed)
 }
 
-func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunner, state stableDelegateWorktreeSnapshot, lanePath, metaDir string, sub *subagent, lanePresent bool, st worktree.LockState, forceDirty, alreadyClosed bool) (WorktreeDisposeResult, error) {
+// disposeStableExecute receives the lane's git branch (Sidecar.BranchOrName())
+// separately from the delegate id because a parent-named lane's branch differs
+// from every id-keyed surface.
+func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunner, state stableDelegateWorktreeSnapshot, lanePath, metaDir, branch string, sub *subagent, lanePresent bool, st worktree.LockState, forceDirty, alreadyClosed bool) (WorktreeDisposeResult, error) {
 	id := state.delegateID
 	if sub != nil && sub.sess != nil {
 		teardownChildSession(ctx, sub.sess, retainChildScratch)
 		s.subagents.removeSession(state.descriptor.ChildSessionID, sub.sess)
 	}
-	lane := isolationLane{delegateID: id, path: lanePath}
+	lane := isolationLane{delegateID: id, path: lanePath, branch: branch}
+	if branch == "" {
+		// A lane record that reaches disposal without a resolved branch (a
+		// future caller's omission) must not have its sidecar deleted with the
+		// real branch stranded behind it, whichever arm would run. Touch
+		// nothing; the lane stays exactly as it is, left for prune.
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate lane %s reached disposal without a resolved branch; left untouched", id)})
+		return WorktreeDisposeResult{}, fmt.Errorf("manage_worktree dispose: %s resumability is closed but its branch was never resolved; residue retained at %s; left for prune", id, lanePath)
+	}
 	if !lanePresent {
 		result := s.disposeStableHalfRemoved(run, lane, metaDir)
 		result.AlreadyDisposed = alreadyClosed
@@ -219,7 +230,7 @@ func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunn
 		return WorktreeDisposeResult{
 			DelegateID:      id,
 			LanePath:        lanePath,
-			Branch:          id,
+			Branch:          branch,
 			AlreadyDisposed: alreadyClosed,
 			Message:         fmt.Sprintf("Closed delegate %s resumability but retained residue: %s. The lane remains non-resumable and requires validation or manual cleanup.", id, note),
 		}, nil
@@ -229,16 +240,16 @@ func (s *Session) disposeStableExecute(ctx context.Context, run worktree.GitRunn
 		return WorktreeDisposeResult{
 			DelegateID:      id,
 			LanePath:        lanePath,
-			Branch:          id,
+			Branch:          branch,
 			AlreadyDisposed: alreadyClosed,
-			Message:         fmt.Sprintf("Disposed delegate %s: removed its worktree lane at %s and deleted branch %s.", id, lanePath, id),
+			Message:         fmt.Sprintf("Disposed delegate %s: removed its worktree lane at %s and deleted branch %s.", id, lanePath, branch),
 		}, nil
 	}
 }
 
 func (s *Session) disposeStableHalfRemoved(run worktree.GitRunner, lane isolationLane, metaDir string) WorktreeDisposeResult {
 	branchDeleted := false
-	if _, err := run("branch", "-D", lane.delegateID); err != nil {
+	if _, err := run("branch", "-D", lane.branch); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("stable delegate lane branch delete failed for %s: %v", lane.delegateID, err)})
 	} else {
 		branchDeleted = true
@@ -246,9 +257,9 @@ func (s *Session) disposeStableHalfRemoved(run worktree.GitRunner, lane isolatio
 	_ = worktree.DeleteSidecar(metaDir, lane.delegateID)
 	message := fmt.Sprintf("Disposed delegate %s: its worktree was already gone; cleaned up the sidecar.", lane.delegateID)
 	if branchDeleted {
-		message = fmt.Sprintf("Disposed delegate %s: its worktree was already gone; deleted leftover branch %s and the sidecar.", lane.delegateID, lane.delegateID)
+		message = fmt.Sprintf("Disposed delegate %s: its worktree was already gone; deleted leftover branch %s and the sidecar.", lane.delegateID, lane.branch)
 	}
-	return WorktreeDisposeResult{DelegateID: lane.delegateID, LanePath: lane.path, Branch: lane.delegateID, Message: message}
+	return WorktreeDisposeResult{DelegateID: lane.delegateID, LanePath: lane.path, Branch: lane.branch, Message: message}
 }
 
 // disposeEvaluateLane applies the dirty-tree and ancestry checks before a
@@ -287,7 +298,8 @@ func (s *Session) disposeEvaluateLane(run worktree.GitRunner, id, lanePath strin
 // via the OriginalRoot env; it returns nil when the tip is collectible and a
 // refusal error naming the state otherwise.
 func (s *Session) disposeEvaluateHalfRemoved(run worktree.GitRunner, id string, sc worktree.Sidecar, force bool) error {
-	tipOut, tErr := run("rev-parse", "refs/heads/"+id)
+	laneBranch := sc.BranchOrName()
+	tipOut, tErr := run("rev-parse", "refs/heads/"+laneBranch)
 	if tErr != nil {
 		return fmt.Errorf("manage_worktree dispose: %s lane is gone and its branch tip could not be resolved: %w", id, tErr)
 	}
@@ -297,7 +309,7 @@ func (s *Session) disposeEvaluateHalfRemoved(run worktree.GitRunner, id string, 
 		return fmt.Errorf("manage_worktree dispose: %s branch evaluation: %w", id, dErr)
 	}
 	if !disposable && !force {
-		return fmt.Errorf("manage_worktree dispose: %s lane is half-removed (worktree gone, branch %s remains, %s); merge it or pass force to delete the branch", id, id, reason)
+		return fmt.Errorf("manage_worktree dispose: %s lane is half-removed (worktree gone, branch %s remains, %s); merge it or pass force to delete the branch", id, laneBranch, reason)
 	}
 	return nil
 }
@@ -307,11 +319,12 @@ func (s *Session) disposeEvaluateHalfRemoved(run worktree.GitRunner, id string, 
 // remnants (the branch if its tip judges D0-model-collectible, the sidecar) and
 // reports already-disposed. It never refuses.
 func (s *Session) disposeAlreadyDisposedRemnants(run worktree.GitRunner, id, lanePath, metaDir string, sc worktree.Sidecar) WorktreeDisposeResult {
+	branch := sc.BranchOrName()
 	branchDeleted := false
-	if tipOut, tErr := run("rev-parse", "refs/heads/"+id); tErr == nil {
+	if tipOut, tErr := run("rev-parse", "refs/heads/"+branch); tErr == nil {
 		tip := strings.TrimSpace(tipOut)
 		if disposable, _, dErr := disposableReason(run, tip, sc.BaseSHA, sc.MergeTarget); dErr == nil && disposable {
-			if _, delErr := run("branch", "-D", id); delErr == nil {
+			if _, delErr := run("branch", "-D", branch); delErr == nil {
 				branchDeleted = true
 			}
 		}
@@ -324,7 +337,7 @@ func (s *Session) disposeAlreadyDisposedRemnants(run worktree.GitRunner, id, lan
 	return WorktreeDisposeResult{
 		DelegateID:      id,
 		LanePath:        lanePath,
-		Branch:          id,
+		Branch:          branch,
 		AlreadyDisposed: true,
 		Message:         msg,
 	}

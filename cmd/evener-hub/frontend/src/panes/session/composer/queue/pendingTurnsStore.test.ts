@@ -14,6 +14,7 @@ import { useColdStartSkeleton } from "../../coldStart";
 import { readComposerDraft, writeComposerDraft } from "../draft";
 import {
   discardRecoveryPendingTurn,
+  pendingTurnEntries,
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   resetPendingTurnsStoreForTests,
@@ -107,6 +108,14 @@ afterEach(() => {
   globalThis.indexedDB = new IDBFactory();
 });
 
+test("the plain pendingTurnEntries read returns the same empty-array reference when nothing is pending", async () => {
+  await connect();
+  const first = pendingTurnEntries("ref_a");
+  const second = pendingTurnEntries("ref_a");
+  expect(first).toEqual([]);
+  expect(first).toBe(second);
+});
+
 test("an action becomes pending only after its durable enqueue commits", async () => {
   const fake = await connect();
   fake.on("turn/start", () => new Promise<never>(() => undefined));
@@ -119,6 +128,27 @@ test("an action becomes pending only after its durable enqueue commits", async (
   await flushPendingTurnsProjectionForTests();
 
   expect(pending.result.current).toEqual([expect.objectContaining({ text: "hello" })]);
+});
+
+test("usePendingTurnEntries returns the same entries array across a submittingRefs-only write", async () => {
+  const fake = await connect();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await act(async () => {
+    await threadsStore.getState().send("ref_a", "hello");
+  });
+  await flushPendingTurnsProjectionForTests();
+  const entriesBefore = pending.result.current;
+  expect(entriesBefore).toEqual([expect.objectContaining({ text: "hello" })]);
+
+  // beginSubmission/endSubmission only touch submittingRefs - not outbox,
+  // optimistic, submittedHere or the thread model this hook's entries
+  // actually depend on - so the getSnapshot cache must not recompute here.
+  await act(async () => {
+    await submitWithPendingTracking({ ref: "ref_a", text: "unrelated", onFailure: vi.fn() }, () => Promise.resolve());
+  });
+
+  expect(pending.result.current).toBe(entriesBefore);
 });
 
 test("a committed submission releases its caller while recovery projection reads are stalled", async () => {
@@ -144,7 +174,7 @@ test("a committed submission releases its caller while recovery projection reads
   });
   let accepted = false;
   const onFailure = vi.fn();
-  const submit = submitWithPendingTracking({ ref: "ref_a", method: "steer", text: "one send", onFailure }, () =>
+  const submit = submitWithPendingTracking({ ref: "ref_a", text: "one send", onFailure }, () =>
     threadsStore.getState().steer("ref_a", "one send"),
   ).then(() => {
     accepted = true;
@@ -257,9 +287,7 @@ test("a local commit failure reports the exact error and never creates optimisti
   const pending = renderHook(() => usePendingTurnEntries("ref_a"));
 
   await expect(
-    submitWithPendingTracking({ ref: "ref_a", method: "send", text: "keep me", onFailure }, () =>
-      Promise.reject(failure),
-    ),
+    submitWithPendingTracking({ ref: "ref_a", text: "keep me", onFailure }, () => Promise.reject(failure)),
   ).rejects.toBe(failure);
 
   expect(onFailure).toHaveBeenCalledWith(failure);
@@ -319,9 +347,8 @@ test("a committed submission clears a stored draft only when its text and select
   writeComposerDraft("ref_a", { text: "with skills", skillNames: ["pkg:probe"] });
   const onFailure = vi.fn();
 
-  await submitWithPendingTracking(
-    { ref: "ref_a", method: "send", text: "with skills", skillNames: ["pkg:probe"], onFailure },
-    () => Promise.resolve(),
+  await submitWithPendingTracking({ ref: "ref_a", text: "with skills", skillNames: ["pkg:probe"], onFailure }, () =>
+    Promise.resolve(),
   );
 
   expect(onFailure).not.toHaveBeenCalled();
@@ -336,7 +363,7 @@ test("a skill edit during a delayed commit keeps the stored draft", async () => 
   });
   const onFailure = vi.fn();
   const submit = submitWithPendingTracking(
-    { ref: "ref_a", method: "send", text: "patient", skillNames: ["pkg:probe"], onFailure },
+    { ref: "ref_a", text: "patient", skillNames: ["pkg:probe"], onFailure },
     () => held,
   );
 
@@ -416,7 +443,7 @@ test("a flush cannot settle while a submit is still in flight", async () => {
   });
 
   const submitted = submitWithPendingTracking(
-    { ref: "ref_a", method: "send", text: "in flight", onFailure: () => undefined },
+    { ref: "ref_a", text: "in flight", onFailure: () => undefined },
     () => submitting,
   );
 
@@ -452,7 +479,7 @@ test("a flush that can never settle trips instead of hanging inside act", async 
     releaseSubmit = resolve;
   });
   const submitted = submitWithPendingTracking(
-    { ref: "ref_a", method: "send", text: "never settles", onFailure: () => undefined },
+    { ref: "ref_a", text: "never settles", onFailure: () => undefined },
     () => stalled,
   );
 
@@ -744,6 +771,41 @@ test("an applied pending receipt settles transport without dropping optimistic s
 
   expect(pending.result.current).toEqual([expect.objectContaining({ method: "send", text: "hello" })]);
   expect(coldStart.result.current).toBe(true);
+});
+
+// RoboRev PR #1873 medium, the fresh review's cold-start finding: the
+// skeleton counted every pending "send" entry, canceled ones included. A
+// turn/start a Stop canceled before dispatch is provably never sent - no
+// turn is coming because of it - so it must not hold the skeleton up; the
+// session shows its empty state instead of a loading frame that only Retry
+// or teardown could clear. The same exclusion class the Composer's
+// ownPendingSend and PendingChips' isOptimistic already carry.
+test("a born-canceled send does not hold the cold-start skeleton", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  await connect();
+  // A turn/start row a Stop canceled before dispatch - born-canceled, never
+  // sent, exactly the shape the durable cancel writes.
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "stopped before it sent" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "stopped before it sent" }] },
+  });
+  await storage.cancelUnattempted("ref_a");
+
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  const coldStart = renderHook(() => useColdStartSkeleton("ref_a", threadsStore.getState().threads.get("ref_a")));
+  await flushPendingTurnsProjectionForTests();
+
+  // The canceled row stays visible where its Retry affordance lives (the
+  // queue strip's durable rows) - the exclusion lives in the skeleton's
+  // predicate, not in the projection.
+  expect(pending.result.current).toEqual([expect.objectContaining({ state: "canceled" })]);
+  // ... but a turn that provably never sent does not mean a turn is coming:
+  expect(coldStart.result.current).toBe(false);
 });
 
 test("a replayed pending receipt keeps a long-running steer until its authoritative identity arrives", async () => {

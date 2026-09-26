@@ -425,6 +425,102 @@ async function clickPillAndSettle(): Promise<
   }
 }
 
+// #917: content growing AFTER the transcript has settled at the bottom, with
+// no item append and no scrollTop assignment (so no native scroll event) - the
+// late-webfont-swap shape, where the offset stays pinned while scrollHeight
+// grows and the reader is left a few pixels short with wasAtBottomRef still
+// true. Growing the scroll content's own box (not a row) keeps the growth out
+// of the virtualizer's follow-on-append AND its row re-measure machinery, so
+// nothing but useTranscriptScroll's own re-anchor can reach the new bottom -
+// the exact #917 geometry. The guard requires the transcript to re-anchor to
+// the TRUE bottom (bottomGap within 1px) and stay there, with no pill.
+//
+// min-height (rather than height) because React owns the sizer's inline
+// height: a re-render writes the virtualizer's totalSize back, and min-height
+// still wins over a smaller height, so the growth holds for the whole settle.
+const GROWTH_PX = 240;
+const GROWTH_SETTLE_FRAMES = 30;
+const GROWTH_TRIPWIRE_MS = 8_000;
+async function growContentAndSettle(): Promise<
+  {
+    settled: boolean;
+    tail: TranscriptScrollMetrics[];
+    beforeScrollTop: number;
+    beforeScrollHeight: number;
+  } & TranscriptScrollMetrics
+> {
+  const el = scrollElement();
+  const before = geometryOf(el);
+  const sizer = el.firstElementChild;
+  if (!(sizer instanceof HTMLElement)) throw new Error("transcript harness: the scroll content is not mounted");
+  const grown = sizer.offsetHeight + GROWTH_PX;
+  sizer.setAttribute("data-growth-probe", "sizer");
+  const style = document.createElement("style");
+  style.textContent = `[data-growth-probe="sizer"] { min-height: ${grown}px !important; }`;
+  document.head.appendChild(style);
+
+  const deadline = performance.now() + GROWTH_TRIPWIRE_MS;
+  let stableFrames = 0;
+  const tail: TranscriptScrollMetrics[] = [];
+  for (;;) {
+    await nextFrame();
+    throwOnPageErrors("post-mount content growth");
+    const m = metrics();
+    tail.push(m);
+    if (tail.length > GROWTH_SETTLE_FRAMES) tail.shift();
+    if (!m.pill && Math.abs(m.bottomGap) <= 1) stableFrames++;
+    else stableFrames = 0;
+    const measured = {
+      settled: true,
+      tail,
+      beforeScrollTop: before.scrollTop,
+      beforeScrollHeight: before.scrollHeight,
+    };
+    if (stableFrames >= GROWTH_SETTLE_FRAMES) return { ...measured, ...m };
+    if (performance.now() > deadline) return { ...measured, settled: false, ...m };
+  }
+}
+
+// The scroll PORT shrinking under a reader at the bottom: the pane header's
+// cadence trace appears (a 10px svg beside the 6px dot) the first time the
+// session clock ticks with a frame in its window, growing the header 4px and
+// shrinking the transcript's port 671 -> 667 with scrollTop held - no scroll
+// event, no content resize. Left alone the reader sits 4px short, which
+// isAtBottom's rounding tolerance still calls "at the bottom", so no pill.
+// The trace's own arrival is timed by a 3s interval (the guard hit it only
+// when contention stretched the run past the tick); this phase stages the same
+// header growth deterministically, on the real header's cadence slot.
+const PORT_SHRINK_PX = 4;
+const SHRINK_SETTLE_FRAMES = 30;
+const SHRINK_TRIPWIRE_MS = 8_000;
+async function shrinkPortAndSettle(): Promise<
+  { settled: boolean; tail: TranscriptScrollMetrics[]; beforeClientHeight: number } & TranscriptScrollMetrics
+> {
+  const el = scrollElement();
+  const before = geometryOf(el);
+  const slot = document.querySelector<HTMLElement>('[data-testid="pane-cadence-slot"]');
+  if (!slot) throw new Error("transcript harness: the pane header's cadence slot is not mounted");
+  const grown = slot.getBoundingClientRect().height + PORT_SHRINK_PX;
+  slot.style.minHeight = `${grown}px`;
+
+  const deadline = performance.now() + SHRINK_TRIPWIRE_MS;
+  let stableFrames = 0;
+  const tail: TranscriptScrollMetrics[] = [];
+  for (;;) {
+    await nextFrame();
+    throwOnPageErrors("scroll port shrink");
+    const m = metrics();
+    tail.push(m);
+    if (tail.length > SHRINK_SETTLE_FRAMES) tail.shift();
+    const shrunk = m.clientHeight < before.clientHeight;
+    if (shrunk && !m.pill && Math.abs(m.bottomGap) <= 1) stableFrames++;
+    else stableFrames = 0;
+    const measured = { tail, beforeClientHeight: before.clientHeight };
+    if (stableFrames >= SHRINK_SETTLE_FRAMES) return { ...measured, settled: true, ...m };
+    if (performance.now() > deadline) return { ...measured, settled: false, ...m };
+  }
+}
+
 declare global {
   interface Window {
     waitForTranscriptSettled: typeof waitForTranscriptSettled;
@@ -432,6 +528,8 @@ declare global {
     scrollAwayAndWaitForPill: typeof scrollAwayAndWaitForPill;
     appendLargeTurns: typeof appendLargeTurns;
     clickPillAndSettle: typeof clickPillAndSettle;
+    growContentAndSettle: typeof growContentAndSettle;
+    shrinkPortAndSettle: typeof shrinkPortAndSettle;
   }
 }
 
@@ -440,3 +538,5 @@ window.transcriptScrollMetrics = metrics;
 window.scrollAwayAndWaitForPill = scrollAwayAndWaitForPill;
 window.appendLargeTurns = appendLargeTurns;
 window.clickPillAndSettle = clickPillAndSettle;
+window.growContentAndSettle = growContentAndSettle;
+window.shrinkPortAndSettle = shrinkPortAndSettle;

@@ -42,7 +42,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 			t.Fatal(err)
 		}
 		active := h.s.currentEnv().(*execenv.LocalExecutionEnvironment)
-		if _, err := h.s.worktreeCreateCore(context.Background(), active, "lane", "", 0, "marker", "create", nil); err == nil {
+		if _, err := h.s.worktreeCreateCore(context.Background(), active, "lane", "lane", "", 0, "marker", "create", nil); err == nil {
 			t.Fatal("create outside repository succeeded")
 		}
 		if _, err := h.s.worktreeSwitchByName(context.Background(), "lane"); err == nil {
@@ -54,7 +54,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 		if _, err := h.s.worktreeRemove(context.Background(), "lane", false, false, false); err == nil {
 			t.Fatal("remove outside repository succeeded")
 		}
-		h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
+		h.s.rollbackFreshDelegateWorktree("delegate", "delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
 	})
 
 	t.Run("managed switch by path", func(t *testing.T) {
@@ -127,7 +127,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 		h, _ := newWorktreeFaultSession(t)
 		active := h.s.currentEnv().(*execenv.LocalExecutionEnvironment)
 		active.Sandbox = &sandbox.ResolvedPolicy{Mode: sandbox.ModeWorkspaceWrite}
-		if _, err := h.s.worktreeCreateCore(context.Background(), active, "sandbox-create", "", 0, "marker", "create", nil); err == nil {
+		if _, err := h.s.worktreeCreateCore(context.Background(), active, "sandbox-create", "sandbox-create", "", 0, "marker", "create", nil); err == nil {
 			t.Fatal("create accepted unavailable control sandbox")
 		}
 		h.s.mu.Lock()
@@ -137,7 +137,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 		if _, err := h.s.worktreeExit(context.Background()); err == nil {
 			t.Fatal("exit accepted unavailable control sandbox")
 		}
-		h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
+		h.s.rollbackFreshDelegateWorktree("delegate", "delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
 	})
 
 	t.Run("injected boundaries", func(t *testing.T) {
@@ -149,7 +149,7 @@ func worktreeSeed100ExactProgram(t *testing.T) {
 			if _, err := h.s.worktreeControlEnv(h.root); err == nil {
 				t.Fatal("control environment accepted policy failure")
 			}
-			h.s.rollbackFreshDelegateWorktree("delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
+			h.s.rollbackFreshDelegateWorktree("delegate", "delegate", filepath.Join(h.root, "delegate"), identifier.Project{})
 		})
 
 		t.Run("sidecar write", func(t *testing.T) {

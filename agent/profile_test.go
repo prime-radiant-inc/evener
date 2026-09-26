@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -188,6 +189,23 @@ func TestProviderProfiles_AllIncludeUseSkill(t *testing.T) {
 	}
 }
 
+// requiredListsIntent reports whether a tool schema's required list carries
+// the shared intent argument, preserving the element type it was built with
+// ([]string from the builtin builders, []any from JSON-assembled schemas).
+func requiredListsIntent(params map[string]any) bool {
+	switch required := params["required"].(type) {
+	case []string:
+		return slices.Contains(required, "intent")
+	case []any:
+		for _, value := range required {
+			if s, ok := value.(string); ok && s == "intent" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestProviderProfiles_AddIntentToWorkToolSchemas(t *testing.T) {
 	t.Parallel()
 	profiles := []*provider.Profile{
@@ -210,10 +228,19 @@ func TestProviderProfiles_AddIntentToWorkToolSchemas(t *testing.T) {
 				if hasIntent {
 					t.Fatalf("%s/%s should not advertise intent", p.ID(), td.Name)
 				}
+				if requiredListsIntent(td.Parameters) {
+					t.Fatalf("%s/%s should not require intent", p.ID(), td.Name)
+				}
 				continue
 			}
 			if !hasIntent {
 				t.Fatalf("%s/%s missing intent parameter", p.ID(), td.Name)
+			}
+			// The wire contract: work tools advertise intent as REQUIRED
+			// (WithIntentParameterRequired), while the registry's validation
+			// schema keeps it optional — see TestWithIntentParameter_LeavesRequiredUntouched.
+			if !requiredListsIntent(td.Parameters) {
+				t.Fatalf("%s/%s missing intent in required", p.ID(), td.Name)
 			}
 		}
 	}

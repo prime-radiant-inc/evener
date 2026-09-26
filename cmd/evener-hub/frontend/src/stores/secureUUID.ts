@@ -1,20 +1,14 @@
-export interface SecureRandomSource {
-  randomUUID?: () => string;
-  getRandomValues(array: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer>;
-}
+import type { SecureRandomSource } from "@evener/appwire-client/state/mutation";
+import { createSecureUUID as createSecureUUIDFromSource } from "@evener/appwire-client/state/mutation";
+import { browserRandomSource } from "./browserRandomSource";
 
-export function createSecureUUID(source: SecureRandomSource = globalThis.crypto): string {
-  if (source.randomUUID) return source.randomUUID();
+export type { SecureRandomSource };
 
-  const bytes = source.getRandomValues(new Uint8Array(16));
-  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
-  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
-  return [
-    hex.slice(0, 4).join(""),
-    hex.slice(4, 6).join(""),
-    hex.slice(6, 8).join(""),
-    hex.slice(8, 10).join(""),
-    hex.slice(10).join(""),
-  ].join("-");
+// Resolved once at module load, like mutationClientIdentity.ts's own
+// browserRandomSource() call: both are the web's callers of a package
+// function that takes this port.
+const randomSource = browserRandomSource();
+
+export function createSecureUUID(): string {
+  return createSecureUUIDFromSource(randomSource);
 }

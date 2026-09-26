@@ -1,0 +1,17 @@
+{
+  "name": "delegate-body-trigger-inline",
+  "description": "A summary-less two-level tool row (a delegate with no trailing affordance) renders its intent as a BARE content line (.intentLine: the rail icon, the status dot, and the intent as one flex item) beside the body trigger - no overlay trigger, no Open affordance. The line must hug its text rather than grow to fill the column (which springs the body chevron to the far edge), and the body trigger must share the intent's first line: the .row[data-intent-trailing=\"true\"] > .intentLine flex:0 1 auto + max-width reservation is what forces a long intent (and the icon's un-pulled post-700px width) to wrap INSIDE itself instead of claiming the line and pushing the trigger to a second row. The body trigger owns its own hit target (no overlay covers it).",
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "styles/railseat.module.css",
+    "panes/session/transcript/toolcallitem.module.css"
+  ],
+  "viewport": { "width": 1200, "height": 900, "deviceScaleFactor": 1, "mobile": false },
+  "mutation": {
+    "declaration": "toolcallitem.module.css: remove the .row[data-intent-trailing=\"true\"] > .intentLine max-width reservation; separately change its flex:0 1 auto to flex:1 1 0",
+    "verified": "2026-09-18",
+    "expect": "fail",
+    "note": "Without the max-width reservation the long-intent fixtures fail sameLine (the whole line claims its max-content width and the body trigger wraps). With flex-grow restored the short fixtures fail text-edge adjacency (the line absorbs the slack and springs the body chevron to the column's far edge)."
+  }
+}

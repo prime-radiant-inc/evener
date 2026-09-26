@@ -36,6 +36,15 @@ export function withPluginSelection(overrides: LaunchConfigLayer, selection: Plu
     : withoutSelection;
 }
 
+// The inverse of withPluginSelection: the selection a LaunchConfigLayer
+// carries. An omitted enabledPlugins is the server's default set; a present
+// one (including an empty list) is an explicit allow-list.
+export function pluginSelectionFromOverrides(overrides: LaunchConfigLayer): PluginSelectionState {
+  return overrides.enabledPlugins === undefined
+    ? { mode: "default" }
+    : { mode: "explicit", names: [...overrides.enabledPlugins] };
+}
+
 export function pluginSelectionIssues(
   selection: PluginSelectionState,
   preview: PluginPreviewResponse,

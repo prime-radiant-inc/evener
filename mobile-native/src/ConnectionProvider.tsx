@@ -10,15 +10,14 @@ import {
 	useState,
 } from "react";
 import { AppState } from "react-native";
-import type { AppwireClient, ConnectionState, WebSocketLike } from "@evener/appwire-client";
+import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 import {
-	createHubClient,
 	type HubInput,
 	type HubProfile,
 	HubProfiles,
 	type HubUpdate,
 } from "./connection";
-import { connectionFailure } from "./connectionRecovery";
+import { useHubConnection } from "./hubConnection";
 import { HubSelection } from "./hubSelection";
 import type { SavedLocation } from "./location";
 import { drafts } from "./nativeDrafts";
@@ -34,6 +33,7 @@ interface Connection {
 	activeProfile: HubProfile | null;
 	client: AppwireClient | null;
 	state: ConnectionState;
+	fatal: boolean;
 	error: string | null;
 	loading: boolean;
 	saveHub(input: HubInput): Promise<boolean>;
@@ -52,11 +52,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 	const [restorationError, setRestorationError] = useState<string | null>(null);
 	const [profiles, setProfiles] = useState<HubProfile[]>([]);
 	const [selected, setSelected] = useState<string | null>(null);
-	const [session, setSession] = useState<{
-		profileId: string;
-		client: AppwireClient;
-	} | null>(null);
-	const [state, setState] = useState<ConnectionState>("idle");
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [attempt, setAttempt] = useState(0);
@@ -79,15 +74,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		profiles.find((profile) => profile.id === selected) ?? null;
 	const activeId = activeProfile?.id;
 	const activeOrigin = activeProfile?.origin;
-	const client =
-		foreground && session?.profileId === selected
-			? (session?.client ?? null)
-			: null;
-	const visibleState = client
-		? state
-		: activeProfile && foreground
-			? "connecting"
-			: "idle";
+	const { client, state: visibleState, fatal } = useHubConnection(
+		repository,
+		activeId,
+		activeOrigin,
+		foreground,
+		attempt,
+		setError,
+	);
 	useEffect(() => {
 		let cancelled = false;
 		selection
@@ -120,58 +114,6 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			subscription.remove();
 		};
 	}, [selection]);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: The retry counter deliberately reopens the same hub connection.
-	useEffect(() => {
-		let cancelled = false;
-		let connection: AppwireClient | null = null;
-		let unsubscribe: (() => void) | undefined;
-		setSession(null);
-		setState("idle");
-		setError(null);
-		if (!activeId || !activeOrigin || !foreground) return;
-		setState("connecting");
-		void repository
-			.token(activeId)
-			.then((token) => {
-				if (cancelled) return;
-				connection = createHubClient(activeOrigin, token, (url, options) => {
-					// React Native adds native upgrade headers to the standard socket API.
-					const NativeWebSocket = WebSocket as unknown as new (
-						url: string,
-						protocols: string[] | null,
-						options: { headers: Record<string, string> },
-					) => WebSocketLike;
-					return new NativeWebSocket(url, null, options);
-				});
-				const currentConnection = connection;
-				unsubscribe = currentConnection.onStateChange((next) => {
-					if (!cancelled) {
-						setState(next);
-						if (next === "ready") setError(null);
-						if (next === "closed")
-							setError(
-								connectionFailure(currentConnection.terminalReason).message,
-							);
-					}
-				});
-				setSession({ profileId: activeId, client: connection });
-				return connection.connect();
-			})
-			.catch(() => {
-				if (!cancelled) {
-					setError(
-						connectionFailure(connection?.terminalReason ?? null).message,
-					);
-					setState("closed");
-					connection?.close();
-				}
-			});
-		return () => {
-			cancelled = true;
-			unsubscribe?.();
-			connection?.close();
-		};
-	}, [activeId, activeOrigin, foreground, attempt]);
 	const selectHub = useCallback(
 		(id: string) => selection.select(id),
 		[selection],
@@ -205,6 +147,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			activeProfile,
 			client,
 			state: visibleState,
+			fatal,
 			error,
 			loading,
 			saveHub,
@@ -221,6 +164,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 			activeProfile,
 			client,
 			visibleState,
+			fatal,
 			error,
 			loading,
 			saveHub,

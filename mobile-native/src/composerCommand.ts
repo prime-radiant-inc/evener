@@ -7,7 +7,7 @@ import {
   mergeSlashCommands,
 } from "@evener/appwire-client";
 import type { ThreadClearResponse } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import type { MobileConversation } from "./projectedRows";
 import { type ControlsSource, conversationControls } from "./conversationControls";
 import type {
   ConversationClearActions,
@@ -37,8 +37,9 @@ const commands = [
   { id: "model", args: true, capability: "changeModel", label: "Set model" },
   { id: "reasoning-effort", args: true, capability: null, label: "Set effort" },
   // Stop is sessionControls' stop: an active status and the interrupt
-  // capability (the hub folds the status into that flag; the client applies
-  // it too, so the rule is one and the transcript's turn id never enters).
+  // capability (the hub advertises interrupt as harness support; the client
+  // applies the status, so the rule is one and the transcript's turn id never
+  // enters).
   { id: "interrupt", capability: "interrupt", control: "stop", label: "Interrupt" },
   // Steering commands read the session's controls (@evener/appwire-client's
   // sessionControls): the hub advertises steer as harness

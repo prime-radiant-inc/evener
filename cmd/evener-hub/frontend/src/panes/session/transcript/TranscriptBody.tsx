@@ -1,15 +1,15 @@
-import type { ThreadModel, TurnModel } from "@evener/appwire-client";
-import { configFingerprint, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import type {
+  ProjectedEntry,
+  ProjectedTurn,
+  ThreadModel,
+  TranscriptProjection,
+  TurnModel,
+} from "@evener/appwire-client";
+import { configFingerprint, projectThread, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import type { ReactNode, RefObject } from "react";
 import { useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import { transcriptDisplayStore } from "../../../stores/transcriptDisplay";
-import {
-  type ProjectedEntry,
-  type ProjectedTurn,
-  projectThread,
-  type TranscriptProjection,
-} from "../../../transcriptDisplay/projector";
 import { createTranscriptRenderContext, TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { VirtualList, type VirtualListHandle } from "../../../widgets";
 import { modelLabel } from "../chrome/statusFormat";

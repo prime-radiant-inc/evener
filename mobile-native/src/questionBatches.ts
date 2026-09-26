@@ -9,6 +9,7 @@ import {
 	type AskQuestionRef,
 	createAskDockStore,
 } from "@evener/appwire-client";
+import { questionsIdentity } from "./questionAnswers";
 
 // One sheet, one conversation: the store keys by ref, the sheet does not.
 const REF = "conversation";
@@ -31,8 +32,8 @@ export class QuestionBatches {
 		);
 		return (
 			current !== undefined &&
-			JSON.stringify(current.questions) ===
-				JSON.stringify(expected.questions) &&
+			questionsIdentity(current.questions) ===
+				questionsIdentity(expected.questions) &&
 			this.store.beginSend(REF, expected.id)
 		);
 	}

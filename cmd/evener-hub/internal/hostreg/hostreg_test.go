@@ -33,6 +33,32 @@ func TestNewBuildsAndGets(t *testing.T) {
 	}
 }
 
+// Equal is the identity the attach rechecks compare, so it must be content
+// equality: same fields and same roots, regardless of each slice's backing.
+func TestHostEqualIsContentIdentity(t *testing.T) {
+	base := Host{Name: "m4", SSH: "m4.local", Roots: []string{"/a", "/b"}}
+	same := Host{Name: "m4", SSH: "m4.local", Roots: []string{"/a", "/b"}}
+	if !base.Equal(same) {
+		t.Fatal("Equal refused an identical entry")
+	}
+	if base.Equal(host("m4")) {
+		t.Fatal("Equal accepted an entry with roots the other lacks")
+	}
+	if base.Equal(host("studio")) {
+		t.Fatal("Equal accepted a different name")
+	}
+	changed := base
+	changed.KeyPath = "/keys/other"
+	if base.Equal(changed) {
+		t.Fatal("Equal accepted a different key path")
+	}
+	changed = base
+	changed.Roots = []string{"/b", "/a"}
+	if base.Equal(changed) {
+		t.Fatal("Equal accepted reordered roots")
+	}
+}
+
 func TestAddRejectsNamedErrors(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -390,5 +416,244 @@ func TestValuesAreStoredTrimmed(t *testing.T) {
 	}
 	if got.SSH != "m4.local" || got.User != "jesse" || got.EvenerPath != "/usr/local/bin/evener" || got.Roots[0] != "/srv/a" {
 		t.Fatalf("stored host = %+v, want trimmed values", got)
+	}
+}
+
+func TestRemoveUnknownHost(t *testing.T) {
+	r, err := New([]Host{host("m4")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Remove("nope"); !errors.Is(err, ErrUnknownHost) {
+		t.Fatalf("Remove(unknown) = %v, want ErrUnknownHost", err)
+	}
+	// The refusal must not disturb the registered host.
+	if _, ok := r.Get("m4"); !ok {
+		t.Error("Get(m4) missing after a refused Remove")
+	}
+}
+
+func TestRemoveRejectsInvalidNames(t *testing.T) {
+	tests := []struct {
+		name   string
+		remove string
+		want   error
+	}{
+		{"blank", "   ", ErrInvalidName},
+		{"empty", "", ErrInvalidName},
+		{"bad charset slash", "a/b", ErrInvalidName},
+		{"dotdot inside", "a..b", ErrInvalidName},
+		{"dot alone", ".", ErrInvalidName},
+		{"reserved local", ReservedName, ErrReservedName},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := New([]Host{host("m4")})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			if err := r.Remove(tt.remove); !errors.Is(err, tt.want) {
+				t.Fatalf("Remove(%q) = %v, want %v", tt.remove, err, tt.want)
+			}
+			if _, ok := r.Get("m4"); !ok {
+				t.Error("Get(m4) missing after a refused Remove")
+			}
+		})
+	}
+}
+
+// Remove deletes the host: Get misses and All no longer lists it. The padded
+// spelling must remove the host too, matching the trimmed lookups elsewhere.
+func TestRemoveDeletesHost(t *testing.T) {
+	r, err := New([]Host{host("m4"), host("studio")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Remove("  m4  "); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, ok := r.Get("m4"); ok {
+		t.Error("Get(m4) present after Remove")
+	}
+	if _, ok := r.Get("  m4  "); ok {
+		t.Error("Get with a padded name present after Remove")
+	}
+	got := r.All()
+	if len(got) != 1 || got[0].Name != "studio" {
+		t.Errorf("All() after Remove = %+v, want only studio", got)
+	}
+	// Removing twice reports unknown: the host stays removed, it is not
+	// resurrected and the second call is not a silent success.
+	if err := r.Remove("m4"); !errors.Is(err, ErrUnknownHost) {
+		t.Fatalf("second Remove = %v, want ErrUnknownHost", err)
+	}
+}
+
+// A later Add of the same name starts clean: it succeeds with a different SSH
+// value, proving no stale host state survived the removal.
+func TestRemoveThenReAddStartsClean(t *testing.T) {
+	r, err := New([]Host{host("m4")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Remove("m4"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	readded := Host{Name: "m4", SSH: "m4-new.local"}
+	if err := r.Add(readded); err != nil {
+		t.Fatalf("Add after Remove: %v", err)
+	}
+	got, ok := r.Get("m4")
+	if !ok {
+		t.Fatal("Get(m4) missing after re-Add")
+	}
+	if got.SSH != "m4-new.local" {
+		t.Fatalf("Get(m4).SSH = %q, want %q", got.SSH, "m4-new.local")
+	}
+}
+
+// A remove and byte-identical re-add of a name is a new registry entry: the
+// registry-wide generation advances across the cycle even though every configured
+// field — the content Equal compares — is unchanged. That Equal passes between
+// the two is exactly why an identity recheck must compare the generation
+// alongside it: content equality alone cannot tell them apart (the round-3
+// identity race behind sshconn's attach rechecks).
+func TestRemoveReaddIdenticalAdvancesGeneration(t *testing.T) {
+	r, err := New([]Host{host("m4")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	first, ok := r.Get("m4")
+	if !ok || first.Generation != 1 {
+		t.Fatalf("Get(m4) = %+v, %v; want the first insert's generation 1", first, ok)
+	}
+	if err := r.Remove("m4"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	// The re-add is the byte-identical literal the registry stored.
+	if err := r.Add(host("m4")); err != nil {
+		t.Fatalf("Add after Remove: %v", err)
+	}
+	second, ok := r.Get("m4")
+	if !ok {
+		t.Fatal("Get(m4) missing after the re-add")
+	}
+	if !first.Equal(second) {
+		t.Fatalf("Equal refused byte-identical entries: %+v vs %+v", first, second)
+	}
+	if second.Generation <= first.Generation {
+		t.Fatalf("re-added generation = %d, want greater than the removed entry's %d", second.Generation, first.Generation)
+	}
+}
+
+// TestGenerationIsRegistryWideMonotonic pins the round-4 L1 design: the
+// registry assigns generations from ONE registry-wide monotonic counter, not
+// a per-name count that survives removals. A per-name counter map grows one
+// tombstone per name ever added — unbounded growth under churn — and pruning
+// it cannot stay safe: dropping a name's count lets a re-add reuse the
+// generation a byte-identical re-add must not match. Registry-wide assignment
+// costs nothing semantically, because every Host.Generation consumer compares
+// a captured entry with the live entry of the SAME name (sshconn's attach
+// rechecks): a parked Ensure reads only its own host's entry, so an unrelated
+// host's add/remove never changes what it compares against, and a remove/
+// re-add of any name still never reuses a generation — the counter only
+// advances.
+func TestGenerationIsRegistryWideMonotonic(t *testing.T) {
+	r, err := New([]Host{host("a"), host("b")})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	a1, ok := r.Get("a")
+	if !ok {
+		t.Fatal("Get(a) missing after New")
+	}
+	b1, ok := r.Get("b")
+	if !ok {
+		t.Fatal("Get(b) missing after New")
+	}
+	// Registry-wide: every insert advances the one counter, so b's insert —
+	// not b's name — carries the next generation. A per-name counter would
+	// restart at 1 here.
+	if b1.Generation <= a1.Generation {
+		t.Fatalf("b's generation = %d, want greater than a's %d: the counter is registry-wide", b1.Generation, a1.Generation)
+	}
+	// Churn on unrelated names interleaved with a remove/re-add must not let
+	// the re-added name reuse a generation: the byte-identical re-add is
+	// still a different entry from the one Remove deleted.
+	if err := r.Remove("a"); err != nil {
+		t.Fatalf("Remove(a): %v", err)
+	}
+	if err := r.Add(host("c")); err != nil {
+		t.Fatalf("Add(c): %v", err)
+	}
+	if err := r.Add(host("a")); err != nil {
+		t.Fatalf("re-Add(a): %v", err)
+	}
+	a2, ok := r.Get("a")
+	if !ok {
+		t.Fatal("Get(a) missing after the re-add")
+	}
+	if !a1.Equal(a2) {
+		t.Fatalf("Equal refused byte-identical entries: %+v vs %+v", a1, a2)
+	}
+	if a2.Generation <= a1.Generation {
+		t.Fatalf("re-added generation = %d, want greater than the removed entry's %d", a2.Generation, a1.Generation)
+	}
+}
+
+// Removing a dependent clears its edges, so re-adding it without upstreams
+// succeeds instead of tripping the cycle check on a stale edge entry.
+func TestRemoveClearsDependentEdges(t *testing.T) {
+	r, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Add(host("a")); err != nil {
+		t.Fatalf("add a: %v", err)
+	}
+	if err := r.AddWithUpstreams(host("b"), []string{"a"}); err != nil {
+		t.Fatalf("add b with upstream a: %v", err)
+	}
+	if err := r.Remove("b"); err != nil {
+		t.Fatalf("Remove(b): %v", err)
+	}
+	if err := r.Add(host("b")); err != nil {
+		t.Fatalf("re-Add b without upstreams: %v", err)
+	}
+	// The re-added host carries no edges, so it is a leaf again.
+	if err := r.SetUpstreams("a", []string{"b"}); err != nil {
+		t.Fatalf("SetUpstreams(a, b) after re-adding b edgeless: %v", err)
+	}
+}
+
+// Removing an upstream does not stop it from being re-added, and the
+// dependent's dangling edge still resolves once the upstream is back.
+func TestRemoveUpstreamThenReAdd(t *testing.T) {
+	r, err := New(nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := r.Add(host("a")); err != nil {
+		t.Fatalf("add a: %v", err)
+	}
+	if err := r.AddWithUpstreams(host("b"), []string{"a"}); err != nil {
+		t.Fatalf("add b with upstream a: %v", err)
+	}
+	if err := r.Remove("a"); err != nil {
+		t.Fatalf("Remove(a): %v", err)
+	}
+	if _, ok := r.Get("a"); ok {
+		t.Error("Get(a) present after Remove")
+	}
+	if err := r.Add(host("a")); err != nil {
+		t.Fatalf("re-Add a: %v", err)
+	}
+	got, ok := r.Get("a")
+	if !ok || got.SSH != "a.local" {
+		t.Fatalf("Get(a) after re-Add = %+v, %v, want the re-added host", got, ok)
+	}
+	// The dependent still points at a, so closing the loop back is refused.
+	if err := r.SetUpstreams("a", []string{"b"}); !errors.Is(err, ErrHostCycle) {
+		t.Fatalf("SetUpstreams closing a cycle through the re-added upstream = %v, want ErrHostCycle", err)
 	}
 }

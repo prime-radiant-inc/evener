@@ -58,6 +58,22 @@ type Host struct {
 	ConfigPath string
 	Addr       string
 	Roots      []string
+	// KeyPath is the SSH private-key file the controller dials with. A
+	// [[hosts]] entry never sets it (hub.toml's schema has no key field, so a
+	// file-declared host resolves its identity the way the operator's ssh_config
+	// does); a UI-added sidecar host carries its key here so the one live dial
+	// path — the registry entry this package stores — sees it.
+	KeyPath string
+	// Generation is the registry-wide insert generation: a counter the
+	// registry advances on every insert and never reuses, so a name's
+	// re-added entry — even with byte-identical content — is a different
+	// entry from the one an earlier Get handed out. It carries the 08 spec
+	// series' generation semantics for attach identity: callers construct
+	// Hosts with it zero, Add (AddWithUpstreams) overwrites whatever they
+	// set, and an attach that captured an entry pins itself to the
+	// generation as much as to the content — content equality alone cannot
+	// tell a removed entry from its re-added twin (see Equal).
+	Generation uint64
 }
 
 // ValidateName reports whether name is an acceptable host name: non-empty, not
@@ -104,11 +120,24 @@ func Normalize(entry Host) Host {
 	entry.EvenerPath = strings.TrimSpace(entry.EvenerPath)
 	entry.ConfigPath = strings.TrimSpace(entry.ConfigPath)
 	entry.Addr = strings.TrimSpace(entry.Addr)
+	entry.KeyPath = strings.TrimSpace(entry.KeyPath)
 	entry.Roots = slices.Clone(entry.Roots)
 	for i, root := range entry.Roots {
 		entry.Roots[i] = strings.TrimSpace(root)
 	}
 	return entry
+}
+
+// Equal reports whether h and other carry the same configured content: every
+// field equal, with Roots compared by content. Generation is deliberately
+// excluded — content equality cannot tell a removed entry from a byte-identical
+// re-add — so an identity recheck compares the generation alongside this
+// (sshconn's Ensure and reconnectOnce), never this alone.
+func (h Host) Equal(other Host) bool {
+	return h.Name == other.Name && h.SSH == other.SSH && h.User == other.User &&
+		h.EvenerPath == other.EvenerPath && h.ConfigPath == other.ConfigPath &&
+		h.Addr == other.Addr && h.KeyPath == other.KeyPath &&
+		slices.Equal(h.Roots, other.Roots)
 }
 
 // cloneHost deep-copies the one field a caller could otherwise mutate through a
@@ -138,12 +167,33 @@ func validateEntry(entry Host) error {
 	return nil
 }
 
+// ValidateEntry reports whether entry could be added to a registry: the same
+// shape checks AddWithUpstreams runs after normalizing — the name grammar, a
+// non-empty ssh destination, user/ssh agreement, and non-empty roots —
+// available on its own so a caller validating one entry commits nothing and
+// builds no scratch registry. Duplicates and cycles stay Add's job.
+func ValidateEntry(entry Host) error {
+	return validateEntry(Normalize(entry))
+}
+
 // Registry is a concurrency-safe set of validated hosts that also carries the
 // directed upstream edges used for cycle rejection.
 type Registry struct {
 	mu    sync.RWMutex
 	hosts map[string]Host
 	edges map[string][]string // host name -> names of its upstream hosts
+	// gen is the registry-wide insert generation: one monotonic counter,
+	// advanced by every Add and never reused, that AddWithUpstreams stamps
+	// on each inserted entry. One registry-wide counter rather than one
+	// per name keeps the retained state a single integer: a per-name
+	// counter map would grow unboundedly under name churn and could not be
+	// pruned — dropping a name's count would let a byte-identical re-add
+	// reuse the removed entry's generation. Every Host.Generation consumer
+	// compares a captured entry with the live entry of the same name, so a
+	// registry-wide counter preserves those semantics exactly — a
+	// remove/re-add of any name still always advances past the removed
+	// entry's generation.
+	gen uint64
 }
 
 // New validates every entry and builds a registry. Entries are added in order,
@@ -194,8 +244,55 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	if err := r.checkCycleLocked(entry.Name, upstreamNames); err != nil {
 		return err
 	}
-	r.hosts[entry.Name] = entry
+	// The generation is assigned under the lock, from the registry-wide
+	// counter: a re-add of the same name — byte-identical or not, interleaved
+	// with other hosts' churn or not — always carries a generation the
+	// removed entry never had.
+	r.stampAndStoreLocked(entry)
 	r.edges[entry.Name] = append([]string(nil), upstreamNames...)
+	return nil
+}
+
+// stampAndStoreLocked gives entry its fresh registry identity and stores it.
+// Callers hold r.mu, so advancing the registry-wide generation and exposing the
+// entry remain one atomic operation.
+func (r *Registry) stampAndStoreLocked(entry Host) {
+	entry.Generation = r.gen + 1
+	r.gen = entry.Generation
+	r.hosts[entry.Name] = entry
+}
+
+// Update replaces the entry registered under entry.Name in place and stamps it
+// with a fresh generation from the registry-wide counter — the identity fence
+// every capture-compare consumer reads (the SSH manager's pre-publish rechecks
+// and the hub's row fence), so a capture taken before an update stops matching
+// once the update lands.
+//
+// It normalizes and validates exactly as an add does — Normalize, then the same
+// validateEntry — so an update can never store what an add would refuse, and a
+// refusal leaves the registry untouched. It runs no host-count cap: the
+// registry has none, config load has none, and the slice that owns the cap
+// (the design document's [03] follow-up) is where it arrives.
+//
+// Unlike AddWithUpstreams it never inserts: update targets a live entry, so a
+// name the registry does not hold is ErrUnknownHost rather than a create. The
+// name's upstream edges are preserved verbatim, which is why the cycle check is
+// not rerun — the edges are unchanged, and the graph they describe is the one
+// that was already acyclic.
+func (r *Registry) Update(entry Host) error {
+	entry = Normalize(entry)
+	if err := validateEntry(entry); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.hosts[entry.Name]; !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownHost, entry.Name)
+	}
+	// The generation is assigned under the lock from the registry-wide counter,
+	// exactly as AddWithUpstreams does, so an update is as much a new identity
+	// as a remove/re-add: no generation a capture can hold is ever reused.
+	r.stampAndStoreLocked(entry)
 	return nil
 }
 
@@ -263,9 +360,9 @@ func (r *Registry) checkCycleLocked(candidate string, upstreamNames []string) er
 	done := map[string]bool{}
 	var walk func(name string) error
 	walk = func(name string) error {
-		if name == candidate {
-			return fmt.Errorf("%w: %q", ErrHostCycle, candidate)
-		}
+		// candidate is pre-seeded in onPath, so reaching it — a self-edge
+		// or a back-edge — trips the same refusal as any other node
+		// already on the current path (a cycle among the upstreams).
 		if onPath[name] {
 			return fmt.Errorf("%w: %q", ErrHostCycle, candidate)
 		}
@@ -302,6 +399,78 @@ func (r *Registry) Get(name string) (Host, bool) {
 		return Host{}, false
 	}
 	return cloneHost(host), true
+}
+
+// SameRegistration reports whether two captures describe the same insert: equal
+// configured content and the same generation. It is the one predicate an
+// identity recheck states, wrapped here by Registry.SameRegistration and
+// applied by sshconn's channels to pair a live channel with an entry. Content
+// equality alone cannot tell a removed entry from its byte-identical re-add
+// (Equal excludes Generation, and a re-add takes a fresh generation from the
+// registry-wide counter); generation equality alone cannot refuse a hand-built
+// capture whose generation is current but whose content is stale, even though
+// the registry never mutates an inserted entry. Both are needed.
+func SameRegistration(a, b Host) bool {
+	return a.Equal(b) && a.Generation == b.Generation
+}
+
+// SameRegistration reports whether name is currently registered as the same
+// insert captured describes: present, carrying the same configured content,
+// and stamped with the same generation. It is the identity recheck for
+// callers that captured an entry and are about to act on it — attach paths
+// before publishing a channel, host rows before folding retained state: a
+// name whose entry was removed, or removed and re-added even byte-identically
+// (the re-add takes a fresh generation from the registry-wide counter), now
+// resolves to a different insert, and the caller must refuse to act on its
+// stale capture. The content comparison rides along even though the registry
+// never mutates an inserted entry: Host is a plain exported value, and a
+// hand-built capture with a current generation but stale content must not
+// pass for the live registration.
+func (r *Registry) SameRegistration(name string, captured Host) bool {
+	current, ok := r.Get(name)
+	return ok && SameRegistration(current, captured)
+}
+
+// Remove deletes the host registered under name along with its upstream edges.
+// A removed host stays removed: Get and All no longer report it, and a later
+// Add of the same name starts clean rather than inheriting the old edges (a
+// stale edges entry under the re-added name would false-positive the cycle
+// check against upstreams that no longer apply). The registry-wide generation
+// counter needs no cleanup here — it only advances, so the re-add's Add
+// assigns the next generation and the re-added entry stays distinguishable
+// from the one Remove deleted even when every configured byte matches.
+//
+// Edges recorded on other hosts that name the removed host are left alone: the
+// cycle walk already treats an unknown upstream as a leaf, so they dangle
+// harmlessly until the target is re-added or the dependent is removed.
+func (r *Registry) Remove(name string) error {
+	// Trimmed like every other name, so a padded spelling removes its host
+	// instead of failing as unknown while the host stays registered.
+	name = strings.TrimSpace(name)
+	if err := ValidateName(name); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.hosts[name]; !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownHost, name)
+	}
+	delete(r.hosts, name)
+	delete(r.edges, name)
+	return nil
+}
+
+// Names returns every registered host's name sorted by name: the name set
+// of All() without the entry copies, for callers that only need membership.
+func (r *Registry) Names() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, 0, len(r.hosts))
+	for name := range r.hosts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // All returns every registered host sorted by name, mirroring

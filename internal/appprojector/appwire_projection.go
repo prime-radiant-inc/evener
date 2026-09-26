@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
@@ -94,6 +95,10 @@ type AppEventProjector struct {
 	reasoningTurnID string
 	toolItemsByKey  map[string]string
 	toolArgsByKey   map[string]string
+	// toolDescriptionByKey stores the started item's Description (intent) so the
+	// END event carries forward the START's gated intent rather than re-deriving
+	// it from argsJSON without the size/validation gate (F3 round 5).
+	toolDescriptionByKey map[string]string
 	// toolStartByKey records each open tool call's server-side start time (the
 	// EventToolCallStart event's own timestamp) so EventToolCallEnd can stamp
 	// the completed item with the call's real StartedAt/DurationMS (issue
@@ -156,6 +161,7 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 		ref:                         ref,
 		toolItemsByKey:              map[string]string{},
 		toolArgsByKey:               map[string]string{},
+		toolDescriptionByKey:        map[string]string{},
 		toolStartByKey:              map[string]time.Time{},
 		suppressedTools:             map[string]struct{}{},
 		heldToolResultImages:        map[string]appwire.ThreadItem{},
@@ -612,7 +618,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		p.provisionalCommunicateItems[data.CallID] = itemID
 		return append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
 			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
-			Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Status: appwire.TurnStatusInProgress},
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, CallID: data.CallID, Status: appwire.TurnStatusInProgress},
 		}))
 	case events.EventCommunicatePreviewDelta:
 		data := eventData[events.CommunicatePreviewDeltaData](event.Data)
@@ -656,7 +662,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			p.recordAssistantMessage(p.activeTurnID, text)
 			return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 				ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
-				Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Text: text, Status: appwire.TurnStatusCompleted},
+				Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, CallID: data.CallID, Text: text, Status: appwire.TurnStatusCompleted},
 			}))
 		}
 		if p.matchesLastAssistantMessage(p.activeTurnID, text) {
@@ -701,6 +707,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		itemID := p.nextItemID("tool")
 		p.toolItemsByKey[data.CallID] = itemID
 		p.toolArgsByKey[data.CallID] = data.ArgumentsJSON
+		p.toolDescriptionByKey[data.CallID] = data.Description
 		startedItem := appwire.ThreadItem{
 			Type:          "commandExecution",
 			ID:            itemID,
@@ -765,9 +772,27 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		if _, ok := p.suppressedTools[data.CallID]; ok {
 			delete(p.suppressedTools, data.CallID)
 			p.communicatePhases[data.CallID] = communicatePhaseClosed
+			// A communicate's settled failure surfaces as a commandExecution
+			// error item on BOTH live and reload IFF it was a pre-dispatch
+			// rejection (PrevalOnly=true — the call's Exec fn never ran),
+			// matching reload's IsError&&PrevalOnly predicate. A runtime
+			// execution failure (PrevalOnly=false — the call ran and
+			// failed/was canceled) surfaces NOTHING on either side (reload
+			// pin: TestProjectTurn_RuntimeFailedCommunicateDoesNotShowRawArgs).
+			// A PrevalOnly rejection whose preview started retracts the
+			// provisional agentMessage (the reset above) AND surfaces the
+			// error item: reload has no preview and always renders the
+			// commandExecution error for IsError&&PrevalOnly, so live matches
+			// by retracting then surfacing the same error.
+			if data.Error != "" && data.ToolName == "communicate" && data.PrevalOnly {
+				out = append(out, p.settledCommunicateFailure(data, event))
+			}
 			return out
 		}
 		if data.ToolName == "communicate" && p.toolItemsByKey[data.CallID] == "" {
+			if data.Error != "" && data.PrevalOnly {
+				out = append(out, p.settledCommunicateFailure(data, event))
+			}
 			return out
 		}
 		raw := data.ToolState
@@ -777,6 +802,17 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		argsJSON := p.toolArgsByKey[data.CallID]
 		if argsJSON == "" {
 			argsJSON = data.ArgumentsJSON
+		}
+		// Carry the call's intent onto the completed item too (#26).
+		// Reuse the START event's gated Description when available (F3 round 5).
+		// When START was never seen, suppressed, or cleared by
+		// resetTurnScopedState, fall back to GATED derivation from argsJSON
+		// — the same validation+size gate the START path uses (F4 round 6).
+		// This does NOT reintroduce ungated re-derivation: bytes the START
+		// path would reject (oversized, invalid UTF-8, or non-JSON) stay empty.
+		description := p.toolDescriptionByKey[data.CallID]
+		if description == "" && len(argsJSON) > 0 && argrepair.ValidateRawArguments([]byte(argsJSON)) == nil && json.Valid([]byte(argsJSON)) {
+			description = apptranscript.ToolIntentFromArguments(json.RawMessage(argsJSON))
 		}
 		item := appwire.ThreadItem{
 			Type:          "commandExecution",
@@ -791,10 +827,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 			OutputImages:  projectOutputImages(data.OutputImages),
 			Status:        apptranscript.SettledToolStatus(data.Error != ""),
 			Raw:           raw,
-			// Carry the call's intent onto the completed item too (#26):
-			// the started item already has it, and live consumers (the web
-			// subagent activity line) render the intent from Description.
-			Description: apptranscript.ToolIntentFromArguments(json.RawMessage(argsJSON)),
+			Description:   description,
 			// ExitCode promotes the shell tool's exit code, already riding
 			// data.ToolState end to end (agent/session_tools_shell.go:483
 			// shellToolResult), onto the settled item (wire-honesty spec Part
@@ -1094,6 +1127,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 				Texts:             append([]string(nil), data.Texts...),
 				SkillNames:        cloneSkillNames(data.SkillNames),
 			},
+			ConsumedClientMutationIDs: append([]string(nil), data.ConsumedClientMutationIDs...),
 		})}
 	case events.EventTaskUpdated:
 		p.clearSkillCandidate()
@@ -1218,6 +1252,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 				FromWatch:        data.FromWatch,
 				Background:       data.Background,
 				Command:          data.Command,
+				Intent:           data.Intent,
 				ParentDelegateID: data.ParentDelegateID,
 				DelegateID:       data.DelegateID,
 				Task:             data.Task,
@@ -1258,6 +1293,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 				FromWatch:        data.FromWatch,
 				Background:       data.Background,
 				Command:          data.Command,
+				Intent:           data.Intent,
 				ParentDelegateID: data.ParentDelegateID,
 				DelegateID:       data.DelegateID,
 				Task:             data.Task,
@@ -1465,7 +1501,12 @@ func cloneInt64Pointer(value *int64) *int64 {
 
 func useSkillNameFromArgs(raw string) string {
 	var args map[string]any
-	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+	// Repair malformed bytes before parsing (F5 round 6): the live path
+	// emits byte-faithful ArgumentsJSON, so a repairable-malformed use_skill
+	// call carries invalid JSON. The live path already repaired the same
+	// bytes to dispatch the call; repair here too so the skill announcement
+	// recovers the name instead of degrading to a plain systemAnnouncement.
+	if err := json.Unmarshal(argrepair.RepairJSON([]byte(raw)), &args); err != nil {
 		return ""
 	}
 	for _, key := range []string{"skill_name", "name"} {
@@ -1653,6 +1694,7 @@ func projectUserInputImages(images []events.UserInputImage) []appwire.InputItem 
 	return out
 }
 
+// projectOutputImages returns nil, never empty, when nothing survives: an item whose descriptors were all unusable never showed images to remove.
 func projectOutputImages(images []events.OutputImage) []appwire.OutputImage {
 	if len(images) == 0 {
 		return nil
@@ -1671,6 +1713,9 @@ func projectOutputImages(images []events.OutputImage) []appwire.OutputImage {
 			SHA:       img.SHA,
 			Path:      img.Path,
 		})
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -1948,9 +1993,7 @@ func (p *AppEventProjector) holdUnfetchableToolResultImages(item *appwire.Thread
 		return
 	}
 	p.heldToolResultImages[item.CallID] = *item
-	if len(fetchable) == 0 {
-		fetchable = nil
-	}
+	// Empty, never nil: this tells a client holding an earlier copy to stop showing these images; the release below restores the descriptors.
 	item.OutputImages = fetchable
 }
 
@@ -2073,6 +2116,7 @@ func (p *AppEventProjector) resetTurnScopedState() {
 	p.reasoningTurnID = ""
 	p.toolItemsByKey = map[string]string{}
 	p.toolArgsByKey = map[string]string{}
+	p.toolDescriptionByKey = map[string]string{}
 	p.toolStartByKey = map[string]time.Time{}
 	p.suppressedTools = map[string]struct{}{}
 	p.provisionalCommunicateItems = map[string]string{}
@@ -2313,6 +2357,37 @@ func (p *AppEventProjector) toolItemID(callID string) string {
 	itemID := p.nextItemID("tool")
 	p.toolItemsByKey[callID] = itemID
 	return itemID
+}
+
+// settledCommunicateFailure builds a NotifyItemCompleted notification for a
+// rejected communicate whose START was suppressed or never seen. Live
+// suppresses communicate start/end for rejected calls (the Exec fn never
+// runs), but the END must still surface a settled failed commandExecution
+// item so the user sees what was rejected — matching what reload renders
+// from the deferred CommRawArgs. This closes the live/reload divergence
+// the metamorphic oracle previously excluded (round 6 finding 1b).
+func (p *AppEventProjector) settledCommunicateFailure(data events.ToolCallEndData, event events.SessionEvent) AppNotification {
+	item := appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            p.toolItemID(data.CallID),
+		TurnID:        p.activeTurnID,
+		ToolName:      data.ToolName,
+		CallID:        data.CallID,
+		ArgumentsJSON: data.ArgumentsJSON,
+		Error:         data.Error,
+		PrevalOnly:    data.PrevalOnly,
+		Status:        apptranscript.SettledToolStatus(data.Error != ""),
+	}
+	if !event.Timestamp.IsZero() {
+		ms := event.Timestamp.UnixMilli()
+		item.CompletedAt = &ms
+	}
+	return p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+		ThreadID: p.threadID,
+		Ref:      p.ref,
+		TurnID:   p.activeTurnID,
+		Item:     item,
+	})
 }
 
 func (p *AppEventProjector) recordAssistantMessage(turnID, text string) {

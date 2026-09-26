@@ -1,6 +1,6 @@
 import type { ThreadModel } from "@evener/appwire-client";
 import { canReadSharedNotes } from "@evener/appwire-client";
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { canWriteHumanNote, syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Chevron, ToolIcon } from "../../../widgets";
@@ -16,7 +16,6 @@ const CLASS = {
   sourceIcon: requireClass(styles.sourceIcon, "topnotespanel.module.css", "sourceIcon"),
   clampedText: requireClass(styles.clampedText, "topnotespanel.module.css", "clampedText"),
   placeholder: requireClass(styles.placeholder, "topnotespanel.module.css", "placeholder"),
-  hint: requireClass(styles.hint, "topnotespanel.module.css", "hint"),
   expandedHeader: requireClass(styles.expandedHeader, "topnotespanel.module.css", "expandedHeader"),
   expandedTitle: requireClass(styles.expandedTitle, "topnotespanel.module.css", "expandedTitle"),
   expandedBody: requireClass(styles.expandedBody, "topnotespanel.module.css", "expandedBody"),
@@ -41,7 +40,6 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
   // every render (the latest-ref pattern).
   const latestSessionRef = useRef(sessionRef);
   latestSessionRef.current = sessionRef;
-  const hintId = useId();
 
   useEffect(() => {
     // Gated on readability so a session without the notes capability never
@@ -126,7 +124,7 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
   };
 
   return (
-    <div className={CLASS.topNotesPanel} data-testid="top-notes-panel">
+    <div className={CLASS.topNotesPanel} data-expanded={expanded} data-testid="top-notes-panel">
       {/* One disclosure trigger both states share (the collapsed summary and
           the expanded header row): same button role, same toggle, same
           chevron - only the resting style, label, and lead content differ. */}
@@ -139,7 +137,6 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
         // text, the link count, or the placeholder) - a generic label would
         // hide that content from screen readers.
         aria-label={expanded ? "Collapse session notes" : undefined}
-        aria-describedby={hintId}
         data-testid={expanded ? "top-notes-collapse-trigger" : "top-notes-summary"}
       >
         <span className={CLASS.summaryLeft}>
@@ -158,13 +155,6 @@ export function TopNotesPanel({ sessionRef, model }: TopNotesPanelProps) {
               <span className={isPlaceholder ? CLASS.placeholder : CLASS.clampedText}>{summaryText}</span>
             </>
           )}
-        </span>
-        {/* Inside the button so the whole bar row is one live click target
-            (chrome, hover, and the divider stay continuous), but aria-hidden:
-            hidden text is excluded from the accessible NAME while
-            aria-describedby still resolves it as the description. */}
-        <span className={CLASS.hint} id={hintId} aria-hidden="true">
-          {expanded ? "Click to collapse" : isPlaceholder && !canWrite ? "Click to view" : "Click to expand"}
         </span>
       </button>
       {expanded && (

@@ -49,7 +49,7 @@ func TestCovNewResumeLocks(t *testing.T) {
 func TestCovResumeLocksConcurrent(t *testing.T) {
 	r := NewResumeLocks()
 	start := make(chan struct{})
-	results := make(chan *sync.Mutex, 20)
+	results := make(chan *ResumeMutex, 20)
 	var wg sync.WaitGroup
 	for range 20 {
 		wg.Add(1)
@@ -63,7 +63,7 @@ func TestCovResumeLocksConcurrent(t *testing.T) {
 	wg.Wait()
 	close(results)
 
-	var want *sync.Mutex
+	var want *ResumeMutex
 	count := 0
 	for got := range results {
 		if got == nil {

@@ -25,6 +25,23 @@ export class WireError extends Error {
   }
 }
 
+// ErrorInvalidHostField is the hub's discriminator for a host mutation's
+// validation refusal, whose data names the input that failed
+// (appwire.ErrorInvalidHostField, appwire/errors.go). It shares its code with
+// every other validation refusal, so the field is only ever read off this
+// discriminant. The binding test (errors.test.ts) reads the Go constant.
+export const ErrorInvalidHostField = "invalidHostField";
+
+// hostFieldError returns the input a host-mutation refusal blames, or undefined
+// for any other rejection — including a refusal that blames the entry as a
+// whole, which carries no field. The returned name is the wire spelling the
+// dialog's own inputs use, so a caller maps it onto an input directly.
+export function hostFieldError(error: unknown): string | undefined {
+  return wireRejectionPayload(error, ErrorInvalidHostField, "field", (value) =>
+    typeof value === "string" && value !== "" ? value : undefined,
+  );
+}
+
 // errorText flattens a rejected value to the text worth showing. It is the
 // one definition of a conversion the whole app needs: every caller that
 // reports a failure to the user starts here.
@@ -43,6 +60,85 @@ export function isHubLaunchError(err: unknown): boolean {
 export function isStaleCursorError(error: unknown): boolean {
   return error instanceof WireError && error.evenerErrorInfo === "transcriptItemCursorStale";
 }
+
+/** Extracts a payload the hub attached to a rejection under `key` when the
+ * rejection is the `evenerErrorInfo` kind named, decoded by `decode`
+ * (undefined for a malformed or absent payload, the same as a rejection of a
+ * different kind). Every settings-hub store's conflict/post-apply rejection
+ * shares this shape (a durable failure whose write already landed carries the
+ * hub's canonical state under "applied"; a lost revision race carries it
+ * under "current") - only the payload's own decoder differs between stores.
+ * The discriminator is the string, never the code - siblings share a code. */
+export function wireRejectionPayload<T>(
+  error: unknown,
+  info: string,
+  key: string,
+  decode: (value: unknown) => T | undefined,
+): T | undefined {
+  if (!(error instanceof WireError) || error.evenerErrorInfo !== info) return undefined;
+  if (!error.data || typeof error.data !== "object") return undefined;
+  return decode((error.data as Record<string, unknown>)[key]);
+}
+
+// ErrorInstanceRenamePersisted is the hub's discriminator for a provider-instance
+// rename that APPLIED before its credential move or reload failed
+// (appwire.ErrorInstanceRenamePersisted, appwire/errors.go); the hub's message
+// names the credential left behind, and clients steer to the new name rather than
+// report a failed save. The binding test (errors.test.ts) reads the Go constant,
+// so a hub-side rename breaks there instead of silently leaving the standing
+// rename read as a plain failure.
+export const ErrorInstanceRenamePersisted = "instanceRenamePersisted";
+
+// isInstanceRenamePersisted reports whether a rejection is the hub reporting a
+// provider-instance rename that APPLIED before its credential move or reload
+// failed (ErrorInstanceRenamePersisted above). The discriminator is that
+// string, never the code - siblings share the code - so this is the one
+// definition every client matches against.
+export function isInstanceRenamePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRenamePersisted;
+}
+
+// ErrorInstanceRemoveApplied is the hub's discriminator for a provider-instance
+// removal that APPLIED before a later step failed
+// (appwire.ErrorInstanceRemoveApplied, appwire/errors.go): the instance's
+// credential deletion (or its config entry) reached the store, so the removal
+// stands and the hub's message names what was left behind. Clients close the
+// confirmation, re-read the listing, and drop any state retained for the name
+// rather than report a failed remove whose retry targets a missing instance.
+// The binding test (errors.test.ts) reads the Go constant, so a hub-side rename
+// breaks there instead of silently leaving the standing removal read as a plain
+// failure.
+export const ErrorInstanceRemoveApplied = "instanceRemoveApplied";
+
+// isInstanceRemoveApplied reports whether a rejection is the hub reporting a
+// provider-instance removal that APPLIED before a later step failed
+// (ErrorInstanceRemoveApplied above). The discriminator is that string, never
+// the code - siblings share the code - so this is the one definition every
+// client matches against.
+export function isInstanceRemoveApplied(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemoveApplied;
+}
+
+// ErrorEndpointConflict is the hub's discriminant for a refusal of an asserted
+// destination (appwire.ErrorEndpointConflict, appwire/errors.go): the name no
+// longer resolves to the endpoint the client showed the user. It shares
+// CodeConflict with genuine conflicts (a name collision, an expired flow), so
+// matching the code would read a create collision as a moved endpoint; this
+// string is the one definition every credential flow matches against. The
+// binding test (errors.test.ts) reads the Go constant.
+export const ErrorEndpointConflict = "endpointConflict";
+
+// ErrorMarketplaceRemoveApplied is the hub's discriminant for a marketplace
+// removal that APPLIED - the unregister and its clone cleanup both completed
+// - but whose response could not carry the updated list, because the fresh
+// read that builds it failed (appwire.ErrorMarketplaceRemoveApplied,
+// appwire/errors.go). The marker alone means the removal stands: a retry
+// finds ErrMarketplaceNotFound, so consumers report neutrally and reconcile
+// through their normal fetch path, never a clone-litter warning and never a
+// retry. The binding test (errors.test.ts) reads the Go constant, so a
+// hub-side rename breaks there instead of silently leaving the standing
+// removal read as a failed one.
+export const ErrorMarketplaceRemoveApplied = "marketplaceRemoveApplied";
 
 // sessionActionHeadline names the step that actually died.
 //

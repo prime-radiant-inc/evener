@@ -37,7 +37,7 @@ describe("the summary link", () => {
     publishRoot();
     const page = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
     expect(settled).not.toHaveBeenCalled();
-    activityPanelStore.getState().publishFetch("ref_a", page, { kind: "ready", tree: tree(2) });
+    activityPanelStore.getState().publishFetch("ref_a", page, { kind: "ready", tree: tree() });
     const merged = activityPanelStore.getState().entries.get("ref_a")?.load;
     if (merged?.kind !== "ready") throw new Error("expected the page to merge");
     expect(settled).toHaveBeenCalledTimes(1);
@@ -65,7 +65,7 @@ describe("the summary link", () => {
     const settled = linkWithGeneration(undefined);
     publishRoot();
     const page = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
-    activityPanelStore.getState().publishFetch("ref_a", page, { kind: "ready", tree: tree(2) });
+    activityPanelStore.getState().publishFetch("ref_a", page, { kind: "ready", tree: tree() });
     expect(settled).toHaveBeenCalledWith("ref_a", {
       summaryRequestID: undefined,
       debt: { kind: "counts", counts: expect.anything() },

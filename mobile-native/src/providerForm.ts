@@ -22,7 +22,7 @@ export function createProviderParams(
   const credentialHeader = draft.credentialHeader.trim();
   if (credentialHeader && !credentialHeader.includes("$"))
     throw new Error(
-      "Credential header must reference a $VARIABLE, never a literal secret.",
+      "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.",
     );
   const entries = Object.keys(provider.vars ?? {})
     .map((key) => [key, draft.vars[key]?.trim() ?? ""] as const)
@@ -37,12 +37,21 @@ export function createProviderParams(
   };
 }
 export function editProviderParams(
-  instance: { name: string; baseUrl?: string },
+  instance: { name: string; baseUrl?: string; endpointFingerprint?: string },
   value: string,
 ): InstanceEditParams {
   const baseUrl = value.trim();
-  if (baseUrl === (instance.baseUrl || "")) return { name: instance.name };
-  return baseUrl
-    ? { name: instance.name, baseUrl }
-    : { name: instance.name, clearBaseUrl: true };
+  const params: InstanceEditParams =
+    baseUrl === (instance.baseUrl || "")
+      ? { name: instance.name }
+      : baseUrl
+        ? { name: instance.name, baseUrl }
+        : { name: instance.name, clearBaseUrl: true };
+  // The endpoint the row resolved to when this editor was opened travels with
+  // the save as the assertion the hub checks: a name another client has
+  // re-pointed since must not have its replacement edited. A row the hub could
+  // not fingerprint asserts nothing.
+  if (instance.endpointFingerprint)
+    params.expectedEndpointFingerprint = instance.endpointFingerprint;
+  return params;
 }

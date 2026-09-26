@@ -1,14 +1,14 @@
 // Settings -> Agents (#8): server-rendered, read-only agent roster, overview-
 // fed (evener/settings/overview -> data.agents). No add/remove/edit affordance
 // in this view - editing happens externally in the linked editor
-// (parity-m7-settings.md §8). See overviewSeam.ts's own top comment for why
-// `useOverview` is injected rather than importing stores/settingsOverview.ts
-// directly.
+// (parity-m7-settings.md §8). The overview hook is injectable (`useOverview`)
+// so tests can supply a fixture; it defaults to the real
+// stores/settingsOverview adapter.
 import { friendlyErrorMessage } from "@evener/appwire-client";
+import { type SettingsOverviewStoreState, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { EmptyState, OpenButton, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agents.module.css";
-import { useSettingsOverview } from "./overviewSeam";
 import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
@@ -25,19 +25,18 @@ export interface AgentsSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
-  useOverview?: typeof useSettingsOverview;
+  useOverview?: () => SettingsOverviewStoreState;
 }
 
-export function AgentsSection({ useOverview = useSettingsOverview }: AgentsSectionProps) {
+export function AgentsSection({ useOverview = useSettingsOverviewStore }: AgentsSectionProps) {
   const { data, loading, error, fetch } = useOverview();
 
-  // fetch caches internally (overviewSeam.ts's own contract), so it's safe
+  // fetch caches internally (settingsOverview.ts's own contract), so it's safe
   // to depend on it honestly - a re-mount or an unstable fetch reference
-  // from a future real store re-runs this harmlessly. useConnectedEffect
-  // (not a bare useEffect) because the real store this will front onto
-  // (stores/settingsOverview.ts, T4) requires a connected client the same
-  // way credentialsStore/launchConfigStore do - see that hook's own doc
-  // comment for the direct-deep-link race this guards against.
+  // re-runs this harmlessly. useConnectedEffect (not a bare useEffect) because
+  // stores/settingsOverview.ts requires a connected client the same way
+  // credentialsStore/launchConfigStore do - see that hook's own doc comment
+  // for the direct-deep-link race this guards against.
   useConnectedEffect(fetch, [fetch]);
 
   const agents = data?.agents ?? [];

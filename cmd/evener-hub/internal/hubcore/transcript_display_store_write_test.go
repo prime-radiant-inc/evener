@@ -88,8 +88,19 @@ func TestTranscriptDisplayStorePostRenameFailurePublishesNewState(t *testing.T) 
 	}
 	newConfig := oldConfig
 	newConfig.Content.Level = appwire.TranscriptLevelFull
-	if _, err := failing.Patch(appwire.TranscriptDisplayDefaultsPatchParams{Layout: appwire.TranscriptViewportMobile, ExpectedRevision: 1, Config: newConfig}); !errors.Is(err, wantFailure) {
-		t.Fatalf("post-rename error=%v, want %v", err, wantFailure)
+	_, patchErr := failing.Patch(appwire.TranscriptDisplayDefaultsPatchParams{Layout: appwire.TranscriptViewportMobile, ExpectedRevision: 1, Config: newConfig})
+	if !errors.Is(patchErr, wantFailure) {
+		t.Fatalf("post-rename error=%v, want %v", patchErr, wantFailure)
+	}
+	// The applied-but-unfinished case must be distinguishable from a rejected
+	// patch: the RPC layer broadcasts on exactly this type (mirrors
+	// KeybindingsPostRenameError's own assertion).
+	postApply, ok := errors.AsType[*TranscriptDisplayPostApplyError](patchErr)
+	if !ok {
+		t.Fatalf("post-rename error type=%T, want *TranscriptDisplayPostApplyError", patchErr)
+	}
+	if postApply.Layout != appwire.TranscriptViewportMobile || postApply.Applied.Revision != 2 || !reflect.DeepEqual(postApply.Applied.Config, newConfig) {
+		t.Fatalf("post-rename error applied=%#v, want layout mobile/revision 2/config %#v", postApply, newConfig)
 	}
 	if got := failing.Snapshot().Mobile; got.Revision != 2 || !reflect.DeepEqual(got.Config, newConfig) {
 		t.Fatalf("post-rename memory=%#v, want revision 2/config %#v", got, newConfig)

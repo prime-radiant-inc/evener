@@ -549,7 +549,7 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 		Kind:        jobstore.EventJobFinished,
 		TS:          endedAt,
 		JobID:       jobID,
-		Status:      jobstore.StatusFailed,
+		Status:      jobstore.StatusCommandExitedNonzero,
 		Reason:      "exit_nonzero",
 		ExitCode:    &exitCode,
 		EndedAt:     &endedAt,
@@ -564,7 +564,7 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 		t.Fatalf("expected 1 job, got %d", len(ds.Jobs))
 	}
 	job := ds.Jobs[0]
-	if job.JobID != jobID || job.JobType != string(jobstore.JobShell) || job.Status != string(jobstore.StatusFailed) ||
+	if job.JobID != jobID || job.JobType != string(jobstore.JobShell) || job.Status != string(jobstore.StatusCommandExitedNonzero) ||
 		job.Reason != "exit_nonzero" || job.TranscriptRef != shellTranscriptRef(jobID) ||
 		job.OutputBytes != 128 || job.ExitCode == nil || *job.ExitCode != exitCode {
 		t.Fatalf("job status = %+v", job)

@@ -43,8 +43,10 @@ function fixture() {
 	const storage = nativeTranscriptDrafts("hub", {
 		get: () => null,
 		set: () => {},
+		insertIfAbsent: () => false,
 		delete: () => {},
-		deleteIf: () => {},
+		deleteIf: () => false,
+		replaceIf: () => false,
 		createId: () => "test",
 	});
 	const hello = {

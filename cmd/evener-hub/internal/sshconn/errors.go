@@ -43,12 +43,16 @@ var (
 	// the version-match deploy that fixes it is 04b.
 	ErrLaunchContract = errors.New("sshconn: host launch contract not satisfied")
 
-	// ErrVersionMismatch marks a host whose on-disk build is not the build this
-	// controller requires, on a Manager with no build source to install instead.
-	// Version auto-match exists to make the attached runtime match the
-	// controller: with nothing to deploy there is no way to resolve the
-	// difference, so attaching would silently serve the wrong build. Terminal,
-	// like the other contract refusals.
+	// ErrVersionMismatch marks a build the controller INSTALLED that does not carry
+	// the identity the controller expects: the installer fallback fetched an
+	// artifact whose commit is not this controller's (a moved channel tag), and the
+	// refusal is terminal because re-fetching the same tag cannot converge.
+	//
+	// It is not an attach-time version gate. A host that answers the launch-check
+	// speaks this controller's protocol, and its build label does not decide whether
+	// it may attach (ensureOnce; component 04 §5, "On-disk identity"). This sentinel
+	// survives for the deploy paths, where the controller has just written a build
+	// and must prove which one it wrote.
 	ErrVersionMismatch = errors.New("sshconn: host version does not match the controller")
 
 	// ErrPreflightDecode marks preflight output (launch-check JSON or the

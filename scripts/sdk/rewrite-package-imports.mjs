@@ -11,13 +11,17 @@
 // script needs TypeScript; this script is the one-time rewrite, not a gate.
 //
 // Why a script instead of sed: the target specifier depends on the SYMBOLS an
-// import names, not on its path prefix. `readDocFile` is published only at
-// `@evener/appwire-client/docContent`; `FakeClient` only at the in-repo
-// `@evener/appwire-client/testing/fakeClient`; everything else comes from the
-// root. So each statement is parsed, its module resolved on disk, and its
-// bindings checked against what the package actually publishes. A symbol the
-// package does not publish is reported and nothing is written — that is a
-// missing export, not something to paper over with a deep path.
+// import names, not on its path prefix. Where a symbol is published decides the
+// specifier: the root, a subpath from the package's `exports` map, or the
+// in-repo `testing/` subpath for test support. So each statement is parsed, its
+// module resolved on disk, and its bindings checked against what the package
+// actually publishes. A symbol the package does not publish is reported and
+// nothing is written — that is a missing export, not something to paper over
+// with a deep path.
+//
+// The set of published subpaths is the package's own package.json `exports`
+// map: the specifier a module maps to is whatever that map says, and nothing
+// here enumerates subpaths.
 
 import { createRequire } from "node:module";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -30,7 +34,6 @@ import { CONSUMER_TREES, SKIPPED_DIRS, sourceFiles } from "./source-files.mjs";
 const checkoutRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const PACKAGE_NAME = "@evener/appwire-client";
-const DOC_CONTENT_SUBPATH = `${PACKAGE_NAME}/docContent`;
 const TESTING_PREFIX = `${PACKAGE_NAME}/testing/`;
 
 // TypeScript always comes from this checkout's frontend, never from --root: a
@@ -53,15 +56,45 @@ function layoutOf(root) {
   };
 }
 
+// The source module an exports entry names, or null when its target cannot be
+// normalized. The target is `types` where the entry has one, else the runtime
+// `import`/`require`: the object form spells the declaration, the string
+// shorthand the runtime file, and both are `./dist/<module>` plus an extension
+// over the same source, so the prefix and the extension both come off.
+function moduleIDOf(entry) {
+  const target = [entry?.types, entry?.import, entry?.require, typeof entry === "string" ? entry : null].find(
+    (candidate) => typeof candidate === "string",
+  );
+  const match = target?.match(/^\.\/dist\/(.+?)\.(?:d\.ts|d\.mts|d\.cts|ts|mts|cts|js|mjs|cjs)$/);
+  return match ? match[1] : null;
+}
+
+// The specifiers the package publishes, keyed by the source module they name.
+// Read from the package's own `exports` map rather than a list kept here, so a
+// subpath added there is picked up with no edit to this tool; an entry whose
+// target cannot be normalized is skipped.
+function publishedSpecifiers(packageDir) {
+  const manifest = JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8"));
+  const byModule = new Map();
+  for (const [subpath, entry] of Object.entries(manifest.exports ?? {})) {
+    const moduleID = moduleIDOf(entry);
+    if (moduleID === null) continue;
+    const specifier = subpath === "." ? PACKAGE_NAME : `${PACKAGE_NAME}${subpath.slice(1)}`;
+    byModule.set(moduleID, specifier);
+  }
+  return byModule;
+}
+
 function usage() {
+  const published = [...publishedSpecifiers(path.join(checkoutRoot, "appwire-client", "typescript")).values()];
   console.log(`Usage: node scripts/sdk/rewrite-package-imports.mjs [--root DIR]
 
 Rewrites every import of the AppWire TypeScript package in the web and native
 trees from a relative path to the package name, choosing the specifier the
-package publishes the named symbols at:
+package publishes the named symbols at. The specifiers are the package's own
+package.json exports map:
 
-  ${PACKAGE_NAME}                  root exports (index.ts)
-  ${DOC_CONTENT_SUBPATH}       the one published subpath
+${published.map((specifier) => `  ${specifier}`).join("\n")}
   ${TESTING_PREFIX}<module>   in-repo test support, never a runtime import
 
 After rewriting, statements that collapsed onto one specifier are merged: a
@@ -104,8 +137,8 @@ function parse(file) {
 
 // Names a module exports, by parsing it. Handles the two forms index.ts uses:
 // explicit named exports, and `export type * from "./types.gen"`. Memoised per
-// module: the root and docContent are read once each, and a testing module a
-// dozen imports name is parsed once for all of them.
+// module, so a module a dozen imports name -- the root, a published subpath, a
+// testing module -- is parsed once for all of them.
 const exportsCache = new Map();
 function exportedNames(file) {
   let names = exportsCache.get(file);
@@ -300,9 +333,9 @@ function main() {
     return 2;
   }
   const layout = layoutOf(root);
+  const published = publishedSpecifiers(layout.packageDir);
 
   const rootExports = exportedNames(path.join(layout.packageDir, "index.ts"));
-  const docContentExports = exportedNames(path.join(layout.packageDir, "docContent.ts"));
 
   const counts = new Map(); // `${tree}\t${specifier}` -> count
   const problems = [];
@@ -339,26 +372,19 @@ function main() {
         // How this module maps onto a package specifier: what a whole-module
         // load becomes (null where the package publishes no such subpath), and
         // the (published names -> specifier) pairs a named import may satisfy,
-        // tried in order so a name both the root and ./docContent publish maps
-        // to the root. testing/<module> is its own subpath; index and docContent
-        // are the root under another name and the one published subpath; every
-        // other module reaches the package only through the root.
+        // tried in order so a name both the root and a subpath publish maps to
+        // the root. testing/<module> is its own in-repo subpath; any other
+        // module the exports map publishes keeps that specifier; every other
+        // module reaches the package only through the root.
         let dest;
         if (moduleID.startsWith("testing/")) {
           const subpath = TESTING_PREFIX + moduleID.slice("testing/".length);
           dest = { wholeModule: subpath, named: [[exportedNames(resolved), subpath]] };
-        } else if (moduleID === "index") {
-          dest = { wholeModule: PACKAGE_NAME, named: [[rootExports, PACKAGE_NAME]] };
-        } else if (moduleID === "docContent") {
-          dest = {
-            wholeModule: DOC_CONTENT_SUBPATH,
-            named: [
-              [rootExports, PACKAGE_NAME],
-              [docContentExports, DOC_CONTENT_SUBPATH],
-            ],
-          };
         } else {
-          dest = { wholeModule: null, named: [[rootExports, PACKAGE_NAME]] };
+          const subpath = published.get(moduleID) ?? null;
+          const candidates = [[rootExports, PACKAGE_NAME]];
+          if (subpath && subpath !== PACKAGE_NAME) candidates.push([exportedNames(resolved), subpath]);
+          dest = { wholeModule: subpath, named: candidates };
         }
         const [primaryNames, primarySpecifier] = dest.named[0];
         let target = null;

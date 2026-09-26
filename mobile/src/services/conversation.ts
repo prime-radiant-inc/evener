@@ -30,6 +30,7 @@ import type {
   ThreadForkResponse,
   ThreadReadResponse,
   ThreadTurnsListResponse,
+  TranscriptDisplayConfigV1,
   TurnCancelQueuedResponse,
   TurnDrainAsSteerResponse,
   TurnPromoteQueuedAsSteerResponse,
@@ -37,20 +38,17 @@ import type {
 import {
   hydrateThread,
   isStaleCursorError,
-  mergeOlderItemPage,
 } from "@evener/appwire-client";
-import type {
-  MobileConversation,
-  MobileTimelineItem,
-} from "../conversation/project";
-import { projectConversation, projectTimeline } from "../conversation/project";
+import type { MobileConversation } from "../../../mobile-native/src/projectedRows";
+import { projectConversation } from "../../../mobile-native/src/projectedRows";
 import type { ActivityView } from "./activity";
 import { createActivityService } from "./activity";
 
-// The bounded read page limit and retained item cap, centralized so every
-// caller uses the same constant.
+// The bounded read page limit, centralized so every caller uses the same
+// constant. The retained item cap lives with the shared projection helpers
+// (the row module's RETAINED_ITEM_CAP, mobile-native/src/projectedRows.ts); nothing here needs its own
+// copy.
 export const READ_ITEM_LIMIT = 40;
-export const RETAINED_ITEM_CAP = 500;
 
 // The narrow client surface the service depends on. Structurally compatible
 // with AppwireClient and FakeClient, so tests inject a FakeClient without
@@ -78,10 +76,30 @@ export type IdFactory = () => string;
 // applied here where the fence is computed, so the displayed conversation and
 // the mutations it offers can never disagree about the instance.
 
-export interface ConversationServiceOptions {
+export interface ConversationServiceOptions<ReadLease = unknown> {
   readonly idFactory?: IdFactory;
   // The clock hydrateThread stamps the model with; tests inject a fixed one.
   readonly now?: () => number;
+  // The transcript display config the projection runs at (D24-5's content
+  // dimension, routed through the seam): read at projection time, so a read
+  // that starts under one level and lands after the user changed it projects
+  // at the level the store will republish anyway. Null/undefined means the
+  // show-everything default — a hub that does not support the settings, or a
+  // host that has not supplied the resolver.
+  readonly resolveDisplayConfig?: () => TranscriptDisplayConfigV1 | null;
+  // Native wires these to its durable mutation host: onReadStart leases the
+  // target just before the raw authoritative read, and onReadComplete hands
+  // the same raw response back so the runtime can settle its dispatch gate
+  // from exactly the snapshot that produces the conversation projection. A
+  // host that has no runtime passes neither and nothing changes.
+  readonly onReadStart?: (
+    threadRef: string,
+    expectedThreadId?: string,
+  ) => ReadLease | undefined;
+  readonly onReadComplete?: (
+    lease: ReadLease | undefined,
+    response: ThreadReadResponse,
+  ) => void | Promise<unknown>;
 }
 
 export interface ConversationReadProjection {
@@ -97,7 +115,14 @@ export interface ConversationReadProjection {
 export interface ConversationService {
   open(ref: string, cursor?: string): Promise<MobileConversation>;
   loadOlder(cursor: string): Promise<{
-    items: MobileTimelineItem[];
+    // The page's own wire turns - the store
+    // folds these into conversation.turns via the package's own
+    // identity-aware merge (a turn can be split into fragments across the
+    // page boundary; an id-only filter drops or double-counts the split),
+    // so sessionTokens's turn-summed fallback covers what's actually loaded,
+    // not just the first page, and projects the display rows from that
+    // merged model (D23d: the model owns the older page and its cursor).
+    turnsPage: ThreadTurnsListResponse;
     nextCursor?: string;
     hasEarlierItems?: boolean;
     hasLaterItems?: boolean;
@@ -277,15 +302,22 @@ const CANONICAL_MUTATION_PROJECTION: Readonly<
   clear: "reflected",
 };
 
-function exactObject(
+function requireObject(
   raw: unknown,
-  keys: readonly string[],
   label: string,
 ): Record<string, unknown> {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`ConversationService: ${label} is not an object`);
   }
-  const object = raw as Record<string, unknown>;
+  return raw as Record<string, unknown>;
+}
+
+function exactObject(
+  raw: unknown,
+  keys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  const object = requireObject(raw, label);
   const actual = Object.keys(object).sort();
   const expected = [...keys].sort();
   if (
@@ -302,6 +334,71 @@ function nonemptyString(raw: unknown, label: string): string {
     throw new Error(`ConversationService: ${label} is empty or invalid`);
   }
   return raw;
+}
+
+// Every receipt carries the correlation fields below, and each mutation kind
+// adds the keys its own receipt requires. A key from KNOWN_RECEIPT_KEYS that a
+// kind does not expect is a malformed receipt and is rejected; a key outside
+// that vocabulary is an additive field no shipped build has seen, and is
+// ignored. Jesse's 2026-09-17 ruling keeps additive AppWire changes on the
+// current ProtocolVersion, so an older peer must read a new optional key as no
+// information -- rejecting it would turn every additive wire field into a hard
+// failure for a phone build already in testers' hands (issue #1759). The
+// vocabulary is derived from the per-kind tables below so the two cannot drift.
+// The result envelope around a receipt stays exact via exactObject.
+const RECEIPT_CORRELATION_KEYS = [
+  "clientMutationId",
+  "disposition",
+  "threadId",
+  "projectionState",
+] as const;
+
+const REQUIRED_RECEIPT_KEYS_BY_KIND: Readonly<
+  Record<MutationKind, readonly string[]>
+> = {
+  send: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+  steer: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+  drain: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+  interrupt: [...RECEIPT_CORRELATION_KEYS, "turnId"],
+  queue: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
+  cancel: [...RECEIPT_CORRELATION_KEYS, "queueEntryIds"],
+  clear: [...RECEIPT_CORRELATION_KEYS],
+};
+
+// Receipt keys the daemon includes only when it has something to report: a
+// drain may name the queue entries and client mutations it consumed, and any
+// kind may name the instance the receipt is bound to.
+const OPTIONAL_RECEIPT_KEYS_BY_KIND: Readonly<
+  Partial<Record<MutationKind, readonly string[]>>
+> = {
+  drain: ["queueEntryIds", "consumedClientMutationIds"],
+};
+const OPTIONAL_RECEIPT_KEYS_ANY_KIND = ["instanceId"] as const;
+
+const KNOWN_RECEIPT_KEYS: ReadonlySet<string> = new Set([
+  ...Object.values(REQUIRED_RECEIPT_KEYS_BY_KIND).flat(),
+  ...Object.values(OPTIONAL_RECEIPT_KEYS_BY_KIND).flat(),
+  ...OPTIONAL_RECEIPT_KEYS_ANY_KIND,
+]);
+
+function decodedReceipt(
+  raw: unknown,
+  expectedKeys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  const receipt = requireObject(raw, label);
+  const expected = new Set(expectedKeys);
+  for (const key of Object.keys(receipt)) {
+    if (!expected.has(key) && KNOWN_RECEIPT_KEYS.has(key)) {
+      throw new Error(`ConversationService: ${label} has unexpected keys`);
+    }
+  }
+  for (const key of expected) {
+    if (!Object.hasOwn(receipt, key)) {
+      throw new Error(`ConversationService: ${label} is missing ${key}`);
+    }
+  }
+  return receipt;
 }
 
 function decodeMutationResult(
@@ -345,35 +442,28 @@ function decodeMutationResult(
     nonemptyString((turn as Record<string, unknown>).id, "send turn id");
   }
 
-  const requiredReceiptKeys = [
-    "clientMutationId",
-    "disposition",
-    "threadId",
-    "projectionState",
-  ];
-  if (
-    kind === "send" ||
-    kind === "steer" ||
-    kind === "drain" ||
-    kind === "interrupt"
-  )
-    requiredReceiptKeys.push("turnId");
-  if (kind === "queue" || kind === "cancel")
-    requiredReceiptKeys.push("queueEntryIds");
+  const receiptObject =
+    result.receipt !== null && typeof result.receipt === "object"
+      ? (result.receipt as Record<string, unknown>)
+      : null;
+  const requiredReceiptKeys = [...REQUIRED_RECEIPT_KEYS_BY_KIND[kind]];
+  for (const key of [
+    ...(OPTIONAL_RECEIPT_KEYS_BY_KIND[kind] ?? []),
+    ...OPTIONAL_RECEIPT_KEYS_ANY_KIND,
+  ]) {
+    if (receiptObject !== null && Object.hasOwn(receiptObject, key)) {
+      requiredReceiptKeys.push(key);
+    }
+  }
   const hasDrainedEntries =
     kind === "drain" &&
-    result.receipt !== null &&
-    typeof result.receipt === "object" &&
-    "queueEntryIds" in result.receipt;
-  if (hasDrainedEntries) requiredReceiptKeys.push("queueEntryIds");
-  if (
-    result.receipt !== null &&
-    typeof result.receipt === "object" &&
-    "instanceId" in result.receipt
-  ) {
-    requiredReceiptKeys.push("instanceId");
-  }
-  const receipt = exactObject(
+    receiptObject !== null &&
+    Object.hasOwn(receiptObject, "queueEntryIds");
+  const hasConsumedClientMutationIds =
+    kind === "drain" &&
+    receiptObject !== null &&
+    Object.hasOwn(receiptObject, "consumedClientMutationIds");
+  const receipt = decodedReceipt(
     result.receipt,
     requiredReceiptKeys,
     `${kind} receipt`,
@@ -403,7 +493,7 @@ function decodeMutationResult(
       `${kind} projection state`,
     ),
   };
-  if ("instanceId" in receipt) {
+  if (Object.hasOwn(receipt, "instanceId")) {
     if (receipt.instanceId !== expectedInstanceId) {
       throw new Error(`ConversationService: ${kind} receipt instance mismatch`);
     }
@@ -429,6 +519,19 @@ function decodeMutationResult(
       );
     }
     decoded.queueEntryIds = [...ids];
+  }
+  if (hasConsumedClientMutationIds) {
+    const consumed = receipt.consumedClientMutationIds;
+    if (
+      !Array.isArray(consumed) ||
+      consumed.length === 0 ||
+      consumed.some((id) => typeof id !== "string" || id.trim() === "")
+    ) {
+      throw new Error(
+        `ConversationService: ${kind} receipt consumed client mutation ids are invalid`,
+      );
+    }
+    decoded.consumedClientMutationIds = [...consumed];
   }
   return decoded;
 }
@@ -461,9 +564,9 @@ function validateQueueAction(
   }
 }
 
-export function createConversationService(
+export function createConversationService<ReadLease = unknown>(
   client: ConversationClientLike | AppwireClient,
-  options: ConversationServiceOptions = {},
+  options: ConversationServiceOptions<ReadLease> = {},
 ): QueueConversationService &
   ConversationModelCatalog &
   ConversationGoalActions &
@@ -473,6 +576,11 @@ export function createConversationService(
   ConversationRecoveryActions {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
   const now = options.now ?? Date.now;
+  // The display config this read's projection runs at, read at projection
+  // time (see the option's own comment). A null/undefined answer keeps the
+  // show-everything default.
+  const displayConfig = (): TranscriptDisplayConfigV1 | undefined =>
+    options.resolveDisplayConfig?.() ?? undefined;
   const activityService = createActivityService();
 
   // Current thread identity and capabilities, set by open() / readProjection().
@@ -501,7 +609,12 @@ export function createConversationService(
   type PendingProjection = {
     ref: string;
     instanceId: string | null;
-    read: Promise<ThreadReadResponse>;
+    // Paging waits on the whole projected publish, not the raw RPC: the
+    // response alone is not the state a page's cursor must be seated against.
+    // The publish spans the raw response, the projection work and commit, and
+    // the host's read fence, so paging that waited on the raw read could seat a
+    // cursor against a projection the publish had not installed yet.
+    publish: Promise<ConversationReadProjection>;
   };
   let pendingProjection: PendingProjection | null = null;
 
@@ -573,6 +686,23 @@ export function createConversationService(
     }
   }
 
+  // Hand the same raw authoritative read back to the host's fence. A fence
+  // failure is non-fatal to the conversation read: the read itself succeeded,
+  // and a fence that cannot settle leaves the runtime's durable dispatch gate
+  // blocked (the fail-safe direction) until a later read reconciles it. It must
+  // never turn a good projection into a conversation error.
+  async function reconcileRead(
+    lease: ReadLease | undefined,
+    response: ThreadReadResponse,
+  ): Promise<void> {
+    if (options.onReadComplete === undefined) return;
+    try {
+      await options.onReadComplete(lease, response);
+    } catch (error) {
+      console.error("ConversationService: read fence failed", error);
+    }
+  }
+
   return {
     async open(threadRef, _cursor) {
       pendingProjection = null;
@@ -582,7 +712,9 @@ export function createConversationService(
       // lives exclusively in thread/turns/list. beginOpen clears BOTH ref
       // and capabilities before the await so the service is fail-closed
       // during the read; the pair is installed together only on success.
+      const expectedThreadId = threadId ?? undefined;
       const epoch = beginOpen(threadRef);
+      const readLease = options.onReadStart?.(threadRef, expectedThreadId);
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
@@ -598,10 +730,14 @@ export function createConversationService(
         response.thread.evener.instanceId ?? response.thread.id,
         "thread instance id",
       );
-      const conversation = projectConversation({
-        ...hydrateThread({ ...response, thread }, threadRef, now()),
-        instanceId: readInstanceId,
-      });
+      const conversation = projectConversation(
+        {
+          ...hydrateThread({ ...response, thread }, threadRef, now()),
+          instanceId: readInstanceId,
+        },
+        undefined,
+        displayConfig(),
+      );
       const caps = extractCapabilities(thread.evener.capabilities);
       const readModelScope = { harness: thread.source, cwd: thread.cwd };
       if (openEpoch === epoch) {
@@ -612,6 +748,10 @@ export function createConversationService(
         capabilities = caps;
         opening = null;
       }
+      // Reconcile the host's durable dispatch gate only for a read whose
+      // projection actually installed: a failed projection or a stale epoch
+      // leaves the gate blocked.
+      if (openEpoch === epoch) await reconcileRead(readLease, response);
       return conversation;
     },
 
@@ -622,7 +762,9 @@ export function createConversationService(
           : pendingProjection?.ref === threadRef
             ? pendingProjection.instanceId
             : null;
+      const expectedThreadId = threadId ?? undefined;
       const epoch = beginOpen(threadRef);
+      const readLease = options.onReadStart?.(threadRef, expectedThreadId);
       const read = client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
@@ -631,44 +773,59 @@ export function createConversationService(
         itemsView: "fragment",
         itemLimit: READ_ITEM_LIMIT,
       });
-      pendingProjection = { ref: threadRef, instanceId: pagingInstance, read };
-      const response: ThreadReadResponse = await read;
-      // Compute ALL response-derived projection work BEFORE committing the
-      // pair — a throw in hydration, projectConversation or activity
-      // projection (or a malformed response) leaves ref+capabilities
-      // null/fail-closed. Only commit the
-      // pair after all projection succeeds and the epoch is still current;
-      // a stale successful result returns without committing.
-      const thread = readWithPushedCapabilities(response.thread, epoch);
-      const readInstanceId = nonemptyString(
-        response.thread.evener.instanceId ?? response.thread.id,
-        "thread instance id",
-      );
-      const conversation = projectConversation({
-        ...hydrateThread({ ...response, thread }, threadRef, now()),
-        instanceId: readInstanceId,
-      });
-      const activity = activityService.projectActivity(thread);
-      const olderCursor = response.olderCursor ?? null;
-      const caps = extractCapabilities(thread.evener.capabilities);
-      const readModelScope = { harness: thread.source, cwd: thread.cwd };
-      if (openEpoch === epoch) {
-        modelScope = readModelScope;
-        instanceId = readInstanceId;
-        threadId = response.thread.id;
-        ref = threadRef;
-        capabilities = caps;
-        opening = null;
-      }
-      return {
-        conversation,
-        activity,
-        olderCursor,
-        hasEarlierItems:
-          thread.turns?.some((turn) => turn.hasEarlierItems === true) ?? false,
-        hasLaterItems:
-          thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,
-      };
+      // The publish is the whole projected read: the raw response, the
+      // projection work and pair commit, and then the host's read fence. Paging
+      // waits on it (see PendingProjection), so a page can never be seated
+      // against a projection the publish has not installed.
+      const publish = (async (): Promise<ConversationReadProjection> => {
+        const response: ThreadReadResponse = await read;
+        // Compute ALL response-derived projection work BEFORE committing the
+        // pair — a throw in hydration, projectConversation or activity
+        // projection (or a malformed response) leaves ref+capabilities
+        // null/fail-closed. Only commit the
+        // pair after all projection succeeds and the epoch is still current;
+        // a stale successful result returns without committing.
+        const thread = readWithPushedCapabilities(response.thread, epoch);
+        const readInstanceId = nonemptyString(
+          response.thread.evener.instanceId ?? response.thread.id,
+          "thread instance id",
+        );
+        const conversation = projectConversation(
+          {
+            ...hydrateThread({ ...response, thread }, threadRef, now()),
+            instanceId: readInstanceId,
+          },
+          undefined,
+          displayConfig(),
+        );
+        const activity = activityService.projectActivity(thread);
+        const olderCursor = response.olderCursor ?? null;
+        const caps = extractCapabilities(thread.evener.capabilities);
+        const readModelScope = { harness: thread.source, cwd: thread.cwd };
+        if (openEpoch === epoch) {
+          modelScope = readModelScope;
+          instanceId = readInstanceId;
+          threadId = response.thread.id;
+          ref = threadRef;
+          capabilities = caps;
+          opening = null;
+        }
+        // Reconcile the host's durable dispatch gate only after the projection
+        // installed, so a failed projection or a stale epoch leaves it blocked.
+        if (openEpoch === epoch) await reconcileRead(readLease, response);
+        return {
+          conversation,
+          activity,
+          olderCursor,
+          hasEarlierItems:
+            thread.turns?.some((turn) => turn.hasEarlierItems === true) ??
+            false,
+          hasLaterItems:
+            thread.turns?.some((turn) => turn.hasLaterItems === true) ?? false,
+        };
+      })();
+      pendingProjection = { ref: threadRef, instanceId: pagingInstance, publish };
+      return publish;
     },
 
     async loadOlder(cursor) {
@@ -679,7 +836,11 @@ export function createConversationService(
         const expected = pending;
         let projection: PendingProjection = pending;
         for (;;) {
-          await projection.read;
+          // Wait for the projected publish, not the raw RPC: the host's read
+          // fence and the pair commit both sit inside it, so a page is seated
+          // only after the state it pages against is installed. A rejection
+          // here is the read's own failure, surfaced unchanged.
+          await projection.publish;
           if (pendingProjection === projection) break;
           const next: PendingProjection | null = pendingProjection;
           if (
@@ -710,11 +871,8 @@ export function createConversationService(
         // cursor and visible projection are published together.
         throw error;
       }
-      // Project the older turns into mobile items by hydrating a minimal
-      // Thread containing just these turns; only the display rows are kept.
-      const items = projectOlderTurns(response, threadId);
       return {
-        items,
+        turnsPage: response,
         nextCursor: response.nextCursor,
         hasEarlierItems: response.data.some(
           (turn) => turn.hasEarlierItems === true,
@@ -909,10 +1067,14 @@ export function createConversationService(
         thread.evener.instanceId,
         "replacement instance id",
       );
-      const conversation = projectConversation({
-        ...hydrateThread({ thread }, response.ref, now()),
-        instanceId: replacementInstance,
-      });
+      const conversation = projectConversation(
+        {
+          ...hydrateThread({ thread }, response.ref, now()),
+          instanceId: replacementInstance,
+        },
+        undefined,
+        displayConfig(),
+      );
       const activity = activityService.projectActivity(thread);
       const caps = extractCapabilities(thread.evener.capabilities);
       modelScope = { harness: thread.source, cwd: thread.cwd };
@@ -1123,60 +1285,3 @@ export function createConversationService(
   };
 }
 
-// Project an older page into mobile timeline items: hydrate an empty Thread
-// under the real thread id (so a replayed image's sha route names this
-// session), merge the page into it with the package's mergeOlderItemPage —
-// the same across-turn merge and tool call/result folding the web applies to
-// a page — and keep only the display rows. The model's ref and clock are
-// placeholders the rows never read. The store still owns the prepend of
-// these rows onto the retained timeline (D23d moves that onto the model).
-// A page never repeats a transcript key: the hub's pager refuses to emit one
-// (internal/appitempaging/page.go validateCandidates), so there is no
-// within-page dedupe to do here.
-function projectOlderTurns(
-  page: ThreadTurnsListResponse,
-  threadId: string | null,
-): MobileTimelineItem[] {
-  if (page.data.length === 0) return [];
-  const id = threadId ?? "older";
-  const thread: Thread = {
-    id,
-    sessionId: id,
-    preview: "",
-    ephemeral: false,
-    modelProvider: "",
-    createdAt: 0,
-    updatedAt: 0,
-    status: { type: "idle" },
-    cwd: "",
-    cliVersion: "",
-    source: "",
-    turns: [],
-    evener: {
-      ref: "older",
-      capabilities: {
-        send: false,
-        steer: false,
-        interrupt: false,
-        compact: false,
-        clear: false,
-        forkFromTurn: false,
-        shutdown: false,
-        changeModel: false,
-        changeVisionModel: false,
-        sharedNotes: false,
-        queue: false,
-        goal: false,
-        rename: false,
-      },
-      queue: { revision: 0 },
-    },
-  };
-  const model = mergeOlderItemPage(hydrateThread({ thread }, "older", 0), page);
-  // I3: Filter out actionable question rows from historical pages. A pending
-  // ask cannot legitimately be older than newer continuation turns, and
-  // page-local projection otherwise resurrects settled calls. All other
-  // projected page items/order/cursor are preserved — only question rows are
-  // omitted.
-  return projectTimeline(model).filter((item) => item.kind !== "question");
-}

@@ -1,10 +1,12 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
+import { ErrorEndpointConflict, ErrorInstanceRenamePersisted, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { InstanceSheet } from "./InstanceSheet";
@@ -93,6 +95,9 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
   resetToastStoreForTests();
+  // Every instance mutation now stamps originClientId, so the assertions that
+  // pin the exact params need an identity that cannot vary.
+  setMutationClientIdentityForTests("test-tab");
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
 });
@@ -115,11 +120,32 @@ describe("visibility", () => {
   });
 
   // The sheet is the whole screen on mobile and the only place Remove would
-  // have been, so the badge explaining an implicit instance has to be here
-  // too - not only on the row behind it.
-  test("an implicit instance is badged 'from environment'", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
+  // have been, so the badge explaining an environment-backed instance has to
+  // be here too - not only on the row behind it.
+  test("an environment-backed instance is badged 'from environment'", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
     expect(screen.getByText("from environment")).toBeTruthy();
+  });
+
+  test("an implicit instance credentialed through the UI carries no badge", () => {
+    renderSheet(
+      instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "store", hasStoredFile: true }),
+    );
+    expect(screen.queryByText("from environment")).toBeNull();
+  });
+
+  test("a signed-in Codex account carries no badge", () => {
+    renderSheet(
+      instance({
+        name: "openai-codex",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        implicit: true,
+        activeSource: "oauth",
+        hasStoredOAuth: true,
+      }),
+    );
+    expect(screen.queryByText("from environment")).toBeNull();
   });
 
   test("a non-implicit instance carries no such badge", () => {
@@ -265,28 +291,80 @@ describe("actions are conditionally rendered", () => {
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
-  // Removing an implicit instance is refused server-side (spec §11.3), so
-  // the sheet must not even offer the button; the form stays, since editing
-  // an implicit instance writes a shadow rather than changing it.
-  test("an implicit instance offers the form but no Remove", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
+  // Removing an environment-backed instance is refused server-side: the
+  // variable that makes it exist would put it straight back. The form stays,
+  // since editing it writes a shadow rather than changing the instance.
+  test("an environment-backed instance offers the form but no Remove", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
     expect(screen.getByLabelText("Base URL")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
   });
 
+  // The account a user adds through the UI is theirs to remove: the credential
+  // is a file under the instance name (auth/<name>.json, credentials.toml), so
+  // removing the instance is exactly how the account goes away.
+  test("an implicit instance credentialed through the UI offers Remove", () => {
+    renderSheet(
+      instance({
+        name: "openai-codex",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        implicit: true,
+        activeSource: "oauth",
+        hasStoredOAuth: true,
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+  });
+
+  // An instance that exists without a credential is not the user's to remove,
+  // however its store layer looks: the reload re-derives it and the row comes
+  // back wearing the badge this affordance just said it did not have, with the
+  // key gone. Clear is the action for that key.
+  test("a keyless-capable instance with a stored key keeps the badge and no Remove", () => {
+    renderSheet(
+      instance({
+        name: "ollama",
+        providerId: "ollama",
+        auth: "optional-bearer",
+        implicit: true,
+        activeSource: "store",
+        hasStoredFile: true,
+        credentialRequired: false,
+      }),
+    );
+    expect(screen.getByText("from environment")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
+  });
+
   // The danger zone is Clear + Remove under a divider; an implicit instance
-  // with nothing stored offers neither, so the divider must go too rather
-  // than trailing an empty section.
+  // the environment supplies with nothing stored offers neither, so the divider
+  // must go too rather than trailing an empty section.
   test("no danger-zone divider when the instance offers neither Clear nor Remove", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "none" }));
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
     expect(document.querySelectorAll("hr").length).toBe(0);
   });
 
-  test("the danger-zone divider stays when Clear alone is offered", () => {
+  // The other side of the allow-list: an implicit instance the environment does
+  // NOT supply - a bearer row resolving no credential at all (none/empty/
+  // unknown) - is the user's own, so Remove and its divider stay. The old
+  // deny-list classified `none` as environment-backed and refused Remove with
+  // nothing to say.
+  test("an implicit instance with no environment-supplied source keeps Remove and its divider", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "none" }));
+    expect(screen.queryByText("from environment")).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+    expect(document.querySelectorAll("hr").length).toBe(1);
+  });
+
+  test("the danger-zone divider stays for a stored-key instance, which offers Clear and Remove", () => {
     renderSheet(
       instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "store", hasStoredFile: true }),
     );
     expect(document.querySelectorAll("hr").length).toBe(1);
+    expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
   test("the danger-zone divider stays when Clear stored key alone is offered", () => {
@@ -527,8 +605,10 @@ describe("writesRefused disables instance-CRUD actions only", () => {
     expect((screen.getByRole("button", { name: "Clear stored key" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  test("an implicit instance under writesRefused still has no Remove button at all", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }), { writesRefused: true });
+  test("an environment-backed implicit instance under writesRefused still has no Remove button at all", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }), {
+      writesRefused: true,
+    });
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
   });
 });
@@ -664,7 +744,31 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("GOOGLE_VERTEX_BASE_URL"), "https://vx.example.test");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "v", vars: { BASE_URL: "https://vx.example.test" } });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "v",
+      vars: { BASE_URL: "https://vx.example.test" },
+      originClientId: "test-tab",
+    });
+  });
+
+  test("a command expression in the credential header saves as authored", async () => {
+    // The hub's authoring rule accepts command expressions as credential
+    // material; the sheet's save-time check only requires a $, so the
+    // expression must cross the form and the wire unrefused and unaltered.
+    const V = instance({ name: "work", providerId: "openai" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => ({ instances: [V], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(V, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.clear(field("Credential header"));
+    await user.type(field("Credential header"), "Authorization=Bearer $(get-gateway-token)");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      credentialHeader: "Authorization=Bearer $(get-gateway-token)",
+      originClientId: "test-tab",
+    });
   });
 
   test("Save is disabled until a field changes, and while writesRefused", async () => {
@@ -720,7 +824,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
     expect(unavailableStates()).toEqual(actions.map(() => true));
 
     await act(async () => finish({ instances: [FULL], availableProviders: [OPENAI] }));
@@ -743,10 +851,62 @@ describe("the form", () => {
     await act(async () => finish({ instances: [WORK], availableProviders: [OPENAI] }));
   });
 
-  test("an implicit instance's Name is disabled with the environment note", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
-    expect(field("Name").disabled).toBe(true);
-    expect(screen.getByText(/comes from the environment/)).toBeTruthy();
+  // The Name field is editable on every instance. A rename always authors an
+  // entry under the new name; when the hub marks the row as one the environment
+  // re-supplies (renameLeavesRow), the old row stays too, so the note under the
+  // field says that instead of promising a rename that cannot happen.
+  test("a row the hub marks as left behind shows the old-row-stays note", async () => {
+    renderSheet(
+      instance({
+        name: "groq",
+        providerId: "groq",
+        implicit: true,
+        activeSource: "env:GROQ_API_KEY",
+        renameLeavesRow: true,
+      }),
+    );
+    expect(field("Name").disabled).toBe(false);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-2");
+    expect(screen.getByText(/leaves this one in place/)).toBeTruthy();
+  });
+
+  // The same note for a row that only looks like the user's - a stored key
+  // outranking a set variable, with the hub's bit saying the variable supplies
+  // the old name once the key moves.
+  test("a stored key shadowing a set variable shows the old-row-stays note", async () => {
+    renderSheet(
+      instance({
+        name: "groq",
+        providerId: "groq",
+        implicit: true,
+        activeSource: "store",
+        hasStoredFile: true,
+        shadowedEnvVar: "GROQ_API_KEY",
+        renameLeavesRow: true,
+      }),
+    );
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-2");
+    expect(screen.getByText(/leaves this one in place/)).toBeTruthy();
+  });
+
+  test("a UI-credentialed instance's Name is editable with the ordinary rename note", async () => {
+    renderSheet(
+      instance({
+        name: "openai-codex",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        implicit: true,
+        activeSource: "oauth",
+        hasStoredOAuth: true,
+      }),
+    );
+    expect(field("Name").disabled).toBe(false);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-2");
+    expect(screen.getByText(/keep the old name/)).toBeTruthy();
+    expect(screen.queryByText(/leaves this one in place/)).toBeNull();
   });
 
   test("changing the name shows the rename note", async () => {
@@ -770,7 +930,7 @@ describe("the form", () => {
   test("Save sends only the changed fields", async () => {
     const fake = new FakeClient("ready");
     fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+      expect(params).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x", originClientId: "test-tab" });
       return { instances: [{ ...WORK, baseUrl: "https://gw.example.test/v1/x" }], availableProviders: [OPENAI] };
     });
     connectionStore.getState().connect(fake);
@@ -794,7 +954,7 @@ describe("the form", () => {
     await user.clear(field("Base URL"));
     expect(screen.getByText("Resets the endpoint to the provider's default.")).toBeTruthy();
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", clearBaseUrl: true });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", clearBaseUrl: true, originClientId: "test-tab" });
   });
 
   test("choosing inherit from base sends clearProtocol", async () => {
@@ -805,7 +965,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.selectOptions(select("Protocol"), "");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", clearProtocol: true });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", clearProtocol: true, originClientId: "test-tab" });
   });
 
   test("emptying a var sends it empty so the hub deletes it", async () => {
@@ -817,7 +977,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.clear(field("GOOGLE_VERTEX_PROJECT"));
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "v", vars: { GOOGLE_VERTEX_PROJECT: "" } });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "" },
+      originClientId: "test-tab",
+    });
   });
 
   test("a credential header without $ is refused inline, with no RPC", async () => {
@@ -900,10 +1064,166 @@ describe("the form", () => {
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
   });
 
+  // The save carries the endpoint the draft was seeded from, and the hub refuses
+  // an edit whose name another client has re-pointed since. The refusal is the
+  // endpoint-conflict class: a clear message, a listing refresh so a retry
+  // asserts the destination now on screen, and the draft kept.
+  test("a save refused for a changed endpoint surfaces the message, refreshes, and keeps the draft", async () => {
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(
+        "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+        -32013,
+        { evenerErrorInfo: ErrorEndpointConflict },
+      );
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK_FP, {}, [OPENAI]);
+    const user = userEvent.setup();
+    const listingsBefore = fake.calls.filter((call) => call.method === "evener/instance/list").length;
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    // The assertion the hub checks travels with the save.
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      expectedEndpointFingerprint: "fp-work",
+      originClientId: "test-tab",
+    });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
+    expect(getToasts().some((t) => t.text.includes("changed to a different endpoint"))).toBe(true);
+    // The draft survives for the retry, and the listing is re-read.
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(listingsBefore);
+  });
+
+  // The refusal's message asks the user to "review its destination and save
+  // again", so the retry has to be able to land: once the recovery read has
+  // applied, the sheet must assert the destination the name now resolves to and
+  // keep the edits the user typed. Before the fix the sheet kept both the stale
+  // assertion and the stale seeded identity, so the second Save either re-sent
+  // the refused fingerprint or tripped the identity guard and reseeded over the
+  // draft.
+  test("a retry after an endpoint conflict asserts the refreshed destination and keeps the edits", async () => {
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    const WORK_MOVED = {
+      ...WORK,
+      baseUrl: "https://gw.example.test/v2",
+      endpointFingerprint: "fp-moved",
+    };
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(
+        "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+        -32013,
+        { evenerErrorInfo: ErrorEndpointConflict },
+      );
+    });
+    // The same instance, re-pointed: name/providerId/base/auth unchanged, only
+    // the endpoint (baseUrl + fingerprint) moved.
+    fake.on("evener/instance/list", () => ({ instances: [WORK_MOVED], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK_FP, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    const edits = () => fake.calls.filter((call) => call.method === "evener/instance/edit");
+    expect(edits()).toHaveLength(1);
+    expect(edits()[0]?.params).toMatchObject({ expectedEndpointFingerprint: "fp-work" });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
+    // The recovery read has applied the re-pointed row.
+    await waitFor(() =>
+      expect(credentialsStore.getState().instances.find((i) => i.name === "work")?.endpointFingerprint).toBe(
+        "fp-moved",
+      ),
+    );
+
+    await user.click(saveButton());
+    await waitFor(() => expect(edits()).toHaveLength(2));
+    // The retry lands against the destination now on screen, with the user's
+    // typed field intact - not the refused fingerprint, and not a reseeded form.
+    expect(edits()[1]?.params).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      expectedEndpointFingerprint: "fp-moved",
+      originClientId: "test-tab",
+    });
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
+  });
+
+  // The re-anchor must not fire for a replacement: when the refreshed row under
+  // the name is a different instance, the sheet's existing identity guard is what
+  // refuses - the edits typed for the old instance must not land on a stranger.
+  test("a replacement at the name is refused, not re-anchored, after an endpoint conflict", async () => {
+    const WORK_FP = { ...WORK, endpointFingerprint: "fp-work" };
+    const IMPOSTOR = instance({
+      name: "work",
+      providerId: "anthropic",
+      protocol: "anthropic",
+      baseUrl: "https://gw.example.test/v9",
+      endpointFingerprint: "fp-impostor",
+    });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(
+        "work no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again",
+        -32013,
+        { evenerErrorInfo: ErrorEndpointConflict },
+      );
+    });
+    fake.on("evener/instance/list", () => ({ instances: [IMPOSTOR], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK_FP, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    const edits = () => fake.calls.filter((call) => call.method === "evener/instance/edit");
+    expect(edits()).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("changed to a different endpoint"));
+    await waitFor(() =>
+      expect(credentialsStore.getState().instances.find((i) => i.name === "work")?.providerId).toBe("anthropic"),
+    );
+
+    await user.click(saveButton());
+    // The guard refuses and reseeds; nothing is sent to the replacement.
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("was replaced under the same name"));
+    expect(edits()).toHaveLength(1);
+  });
+
+  // The hub's generic conflict is shared by genuine refusals. A rename onto an
+  // occupied name is one: the sheet must surface the hub's own message and keep
+  // the draft, not dress it up as a moved endpoint and refresh.
+  test("a rename onto an occupied name surfaces the hub's refusal, not an endpoint conflict", async () => {
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new WireError('instance "work2" already exists', -32013, { evenerErrorInfo: "conflict" });
+    });
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    const listingsBefore = fake.calls.filter((call) => call.method === "evener/instance/list").length;
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      originClientId: "test-tab",
+    });
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("already exists"));
+    expect(screen.queryByText(/changed to a different endpoint/)).toBeNull();
+    // Not the endpoint-conflict recovery: no listing read was asked for.
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBe(listingsBefore);
+  });
+
   test("a rename toasts the new name, calls onRenamed, and does not close the sheet", async () => {
     const fake = new FakeClient("ready");
     fake.on("evener/instance/edit", (params) => {
-      expect(params).toEqual({ name: "work", newName: "work2" });
+      expect(params).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
       return { instances: [{ ...WORK, name: "work2" }], availableProviders: [OPENAI] };
     });
     connectionStore.getState().connect(fake);
@@ -1117,7 +1437,7 @@ describe("the form", () => {
     expect(field("Base URL").value).toBe("https://original.example/v1");
 
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", apiKeyEnv: "PORTKEY_KEY" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", apiKeyEnv: "PORTKEY_KEY", originClientId: "test-tab" });
     await waitFor(() => expect(getToasts().some((t) => t.text === "Saved work")).toBe(true));
     expect(screen.queryByRole("alert")).toBeNull();
     // Reseeded from the instance the save answered with: clean again, showing
@@ -1257,7 +1577,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
     dismiss();
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -1281,7 +1601,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
     act(() => {
       credentialsStore.setState({ instances: [WORK, OTHER], availableProviders: [OPENAI] });
@@ -1306,7 +1626,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
 
     act(() => {
       credentialsStore.setState({ instances: [WORK, OTHER], availableProviders: [OPENAI] });
@@ -1331,7 +1655,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
 
     act(() => {
       credentialsStore.setState({ instances: [WORK, OTHER], availableProviders: [OPENAI] });
@@ -1355,8 +1683,12 @@ describe("the form", () => {
 
   /** Answers an evener/instance/list refresh with `instances` and waits for
    * the store to apply it, so the save still in flight becomes superseded. */
-  async function refreshList(fake: FakeClient, instances: InstanceEntry[]): Promise<void> {
-    fake.on("evener/instance/list", () => ({ instances, availableProviders: [OPENAI] }));
+  async function refreshList(
+    fake: FakeClient,
+    instances: InstanceEntry[],
+    providers: ProviderDescriptor[] = [OPENAI],
+  ): Promise<void> {
+    fake.on("evener/instance/list", () => ({ instances, availableProviders: providers }));
     await act(async () => {
       await credentialsStore.getState().fetch();
     });
@@ -1368,7 +1700,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
     await refreshList(fake, [WORK]);
     await act(async () => finish({ instances: [{ ...WORK, name: "work2" }], availableProviders: [OPENAI] }));
@@ -1381,19 +1713,69 @@ describe("the form", () => {
   });
 
   test("a rename the store superseded is a saved rename when the list confirms it", async () => {
+    const before = { ...WORK, endpointFingerprint: "fp-work" };
+    const renamed = { ...before, name: "work2" };
     const { fake, finish } = deferredEdit();
-    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      originClientId: "test-tab",
+      expectedEndpointFingerprint: "fp-work",
+    });
 
-    await refreshList(fake, [{ ...WORK, name: "work2" }]);
-    await act(async () => finish({ instances: [{ ...WORK, name: "work2" }], availableProviders: [OPENAI] }));
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
 
     expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // A rename the hub persisted but could not finish (the OAuth record would
+  // not move, or its reload failed) answers as an error carrying the hub's
+  // ErrorInstanceRenamePersisted discriminator. That discriminator is the
+  // authoritative fact - providers.toml already names the new instance - so the
+  // sheet must follow it even when the refreshed listing cannot show the new
+  // row (the hub's fallback registry, a reload that failed). Gating the steer
+  // on the listing strands the sheet on a name the config no longer carries;
+  // replacing the steer with a form error does the same while also blaming the
+  // wrong thing. The listing is still refreshed (the store should catch up),
+  // and the hub's own warning - it names the credential left behind - still
+  // reaches the user.
+  test("a persisted rename whose listing omits the new row still steers to the new name and warns", async () => {
+    const HUB_MESSAGE =
+      "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
+    const fake = new FakeClient("ready");
+    // The refreshed listing never gains the new row: the hub's registry is on
+    // its fallback listing, so reconciliation can never confirm the landing.
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [OPENAI] }));
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted });
+    });
+    connectionStore.getState().connect(fake);
+    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      originClientId: "test-tab",
+    });
+
+    // The persisted name is followed regardless of the listing...
+    await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("work2"));
+    // ...the listing was still reconciled...
+    expect(fake.calls.some((c) => c.method === "evener/instance/list")).toBe(true);
+    // ...the hub's message still warns...
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === HUB_MESSAGE)).toBe(true);
+    // ...and no form error blames the instance the config already renamed.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(getToasts().some((t) => t.text.startsWith("Save failed"))).toBe(false);
   });
 
   // A rename that also edits an endpoint-affecting field necessarily changes
@@ -1414,6 +1796,7 @@ describe("the form", () => {
       name: "work",
       newName: "work2",
       baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
     });
 
     const renamed = {
@@ -1440,7 +1823,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
     await refreshList(fake, [{ ...OTHER, name: "work2" }]);
     await act(async () => finish({ instances: [{ ...OTHER, name: "work2" }], availableProviders: [OPENAI] }));
@@ -1469,6 +1852,7 @@ describe("the form", () => {
       name: "work",
       newName: "work2",
       apiKeyEnv: "PORTKEY_KEY_2",
+      originClientId: "test-tab",
     });
 
     const lookAlike = {
@@ -1493,7 +1877,7 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "2");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", originClientId: "test-tab" });
 
     const lookAlike = { ...WORK, name: "work2", auth: "oauth-openai-codex" };
     await refreshList(fake, [lookAlike]);
@@ -1527,7 +1911,12 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+      originClientId: "test-tab",
+    });
 
     const renamed = { ...shadow, name: "openai-work", base: "openai" };
     await refreshList(fake, [renamed]);
@@ -1536,6 +1925,85 @@ describe("the form", () => {
     expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work");
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-work")).toBe(true);
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // Renaming an instance that had no authored entry authors one under the new
+  // name, so the row the store's listing holds at that name is an authored one.
+  // Implicit becoming authored is therefore the rename's own outcome, not a
+  // different instance wearing the new name: reading the changed flag as a
+  // difference rejects the store's confirmation and leaves the sheet on a row
+  // that no longer exists.
+  test("a superseded rename of an instance with no authored entry is confirmed as authored", async () => {
+    const codex = instance({
+      name: "openai-codex",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      implicit: true,
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      endpointFingerprint: "fp-codex",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(codex, {}, []);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai-codex",
+      newName: "openai-codex-work",
+      expectedEndpointFingerprint: "fp-codex",
+      originClientId: "test-tab",
+    });
+
+    // What the hub authors: the entry under the new name, pinning the curated
+    // id it was inheriting from, so the listing's row is authored and carries
+    // that base.
+    const renamed = { ...codex, name: "openai-codex-work", base: "openai-codex", implicit: false };
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("openai-codex-work");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-codex-work")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // A rename always authors the entry under the new name, so an implicit row
+  // holding that name is never this rename's result: it is a curated provider
+  // the environment re-derived there, or a later tenant of the freed name.
+  // Landing the sheet on it would title one instance with another's values.
+  test("a superseded rename is not confirmed by an implicit row at the new name", async () => {
+    const codex = instance({
+      name: "openai-codex",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      authModes: ["oauth"],
+      implicit: true,
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+      endpointFingerprint: "fp-codex",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(codex, {}, []);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-work");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai-codex",
+      newName: "openai-codex-work",
+      expectedEndpointFingerprint: "fp-codex",
+      originClientId: "test-tab",
+    });
+
+    // Every identity field matches, but the row is implicit - not something a
+    // rename authors.
+    const implicitLookAlike = { ...codex, name: "openai-codex-work", implicit: true };
+    await refreshList(fake, [implicitLookAlike]);
+    await act(async () => finish({ instances: [implicitLookAlike], availableProviders: [] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved openai-codex-work")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
   });
 
   // The same rename answered by the store instead of superseded: the edit
@@ -1560,7 +2028,12 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+      originClientId: "test-tab",
+    });
 
     await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("openai-work"));
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved openai-work")).toBe(true);
@@ -1581,7 +2054,12 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Name"), "-work");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "openai", newName: "openai-work" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "openai",
+      newName: "openai-work",
+      expectedEndpointFingerprint: "fp-shadow",
+      originClientId: "test-tab",
+    });
 
     const lookAlike = { ...shadow, name: "openai-work", base: "anthropic" };
     await refreshList(fake, [lookAlike]);
@@ -1598,7 +2076,11 @@ describe("the form", () => {
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
 
     await refreshList(fake, [WORK]);
     await act(async () =>
@@ -1608,5 +2090,1253 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.text === "Saved work")).toBe(false);
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
     expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
+  });
+
+  // A superseded save that edited an endpoint-affecting field lands in the
+  // store's own listing: the derived endpointFingerprint is the digest of the
+  // change this save produced, so the seeded identity anchor — taken before the
+  // save — no longer matches the entry that carries it. Without re-anchoring,
+  // the next Save refuses with the replacement error for an instance nothing
+  // replaced. The draft is the user's own landed change: re-anchoring keeps it
+  // and rebases the diff baseline to what landed, so the next Save is not
+  // refused and is not spuriously dirty either.
+  test("a superseded endpoint save re-anchors so the next save is not refused as a replacement", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
+
+    // The refresh that started after the save answers first, so the store
+    // discards the save's own response as superseded while its listing already
+    // holds the endpoint the save produced.
+    const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    // The draft now equals the landed row, so no replacement error appears and
+    // Save is clean (disabled) rather than re-sending the same edit.
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(saveButton().disabled).toBe(true);
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // The re-anchor above turns on the listing carrying THIS save's declaration.
+  // A same-name replacement that matches every untouched identity field but
+  // differs in the very field the save edited is not this save's landing:
+  // re-anchoring there would pin the draft to the replacement and let the next
+  // Save write onto it.
+  test("a superseded save is not re-anchored onto a concurrent write in the same field it touched", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
+
+    // The answer the store discards is THIS save's landing; the refresh that
+    // superseded it carries another client's write to the same field.
+    const ours = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-ours" };
+    const foreign = { ...before, baseUrl: "https://other.example.test/y", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // A save's params carry only the variables it changed; every other authored
+  // variable is left alone. Comparing `vars` as one field would therefore
+  // accept a replacement that differs only in an untouched variable. The
+  // re-anchor has to compare the variables key by key.
+  test("a superseded save is not re-anchored onto a look-alike differing only in an untouched variable", async () => {
+    const before = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1", GOOGLE_VERTEX_LOCATION: "loc1" },
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p9");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "p9" },
+      originClientId: "test-tab",
+    });
+
+    // The listing carries the variable this save declared, but its untouched
+    // variable differs: this is a different instance, not this save's landing.
+    const lookAlike = {
+      ...before,
+      vars: { GOOGLE_VERTEX_PROJECT: "p9", GOOGLE_VERTEX_LOCATION: "loc-other" },
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [lookAlike], [VERTEX]);
+    await act(async () => finish({ instances: [lookAlike], availableProviders: [VERTEX] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // Editing an implicit instance authors a shadow under the same name, so the
+  // listing's implicit legitimately falls true -> false across this save. That
+  // is still this save's own landing: the re-anchor must allow it, or the next
+  // endpoint save is falsely refused and the draft reset.
+  test("editing an implicit instance still re-anchors after it authors a shadow", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      implicit: true,
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
+
+    const authored = {
+      ...before,
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-after",
+      implicit: false,
+    };
+    await refreshList(fake, [authored]);
+    await act(async () => finish({ instances: [authored], availableProviders: [OPENAI] }));
+
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(saveButton().disabled).toBe(true);
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // The transition is one-directional: an authored row does not become
+  // implicit from a plain save, so a listing that flips the other way is a
+  // different instance and the re-anchor must not accept it.
+  test("a superseded save is not re-anchored onto a replacement under a differing implicit", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
+
+    const envRow = {
+      ...before,
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-after",
+      implicit: true,
+    };
+    await refreshList(fake, [envRow]);
+    await act(async () => finish({ instances: [envRow], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // The listing's Base URL is the endpoint the hub sanitized: userinfo, query
+  // and fragment are stripped before it crosses the appwire boundary, so the
+  // listing cannot show that query. The mutation's own discarded answer carries
+  // the hub's fingerprint for the complete resolved endpoint, so the re-anchor
+  // is confirmed from that rather than from the sanitized display string.
+  test("a superseded save whose declared URL carries a stripped part re-anchors on the authoritative fingerprint", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x?token=abc");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x?token=abc",
+      originClientId: "test-tab",
+    });
+
+    // The listing serves the sanitized endpoint; the answer the store discards
+    // carries the fingerprint for the same landing.
+    const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+  });
+
+  // A rename whose captured row has no endpoint fingerprint cannot prove the
+  // renamed destination, so it fails closed like the plain path: a stale-save
+  // warning and no steer onto the new name (rather than a URL comparison that
+  // could never see hidden parts).
+  test("a superseded rename with no authoritative fingerprint fails closed", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      newName: "work2",
+      originClientId: "test-tab",
+    });
+
+    // The rename landed, but the captured row serves no fingerprint.
+    const renamed = {
+      ...before,
+      name: "work2",
+      endpointFingerprint: "",
+    };
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
+  // Clearing an endpoint override drops the authored value, and the listing
+  // then serves the RESOLVED one: an instance with a different authored override
+  // that resolves to the same effective endpoint carries the same fingerprint,
+  // so the capture cannot tell this save's clear from a replacement. The plain
+  // supersede fails closed on an endpoint clear instead of re-anchoring.
+  test("a superseded endpoint clear is not re-anchored onto a same-endpoint replacement", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.clear(field("Base URL"));
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      clearBaseUrl: true,
+      originClientId: "test-tab",
+    });
+
+    // This save's landing resolved the inherited URL; a replacement carries its
+    // own override that resolves to the same effective endpoint.
+    const ours = {
+      ...before,
+      baseUrl: "https://inherited.example.test/v1",
+      endpointFingerprint: "fp-after",
+    };
+    const foreign = {
+      ...before,
+      baseUrl: "https://other.example.test/x",
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // The hub normalizes a credential header to `name=value` (trimming around
+  // the `=`) before the listing serves it, so a declared header with spacing
+  // only matches after the same reduction. The save also edits the endpoint,
+  // so the re-anchor is what the next Save depends on (the fingerprint moved).
+  test("a superseded credential-header save re-anchors through the hub's normalization", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      credentialHeader: "Authorization=Bearer $OLDKEY",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.clear(field("Credential header"));
+    await user.type(field("Credential header"), "Authorization = Bearer $NEWKEY");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      credentialHeader: "Authorization = Bearer $NEWKEY",
+      originClientId: "test-tab",
+    });
+
+    // The listing serves the header the hub normalized and the endpoint the
+    // save produced.
+    const landed = {
+      ...before,
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-after",
+      credentialHeader: "Authorization=Bearer $NEWKEY",
+    };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+  });
+
+  // A malformed or hostless URL is stored verbatim by the hub but sanitizes to
+  // empty for the listing, so two distinct invalid destinations read the same.
+  // Matching empty-to-empty would re-anchor the draft onto a same-name
+  // replacement; the check fails closed instead.
+  test("a superseded save with a malformed URL does not re-anchor onto another malformed entry", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.clear(field("Base URL"));
+    await user.type(field("Base URL"), "not a url");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      baseUrl: "not a url",
+      originClientId: "test-tab",
+    });
+
+    // This save's own landing: a malformed URL, which the hub stores verbatim
+    // but cannot key (no fingerprint).
+    const ours = { ...before, baseUrl: "not a url", endpointFingerprint: "" };
+    // A different invalid destination, which the hub also sanitizes to "".
+    const foreign = { ...before, baseUrl: "also not a url", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // The hub omits apiKeyEnv/credentialHeader when the authored value is invalid
+  // or a literal secret, so an omitted listing field is not proof that this
+  // save cleared it. On an instance the hub cannot key there is no authoritative
+  // fingerprint to fall back on, so the clear fails closed instead of
+  // re-anchoring onto redacted metadata.
+  test("an unkeyable superseded endpoint-plus-credential clear does not re-anchor onto redacted metadata", async () => {
+    const before = unkeyable({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      apiKeyEnv: "PORTKEY_KEY",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.clear(field("API key environment variable"));
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      clearApiKeyEnv: true,
+      originClientId: "test-tab",
+    });
+
+    // This save's own landing (redacted: the cleared field is omitted), and a
+    // replacement at the same endpoint carrying a hidden authored value.
+    const ours = unkeyable({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1/x",
+    });
+    const foreign = unkeyable({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1/x",
+      apiKeyEnv: "HIDDEN_KEY",
+    });
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // The listing's baseUrl is the RESOLVED URL: editing a template variable that
+  // feeds the provider's base_url changes it, so it is derived from this save
+  // and cannot be compared as an untouched identity field on an endpoint-
+  // affecting save.
+  test("a superseded save that changes a template variable re-anchors on the new resolved URL", async () => {
+    const before = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1" },
+      baseUrl: "https://old.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      originClientId: "test-tab",
+    });
+
+    // The variable change resolves a different base URL in the listing.
+    const landed = {
+      ...before,
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      baseUrl: "https://new.example.test/v1",
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [landed], [VERTEX]);
+    await act(async () => finish({ instances: [landed], availableProviders: [VERTEX] }));
+
+    // The re-anchor takes the landed resolution and leaves the draft clean.
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(field("Base URL").value).toBe("https://new.example.test/v1");
+    expect(saveButton().disabled).toBe(true);
+
+    // A further variable edit must not carry the stale pre-save URL as an
+    // explicit baseUrl override.
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p3");
+    await user.click(saveButton());
+    const edits = fake.calls.filter((c) => c.method === "evener/instance/edit");
+    expect(edits).toHaveLength(2);
+    expect(edits[1]?.params).toEqual({
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "p3" },
+      expectedEndpointFingerprint: "fp-after",
+      originClientId: "test-tab",
+    });
+  });
+
+  // A rename riding along with a credential clear cannot be confirmed: the hub
+  // omits an authored value it cannot serve, so a replacement under the new name
+  // with different (hidden) credentials reads the same. The rename fails closed.
+  test("a superseded rename that also clears a credential field is not confirmed", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      apiKeyEnv: "PORTKEY_KEY",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("API key environment variable"));
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      newName: "work2",
+      clearApiKeyEnv: true,
+      originClientId: "test-tab",
+    });
+
+    // The renamed instance landed without the cleared authored field.
+    const landed = instance({
+      name: "work2",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
+  // The credential-clear exemption above is only for clears whose landed value
+  // the rename does not depend on. An ENDPOINT clear (baseUrl here) is
+  // unverifiable and also removes baseUrl and endpointFingerprint from the
+  // untouched comparison, so a replacement under the new name with any endpoint
+  // must not be confirmed as this rename.
+  test("a superseded rename that clears the endpoint is not confirmed by an arbitrary replacement", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("Base URL"));
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      newName: "work2",
+      clearBaseUrl: true,
+      originClientId: "test-tab",
+    });
+
+    const foreign = {
+      ...before,
+      name: "work2",
+      baseUrl: "https://other.example.test/y",
+      endpointFingerprint: "fp-other",
+    };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
+  // A variable-only save declares no baseUrl, so the listing's resolved URL is
+  // the only endpoint evidence. The mutation's own answer carries the
+  // fingerprint for the endpoint it resolved; a replacement that matches the
+  // requested variable but resolves another URL must not be re-anchored.
+  test("a superseded variable save is not re-anchored onto an entry with a different URL override", async () => {
+    const before = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1" },
+      baseUrl: "https://resolved-one.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      originClientId: "test-tab",
+    });
+
+    const ours = {
+      ...before,
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      baseUrl: "https://resolved-one.example.test/v1",
+      endpointFingerprint: "fp-ours",
+    };
+    const foreign = {
+      ...before,
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      baseUrl: "https://resolved-other.example.test/v1",
+      endpointFingerprint: "fp-foreign",
+    };
+    await refreshList(fake, [foreign], [VERTEX]);
+    await act(async () => finish({ instances: [ours], availableProviders: [VERTEX] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // The endpoint fingerprint proves the destination, not the credential fields
+  // it excludes. A replacement at the same endpoint (matching fingerprint) that
+  // carries different credential metadata must not be re-anchored over.
+  test("a superseded endpoint-plus-credential clear is not re-anchored onto conflicting credential metadata", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      apiKeyEnv: "PORTKEY_KEY",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.clear(field("API key environment variable"));
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      clearApiKeyEnv: true,
+      originClientId: "test-tab",
+    });
+
+    // Same endpoint, so the same fingerprint; the replacement keeps its own
+    // credential metadata.
+    const ours = {
+      ...before,
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-after",
+      apiKeyEnv: "",
+    };
+    const foreign = {
+      ...before,
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-after",
+      apiKeyEnv: "OTHER_KEY",
+    };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // A pathless URL is not a path disagreement: the hub serves `https://host`
+  // while WHATWG supplies `/`, so the normalization guard must not refuse a
+  // rename that moves the endpoint to a bare authority.
+  test("a superseded rename to a pathless Base URL is confirmed", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("Base URL"));
+    await user.type(field("Base URL"), "https://api.example.test");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      newName: "work2",
+      baseUrl: "https://api.example.test",
+      originClientId: "test-tab",
+    });
+
+    const renamed = {
+      ...before,
+      name: "work2",
+      baseUrl: "https://api.example.test",
+      endpointFingerprint: "fp-other",
+    };
+    await refreshList(fake, [renamed]);
+    await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
+  });
+
+  // The endpoint fingerprint excludes `surface` and the variables that do not
+  // feed the endpoint, so a matching fingerprint alone must not confirm a
+  // declared variable that the listing carries differently.
+  test("a superseded variable save is not re-anchored onto an entry with a conflicting declared variable", async () => {
+    const before = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1" },
+      baseUrl: "https://resolved.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      originClientId: "test-tab",
+    });
+
+    const ours = {
+      ...before,
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      baseUrl: "https://resolved.example.test/v1",
+      endpointFingerprint: "fp-after",
+    };
+    const foreign = {
+      ...before,
+      vars: { GOOGLE_VERTEX_PROJECT: "p3" },
+      baseUrl: "https://resolved.example.test/v1",
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [foreign], [VERTEX]);
+    await act(async () => finish({ instances: [ours], availableProviders: [VERTEX] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // draftIdentity excludes the credential fields, so a credential-only save
+  // whose superseding listing belongs to a same-endpoint replacement would pass
+  // the next pre-write check and overwrite that replacement's credentials. An
+  // unconfirmed credential supersede marks the draft stale instead.
+  test("a superseded credential-only save is not re-anchored onto a replacement's credentials", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      apiKeyEnv: "PORTKEY_KEY",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.clear(field("API key environment variable"));
+    await user.type(field("API key environment variable"), "NEW_KEY");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      apiKeyEnv: "NEW_KEY",
+      originClientId: "test-tab",
+    });
+
+    const ours = { ...before, apiKeyEnv: "NEW_KEY" };
+    const foreign = { ...before, apiKeyEnv: "FOREIGN_KEY" };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    // The next Save refuses and re-seeds rather than overwriting the foreign key.
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // The endpoint fingerprint does not cover `surface`, and draftIdentity does
+  // not either, so an unconfirmed supersede of a surface change must mark the
+  // draft stale or a same-endpoint replacement is overwritten on the next Save.
+  test("a superseded surface save whose landing cannot be confirmed marks the draft stale", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      surface: "generic",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.selectOptions(select("Surface"), "openai");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      surface: "openai",
+      originClientId: "test-tab",
+    });
+
+    // Same endpoint (same fingerprint), different surface.
+    const ours = { ...before, surface: "openai" };
+    const foreign = { ...before, surface: "anthropic" };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // A surface clear leaves no declared value to compare and the fingerprint
+  // excludes surface, so it is verified against the captured row instead.
+  test("a superseded clear-surface save is not re-anchored onto a replacement with a different surface", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      surface: "generic",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.selectOptions(select("Surface"), "");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      clearSurface: true,
+      originClientId: "test-tab",
+    });
+
+    const ours = { ...before, surface: "" };
+    const foreign = { ...before, surface: "anthropic" };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // Without an authoritative fingerprint the sanitized listing cannot prove the
+  // destination (baseUrl omits query/userinfo), so an unkeyable supersede fails
+  // closed and marks the draft stale rather than re-anchoring from display fields.
+  test("an unkeyable superseded save is not re-anchored without an authoritative fingerprint", async () => {
+    const before = unkeyable({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
+
+    const ours = unkeyable({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1/x",
+    });
+    const foreign = unkeyable({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1/x",
+    });
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // A confirmed re-anchor rebases the diff baseline to the landed row, so the
+  // draft is clean; reverting the landed edit to its pre-save value must then be
+  // dirty and writable rather than a Save the sheet cannot press.
+  test("a confirmed superseded re-anchor lets a landed edit be reverted", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      originClientId: "test-tab",
+    });
+
+    const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    // Draft equals landed: clean, no replacement error.
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(saveButton().disabled).toBe(true);
+
+    await user.clear(field("Base URL"));
+    await user.type(field("Base URL"), "https://gw.example.test/v1");
+    expect(saveButton().disabled).toBe(false);
+    await user.click(saveButton());
+    const edits = fake.calls.filter((c) => c.method === "evener/instance/edit");
+    expect(edits).toHaveLength(2);
+    expect(edits[1]?.params).toMatchObject({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1",
+      originClientId: "test-tab",
+    });
+  });
+
+  // The baseline rebase must not manufacture a pending change: a field the save
+  // did not declare whose store value moved concurrently takes the landed value,
+  // so Save stays clean instead of reverting the other client's edit.
+  test("a re-anchor does not turn a concurrently changed unedited field into a pending overwrite", async () => {
+    const seeded = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      surface: "generic",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      apiKeyEnv: "OLD",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(seeded, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.selectOptions(select("Surface"), "openai");
+    // Another client changes apiKeyEnv; the draft keeps its seeded value because
+    // the reseed effect keys on the instance name only.
+    await act(async () => {
+      credentialsStore.setState({
+        instances: [{ ...seeded, apiKeyEnv: "FOREIGN" }],
+        availableProviders: [OPENAI],
+      });
+    });
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      surface: "openai",
+      originClientId: "test-tab",
+    });
+
+    const landed = {
+      ...seeded,
+      surface: "openai",
+      apiKeyEnv: "FOREIGN",
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    // The unedited apiKeyEnv takes the landed (foreign) value; nothing pending.
+    expect(field("API key environment variable").value).toBe("FOREIGN");
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  // The rename path now proves the destination from the rename's own captured
+  // row: a replacement under the new name at the same sanitized URL but a
+  // different hidden endpoint (a query the listing strips) must not be confirmed.
+  test("a superseded rename is not confirmed by a same-URL entry at a different hidden endpoint", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://old.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("Base URL"));
+    await user.type(field("Base URL"), "https://gw.example.test/v1");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "work",
+      newName: "work2",
+      baseUrl: "https://gw.example.test/v1",
+      originClientId: "test-tab",
+    });
+
+    const ours = {
+      ...before,
+      name: "work2",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-ours",
+    };
+    const foreign = {
+      ...before,
+      name: "work2",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-foreign",
+    };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [ours], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
+
+  // A rename that only changes a variable has no declared Base URL, but the
+  // rename's own captured row carries the new-name fingerprint, so it confirms
+  // rather than failing closed.
+  test("a superseded rename that only changes a variable is confirmed by the authoritative fingerprint", async () => {
+    const before = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1" },
+      baseUrl: "https://resolved.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "v",
+      newName: "v2",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      originClientId: "test-tab",
+    });
+
+    const landed = {
+      ...before,
+      name: "v2",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [landed], [VERTEX]);
+    await act(async () => finish({ instances: [landed], availableProviders: [VERTEX] }));
+
+    expect(handlers.onRenamed).toHaveBeenCalledWith("v2");
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved v2")).toBe(true);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // The real transport ordering: the superseding read is issued after this
+  // write, but its response arrives AFTER the write's (evener/instance/list runs
+  // inline on the connection's serial worker). The store therefore still holds
+  // the pre-save listing when the edit's await resolves, and the sheet must
+  // settle a post-write read before comparing.
+  test("a superseded save re-anchors when the superseding read lands after the edit response", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
+    const resolvers: ((value: InstanceListResponse) => void)[] = [];
+    fake.on("evener/instance/list", () => new Promise<InstanceListResponse>((resolve) => resolvers.push(resolve)));
+    const pendingRead = credentialsStore.getState().fetch();
+
+    await act(async () => {
+      finish({ instances: [landed], availableProviders: [OPENAI] });
+    });
+    await waitFor(() => expect(resolvers.length).toBeGreaterThanOrEqual(2));
+    await act(async () => {
+      for (const resolve of resolvers) resolve({ instances: [landed], availableProviders: [OPENAI] });
+    });
+    await pendingRead;
+
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/x");
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  // A superseded save whose connection is torn down before its answer must not
+  // report a failed save: the write may have landed, and the follow-up read is
+  // only a confirmation (it throws when no client is connected).
+  test("a superseded save does not report a failed save when the connection is gone", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    // A read starts after the write and supersedes its answer; the connection
+    // is then torn down before the edit's response arrives.
+    fake.on("evener/instance/list", () => new Promise<InstanceListResponse>(() => {}));
+    void credentialsStore.getState().fetch();
+    act(() => connectionStore.setState({ client: null, state: "idle" }));
+
+    await act(async () => {
+      finish({ instances: [before], availableProviders: [OPENAI] });
+    });
+
+    expect(getToasts().some((t) => t.text.startsWith("Save failed"))).toBe(false);
+    expect(screen.queryByText(/Save failed/)).toBeNull();
+    expect(screen.queryByText(/no client connected/)).toBeNull();
+  });
+
+  // `vars` is a map: the re-anchor must rebase per key, so an undeclared
+  // variable a concurrent client changed does not become a pending overwrite.
+  test("a re-anchor does not resurrect a concurrently changed undeclared variable", async () => {
+    const seeded = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1", GOOGLE_VERTEX_LOCATION: "loc1" },
+      baseUrl: "https://resolved.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(seeded, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p2");
+    // Another client changes the OTHER authored variable; the draft keeps its
+    // seeded value because the reseed effect keys on the instance name only.
+    await act(async () => {
+      credentialsStore.setState({
+        instances: [{ ...seeded, vars: { GOOGLE_VERTEX_PROJECT: "p1", GOOGLE_VERTEX_LOCATION: "loc-client" } }],
+        availableProviders: [VERTEX],
+      });
+    });
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      expectedEndpointFingerprint: "fp-before",
+      name: "v",
+      vars: { GOOGLE_VERTEX_PROJECT: "p2" },
+      originClientId: "test-tab",
+    });
+
+    const landed = {
+      ...seeded,
+      vars: { GOOGLE_VERTEX_PROJECT: "p2", GOOGLE_VERTEX_LOCATION: "loc-client" },
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [landed], [VERTEX]);
+    await act(async () => finish({ instances: [landed], availableProviders: [VERTEX] }));
+
+    // The undeclared variable takes the landed (foreign) value; nothing pending.
+    expect(field("GOOGLE_VERTEX_LOCATION").value).toBe("loc-client");
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  // The store already schedules its own debounced refetch on a superseded write;
+  // if that read starts later it supersedes the sheet's confirmation read, which
+  // then resolves without applying anything. The sheet must re-read until one
+  // applies, not sample the pre-save listing.
+  test("a superseded save re-reads when the store's own refetch supersedes the confirmation read", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+
+    const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
+    const resolvers: ((value: InstanceListResponse) => void)[] = [];
+    fake.on("evener/instance/list", () => new Promise<InstanceListResponse>((resolve) => resolvers.push(resolve)));
+
+    // The read that supersedes the edit.
+    void credentialsStore.getState().fetch();
+    await act(async () => {
+      finish({ instances: [landed], availableProviders: [OPENAI] });
+    });
+
+    // The sheet's confirmation read, then the store's own later refetch that
+    // supersedes it so it resolves without applying.
+    await waitFor(() => expect(resolvers.length).toBeGreaterThanOrEqual(2));
+    void credentialsStore.getState().fetch();
+    await waitFor(() => expect(resolvers.length).toBeGreaterThanOrEqual(3));
+    await act(async () => {
+      resolvers[1]?.({ instances: [landed], availableProviders: [OPENAI] });
+    });
+
+    // The re-read applies the post-write listing.
+    await waitFor(() => expect(resolvers.length).toBeGreaterThanOrEqual(4));
+    await act(async () => {
+      resolvers[3]?.({ instances: [landed], availableProviders: [OPENAI] });
+    });
+
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(saveButton().disabled).toBe(true);
   });
 });

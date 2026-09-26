@@ -17,33 +17,35 @@ import { SettingsNav } from "./SettingsNav";
 import { DEFAULT_SECTION_ID, isKnownSettingsSection, settingsSectionLabel } from "./sections";
 import { AboutSection } from "./sections/about";
 import { AgentsSection } from "./sections/agents";
-import { AgentsDocSection } from "./sections/agentsDoc";
-import { CredentialsSection } from "./sections/credentials/CredentialsSection";
+import { AgentsDocHostScope } from "./sections/agentsDoc";
+import { CredentialsHostScope } from "./sections/credentials/CredentialsHostScope";
 import { DisplaySection } from "./sections/display";
 import { GeneralSection } from "./sections/general";
+import { HostsSection } from "./sections/hosts";
 import { HubSection } from "./sections/hub";
-import { InRepoSection } from "./sections/inrepo";
+import { InRepoHostScope } from "./sections/inrepo";
 import { KeybindingsSection } from "./sections/keybindings";
-import { LaunchServerSection } from "./sections/launchServer";
-import { MarketplacesPluginsSection } from "./sections/marketplacesPlugins";
-import { McpSection } from "./sections/mcp";
+import { LaunchServerHostScope } from "./sections/launchServer";
+import { MarketplacesPluginsHostScope } from "./sections/marketplacesPlugins";
+import { McpSectionHostScope } from "./sections/mcp";
 import { MobileSection } from "./sections/mobile";
 import { NotificationsSection } from "./sections/notifications";
 import { PlaceholderSection } from "./sections/PlaceholderSection";
-import { PluginsDirsSection } from "./sections/pluginsDirs";
-import { ProjectSection } from "./sections/project";
-import { SkillsDirsSection } from "./sections/skillsDirs";
+import { PluginsDirsHostScope } from "./sections/pluginsDirs";
+import { ProjectHostScope } from "./sections/project";
+import { SkillsDirsHostScope } from "./sections/skillsDirs";
 import { StorageSection } from "./sections/storage";
 import { ThemeSection } from "./sections/theme";
 import { TranscriptSection } from "./sections/transcript";
 import styles from "./settings.module.css";
+import { settingsURL, useSettingsHost, useSettingsHostURLSync } from "./settingsHost";
 
 // McpSection's overview dependency is injected (its own McpSectionProps seam,
 // built against the pinned interface before the real store existed) - this
 // adapter binds it to the real store at the one place the dispatch map needs
 // a zero-prop component.
 function McpSectionWired() {
-  return <McpSection useOverviewStore={useSettingsOverviewStore} />;
+  return <McpSectionHostScope useOverviewStore={useSettingsOverviewStore} />;
 }
 
 export interface SettingsPaneParams {
@@ -67,15 +69,18 @@ const CLASS = {
 // SETTINGS_SECTIONS (sections.ts's own comment - no nav entry) but IS a
 // valid dispatch target here, reached via /settings/project?cwd=.
 const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> = {
-  credentials: CredentialsSection,
+  // CredentialsHostScope wraps CredentialsSection with the host picker: local
+  // (the default) renders CredentialsSection unchanged, a remote selection
+  // renders that host's own read-only listing.
+  credentials: CredentialsHostScope,
   agents: AgentsSection,
-  "agents-md": AgentsDocSection,
-  "launch-evener": LaunchServerSection,
-  inrepo: InRepoSection,
-  project: ProjectSection,
-  "plugins-manager": MarketplacesPluginsSection,
-  plugins: PluginsDirsSection,
-  skills: SkillsDirsSection,
+  "agents-md": AgentsDocHostScope,
+  "launch-evener": LaunchServerHostScope,
+  inrepo: InRepoHostScope,
+  project: ProjectHostScope,
+  "plugins-manager": MarketplacesPluginsHostScope,
+  plugins: PluginsDirsHostScope,
+  skills: SkillsDirsHostScope,
   mcp: McpSectionWired,
   general: GeneralSection,
   theme: ThemeSection,
@@ -83,6 +88,7 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   display: DisplaySection,
   notifications: NotificationsSection,
   keybindings: KeybindingsSection,
+  hosts: HostsSection,
   hub: HubSection,
   mobile: MobileSection,
   storage: StorageSection,
@@ -135,6 +141,11 @@ function showSettingsList(): void {
  */
 export default function Settings({ params, paneId }: PaneProps<SettingsPaneParams>) {
   const rememberedSection = usePrefsStore((s) => s.lastSettingsSection);
+  // The route's selected host (component 07b's host-context): this pane is the
+  // settings route's shell, so it is where a URL that names a host is adopted
+  // and kept in step with back/forward.
+  const { host } = useSettingsHost();
+  useSettingsHostURLSync();
   const activeId =
     params.section ??
     (rememberedSection !== null && isKnownSettingsSection(rememberedSection) ? rememberedSection : DEFAULT_SECTION_ID);
@@ -146,8 +157,9 @@ export default function Settings({ params, paneId }: PaneProps<SettingsPaneParam
   const showContent = !isMobile || params.section !== undefined;
 
   function handleNavigate(sectionId: string) {
-    const url = paneToURL("settings", { section: sectionId });
-    if (url !== null) navigate(url);
+    // Through settingsURL, not paneToURL: a remote selection stays part of the
+    // route across a section switch. Local yields exactly paneToURL's URL.
+    navigate(settingsURL(sectionId, host));
   }
 
   // Record the visited section so the next bare /settings reopens here.

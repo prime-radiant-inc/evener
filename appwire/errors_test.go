@@ -3,8 +3,45 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
+
+// TestInvalidHostFieldCarriesTheBlamedInput pins the shape a dialog reads: the
+// standard validation code and prose, with evenerErrorInfo naming the refusal
+// kind and data.field naming the input in the wire's own spelling.
+func TestInvalidHostFieldCarriesTheBlamedInput(t *testing.T) {
+	err := InvalidHostField("address", `host "m4": missing ssh destination`)
+	if err.Code != CodeInvalidParams {
+		t.Fatalf("Code = %d, want CodeInvalidParams", err.Code)
+	}
+	data, ok := err.Data.(HostFieldErrorData)
+	if !ok {
+		t.Fatalf("Data = %T, want HostFieldErrorData", err.Data)
+	}
+	if data.EvenerErrorInfo != ErrorInvalidHostField || data.Field != "address" {
+		t.Fatalf("data = %+v, want the invalidHostField discriminant and field address", data)
+	}
+	raw, err2 := json.Marshal(err)
+	if err2 != nil {
+		t.Fatalf("Marshal: %v", err2)
+	}
+	for _, want := range []string{`"evenerErrorInfo":"invalidHostField"`, `"field":"address"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("wire error = %s, want it to contain %s", raw, want)
+		}
+	}
+	// A refusal that blames the entry as a whole carries no field at all, so a
+	// client never looks for an input that does not exist.
+	whole := InvalidHostField("", "host cycle")
+	rawWhole, err3 := json.Marshal(whole)
+	if err3 != nil {
+		t.Fatalf("Marshal: %v", err3)
+	}
+	if strings.Contains(string(rawWhole), `"field"`) {
+		t.Fatalf("wire error = %s, want no field for a form-level refusal", rawWhole)
+	}
+}
 
 // TestWireErrorConstructors asserts each constructor's code (against the literal
 // JSON-RPC number, so a mutated CodeX constant is caught), evenerErrorInfo tag, and
@@ -27,6 +64,9 @@ func TestWireErrorConstructors(t *testing.T) {
 		{"SessionUnavailable", SessionUnavailable("no sess"), -32014, ErrorSessionUnavailable, "no sess"},
 		{"HubLaunchError", HubLaunchError("launch"), -32014, ErrorHubLaunch, "launch"},
 		{"QueuedDrainPartial", QueuedDrainPartial("partial"), -32013, ErrorQueuedDrainPartial, "partial"},
+		{"InstanceRenamePersisted", InstanceRenamePersisted("leftover"), -32603, ErrorInstanceRenamePersisted, "leftover"},
+		{"InstanceRemoveApplied", InstanceRemoveApplied("leftover"), -32603, ErrorInstanceRemoveApplied, "leftover"},
+		{"EndpointConflict", EndpointConflict("moved"), -32013, ErrorEndpointConflict, "moved"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if c.err.Code != c.wantCode {

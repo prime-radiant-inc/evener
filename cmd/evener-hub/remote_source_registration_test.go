@@ -189,6 +189,11 @@ func TestHostRegistryEntriesCarryEveryHostField(t *testing.T) {
 	if !ok {
 		t.Fatal("alpha missing from the registry built from the config")
 	}
+	// The one difference from the configured literal is the field the registry
+	// owns: Add assigns the entry its per-name generation on insert, so a
+	// byte-identical re-add of the name is a different entry (the round-3
+	// identity rule). Everything else must round-trip unchanged.
+	want.Generation = 1
 	if !reflect.DeepEqual(registered, want) {
 		t.Fatalf("registry.Get(%q) = %+v, want %+v", "alpha", registered, want)
 	}

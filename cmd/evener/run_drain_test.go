@@ -330,7 +330,7 @@ func TestRunDrainsManagedShellBeforeExit(t *testing.T) {
 		wantStatus string
 	}{
 		{name: "completed", command: "printf shell-ok", wantStatus: "completed"},
-		{name: "failed", command: "printf shell-failed >&2; exit 7", wantStatus: "failed"},
+		{name: "command exited nonzero", command: "printf shell-failed >&2; exit 7", wantStatus: "command_exited_nonzero"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -348,7 +348,7 @@ func TestRunDrainsManagedShellBeforeExit(t *testing.T) {
 func managedShellDrainScenario(t *testing.T, command, wantStatus string, tweak func(*runConfig)) *scriptedProvider {
 	output := "shell-ok"
 	exit := 0
-	if wantStatus == "failed" {
+	if wantStatus == "command_exited_nonzero" {
 		output = "shell-failed"
 		exit = 7
 	}

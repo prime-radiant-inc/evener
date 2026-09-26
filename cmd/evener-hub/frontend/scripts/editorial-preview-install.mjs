@@ -5,12 +5,11 @@ import path from "node:path";
 // frontend plus the AppWire package at appwire-client/typescript, the one
 // intentional entry outside the checkout (see editorial-preview.vite.config.mjs
 // and its test - the package's modules are served over /@fs/ and 403 without
-// it), and lets Vite's dep cache live under node_modules - both only hold when the
-// install is the checkout's OWN, not a fleet worktree's symlink into the one
-// shared install (a tree every concurrent lane can write). The config refuses
-// to serve on a shared install; the preview's own tests skip on one instead of
-// re-testing a contract that cannot hold there. CI's fresh npm ci checkout is
-// where these actually run.
+// it) - a contract that only holds when the install is the checkout's OWN, not
+// a fleet worktree's symlink into the one shared install (a tree every
+// concurrent lane can write). The config refuses to serve on a shared install;
+// the preview's own tests skip on one instead of re-testing a contract that
+// cannot hold there. CI's fresh npm ci checkout is where these actually run.
 //
 // The verdict tests node_modules ITSELF (lstat), never the whole resolved
 // path: realpathSync would also resolve a symlinked PARENT (macOS's

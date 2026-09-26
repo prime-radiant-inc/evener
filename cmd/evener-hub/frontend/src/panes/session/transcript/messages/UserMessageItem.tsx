@@ -39,6 +39,8 @@ const CLASS = {
   actions: requireClass(styles.actions, "usermessageitem.module.css", "actions"),
   body: requireClass(styles.body, "usermessageitem.module.css", "body"),
   text: requireClass(styles.text, "usermessageitem.module.css", "text"),
+  provisional: requireClass(styles.provisional, "usermessageitem.module.css", "provisional"),
+  railmark: requireClass(styles.railmark, "usermessageitem.module.css", "railmark"),
 };
 
 // A simple line-and-node "fork" glyph (straight lines only, no arcs) -
@@ -105,6 +107,7 @@ export function UserMessageView({
   name = "You",
   timeIso,
   entityText = false,
+  provisional,
 }: {
   item: ItemModel;
   actions?: ReactNode;
@@ -118,14 +121,17 @@ export function UserMessageView({
   timeIso?: string;
   /** Reserved for real user messages; tool-output callers keep literal text. */
   entityText?: boolean;
+  /** Held-steer ghost caption (steering-ghost spec §2): presence applies the provisional register and renders in the meta slot; absence renders exactly the delivered form. */
+  provisional?: string;
 }) {
   // Missing or invalid server timestamps stay absent rather than showing a guess.
   const time = Date.parse(timeIso ?? item.startedAt ?? "");
   return (
     <div
-      className={CLASS.message}
+      className={provisional === undefined ? CLASS.message : `${CLASS.message} ${CLASS.provisional}`}
       data-testid="user-message-item"
       data-opens-exchange={opensExchange ? "true" : undefined}
+      data-provisional={provisional !== undefined ? "true" : undefined}
     >
       <span className={CLASS.avatar}>
         <SpeakerAvatar speaker={speaker} />
@@ -133,15 +139,20 @@ export function UserMessageView({
       <div className={CLASS.content}>
         <div className={CLASS.header}>
           <span className={CLASS.name}>{name}</span>
-          {Number.isFinite(time) && (
-            <span className={CLASS.time}>
-              <MessageTimestamp value={time} />
-            </span>
+          {provisional !== undefined ? (
+            <span className={CLASS.time}>{provisional}</span>
+          ) : (
+            Number.isFinite(time) && (
+              <span className={CLASS.time}>
+                <MessageTimestamp value={time} />
+              </span>
+            )
           )}
           {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}
         </div>
         <div className={CLASS.body} data-testid="user-bubble">
           <div className={CLASS.text}>{entityText ? <EntityText text={item.text} /> : item.text}</div>
+          {provisional !== undefined && <span className={CLASS.railmark} aria-hidden="true" />}
           <ImageGallery images={item.images} />
         </div>
       </div>

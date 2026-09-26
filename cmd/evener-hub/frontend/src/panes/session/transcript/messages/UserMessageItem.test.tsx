@@ -9,6 +9,7 @@ import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { registerPaneForTests } from "../../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
@@ -20,30 +21,8 @@ import styles from "./usermessageitem.module.css";
 
 afterEach(cleanup);
 
-// See shell/rail/Rail.test.tsx's identical comment: Node 26 shadows jsdom's
-// real window.localStorage with its own (non-functional under vitest) global,
-// so the fork-affordance tests below - which read the seeded composer draft
-// through draft.ts - need this same small in-memory stand-in. Scoped to this
-// file.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
@@ -499,4 +478,41 @@ test("UserMessageView accepts speaker/name/timeIso overrides for non-user speake
 test("UserMessageView defaults are unchanged: user speaker, 'You' name, item.startedAt time", () => {
   render(<UserMessageView item={item({ text: "hi" })} />);
   expect(screen.getByText("You")).toBeTruthy();
+});
+
+// --- the provisional register (steering-ghost live edge) ---------------------
+// A held steering ghost renders through this same view in a provisional
+// register (docs/web-ui/specs/2026-09-20-steering-ghost-live-edge.md §2): its
+// caption takes the meta slot instead of the item time, and the row is marked
+// for styling and tests. Absence of the prop renders exactly today's
+// delivered form - the regression pin below.
+
+test("a provisional caption renders in the meta slot instead of the item time", () => {
+  render(
+    <UserMessageView
+      item={item({ text: "held body", startedAt: "2026-09-21T16:00:00.000Z" })}
+      opensExchange={false}
+      provisional="Delivers when this step finishes · held 42s"
+    />,
+  );
+  expect(screen.getByText("Delivers when this step finishes · held 42s")).toBeTruthy();
+  // The item time does not render: the meta slot is EXACTLY the caption, so
+  // the header's whole text is the name plus the caption and nothing else.
+  // (The old queryByText(/16:00/) pin was vacuous - MessageTimestamp renders
+  // a relative label, never a clock string - while a timestamp rendered
+  // alongside the caption would append its label here and fail.)
+  const root = screen.getByTestId("user-message-item");
+  const header = root.querySelector(`.${styles.header}`) as HTMLElement;
+  expect(header.textContent).toBe("YouDelivers when this step finishes · held 42s");
+});
+
+test("the provisional register marks the row for styling and tests", () => {
+  render(<UserMessageView item={item({ text: "held body" })} provisional="Joining this turn · 0s" />);
+  expect(document.querySelector('[data-testid="user-message-item"][data-provisional="true"]')).not.toBeNull();
+});
+
+test("absent provisional renders exactly today's output (regression pin)", () => {
+  render(<UserMessageView item={item({ text: "delivered body", startedAt: "2026-09-21T16:00:00.000Z" })} />);
+  expect(document.querySelector('[data-testid="user-message-item"][data-provisional]')).toBeNull();
+  expect(screen.getByTestId("user-bubble").textContent).toContain("delivered body");
 });

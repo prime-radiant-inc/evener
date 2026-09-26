@@ -11,7 +11,7 @@ import (
 // real-process way: build the actual evener binary and invoke `evener dev`
 // to read its exit code and stderr directly. Not `go run`, which reports 1
 // whatever the child exited with, erasing exactly the codes under test. The
-// per-test build rides the build cache.
+// binary is built once per package run (buildEvenerDev).
 func runEvenerDev(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	if testing.Short() {

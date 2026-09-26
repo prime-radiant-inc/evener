@@ -41,20 +41,25 @@ test("the warm-cache typecheck is still available, under a name that says it is 
 // A fixed worker count sized every concurrent gate run as if it were alone on
 // the machine: vitest's own default pool is os.availableParallelism(), so the
 // hardcoded four was a ceiling, not a floor, and a fleet of runs multiplied it.
-// The scripts now read the machine's spare capacity through the shared helper,
-// which keeps four on an idle host and backs off as the load average rises.
-test.each(["test", "test:coverage"])("the %s script sizes vitest from spare capacity", (name) => {
+// The scripts now get the worker count from scripts/lib/gate-budgets.sh, whose
+// `vitest_run_args` builds the flags from the machine's spare capacity. That
+// behavior is pinned directly — source the library, replace its machine probes
+// with fixtures, read the arguments — in gatebudgets_test.go, so what remains
+// here is the smoke assertion that the scripts delegate to it rather than
+// pinning a count of their own.
+test.each(["test", "test:coverage"])("the %s script sizes vitest through the shared budget library", (name) => {
   const script = scripts[name];
   expect(script, `package.json has no "${name}" script`).toBeDefined();
   expect(
     script,
-    `"${name}" must source scripts/lib/load-aware-workers.sh so concurrent gate runs share the machine`,
-  ).toContain("../../../scripts/lib/load-aware-workers.sh");
-  expect(script, `"${name}" must pass the helper's computed count, not merely source it`).toContain(
-    '--maxWorkers="$maxWorkers"',
-  );
-  expect(script, `"${name}" must fall back to a fixed ceiling when the helper is unavailable`).toContain(
-    "maxWorkers=4",
+    `"${name}" must source load-aware-workers.sh through gate_source_helper, or the budget always falls back to a fixed count`,
+  ).toContain("gate_source_helper ../../../scripts/lib/load-aware-workers.sh");
+  expect(
+    script,
+    `"${name}" must source scripts/lib/gate-budgets.sh, which builds the worker-budget arguments`,
+  ).toContain("../../../scripts/lib/gate-budgets.sh");
+  expect(script, `"${name}" must pass the library's computed arguments, not merely source it`).toContain(
+    "$(vitest_run_args)",
   );
   expect(script, `"${name}" must not pin a fixed worker count`).not.toMatch(/--maxWorkers=\d/);
 });

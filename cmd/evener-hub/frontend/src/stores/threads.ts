@@ -2,7 +2,7 @@
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
 // It rides the single AppwireClientLike connection.ts wires via
-// useConnectionStore.getState().connect(client) — this store has no
+// connectionStore.getState().connect(client) — this store has no
 // connect() of its own — and reactively re-attaches its onNotification/onReady
 // handlers to whatever client connectionStore currently holds, via a
 // connectionStore.subscribe() wired at module load (see rewireClient).
@@ -40,19 +40,23 @@ import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
-import { connectionStore } from "./connection";
+import { connectedClientPort, connectionStore } from "./connection";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
-import { MutationDispatcher } from "./mutationDispatcher";
+import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
 import {
   type MutationAttachment,
+  type MutationClientLookup,
+  type MutationCommit,
   type MutationIntent,
   type MutationOptimisticRecord,
   MutationOutbox,
   type MutationOutboxOptions,
   type MutationOutboxRecord,
   type MutationRecoveryRecord,
+  type MutationStopBarrier,
 } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 
@@ -102,6 +106,16 @@ export class ConflictError extends Error {
   }
 }
 
+// The ghost's display input (steering-ghost spec §3): the row's full text
+// - or the daemon's own preview placeholder when the row is image-only -
+// plus its canonical skill selections, so the optimistic promote record
+// previews the message it will become instead of the action's wire
+// parameters.
+export interface PromoteDisplayInput {
+  text: string;
+  skillNames?: readonly string[];
+}
+
 export interface ThreadsStoreState {
   threads: Map<string, ThreadModel>;
   mutationWriteStalled: boolean;
@@ -141,7 +155,10 @@ export interface ThreadsStoreState {
   // an ordinary transient one.
   deletedRefs: Set<string>;
   ensureThread(ref: string): Promise<void>;
-  refreshThread(ref: string): Promise<void>;
+  // beforePublish, when given, is evaluated synchronously immediately before
+  // this refresh publishes its snapshot. A throw cancels the read's result so
+  // a canceled action never republishes over newer authoritative state.
+  refreshThread(ref: string, beforePublish?: () => void): Promise<void>;
   releaseThread(ref: string): void;
   // Additive, leaner subscription to a child thread for a delegate card's
   // row's live view (see this file's own doc comment). opts.includeTurns
@@ -177,7 +194,12 @@ export interface ThreadsStoreState {
   // the id the daemon minted for that queue position (QueueState.IDs) - a
   // mismatch (the queue shifted under the caller's snapshot) is a Conflict,
   // never a wrong-message promote.
-  promoteQueuedAsSteer(ref: string, index: number, expectedEntryId: string): Promise<void>;
+  promoteQueuedAsSteer(
+    ref: string,
+    index: number,
+    expectedEntryId: string,
+    display: PromoteDisplayInput,
+  ): Promise<void>;
   // Removes the queued follow-up at index so it is never consumed (issue
   // #23; also the removal half of the composer's edit-and-recompose flow).
   // Same expectedEntryId Conflict semantics as promoteQueuedAsSteer. The
@@ -336,12 +358,26 @@ type PendingThreadHydration = {
   epoch: number;
   notifications: AnyNotification[];
   routing: PendingHydrationRouting;
+  // The tracked-hydration attempt that owns this pending entry (tracked
+  // hydrations only): the per-ref sequence beginThreadHydration stamps from
+  // trackedHydrationAttempts, which the Stop-cancellation unwind compares
+  // against that map so only the ref's newest attempt may unwind.
+  attempt?: number;
 };
 // A thread/read subscribes before it returns its snapshot. Notifications can
 // therefore arrive in the gap between the source subscription and snapshot
 // response. Keep the newest hydration's notifications out of the old model,
 // then fold them onto the returned snapshot before publishing it.
 const pendingThreadHydrations = new Map<string, PendingThreadHydration>();
+// Tracked-hydration attempts: one monotonically increasing counter per ref,
+// stamped onto each tracked pending and never reset. This is the currency the
+// Stop-cancellation unwind requires: only the ref's NEWEST attempt may unwind
+// the dispatch gate and recovery obligation, because only it can still speak
+// for the state a Stop would cancel. A superseded refresh published nothing
+// (publishThreadHydration refuses it), and an overtaken one's banking belongs
+// to the newer attempt's fresh proof now, so a stale cancellation re-arming
+// recovery would clobber a resume that already succeeded.
+const trackedHydrationAttempts = new Map<string, number>();
 const pendingMutationReconciliations = new Map<string, Promise<void>>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 
@@ -521,6 +557,70 @@ function putThreadModels(
   }
   if (!threadModel && !watchedModel) return;
   threadsStore.setState(patch);
+  // stop-cancellation-outbox §6, the cross-tab half: a published model whose
+  // thread id differs from the one it replaces is a clear that landed
+  // somewhere else - another tab dispatched it, and its response and
+  // best-effort removal never reach this tab. The publication is the one clear
+  // signal every tab observes on its own (the BroadcastChannel wakeup is a
+  // timing hint, never an authority), so whichever tab sees the transition
+  // completes the removal, scoped to the instance the transition provably
+  // replaced: the current instance's canceled rows keep their explicit-Retry
+  // contract.
+  const supersededInstances = new Set<string>();
+  // The comparison is the fused identity the fence uses (instanceId ??
+  // threadId), never threadId alone: a replacement can rotate the instance
+  // while retaining the thread id, and RoboRev's fresh review caught exactly
+  // that rotation passing a threadId-only check.
+  const supersededThreadInstance = threadInstanceID(previousThread);
+  const supersededWatchedInstance = threadInstanceID(previousWatched);
+  if (
+    threadModel &&
+    supersededThreadInstance !== undefined &&
+    supersededThreadInstance !== threadInstanceID(threadModel)
+  )
+    supersededInstances.add(supersededThreadInstance);
+  if (
+    watchedModel &&
+    supersededWatchedInstance !== undefined &&
+    supersededWatchedInstance !== threadInstanceID(watchedModel)
+  )
+    supersededInstances.add(supersededWatchedInstance);
+  for (const instanceThreadId of supersededInstances) discardSupersededInstanceCanceled(ref, instanceThreadId);
+}
+
+// The observing half of §6's cross-tab removal. Observation only: a model
+// publication must never be what first mints the mutation runtime (its startup
+// scan would then run on the next hydration instead of the first send). The
+// no-runtime return below is unreachable in a connected tab: the ready flow
+// mints the runtime (rewireClient's direct handleReady call, whose opening
+// getMutationRuntime) before any publication that could observe a replacement
+// instance completes, and a tab without IndexedDB never mints one but also has
+// no durable rows to remove - so the rows this guard could skip are exactly
+// none (pinned by the earliest-publication test in threads.test.ts).
+function discardSupersededInstanceCanceled(targetRef: string, supersededThreadId: string): void {
+  const runtime = mutationRuntime;
+  if (!runtime) return;
+  void runtime.storage
+    .discardCanceledOfInstance(targetRef, supersededThreadId)
+    .then(() => {
+      if (!isCurrentMutationRuntime(runtime)) return;
+      // Every successful cleanup notifies AND refreshes pins, zero included -
+      // the local discard path's own rule. Zero says what THIS tab's write
+      // removed, never what another tab removed from under this tab's cached
+      // projection or in-memory pin: zero is exactly what another tab's
+      // identical cleanup leaves this one, and that other tab's removal may
+      // have taken the ref's last durable row without this tab observing it.
+      // The notify refreshes the projection; the pin refresh lets a later
+      // releaseThread drop a model whose rows are already gone - a stale pin
+      // keeps it pinned, and the cleared model leaks. The pin-only variant,
+      // never the full refresh: a removal-triggered cleanup has authority
+      // over the pin and none over dispatchability - a full refresh can read
+      // the stores empty while an enqueue is mid-chain and de-arm a dispatch
+      // the chain already scheduled (the supersede-discard listener's rule).
+      notifyMutationPersistence([targetRef]);
+      void refreshMutationPinAfterRemoval(runtime, targetRef).catch(() => {});
+    })
+    .catch(() => {});
 }
 
 function removeThreadModel(ref: string): void {
@@ -603,6 +703,11 @@ let wiredClient: AppwireClientLike | null = null;
 let readyEpoch = 0;
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
+
+// This store's own guard: keybindings.ts and transcriptDisplay.ts wire the
+// same connectionStore client through their own instances, so the three never
+// contend over one shared registration slot.
+const readyGenerationCallback = createReadyGenerationCallback();
 let dispatchReadyClient: AppwireClientLike | null = null;
 let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
@@ -620,8 +725,11 @@ const wireSubscribedRefs = new Set<string>();
 
 interface MutationRuntime {
   storage: MutationOutboxIndexedDB;
-  dispatcher: MutationDispatcher;
-  outbox: MutationOutbox;
+  // Bound to the attachment shape this host stages, like the outbox above.
+  dispatcher: MutationDispatcher<MutationAttachment>;
+  // The web's attachments carry bytes, so its outbox is the shared class bound
+  // to the record shape with a Blob in it.
+  outbox: MutationOutbox<MutationAttachment>;
   start: Promise<void>;
   active: boolean;
 }
@@ -629,11 +737,6 @@ interface MutationRuntime {
 let mutationRuntime: MutationRuntime | null = null;
 let mutationStorageForTests: MutationOutboxIndexedDB | null = null;
 let createMutationBroadcastChannelForTests: NonNullable<MutationOutboxOptions["createBroadcastChannel"]> | undefined;
-interface MutationCommit {
-  record: MutationOutboxRecord;
-  recoveryId?: string;
-}
-
 type MutationPersistenceListener = (targetRefs: string[], committed?: MutationCommit) => void;
 const mutationPersistenceListeners = new Set<MutationPersistenceListener>();
 
@@ -653,8 +756,15 @@ function notifyMutationPersistence(targetRefs: Iterable<string>, committed?: Mut
   }
 }
 
-function applyClearResponse(targetRef: string, response: ThreadClearResponse): void {
+async function applyClearResponse(targetRef: string, response: ThreadClearResponse): Promise<void> {
   invalidateGoalResponseFallback(targetRef);
+  // The cleared model must never publish while the ref's canceled rows are
+  // still durable: a Retry pressed against the published state, or a
+  // discovery scan, would otherwise face a thread that claims to be cleared
+  // but still holds live canceled rows in storage. The discard stays
+  // best-effort - a failed write keeps the rows and publishes anyway - and
+  // retryBlockedMutation's press-time refusal is what closes that residue.
+  await discardCanceledMutations(targetRef);
   const now = Date.now();
   const model = hydrateThread({ thread: response.thread }, targetRef, now);
   // A clear response is a newer authoritative cut than any thread/read that
@@ -742,6 +852,31 @@ async function refreshMutationPins(runtime: MutationRuntime, targetRefs: Iterabl
   }
 }
 
+// The pin half of refreshMutationPins alone, for the supersede-discard
+// listener below: its trigger — rows just left the store through a
+// fire-and-forget cleanup — has authority over whether the ref still needs
+// its model pinned, and NONE over whether the ref is dispatchable. An
+// enqueue mid-chain (a parked save replaying against a deadline, exactly the
+// note editor's gated-save staging) re-arms the ref BEFORE its durable write
+// commits, so a full refresh here can read the stores empty and de-arm a
+// dispatch the enqueue chain already scheduled — the pinned-save tests pin
+// that ordering. A pin left armed with no rows costs one no-op dispatch
+// turn on the next discovery; a dispatch killed here costs the user's save.
+async function refreshMutationPinAfterRemoval(runtime: MutationRuntime, targetRef: string): Promise<void> {
+  if (!isCurrentMutationRuntime(runtime)) return;
+  const [outbox, optimistic] = await Promise.all([
+    runtime.storage.listOutbox(targetRef),
+    runtime.storage.listOptimistic(targetRef),
+  ]);
+  if (!isCurrentMutationRuntime(runtime)) return;
+  if (outbox.length > 0 || optimistic.length > 0) {
+    pinnedMutationRefs.add(targetRef);
+    return;
+  }
+  pinnedMutationRefs.delete(targetRef);
+  dropUnpinnedModel(targetRef);
+}
+
 function scheduleMutationDispatch(runtime: MutationRuntime, targetRefs: Iterable<string>): void {
   if (!isCurrentMutationRuntime(runtime)) return;
   const refs = [...new Set(targetRefs)].filter((targetRef) => dispatchableMutationRefs.has(targetRef));
@@ -808,8 +943,28 @@ function getMutationRuntime(): MutationRuntime | null {
         if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationWriteStalled: waiting });
       },
     });
+  // §6's note-row supersede discard commits fire-and-forget AFTER the settle
+  // that spawned it has already notified — the dispatcher's post-settlement
+  // refresh may have completed before the cleanup's write does, and a
+  // fire-and-forget write no other path observes leaves the removal invisible
+  // to this runtime's projections and pins (the store's supersede-discard
+  // test pins the notification; the pin refresh lets a releaseThread drop a
+  // model whose row just left). Zero-deletion cleanups included: another tab
+  // may have removed the rows, and zero is what leaves this tab's cached
+  // projection and pin stale.
+  storage.setSupersededDiscardListener((targetRef) => {
+    if (!isCurrentMutationRuntime(runtime)) return;
+    notifyMutationPersistence([targetRef]);
+    void refreshMutationPinAfterRemoval(runtime, targetRef).catch(() => {});
+  });
+  // One client lookup for both halves of the mutation runtime: the dispatcher
+  // asks it per target ref, and the outbox asks it ref-less for "is any client
+  // ready right now". Wiring them from one function is what keeps the
+  // dispatcher's readiness and the outbox's from drifting apart.
+  const getClient: MutationClientLookup = (targetRef) =>
+    isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null;
   const dispatcher = new MutationDispatcher(storage, {
-    getClient: (targetRef) => (isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null),
+    getClient,
     onStorageChange: (targetRefs) => {
       if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
     },
@@ -859,11 +1014,19 @@ function getMutationRuntime(): MutationRuntime | null {
     },
   });
   const outbox = new MutationOutbox(storage, {
-    isReady: () => isCurrentMutationRuntime(runtime) && currentDispatchClient() !== null,
+    getClient,
     onDiscover: (targetRefs) => {
       if (runtime) handleDiscoveredMutations(runtime, targetRefs);
     },
-    createBroadcastChannel: createMutationBroadcastChannelForTests,
+    // The browser's own discovery capabilities, named here rather than reached
+    // for inside the shared class: sibling tabs over BroadcastChannel, the
+    // window's online/focus, the document's visibility, and a timer. A host
+    // without them passes nothing and the class does nothing with them.
+    createBroadcastChannel: createMutationBroadcastChannelForTests ?? ((name) => new BroadcastChannel(name)),
+    lifecycleWindow: typeof window === "undefined" ? undefined : window,
+    lifecycleDocument: typeof document === "undefined" ? undefined : document,
+    setInterval: (callback, milliseconds) => globalThis.setInterval(callback, milliseconds),
+    clearInterval: (intervalId) => globalThis.clearInterval(intervalId),
   });
   const initializedRuntime: MutationRuntime = {
     storage,
@@ -907,32 +1070,179 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
   return { outbox, optimistic, recovery };
 }
 
-export async function retryBlockedMutation(clientMutationId: string): Promise<boolean> {
+const userIntentStopGenerations = new Map<string, number>();
+// Stop generations come from one page-wide sequence, never a per-ref counter,
+// and an entry once written persists for the page session - releaseThread
+// deliberately does NOT prune. Deleting the only cancellation evidence let a
+// fence miss a real Stop (baseline 0, Stop nonzero, release deletes, fence
+// reads 0); tombstones with a clearing schedule need a fence-lifetime
+// registry that does not exist, and one that never clears is this. Growth is
+// bounded by the distinct refs a user actually Stops in the page's lifetime.
+// Sequence values are forever-unique and start at 1, so an absent entry's
+// `?? 0` stays below every real generation, an increased entry is exactly a
+// landed Stop, and a Stop after a re-ensure never recycles an older value.
+let userIntentStopSequence = 0;
+
+function cancelPendingUserIntents(ref: string): void {
+  userIntentStopGenerations.set(ref, ++userIntentStopSequence);
+}
+
+// The explicit Resume action is the one user intent that still starts a daemon
+// directly, and a Stop acknowledged while its reconnect or post-resume
+// hydration is in flight must cancel it. Production fences that action through
+// resumeStopBaseline below -- resume can return a NEW identity a per-ref fence
+// captured beforehand cannot name -- so this per-ref form now serves the
+// single-ref checks that remain (the tests pinning refreshThread's
+// beforePublish window among them) and delegates to the baseline's per-ref
+// compare rather than re-implementing it.
+export function resumeStopFence(ref: string): () => void {
+  const baseline = resumeStopBaseline();
+  return () => baseline(ref);
+}
+
+// Resume can return a NEW identity, and that identity can be named by a Stop
+// before resumeThread resolves: any surface already tracking the resumed ref
+// (a prior load, a list row hydrated from hub state) records its Stop during
+// the reconnect window. A fence captured after the resolve would take that
+// Stop as its baseline and never fire. Snapshot every generation before the
+// resume starts instead; the returned check fences any ref -- the old one the
+// pane still shows and the new one the resume returns -- against its
+// pre-resume baseline.
+//
+// Called with NO ref, the check fences globally: any generation that has
+// increased since the snapshot throws. beforeRequest runs before the resumed
+// identity is knowable, so a per-ref fence cannot name it -- any ref's
+// acknowledged Stop in the reconnect window suppresses the resume RPC. Values
+// only grow (the page-wide sequence), so an increased entry is exactly a
+// landed Stop; a released ref's retained entry compares equal to its
+// snapshot, which is correct -- release is not a Stop.
+export function resumeStopBaseline(): (ref?: string) => void {
+  const generations = new Map(userIntentStopGenerations);
+  return (ref?: string) => {
+    if (ref === undefined) {
+      for (const [stoppedRef, generation] of userIntentStopGenerations) {
+        if (generation > (generations.get(stoppedRef) ?? 0))
+          throw new Error("Stop canceled this pending action; send again when ready.");
+      }
+      return;
+    }
+    if ((userIntentStopGenerations.get(ref) ?? 0) !== (generations.get(ref) ?? 0))
+      throw new Error("Stop canceled this pending action; send again when ready.");
+  };
+}
+
+// The snapshot-level refusals of retryBlockedMutation: a target the store
+// cannot act on regardless of what the retry would find -- no live status, a
+// restartRequired or notLoaded snapshot, no mutation authority, or a
+// restart-blocking obligation. Shared with QueueStrip's Retry button, which
+// disables on exactly these so a fenced row never offers a Retry that always
+// fails; the remaining refusals (an in-flight reconciliation or hydration, a
+// reconciliation failure, a missing dispatch client) stay retry-time checks.
+export function retryBlockedBySnapshot(
+  statusType: string | undefined,
+  hasMutationAuthority: boolean,
+  restartObligated: boolean,
+): boolean {
+  return (
+    statusType === undefined ||
+    statusType === "restartRequired" ||
+    statusType === "notLoaded" ||
+    !hasMutationAuthority ||
+    restartObligated
+  );
+}
+
+export async function retryBlockedMutation(
+  clientMutationId: string,
+  mode: "user" | "backgroundNote" = "user",
+): Promise<boolean> {
   const runtime = requireMutationRuntime();
+  // §4's stop barrier on the release path, the click-time capture: REQUESTED
+  // here, inside the click's own synchronous prefix, before `await
+  // runtime.start` and every other wait in the retry chain — the enqueue
+  // barrier's own rule. The ref is unknown until the row is read, so the
+  // capture rides that read: one readonly transaction carries the row AND the
+  // ref's stop epoch, making it the click's first storage observation (on a
+  // cold connection the request itself issues the open). A Stop whose cancel
+  // transaction commits after that snapshot bumps the epoch past the capture,
+  // and the release below refuses — a newer Stop outranks an earlier Retry,
+  // the same commit-order comparison the enqueue barrier carries. A Stop
+  // committed before the capture read's transaction can exist is the bounded
+  // residual §4 states for the enqueue, and for the same reason: the
+  // deliberate post-Stop Retry §9 item 7 protects is indistinguishable from
+  // it in the database.
+  const captureRead = runtime.storage.getOutboxWithStopEpoch(clientMutationId);
   await runtime.start;
-  const record = await runtime.storage.getOutbox(clientMutationId);
-  if (record?.state !== "blockedUnknown") return false;
+  const { record, stopEpoch } = await captureRead;
+  if (record?.state !== "blockedUnknown" && record?.state !== "canceled") return false;
+  // Only an explicit user Retry releases a canceled row (the one reversal the
+  // design allows); background retry modes exist for delivery-uncertain rows
+  // and must never resurrect a user's Stop.
+  if (record.state === "canceled" && mode !== "user") return false;
+  // A background note save keeps its blocked draft when Stop wins; it must
+  // neither resume a session nor retry another kind of mutation.
+  if (mode === "backgroundNote" && record.method !== "notes/human/set") return false;
   if (record.method === "notes/human/set" && !canWriteHumanNote(trackedThreadModel(record.targetRef))) return false;
-  if (!threadsStore.getState().mutationAuthorityRefs.has(record.targetRef)) return false;
-  const status = threadsStore.getState().threads.get(record.targetRef)?.status.type;
-  if (!status || status === "restartRequired" || status === "notLoaded") return false;
+  const state = threadsStore.getState();
+  // A Retry is a press-time verdict on a ref this tab can still vouch for.
+  // The hub's deletion fence (deletedRefs) and a clear's replacement model are
+  // the two states that say the world the row knew is gone: the discard that
+  // should have removed the row is best-effort and may have failed, so the
+  // press itself must refuse rather than release a row whose instance the
+  // daemon would fence as stale anyway.
+  if (state.deletedRefs.has(record.targetRef)) return false;
+  const pressModel = state.threads.get(record.targetRef) ?? state.watchedThreads.get(record.targetRef);
+  // The same fused identity check replacement detection uses (instanceId ??
+  // threadId): the row's enqueue-time instance against the press model's.
+  // A replacement that rotated the instance while retaining the thread id
+  // must refuse here too — the daemon would fence the stale send anyway.
+  const rowInstance = record.instanceId ?? record.threadId;
+  if (rowInstance !== undefined && threadInstanceID(pressModel) !== rowInstance) return false;
+  if (
+    retryBlockedBySnapshot(
+      state.threads.get(record.targetRef)?.status.type,
+      state.mutationAuthorityRefs.has(record.targetRef),
+      state.restartBlockingObligations.has(record.targetRef),
+    )
+  )
+    return false;
   if (
     pendingMutationReconciliations.has(record.targetRef) ||
     pendingThreadHydrations.has(record.targetRef) ||
-    threadsStore.getState().restartBlockingObligations.has(record.targetRef) ||
-    threadsStore.getState().mutationReconciliationFailures.has(record.targetRef)
+    state.mutationReconciliationFailures.has(record.targetRef)
   )
     return false;
   const client = currentDispatchClient();
   if (!client) return false;
   const epoch = dispatchReadyEpoch;
+  if (record.state === "canceled") {
+    // The release is durable before any dispatch. A canceled row provably
+    // never reached the daemon, so it needs no reconciliation to prove
+    // absence — release, then let the same fenced resync-and-dispatch tail
+    // every user retry uses carry it out. The barrier is the click-time
+    // capture above: a Stop that landed between the capture and this release
+    // outranks the Retry, and the refused release leaves the row canceled
+    // for it — the release returning false is this press's refusal.
+    if (!(await runtime.storage.releaseCanceled(clientMutationId, { stopEpoch }))) return false;
+    notifyMutationPersistence([record.targetRef]);
+  }
   // Shared storage can become blocked after this tab's authoritative snapshot.
   // Only fresh reconciliation may settle it or restore it for dispatch.
-  await handleReady(client, epoch, record.targetRef);
+  await handleReady(
+    client,
+    epoch,
+    record.targetRef,
+    // A background note save never dispatches (its own resend belongs to the
+    // outbox's lifecycle scan) and reopens only the record it retries; a user
+    // retry dispatches and reconciles the whole target.
+    mode === "backgroundNote"
+      ? { suppressTargetDispatch: () => false, reopenOnlyClientMutationId: clientMutationId }
+      : undefined,
+  );
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
   const current = await runtime.storage.getOutbox(clientMutationId);
-  return current?.state !== "blockedUnknown";
+  return current?.state !== "blockedUnknown" && current?.state !== "canceled";
 }
 
 export async function updateRecoveryMutation(
@@ -1167,12 +1477,63 @@ async function hydrateAndSubscribe(
 function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   if (mutationErrorData(err)?.mutationOutcome !== "targetDeleted") return;
   releaseSubagentRows(ref);
+  discardCanceledMutations(ref);
   threadsStore.setState((s) => {
     if (s.deletedRefs.has(ref)) return s;
     const deletedRefs = new Set(s.deletedRefs);
     deletedRefs.add(ref);
     return { deletedRefs };
   });
+}
+
+// The removal half of a canceled row's lifecycle
+// (docs/design/stop-cancellation-outbox.md §6): when the thread is cleared or
+// the hub proves it deleted, its canceled rows leave with it. Best-effort —
+// a storage failure keeps the rows visible for an explicit Retry, and the
+// next clear/delete retries the removal.
+function discardCanceledMutations(targetRef: string): Promise<void> {
+  const runtime = getMutationRuntime();
+  if (!runtime) return Promise.resolve();
+  return runtime.storage
+    .discardCanceled(targetRef)
+    .then(() => {
+      if (!isCurrentMutationRuntime(runtime)) return;
+      // Every successful discard notifies, a zero count included: zero says
+      // what THIS tab's write removed, never what another tab may have
+      // removed from under this tab's cached projection - and the notify is
+      // what refreshes that projection. The pin refresh follows for the same
+      // reason: the discard may have removed the ref's last durable row, and
+      // a stale pin keeps releaseThread from dropping the model.
+      notifyMutationPersistence([targetRef]);
+      // Fired, not awaited - the clear's publication must not wait on it -
+      // but its rejection stays inside this best-effort envelope: the reads
+      // it performs can fail (a timeout, a VersionError, a retired
+      // connection) after the discard already committed.
+      void refreshMutationPins(runtime, [targetRef]).catch(() => {});
+    })
+    .catch(() => {});
+}
+
+// The cancellation write every Stop path makes before its stop action
+// (stop-cancellation-outbox §4): forceStop/shutdown carry no interrupt
+// record, so this standalone write is their cancel moment. A failure of a
+// real store's write throws, aborting the stop before the daemon is touched.
+// No store at all (IndexedDB unavailable to this tab) is different: there
+// are no durable rows to cancel and this tab can neither resurrect nor
+// reopen any, so the rule has nothing to protect and the stop proceeds.
+async function cancelUnattemptedMutations(ref: string): Promise<void> {
+  const runtime = getMutationRuntime();
+  if (!runtime) return;
+  await runtime.start;
+  await runtime.storage.cancelUnattempted(ref);
+  // Notify on every successful write, zero canceled rows included: zero is
+  // exactly what this tab sees when a sibling tab's Stop already canceled the
+  // rows, and cancelUnattempted is a raw storage write — it announces nothing
+  // over the BroadcastChannel and schedules no discovery — so this notify is
+  // the only thing that refreshes this tab's projection and pins now rather
+  // than at the next discovery scan. The discard paths carry the same
+  // zero-included rule.
+  notifyMutationPersistence([ref]);
 }
 
 // Lean watches omit turns until an expanded card asks for them; the shared
@@ -1278,6 +1639,10 @@ function composerMutationIntent(
   const base = {
     targetRef: ref,
     threadId: model?.threadId,
+    // The enqueue-time instance identity, persisted beside the thread id so
+    // cleanup and Retry can compare the fused identity (instanceId ??
+    // threadId) the fence uses — see discardCanceledOfInstance.
+    instanceId: model?.instanceId,
     attachments: durableAttachments(attachments),
     composerText: text,
   };
@@ -1310,14 +1675,86 @@ function composerMutationIntent(
   };
 }
 
+// The local recovery fence. A LOCAL session carrying a restart-blocking
+// obligation (a Stop in flight, or a snapshot the daemon reports as
+// restartRequired/resumeRequired) admits no session action at all while the
+// obligation stands: the hub's recovery admission refuses turn/start,
+// turn/steer, turn/queue and every other fenced mutation for exactly that
+// window (cmd/evener-hub's sessionActionRecoveryError reads the resume locks,
+// never the projected status), so even a still-ACTIVE snapshot is fenced while
+// a Stop drains - a live read relays the daemon's active status with
+// resumeRequired overlaid beside it (applyThreadResumeRequirement), and the
+// store arms the obligation on that very hydration. An offered press in that
+// window could only mint durable intent that parks until the explicit Resume
+// action clears the fence. The predicate lives here - beside the obligation
+// state it reads, and where the store's own mutation admission enforces it
+// (enqueueMutationIntent) without an import cycle - and liveControls
+// re-exports it for the surfaces.
+export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): boolean {
+  return ref.startsWith("local:") && restartObligated;
+}
+
+// The verbs the shared admission fences, each mapped to the refusal its own
+// surface already renders (Composer's Send/Steer sentences, QueueStrip's
+// queue-actions sentence, the typed /clear idiom): the hub's recovery
+// admission refuses exactly these methods for an obligation's whole window -
+// turn/start, turn/steer, turn/queue, turn/drainAsSteer,
+// turn/promoteQueuedAsSteer and turn/cancelQueued via
+// withDeletionTargetOwnership, thread/clear through clearThreadWithResume's
+// durable leg, notes/human/set through relayWithResume's - so an enqueue for
+// a fenced ref could only mint durable intent that parks until the explicit
+// Resume action clears the fence. turn/interrupt is the deliberate exemption:
+// Stop is how the fenced window ends, the Stop button never disables for the
+// fence, and the typed /interrupt agrees with the button
+// (shell/palette/commands.ts's own carve-out, pinned there), so interrupt
+// still enqueues and settles after Resume rather than refusing here. Any
+// method absent from this table is therefore not fenced at admission - the
+// table is the whole policy.
+const RECOVERY_FENCE_REFUSALS: Record<string, string> = {
+  "turn/start": "Send isn't available until this session is resumed",
+  "turn/steer": "Steer isn't available until this session is resumed",
+  "turn/queue": "Queue isn't available until this session is resumed",
+  "turn/drainAsSteer": "Drain isn't available until this session is resumed",
+  "turn/promoteQueuedAsSteer": "Queue actions aren't available until this session is resumed",
+  "turn/cancelQueued": "Queue actions aren't available until this session is resumed",
+  "thread/clear": "Clear isn't available until this session is resumed",
+  "notes/human/set": "Notes aren't available until this session is resumed",
+};
+
 async function enqueueMutationIntent(
   intent: MutationIntent,
   onCommitted?: (record: MutationOutboxRecord) => void,
+  durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
 ): Promise<MutationOutboxRecord> {
   const ref = intent.targetRef;
+  // The recovery fence, enforced at the one funnel every durable action
+  // passes through: a fenced local session's durable intent could only park
+  // (the hub refuses these methods for the obligation's whole window), so it
+  // is refused here - before any durable write, so every caller shape hears
+  // the same admission refusal.
+  const fenceRefusal = RECOVERY_FENCE_REFUSALS[intent.method];
+  if (
+    fenceRefusal !== undefined &&
+    isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref))
+  )
+    throw new Error(fenceRefusal);
   const client = requireClient();
   if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
   const runtime = requireMutationRuntime();
+  // §4's stop barrier, the click-time half: the capture's read transaction is
+  // REQUESTED here, at true click time — inside the click's own synchronous
+  // prefix, before `await runtime.start` and every other wait in the enqueue
+  // chain — so nothing can take the queue position ahead of it. On a warm
+  // connection the read's transaction is the click's first; on a cold one the
+  // request itself issues the open, and the capture is the first transaction
+  // the reopened connection creates. A Stop whose durable write is created
+  // after this request lands either before the enqueue's own write — the
+  // comparison reads its bump, and the row commits born-"canceled" — or after
+  // it, where the Stop's cancel scan cancels the row directly. The one
+  // unfenceable order is a Stop whose write is created before the capture's
+  // transaction can exist at all (§4's honest boundary). The Stop's own
+  // interrupt record passes no barrier (it IS the click the epoch records).
+  const barrierRead = durableWrite === "enqueue" ? runtime.storage.readStopEpoch(ref) : undefined;
   await runtime.start;
   // Enqueue schedules discovery before returning; preserve the hydrated replay
   // gate now, but only a durable commit may pin this ref after its pane closes.
@@ -1327,7 +1764,17 @@ async function enqueueMutationIntent(
   }
   let record: MutationOutboxRecord;
   try {
-    record = await runtime.outbox.enqueueIntent(intent, onCommitted);
+    // The click-time capture, awaited at the write it fences. A rejecting
+    // read (MutationStorageTimeoutError, VersionError, a retired connection)
+    // is a failed submission exactly like a failed enqueue: the catch below
+    // disarms the ref this click armed, so a transient read failure leaves no
+    // stale dispatch bookkeeping for later discovery passes to act on.
+    const barrier: MutationStopBarrier | undefined =
+      barrierRead === undefined ? undefined : { stopEpoch: await barrierRead };
+    record =
+      durableWrite === "interruptAndCancel"
+        ? await runtime.outbox.enqueueInterruptAndCancel(intent, onCommitted)
+        : await runtime.outbox.enqueueIntent(intent, onCommitted, barrier);
   } catch (error) {
     if (!pinnedMutationRefs.has(ref)) dispatchableMutationRefs.delete(ref);
     throw error;
@@ -1343,15 +1790,21 @@ async function enqueueMutation(
   payload: Record<string, unknown>,
   optimisticDisplay: unknown,
   attachments?: InputAttachment[],
+  durableWrite: "enqueue" | "interruptAndCancel" = "enqueue",
 ): Promise<void> {
-  await enqueueMutationIntent({
-    targetRef: ref,
-    threadId: threadsStore.getState().threads.get(ref)?.threadId,
-    method,
-    payload,
-    attachments: durableAttachments(attachments),
-    optimisticDisplay,
-  });
+  await enqueueMutationIntent(
+    {
+      targetRef: ref,
+      threadId: threadsStore.getState().threads.get(ref)?.threadId,
+      instanceId: threadsStore.getState().threads.get(ref)?.instanceId,
+      method,
+      payload,
+      attachments: durableAttachments(attachments),
+      optimisticDisplay,
+    },
+    undefined,
+    durableWrite,
+  );
   notifyMutationPersistence([ref]);
 }
 
@@ -1379,6 +1832,7 @@ function clearMutationIntent(ref: string): MutationIntent {
   return {
     targetRef: ref,
     threadId: model.threadId,
+    instanceId: model.instanceId,
     method: "thread/clear",
     payload: { ref, expectedInstanceId },
     attachments: [],
@@ -1401,7 +1855,18 @@ function notificationThreadId(n: AnyNotification): string | undefined {
 }
 
 function notificationMutationIdentities(n: AnyNotification): string[] {
-  if (n.method === "thread/queueChanged") return n.params.queue.clientMutationIds ?? [];
+  if (n.method === "thread/queueChanged") {
+    // consumedClientMutationIds names entries THIS push's own transition (a
+    // drain) just took out of the queue (issue #1704): the daemon knows
+    // exactly which ids it consumed, so those settle by the same positive-
+    // evidence rule as the remaining, still-queued ids below. Validated the
+    // same way the receipt path validates it: anything not an array of
+    // non-empty strings settles nothing, never guessed at by spreading it.
+    return [
+      ...(n.params.queue.clientMutationIds ?? []),
+      ...validConsumedClientMutationIds(n.params.consumedClientMutationIds),
+    ];
+  }
   if (n.method === "evener/steering/injected") {
     return n.params.clientMutationId ? [n.params.clientMutationId] : [];
   }
@@ -1423,6 +1888,21 @@ function applyHydrationResponseCut(pending: PendingThreadHydration, ref: string,
   // response enter the buffer later and remain ordered for replay.
   pending.notifications = [];
   pending.routing = pendingHydrationRouting(ref, model);
+}
+
+function preserveLiveActiveTurn(snapshot: ThreadModel, live: ThreadModel | undefined): ThreadModel {
+  const activeTurnId = snapshot.activeTurnId;
+  if (
+    activeTurnId === undefined ||
+    live?.threadId !== snapshot.threadId ||
+    threadInstanceID(live) !== threadInstanceID(snapshot) ||
+    live?.activeTurnId !== activeTurnId ||
+    snapshot.turns.some((turn) => turn.id === activeTurnId)
+  )
+    return snapshot;
+  const liveTurn = live.turns.find((turn) => turn.id === activeTurnId);
+  if (!liveTurn) return snapshot;
+  return { ...snapshot, turns: [...snapshot.turns, liveTurn] };
 }
 
 // Buffering is decided by IDENTITY alone, the same rule applyToMap follows for
@@ -1485,11 +1965,14 @@ function beginThreadHydration(
   model: ThreadModel | undefined,
   epoch: number,
 ): PendingThreadHydration {
+  const attempt = (trackedHydrationAttempts.get(ref) ?? 0) + 1;
+  trackedHydrationAttempts.set(ref, attempt);
   const pending = {
     client,
     epoch,
     notifications: [],
     routing: pendingHydrationRouting(ref, model),
+    attempt,
   };
   pendingThreadHydrations.set(ref, pending);
   return pending;
@@ -1541,7 +2024,11 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
     return null;
   }
 
-  const { model: hydrated, appliedAt } = replayHydrationNotifications(model, pending.notifications);
+  const live = threadsStore.getState().threads.get(ref);
+  const { model: hydrated, appliedAt } = replayHydrationNotifications(
+    preserveLiveActiveTurn(model, live),
+    pending.notifications,
+  );
 
   pendingThreadHydrations.delete(ref);
   putThreadModel(ref, hydrated);
@@ -1565,6 +2052,10 @@ async function publishAndReconcileThreadHydration(
   ref: string,
   pending: PendingThreadHydration,
   hydration: ThreadHydration,
+  // A background note retry proves absence only for the record it carries and
+  // must not reopen an unrelated blocked row of the same ref (#1716); every
+  // other caller leaves this undefined for the ordinary target-wide reopen.
+  reopenOnlyClientMutationId?: string,
 ): Promise<ThreadModel | null> {
   const published = publishThreadHydration(ref, pending, hydration.model);
   if (!published) return null;
@@ -1629,7 +2120,21 @@ async function publishAndReconcileThreadHydration(
           }
           notifyMutationPersistence([ref]);
         } else {
-          await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
+          // restoreProvenAbsent reopens EVERY blockedUnknown row of the ref
+          // that this read did not name. A scoped caller must reopen only its
+          // own record: every other blocked row joins the set this reopen
+          // excludes, so it stays blockedUnknown for a later target-wide
+          // reconciliation. An unscoped caller keeps that whole-target reopen.
+          let reopenExcludedIds = authoritativeIds;
+          if (reopenOnlyClientMutationId !== undefined) {
+            reopenExcludedIds = new Set(authoritativeIds);
+            for (const record of await runtime.storage.listOutbox(ref)) {
+              if (record.state === "blockedUnknown" && record.clientMutationId !== reopenOnlyClientMutationId)
+                reopenExcludedIds.add(record.clientMutationId);
+            }
+            if (!current()) return;
+          }
+          await runtime.dispatcher.restoreProvenAbsent(ref, reopenExcludedIds);
         }
         if (!current()) return;
         await refreshMutationPins(runtime, [ref]);
@@ -1707,7 +2212,8 @@ function publishWatchedHydration(
   if (pendingWatchedHydrations.get(ref) !== pending) return null;
   if (readyEpoch !== pending.epoch) return null;
 
-  const replayed = replayHydrationNotifications(model, pending.notifications);
+  const live = threadsStore.getState().watchedThreads.get(ref);
+  const replayed = replayHydrationNotifications(preserveLiveActiveTurn(model, live), pending.notifications);
   pendingWatchedHydrations.delete(ref);
   storeWatchedModel(ref, replayed.model, includeTurns, generation);
   settleOwnedHydration("watched", ref, replayed.model);
@@ -2017,6 +2523,31 @@ async function retryWatchedHydration(client: AppwireClientLike, epoch: number, r
   await refreshWatchedThread(client, epoch, ref, true);
 }
 
+// Both of a fenced refreshThread's fence evaluations owe the ref they cancel
+// the same unwind: a Stop-canceled refresh must not leave standing what its
+// session banked on the way - the dispatch gate the enqueue path or an
+// earlier refresh opened, and the restart-blocking obligation a proven
+// snapshot cleared - or the outbox's own later discovery scan would dispatch
+// queued mutations on the strength of both despite the acknowledged Stop. The
+// ref leaves the dispatchable set, and the obligation re-arms (the forceStop
+// tail's own retention rule) until a fresh snapshot proves it can clear.
+//
+// But only the ref's NEWEST tracked-hydration attempt may unwind (the attempt
+// is the caller's own beginThreadHydration stamp): a superseded refresh
+// published nothing to bank, and an overtaken one's banking belongs to the
+// newer attempt's fresh proof, so a stale cancellation re-arming recovery
+// here would clobber a resume that already succeeded - including closing the
+// newer attempt's reconciliation out of its own clear, whose captured
+// obligation symbol would no longer match. A refresh that never began
+// (no attempt) banked nothing either and does not unwind.
+function unwindStopCanceledRefresh(ref: string, attempt?: number): void {
+  if (attempt === undefined || trackedHydrationAttempts.get(ref) !== attempt) return;
+  dispatchableMutationRefs.delete(ref);
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+  }));
+}
+
 // refreshTrackedThread re-subscribes one real-pane/pinned ref and replaces its
 // model wholesale from the fresh snapshot (hydrateThread) — snapshot recovery
 // for notifications the old relay missed. A rejection keeps the last published
@@ -2027,18 +2558,46 @@ async function refreshTrackedThread(
   ref: string,
   targetedResync: boolean,
   reportFailure = false,
-): Promise<void> {
-  if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return;
+  beforePublish?: () => void,
+  reopenOnlyClientMutationId?: string,
+): Promise<number | undefined> {
+  // Returns the tracked-hydration attempt this refresh began, or undefined
+  // when it never began one (an unowned ref, or an in-flight non-targeted
+  // predecessor): refreshThread's tail recheck passes that attempt to
+  // unwindStopCanceledRefresh, whose currency check needs to know which
+  // attempt a cancellation belongs to.
+  if ((refCounts.get(ref) ?? 0) <= 0 && !pinnedMutationRefs.has(ref)) return undefined;
   const previous = pendingThreadHydrations.get(ref);
-  if (!targetedResync && previous?.client === client && previous.epoch === epoch) return;
+  if (!targetedResync && previous?.client === client && previous.epoch === epoch) return undefined;
   const pending = beginThreadHydration(ref, client, threadsStore.getState().threads.get(ref), epoch);
   // No pre-check here: pending.client is this `client` and pending.epoch is this
   // `epoch`, so publishThreadHydration re-decides exactly the same thing one
   // frame later, and returning null from there reconciles nothing either. The
   // gate lives in one place.
-  const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) =>
-    publishAndReconcileThreadHydration(ref, pending, result),
-  );
+  const hydration = hydrateAndSubscribe(client, ref, Date.now(), pending).then((result) => {
+    // Evaluated synchronously immediately before publication, with no await in
+    // between: a canceled read never reaches putThreadModel, the
+    // mutation-authority publication, or capture of the current Stop obligation.
+    try {
+      beforePublish?.();
+    } catch (error) {
+      // A Stop that lands while the refreshed read is still in flight cancels
+      // HERE, before publication: the rejection propagates out of this
+      // refresh's await and back through refreshThread's, so it never reaches
+      // the tail recheck whose catch carried the unwind before. This
+      // evaluation must unwind the canceled refresh itself, or the state
+      // recovery banked before it - the open dispatch gate, the cleared
+      // restart-blocking obligation - stays standing for the outbox's own
+      // later discovery scan to dispatch against despite the acknowledged
+      // Stop. The unwind carries this attempt so only the ref's newest
+      // hydration performs it: a superseded read's late cancellation is
+      // still its caller's honest rejection, but it banked nothing, and the
+      // newer attempt owns the ref's convergence from fresh state.
+      unwindStopCanceledRefresh(ref, pending.attempt);
+      throw error;
+    }
+    return publishAndReconcileThreadHydration(ref, pending, result, reopenOnlyClientMutationId);
+  });
   const completion = hydration.then(
     () => undefined,
     () => undefined,
@@ -2076,6 +2635,7 @@ async function refreshTrackedThread(
   } finally {
     if (pendingThreadHydrations.get(ref) === pending) pendingThreadHydrations.delete(ref);
   }
+  return pending.attempt;
 }
 
 // refreshWatchedThread is the watched-owner mirror of refreshTrackedThread.
@@ -2139,7 +2699,21 @@ async function refreshWatchedThread(
 // fires on a FUTURE transition, never retroactively for a client that
 // reached "ready" before this store ever subscribed to it (see
 // rewireClient's own comment).
-async function handleReady(client: AppwireClientLike, epoch: number, targetRef?: string): Promise<void> {
+async function handleReady(
+  client: AppwireClientLike,
+  epoch: number,
+  targetRef?: string,
+  // The targeted tail dispatches every dispatchable record of the target in
+  // FIFO order, which is right when the caller is user intent on that session.
+  // A caller that must not do that - a background note save, which must not
+  // submit other pending mutations for the session - passes
+  // `suppressTargetDispatch`; `false` suppresses the schedule. Evaluated
+  // synchronously at the scheduling point, after every await.
+  // `reopenOnlyClientMutationId` narrows the reconciliation's reopen to the
+  // one record for the same caller: a background note retry must not return an
+  // unrelated blocked row to submitting (#1716).
+  options?: { suppressTargetDispatch?: () => boolean; reopenOnlyClientMutationId?: string },
+): Promise<void> {
   const targetedResync = targetRef !== undefined;
   if (targetRef) dispatchableMutationRefs.delete(targetRef);
   const runtime = getMutationRuntime();
@@ -2154,7 +2728,9 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
     ? new Set([targetRef])
     : new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
   await Promise.all([
-    ...Array.from(refs, (ref) => refreshTrackedThread(client, epoch, ref, targetedResync)),
+    ...Array.from(refs, (ref) =>
+      refreshTrackedThread(client, epoch, ref, targetedResync, false, undefined, options?.reopenOnlyClientMutationId),
+    ),
     ...Array.from(watchRefs, (ref) => refreshWatchedThread(client, epoch, ref, targetedResync)),
   ]);
 
@@ -2185,7 +2761,7 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
     dispatchReadyClient = client;
     dispatchReadyEpoch = epoch;
     await runtime.outbox.connectionReady();
-  } else if (targetRef && dispatchableMutationRefs.has(targetRef)) {
+  } else if (targetRef && dispatchableMutationRefs.has(targetRef) && (options?.suppressTargetDispatch?.() ?? true)) {
     scheduleMutationDispatch(runtime, [targetRef]);
   }
 }
@@ -2222,19 +2798,25 @@ function rewireClient(client: AppwireClientLike): void {
   unwireReady?.();
   wiredClient = client;
   unwireNotification = client.onNotification(handleNotification);
-  unwireReady = client.onReady(() => {
-    readyEpoch += 1;
-    threadsStore.setState({ mutationAuthorityRefs: new Set() });
-    // onReady is the SAME client reconnecting: its old connection's
-    // subscriptions are server-side gone too, even though the client object
-    // survives. handleReady re-subscribes the still-tracked refs.
-    wireSubscribedRefs.clear();
-    retireAllOwnedHydrations();
-    dispatchReadyClient = null;
-    dispatchReadyEpoch = -1;
-    dispatchableMutationRefs.clear();
-    void handleReady(client, readyEpoch);
-  });
+  unwireReady = client.onReady(
+    readyGenerationCallback(
+      client,
+      () => wiredClient,
+      () => {
+        readyEpoch += 1;
+        threadsStore.setState({ mutationAuthorityRefs: new Set() });
+        // onReady is the SAME client reconnecting: its old connection's
+        // subscriptions are server-side gone too, even though the client object
+        // survives. handleReady re-subscribes the still-tracked refs.
+        wireSubscribedRefs.clear();
+        retireAllOwnedHydrations();
+        dispatchReadyClient = null;
+        dispatchReadyEpoch = -1;
+        dispatchableMutationRefs.clear();
+        void handleReady(client, readyEpoch);
+      },
+    ),
+  );
   // onReady only fires on a FUTURE transition into "ready" (AppwireClient/
   // FakeClient both dispatch it from within setState/emitStateChange) — it
   // does NOT fire retroactively for a client that is already ready by the
@@ -2260,14 +2842,16 @@ connectionStore.subscribe((state) => {
 });
 
 // requireClient reads the client connection.ts wired via
-// useConnectionStore.getState().connect(client) — threads.ts has no
+// connectionStore.getState().connect(client) — threads.ts has no
 // connect() of its own in the locked interface, so it rides connection.ts's
-// single wiring point.
+// single wiring point. The one thing that is threads-specific is the
+// defensive rewireClient() call (see above), so it takes only the shared
+// resolver and routes every client read through this rewire-aware wrapper -
+// nothing here hands out a bare port whose request/onNotification would
+// silently skip the rewire.
+const { requireClient: resolveCurrentClient } = connectedClientPort("threads");
 function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error("threads store: no client connected; call useConnectionStore.getState().connect(client) first");
-  }
+  const client = resolveCurrentClient();
   rewireClient(client);
   return client;
 }
@@ -2518,6 +3102,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     inflightHydrateEpochs.delete(ref);
     trackedHydrationCompletions.delete(ref);
     pendingThreadHydrations.delete(ref);
+    // The Stop generation is the one per-ref structure release must NOT tear
+    // down: it is the only cancellation evidence fences captured elsewhere
+    // read, and those fences have no registered lifetime to prune against.
+    // Retention is what lets a fence captured before a Stop keep firing after
+    // the ref's last holder lets go (see the map's own comment above).
     // A watched lifecycle may still hold this ref (watchRefCounts), and its
     // model stays; only the pane's own tracking goes. Unsubscribe the wire
     // subscription when this was the last holder of either kind, so the hub
@@ -2671,7 +3260,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     removeWatchedThreadModel(ref);
   },
 
-  async refreshThread(ref): Promise<void> {
+  async refreshThread(ref, beforePublish): Promise<void> {
     const deadline = Date.now() + REQUIRE_READY_TIMEOUT_MS;
     let client: AppwireClientLike;
     do {
@@ -2682,7 +3271,30 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       await requireReadyClient(remaining);
       client = requireClient();
     } while (client.state !== "ready");
-    await refreshTrackedThread(client, readyEpoch, ref, true, true);
+    const attempt = await refreshTrackedThread(client, readyEpoch, ref, true, true, beforePublish);
+    // beforePublish was evaluated before publication, but reconciliation above
+    // runs asynchronously after it. A Stop acknowledged in that window must
+    // cancel the dispatch this refresh earned too, exactly as handleReady's
+    // targeted tail rechecks its own fence at the scheduling point. The
+    // rejection lands only after publication, so what the refresh earned on
+    // the way is unwound with it: publication opened the ref's dispatch gate
+    // and reconciliation may have cleared its recovery-blocked obligation,
+    // and a later outbox discovery would dispatch queued mutations on the
+    // strength of both if the fence left them banked.
+    try {
+      beforePublish?.();
+    } catch (error) {
+      // Stop canceled this refresh, so its earned dispatchability goes with
+      // it: close the gate and re-arm recovery (the forceStop tail's own
+      // retention rule) until a fresh snapshot proves it can clear - but only
+      // while this refresh is still the ref's newest hydration attempt. An
+      // overtaken refresh's cancellation is its caller's honest rejection,
+      // while the newer attempt's fresh proof owns the ref now; unwinding
+      // here would re-arm recovery over it, closing the newer attempt's
+      // reconciliation out of its own clear.
+      unwindStopCanceledRefresh(ref, attempt);
+      throw error;
+    }
     const runtime = getMutationRuntime();
     if (runtime) scheduleMutationDispatch(runtime, [ref]);
   },
@@ -2744,6 +3356,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async send(ref, text, attachments, skillNames) {
+    // The recovery fence is enforced at the shared admission every durable
+    // action funnels through (enqueueMutationIntent's central check), so the
+    // alternate send paths - the palette's slash fallthrough, the ask dock's
+    // batch send, a failed turn's Retry - hear the same refusal the surfaces
+    // render, with nothing parked behind it.
     await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments, skillNames));
   },
 
@@ -2756,6 +3373,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async interrupt(ref) {
+    cancelPendingUserIntents(ref);
     // Stop is session-scoped, always. Naming a turn here could only ever make
     // Stop fail: the id is missing in the windows Stop matters most -- a turn
     // the session started for itself, a boundary between two turns of one
@@ -2767,6 +3385,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       "turn/interrupt",
       { ref, expectedInstanceId: expectedInstanceID(ref) },
       { method: "turn/interrupt" },
+      undefined,
+      // The click is the cancel moment (stop-cancellation-outbox §4): the
+      // ref's non-attempted rows turn "canceled" in the same transaction that
+      // enqueues the interrupt, so both are durable or neither is.
+      "interruptAndCancel",
     );
   },
 
@@ -2774,7 +3397,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     await enqueueMutationIntent(composerMutationIntent(ref, "drain", text, attachments, skillNames));
   },
 
-  async promoteQueuedAsSteer(ref, index, expectedEntryId) {
+  async promoteQueuedAsSteer(ref, index, expectedEntryId, display) {
     // The entry id is the precondition that matters: it names the message being
     // promoted, so a queue that shifted underneath is caught without needing a
     // turn id that would only add a second way to fail.
@@ -2782,7 +3405,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       ref,
       "turn/promoteQueuedAsSteer",
       { ref, index, expectedInstanceId: expectedInstanceID(ref), expectedEntryId },
-      { method: "turn/promoteQueuedAsSteer", index, expectedEntryId },
+      {
+        method: "turn/promoteQueuedAsSteer",
+        input: [
+          ...(display.text !== "" ? [{ type: "text", text: display.text }] : []),
+          ...(display.skillNames ?? []).map((name) => ({ type: "skill", name })),
+        ],
+      },
     );
   },
 
@@ -2854,6 +3483,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       {
         targetRef: ref,
         threadId: model?.threadId,
+        instanceId: model?.instanceId,
         method: "notes/human/set",
         payload: { ref, expectedInstanceId: expectedInstanceId ?? instanceId, note },
         attachments: [],
@@ -2915,6 +3545,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async forceStop(ref) {
+    cancelPendingUserIntents(ref);
+    // Write-first (stop-cancellation-outbox §4): the cancellation lands
+    // durably before the stop RPC, so a storage failure aborts the stop here
+    // with the daemon untouched and the user free to retry.
+    await cancelUnattemptedMutations(ref);
     try {
       await requireClient().forceStop(ref);
     } catch (error) {
@@ -2936,6 +3571,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   async shutdown(ref) {
+    cancelPendingUserIntents(ref);
+    await cancelUnattemptedMutations(ref);
     const client = requireClient();
     try {
       await client.request("thread/shutdown", { ref });
@@ -3088,6 +3725,8 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // test's first rewireClient() call never fires a stale unwire closure from
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
+  userIntentStopGenerations.clear();
+  userIntentStopSequence = 0;
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();

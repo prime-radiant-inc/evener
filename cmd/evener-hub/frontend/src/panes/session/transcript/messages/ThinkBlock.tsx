@@ -172,7 +172,12 @@ function ContentFreeThinkBlock({ item }: { item: ItemModel }) {
   const label = estimatedTokens > 0 ? `Thinking… · ~${formatTokenCount(estimatedTokens)} tokens` : "Thinking…";
   return (
     <div className={CLASS.block} data-testid="think-block" data-live="true" data-content-free="true">
-      <Loader label={label} />
+      {/* rail: the grid IS this row's status glyph, so it seats in the icon
+       * rail the live and settled rows seat their bulb glyph in (the Loader
+       * variant owns the slot geometry and the gutter pull - see
+       * loader.module.css), keeping all three thinking states' icons on one
+       * column while their labels all start at the content edge. */}
+      <Loader label={label} rail />
     </div>
   );
 }

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, test } from "vitest";
-import { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickableRows } from "./pathRows";
+import { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 
 // Compact row shape for order assertions: kind plus whatever that kind's
 // identifying text is.
@@ -293,7 +293,7 @@ describe("buildPathRows", () => {
   });
 });
 
-describe("pickableRows", () => {
+describe("pickablePathRows", () => {
   test("keeps recents, the parent, dirs, and files - group headers and status lines are text", () => {
     const rows = buildPathRows({
       kind: "file",
@@ -304,9 +304,9 @@ describe("pickableRows", () => {
       showRecents: true,
     });
 
-    expect(pickableRows(rows).map((r) => r.path)).toEqual(["/home/jesse/evener", "/", "/etc/ssl", "/etc/hosts"]);
+    expect(pickablePathRows(rows).map((r) => r.path)).toEqual(["/home/jesse/evener", "/", "/etc/ssl", "/etc/hosts"]);
     expect(
-      pickableRows(
+      pickablePathRows(
         buildPathRows({ kind: "dir", currentDir: "/", entries: null, value: "", recents: [], showRecents: false }),
       ),
     ).toEqual([]);

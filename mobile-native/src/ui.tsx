@@ -19,6 +19,7 @@ export function useColors() {
 				border: "#363b42",
 				accent: "#9cb4ff",
 				error: "#ffaaa5",
+				warning: "#f0c674",
 				onAccent: "#18244b",
 			}
 		: {
@@ -29,6 +30,7 @@ export function useColors() {
 				border: "#d8dcd9",
 				accent: "#315ad7",
 				error: "#b52b25",
+				warning: "#8a5a00",
 				onAccent: "#ffffff",
 			};
 }
@@ -171,6 +173,24 @@ export function ErrorMessage({ message }: { message: string | null }) {
 			accessibilityRole="alert"
 			allowFontScaling={Platform.OS !== "ios"}
 			style={{ color: colors.error, padding: 12, fontSize: 16 * textScale }}
+		>
+			{message}
+		</Text>
+	) : null;
+}
+
+/** WarningMessage is the standing-write tone: the thing it reports happened,
+ * and only a step after it failed, so it must not read like ErrorMessage's
+ * failure. */
+export function WarningMessage({ message }: { message: string | null }) {
+	const colors = useColors();
+	const { fontScale } = useWindowDimensions();
+	const textScale = Platform.OS === "ios" ? fontScale : 1;
+	return message ? (
+		<Text
+			accessibilityRole="alert"
+			allowFontScaling={Platform.OS !== "ios"}
+			style={{ color: colors.warning, padding: 12, fontSize: 16 * textScale }}
 		>
 			{message}
 		</Text>

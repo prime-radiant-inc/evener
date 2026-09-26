@@ -27,7 +27,7 @@ func (bearerAuth) Apply(_ context.Context, req *http.Request, res registry.Resol
 		return nil
 	}
 	if res.Credential.Value == "" {
-		return missingCredential(res)
+		return missingCredential(res, "Authorization")
 	}
 	req.Header.Set("Authorization", "Bearer "+res.Credential.Value)
 	return nil
@@ -55,7 +55,7 @@ func (headerAuth) Apply(_ context.Context, req *http.Request, res registry.Resol
 		return nil
 	}
 	if res.Credential.Value == "" {
-		return missingCredential(res)
+		return missingCredential(res, res.Transport.AuthHeader)
 	}
 	req.Header.Set(res.Transport.AuthHeader, res.Credential.Value)
 	return nil
@@ -82,12 +82,22 @@ func credentialHeaderWins(res registry.Resolved, name string) bool {
 
 // missingCredential names the instance and repeats the registry's own
 // "no credential" warning, which says which variable or login is missing.
-func missingCredential(res registry.Resolved) error {
+// The resolve path suppresses that warning when the auth header's own
+// expression failed — the header form carries the diagnosis — so the second
+// look recognizes the auth header's failure wording, case-folded like every
+// other header match.
+func missingCredential(res registry.Resolved, authHeader string) error {
 	msg := fmt.Sprintf("instance %q has no credential", res.Instance)
 	for _, w := range res.Warnings {
 		if strings.HasPrefix(w, "no credential") {
-			return &ConfigurationError{Message: msg + ": " + w}
+			return &ConfigurationError{Message: msg + ": " + w, Cause: ErrNoCredential}
 		}
 	}
-	return &ConfigurationError{Message: msg}
+	prefix := fmt.Sprintf("credential header %q:", authHeader)
+	for _, w := range res.Warnings {
+		if len(w) >= len(prefix) && strings.EqualFold(w[:len(prefix)], prefix) {
+			return &ConfigurationError{Message: msg + ": " + w, Cause: ErrNoCredential}
+		}
+	}
+	return &ConfigurationError{Message: msg, Cause: ErrNoCredential}
 }

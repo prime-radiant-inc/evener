@@ -1,9 +1,16 @@
-import type { HostForwardedResult, InstanceEntry } from "@evener/appwire-client";
+import {
+  type HostForwardedResult,
+  type HostRow,
+  type InstanceEntry,
+  type InstanceListResponse,
+  WireError,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "../../stores/connection";
-import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
+import { credentialsStore, resetCredentialsStoreForTests, resetHostInstancesForTests } from "../../stores/credentials";
+import { hostsStore } from "../../stores/hosts";
 import { useProviderSetup } from "./useProviderSetup";
 
 const provider: InstanceEntry = {
@@ -21,6 +28,8 @@ const provider: InstanceEntry = {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", client: null });
   resetCredentialsStoreForTests();
+  resetHostInstancesForTests();
+  hostsStore.getState().resetForTests();
 });
 afterEach(() => {
   cleanup();
@@ -163,4 +172,69 @@ test("a controller-scoped refetch does not replace a remote host's provider list
 
   expect(result.current.status).toBe("ready");
   expect(result.current.instances).toEqual([{ ...provider, activeSource: "store" }]);
+});
+
+// M2 (round 6): the store owns the refresh when the registry invalidates a
+// partition. The spawn form keys its effect on [client, connection, load] and
+// knows nothing about registry identity - it must converge anyway, because the
+// same defect would otherwise reappear in every other partition consumer.
+function registryRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
+  return { origin: "sidecar", attached: true, midAttach: false, removed: false, ...overrides };
+}
+
+// M1: the registry's own failure must be REACHABLE here. A remote target whose
+// registry read failed used to sit on a pending state forever - status
+// "loading", no verdict, and Start proceeding without the provider gate.
+test("a failed registry surfaces on a remote target, and its retry recovers", async () => {
+  const client = new FakeClient("ready");
+  let registryDown = true;
+  client.on("evener/host/list", () => {
+    if (registryDown) throw new WireError("registry unavailable", -32000);
+    return { hosts: [registryRow({ name: "buildbox" })] };
+  });
+  client.on(
+    "evener/host/request",
+    () =>
+      ({
+        instances: [{ ...provider, activeSource: "store" }],
+        availableProviders: [],
+      }) as unknown as HostForwardedResult,
+  );
+  connectionStore.getState().connect(client);
+  hostsStore.getState().resetForTests();
+  await hostsStore.getState().fetch(); // the registry read fails
+
+  const { result } = renderHook(() => useProviderSetup("buildbox"));
+  await waitFor(() => expect(result.current.status).toBe("error"));
+
+  // Its retry re-reads the registry, and the listing follows.
+  registryDown = false;
+  await act(async () => result.current.retry());
+  await waitFor(() => expect(result.current.status).toBe("ready"));
+});
+
+test("a registry-driven re-registration re-reads the host's listing without a remount", async () => {
+  const client = new FakeClient("ready");
+  let listing: InstanceListResponse = { instances: [{ ...provider, activeSource: "store" }], availableProviders: [] };
+  client.on("evener/host/request", () => listing as unknown as HostForwardedResult);
+  connectionStore.getState().connect(client);
+  hostsStore.setState({
+    load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "a.example" })] },
+  });
+
+  const { result } = renderHook(() => useProviderSetup("buildbox"));
+  await waitFor(() => expect(result.current.instances).toEqual([{ ...provider, activeSource: "store" }]));
+
+  // The name is re-registered as a different machine; its own listing now
+  // reports a fresh, unconfigured instance.
+  listing = { instances: [{ ...provider, name: "fresh", activeSource: "none" }], availableProviders: [] };
+  await act(async () => {
+    hostsStore.setState({
+      load: { phase: "ready", hosts: [registryRow({ name: "buildbox", address: "b.example" })] },
+    });
+  });
+
+  // The store re-read the name under its new registration, so the form shows that
+  // answer instead of the empty partition the drop left.
+  await waitFor(() => expect(result.current.instances).toEqual([{ ...provider, name: "fresh", activeSource: "none" }]));
 });

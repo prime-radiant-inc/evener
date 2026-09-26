@@ -33,6 +33,42 @@ evener --model openai/gpt-5.4-mini \
 go tool trace trace.out
 ```
 
+## Live Profiling of `evener serve` and `evener hub`
+
+`--cpu-profile` only covers a process from its start. To profile a daemon or
+hub that has already been running for days, start it with
+`EVENER_PPROF_ADDR` set to a loopback `host:port`. The process then serves
+Go's `net/http/pprof` handlers on that address, on their own listener, never
+on the hub's public one. Unset (the default) starts nothing. A host that is
+not `127.0.0.1`, `[::1]`, or `localhost` is refused at startup.
+
+```bash
+EVENER_PPROF_ADDR=127.0.0.1:0 evener hub
+# [hub] pprof listening on http://127.0.0.1:41873/debug/pprof/
+```
+
+Port `0` picks a free port, and the process logs the one it bound: the hub
+to its stderr, each `evener serve` daemon to its stderr (for hub-spawned
+daemons, that is the session's log under `<run_dir>/logs/`). Local daemons
+the hub spawns inherit the hub's environment, so setting the variable on the
+hub enables it for every daemon it launches. Use port `0` there: with a fixed
+port the hub takes it, and each daemon logs a warning and runs without pprof.
+Failing to bind never stops a process from starting; only a malformed or
+non-loopback address does. To profile
+daemons without the hub, set the variable in a launch configuration's `[env]`
+table instead (see [Launch configuration](../evener-hub.md#launch-configuration)).
+
+Grab profiles with `go tool pprof`, using the address from the log:
+
+```bash
+addr=127.0.0.1:41873
+go tool pprof -http=:8080 "http://$addr/debug/pprof/heap"               # live heap
+go tool pprof -http=:8080 "http://$addr/debug/pprof/profile?seconds=30" # 30s CPU sample
+curl -s "http://$addr/debug/pprof/goroutine?debug=2" > goroutines.txt    # every goroutine's stack
+```
+
+`http://$addr/debug/pprof/` lists every profile the process offers.
+
 ## Round Timings
 
 Every round of `processOneInput()` emits a `ROUND_TIMINGS` event with per-phase wall clock durations:
@@ -61,6 +97,38 @@ go test ./agent/ -bench BenchmarkRoundOverhead -benchtime 10x -run "^$"
 ```
 
 This uses a mock LLM client with 10ms simulated latency and reports per-round overhead in microseconds. Useful for detecting framework regressions without real API calls.
+
+## Memory profiling
+
+`TestMemHarness` (cmd/evener/memharness_test.go) runs a real `evener serve`
+in-process, drives it over AppWire with a scripted provider at the LLM
+boundary, and writes heap profiles plus a `report.txt` line per sample (live
+heap, heap not yet returned to the OS, bytes allocated so far, transcript
+size). It is skipped unless `-memharness-out` names an output directory:
+
+```bash
+# 200 turns of 5 shell rounds each (realistic output sizes), compaction on
+go test ./cmd/evener -run 'TestMemHarness$' -count=1 -timeout 60m \
+  -memharness-out=/tmp/mem -memharness-turns=200 -memharness-every=25
+
+# Open every turn with a delegate, then idle past the delegate idle release
+go test ./cmd/evener -run 'TestMemHarness$' -count=1 \
+  -memharness-out=/tmp/mem -memharness-turns=20 -memharness-delegates \
+  -memharness-idle=45s
+
+# What a resumed session costs: resume a COPY of real state (never point
+# -memharness-state at a live state directory; resuming appends to it)
+mkdir -p /tmp/memstate
+cp -r ~/.local/state/evener/projects/<project-id>/sessions /tmp/memstate/sessions
+go test ./cmd/evener -run 'TestMemHarness$' -count=1 \
+  -memharness-out=/tmp/mem -memharness-state=/tmp/memstate \
+  -memharness-resume=<session-id> -memharness-turns=0
+```
+
+Read the profiles with `go tool pprof`: `-sample_index=inuse_space` for what
+is retained, `alloc_space` for churn, and `-diff_base` between two samples for
+growth, e.g.
+`go tool pprof -sample_index=inuse_space -top -cum -diff_base /tmp/mem/heap-t025.pprof /tmp/mem/heap-t200.pprof`.
 
 ## State paths and identifiers
 

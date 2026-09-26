@@ -90,6 +90,8 @@ func TestActivityOutcome(t *testing.T) {
 	}{
 		{status: jobstore.StatusRunning},
 		{status: jobstore.StatusFailed, terminal: true, outcome: "failure"},
+		{status: jobstore.StatusCommandExitedNonzero, terminal: true, outcome: "failure"},
+		{status: jobstore.StatusCommandKilled, terminal: true, outcome: "failure"},
 		{status: jobstore.StatusExhausted, terminal: true, outcome: "failure"},
 		{status: jobstore.StatusCompleted, terminal: true, outcome: "success"},
 		{status: jobstore.StatusCancelled, terminal: true, outcome: "neutral"},

@@ -8,6 +8,7 @@ import (
 	"hash/fnv"
 	"maps"
 	"os"
+	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -26,12 +27,21 @@ import (
 // rendezvous-file metadata with dynamic state resolved via AppWire.
 type LiveEntry struct {
 	rendezvous.Entry
-	SessionID          string
-	Status             string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
-	ActiveFlags        []string // the status flags the daemon reported alongside Status
-	Crashed            bool     // true only for a retained record whose daemon PID is confirmed gone
-	PendingAsk         bool     // true while the daemon reports an unanswered ask_user question
-	PendingEscalation  bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	SessionID         string
+	Status            string   // most-recent daemon state ("active", "idle", "awaiting", etc.)
+	ActiveFlags       []string // the status flags the daemon reported alongside Status
+	Crashed           bool     // true only for a retained record whose daemon PID is confirmed gone
+	PendingAsk        bool     // true while the daemon reports an unanswered ask_user question
+	PendingEscalation bool     // true while the daemon reports a blocked sandbox-exemption escalation (M7)
+	// Capabilities mirrors the daemon's own Evener capability set from the
+	// probe that produced this entry, so list projections can advertise the
+	// daemon's answer instead of a hand approximation (#1840's one-answer
+	// rule: the same session must not read differently from ListThreads and
+	// from ThreadRead). CapabilitiesKnown false means no probe read one and
+	// the approximation takes over; the zero value alone is not that signal,
+	// because a daemon can legitimately answer an all-false set.
+	Capabilities       appwire.ThreadCapabilities
+	CapabilitiesKnown  bool
 	RunningSubagentIDs []string // in-process children reported by this daemon; not independently routable
 	// RunningSubagentStates carries each listed child's projected status
 	// ("active", "idle", ...) when the daemon reports it. Retained stable
@@ -74,11 +84,18 @@ type LiveEntry struct {
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
 type ProbeResult struct {
-	SessionID             string
-	Status                string
-	ActiveFlags           []string
-	PendingAsk            bool
-	PendingEscalation     bool
+	SessionID         string
+	Status            string
+	ActiveFlags       []string
+	PendingAsk        bool
+	PendingEscalation bool
+	// Capabilities is the daemon's own Evener capability set from the same
+	// projection cut as Status. CapabilitiesKnown reports whether this probe
+	// read one: a failed, protocol-mismatched, or legacy probe leaves the set
+	// absent, and consumers fall back to their approximation — never to an
+	// empty set they would mistake for the daemon's answer.
+	Capabilities          appwire.ThreadCapabilities
+	CapabilitiesKnown     bool
 	RunningSubagentIDs    []string
 	RunningSubagentStates map[string]string
 	RunningJobs           []appwire.EvenerJobInfo
@@ -385,6 +402,36 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		}
 		_, _ = h.Write([]byte{0})
 		if bySess[id].PendingAsk {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
+		// An escalation moving while the status holds still changes the
+		// Clear bit list rows advertise — the fallback folds it out the way
+		// the daemon's clear gate does — so it must bump the fingerprint like
+		// its sibling ask flag, or onChange never invalidates.
+		if bySess[id].PendingEscalation {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
+		// The daemon's capability answer is per-session observable state in
+		// the same sense the status is: bits fold daemon state the status
+		// string itself does not (Clear folds the clear-blocked reason, Send
+		// folds activity), so a bit can flip while the status holds still.
+		// Reflection walks the whole set so a capability bit added later
+		// moves the fingerprint without anyone having to remember this site.
+		capsV := reflect.ValueOf(bySess[id].Capabilities)
+		for _, fieldValue := range capsV.Fields() {
+			// Hash every field whatever its kind: Bool() would panic on a
+			// future non-bool ThreadCapabilities field, and skipping a field
+			// would silently drop it from the fingerprint.
+			if fieldValue.Kind() != reflect.Bool {
+				_, _ = fmt.Fprintf(h, "%v", fieldValue.Interface())
+			} else if fieldValue.Bool() {
+				_, _ = h.Write([]byte{1})
+			}
+			_, _ = h.Write([]byte{0})
+		}
+		if bySess[id].CapabilitiesKnown {
 			_, _ = h.Write([]byte{1})
 		}
 		_, _ = h.Write([]byte{0})
@@ -1229,6 +1276,8 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		ActiveFlags:           append([]string(nil), result.ActiveFlags...),
 		PendingAsk:            result.PendingAsk,
 		PendingEscalation:     result.PendingEscalation,
+		Capabilities:          result.Capabilities,
+		CapabilitiesKnown:     result.CapabilitiesKnown,
 		RunningSubagentIDs:    append([]string(nil), result.RunningSubagentIDs...),
 		RunningSubagentStates: cloneSubagentStates(result.RunningSubagentStates),
 		RunningJobs:           cloneRunningJobs(result.RunningJobs),
@@ -1300,7 +1349,12 @@ func (r *Roster) ReadSpawnedThread(ctx context.Context, entry rendezvous.Entry, 
 		ActiveFlags: append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:  root.Evener.AskPending, PendingEscalation: len(root.Evener.PendingEscalations) > 0,
 		RunningJobs: runningJobs, CompletedJobs: completedJobs,
-		Watches: diagnosticsWatches(root.Evener.Diagnostics)}
+		Watches: diagnosticsWatches(root.Evener.Diagnostics),
+		// The identity checks above already require a current-protocol daemon,
+		// and every current daemon stamps its capability set on the thread
+		// projection this read answered from, so the caps beside the status
+		// are the daemon's own answer — not an approximation.
+		Capabilities: root.Evener.Capabilities, CapabilitiesKnown: true}
 	if root.Evener.Diagnostics != nil {
 		result.RunningSubagentStates = make(map[string]string)
 		for _, delegate := range root.Evener.Diagnostics.Delegates {

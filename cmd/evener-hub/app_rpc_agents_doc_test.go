@@ -163,15 +163,16 @@ func TestHubRPCAgentsDocSetReplacesThePreviousContent(t *testing.T) {
 	}
 }
 
-// A re-read that fails after the rename must not be reported as a rejected
-// save. The rename already landed, so telling the requester its write failed
-// would show an error over content that is on disk and leave every other
-// client stale; the byte-for-byte contract means the content just written is
-// what the file holds. A long symlink chain makes that happen for real: the
-// save resolves the chain through filepath.EvalSymlinks and lands on the file
-// at the end of it, and the read back walks the same chain through the kernel,
+// A re-read that fails after the rename is a step after the write that
+// applied, so the requester must see the failure: swallowing it and returning
+// a fabricated success told the caller nothing went wrong. The write is still
+// a change every other client needs to hear about, so the broadcast carries
+// the content that landed - the byte-for-byte contract means that is what the
+// file holds. A long symlink chain makes the read back fail for real: the save
+// resolves the chain through filepath.EvalSymlinks and lands on the file at
+// the end of it, and the read back walks the same chain through the kernel,
 // which gives up long before EvalSymlinks does (see linkChainBeyondTheKernel).
-func TestHubRPCAgentsDocSetReportsTheSaveWhenTheReadBackFails(t *testing.T) {
+func TestHubRPCAgentsDocSetSurfacesTheFailureWhenTheReadBackFails(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation is privileged on Windows")
 	}
@@ -203,21 +204,24 @@ func TestHubRPCAgentsDocSetReportsTheSaveWhenTheReadBackFails(t *testing.T) {
 
 	const content = "saved even though the read back cannot see it\n"
 	var result appwire.AgentsDocResponse
-	if err := clientA.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocSet, appwire.AgentsDocSetParams{Content: content}, &result); err != nil {
-		t.Fatalf("set: %v", err)
+	err := clientA.Request(context.Background(), appwire.MethodEvenerSettingsAgentsDocSet, appwire.AgentsDocSetParams{Content: content}, &result)
+	if err == nil {
+		t.Fatal("set with a failed read back returned no error")
 	}
+	if !strings.Contains(err.Error(), "AGENTS.md: read:") {
+		t.Fatalf("set error = %v, want the read-back failure", err)
+	}
+	// The write applied, so every client - the requester included - still
+	// hears the canonical content.
 	want := appwire.AgentsDocResponse{Path: path, Exists: true, Content: content}
-	if result != want {
-		t.Fatalf("set = %+v, want %+v", result, want)
-	}
 	for _, client := range []*appwire.Client{clientA, clientB} {
 		if notification := receiveAgentsDocChanged(t, client); notification != want {
 			t.Fatalf("notification = %+v, want %+v", notification, want)
 		}
 	}
 
-	// Guards the premise: both branches return the same response, so unless
-	// the read back is genuinely denied this test proves nothing.
+	// Guards the premise: unless the read back is genuinely denied this test
+	// proves nothing.
 	if _, err := os.ReadFile(path); err == nil {
 		t.Fatal("the read back was never actually denied")
 	}

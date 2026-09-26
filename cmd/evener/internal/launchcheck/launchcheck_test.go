@@ -15,14 +15,14 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
 	"primeradiant.com/evener/llm/registry"
 )
 
-// launchCheckGateway starts a /models endpoint answering with status and body,
-// declares it as the "gw" instance in an isolated providers.toml, and installs
-// a client built from that file on the launchCheckLoadClient seam.
+// launchCheckRegistry installs a client built from the given providers.toml
+// body on the launchCheckLoadClient seam.
 //
 // The client is the real one — cmdutil.LoadRegistry over the real providers
 // file, no mocks — but its environment is a fixed table rather than the
@@ -32,6 +32,33 @@ import (
 // The one variable the table answers is OLLAMA_HOST, whose instance needs no
 // credential and is therefore always visible; it points at a closed port so
 // its listing fails instantly instead of reaching a real daemon.
+func launchCheckRegistry(t *testing.T, cfg string) {
+	t.Helper()
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stateRoot := t.TempDir()
+	env := map[string]string{"OLLAMA_HOST": "127.0.0.1:1"}
+
+	withLaunchCheckLoadClient(t, func(stateDir string) (*llm.Client, error) {
+		r, _, err := cmdutil.LoadRegistry(
+			registry.WithConfigPath(cfgPath),
+			registry.WithStateRoot(stateRoot),
+			registry.WithOffline(true), registry.WithoutCache(),
+			registry.WithEnv(func(k string) (string, bool) { v, ok := env[k]; return v, ok }),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return cmdutil.NewRegistryClient(r, stateDir), nil
+	})
+}
+
+// launchCheckGateway starts a /models endpoint answering with status and body,
+// declares it as the keyed "gw" instance in an isolated providers.toml, and
+// installs a client built from that file on the launchCheckLoadClient seam.
 func launchCheckGateway(t *testing.T, status int, body string, gwExtra ...string) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,30 +71,51 @@ func launchCheckGateway(t *testing.T, status int, body string, gwExtra ...string
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
+	launchCheckRegistry(t, "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \""+srv.URL+"/v1\"\napi_key  = \"test-key\"\n"+strings.Join(gwExtra, ""))
+}
 
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "providers.toml")
-	cfg := "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key  = \"test-key\"\n" + strings.Join(gwExtra, "")
-	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
-		t.Fatal(err)
+// launchCheckKeylessInstance declares an explicit instance on the openai
+// preset with no key in the fixture's fixed environment: an explicit instance
+// stays visible without a credential, so its listing runs and fails at the
+// credential check before any request can leave the process.
+func launchCheckKeylessInstance(t *testing.T) {
+	t.Helper()
+	launchCheckRegistry(t, "[providers.gw]\nbase = \"openai\"\n")
+}
+
+// decodeDiagnostics runs the launch check for the models contract and decodes
+// the diagnostics it printed to stdout.
+func decodeDiagnostics(t *testing.T) []appwire.ModelListDiagnostic {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{
+		"--protocol", appwire.ProtocolVersion,
+		"--models",
+		"--json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
 	}
-	stateRoot := t.TempDir()
-	env := map[string]string{"OLLAMA_HOST": "127.0.0.1:1"}
+	var out struct {
+		Diagnostics []appwire.ModelListDiagnostic `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	return out.Diagnostics
+}
 
-	old := launchCheckLoadClient
-	t.Cleanup(func() { launchCheckLoadClient = old })
-	launchCheckLoadClient = func(stateDir string) (*llm.Client, error) {
-		r, _, err := cmdutil.LoadRegistry(
-			registry.WithConfigPath(cfgPath),
-			registry.WithStateRoot(stateRoot),
-			registry.WithOffline(true), registry.WithoutCache(),
-			registry.WithEnv(func(k string) (string, bool) { v, ok := env[k]; return v, ok }),
-		)
-		if err != nil {
-			return nil, err
+// gwDiagnostic returns the gw row of the models contract's diagnostics,
+// failing the test when the listing produced none.
+func gwDiagnostic(t *testing.T) appwire.ModelListDiagnostic {
+	t.Helper()
+	for _, got := range decodeDiagnostics(t) {
+		if got.Provider == "gw" {
+			return got
 		}
-		return cmdutil.NewRegistryClient(r, stateDir), nil
 	}
+	t.Fatalf("diagnostics missing the gw entry")
+	return appwire.ModelListDiagnostic{}
 }
 
 func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
@@ -152,37 +200,98 @@ func TestLaunchCheckListsLiveModelsFromConfiguredProviders(t *testing.T) {
 func TestLaunchCheckReportsModelEnumerationDiagnostics(t *testing.T) {
 	launchCheckGateway(t, http.StatusForbidden, `{"error":"forbidden"}`)
 
-	var stdout, stderr bytes.Buffer
-	err := RunLaunchCheck([]string{
-		"--protocol", appwire.ProtocolVersion,
-		"--models",
-		"--json",
-	}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	got := gwDiagnostic(t)
+	// The picker prints the message inline ("gw — <message>"), so a listing
+	// failure reports its class, not the endpoint's prose.
+	if got.Source != "provider" || got.Title != "Provider error" || got.Message != "HTTP 403" {
+		t.Fatalf("diagnostic=%+v", got)
 	}
-	var out struct {
-		Diagnostics []struct {
-			Provider string `json:"provider"`
-			Source   string `json:"source"`
-			Title    string `json:"title"`
-			Message  string `json:"message"`
-		} `json:"diagnostics"`
+}
+
+// The picker prints a provider's listing diagnostic inline under the model
+// list. An endpoint that answers 404 with an HTML error page must not put
+// that page's content in the list: the line stops at the status.
+func TestLaunchCheckDiagnosticStopsA404PageAtTheStatusLine(t *testing.T) {
+	page := "<html><head><title>404 Not Found</title></head><body>nginx: no such path</body></html>"
+	launchCheckGateway(t, http.StatusNotFound, page)
+
+	if got := gwDiagnostic(t); got.Message != "HTTP 404" {
+		t.Fatalf("diagnostic message=%q, want the status line without the page content", got.Message)
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
-		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+}
+
+// A keyless explicit instance fails its listing at the credential check. The
+// diagnostic must report the class ("no credential"), not the registry's
+// whole remediation warning, which the picker would print under the list.
+func TestLaunchCheckDiagnosticCompactsAMissingCredential(t *testing.T) {
+	launchCheckKeylessInstance(t)
+
+	if got := gwDiagnostic(t); got.Message != "no credential" {
+		t.Fatalf("diagnostic message=%q, want the compact no-credential class", got.Message)
 	}
-	var found bool
-	for _, got := range out.Diagnostics {
-		if got.Provider == "gw" {
-			found = true
-			if got.Source != "provider" || got.Title != "Provider error" || !strings.Contains(got.Message, "403") {
-				t.Fatalf("diagnostic=%+v", got)
-			}
-		}
+}
+
+// The google protocol buries a classified HTTP error under a ConfigurationError
+// (reclassifyGemini's regional-Vertex remap, whose message quotes the provider
+// verbatim). The picker's line must still stop at the wrapped status, not the
+// wrapped prose.
+func TestLaunchCheckDiagnosticFindsAStatusUnderAConfigurationWrapper(t *testing.T) {
+	inner := llm.ClassifyHTTPError("models.list", http.StatusNotFound, nil,
+		[]byte("Publisher model `projects/p/locations/us-central1/models/gemini-x` was not found"),
+		registry.Resolved{Instance: "vtx"})
+	err := &llm.ConfigurationError{
+		Message: "a global-only model under a regional location needs `global`; provider said: " + inner.Error(),
+		Cause:   inner,
 	}
-	if !found {
-		t.Fatalf("diagnostics missing the gw entry: %+v", out.Diagnostics)
+
+	if got := launchCheckModelDiagnostic("vtx", err).Message; got != "HTTP 404" {
+		t.Fatalf("diagnostic message=%q, want the wrapped HTTP 404 class", got)
+	}
+}
+
+// A joined error's branches must not hide a status. The errors.Join node
+// answers only Unwrap() []error — which errors.Unwrap cannot descend into —
+// and errors.As stops at the first llm.Error in branch order, so a status
+// behind a status-zero sibling in the join needs a branch-aware walk.
+func TestLaunchCheckDiagnosticFindsAStatusBehindAJoinedSibling(t *testing.T) {
+	inner := llm.ClassifyHTTPError("models.list", http.StatusNotFound, nil,
+		[]byte("Publisher model `projects/p/locations/us-central1/models/gemini-x` was not found"),
+		registry.Resolved{Instance: "vtx"})
+	err := &llm.ConfigurationError{
+		Message: "a global-only model under a regional location needs `global`; provider said: " + inner.Error(),
+		Cause:   errors.Join(&llm.ConfigurationError{Message: "regional endpoint unusable"}, inner),
+	}
+
+	if got := launchCheckModelDiagnostic("vtx", err).Message; got != "HTTP 404" {
+		t.Fatalf("diagnostic message=%q, want the status from the joined sibling branch", got)
+	}
+}
+
+// An exhausted allowance is its own class, more specific than the status it
+// arrives on (429, or a provider's 403 billing-cycle exhaustion): the line
+// names the spent allowance, and the distinct title must survive the
+// compaction too.
+func TestLaunchCheckDiagnosticNamesAnExhaustedAllowance(t *testing.T) {
+	body := []byte(`{"error":{"code":"usage_limit_reached","message":"The usage limit has been reached"}}`)
+	err := llm.ClassifyHTTPError("models.list", http.StatusTooManyRequests, nil, body, registry.Resolved{Instance: "gw"})
+
+	diag := launchCheckModelDiagnostic("gw", err)
+	if diag.Message != "usage limit reached" {
+		t.Fatalf("diagnostic message=%q, want the exhausted-allowance class", diag.Message)
+	}
+	if diag.Title != "Usage limit reached" {
+		t.Fatalf("diagnostic title=%q, want the distinct usage-limit title", diag.Title)
+	}
+}
+
+// The quota class must not swallow every 429: an ordinary rate limit keeps
+// the bare status, or a throttled listing would read as a spent allowance.
+func TestLaunchCheckDiagnosticKeepsAnOrdinaryRateLimitAtTheStatus(t *testing.T) {
+	body := []byte(`{"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-4o"}}`)
+	err := llm.ClassifyHTTPError("models.list", http.StatusTooManyRequests, nil, body, registry.Resolved{Instance: "gw"})
+
+	if got := launchCheckModelDiagnostic("gw", err).Message; got != "HTTP 429" {
+		t.Fatalf("diagnostic message=%q, want the bare status for an ordinary rate limit", got)
 	}
 }
 
@@ -373,4 +482,142 @@ models_endpoint = "-"
 		return
 	}
 	t.Fatalf("models=%+v, want vtx/gemini-3.5-flash", out.Models)
+}
+
+// The launch check validates that a ref resolves — a read, not a launch:
+// a command-bearing credential is the child's first request to spend
+// (spec §10.1), and a preflight that minted would prompt the user's
+// password manager with no session launched.
+func TestLaunchCheckNeverMintsCommandCredentials(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	client := launchCheckClient(t, map[string]registry.Provider{
+		"gw": {
+			Base: "openai-compatible", APIKey: "$(gw-mint)",
+			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"},
+			Models:    map[string]registry.Model{"house-model": {}},
+		},
+	})
+	oldLoad := launchCheckLoadClient
+	launchCheckLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { launchCheckLoadClient = oldLoad })
+
+	if err := validateLaunchCheckProfile(cmdutil.ModelRef{Provider: "gw", Model: "house-model"}); err != nil {
+		t.Fatal(err)
+	}
+	if runs != 0 {
+		t.Fatalf("the launch check executed the credential command %d time(s); the child's first request owns the mint (spec §10.1)", runs)
+	}
+}
+
+// The launch contract's model list serves a command-credentialed
+// instance's registry rows — every advertised fact, no credential
+// materialized — and leaves its live listing to the child, mirroring the
+// hub picker (spec §10.1).
+func TestLaunchCheckModelsServesCommandCredentialedRowsWithoutMinting(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	client := launchCheckClient(t, map[string]registry.Provider{
+		"gw": {
+			Base: "openai-compatible", APIKey: "$(gw-mint)",
+			Transport: registry.Transport{BaseURL: "http://127.0.0.1:9/v1"},
+			Models:    map[string]registry.Model{"house-model": {}},
+		},
+	})
+	oldLoad := launchCheckLoadClient
+	launchCheckLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { launchCheckLoadClient = oldLoad })
+
+	models, _, err := launchCheckModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, m := range models {
+		if m.Provider == "gw" && m.Model == "house-model" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the launch contract's model list dropped the command-credentialed instance's registry rows: %+v", models)
+	}
+	if runs != 0 {
+		t.Fatalf("the model list executed the credential command %d time(s); skipping the live fetch must skip the mint", runs)
+	}
+}
+
+// The hub shells out `evener launch-check --model` before every spawn:
+// that preflight never mints either (spec §10.1) — the child's first
+// request owns the mint, so a command-credentialed launch validates
+// structurally and no live listing is fetched with a credential the hub
+// cannot materialize.
+func TestRunLaunchCheckModelNeverMintsCommandCredentials(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	runs := 0
+	valueexpr.RunCommand = func(string) (string, error) {
+		runs++
+		return "token", nil
+	}
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			hits++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	launchCheckRegistry(t, "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \""+srv.URL+"/v1\"\napi_key  = '''$(gw-mint)'''\n"+
+		"[providers.gw.models.\"gpt-live\"]\n")
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{"--protocol", appwire.ProtocolVersion, "--model", "gw/gpt-live", "--json"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("RunLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	if runs != 0 {
+		t.Fatalf("the preflight executed the credential command %d time(s); the child's first request owns the mint (spec §10.1)", runs)
+	}
+	if hits != 0 {
+		t.Fatal("the preflight fetched a live listing with a credential it never materialized")
+	}
+}
+
+// A disabled row refuses the launch on the command-credentialed path too:
+// the structural validation the mint-free boundary substitutes must keep
+// the disabled-model refusal, not just the liveness it replaces.
+func TestRunLaunchCheckRejectsDisabledCommandCredentialedModel(t *testing.T) {
+	valueexpr.ResetForTest()
+	t.Cleanup(valueexpr.ResetForTest)
+	valueexpr.RunCommand = func(string) (string, error) {
+		return "token", nil
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	launchCheckRegistry(t, "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \""+srv.URL+"/v1\"\napi_key  = '''$(gw-mint)'''\n"+
+		"[providers.gw.models.\"gpt-live\"]\ndisabled = true\n")
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{"--protocol", appwire.ProtocolVersion, "--model", "gw/gpt-live", "--json"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected the disabled model to refuse the launch")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Fatalf("error=%v, want it to name the disablement", err)
+	}
 }

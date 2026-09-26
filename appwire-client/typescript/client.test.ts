@@ -7,7 +7,10 @@ import {
   AppwireClient,
   type ConnectionState,
   decodeInitializeResponse,
+  HEARTBEAT_INTERVAL_MS,
+  HEARTBEAT_TIMEOUT_MS,
   RECONNECT_BASE_MS,
+  RESUME_REQUEST_TIMEOUT_MS,
 } from "./client";
 import type { AppwireClientLike } from "./clientLike";
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
@@ -969,3 +972,251 @@ test.each(["closed", "rejected"])("explicit Resume releases its waiters when %s"
   client.close();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+test("a throwing beforeRequest sends no resume RPC, releases the resume, and keeps the primary ready", async () => {
+  const sockets: FakeSocket[] = [];
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  const connected = client.connect();
+  const primary = sockets[0];
+  if (!primary) throw new Error("missing primary");
+  primary.open();
+  await connected;
+  // The fence a Stop armed while the resume's reconnect was in flight.
+  const fence = new Error("Stop canceled this pending action");
+  const resumed = client.resumeThread("local:owner", {
+    beforeRequest: () => {
+      throw fence;
+    },
+  });
+  const rejected = expect(resumed).rejects.toBe(fence);
+  const replacement = sockets[1];
+  if (!replacement) throw new Error("missing replacement");
+  replacement.open();
+  await rejected;
+  // The throw ran after the reconnect settled and before the RPC: no resume
+  // frame ever went out, on either transport.
+  expect(sentFrames(replacement).some((frame) => frame.method === "thread/resume")).toBe(false);
+  expect(sentFrames(primary).some((frame) => frame.method === "thread/resume")).toBe(false);
+  // The reconnected primary is the healthy one the finally kept.
+  expect(client.state).toBe("ready");
+  // resumePending cleared: a subsequent resume starts instead of failing with
+  // "A session resume is already pending".
+  const retried = client.resumeThread("local:owner");
+  const secondReplacement = sockets[2];
+  if (!secondReplacement) throw new Error("missing second replacement");
+  secondReplacement.open();
+  await flushUntil(() => sentFrames(secondReplacement).some((frame) => frame.method === "thread/resume"));
+  secondReplacement.receive({ id: lastSentFrame(secondReplacement).id, result: {} });
+  await retried;
+  expect(client.state).toBe("ready");
+  client.close();
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+function createResumeClient() {
+  let resumeSent!: (frame: { id: number }) => void;
+  const requestSent = new Promise<{ id: number }>((resolve) => {
+    resumeSent = resolve;
+  });
+  class ResumeSocket extends FakeSocket {
+    override send(data: string): void {
+      super.send(data);
+      const frame = JSON.parse(data) as { id: number; method: string };
+      if (frame.method === "thread/resume") resumeSent(frame);
+    }
+  }
+  const sockets: ResumeSocket[] = [];
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new ResumeSocket({ autoInitialize: true });
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  return { requestSent, sockets, client };
+}
+
+test.each(["success", "failure"])("long-running Resume preserves its late %s and transport health", async (outcome) => {
+  const { requestSent, sockets, client } = createResumeClient();
+  let settled = false;
+  try {
+    const connecting = client.connect();
+    const primary = sockets[0];
+    if (!primary) throw new Error("missing primary");
+    primary.open();
+    await connecting;
+    const resumed = client.resumeThread("local:owner");
+    const observed = resumed.then(
+      (result) => {
+        settled = true;
+        return result;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+    const replacement = sockets[1];
+    if (!replacement) throw new Error("missing replacement");
+    replacement.open();
+    const request = await requestSent;
+    // The transport heartbeat plus the finishable Resume cap own one timer each.
+    expect(vi.getTimerCount()).toBe(2);
+    const ordinary = client.request("thread/list", {});
+    const ordinaryRejected = expect(ordinary).rejects.toBeInstanceOf(RequestTimeoutError);
+
+    // Advance the existing ordinary RPC deadline, not a guessed restore budget.
+    await vi.advanceTimersByTimeAsync(30_000);
+    await ordinaryRejected;
+    expect(settled).toBe(false);
+    expect(client.state).toBe("ready");
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(settled).toBe(false);
+    expect(sentFrames(replacement).some((frame) => frame.method === "ping")).toBe(true);
+    await expect(client.resumeThread("local:owner")).rejects.toThrow();
+    expect(sentFrames(replacement).filter((frame) => frame.method === "thread/resume")).toHaveLength(1);
+
+    if (outcome === "success") {
+      replacement.receive({ id: request.id, result: {} });
+      expect(await observed).toEqual({});
+    } else {
+      const failure = { code: -32000, message: "fixture restore failure", data: { phase: "fixture" } };
+      replacement.receive({ id: request.id, error: failure });
+      const error = await observed;
+      expect(error).toBeInstanceOf(WireError);
+      expect(error).toMatchObject(failure);
+    }
+    expect(settled).toBe(true);
+    expect(sockets).toHaveLength(2);
+  } finally {
+    client.close();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test("a Resume the hub never answers is bounded by a large finite cap and can be retried", async () => {
+  const { requestSent, sockets, client } = createResumeClient();
+  try {
+    const connecting = client.connect();
+    const primary = sockets[0];
+    if (!primary) throw new Error("missing primary");
+    primary.open();
+    await connecting;
+    const resumed = client.resumeThread("local:owner");
+    const rejected = expect(resumed).rejects.toBeInstanceOf(RequestTimeoutError);
+    const replacement = sockets[1];
+    if (!replacement) throw new Error("missing replacement");
+    replacement.open();
+    await requestSent;
+    // The ordinary 30s transport budget must not fail a legitimate restore.
+    await vi.advanceTimersByTimeAsync(30_000);
+    // The bounded cap still settles the promise instead of hanging forever.
+    await vi.advanceTimersByTimeAsync(RESUME_REQUEST_TIMEOUT_MS);
+    await rejected;
+    // The cap retired the abandoned request's transport, so the hub observed
+    // the abandonment and could unwind the resume's ownership.
+    expect(replacement.closeRequests.length).toBeGreaterThan(0);
+    // The client rebuilds its transport, so the user can retry without a
+    // reload; resumePending was already cleared by the settle.
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const rebuilt = sockets[2];
+    if (!rebuilt) throw new Error("missing rebuilt transport");
+    rebuilt.open();
+    await vi.advanceTimersByTimeAsync(1);
+    const retried = client.resumeThread("local:owner");
+    const retriedSettled = retried.then(
+      () => undefined,
+      () => undefined,
+    );
+    expect(sockets).toHaveLength(4);
+    // Retire the retry's replacement transport and let its promise settle.
+    client.close();
+    await retriedSettled;
+  } finally {
+    client.close();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test("an explicit numeric Resume deadline remains authoritative", async () => {
+  const socket = new FakeSocket({ autoInitialize: true });
+  const client = new AppwireClient({ url: "ws://hub/rpc", socketFactory: () => socket });
+  try {
+    await connectReady(socket, client);
+    const resumed = client.request("thread/resume", { ref: "local:owner" }, { timeoutMs: 37 });
+    const rejected = expect(resumed).rejects.toBeInstanceOf(RequestTimeoutError);
+    await vi.advanceTimersByTimeAsync(37);
+    await rejected;
+    expect(client.state).toBe("ready");
+    expect(sentFrames(socket).filter((frame) => frame.method === "thread/resume")).toHaveLength(1);
+  } finally {
+    client.close();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test.each(["close", "disconnect", "heartbeat loss"])(
+  "long-running Resume ends on %s without replay",
+  async (outcome) => {
+    const { requestSent, sockets, client } = createResumeClient();
+    try {
+      const connecting = client.connect();
+      const primary = sockets[0];
+      if (!primary) throw new Error("missing primary");
+      primary.open();
+      await connecting;
+      const resumed = client.resumeThread("local:owner");
+      let settled = false;
+      const observed = resumed.then(
+        (value) => {
+          settled = true;
+          return value;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error;
+        },
+      );
+      const replacement = sockets[1];
+      if (!replacement) throw new Error("missing replacement");
+      replacement.open();
+      const request = await requestSent;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(settled).toBe(false);
+      if (outcome === "close") client.close();
+      else if (outcome === "disconnect") replacement.closeFromServer(1006);
+      else {
+        replacement.autoInitialize = false;
+        await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+        await vi.advanceTimersByTimeAsync(HEARTBEAT_TIMEOUT_MS);
+      }
+      expect(await observed).toBeInstanceOf(Error);
+      replacement.receive({ id: request.id, result: {} });
+      if (outcome !== "close") {
+        const ready = new Promise<void>((resolve) => {
+          const unsubscribe = client.onReady(() => {
+            unsubscribe();
+            resolve();
+          });
+        });
+        await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+        const reconnected = sockets[2];
+        if (!reconnected) throw new Error("missing reconnect transport");
+        reconnected.open();
+        await ready;
+        expect(sentFrames(reconnected).some((frame) => frame.method === "thread/resume")).toBe(false);
+      }
+    } finally {
+      client.close();
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);

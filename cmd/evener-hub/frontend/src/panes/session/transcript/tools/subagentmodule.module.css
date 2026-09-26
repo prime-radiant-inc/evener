@@ -11,11 +11,11 @@
   color: var(--ink-mid);
 }
 
-.lifecycle[data-kind="running"] {
+.statusWord[data-kind="running"] {
   color: var(--alive-ink);
 }
 
-.lifecycle[data-kind="failed"] {
+.statusWord[data-kind="failed"] {
   color: var(--danger-ink);
 }
 
@@ -36,15 +36,14 @@
 .card[data-kind="failed"] {
   border-left-color: var(--danger);
 }
-.card[data-attention="true"] {
-  border-left-color: var(--attention);
-}
 
 .quote {
   display: block;
   min-width: 0;
   font-family: var(--font-prose);
-  font-size: var(--font-size-prose);
+  /* The child's latest words are secondary content below the status line -
+     UI-sized, a step below reading prose. */
+  font-size: var(--font-size-ui);
   line-height: var(--line-height-body);
   font-style: italic;
   color: var(--ink-hi);
@@ -52,9 +51,6 @@
 }
 .card[data-kind="failed"] .quote {
   color: var(--danger-ink);
-}
-.card[data-attention="true"] .quote {
-  color: var(--attention-ink);
 }
 .card[data-kind="done"] .quote {
   color: var(--ink-mid);
@@ -74,10 +70,6 @@
 .stats > span {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-.lifecycle[data-attention="true"] > span {
-  color: var(--attention-ink);
-  font-weight: var(--font-weight-medium);
 }
 .statusGlyph {
   flex: none;
@@ -129,7 +121,9 @@
 }
 .quoteMsg {
   font-family: var(--font-prose);
-  font-size: var(--font-size-prose);
+  /* Same UI-sizing rule as .quote above: a child-authored line is dense
+     chrome here, a step below reading prose. */
+  font-size: var(--font-size-ui);
   font-style: italic;
   color: var(--ink-hi);
 }

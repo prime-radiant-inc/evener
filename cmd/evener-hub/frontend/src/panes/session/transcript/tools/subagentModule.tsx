@@ -11,9 +11,10 @@ import {
   parseJSONObject,
   plainQuoteLine,
   SYSTEM_PRELUDE_TURN_ID,
+  stableDelegateDisplayStatus,
   str,
 } from "@evener/appwire-client";
-import { useEffect } from "react";
+import { Fragment, useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Chevron, IconButton, Timestamp } from "../../../../widgets";
@@ -22,9 +23,9 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { formatUsagePair } from "../../chrome/activityFormat";
 import { useSessionNow } from "../../liveness";
 import { statedIntentOf } from "../ToolRow";
-import type { ToolRenderProps } from "../toolRenderers";
-import { registerToolRenderer } from "../toolRenderers";
+import { registerToolRenderer, type ToolRenderProps, type ToolStatusLineProps } from "../toolRenderers";
 import {
+  delegateStableState,
   effectiveRowKind,
   resolveRowKey,
   type SubagentRow,
@@ -42,7 +43,9 @@ const RECENT_QUOTES_CAP = 5;
 
 const CLASS = {
   card: requireClass(styles.card, "subagentmodule.module.css", "card"),
+  lifecycle: requireClass(styles.lifecycle, "subagentmodule.module.css", "lifecycle"),
   statusGlyph: requireClass(styles.statusGlyph, "subagentmodule.module.css", "statusGlyph"),
+  statusWord: requireClass(styles.statusWord, "subagentmodule.module.css", "statusWord"),
   srOnly: requireClass(styles.srOnly, "subagentmodule.module.css", "srOnly"),
   quote: requireClass(styles.quote, "subagentmodule.module.css", "quote"),
   quoteText: requireClass(styles.quoteText, "subagentmodule.module.css", "quoteText"),
@@ -85,14 +88,60 @@ interface Quote {
   completedAt?: string;
 }
 
-const STATUS_GLYPH: Record<SubagentRowKind | "attention", string> = {
+const STATUS_GLYPH: Record<SubagentRowKind, string> = {
   running: "●",
   done: "✓",
   stopped: "■",
   failed: "×",
   unknown: "?",
-  attention: "◆",
 };
+
+// The one status-word vocabulary for a delegate's lifecycle line. ToolCallItem
+// renders it standalone on a collapsed row (the delegate-lifecycle div); the
+// expanded card merges it into its own first line (subagent-stats), where the
+// turn/call counts and run clock ride WITH the word. The stable projection's
+// display status outranks the frozen receipt's kind - "Exhausted"/"Idle" name
+// the run's actual outcome, not the stale receipt.
+const DELEGATE_LABEL: Record<SubagentRowKind, string> = {
+  running: "Running",
+  done: "Idle · reported",
+  stopped: "Stopped",
+  failed: "Failed",
+  unknown: "Status unavailable",
+};
+
+// Both delegate status surfaces (the card's merged first line and the
+// collapsed standalone line) derive their word here, so the wording stays
+// identical on either surface. The stable projection's NeedsAttention flag is
+// deliberately absent from every surface a delegate renders on: it is
+// wake-delivery plumbing the owner driver consumes on its own, never a
+// reader-facing status.
+function delegateLifecycleLabel(kind: SubagentRowKind, stable: EvenerDelegateInfo | undefined): string {
+  const lifecycleStatus = stable ? stableDelegateDisplayStatus(stable) : undefined;
+  return lifecycleStatus === "exhausted" ? "Exhausted" : lifecycleStatus === "idle" ? "Idle" : DELEGATE_LABEL[kind];
+}
+
+// The status word both delegate status surfaces render, owning its own DOM
+// identity (one testid plus kind state) so consumers find it with one
+// selector wherever it renders: the standalone DelegateStatusLine, collapsed
+// rows, and the card's merged first line, expanded rows.
+function DelegateStatusWord({ kind, stable }: { kind: SubagentRowKind; stable: EvenerDelegateInfo | undefined }) {
+  return (
+    <span className={CLASS.statusWord} data-testid="delegate-status-word" data-kind={kind}>
+      {delegateLifecycleLabel(kind, stable)}
+    </span>
+  );
+}
+
+// True when a delegate call's parsed output still yields a card row - the
+// exact gate rowFromDelegateItem applies. An activation-only result (parsed
+// JSON with no non-empty delegate_id) renders no card, so its caller keeps the
+// standalone status line. Deriving the id here keeps the rule and its inputs
+// in one place - no caller can pass an id from a different source. Truthiness,
+// not presence: str() returns "" for an empty id, which counts as absent.
+export function delegateOutputHasCard(parsed: Record<string, unknown> | undefined): boolean {
+  return parsed === undefined || !!str(parsed, "delegate_id");
+}
 
 // deriveQuotes flattens the child's turns into its authored lines. Two
 // exclusions, both deliberate:
@@ -124,22 +173,16 @@ function deriveQuotes(items: ItemModel[]): Quote[] {
 
 // Stable exhaustion evidence belongs in the expanded region.
 function JobDetailSection({ row, stable }: { row: SubagentRow; stable: EvenerDelegateInfo | undefined }) {
-  const resumable = stable ? (stable.exhaustionResumable ?? stable.resumable) : row.resumable;
   const exhaustionBudget = stable ? stable.exhaustionBudget : row.exhaustionBudget;
   const exhaustionLimit = stable ? stable.exhaustionLimit : row.exhaustionLimit;
-  if (resumable === undefined && exhaustionBudget === undefined && exhaustionLimit === undefined) {
+  if (exhaustionBudget === undefined && exhaustionLimit === undefined) {
     return null;
   }
-  const exhaustion =
-    exhaustionBudget !== undefined || exhaustionLimit !== undefined
-      ? `${exhaustionBudget ?? "?"} of ${exhaustionLimit ?? "?"}`
-      : undefined;
   return (
     <section className={CLASS.section} data-testid="subagent-job-detail">
       <div className={CLASS.sectionLabel}>Job</div>
       <div className={CLASS.mandate}>
-        {exhaustion && <div>Exhaustion budget: {exhaustion}</div>}
-        {resumable !== undefined && <div>{resumable ? "Resumable" : "Not resumable"}</div>}
+        Exhaustion budget: {exhaustionBudget ?? "?"} of {exhaustionLimit ?? "?"}
       </div>
     </section>
   );
@@ -182,7 +225,6 @@ function SubagentCard({
       ? context.thread.delegates?.find((delegate) => delegate.delegateId === row.delegateId)
       : storedStable;
   const displayKind = effectiveRowKind(row, stable);
-  const attention = stable?.needsAttention ?? false;
   const childRunning = displayKind === "running";
 
   const items = model ? model.turns.flatMap((t) => t.items) : [];
@@ -217,44 +259,31 @@ function SubagentCard({
   // Deterministic scoping preserves disclosure state across virtualization.
   const disclosureId = `subagent-quotes-${encodeURIComponent(scopeKey)}-${encodeURIComponent(row.rowKey)}`;
   const open = isDisclosureOpen(disclosureId, false);
-  const effectiveStatus = attention ? "needs attention" : displayKind;
 
   // Keep true feed ordinals when slicing the recent chronological window.
   const windowStart = Math.max(0, quotes.length - RECENT_QUOTES_CAP);
   const recentQuotes = quotes.slice(windowStart).map((q, i) => ({ ...q, ordinal: windowStart + i + 1 }));
 
   return (
-    <div
-      className={CLASS.card}
-      data-testid="subagent-row"
-      data-kind={displayKind}
-      data-attention={attention ? "true" : undefined}
-    >
+    <div className={CLASS.card} data-testid="subagent-row" data-kind={displayKind}>
       <span className={CLASS.srOnly}>{`Delegate ${row.delegateId ?? row.rowKey.replace(/^[^:]+:/, "")}`}</span>
-      <span className={CLASS.srOnly}>{`Status: ${effectiveStatus}`}</span>
-      {quoteText ? (
-        <em className={CLASS.quote} data-testid="subagent-quote">
-          {quoteText}
-        </em>
-      ) : (
-        <span className={CLASS.quotesEmpty}>{model ? "No activity yet" : "Child activity unavailable"}</span>
-      )}
-      <div className={CLASS.stats} data-testid="subagent-stats">
+      <span className={CLASS.srOnly}>{`Status: ${displayKind}`}</span>
+      {/* The card's FIRST line is the status line: the lifecycle word leads,
+          and the turn/call counts and run clock ride WITH it on one line. The
+          child's latest words (the quote) follow below, secondary. */}
+      <div className={CLASS.stats} data-testid="subagent-stats" data-status-line="delegate" data-kind={displayKind}>
         <span className={CLASS.statusGlyph} data-testid="subagent-status-glyph" aria-hidden="true">
-          {STATUS_GLYPH[attention ? "attention" : displayKind]}
+          {STATUS_GLYPH[displayKind]}
         </span>
-        {/* Segments join with a separator BETWEEN them - never a dangling
-            "·" advertising a segment that has no data. */}
-        {statsSegments.flatMap((segment, i) =>
-          i === 0
-            ? [<span key={segment}>{segment}</span>]
-            : [
-                <span key={`sep-${segment}`} className={CLASS.statsSep}>
-                  ·
-                </span>,
-                <span key={segment}>{segment}</span>,
-              ],
-        )}
+        <DelegateStatusWord kind={displayKind} stable={stable} />
+        {/* Each segment rides behind the word, behind its own separator -
+            never a dangling "·" advertising a segment that has no data. */}
+        {statsSegments.map((segment) => (
+          <Fragment key={segment}>
+            <span className={CLASS.statsSep}>·</span>
+            <span>{segment}</span>
+          </Fragment>
+        ))}
         <span className={CLASS.statsSpring} />
         {clockMs !== undefined && <span className={CLASS.clock}>{formatElapsed(clockMs)}</span>}
         <IconButton
@@ -271,6 +300,13 @@ function SubagentCard({
           }}
         />
       </div>
+      {quoteText ? (
+        <em className={CLASS.quote} data-testid="subagent-quote">
+          {quoteText}
+        </em>
+      ) : (
+        <span className={CLASS.quotesEmpty}>{model ? "No activity yet" : "Child activity unavailable"}</span>
+      )}
       {open && (
         <section
           id={disclosureId}
@@ -340,10 +376,9 @@ export function rowFromDelegateItem(
   // A settled activation-only result is historical data, not a stable
   // delegate control identity. Keep an in-flight call-keyed placeholder, but
   // never turn job_id into a delegate row.
-  if (parsed && !delegateId) return null;
+  if (!delegateOutputHasCard(parsed)) return null;
   const transcriptRef = parsed ? str(parsed, "transcript_ref") : undefined;
   const reason = parsed ? str(parsed, "reason") : undefined;
-  const resumable = parsed && typeof parsed.resumable === "boolean" ? parsed.resumable : undefined;
   const exhaustionBudget = parsed ? str(parsed, "exhaustion_budget") : undefined;
   const exhaustionLimit = parsed && typeof parsed.exhaustion_limit === "number" ? parsed.exhaustion_limit : undefined;
   const fallbackRowKey = resolveRowKey(undefined, undefined, item.callId ?? item.id);
@@ -359,7 +394,6 @@ export function rowFromDelegateItem(
       startedAt: item.startedAt,
       completedAt: item.completedAt,
       resultPreview: reason ?? "",
-      resumable,
       exhaustionBudget,
       exhaustionLimit,
     },
@@ -381,6 +415,25 @@ function DelegateBody({ item, live, sessionRef }: ToolRenderProps) {
   );
 }
 
+// The standalone status line a collapsed (or card-less) delegate row shows
+// below the intent line - the descriptor's statusLine hook (toolRenderers.ts)
+// mounts it, so this module owns the surface end-to-end with the card's own
+// first line: same word component, same state attributes, same
+// data-status-line identity.
+function DelegateStatusLine({ item, live, sessionRef, thread, expanded }: ToolStatusLineProps) {
+  const { parsed, stable, kind } = delegateStableState(item, live, sessionRef, thread);
+  // While the expanded card renders, its own first line carries the lifecycle
+  // word; a standalone div here would duplicate it on back-to-back lines.
+  // Collapsed - or for an activation-only receipt whose card renders nothing -
+  // this line is the row's only status surface.
+  if (expanded && delegateOutputHasCard(parsed)) return null;
+  return (
+    <div className={CLASS.lifecycle} data-testid="delegate-lifecycle" data-status-line="delegate" data-kind={kind}>
+      <DelegateStatusWord kind={kind} stable={stable} />
+    </div>
+  );
+}
+
 registerToolRenderer({
   match: "delegate",
   fold: "never", // a delegate card is never folded away into a run
@@ -398,11 +451,14 @@ registerToolRenderer({
     return str(parsed, "transcript_ref");
   },
   body: DelegateBody,
-  // A delegate call is a status card, not a fold-to-open tool row - the same
-  // reasoning as task_list's own `autoExpand: () => true`. Child watching
-  // exists only while the body is expanded, for quotes and stats; collapsed
-  // lifecycle and attention come from the stable owner projection. Opening at
-  // settle makes the card visible without a click; a manual collapse afterward
-  // still sticks (ToolCallItem's own autoDefault vs. store-backed toggle).
+  statusLine: DelegateStatusLine,
+  // A delegate call is a status card, not a fold-to-open tool row: opening
+  // at settle makes the card visible without a click. Child watching exists
+  // only while the body is expanded, for quotes and stats; the collapsed
+  // lifecycle word comes from the stable owner projection. A manual collapse
+  // afterward still sticks (ToolCallItem's own autoDefault vs. store-backed
+  // toggle). This descriptor's own autoExpand is the delegate's posture -
+  // task_list settles FOLDED instead (its folded line already carries the
+  // news), so do not unify the two.
   autoExpand: () => true,
 });

@@ -21,6 +21,13 @@ vi.mock("qrcode.react", async (importOriginal) => {
   return importOriginal();
 });
 
+// Vitest's mocker builds its wrapper error in the runner's realm, not the test
+// file's VM context, so `instanceof Error` is false for it under the vmThreads
+// pool. The Error brand survives the realm boundary.
+function isError(value: unknown): value is Error {
+  return Object.prototype.toString.call(value) === "[object Error]";
+}
+
 let client: FakeClient;
 
 beforeEach(() => {
@@ -47,7 +54,7 @@ test("keeps the pairing link usable when the QR chunk fails to load", async () =
   const mockErrorMessage =
     '[vitest] There was an error when mocking a module. If you are using "vi.mock" factory, make sure there are no top level variables inside, since this call is hoisted to top of the file. Read more: https://vitest.dev/api/vi.html#vi-mock';
   const onCaughtError = vi.fn<NonNullable<RenderOptions["onCaughtError"]>>((error, info) => {
-    if (!(error instanceof Error) || error.message !== mockErrorMessage || error.cause !== qrChunkControl.error) {
+    if (!isError(error) || error.message !== mockErrorMessage || error.cause !== qrChunkControl.error) {
       console.error(error, info);
     }
   });
@@ -87,7 +94,7 @@ test("keeps the pairing link usable when the QR chunk fails to load", async () =
     expect(screen.queryByRole("img", { name: "Mobile app pairing QR code" })).toBeNull();
     expect(onCaughtError).toHaveBeenCalledTimes(1);
     const caughtError = onCaughtError.mock.calls[0]?.[0];
-    expect(caughtError).toBeInstanceOf(Error);
+    expect(isError(caughtError)).toBe(true);
     expect(caughtError).toHaveProperty("message", mockErrorMessage);
     expect((caughtError as Error).cause).toBe(qrChunkControl.error);
   } finally {

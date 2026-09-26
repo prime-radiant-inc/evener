@@ -38,8 +38,12 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 	return source, nil
 }
 
-func sourceForThreadWithDeletionFence(cfg hubcore.WebConfig, sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
-	return withDeletionTargetOwnership(context.Background(), cfg, ref, threadID, "", func() (appsource.Source, error) {
+// sourceForThreadWithDeletionFence resolves a source while holding the
+// session's ownership alias, so it must acquire that alias with the request's
+// context: a canceled or disconnected RPC returns promptly instead of parking
+// behind a long-running explicit Resume.
+func sourceForThreadWithDeletionFence(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
+	return withDeletionTargetOwnership(ctx, cfg, ref, threadID, "", func() (appsource.Source, error) {
 		return sourceForThread(sources, ref, threadID)
 	})
 }
@@ -51,7 +55,11 @@ func withDeletionTargetOwnership[R any](
 	action func() (R, error),
 ) (R, error) {
 	epoch := sessionRequestRecoveryEpoch(ctx, cfg, ref, threadID)
-	unlock := lockDeletionTarget(cfg, ref, threadID)
+	unlock, err := lockDeletionTarget(ctx, cfg, ref, threadID)
+	if err != nil {
+		var zero R
+		return zero, err
+	}
 	defer unlock()
 	if err := deletionFenceError(cfg, ref, threadID, clientMutationID); err != nil {
 		var zero R
@@ -107,21 +115,72 @@ func daemonOwnershipMayHaveChanged(err error) bool {
 	return isSessionUnavailableError(err) || errors.As(err, &mismatch) || errors.As(err, &initialization)
 }
 
-func lockDeletionTarget(cfg hubcore.WebConfig, ref, threadID string) func() {
+func lockDeletionTarget(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) (func(), error) {
 	if cfg.ResumeLocks == nil {
-		return func() {}
+		return func() {}, nil
 	}
 	threadID = deletionThreadID(ref, threadID)
 	if threadID == "" {
-		return func() {}
+		return func() {}, nil
 	}
 	lock := cfg.ResumeLocks.For(threadID)
-	lock.Lock()
-	return lock.Unlock
+	if err := lock.LockContext(ctx); err != nil {
+		return nil, err
+	}
+	return lock.Unlock, nil
+}
+
+// tryLockDeletionTarget takes the deletion target's alias without blocking
+// when it is immediately free, letting the relay's per-frame guard skip the
+// bounded wait's context and timer allocation. It reports false whenever
+// lockDeletionTarget must run instead — nil locks, an unresolvable target, or
+// a held alias — so acquisition semantics are unchanged: the alias is a single
+// token channel with no waiter queue, and the fast take is the acquisition the
+// bounded wait would have made immediately.
+func tryLockDeletionTarget(cfg hubcore.WebConfig, ref, threadID string) (func(), bool) {
+	if cfg.ResumeLocks == nil {
+		return nil, false
+	}
+	threadID = deletionThreadID(ref, threadID)
+	if threadID == "" {
+		return nil, false
+	}
+	lock := cfg.ResumeLocks.For(threadID)
+	if !lock.TryLock() {
+		return nil, false
+	}
+	return lock.Unlock, true
 }
 
 func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID string) error {
 	return deletionFenceErrorNaming(cfg, ref, threadID, ref, clientMutationID)
+}
+
+// deletionFenceErrorForGroup applies the deletion fence to every alias in an
+// ownership group: a deletion record may name any alias in the group, not only
+// the one the request addressed, so checking one alias would let a
+// sibling-alias deletion slip past.
+func deletionFenceErrorForGroup(cfg hubcore.WebConfig, aliases []string) error {
+	for _, alias := range aliases {
+		if err := deletionFenceError(cfg, "", alias, ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// deletionTargetLookup reads the retained deletion state for one stable target.
+type deletionTargetLookup func(store *hubcore.DeletionStore, ref, threadID string) (hubcore.DeletionState, bool)
+
+// deletionTargetState is the deletion-state lookup requests use. It is a
+// package-level seam so cancellation-ordering tests can publish a deletion
+// between two checks made by a single request; production reads the durable
+// store directly. Work that runs in the background, past the request that
+// started it, captures the lookup once when it is built instead of reading
+// this variable live (see newHubRelayFunctions): a test restoring the seam must
+// not race with, or be answered by, a relay some earlier test left running.
+var deletionTargetState deletionTargetLookup = func(store *hubcore.DeletionStore, ref, threadID string) (hubcore.DeletionState, bool) {
+	return store.TargetState(ref, threadID)
 }
 
 // deletionFenceErrorNaming looks the fence up under (ref, threadID) and names
@@ -130,10 +189,15 @@ func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID s
 // the message belongs to the ref the client asked about — naming the resolved
 // id would report an identity the request never mentioned.
 func deletionFenceErrorNaming(cfg hubcore.WebConfig, ref, threadID, reportRef, clientMutationID string) error {
+	return deletionTargetState.fenceError(cfg, ref, threadID, reportRef, clientMutationID)
+}
+
+// fenceError is deletionFenceErrorNaming answered by this lookup.
+func (lookup deletionTargetLookup) fenceError(cfg hubcore.WebConfig, ref, threadID, reportRef, clientMutationID string) error {
 	if cfg.DeletionStore == nil {
 		return nil
 	}
-	if _, deleted := cfg.DeletionStore.TargetState(ref, threadID); !deleted {
+	if _, deleted := lookup(cfg.DeletionStore, ref, threadID); !deleted {
 		return nil
 	}
 	if reportRef == "" {
@@ -151,13 +215,29 @@ func deletionFenceErrorNaming(cfg hubcore.WebConfig, ref, threadID, reportRef, c
 	}
 }
 
+// isTargetDeletedError reports whether err is the hub's typed deletion refusal:
+// a WireError whose data marks the target as deleted. The wire client decodes
+// Data as the typed appwire.ErrorData on some paths and as map[string]any on
+// others, so a shape that is not already typed is re-marshaled rather than
+// asserted — the convention app_retirement_resume.go's isLifecycleRetiringError
+// follows. Reading only the typed shape would let a real deletion be wrapped as
+// an unknown mutation outcome instead of reported as the deletion it is.
 func isTargetDeletedError(err error) bool {
-	var wireErr appwire.WireError
-	if !errors.As(err, &wireErr) {
+	wireErr, ok := wireErrorFromError(err)
+	if !ok || wireErr.Data == nil {
 		return false
 	}
 	data, ok := wireErr.Data.(appwire.ErrorData)
-	return ok && data.MutationOutcome == appwire.MutationOutcomeTargetDeleted
+	if !ok {
+		raw, merr := json.Marshal(wireErr.Data)
+		if merr != nil {
+			return false
+		}
+		if json.Unmarshal(raw, &data) != nil {
+			return false
+		}
+	}
+	return data.MutationOutcome == appwire.MutationOutcomeTargetDeleted
 }
 
 func deletionThreadID(ref, threadID string) string {

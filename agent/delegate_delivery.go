@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -69,6 +69,7 @@ type delegateDeliveryClaim struct {
 type delegateDeliveryPlan struct {
 	controller      *delegateTreeController
 	delegateID      string
+	name            string
 	deliveryID      string
 	ownerDelegateID string
 	waiter          *delegateInlineWaiter
@@ -553,6 +554,7 @@ func (c *delegateTreeController) newHeadDeliveryPlanLocked(delegateID, deliveryI
 	return &delegateDeliveryPlan{
 		controller:      c,
 		delegateID:      delegateID,
+		name:            aggregate.Descriptor.Name,
 		deliveryID:      head.DeliveryID,
 		ownerDelegateID: head.OwnerDelegateID,
 		waiter:          waiter,
@@ -625,6 +627,7 @@ func (c *delegateTreeController) retryDeliveryPlanLocked(receipt *delegateDelive
 	return &delegateDeliveryPlan{
 		controller:      c,
 		delegateID:      receipt.delegateID,
+		name:            aggregate.Descriptor.Name,
 		deliveryID:      head.DeliveryID,
 		ownerDelegateID: head.OwnerDelegateID,
 		packet:          cloneDelegateTerminalPacket(head.Packet),
@@ -763,6 +766,17 @@ func (s *Session) requeueReplayableDelegateDeliveries(unprocessed []delegateDeli
 	if shouldWake {
 		pump.notify()
 	}
+}
+
+// delegateDeliveryResiduePending reports whether this session's delegate
+// delivery pipeline still owes work: parcels queued for the pump, a pump
+// pass in flight, a wake owed, or a retry armed. Retirement refuses on it,
+// and the idle-release pre-gate refuses on it for the same reason: a
+// teardown through any of these would abandon a parcel mid-flight.
+func (s *Session) delegateDeliveryResiduePending() bool {
+	s.delegateDeliveryMu.Lock()
+	defer s.delegateDeliveryMu.Unlock()
+	return len(s.pendingDelegateDeliveries) != 0 || s.delegateDeliveryPumping || s.delegateDeliveryWake || s.delegateDeliveryRetry.active
 }
 
 func (s *Session) scheduleDelegateDeliveryRetryLocked() {
@@ -944,9 +958,11 @@ func delegateNotificationContent(plan delegateDeliveryPlan) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("marshal delegate delivery packet: %w", err)
 	}
-	return fmt.Sprintf(
-		"<delegate-notification delegate_id=%q>%s</delegate-notification>",
-		html.EscapeString(plan.delegateID),
-		packet,
-	), nil
+	// The name attribute is display-only: the frame stays addressable by
+	// delegate_id alone, and an unnamed delegate renders no name attribute.
+	attrs := []string{notificationAttr("delegate_id", plan.delegateID)}
+	if plan.name != "" {
+		attrs = append(attrs, notificationAttr("name", plan.name))
+	}
+	return fmt.Sprintf("<delegate-notification %s>%s</delegate-notification>", strings.Join(attrs, " "), packet), nil
 }

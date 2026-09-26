@@ -17,7 +17,7 @@ export function measureEditorial() {
     theme:de.dataset.theme,fontSize:document.body.dataset.fontSize, transcript:transcript?rect(transcript):null,
     composer:composer?rect(composer):null,input:input?{...rect(input),fontSize:getComputedStyle(input).fontSize}:null,
     buttons,stamps,prose:[...document.querySelectorAll('[data-testid="agent-bubble"]')].map(e=>({family:getComputedStyle(e).fontFamily,fontSize:getComputedStyle(e).fontSize})),
-    lifecycle:[...document.querySelectorAll('[data-testid="delegate-lifecycle"]')].map(e=>({text:e.textContent,...rect(e)}))};
+    lifecycle:[...document.querySelectorAll('[data-status-line="delegate"]')].map(e=>({text:e.textContent,...rect(e)}))};
 }
 
 export function assertEditorialGeometry(assert, m, label, {collaborators = false} = {}) {

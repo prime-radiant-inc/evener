@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/llm"
 )
 
 func TestEmitStruct(t *testing.T) {
@@ -323,6 +324,85 @@ func TestRegistryDiscoversSharedNestedTypesOnce(t *testing.T) {
 	if !reflect.DeepEqual(gotNames, wantNames) {
 		t.Fatalf("registered names = %v, want %v", gotNames, wantNames)
 	}
+}
+
+// #1016: the registry keys by bare Go type name, so a same-named type in
+// another package used to be dropped silently — the first claimant won and the
+// second was never emitted. reflect.Type identity is package-qualified, so a
+// second, differently shaped claimant of a name is now a loud generator
+// failure instead. Before the fix this test fails: no panic, and the divergent
+// type is silently absent from the output.
+func TestRegistryPanicsOnDivergentSameNameTypes(t *testing.T) {
+	// Same bare name as appwire.AttentionSummary but a different shape, so
+	// emitting either interface would mistype the other.
+	type AttentionSummary struct {
+		NeedsYou int    `json:"needs_you"`
+		Extra    string `json:"extra"`
+	}
+
+	reg := newRegistry()
+	registerTopLevel(reg, appwire.AttentionSummary{}, "unused")
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatalf("a second, differently shaped type named AttentionSummary was silently dropped; registered %v", reg.order)
+		}
+		msg := fmt.Sprint(r)
+		if !strings.Contains(msg, "AttentionSummary") || !strings.Contains(msg, "collides") {
+			t.Fatalf("panic %q does not name the colliding type", msg)
+		}
+	}()
+	registerTopLevel(reg, AttentionSummary{}, "unused")
+}
+
+// The live catalog already contains one same-named pair across packages —
+// hubapi.AttentionSummary and appwire.AttentionSummary (#1014's aliasing never
+// landed here). Their shapes are identical, so the generated TypeScript cannot
+// tell them apart and the dedup is invisible and correct. This pins that the
+// collision guard leaves such a pair alone: no panic, one interface emitted.
+func TestRegistryAllowsIdenticalSameNameTypesFromDifferentPackages(t *testing.T) {
+	reg := newRegistry()
+	registerTopLevel(reg, hubapi.AttentionSummary{}, "unused")
+	registerTopLevel(reg, appwire.AttentionSummary{}, "unused")
+
+	occurrences := 0
+	for _, name := range reg.order {
+		if name == "AttentionSummary" {
+			occurrences++
+		}
+	}
+	if occurrences != 1 {
+		t.Fatalf("AttentionSummary registered %d times, want 1 (registered: %v)", occurrences, reg.order)
+	}
+}
+
+// A same-named pair that renders identically is deduped, but the second
+// claimant's fields must still be walked: otherwise a divergent same-named
+// type reachable only through the dropped claimant would never be discovered,
+// quietly reintroducing the #1016 silent drop one level down.
+//
+// Two local outer types render identically ("m: Message;") while nesting two
+// different packages' Message structs; appwire.Message and llm.Message have
+// different fields. The dedupe of the outer name must still walk the second
+// claimant's fields and surface that inner Message collision as a panic.
+func TestRegistryWalksFieldsOfEmissionEqualDuplicate(t *testing.T) {
+	type OuterA struct {
+		M appwire.Message `json:"m"`
+	}
+	type OuterB struct {
+		M llm.Message `json:"m"`
+	}
+
+	reg := newRegistry()
+	// Both added under one name so the second is an emission-equal duplicate of
+	// the first, hitting exactly the dedupe path.
+	reg.addNamed("Outer", reflect.TypeFor[OuterA]())
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("a divergent Message nested only in the deduped claimant was not discovered; registered %v", reg.order)
+		}
+	}()
+	reg.addNamed("Outer", reflect.TypeFor[OuterB]())
 }
 
 // registerTopLevel falls back to the wire-derived name only when the value
@@ -813,5 +893,122 @@ func TestEmitsSkillInputContracts(t *testing.T) {
 	}
 	if strings.Contains(inputItem, "skill") {
 		t.Fatalf("InputItem grew a skill-specific field:\n%s", inputItem)
+	}
+}
+
+// A slice tagged omitzero is absent when it is nil and an explicit [] when it
+// is empty, so it is as optional to a client as an omitempty one — and the
+// empty list is a value the client must be able to read (appwire.ThreadItem's
+// image lists use it to say the images are gone). A required field here would
+// have every consumer of a frame without the key fail to type-check.
+func TestEmitInterface_OmitzeroIsOptional(t *testing.T) {
+	type Sample struct {
+		Gone []string `json:"gone,omitzero"`
+	}
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
+	want := "export interface Sample {\n  gone?: string[];\n}\n"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// Field doc comments live in Go source, not in reflect.Type, so the generator
+// must read them back out of the source. A documented field carries its
+// comment as a JSDoc block directly above the generated field; the omitzero
+// removal-signal rule documented on appwire.ThreadItem.OutputImages is the
+// motivating case (#1637), since the frontend reads the generated TS first.
+func TestEmitCatalogCarriesFieldDocComments(t *testing.T) {
+	out := EmitCatalog()
+	body := interfaceBody(t, out, "ThreadItem")
+
+	wantDoc := "  /**\n" +
+		"   * OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.\n" +
+		"   * Images stays omitempty: nothing removes an item's input images.\n" +
+		"   */\n" +
+		"  outputImages?: OutputImage[];"
+	if !strings.Contains(body, wantDoc) {
+		t.Fatalf("ThreadItem.outputImages missing its JSDoc doc comment:\n%s", body)
+	}
+
+	// The omitempty sibling has no doc comment: it must not grow a block, so
+	// the field is still preceded directly by the previous field's semicolon.
+	if !strings.Contains(body, ";\n  images?: InputItem[];") {
+		t.Fatalf("ThreadItem.images gained a doc block it should not have:\n%s", body)
+	}
+}
+
+// writeFieldDoc renders a raw comment (one string entry per source line) as an
+// indented JSDoc block, and writes nothing at all when there is no comment —
+// that silence is what keeps types.gen.ts byte-identical for undocumented
+// fields.
+func TestWriteFieldDoc(t *testing.T) {
+	var b strings.Builder
+	writeFieldDoc(&b, "first line\nsecond line")
+	want := "  /**\n   * first line\n   * second line\n   */\n"
+	if b.String() != want {
+		t.Fatalf("writeFieldDoc got %q, want %q", b.String(), want)
+	}
+
+	// A line that would close the block comment is escaped so the emitted
+	// TypeScript stays syntactically valid.
+	b.Reset()
+	writeFieldDoc(&b, "closes */ here")
+	if got := b.String(); !strings.Contains(got, `*\/`) || strings.Contains(got, "*/ here") {
+		t.Fatalf("writeFieldDoc did not escape a block-comment terminator: %q", got)
+	}
+
+	var empty strings.Builder
+	writeFieldDoc(&empty, "")
+	if empty.String() != "" {
+		t.Fatalf("writeFieldDoc wrote %q for an empty comment, want nothing", empty.String())
+	}
+}
+
+// commentText drops the comment markers from both doc-comment spellings, so a
+// field documented with // or /* */ renders the same JSDoc.
+func TestCommentText(t *testing.T) {
+	line := &ast.CommentGroup{List: []*ast.Comment{
+		{Text: "// first line"},
+		{Text: "// second line"},
+	}}
+	if got, want := commentText(line), "first line\nsecond line"; got != want {
+		t.Fatalf("commentText(line comments) = %q, want %q", got, want)
+	}
+
+	block := &ast.CommentGroup{List: []*ast.Comment{
+		{Text: "/* first line\n * second line */"},
+	}}
+	if got, want := commentText(block), "first line\nsecond line"; got != want {
+		t.Fatalf("commentText(block comment) = %q, want %q", got, want)
+	}
+}
+
+// Source resolution must not depend on the compiled-in file path: under
+// -trimpath runtime.Caller returns a module-relative path that is not a real
+// directory, and a resolver trusting it finds no sources at all — which
+// silently strips every JSDoc comment instead of failing. Pin the
+// working-directory resolution that keeps that from happening.
+func TestFindModuleRootFromWorkingDirectory(t *testing.T) {
+	root, ok := findModuleRoot(".")
+	if !ok {
+		t.Fatal("findModuleRoot did not locate this module's go.mod from the test working directory")
+	}
+	data, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		t.Fatalf("findModuleRoot returned %q with no readable go.mod: %v", root, err)
+	}
+	if !declaresModule(data) {
+		t.Fatalf("findModuleRoot returned %q whose go.mod does not declare %s", root, modulePath)
+	}
+}
+
+// A nested module on the way up (agent/ declares primeradiant.com/evener/agent)
+// must not be mistaken for this module just because its path shares the prefix.
+func TestDeclaresModuleRequiresExactModulePath(t *testing.T) {
+	if declaresModule([]byte("module primeradiant.com/evener/agent\n\ngo 1.27\n")) {
+		t.Fatal("declaresModule accepted a nested module whose path merely shares the prefix")
+	}
+	if !declaresModule([]byte("module primeradiant.com/evener\n\ngo 1.27\n")) {
+		t.Fatal("declaresModule rejected this module's own go.mod")
 	}
 }

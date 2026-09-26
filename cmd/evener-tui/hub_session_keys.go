@@ -357,7 +357,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		now := time.Now()
 		if !m.lastCtrlC.IsZero() && now.Sub(m.lastCtrlC) <= hubCtrlCQuitWindow {
 			m.postQuitMessage = m.restoreInstructionMessage()
-			return m, tea.Quit
+			return m, quitCmd()
 		}
 		m.lastCtrlC = now
 		// First ctrl+c during an active turn interrupts the turn (matching

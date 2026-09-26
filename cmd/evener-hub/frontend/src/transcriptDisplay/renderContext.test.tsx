@@ -1,4 +1,4 @@
-import type { EntityView, ThreadModel } from "@evener/appwire-client";
+import type { EntityView, ThreadModel, TranscriptMetadataVisibility } from "@evener/appwire-client";
 import {
   makeTranscriptDisplayConfig,
   presetContent,
@@ -13,7 +13,6 @@ import {
   resetDisclosureStoreForTests,
   setDisclosureOpen,
 } from "../widgets/disclosure/disclosureStore";
-import type { TranscriptMetadataVisibility } from "./projector";
 import {
   expandDetailsByDefault,
   summaryOpenByDefault,

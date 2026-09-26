@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"strings"
@@ -37,6 +38,18 @@ type threadListBudgetSource interface {
 	ThreadListBudget() time.Duration
 }
 
+// attachErrorClassifier is a source that can classify one attach/connect
+// failure into the same typed transport-unavailable error its own call path
+// produces. The explicit thread/list fan-out attaches a host-targeted remote
+// source before calling it, and routes that attach failure through this so it
+// reaches the caller as the typed SessionUnavailable rather than the raw
+// transport error. A source that does not implement it leaves the error raw,
+// preserving every other source's behavior. *appsource.RemoteHubSource
+// implements it.
+type attachErrorClassifier interface {
+	MapAttachError(err error) error
+}
+
 // threadListTimeoutFor returns the deadline one source's ListThreads runs
 // under: the budget the source reports, or fallback (the local-daemon budget)
 // for every source that reports none. Local daemons never attach, so their
@@ -64,6 +77,8 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 	threads := make([]appwire.Thread, 0)
 	liveIDs := map[string]struct{}{}
 	allSources := sources.All()
+	remoteHosts := remoteHostNames(cfg)
+	explicit := len(params.SourceIDs) > 0
 	type sourceResult struct {
 		index int
 		resp  appwire.ThreadListResponse
@@ -72,6 +87,15 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 	allowed := make([]int, 0, len(allSources))
 	for index, source := range allSources {
 		if !sourceAllowedForList(source.ID(), params) {
+			continue
+		}
+		// A non-explicit (empty-filter) fan-out must not force attachment: a
+		// remote host with no live channel is skipped without a call, so simply
+		// opening the hub and listing the fleet cannot dial every configured host
+		// (component 05, §"The same gate applies to the primary thread/list
+		// fan-out"). A source named explicitly in SourceIDs is a deliberate,
+		// host-targeted request and may attach (below).
+		if !explicit && !remoteSourceAttached(cfg, remoteHosts, source.ID()) {
 			continue
 		}
 		allowed = append(allowed, index)
@@ -95,6 +119,37 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 					// budget that call needs, and every other source keeps the
 					// local-daemon deadline the caller passed.
 					sourceCtx, cancel := context.WithTimeout(ctx, threadListTimeoutFor(source, sourceTimeout))
+					// The explicit host-targeted request is one of the two intended
+					// attach triggers: attach before calling the source, whose own
+					// resolver is attached-only and so never dials. A non-explicit
+					// request never reaches here for an unattached host.
+					if _, isRemote := remoteHosts[source.ID()]; isRemote &&
+						sourceExplicitlyRequestedForList(source.ID(), params) && cfg.RemoteHostClient != nil {
+						// dialRemoteHost applies the shared host-routing origin
+						// guard before the Ensure-backed dial: a remote-originated
+						// request may not make this hub attach a host (component 07,
+						// §"Host-routing origin guard").
+						if _, err := dialRemoteHost(sourceCtx, cfg, source.ID()); err != nil {
+							// Classify the attach failure through the source exactly as
+							// its own call path classifies a connect failure: sshconn's
+							// transient attach failures and transport losses become the
+							// typed SessionUnavailable the auto-resume/refusal gates
+							// match, instead of surfacing here as a raw transport error.
+							// The caller's own context ending stays raw, matching
+							// RemoteHubSource.call. A guard refusal is already a typed
+							// WireError and must not be re-labelled.
+							if cerr := ctx.Err(); cerr != nil {
+								err = cerr
+							} else if _, isWire := errors.AsType[appwire.WireError](err); !isWire {
+								if classifier, ok := source.(attachErrorClassifier); ok {
+									err = classifier.MapAttachError(err)
+								}
+							}
+							results <- sourceResult{index: index, err: err}
+							cancel()
+							continue
+						}
+					}
 					resp, err := source.ListThreads(sourceCtx, params)
 					cancel()
 					results <- sourceResult{index: index, resp: resp, err: err}
@@ -251,6 +306,75 @@ func sourceAllowedForList(sourceID string, params appwire.ThreadListParams) bool
 
 func sourceExplicitlyRequestedForList(sourceID string, params appwire.ThreadListParams) bool {
 	return slices.Contains(params.SourceIDs, sourceID)
+}
+
+// remoteHostKnown reports whether name names a remote host this hub knows:
+// one the configured entries carry (cfg.RemoteHosts is the configured truth)
+// or one the live registry holds — a registry only holds validated entries,
+// while the config carries whatever the operator declared. It is the one
+// configured∪registry membership rule, shared by
+// validateDecisionSource's per-name probe and by remoteHostNames' whole-set
+// build below, so a decision source and a fan-out gate can never disagree
+// about which names count as remote.
+func remoteHostKnown(cfg hubcore.WebConfig, name string) bool {
+	if cfg.RemoteHostRegistry != nil {
+		if _, ok := cfg.RemoteHostRegistry.Get(name); ok {
+			return true
+		}
+	}
+	for _, host := range cfg.RemoteHosts {
+		if host.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteHostNames is the set of remote host names — the enumeration half of
+// the same configured∪registry rule remoteHostKnown probes per name — so the
+// fan-out can tell a remote source (which must gate on attachment) from the
+// local one. The live registry is the authority for hosts that exist past
+// boot: it carries every host the management surface added at runtime, so a
+// UI-added host is classified remote by the same gates a configured one is —
+// an explicit thread/list attaches it, and the background refresh gates it on
+// attachment instead of treating it as local. The configured entries stay in
+// the set alongside it, so the union — not the registry alone — is the set of
+// names these gates treat as remote.
+func remoteHostNames(cfg hubcore.WebConfig) map[string]struct{} {
+	names := make(map[string]struct{}, len(cfg.RemoteHosts))
+	for _, host := range cfg.RemoteHosts {
+		names[host.Name] = struct{}{}
+	}
+	if cfg.RemoteHostRegistry != nil {
+		// Names() is the name set of All() without the entry copies: this
+		// runs per thread/list request, and only membership is needed here.
+		for _, name := range cfg.RemoteHostRegistry.Names() {
+			names[name] = struct{}{}
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+// remoteSourceAttached reports whether a source is safe for a non-explicit
+// fan-out to call: a local source always is, and a remote source only while the
+// attached-only lookup finds a live channel. It is a skip, never a dial: the
+// lookup is Manager.ClientIfAttached, so an unattached host is skipped without a
+// call and a host that drops between this check and the source's own
+// (attached-only) resolution is reported unavailable rather than re-attached.
+// With no lookup wired (tests) it reports attached, preserving the pre-gate
+// behavior.
+func remoteSourceAttached(cfg hubcore.WebConfig, remoteHosts map[string]struct{}, sourceID string) bool {
+	if _, isRemote := remoteHosts[sourceID]; !isRemote {
+		return true
+	}
+	if cfg.RemoteHostClientIfAttached == nil {
+		return true
+	}
+	_, ok := cfg.RemoteHostClientIfAttached(sourceID)
+	return ok
 }
 
 // mergePastMetadataForList enriches live with its past-persisted metadata.

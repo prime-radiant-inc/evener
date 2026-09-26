@@ -39,7 +39,7 @@ func TestForkRespectsSourceRecoveryAdmission(t *testing.T) {
 				}
 			}
 			assertBlocked()
-			finish(true)
+			finish.Finish(true)
 			assertBlocked()
 			if err := locks.ExplicitResumeCompleted(parent, locks.RecoveryState(parent).Epoch); err != nil {
 				t.Fatal(err)

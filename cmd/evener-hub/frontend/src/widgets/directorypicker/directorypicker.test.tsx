@@ -36,6 +36,12 @@ test("navigation and recent folders stay draft until explicitly selected", async
   expect(onPick).toHaveBeenCalledWith("/recent/app");
 });
 
+test("recent rows carry the full path on hover after the sidebar truncates it", async () => {
+  setup();
+  const row = await screen.findByRole("button", { name: "Open recent /recent/app" });
+  expect(row.title).toBe("/recent/app");
+});
+
 test("typed paths are validated and canonicalized before selection", async () => {
   const { user, onPick } = setup();
   const input = screen.getByRole("textbox", { name: "Path" });

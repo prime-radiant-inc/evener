@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -161,7 +162,14 @@ func TestRetirementSafetyDetachedLifetime(t *testing.T) {
 			if len(before) != 1 || before[0].pid != original.PID || before[0].done != original.Done {
 				t.Fatal("warning owner lost exact launch receipt")
 			}
-			claim, state, err = c.TryClaim(true)
+			// This is root's first successfully-processed turn, so it also
+			// launched the async session namer (launchInitialPromptNamer,
+			// session_namer.go). retirementClaimAfterFirstTurn waits for it
+			// before claiming, for the same reason assertRetirementEvidenceEligible
+			// does (#1879): a raw TryClaim this close to that turn can
+			// otherwise race the namer goroutine and see a spurious
+			// "autonomous" blocker.
+			claim, state, err = retirementClaimAfterFirstTurn(root, c)
 			if err != nil || claim == nil {
 				t.Fatalf("independent detached lifetime blocked eligibility: %+v %v", state, err)
 			}
@@ -240,6 +248,8 @@ func retirementAttentionRetryWake(t *testing.T, attachBefore bool) {
 	done := sub.done
 	sub.mu.Unlock()
 	retirementAwait(t, done)
+	// done does not cover the namer the child's first turn launched.
+	joinRetirementTreeEmitters(sub.sess)
 	path := transcriptPath(root.stateDir, root.id)
 	original, err := readDelegateAttentionFold(path, root.id)
 	if err != nil || len(original.pendingIDs()) != 1 {
@@ -343,6 +353,8 @@ func TestRetirementAutonomousAttentionRetryOverlap(t *testing.T) {
 		done := sub.done
 		sub.mu.Unlock()
 		retirementAwait(t, done)
+		// done does not cover the namer the child's first turn launched.
+		joinRetirementTreeEmitters(sub.sess)
 		path := transcriptPath(root.stateDir, root.id)
 		original, err := readDelegateAttentionFold(path, root.id)
 		if err != nil || len(original.pendingIDs()) != 1 {
@@ -411,6 +423,8 @@ func TestRetirementAutonomousAttentionRetryStale(t *testing.T) {
 		done := sub.done
 		sub.mu.Unlock()
 		retirementAwait(t, done)
+		// done does not cover the namer the child's first turn launched.
+		joinRetirementTreeEmitters(sub.sess)
 		path := transcriptPath(root.stateDir, root.id)
 		original, err := readDelegateAttentionFold(path, root.id)
 		if err != nil || len(original.pendingIDs()) != 1 {
@@ -487,6 +501,8 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 	done := sub.done
 	sub.mu.Unlock()
 	retirementAwait(t, done)
+	// done does not cover the namer the child's first turn launched.
+	joinRetirementTreeEmitters(sub.sess)
 	path := transcriptPath(root.stateDir, root.id)
 	original, err := readDelegateAttentionFold(path, root.id)
 	if err != nil || len(original.pendingIDs()) != 1 {
@@ -509,6 +525,10 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 	// Park the real evidence pass inside its preparing window on the job
 	// manager's own lock; the root attention source keeps the grant refused.
 	root.jobManager.mu.Lock()
+	// A tripwire failure below must not leave the lock held: the session's
+	// cleanup takes it, and would hang the package instead of failing the test.
+	unlockJobs := sync.OnceFunc(root.jobManager.mu.Unlock)
+	defer unlockJobs()
 	type claimResult struct {
 		claim *RetirementClaim
 		state RetirementSnapshot
@@ -526,7 +546,7 @@ func TestRetirementAutonomousAttentionRetryRefusedRearms(t *testing.T) {
 	})
 	clk.Advance(jobNotificationRetryInitialDelay)
 	clk.Drain()
-	root.jobManager.mu.Unlock()
+	unlockJobs()
 	res := <-resultCh
 	if res.err != nil || res.claim != nil {
 		t.Fatalf("pending attention source escaped preparing: %+v %v", res.state, res.err)
@@ -987,6 +1007,10 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 	// Park the real evidence pass inside its preparing window on the job
 	// manager's own lock; the retained re-lock source keeps the grant refused.
 	root.jobManager.mu.Lock()
+	// A tripwire failure below must not leave the lock held: the session's
+	// cleanup takes it, and would hang the package instead of failing the test.
+	unlockJobs := sync.OnceFunc(root.jobManager.mu.Unlock)
+	defer unlockJobs()
 	type claimResult struct {
 		claim *RetirementClaim
 		state RetirementSnapshot
@@ -1004,7 +1028,7 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 	})
 	select {
 	case r := <-resultCh:
-		root.jobManager.mu.Unlock()
+		unlockJobs()
 		t.Fatalf("real TryClaim completed before the timer fired: %+v", r)
 	default:
 	}
@@ -1012,7 +1036,7 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 	beforeRefused := calls.Load()
 	clk.Advance(laneSweepDelay)
 	clk.Drain()
-	root.jobManager.mu.Unlock()
+	unlockJobs()
 	if got := calls.Load(); got != beforeRefused {
 		t.Fatalf("refused relock retry performed %d Git calls", got-beforeRefused)
 	}
@@ -1361,15 +1385,121 @@ func assertRetirementEvidenceBlocked(t *testing.T, c *RetirementController, cate
 	}
 }
 
+// retirementClaimAfterFirstTurn is the shared guard for a TryClaim call made
+// close to a session's first non-empty turn. That turn also launches the
+// async session namer (launchInitialPromptNamer / launchCompactionNamerGated,
+// session_namer.go) in its own goroutine, which is never joined before
+// ProcessInput returns and correctly holds an "autonomous" blocker
+// (session_retirement_evidence.go) until it settles. Waiting on every
+// registered sender before reading evidence is what
+// assertRetirementEvidenceEligible and TestRetirementSafetyDetachedLifetime's
+// own raw eligibility check both need to avoid racing that goroutine and
+// intermittently reporting a settled owner ineligible (#1879); this is the
+// one place that wait lives, so both call it, and both are exercised by the
+// same regression tests below. The wait covers the whole delegate tree: a
+// delegate child's first turn launches the child's own namer, and a namer
+// whose call fails (a scripted provider that answers with no JSON title)
+// leaves the session unnamed, so the next prompt launches another one.
+func retirementClaimAfterFirstTurn(root *Session, c *RetirementController) (*RetirementClaim, RetirementSnapshot, error) {
+	joinRetirementTreeEmitters(root)
+	return c.TryClaim(true)
+}
+
+// joinRetirementTreeEmitters waits for the detached event emitters (subagent
+// runs, drives, session namers) of s and of every resident descendant. A
+// parent joins before its children, because a child's run goroutine is the
+// parent's emitter and is what launches the child's namer. A test that has
+// awaited a delegate child's done channel calls it on the child alone to join
+// the namer that turn launched: while that namer holds its "autonomous" lease,
+// TryClaim refuses before it reads any other evidence, so a claim the test
+// expects to succeed, or to refuse for a named reason, sees only the lease.
+func joinRetirementTreeEmitters(s *Session) {
+	s.sendersWG.Wait()
+	if s.subagents == nil {
+		return
+	}
+	for _, child := range s.subagents.sessions() {
+		joinRetirementTreeEmitters(child)
+	}
+}
+
 func assertRetirementEvidenceEligible(t *testing.T, c *RetirementController) {
 	t.Helper()
-	claim, state, err := c.TryClaim(true)
+	claim, state, err := retirementClaimAfterFirstTurn(c.root, c)
 	if err != nil || claim == nil {
 		t.Fatalf("settled owner not eligible: %+v, %v", state, err)
 	}
 	if err := c.Abort(claim, ""); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestRetirementClaimAfterFirstTurnAwaitsInFlightNamer is the deterministic
+// regression for #1879: launchInitialPromptNamer (session_namer.go) starts
+// the session namer in its own goroutine and never joins it before the
+// triggering ProcessInput returns, while that goroutine correctly holds an
+// "autonomous" blocker (session_retirement_evidence.go) until it settles.
+// retirementClaimAfterFirstTurn is the one place assertRetirementEvidenceEligible
+// and TestRetirementSafetyDetachedLifetime's own raw eligibility check both
+// wait for it; this exercises that shared function directly, so reverting its
+// wait reproduces both #1879 occurrences (2 of the 4 named tests / round 1's
+// and round 2's CI failures) at once.
+//
+// The test runs in a synctest bubble so its first Wait reaches a stable
+// interleaving: the real namer is blocked on release, and the claim goroutine
+// is blocked in retirementClaimAfterFirstTurn's sendersWG.Wait. A version that
+// skips that wait runs TryClaim and fills resultCh before the first Wait
+// returns, proving the shared helper is the seam under test. After release, a
+// second Wait drains both goroutines before the eligible claim is checked.
+func TestRetirementClaimAfterFirstTurnAwaitsInFlightNamer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response {
+			return finalResponse("turn settled")
+		}))
+		c := retirementEvidenceController(t, root)
+		held, release := make(chan struct{}), make(chan struct{})
+		var releaseOnce sync.Once
+		releaseNamer := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(releaseNamer) // never leak the namer goroutine on an earlier Fatal
+		namer := llm.NewClient()
+		namer.Register(&agenttest.ScriptedAdapter{Provider: root.currentProfile().CheapProvider(), Responder: func(llm.Request) llm.Response {
+			close(held)
+			<-release
+			return llm.Response{Message: llm.Assistant(`{"name":"Named After Release"}`)}
+		}})
+		updateSessionTestConfig(root, func(cfg *testConfig) { cfg.namerClient = namer })
+		if _, err := root.ProcessInput(context.Background(), "first turn", nil); err != nil {
+			t.Fatal(err)
+		}
+		<-held // the namer goroutine is provably still in flight right here
+
+		type outcome struct {
+			claim *RetirementClaim
+			state RetirementSnapshot
+			err   error
+		}
+		resultCh := make(chan outcome, 1)
+		go func() {
+			claim, state, err := retirementClaimAfterFirstTurn(root, c)
+			resultCh <- outcome{claim, state, err}
+		}()
+		synctest.Wait()
+		select {
+		case res := <-resultCh:
+			t.Fatalf("claim settled while the namer was still held in flight: %+v %v", res.state, res.err)
+		default:
+		}
+
+		releaseNamer()
+		synctest.Wait()
+		res := <-resultCh
+		if res.err != nil || res.claim == nil {
+			t.Fatalf("claim blocked eligibility after the namer released: %+v %v", res.state, res.err)
+		}
+		if err := c.Abort(res.claim, ""); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestRetirementSafetyDirectSetterAdmissionFirst(t *testing.T) {
@@ -2237,6 +2367,10 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 	// Park the real evidence pass inside its preparing window on the job
 	// manager's own lock; the live pending source keeps the grant refused.
 	root.jobManager.mu.Lock()
+	// A tripwire failure below must not leave the lock held: the session's
+	// cleanup takes it, and would hang the package instead of failing the test.
+	unlockJobs := sync.OnceFunc(root.jobManager.mu.Unlock)
+	defer unlockJobs()
 	type claimResult struct {
 		claim *RetirementClaim
 		state RetirementSnapshot
@@ -2255,7 +2389,7 @@ func TestRetirementAutonomousNotificationRetryRefusedRearms(t *testing.T) {
 	// The armed one-shot fires now and is refused for the whole window.
 	clk.Advance(jobNotificationRetryInitialDelay)
 	clk.Drain()
-	root.jobManager.mu.Unlock()
+	unlockJobs()
 	res := <-resultCh
 	if res.err != nil || res.claim != nil {
 		t.Fatalf("pending source escaped preparing: %+v %v", res.state, res.err)
@@ -2723,11 +2857,47 @@ func TestRetirementEvidenceStableWatchSettlementPending(t *testing.T) {
 	}
 }
 
+// retirementHeldAttentionAdapter holds every agent turn at the LLM boundary
+// until release closes, signalling started on the first one, so a test can
+// keep a delegate's attention generation in flight for as long as it asserts.
+// Structured-output calls (the session namer's JSON-schema requests, which
+// share this provider when no cheap model is configured and may still be in
+// flight from earlier turns) pass straight through: started must mean the
+// attention generation reached the provider, not a namer.
+type retirementHeldAttentionAdapter struct {
+	retirementDelegateAdapter
+	started   chan struct{}
+	release   chan struct{}
+	startOnce sync.Once
+}
+
+func (a *retirementHeldAttentionAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if req.ResponseFormat != nil {
+		return a.retirementDelegateAdapter.Complete(ctx, req)
+	}
+	a.startOnce.Do(func() { close(a.started) })
+	select {
+	case <-a.release:
+		return a.retirementDelegateAdapter.Complete(ctx, req)
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+}
+
 // TestRetirementSafetyNotificationPinsDelegateResident documents the cold
 // notification boundary: a delegate child's shell completion is delivered
 // through the durable stable-attention stream at finalize, and production
-// reclamation refuses to make a child with pending attention cold, so the
-// obligation stays on the resident evidence path.
+// reclamation refuses to make a child that still owes that attention cold,
+// so the obligation stays on the resident evidence path.
+//
+// Arming the attention drives the child synchronously inside finalize: the
+// parent reserves and commits an attention generation and launches its run
+// before finalize returns. The obligation then lives on the child only until
+// that run finishes and its outcome is delivered to the root, after which the
+// child is quiescent and legitimately reclaimable. The provider holds the
+// attention generation in flight so the pin is asserted while the child
+// provably owns the obligation, not at whatever settlement stage the run
+// happens to have reached.
 func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
@@ -2736,6 +2906,18 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	if child == nil || child.jobManager == nil {
 		t.Fatal("original idle runtime or its job manager missing")
 	}
+	held := &retirementHeldAttentionAdapter{
+		retirementDelegateAdapter: retirementDelegateAdapter{fakeAdapter{name: "openai"}},
+		started:                   make(chan struct{}),
+		release:                   make(chan struct{}),
+	}
+	root.client.Register(held)
+	released := false
+	defer func() {
+		if !released {
+			close(held.release)
+		}
+	}()
 	rec, err := child.jobManager.createShell(createShellOpts{Command: "original-pinned-shell"})
 	if err != nil {
 		t.Fatal(err)
@@ -2750,6 +2932,14 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	if recs[rec.JobID] == nil || recs[rec.JobID].NotifyState != jobstore.NotifyDelivered || recs[rec.JobID].TerminalGen == "" {
 		t.Fatalf("original shell completion not stably delivered: %+v", recs[rec.JobID])
 	}
+	retirementAwait(t, held.started)
+	sub := root.subagents.get(d.ChildSessionID)
+	if sub == nil {
+		t.Fatal("original child missing from root manager while its attention generation runs")
+	}
+	sub.mu.Lock()
+	attentionRunDone := sub.done
+	sub.mu.Unlock()
 	if err := root.reclaimDelegateRuntimeCapacity(tree.maxRetainedTerminal); err != nil {
 		t.Fatal(err)
 	}
@@ -2761,26 +2951,40 @@ func TestRetirementSafetyNotificationPinsDelegateResident(t *testing.T) {
 	// version moved mid-collection (delegate_tree_retirement.go:193); that is
 	// a retry signal, never an escape. The pin holds when every attempt
 	// refuses and a settled attempt still names the original owner.
-	var state RetirementSnapshot
-	// TRIPWIRE: hang guard only; the durable attention stream settles in
-	// milliseconds once finalize's delivery lands.
-	waitForCondition(t, 5*time.Second, "pinned shell attention refusal settles", func() bool {
-		claim, got, err := c.TryClaim(true)
-		if claim != nil {
-			if abortErr := c.Abort(claim, ""); abortErr != nil {
-				t.Fatal(abortErr)
+	settledRefusal := func(stage string) RetirementSnapshot {
+		t.Helper()
+		var state RetirementSnapshot
+		// TRIPWIRE: hang guard only; a refusal settles in milliseconds.
+		waitForCondition(t, 5*time.Second, stage+" refusal settles", func() bool {
+			claim, got, err := c.TryClaim(true)
+			if claim != nil {
+				if abortErr := c.Abort(claim, ""); abortErr != nil {
+					t.Fatal(abortErr)
+				}
+				t.Fatalf("%s: pinned shell attention escaped: %+v", stage, got)
 			}
-			t.Fatalf("pinned shell attention escaped: %+v", got)
-		}
-		state = got
-		return err == nil
-	})
-	// The obligation's owner at the settled instant is timing-dependent:
-	// still-pending child attention blocks with the original DelegateID,
-	// while attention already delivered blocks with the session actually
-	// driving it (a turn on the original child, or root-owned work). All
-	// name the original root/child pair; an empty or foreign-owned refusal
-	// would mean the obligation was lost.
+			state = got
+			return err == nil
+		})
+		return state
+	}
+	// While the attention generation is held, the obligation belongs to the
+	// original delegate child and nothing else.
+	state := settledRefusal("held attention generation")
+	if !slices.ContainsFunc(state.Blockers, func(b RetirementBlocker) bool {
+		return b.DelegateID == d.DelegateID || b.SessionID == d.ChildSessionID
+	}) {
+		t.Fatalf("held attention generation lost its original owner: %+v", state)
+	}
+	close(held.release)
+	released = true
+	retirementAwait(t, attentionRunDone)
+	state = settledRefusal("finished attention generation")
+	// Once the run finishes, the obligation's owner at the settled instant
+	// is timing-dependent: an outcome still being delivered blocks with the
+	// original DelegateID, while an outcome already delivered blocks with
+	// root-owned work. All name the original root/child pair; an empty or
+	// foreign-owned refusal would mean the obligation was lost.
 	if len(state.Blockers) == 0 {
 		t.Fatalf("pinned shell attention escaped with empty blockers: %+v", state)
 	}

@@ -96,3 +96,90 @@ func TestListModelsNormalizesSupportedParameters(t *testing.T) {
 		t.Fatalf("caps = %+v, want Tools and Reasoning true", c)
 	}
 }
+
+// listRow runs the live /models reader against a single-row body and returns
+// that row's caps.
+func listRow(t *testing.T, row string) registry.Caps {
+	t.Helper()
+	srv, _ := server(t, 200, `{"data":[`+row+`]}`)
+	rows, err := (&Protocol{Client: srv.Client()}).ListModels(context.Background(), liveRes(srv, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	return rows[0].Caps
+}
+
+// TestListModelsMapsGatewayTopLevelLimits pins the lunaroute-shaped row Evener
+// depends on: the gateway advertises its limits at the top level, with no
+// top_provider object and no supported_parameters. Dropping
+// max_input_tokens/max_output_tokens here left Profile.MaxOutputTokens() at 0,
+// so llm.ApplyTokenBudget fell back to asking for the whole remaining window.
+func TestListModelsMapsGatewayTopLevelLimits(t *testing.T) {
+	c := listRow(t, `{"id":"deepseek-4.1-flash","object":"model","created":0,"owned_by":"lunaroute","context_window":1048576,"context_length":1048576,"max_input_tokens":1048576,"max_output_tokens":262144,"max_completion_tokens":262144,"capabilities":{"json_schema":true,"openai_chat":true,"openai_responses":true,"reasoning":true,"tools":true,"vision":true},"client_compat":{"streaming":true}}`)
+	if c.ContextWindow == nil || *c.ContextWindow != 1048576 {
+		t.Fatalf("ContextWindow = %v, want 1048576", c.ContextWindow)
+	}
+	if c.MaxInputTokens == nil || *c.MaxInputTokens != 1048576 {
+		t.Fatalf("MaxInputTokens = %v, want 1048576", c.MaxInputTokens)
+	}
+	if c.MaxOutputTokens == nil || *c.MaxOutputTokens != 262144 {
+		t.Fatalf("MaxOutputTokens = %v, want 262144", c.MaxOutputTokens)
+	}
+}
+
+// TestListModelsPrefersContextLengthOverContextWindow keeps OpenRouter's
+// ordering: context_length wins when both spellings are present.
+func TestListModelsPrefersContextLengthOverContextWindow(t *testing.T) {
+	c := listRow(t, `{"id":"both-windows","context_length":1000000,"context_window":1048576}`)
+	if c.ContextWindow == nil || *c.ContextWindow != 1000000 {
+		t.Fatalf("ContextWindow = %v, want context_length 1000000", c.ContextWindow)
+	}
+}
+
+// TestListModelsPrefersTopProviderMaxCompletionTokens keeps OpenRouter's
+// precedence: the per-provider cap beats every top-level output spelling.
+func TestListModelsPrefersTopProviderMaxCompletionTokens(t *testing.T) {
+	c := listRow(t, `{"id":"provider-cap","top_provider":{"max_completion_tokens":128000},"max_completion_tokens":262144,"max_output_tokens":999}`)
+	if c.MaxOutputTokens == nil || *c.MaxOutputTokens != 128000 {
+		t.Fatalf("MaxOutputTokens = %v, want top_provider 128000", c.MaxOutputTokens)
+	}
+}
+
+// TestListModelsPrefersTopLevelMaxCompletionTokens pins the top-level order:
+// max_completion_tokens before max_output_tokens.
+func TestListModelsPrefersTopLevelMaxCompletionTokens(t *testing.T) {
+	c := listRow(t, `{"id":"two-spellings","max_completion_tokens":262144,"max_output_tokens":999}`)
+	if c.MaxOutputTokens == nil || *c.MaxOutputTokens != 262144 {
+		t.Fatalf("MaxOutputTokens = %v, want max_completion_tokens 262144", c.MaxOutputTokens)
+	}
+}
+
+// TestListModelsLeavesLimitsNilWhenUnadvertised pins that only positive values
+// become caps: absent, zero and negative spellings all leave the pointer nil.
+func TestListModelsLeavesLimitsNilWhenUnadvertised(t *testing.T) {
+	for _, row := range []string{
+		`{"id":"absent"}`,
+		`{"id":"nonpositive","context_length":0,"context_window":-1,"max_input_tokens":0,"max_completion_tokens":0,"max_output_tokens":-5,"top_provider":{"max_completion_tokens":0}}`,
+	} {
+		c := listRow(t, row)
+		if c.ContextWindow != nil || c.MaxInputTokens != nil || c.MaxOutputTokens != nil {
+			t.Fatalf("%s: limits must stay nil: %+v", row, c)
+		}
+	}
+}
+
+// TestListModelsReadsContextWindowAlone pins the top-level context_window as a
+// window source on its own. The other tests that touch it also set
+// context_length, so without this one a regression that dropped the
+// context_window field, or its use in row(), would still pass every test while
+// a gateway publishing only that spelling lost its window: ApplyTokenBudget
+// would then skip the total-context clamp and allocate output with no ceiling.
+func TestListModelsReadsContextWindowAlone(t *testing.T) {
+	c := listRow(t, `{"id":"window-only","context_window":1048576}`)
+	if c.ContextWindow == nil || *c.ContextWindow != 1048576 {
+		t.Fatalf("ContextWindow = %v, want 1048576", c.ContextWindow)
+	}
+}

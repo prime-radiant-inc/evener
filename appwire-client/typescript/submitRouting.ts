@@ -67,10 +67,12 @@ export function decideSteerRoute(opts: {
 // thread/status/changed frame that always follows the closing turn/completed,
 // so the status alone is never late in that direction.
 //
-// Capabilities are the harness's. The hub's `steer` is harness support alone
-// (server/appwire_runtime.go appCapabilitiesLocked; it does not fold the
-// status in, so an idle client can still tell a harness that steers from one
-// that cannot, #1363); `interrupt` and `queue` fold the active status in.
+// Capabilities are the harness's. The hub's `steer`, `interrupt` and `queue`
+// are harness support alone (server/appwire_runtime.go appCapabilitiesLocked;
+// none folds the status in, so an idle client can still tell a harness that
+// supports an action from one that cannot, #1363, #1375). This derivation
+// applies the status for all of them, so every action below reads one rule and
+// no caller has to know which flags arrive pre-gated.
 //
 //   stop   turn/interrupt: active && interrupt.
 //   steer  turn/steer: active && steer. With nothing running Send is the

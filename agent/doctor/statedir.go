@@ -12,8 +12,10 @@ var doctorUserHomeDir = os.UserHomeDir
 // ResolveStateBase resolves the doctor's state base with evener's session-state
 // precedence: the --state-dir flag › EVENER_STATE_DIR env › $XDG_STATE_HOME ›
 // ~/.local/state. Locate (and the subcommands built on it) then auto-detect
-// whether the base is an XDG state home (it holds evener/projects/* buckets) or is
-// itself a single override / scratch bucket (sessions/ directly under it).
+// the base's shape (see resolveBuckets): an XDG state home (it holds
+// evener/projects/* buckets), a project bucket directory (the daemon's
+// per-session state dir — see userdirs.StateHomeForBucketDir), or a single
+// override / scratch bucket (sessions/ directly under it).
 //
 // Note EVENER_STATE_HOME does not exist — it was never read by evener; the real env
 // knob is EVENER_STATE_DIR.

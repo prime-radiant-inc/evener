@@ -47,7 +47,12 @@ const NO_CAPABILITIES: ThreadCapabilities = {
   rename: false,
 };
 
-function model(turns: TurnModel[]): ThreadModel {
+// askPending defaults to true: this file's tests exercise the item-scan
+// half of liveAskQuestions ("which questions"), not the wire gate itself
+// ("is anything pending") - that gate has its own tests below, and its own
+// coverage from the thread snapshot in reducer.test.ts ("askPending is
+// wire-authoritative from the thread snapshot").
+function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): ThreadModel {
   return {
     ref: "ref_a",
     threadId: "thr_a",
@@ -56,7 +61,7 @@ function model(turns: TurnModel[]): ThreadModel {
     modelProvider: "anthropic/claude",
     model: "anthropic/claude",
     visionModel: "",
-    askPending: false,
+    askPending: true,
     turns,
     queue: null,
     tasks: null,
@@ -77,6 +82,7 @@ function model(turns: TurnModel[]): ThreadModel {
     reasoningEffortLevels: [],
     supportsReasoning: false,
     cwd: "/tmp/project",
+    ...overrides,
   };
 }
 
@@ -130,6 +136,117 @@ test("a userMessage AFTER an ask_user ack resolves it - excluded from the live s
   const m = model([
     turn("t1", [askItem("i1", "t1", "call_1"), item("i2", "t1", { type: "userMessage", text: "[answers]..." })]),
   ]);
+  expect(liveAskQuestions(m)).toEqual([]);
+});
+
+// The server resolves the whole pending set on an interrupt exactly like a
+// user message resolves it (agent/session_lifecycle.go: an interrupted turn
+// calls clearAskPending directly - "the cards stay rendered from the
+// transcript regardless; only the pending set... clears" - then appends a
+// steering turn carrying SteeringKindInterrupted as the transcript's own
+// marker of that boundary). A client deriving the live set locally must
+// treat that marker as a resolution too, or it renders a question the
+// server has already closed out.
+test("a steering item with steeringKind interrupted AFTER an ask_user ack resolves it", () => {
+  const m = model([
+    turn("t1", [
+      askItem("i1", "t1", "call_1"),
+      item("i2", "t1", { type: "steering", text: "interrupted", steeringKind: "interrupted" }),
+    ]),
+  ]);
+  expect(liveAskQuestions(m)).toEqual([]);
+});
+
+// The salvage explanation is persisted beside a partial response, but it is
+// daemon-authored context rather than the admitted interrupt boundary. It must
+// leave an ask opened when the durable interrupt marker was not accepted.
+test("a steering item with steeringKind interrupted-salvage does NOT resolve the ask", () => {
+  const m = model([
+    turn("t1", [
+      askItem("i1", "t1", "call_1"),
+      item("i2", "t1", {
+        type: "steering",
+        text: "This response was interrupted; the content above was produced before the interruption and was not delivered.",
+        steeringKind: "interrupted-salvage",
+      }),
+    ]),
+  ]);
+  expect(liveAskQuestions(m).map((q) => q.key)).toEqual(["call_1:0"]);
+});
+
+// A user steer reaches processOneInput as EntryUserInput (session_lifecycle.go:
+// "the steering carrier enters as queued user input... it must reach the
+// model rather than wait behind a question the user has already moved
+// past"), which is the same accepted-turn path that clears askPending for a
+// plain user message. Its transcript item carries source "user" (the wire's
+// SteeringSourceUser), never a steeringKind.
+test("a steering item with source user AFTER an ask_user ack resolves it", () => {
+  const m = model([
+    turn("t1", [
+      askItem("i1", "t1", "call_1"),
+      item("i2", "t1", { type: "steering", text: "focus on the tests", source: "user" }),
+    ]),
+  ]);
+  expect(liveAskQuestions(m)).toEqual([]);
+});
+
+// A human-note update also carries source "user" (the note text a human
+// wrote, steered in as SteeringKindHumanNote - agent/session_notes_rpc.go's
+// steeringOrigin machinery), but writing a note is not answering the
+// question: it must not resolve a pending ask, or the dock disappears while
+// the ask itself stays open on the server (the TS twin of the server's own
+// exclusion for this kind).
+test("a steering item with source user AND steeringKind human-note does NOT resolve the ask", () => {
+  const m = model([
+    turn("t1", [
+      askItem("i1", "t1", "call_1"),
+      item("i2", "t1", { type: "steering", text: "note: check the logs", source: "user", steeringKind: "human-note" }),
+    ]),
+  ]);
+  expect(liveAskQuestions(m).map((q) => q.key)).toEqual(["call_1:0"]);
+});
+
+// A daemon-originated steer with no user provenance (no steeringKind naming
+// an interrupt, no source "user") never resolves a pending ask - the user
+// has not spoken and has not stopped anything.
+test("a daemon steering item with neither steeringKind interrupted nor source user does not resolve the ask", () => {
+  const m = model([
+    turn("t1", [
+      askItem("i1", "t1", "call_1"),
+      item("i2", "t1", { type: "steering", text: "a reminder", steeringKind: "task-nudge" }),
+    ]),
+  ]);
+  expect(liveAskQuestions(m).map((q) => q.key)).toEqual(["call_1:0"]);
+});
+
+// A turn with no items of its own contributes nothing to the item scan
+// either way, whether or not it also carries an error: it is not a question
+// to show, and (since the turn/deriveAskQuestions round of this file) it is
+// no longer a boundary this function looks for. Whether that failure
+// resolved anything is the server's call, already folded into
+// ThreadModel.askPending - the wire-gate tests below cover that half.
+test("a turn with no items and an error is not a boundary — the earlier ask_user ack stays live", () => {
+  const m = model([turn("t1", [askItem("i1", "t1", "call_1")]), turn("t2", [], { error: { message: "failed" } })]);
+  const result = liveAskQuestions(m);
+  expect(result.map((q) => q.key)).toEqual(["call_1:0"]);
+});
+
+test("a turn with items stays live by its items, even if the turn also errors", () => {
+  const m = model([turn("t1", [askItem("i1", "t1", "call_1")], { error: { message: "failed" } })]);
+  const result = liveAskQuestions(m);
+  expect(result.map((q) => q.key)).toEqual(["call_1:0"]);
+});
+
+// --- the wire gate: "is anything pending" is ThreadModel.askPending's call,
+// not this scan's -------------------------------------------------------
+
+test("askPending false returns nothing, even with an unanswered ask_user item in the transcript", () => {
+  const m = model([turn("t1", [askItem("i1", "t1", "call_1")])], { askPending: false });
+  expect(liveAskQuestions(m)).toEqual([]);
+});
+
+test("askPending true with no ask_user items at all still returns nothing (there is nothing to scan)", () => {
+  const m = model([turn("t1", [item("i1", "t1", { type: "userMessage", text: "hi" })])], { askPending: true });
   expect(liveAskQuestions(m)).toEqual([]);
 });
 

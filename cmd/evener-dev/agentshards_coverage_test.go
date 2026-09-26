@@ -1,8 +1,10 @@
 package dev
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -183,46 +185,321 @@ func TestCopyFileToNonEmpty(t *testing.T) {
 	}
 }
 
-// TestReplayMatchingMissingFile covers the read-error path.
-func TestReplayMatchingMissingFile(t *testing.T) {
-	var sb strings.Builder
-	// Should not panic or write anything for a missing file.
-	replayMatching(&sb, filepath.Join(t.TempDir(), "nonexistent"), surveyRedLine, 10)
-	if sb.Len() != 0 {
-		t.Fatalf("replayMatching on missing file should write nothing, got %q", sb.String())
-	}
-}
-
-// TestReplayMatchingWithMatches covers the positive path.
-func TestReplayMatchingWithMatches(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "log")
-	content := "--- FAIL: TestX\nok\npanic: something\n--- PASS: TestY\n"
+// writeSurveyLog writes content to a fresh file and returns its path.
+func writeSurveyLog(t *testing.T, content string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "survey.log")
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return p
+}
+
+// replayLines is replaySurveyFailures' output as lines, nil when it wrote
+// nothing.
+func replayLines(t *testing.T, path string, blocks int) []string {
+	t.Helper()
 	var sb strings.Builder
-	replayMatching(&sb, p, surveyRedLine, 10)
-	lines := strings.Split(strings.TrimRight(sb.String(), "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("replayMatching wrote %d lines, want 2: %q", len(lines), sb.String())
+	replaySurveyFailures(&sb, path, blocks)
+	if sb.Len() == 0 {
+		return nil
 	}
-	if lines[0] != "--- FAIL: TestX" || lines[1] != "panic: something" {
-		t.Fatalf("replayMatching wrote wrong lines: %q", sb.String())
+	return strings.Split(strings.TrimRight(sb.String(), "\n"), "\n")
+}
+
+// TestReplaySurveyFailuresMissingFile covers the read-error path: a log that
+// is not there writes nothing at all rather than a stray error.
+func TestReplaySurveyFailuresMissingFile(t *testing.T) {
+	if got := replayLines(t, filepath.Join(t.TempDir(), "nonexistent"), 10); got != nil {
+		t.Fatalf("a missing survey log should write nothing, got %q", got)
 	}
 }
 
-// TestReplayMatchingLimit covers the limit parameter.
-func TestReplayMatchingLimit(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "log")
-	content := "--- FAIL: TestA\n--- FAIL: TestB\n--- FAIL: TestC\n"
-	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+// TestReplaySurveyFailuresShowsAssertionContext is the issue #2121 contract:
+// the excerpt carries the failing test's own output, not just its name. The
+// assertion lines sit above the verdict (that is where t.Fatal writes them),
+// a subtest's verdict is indented output of its parent, and a green test's
+// logged noise stays out of the block entirely.
+func TestReplaySurveyFailuresShowsAssertionContext(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestWrong\n"+
+			"    thing_test.go:9: first line of the failure\n"+
+			"    thing_test.go:10: the assertion that matters\n"+
+			"--- FAIL: TestWrong (0.01s)\n"+
+			"    --- FAIL: TestWrong/sub (0.01s)\n"+
+			"=== RUN   TestGreen\n"+
+			"    thing_test.go:30: green noise\n"+
+			"--- PASS: TestGreen (0.00s)\n"+
+			"ok  \tpkg\t0.01s\n")
+	want := []string{
+		"    thing_test.go:9: first line of the failure",
+		"    thing_test.go:10: the assertion that matters",
+		"--- FAIL: TestWrong (0.01s)",
+		"    --- FAIL: TestWrong/sub (0.01s)",
 	}
-	var sb strings.Builder
-	replayMatching(&sb, p, surveyRedLine, 2)
-	lines := strings.Split(strings.TrimRight(sb.String(), "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("replayMatching with limit 2 wrote %d lines, want 2", len(lines))
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("replayed %q, want %q", got, want)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsUnindentedFailureOutput is the D1 contract: a
+// failing test's unindented direct output (fmt.Println, log.Print, a child
+// process) sits with its verdict, and the excerpt must carry it. The framework
+// frames those lines with unindented output of its own, so a block runs from
+// the previous framework line to the next one rather than stopping at the
+// first line that is not indented.
+func TestReplaySurveyFailuresKeepsUnindentedFailureOutput(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestPrints\n"+
+			"WORKER: building cache index\n"+
+			"2026/09/21 21:28:27 worker: connecting to peer\n"+
+			"    thing_test.go:12: a framed log line\n"+
+			"    thing_test.go:13: the fatal message\n"+
+			"--- FAIL: TestPrints (0.00s)\n"+
+			"=== RUN   TestNext\n")
+	want := []string{
+		"WORKER: building cache index",
+		"2026/09/21 21:28:27 worker: connecting to peer",
+		"    thing_test.go:12: a framed log line",
+		"    thing_test.go:13: the fatal message",
+		"--- FAIL: TestPrints (0.00s)",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("replayed %q, want the failure's own unindented output carried %q", got, want)
+	}
+
+	// The before bound still holds: a failure with more output ahead than a
+	// block keeps shows only the last surveyContextBefore lines of it, and the
+	// green test's own run line ends the block above.
+	var noisy strings.Builder
+	noisy.WriteString("=== RUN   TestNoisy\n")
+	for i := range surveyContextBefore + surveyContextAfter {
+		_, _ = fmt.Fprintf(&noisy, "WORKER: output line %d\n", i)
+	}
+	noisy.WriteString("--- FAIL: TestNoisy (0.00s)\n")
+	got := replayLines(t, writeSurveyLog(t, noisy.String()), 10)
+	if len(got) != surveyContextBefore+1 {
+		t.Fatalf("replayed %d lines of a noisy failure, want %d:\n%s",
+			len(got), surveyContextBefore+1, strings.Join(got, "\n"))
+	}
+	if wantFirst := fmt.Sprintf("WORKER: output line %d", surveyContextAfter); got[0] != wantFirst {
+		t.Fatalf("excerpt starts at %q, want %q: the before bound keeps the %d output lines nearest the verdict", got[0], wantFirst, surveyContextBefore)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsVerdictLikeTestOutput is the review finding on
+// the D1 fix: the boundary predicate matched `FAIL`, `PASS`, and `ok` by
+// prefix, so a failing test's own `FAIL: ...`, `PASS: ...`, `FAILURE: ...`,
+// `ok done`, or `PASSWORD=...` line was read as toolchain framing and became a
+// boundary that cut the diagnosis out of the excerpt it exists to show. Only
+// the toolchain's exact verdict forms may end a block.
+func TestReplaySurveyFailuresKeepsVerdictLikeTestOutput(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestLooksRed\n"+
+			"FAIL: fixture-gamma is green and only looks red\n"+
+			"ok done\n"+
+			"--- FAIL: TestLooksRed (0.00s)\n"+
+			"PASS: peer up\n"+
+			"FAILURE: cannot connect\n"+
+			"PASSWORD=hunter2\n"+
+			"=== RUN   TestNext\n")
+	want := []string{
+		"FAIL: fixture-gamma is green and only looks red",
+		"ok done",
+		"--- FAIL: TestLooksRed (0.00s)",
+		"PASS: peer up",
+		"FAILURE: cannot connect",
+		"PASSWORD=hunter2",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("a failing test's verdict-like output ended the block: replayed %q, want %q", got, want)
+	}
+}
+
+// TestReplaySurveyFailuresVerdictFormsStillBound pins the other side of the
+// same predicate: the toolchain's exact verdict forms still end a block. A
+// test's own `ok done` is output, while `go test`'s summary `ok  \tpkg` is
+// framing; the binary's bare `PASS` and the package verdict `FAIL\tpkg` follow
+// suit. Under the old prefix match the first block ended at the `ok done` line,
+// so this case was red too.
+func TestReplaySurveyFailuresVerdictFormsStillBound(t *testing.T) {
+	path := writeSurveyLog(t,
+		"--- FAIL: TestFirst (0.00s)\n"+
+			"ok done\n"+
+			"ok  \tpkg\t0.01s\n"+
+			"--- FAIL: TestSecond (0.00s)\n"+
+			"    thing_test.go:1: the second failure\n"+
+			"PASS\n"+
+			"FAIL\tpkg\t0.01s\n")
+	want := []string{
+		"--- FAIL: TestFirst (0.00s)",
+		"ok done",
+		"--- FAIL: TestSecond (0.00s)",
+		"    thing_test.go:1: the second failure",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("the toolchain's exact verdict forms no longer bound a block: replayed %q, want %q", got, want)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsFramingLookalikes is the follow-up review
+// finding: the boundary predicate matched `=== `, `--- `, and the verdict
+// tokens by prefix, so a failing test's own unindented output shaped like the
+// framing — a printed diff's `--- expected`, or a line that merely begins with
+// `--- FAILURE:`, `FAIL `, `PASS `, or `ok  ` — was read as toolchain framing
+// (or, for `--- FAILURE:`, as a failure marker) and cut the diagnosis out of
+// the excerpt it exists to show. Only the toolchain's actual framing grammar
+// may end a block or announce a failure, and every line here stays.
+func TestReplaySurveyFailuresKeepsFramingLookalikes(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestLooksFramed\n"+
+			"--- expected\n"+
+			"--- FAILURE: not really a verdict\n"+
+			"FAIL reason\n"+
+			"PASS details\n"+
+			"ok  details\n"+
+			"--- FAIL: TestLooksFramed (0.00s)\n")
+	want := []string{
+		"--- expected",
+		"--- FAILURE: not really a verdict",
+		"FAIL reason",
+		"PASS details",
+		"ok  details",
+		"--- FAIL: TestLooksFramed (0.00s)",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("a failing test's framing-shaped output ended the block: replayed %q, want %q", got, want)
+	}
+}
+
+// TestReplaySurveyFailuresMarkerlessTailWithTestOKPrint is the D2 contract:
+// the excerpt runs only once the survey pass has already exited nonzero, so
+// there is no green verdict to consult. A log with no failure marker whose
+// last line is the failing test's own unindented `ok done` print — which the
+// removed green-verdict check read as the toolchain's `ok  pkg` and suppressed
+// the fallback for — must still print its bounded tail.
+func TestReplaySurveyFailuresMarkerlessTailWithTestOKPrint(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestDies\n"+
+			"worker: about to die\n"+
+			"ok done\n")
+	want := []string{
+		"=== RUN   TestDies",
+		"worker: about to die",
+		"ok done",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("a markerless red log ending in a test's own %q replayed %q, want its bounded tail %q", "ok done", got, want)
+	}
+}
+
+// TestReplaySurveyFailuresMarkerlessFailureShowsTail covers the red log with no
+// marker at all: a survey that dies with a fatal error, an os.Exit, or a kill
+// leaves no `--- FAIL`/`panic:` block behind, and the excerpt must not be left
+// empty. A bounded tail of the log stands in.
+func TestReplaySurveyFailuresMarkerlessFailureShowsTail(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestExits\n"+
+			"dying hard, with no verdict and no marker\n")
+	want := []string{
+		"=== RUN   TestExits",
+		"dying hard, with no verdict and no marker",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("a markerless red log replayed %q, want its bounded tail %q", got, want)
+	}
+
+	// The tail is bounded like a block: a crash dump must not carry its whole
+	// stack into the summary. The excerpt keeps the last surveyTailLines lines.
+	var crash strings.Builder
+	crash.WriteString("=== RUN   TestCrashes\n")
+	for i := range surveyTailLines + surveyContextAfter {
+		_, _ = fmt.Fprintf(&crash, "    crash frame %d\n", i)
+	}
+	got := replayLines(t, writeSurveyLog(t, crash.String()), 10)
+	if len(got) != surveyTailLines {
+		t.Fatalf("a markerless crash replayed %d lines, want the bounded tail of %d:\n%s",
+			len(got), surveyTailLines, strings.Join(got, "\n"))
+	}
+	if wantFirst := fmt.Sprintf("    crash frame %d", surveyContextAfter); got[0] != wantFirst {
+		t.Fatalf("tail starts at %q, want %q: the excerpt is the END of the log", got[0], wantFirst)
+	}
+}
+
+// TestReplaySurveyFailuresAdjacentFailuresDoNotOverlap pins block boundaries:
+// two failures close enough that their context windows would overlap print each
+// line once, not twice.
+func TestReplaySurveyFailuresAdjacentFailuresDoNotOverlap(t *testing.T) {
+	path := writeSurveyLog(t,
+		"--- FAIL: TestFirst (0.00s)\n"+
+			"    thing_test.go:1: first assertion\n"+
+			"--- FAIL: TestSecond (0.00s)\n"+
+			"    thing_test.go:2: second assertion\n")
+	want := []string{
+		"--- FAIL: TestFirst (0.00s)",
+		"    thing_test.go:1: first assertion",
+		"--- FAIL: TestSecond (0.00s)",
+		"    thing_test.go:2: second assertion",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("adjacent failures replayed %q, want each line once %q", got, want)
+	}
+}
+
+// TestReplaySurveyFailuresShowsPanic covers the other marker: `panic:` is a
+// framework line too, so the failing test's verdict block ends at the panic
+// line and the panic's own block carries its message plus the stack head, up
+// to the after bound.
+func TestReplaySurveyFailuresShowsPanic(t *testing.T) {
+	path := writeSurveyLog(t,
+		"=== RUN   TestPanics\n"+
+			"--- FAIL: TestPanics (0.00s)\n"+
+			"panic: boom as instructed\n"+
+			"\n"+
+			"goroutine 1 [running]:\n"+
+			"\tpkg.TestPanics(0x0)\n"+
+			"\t\tthing_test.go:21 +0x25\n")
+	want := []string{
+		"--- FAIL: TestPanics (0.00s)",
+		"panic: boom as instructed",
+		"",
+		"goroutine 1 [running]:",
+		"\tpkg.TestPanics(0x0)",
+		"\t\tthing_test.go:21 +0x25",
+	}
+	if got := replayLines(t, path, 10); !slices.Equal(got, want) {
+		t.Fatalf("replayed %q, want %q", got, want)
+	}
+}
+
+// TestReplaySurveyFailuresBoundsOutput pins the two bounds. A failing test
+// that logs without limit must not carry its whole log into the worktree's
+// summary, and a suite with many failures must not either: the excerpt is a
+// failure block, not the suite log it is an excerpt of.
+func TestReplaySurveyFailuresBoundsOutput(t *testing.T) {
+	// More output ahead of the marker than a block keeps: the block starts
+	// surveyContextBefore lines above the verdict, dropping the
+	// surveyContextAfter lines that sit ahead of those.
+	var spam strings.Builder
+	spam.WriteString("=== RUN   TestSpam\n")
+	for i := range surveyContextBefore + surveyContextAfter {
+		_, _ = fmt.Fprintf(&spam, "    thing_test.go:%d: line %d\n", i, i)
+	}
+	spam.WriteString("--- FAIL: TestSpam (0.00s)\n")
+	got := replayLines(t, writeSurveyLog(t, spam.String()), 10)
+	if len(got) != surveyContextBefore+1 {
+		t.Fatalf("replayed %d lines of a noisy failure, want %d:\n%s",
+			len(got), surveyContextBefore+1, strings.Join(got, "\n"))
+	}
+	wantFirst := fmt.Sprintf("    thing_test.go:%d: line %d", surveyContextAfter, surveyContextAfter)
+	if got[0] != wantFirst {
+		t.Fatalf("excerpt starts at %q, want the last %d output lines (%q)", got[0], surveyContextBefore, wantFirst)
+	}
+
+	// The block count, and not the suite, is the other bound.
+	got = replayLines(t, writeSurveyLog(t, "--- FAIL: TestA\n--- FAIL: TestB\n--- FAIL: TestC\n"), 2)
+	if len(got) != 2 {
+		t.Fatalf("replaySurveyFailures with 2 blocks wrote %d lines, want 2", len(got))
 	}
 }
 
@@ -240,7 +517,7 @@ func TestCachedSurveyPathExplicit(t *testing.T) {
 
 // TestCachedSurveyPathEmptyGOCACHE covers the path where go env GOCACHE fails.
 func TestCachedSurveyPathEmptyGOCACHE(t *testing.T) {
-	cfg := shardsConfig{cacheDir: ""}
+	cfg := shardsConfig{label: "agent", envPrefix: "AGENT", cacheDir: ""}
 	// We can't easily make `go env GOCACHE` fail, but we can test with
 	// a cacheDir that cannot be created (a path under a file).
 	tmp := t.TempDir()

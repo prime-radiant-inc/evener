@@ -20,6 +20,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/mcphttp"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/sandbox"
@@ -521,11 +522,11 @@ func mcpProgramConstructionCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new in-memory request: %v", err)
 	}
-	if _, err := (&headerRoundTripper{base: base, headers: map[string]string{"X-Program": "value"}}).RoundTrip(request); err != nil || base.got == nil || base.got.Header.Get("X-Program") != "value" {
+	if _, err := (&mcphttp.HeaderRoundTripper{Base: base, Origin: "https://invalid.example:443", Headers: map[string]string{"X-Program": "value"}}).RoundTrip(request); err != nil || base.got == nil || base.got.Header.Get("X-Program") != "value" {
 		t.Fatalf("header round trip = req=%#v err=%v", base.got, err)
 	}
-	if client := httpClientWithHeaders(map[string]string{"X-Program": "value"}); client == nil || client.Transport == nil {
-		t.Fatal("httpClientWithHeaders returned an unusable client")
+	if client := mcphttp.ClientWithHeaders(nil, "https://invalid.example/mcp", map[string]string{"X-Program": "value"}); client == nil || client.Transport == nil {
+		t.Fatal("ClientWithHeaders returned an unusable client")
 	}
 
 	merged := mergeEnvInto([]string{"A=old", "B=keep", "MALFORMED"}, map[string]string{"A": "new", "C": "add"})

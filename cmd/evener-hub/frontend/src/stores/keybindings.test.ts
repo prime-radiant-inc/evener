@@ -11,34 +11,13 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
+import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "./connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "./keybindings";
 import { prefsStore, resetPrefsStoreForTests } from "./prefs";
 
-// Node 26 shadows jsdom's real window.localStorage with its own
-// (non-functional under vitest) global, so every test file that touches
-// localStorage (the prefs store does, and keybindings.ts now reads the
-// character-key pref through it) needs this same small in-memory stand-in -
-// see stores/prefs.test.ts's own comment.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 function resetRegistryToDefaults(): void {
@@ -630,6 +609,34 @@ describe("keybindings store: client replacement (stale-hub window)", () => {
     });
     // Hub A never saw a patch.
     expect(clientA.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
+  });
+
+  test("a stale client's ready callback cannot begin a generation once it has been replaced", async () => {
+    const stale = new FakeClient("connecting");
+    const current = new FakeClient("ready");
+    current.on("evener/settings/keybindings/get", () => overridesPayload(3, []));
+    const staleReady = vi.spyOn(stale, "onReady");
+    connectionStore.getState().connect(stale);
+    connectionStore.setState({
+      features: { ...(await stale.connect()).features, keybindingsSettings: true },
+    });
+    // The callback the module registered on `stale`, captured before it ever
+    // fires - `stale` is still mid-handshake, so nothing has begun yet.
+    const staleReadyCallback = staleReady.mock.calls[0]?.[0];
+    expect(staleReadyCallback).toBeDefined();
+
+    connectionStore.getState().connect(current);
+    connectionStore.setState({
+      features: { ...(await current.connect()).features, keybindingsSettings: true },
+    });
+    const callsAfterCurrentWired = current.calls.length;
+
+    // The race this fixes: `stale`'s own dispatch can snapshot its ready
+    // handlers before rewireClient's unsubscribe removes this one, so it
+    // still runs - after `current` is already the wired client.
+    staleReadyCallback?.(await stale.connect());
+
+    expect(current.calls.length).toBe(callsAfterCurrentWired);
   });
 });
 

@@ -41,6 +41,7 @@
 import {
   canReadSharedNotes,
   humanizeState,
+  isActivityFailure,
   watchArmedLabel,
   watchCadenceLabel,
   watchDurationLabel,
@@ -48,8 +49,10 @@ import {
   watchTitle,
 } from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
+import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { selectDisplaySources } from "../../stores/navigation/selectors";
+import { LOCAL_HOST } from "../../stores/hostRouting";
+import { relativeAge, selectDisplaySources, selectSources } from "../../stores/navigation/selectors";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
 import { useTopNotesExpanded } from "../../stores/topNotes";
@@ -66,6 +69,7 @@ import {
   activeWorkSummary,
   type CompletedJobsFoldRailNode,
   displayState,
+  type HostRailNode,
   type InactiveFoldRailNode,
   type JobRailNode,
   needsYouDescendantCount,
@@ -75,9 +79,11 @@ import {
   type RailProject,
   type RailSession,
   type SessionRailNode,
+  sessionGroupHostId,
   type WatchRailNode,
   watchCountLabel,
 } from "./railNodes";
+import { useRailNow } from "./railNow";
 import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
 
@@ -100,6 +106,7 @@ const CLASS = {
   notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
   host: requireClass(styles.host, "RailRow.module.css", "host"),
   hostOffline: requireClass(styles.hostOffline, "RailRow.module.css", "hostOffline"),
+  hostGlyph: requireClass(styles.hostGlyph, "RailRow.module.css", "hostGlyph"),
   star: requireClass(styles.star, "RailRow.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
@@ -242,13 +249,14 @@ export { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchGloss, wat
 
 // secondLine is the row's second line in full: activityGloss above, joined
 // with the session's project when the row needs one (kata hxjn). A session
-// row only needs its project named when it is rendered FLAT, mixed in with
-// other projects' sessions - the Live and Pinned tiers, where a row's own
-// nesting depth is 0 (see below). A session nested under its own ProjectRow
-// (Projects/Test runs/Archived) is depth >= 1 there and never needs this:
-// the project it belongs to is the row it is indented under. Project leads
-// the line (state is what's happening, project is where) the same way
-// activityGloss already leads with state before branch.
+// row only needs its project named when it is the ROOT of a flat
+// cross-project tier, mixed in with other projects' sessions - the Live,
+// Needs-you, and Pinned tier roots (the node's crossProjectTier mark; see
+// SessionRow). A session nested under its own ProjectRow (Projects/Test
+// runs/Archived) never needs this: the project it belongs to is the row it
+// is indented under. Project leads the line (state is what's happening,
+// project is where) the same way activityGloss already leads with state
+// before branch.
 function secondLine(
   session: RailSession,
   showsGloss: boolean,
@@ -375,17 +383,27 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
 const NO_PROJECT_KEY = "no-project";
 
 // Opens a fresh spawn targeted at this project's working directory, via the
-// same /new?dir= URL prefill the palette's "Start with prompt" command
-// already uses for /new?prompt= (shell/palette/commands.ts): Spawn.tsx reads
-// both off window.location.search (panes/spawn/urlPrefill.ts), never pane
-// params - the spawn pane's own params type is deliberately empty (see
-// panes/spawn/Spawn.tsx), so a URL prefill is the only way to hand it a
-// directory. Falls back to a bare /new when a project has no working_dir
-// (shouldn't happen for a real project, but degrades gracefully rather than
-// silently doing nothing) - NO_PROJECT_KEY itself is excluded before this is
-// ever called, same as every other project-scoped action here.
-function spawnInProject(project: RailProject): void {
-  navigate(project.working_dir ? `/new?dir=${encodeURIComponent(project.working_dir)}` : "/new");
+// same /new URL prefill the palette's "Start with prompt" command already
+// uses for /new?prompt= (shell/palette/commands.ts): Spawn.tsx reads dir,
+// prompt, and host off window.location.search (panes/spawn/urlPrefill.ts),
+// never pane params - the spawn pane's own params type is deliberately empty
+// (see panes/spawn/Spawn.tsx), so a URL prefill is the only way to hand it a
+// directory. A "Host, then project" copy passes the host it nests under,
+// and a "Project, then host" project row passes the first owning host in
+// rail order - this hub included in both cases, since the same project's
+// rows share one working_dir and the draft's last-chosen host must not
+// survive a launch from another row. Falls back to a bare /new only when
+// the project has neither a
+// working_dir nor a host to name (shouldn't happen for a real project, but
+// degrades gracefully rather than silently doing nothing) - NO_PROJECT_KEY
+// itself is excluded before this is ever called, same as every other
+// project-scoped action here.
+function spawnInProject(project: RailProject, host?: string): void {
+  const params = new URLSearchParams();
+  if (project.working_dir) params.set("dir", project.working_dir);
+  if (host) params.set("host", host);
+  const query = params.toString();
+  navigate(query ? `/new?${query}` : "/new");
 }
 
 // The project menu offers delete unconditionally: the request is local-only,
@@ -393,14 +411,25 @@ function spawnInProject(project: RailProject): void {
 // a remote host also owns, with a toast that names the hosts (Rail.test.tsx
 // pins it), so the person gets an explanation instead of an item that is
 // silently missing. The row keeps no ownership verdict of its own.
-function projectMenuItems(project: RailProject, actions: RailRowActions): MenuItem[] {
+function projectMenuItems(
+  project: RailProject,
+  actions: RailRowActions,
+  spawnHost?: string,
+  canSpawn = true,
+): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
   return [
-    {
-      id: "new-session",
-      label: "New session",
-      onSelect: () => spawnInProject(project),
-    },
+    // An offline host copy offers no launch at all: the request would
+    // silently fall back to this hub with the remote working_dir.
+    ...(canSpawn
+      ? [
+          {
+            id: "new-session",
+            label: "New session",
+            onSelect: () => spawnInProject(project, spawnHost),
+          },
+        ]
+      : []),
     {
       id: "favorite",
       label: project.favorite ? "Remove from pinned" : "Add to pinned",
@@ -425,7 +454,7 @@ function projectMenuItems(project: RailProject, actions: RailRowActions): MenuIt
 // reachable on hover without costing the list a line. The title always leads, so
 // a truncated title is still recoverable from it (the case this tooltip
 // originally existed for).
-function rowTooltip(session: RailSession, showsGloss: boolean, saysNotStarted: boolean): string {
+function rowTooltip(session: RailSession, showsGloss: boolean, saysNotStarted: boolean, age?: string): string {
   const parts = [session.title];
   // A signal row already prints its state; a quiet one doesn't, so only the
   // quiet case needs the word here. A row that has never run reports THAT
@@ -438,8 +467,9 @@ function rowTooltip(session: RailSession, showsGloss: boolean, saysNotStarted: b
   if (session.tier !== undefined && session.tier !== "" && session.tier !== "current") parts.push(session.tier);
   // A dormant row spends its right slot on "Not started" instead of the age,
   // so the age lands here - the same contract every other fact this row gives
-  // up is held to.
-  if (saysNotStarted && session.age !== undefined && session.age !== "") parts.push(session.age);
+  // up is held to. The caller supplies it from the summary's anchor, because a
+  // clock-derived value cannot be a field the model froze.
+  if (saysNotStarted && age !== undefined && age !== "") parts.push(age);
   return parts.join(" · ");
 }
 
@@ -521,20 +551,87 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
 // of the refresh (round nine). A host the fresh manifest has dropped still
 // leaves its rows reading online once the NEW manifest lands, which is the
 // unchanged "unknown host" contract below.
-function useHostOnline(hostId: string): boolean {
+function useHostOnline(hostId: string | undefined): boolean {
   return useNavigationStore((state) => {
+    // No host to consult (a flat row asking whether its spawn needs a
+    // gate): reads as online, the same default an unknown host gets below.
+    if (hostId === undefined) return true;
     const source = selectDisplaySources(state).find((candidate) => candidate.id === hostId);
     return source ? source.online : true;
   });
+}
+
+// Launchability is a different question from the display flag above: a
+// host can take a launch only while the SETTLED manifest names it and it
+// reads online - the same judgment Spawn's own hostChoice makes. A host
+// the manifest has removed keeps its rows and chips (the display contract)
+// but must stop offering launches: the picker would refuse the prefilled
+// host and silently start the session on this hub, with the remote
+// working_dir.
+function useHostLaunchable(hostId: string | undefined): boolean {
+  return useNavigationStore((state) => {
+    // This hub is always launchable, whatever the manifest's flight state:
+    // Spawn's own fallback IS local, so an in-flight read can never take
+    // this machine away.
+    if (hostId === undefined || hostId === LOCAL_HOST) return true;
+    const source = selectSources(state).find((candidate) => candidate.id === hostId);
+    return source ? source.online : false;
+  });
+}
+
+// The row's label span: the treeitem's accessible name (there is no separate
+// aria-label) and the holder of the title tooltip.
+function RailLabelSpan({ session, tooltip }: { session: RailSession; tooltip: string }): ReactNode {
+  return (
+    <span className={CLASS.label} title={tooltip}>
+      {session.title}
+    </span>
+  );
+}
+
+// A dormant row's tooltip carries the age its right slot gave up to "Not
+// started", and that age is a clock like the visible stamp - so THIS leaf, not
+// the memoized SessionRow, is the rail clock's other subscriber. Every other
+// row's tooltip is clock-free and renders through RailLabelSpan with no
+// subscription at all.
+function DormantLabel({ session, showsGloss }: { session: RailSession; showsGloss: boolean }): ReactNode {
+  const now = useRailNow();
+  return (
+    <RailLabelSpan
+      session={session}
+      tooltip={rowTooltip(session, showsGloss, true, relativeAge(session.updated_at, now))}
+    />
+  );
+}
+
+// RailAge is the row's live "last update" stamp: one of the rail clock's two
+// leaf subscribers (the other is a dormant row's label - see DormantLabel).
+// railNow.tsx owns why the label comes from `updated_at` rather than a field
+// the model precomputed. Sitting BELOW the memoized SessionRow - the boundary
+// ActivityTree.tsx draws with LiveMetaSegments - is what keeps a tick from
+// re-rendering every row that carries a stamp.
+function RailAge({ updatedAt }: { updatedAt?: string }): ReactNode {
+  const now = useRailNow();
+  const label = relativeAge(updatedAt, now);
+  if (label === undefined || label === "") return null;
+  return (
+    <span data-testid="rail-row-time" className={CLASS.time}>
+      {label}
+    </span>
+  );
 }
 
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
   // A non-local row names its host on the title line (a LABEL, not a tree
   // re-layout); reachability comes from the manifest's sources, not from the
-  // row. Dormant keeps its own "never run" meaning - see useHostOnline.
-  const hostId = session.host_id;
-  const showsHost = hostId !== "" && hostId !== "local";
+  // row. A CLUSTER row names its members' host - its own host_id is the
+  // synthetic scope prefix of its id ("cluster"), which names no machine -
+  // the same resolver the grouping uses, so the chip cannot contradict the
+  // group the row sits under. Dormant keeps its own "never run" meaning -
+  // see useHostOnline.
+  const hostId = sessionGroupHostId(session);
+  const showsHost = hostId !== "" && hostId !== LOCAL_HOST;
   const hostOnline = useHostOnline(hostId);
   const needsYouCount = needsYouDescendantCount(session);
   // The state this row PRESENTS (railNodes' displayState): a turn-ended
@@ -559,14 +656,17 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   let effectiveState = presented;
   if (effectiveState !== "errored" && effectiveState !== "restartRequired" && hasActiveWork) effectiveState = "active";
   const showsGloss = SIGNAL_STATES.has(cadenceStateFor(effectiveState));
-  // kata hxjn: a row at depth 0 is a top-level entry in a flat, cross-project
-  // tier (Live/Pinned - see toSessionNode/sessionNodes; a Projects/Test-runs/
-  // Archived session is always nested under its own ProjectRow, never a depth-0
-  // SessionRow). Cross-referencing which project a Live row belongs to used to
-  // mean leaving the rail entirely, so those rows get a second line even when
-  // otherwise quiet - the one exception to the "quiet row is one line" rule
-  // above, made for exactly the fact that rule can't otherwise carry.
-  const showsProject = info.depth === 0;
+  // kata hxjn: the ROOT of a flat, cross-project tier (Live/Needs-you/Pinned
+  // - the rows sessionNodes builds, marked crossProjectTier on the node; a
+  // Projects/Test-runs/Archived session is always nested under its own
+  // ProjectRow, which already names the project). Cross-referencing which
+  // project such a row belongs to used to mean leaving the rail entirely, so
+  // those rows get a second line even when otherwise quiet - the one
+  // exception to the "quiet row is one line" rule above, made for exactly
+  // the fact that rule can't otherwise carry. The node's mark, not nesting
+  // depth: host grouping nests these rows under host subheaders, so depth
+  // stopped separating a tier root from a project row.
+  const showsProject = node.crossProjectTier === true;
   const notStarted = saysNotStarted(session, showsGloss);
   // The session's own armed watches. Not a subtree rollup: the hub keeps each
   // watch on its receiver's summary, so this is every watch the fold-out below
@@ -621,9 +721,11 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             drops (rowTooltip). */}
         <span className={CLASS.titleLine}>
           <Signal wireState={effectiveState} />
-          <span className={CLASS.label} title={rowTooltip(session, showsGloss, notStarted)}>
-            {session.title}
-          </span>
+          {notStarted ? (
+            <DormantLabel session={session} showsGloss={showsGloss} />
+          ) : (
+            <RailLabelSpan session={session} tooltip={rowTooltip(session, showsGloss, false)} />
+          )}
           <TrailingChevron info={info} />
           {/* Host label after the chevron (which hugs the title text), so a
               remote row says where it lives without pushing the title. The
@@ -668,11 +770,12 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
       {/* Gated on the same rule as the pin action: the wire can still carry
           favorite:true on a nested or synthetic node (a decision written
           before pinning was scoped, or a direct API call), and a star on a row
-          whose menu offers no way to remove it is a dead end. Depth 0 rows -
-          the flat Live and named-pin-section tiers - never carry it at all:
-          being listed in those sections already says the session is pinned,
-          so the star there is redundancy, not information. */}
-      {session.pin_section_id !== undefined && isTopLevelSession(session) && info.depth > 0 && (
+          whose menu offers no way to remove it is a dead end. Cross-project
+          tier roots (the flat Live and named-pin-section rows, wherever host
+          grouping nests them) never carry it at all: being listed in those
+          sections already says the session is pinned, so the star there is
+          redundancy, not information. */}
+      {session.pin_section_id !== undefined && isTopLevelSession(session) && node.crossProjectTier !== true && (
         <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>
           {"★"}
         </span>
@@ -702,12 +805,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             Not started
           </span>
         ) : (
-          session.age !== undefined &&
-          session.age !== "" && (
-            <span data-testid="rail-row-time" className={CLASS.time}>
-              {session.age}
-            </span>
-          )
+          <RailAge updatedAt={session.updated_at} />
         )}
         <span className={CLASS.actions}>
           <SessionMenuRow session={session} actions={actions} />
@@ -732,13 +830,27 @@ function ProjectRow({
 }) {
   const { project } = node;
   const attentionCount = project.rollup_attn ?? 0;
+  // The project-wide rollup is an aggregate fact, so it reads ONCE: on the
+  // rows that own the project's aggregate facts - every single-copy tier's
+  // canonical row (flat, test runs, archived) or a hostless row (the
+  // no-sources builder contract) - or on the one aggregate row the grouped
+  // modes mark (the project-first project row, or the canonical host-first
+  // copy - the first host in rail order with loaded rows, the same copy
+  // that renders the project's overflow). Every other copy claims nothing
+  // - an honest per-host count would need wire support the manifest does
+  // not carry, the same line the host group row itself draws.
+  const showsRollup = node.spawnHost === undefined || node.canonicalCopy === true;
+  // The Spawn picker refuses an offline or unknown-to-the-manifest host; a
+  // copy nested under one must not offer a launch that would silently fall
+  // back to this hub (with the remote working_dir).
+  const canSpawn = useHostLaunchable(node.spawnHost);
   return (
     <span className={CLASS.railRow}>
       {/* Same title-line anatomy as SessionRow: outdented signal dot, name,
           trailing chevron on a branch row. */}
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
-          <Signal wireState={project.rollup_state ?? "idle"} />
+          <Signal wireState={showsRollup ? (project.rollup_state ?? "idle") : "idle"} />
           {/* Same reasoning as SessionRow's own label above. displayName is
               the UX-fix decoration railNodes.ts's projectDisplayLabels
               stamps on when this project's name collides with a sibling's
@@ -773,19 +885,67 @@ function ProjectRow({
           pair share one cell - the menu covers the badge while revealed
           instead of reserving width beside it. */}
       <span className={CLASS.rightSlot}>
-        {attentionCount > 0 && <Badge count={attentionCount} tone="attention" />}
+        {showsRollup && attentionCount > 0 && <Badge count={attentionCount} tone="attention" />}
         <span className={CLASS.actions}>
-          {project.key !== NO_PROJECT_KEY && (
+          {project.key !== NO_PROJECT_KEY && canSpawn && (
             <IconButton
               label={`New session in ${project.name}`}
               icon={<span aria-hidden="true">{"+"}</span>}
               variant="quiet"
               size="sm"
               tabIndex={-1}
-              onClick={() => spawnInProject(project)}
+              onClick={() => spawnInProject(project, node.spawnHost)}
             />
           )}
-          <ActionsMenu label={project.name} items={projectMenuItems(project, actions)} />
+          <ActionsMenu label={project.name} items={projectMenuItems(project, actions, node.spawnHost, canSpawn)} />
+        </span>
+      </span>
+    </span>
+  );
+}
+
+// project.sources is the project's ownership (project-level mutations are
+// keyed by (source, project ID), and the row's menu closes over the project
+// object), so the memo comparator must compare it by contents: an ownership
+// change (a host attached or detached) re-renders the row and its action
+// closures, while an unchanged list reuses the memoized row.
+function projectSourcesEqual(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+// The rail's organize-by host group row - a configured host as a synthetic
+// branch, in whichever shape the grouping puts it in ("Host, then project"
+// top group, "Project, then host" branch inside a project, or a Live-section
+// subheader). Anatomy is the project row's: a leading glyph instead of a
+// signal dot (a host is infrastructure, not triage), the label, a trailing
+// chevron. Offline follows the session rows' own host-label convention:
+// italic, dimmed, "(offline)" in the caption ink. No rollup Badge and no
+// actions: the manifest carries no per-host attention count, and the rows
+// under the group keep their own signals and menus.
+function HostRow({ node, info }: { node: HostRailNode; info: TreeRowInfo }) {
+  const { host } = node;
+  return (
+    <span
+      className={CLASS.railRow}
+      data-testid="rail-row-host-group"
+      title={host.online ? `Host ${host.label}` : `Host ${host.label} is offline`}
+    >
+      <span className={CLASS.textCol}>
+        <span className={CLASS.titleLine}>
+          <HostGlyph className={CLASS.hostGlyph} testId="rail-row-host-glyph" />
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
+          <span className={host.online ? CLASS.label : `${CLASS.label} ${CLASS.hostOffline}`} onClick={info.activate}>
+            {host.label}
+          </span>
+          {!host.online && (
+            <span data-testid="rail-row-host-group-offline" className={CLASS.host}>
+              {" (offline)"}
+            </span>
+          )}
+          <TrailingChevron info={info} />
         </span>
       </span>
     </span>
@@ -845,12 +1005,13 @@ function jobTitle(job: JobRailNode["job"], status: string): string {
 function JobRow({ node }: { node: JobRailNode }) {
   const active = node.active;
   const status = node.job.status.trim() || (active ? "running" : "completed");
+  const displayStatus = jobStatusDisplay(status, node.job.reason);
   return (
     <span className={CLASS.railRow} data-testid="rail-row-job" data-job-id={node.job.job_id}>
       <span className={CLASS.textCol}>
         <span className={CLASS.titleLine}>
-          <Signal wireState={active ? "active" : status === "failed" ? "errored" : "ended"} />
-          <span className={CLASS.label} title={jobTitle(node.job, status)}>
+          <Signal wireState={active ? "active" : isActivityFailure(undefined, status) ? "errored" : "ended"} />
+          <span className={CLASS.label} title={jobTitle(node.job, displayStatus)}>
             {jobLabel(node.job)}
           </span>
         </span>
@@ -858,7 +1019,7 @@ function JobRow({ node }: { node: JobRailNode }) {
           data-testid="rail-row-job-status"
           className={active ? `${CLASS.activity} ${CLASS.activityAlive}` : CLASS.activity}
         >
-          {status}
+          {displayStatus}
         </span>
       </span>
     </span>
@@ -879,6 +1040,21 @@ export function WatchGlyph({ className, testId }: { className: string; testId: s
     <svg data-testid={testId} className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
       <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
       <path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// The host glyph a host group row leads with: DRAWN on the rail's 16x16 icon
+// grammar (railIcons.tsx) and sized/inked like the watch row's clock above -
+// two stacked units and their drive dots, so the row reads as "a machine"
+// rather than a text glyph falling back to a system font. aria-hidden like
+// WatchGlyph: the label beside it is the row's accessible name.
+function HostGlyph({ className, testId }: { className: string; testId: string }) {
+  return (
+    <svg data-testid={testId} className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <rect x="2" y="2.75" width="12" height="4.5" rx="1.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="2" y="8.75" width="12" height="4.5" rx="1.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M4.75 5h.01M4.75 11h.01" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
     </svg>
   );
 }
@@ -970,12 +1146,15 @@ function railRowPropsEqual(previous: RailRowProps, next: RailRowProps): boolean 
   // boundary.
   return (
     previous.node.id === next.node.id &&
+    previous.node.spawnHost === next.node.spawnHost &&
+    previous.node.canonicalCopy === next.node.canonicalCopy &&
     previous.node.displayName === next.node.displayName &&
     previous.node.resourceError === next.node.resourceError &&
     previous.node.retry === next.node.retry &&
     previousProject.key === nextProject.key &&
     previousProject.name === nextProject.name &&
     previousProject.working_dir === nextProject.working_dir &&
+    projectSourcesEqual(previousProject.sources, nextProject.sources) &&
     previousProject.rollup_state === nextProject.rollup_state &&
     previousProject.rollup_attn === nextProject.rollup_attn &&
     previousProject.favorite === nextProject.favorite &&
@@ -1008,6 +1187,8 @@ export const RailRow = memo(function RailRow({ node, info, actions, resourceErro
           retry={retry ?? node.retry}
         />
       );
+    case "host":
+      return <HostRow node={node} info={info} />;
     case "session":
       return <SessionRow node={node} info={info} actions={actions} />;
   }

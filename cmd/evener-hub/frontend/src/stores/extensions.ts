@@ -2,7 +2,7 @@
 // cluster (Marketplaces & Plugins, Plugins/Skills directories, MCP servers -
 // panes/settings/sections/{marketplacesPlugins,dirListSetting,pluginsDirs,
 // skillsDirs,mcp}). It rides the single AppwireClientLike connection.ts wires
-// via useConnectionStore.getState().connect(client), same as threads.ts/
+// via connectionStore.getState().connect(client), same as threads.ts/
 // tree.ts - this store has no connect() of its own.
 //
 // Split, deliberately, into two halves with different failure conventions,
@@ -18,194 +18,335 @@
 //     React) catch the rejection and toast, per the app's toast-on-failure
 //     convention.
 
-import type {
-  AppwireClientLike,
-  HostNotificationParams,
-  LaunchConfigLayer,
-  PathValidateResponse,
-  PluginEntry,
-} from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
-import { createMarketplacesStore, type MarketplacesState } from "@evener/appwire-client/state/extensions";
+import type { AnyNotification, PathValidateResponse } from "@evener/appwire-client";
+import {
+  createLaunchLayerStore,
+  createMarketplacesStore,
+  createPluginsStore,
+  type LaunchLayerClient,
+  type LaunchLayerState,
+  type LaunchLayerStore,
+  type MarketplacesClient,
+  type MarketplacesState,
+  type MarketplacesStore,
+  type PluginsClient,
+  type PluginsState,
+  type PluginsStore,
+} from "@evener/appwire-client/state/extensions";
 import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
-import { connectionStore, onConnectionNotification } from "./connection";
+import { createStore, type StoreApi } from "zustand/vanilla";
+import {
+  type ConnectionStoreState,
+  connectedClientPort,
+  connectionStore,
+  onConnectionNotification,
+} from "./connection";
 import { isLocalHost } from "./hostRouting";
+import { remoteHostStoreClient } from "./hostStoreClient";
+import {
+  currentHostRegistration,
+  type HostRegistration,
+  hostRegistrationChanged,
+  hostsStore,
+  registrySaysHostGone,
+} from "./hosts";
+import { launchConfigStore, launchConfigStoreForHost } from "./launchConfig";
 
 export type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
 
-export interface ExtensionsStoreState extends MarketplacesState {
-  plugins: PluginEntry[] | null;
-  pluginRevision: number;
-  pluginsLoading: boolean;
-  pluginsError: string | null;
-  fetchPlugins(): Promise<void>;
-  installPlugin(plugin: string, marketplace: string): Promise<void>;
-  upgradePlugin(plugin: string, marketplace: string): Promise<void>;
-  removePlugin(plugin: string, marketplace: string): Promise<void>;
-  enablePlugin(plugin: string, marketplace: string): Promise<void>;
-  disablePlugin(plugin: string, marketplace: string): Promise<void>;
-  setPluginAutoUpgrade(plugin: string, marketplace: string, autoUpgrade: boolean): Promise<void>;
-
-  // The global launch-config layer - backs Plugins/Skills directories and
-  // MCP's editable config-files/inline-servers lists (all four are fields
-  // on this same object). Deliberately NOT layer-aware (always cwd:"/",
-  // layer:"global") - matches every one of §§13-15's legacy partials, none
-  // of which is layer-parameterized either (Appendix B's schema-driven
-  // engine is the one that supports project-layer editing, and it's T2's
-  // Evener-launch/Per-project domain, not this store's).
-  launchLayer: LaunchConfigLayer | null;
-  launchLayerLoading: boolean;
-  launchLayerError: string | null;
-  fetchLaunchLayer(): Promise<void>;
-  setLaunchLayer(next: LaunchConfigLayer): Promise<void>;
-
+export interface ExtensionsStoreState extends MarketplacesState, PluginsState, LaunchLayerState {
+  // The filesystem three the sections' PathFields and directory pickers use;
+  // the launch-config gateway answers all of them (see below).
   validatePath(path: string, kind: string): Promise<PathValidateResponse>;
   createDirectory(path: string): Promise<void>;
-  // Backs PathField. The prefix passes through verbatim, because the widget
-  // picks which of the RPC's two duties it wants per keystroke: a trailing
-  // slash lists a directory's children, a bare prefix fuzzy-completes it
-  // (TestHubRPCPathsCompleteReturnsMatchingDirectories). includeFiles adds
-  // files to the dirs-only default, and then directory entries come back with
-  // a trailing slash.
   completePaths(prefix: string, includeFiles: boolean): Promise<string[]>;
 }
 
-function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error("extensions store: no client connected; call useConnectionStore.getState().connect(client) first");
-  }
-  return client;
+// The shared port's `request` forwards to connectionStore's CURRENT client on
+// every call; only the notification side is extensions-specific (see below).
+const { request } = connectedClientPort("extensions");
+
+// onHubConfigNotification delivers the config notifications THIS hub's fetches
+// are about. The controller's own arrive plainly. A host's own arrive wrapped
+// in evener/host/notification tagged with the host that owns them
+// (cmd/evener-hub/app_host_admin.go's relayHostNotifications, one fan-out per
+// remote host, over the remoteHostConfigNotifications allowlist), and every
+// fetch reached from here - evener/marketplace/list, evener/plugin/list,
+// evener/launch/getLayer - reads this hub over the plain connection, so
+// another host's change is no evidence about any of them and goes no further.
+// A wrapper tagged with the controller itself is this hub's own change, and is
+// delivered unwrapped: indistinguishable from the plain notification. The one
+// thing a remote host's plugin change does move is pluginRevision (below).
+function onHubConfigNotification(handler: (n: AnyNotification) => void): () => void {
+  return onConnectionNotification((n) => {
+    if (n.method !== "evener/host/notification") {
+      handler(n);
+      return;
+    }
+    if (!isLocalHost(n.params.host)) return;
+    handler({ method: n.params.method, params: n.params.params } as AnyNotification);
+  });
 }
 
-const GLOBAL_LAYER_PARAMS = { cwd: "/", layer: "global" } as const;
+/** The filesystem three the sections' PathFields and directory pickers use; on
+ * a merged store they are the launch-config gateway's own methods. */
+type ExtensionsPathActions = Pick<ExtensionsStoreState, "validatePath" | "createDirectory" | "completePaths">;
 
-// The marketplaces store proper lives in the package; this is the app's one
-// instance, over a client port that resolves connectionStore's CURRENT client
-// at request time. It publishes into extensionsStore (below the store) so the
-// sections keep reading one store; the plugins and launch-layer slices are
-// still written here.
-const marketplaces = createMarketplacesStore({
-  request: (method, params, opts) => requireClient().request(method, params, opts),
-  onNotification: onConnectionNotification,
-});
-marketplaces.start();
+/** ExtensionsInstance is one hub's three extensions cores plus the merged store
+ * the sections read. A remote host gets its own instance (extensionsInstanceForHost
+ * below), so every cache and revision it holds is that host's own. */
+interface ExtensionsInstance {
+  marketplaces: MarketplacesStore;
+  plugins: PluginsStore;
+  launchLayer: LaunchLayerStore;
+  store: StoreApi<ExtensionsStoreState>;
+}
 
-export const extensionsStore = createStore<ExtensionsStoreState>((set) => ({
-  ...marketplaces.getState(),
-
-  plugins: null,
-  pluginRevision: 0,
-  pluginsLoading: false,
-  pluginsError: null,
-
-  async fetchPlugins() {
-    set({ pluginsLoading: true, pluginsError: null });
-    try {
-      const client = requireClient();
-      const resp = await client.request("evener/plugin/list", {});
-      set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
-    } catch (err) {
-      set({ pluginsLoading: false, pluginsError: errorText(err) });
+// Each core's publish lands here synchronously, as the fields it changed: a
+// whole-snapshot copy would make the core the owner of every one of its
+// fields and overwrite a value written straight into this store (the section
+// tests seed their fixtures that way).
+function publishChangedFields<S extends Partial<ExtensionsStoreState>>(
+  target: StoreApi<ExtensionsStoreState>,
+  core: { subscribe(listener: (state: S, previous: S) => void): () => void },
+): void {
+  core.subscribe((state, previous) => {
+    const changed: Partial<ExtensionsStoreState> = {};
+    for (const key of Object.keys(state) as (keyof S & keyof ExtensionsStoreState)[]) {
+      if (state[key] !== previous[key]) Object.assign(changed, { [key]: state[key] });
     }
+    target.setState(changed);
+  });
+}
+
+/** buildExtensionsInstance wires the three cores to `client` and publishes them
+ * into one merged store over `paths` (the launch-config gateway's filesystem
+ * three: the controller's own store for the local hub, a per-host instance for a
+ * remote one). */
+function buildExtensionsInstance(
+  client: MarketplacesClient & PluginsClient & LaunchLayerClient,
+  paths: ExtensionsPathActions,
+): ExtensionsInstance {
+  const marketplaces = createMarketplacesStore(client);
+  marketplaces.start();
+  const plugins = createPluginsStore(client);
+  plugins.start();
+  const launchLayer = createLaunchLayerStore(client);
+  launchLayer.start();
+
+  const store = createStore<ExtensionsStoreState>(() => ({
+    ...marketplaces.getState(),
+    ...plugins.getState(),
+    ...launchLayer.getState(),
+
+    // The three filesystem RPCs are the launch-config gateway's
+    // (stores/launchConfig.ts over the package's createLaunchConfigStore), named
+    // once there for every surface that picks a path. They stay on this store's
+    // state because the sections reach them through it.
+    validatePath: (path, kind) => paths.validatePath(path, kind),
+    createDirectory: (path) => paths.createDirectory(path),
+    completePaths: (prefix, includeFiles) => paths.completePaths(prefix, includeFiles),
+  }));
+  publishChangedFields(store, marketplaces);
+  publishChangedFields(store, plugins);
+  publishChangedFields(store, launchLayer);
+  return { marketplaces, plugins, launchLayer, store };
+}
+
+const hubClient = {
+  request,
+  onNotification: onHubConfigNotification,
+} satisfies MarketplacesClient & PluginsClient & LaunchLayerClient;
+
+// The controller's own three cores, over the plain port, published into the one
+// merged store today's sections read. The local hub is byte-for-byte the store
+// that existed before host scoping; a remote host gets its own instance below.
+const localInstance = buildExtensionsInstance(hubClient, launchConfigStore.getState());
+export const extensionsStore = localInstance.store;
+
+/** goneInstance is what a lookup for a host the registry does not list returns:
+ * ONE shared instance whose three cores run over a port that refuses every call
+ * and subscribes to nothing. Nothing kept for the previous registration, and
+ * nothing built per lookup (each core's `start()` wires a subscription, so an
+ * instance per call would wire three of them for a host that does not exist). */
+const goneClient = {
+  request: async () => {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no extensions store");
   },
-
-  async installPlugin(plugin, marketplace) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/install", { plugin, marketplace });
-    set({ plugins: resp.plugins });
+  onNotification: () => () => {},
+} satisfies MarketplacesClient & PluginsClient & LaunchLayerClient;
+const gonePaths: ExtensionsPathActions = {
+  validatePath: async () => {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no paths");
   },
-
-  async upgradePlugin(plugin, marketplace) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/upgrade", { plugin, marketplace });
-    set({ plugins: resp.plugins });
+  createDirectory: async () => {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no paths");
   },
-
-  async removePlugin(plugin, marketplace) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/remove", { plugin, marketplace });
-    set({ plugins: resp.plugins });
+  completePaths: async () => {
+    throw new Error("this host is not registered: the registry lists no such host, so it has no paths");
   },
+};
+const goneInstance = buildExtensionsInstance(goneClient, gonePaths);
 
-  async enablePlugin(plugin, marketplace) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/enable", { plugin, marketplace });
-    set({ plugins: resp.plugins });
-  },
+// The hub broadcasts a change to every CONNECTED client, so a change made
+// while this browser was disconnected reaches it as nothing at all: the
+// notification each core follows cannot recover it, and the reconnect can.
+// Each core re-reads its list when this connection is ready again - only if
+// something has read it already, so a section the user never opened still
+// sends nothing.
+function syncConnection(state: Pick<ConnectionStoreState, "client" | "state">): void {
+  localInstance.marketplaces.connectionChanged(state.client, state.state);
+  localInstance.plugins.connectionChanged(state.client, state.state);
+  localInstance.launchLayer.connectionChanged(state.client, state.state);
+}
+connectionStore.subscribe(syncConnection);
 
-  async disablePlugin(plugin, marketplace) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/disable", { plugin, marketplace });
-    set({ plugins: resp.plugins });
-  },
+// --- Host-scoped instances (component 07b) ----------------------------------
+//
+// A REMOTE host's marketplaces, plugins and global launch layer are that host's
+// own, and each core caches server-side data (the browse catalogs, the list
+// revisions, the layer). One instance with a per-call routing port would serve
+// host A's cached catalog for host B, so each remote host gets its own instance
+// over a client that forwards through evener/host/request
+// (stores/hostStoreClient.ts). The controller's own singleton above is
+// untouched: the local hub stays byte-for-byte today's store.
 
-  async setPluginAutoUpgrade(plugin, marketplace, autoUpgrade) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/setAutoUpgrade", { plugin, marketplace, autoUpgrade });
-    set({ plugins: resp.plugins });
-  },
+interface ExtensionsHostEntry {
+  instance: ExtensionsInstance;
+  /** What the registry said REGISTERED this host when the instance was built
+   * (stores/hosts.ts's HostRegistration). The instance is current only while
+   * the registry still gives the same answer, so a host removed and re-added
+   * under the same name gets a fresh instance rather than the previous
+   * registration's cached catalogs and revisions - and a response the old
+   * registration had in flight lands in the instance it was issued for. */
+  registration: HostRegistration;
+}
 
-  launchLayer: null,
-  launchLayerLoading: false,
-  launchLayerError: null,
+const hostInstances = new Map<string, ExtensionsHostEntry>();
 
-  async fetchLaunchLayer() {
-    set({ launchLayerLoading: true, launchLayerError: null });
-    try {
-      const client = requireClient();
-      const layer = await client.request("evener/launch/getLayer", GLOBAL_LAYER_PARAMS);
-      set({ launchLayer: layer, launchLayerLoading: false, launchLayerError: null });
-    } catch (err) {
-      set({ launchLayerLoading: false, launchLayerError: errorText(err) });
+/** syncInstance tells one instance's three cores which connection is current.
+ * A repeat of the connection it already has is a no-op (their own
+ * connectionChanged says so), so this is safe to call on every transition. */
+function syncInstance(instance: ExtensionsInstance, state: Pick<ConnectionStoreState, "client" | "state">): void {
+  instance.marketplaces.connectionChanged(state.client, state.state);
+  instance.plugins.connectionChanged(state.client, state.state);
+  instance.launchLayer.connectionChanged(state.client, state.state);
+}
+
+function syncHostInstances(state: Pick<ConnectionStoreState, "client" | "state">): void {
+  for (const entry of hostInstances.values()) syncInstance(entry.instance, state);
+  // The shared gone instance is not an entry - a host the registry does not list
+  // keeps nothing - but its cores still have to see the connection: without it
+  // they hold "no connection" and a call on them would return before reaching
+  // the refusing port at all.
+  syncInstance(goneInstance, state);
+}
+connectionStore.subscribe(syncHostInstances);
+
+/** disposeHostInstance ends a per-host instance's three cores. Their
+ * `start()` wired live notification subscriptions, so an instance no consumer
+ * can reach any more - a re-registration replaced it, or a test ended - must be
+ * disposed rather than dropped. `dispose()` is terminal. */
+function disposeHostInstance(instance: ExtensionsInstance): void {
+  instance.marketplaces.dispose();
+  instance.plugins.dispose();
+  instance.launchLayer.dispose();
+}
+
+// The registry's own transition evicts - never a lookup. A host that leaves the
+// registry is rendered as the frame's own refusal instead of its body
+// (hostScopedSurface.tsx), so nothing calls this accessor for it again: left to
+// the accessor, the instance would stay in this map for the rest of the session
+// with its three cores' subscriptions live, and syncHostInstances would go on
+// calling connectionChanged on them - so every reconnect would forward
+// evener/host/request for a host the registry no longer lists. Only the
+// registry's ANSWERED "gone" evicts (stores/hosts.ts's registrySaysHostGone), so
+// a host that is merely unattached, or one whose read has not answered yet, is
+// never dropped.
+hostsStore.subscribe(() => {
+  const load = hostsStore.getState().load;
+  for (const name of [...hostInstances.keys()]) {
+    if (registrySaysHostGone(load, name)) {
+      const recorded = hostInstances.get(name);
+      if (recorded !== undefined) disposeHostInstance(recorded.instance);
+      hostInstances.delete(name);
     }
-  },
-
-  async setLaunchLayer(next) {
-    const client = requireClient();
-    // setLayer's response is a LaunchConfigResolved (effective + a
-    // per-layer map), not the plain layer this store tracks - and
-    // FromWire/ToWire (cmd/evener-hub/internal/launchconfig/wire.go) are a
-    // straight field-for-field copy with no server-side normalization, so
-    // `next` (what was just successfully saved) IS the new global layer.
-    // Trusting our own outgoing payload avoids taking a dependency on the
-    // resolved response's internal layer-name keying, which nothing in
-    // this store otherwise needs to know.
-    await client.request("evener/launch/setLayer", { ...GLOBAL_LAYER_PARAMS, config: next });
-    set({ launchLayer: next });
-  },
-
-  async validatePath(path, kind) {
-    const client = requireClient();
-    return client.request("evener/path/validate", { path, kind });
-  },
-
-  async createDirectory(path) {
-    await requireClient().request("evener/dirs/create", { path });
-  },
-
-  async completePaths(prefix, includeFiles) {
-    const client = requireClient();
-    const resp = await client.request("evener/paths/complete", { prefix, includeFiles });
-    // Defence in depth against a null `data`. The hub sends [] and the wire type
-    // says string[], but a null here would reach every PathField on the page and
-    // a form must not come down over an empty directory listing.
-    return resp.data ?? [];
-  },
-}));
-
-// Each marketplaces publish lands here synchronously, as the fields it
-// changed: a whole-snapshot copy would make the core the owner of every
-// marketplaces field and overwrite a value written straight into this store
-// (the section tests seed their fixtures that way).
-marketplaces.subscribe((state, previous) => {
-  const changed: Partial<MarketplacesState> = {};
-  for (const key of Object.keys(state) as (keyof MarketplacesState)[]) {
-    if (state[key] !== previous[key]) Object.assign(changed, { [key]: state[key] });
   }
-  extensionsStore.setState(changed);
 });
+
+/** extensionsInstanceForHost returns the extensions instance for `host`: the
+ * controller's own instance for the local hub (and for an absent host), and a
+ * per-host instance for a remote one. Nothing here falls back to the
+ * controller's data: a remote host's sections read only its own instance. */
+export function extensionsInstanceForHost(host: string | null | undefined): ExtensionsInstance {
+  if (isLocalHost(host)) return localInstance;
+  const name = host as string;
+  const registration = currentHostRegistration(name);
+  const recorded = hostInstances.get(name);
+  // The registry says this host is not configured (stores/hosts.ts's
+  // registrySaysHostGone - the same answer the eviction subscription above acts
+  // on): nothing is kept for it, so a lookup that races that subscription - or
+  // one made before this module was loaded - cannot rebuild an instance whose
+  // three cores would open subscriptions nothing would ever unwind.
+  if (registrySaysHostGone(hostsStore.getState().load, name)) {
+    if (recorded !== undefined) {
+      disposeHostInstance(recorded.instance);
+      hostInstances.delete(name);
+    }
+    return goneInstance;
+  }
+  if (recorded !== undefined && !hostRegistrationChanged(recorded.registration, registration)) {
+    // The first answer after an instance was built before the registry had one
+    // identifies it from here on; every other unchanged answer is the same one.
+    if (registration !== undefined) recorded.registration = registration;
+    return recorded.instance;
+  }
+  // A re-registration: the instance this replaces belongs to a registration the
+  // registry no longer names, so its cores are unwired before it is dropped -
+  // otherwise its subscriptions would keep refetching for a host no section can
+  // reach.
+  if (recorded !== undefined) disposeHostInstance(recorded.instance);
+  const instance = buildExtensionsInstance(remoteHostStoreClient(name), launchConfigStoreForHost(name).getState());
+  hostInstances.set(name, { instance, registration });
+  // The connection that already exists: this module is loaded after the client
+  // may be ready, so a fresh instance reads it rather than waiting for the NEXT
+  // transition (mirrors syncConnection's own initial pass). A no-op for the
+  // instances already there - connectionChanged ignores a repeat of the
+  // connection it already has.
+  syncHostInstances(connectionStore.getState());
+  return instance;
+}
+
+/** extensionsStoreForHost returns the merged store the settings sections read
+ * for `host`. */
+export function extensionsStoreForHost(host: string | null | undefined): StoreApi<ExtensionsStoreState> {
+  return extensionsInstanceForHost(host).store;
+}
+
+/** useExtensionsStoreForHost reads the merged extensions store for `host`: the
+ * controller's own store for the local hub, a per-host instance for a remote
+ * one. This is how the host-scoped sections read (component 07b); the plain
+ * useExtensionsStore above keeps reading the controller's, so a surface that is
+ * not host-scoped is unchanged. */
+export function useExtensionsStoreForHost<T>(
+  host: string | null | undefined,
+  selector: (state: ExtensionsStoreState) => T,
+): T {
+  return useStore(extensionsStoreForHost(host), selector);
+}
+
+// And the connection that already exists. This module is lazily loaded, so
+// initializing after the client is ready is the common case: without this pass
+// the cores' first sight of the connection is the NEXT transition, which they
+// read as a first connection - invalidating nothing and moving no revision,
+// exactly when a disconnection has just hidden changes from them. Same shape
+// as stores/credentials.ts's own initial pass.
+//
+// Last in the module, after the store and its mirrors exist: the pass can
+// reach a core's state (a recovery read for a list something has already read,
+// which cannot be true at first load but is one refactor away from being), and
+// whatever a core publishes has to have somewhere to land.
+syncConnection(connectionStore.getState());
 
 export function useExtensionsStore(): ExtensionsStoreState;
 export function useExtensionsStore<T>(selector: (state: ExtensionsStoreState) => T): T;
@@ -216,119 +357,62 @@ export function useExtensionsStore<T>(selector?: (state: ExtensionsStoreState) =
   return selector ? useStore(extensionsStore, selector) : useStore(extensionsStore);
 }
 
-// --- notification-triggered refetch --------------------------------------
+// A REMOTE host's plugin change moves pluginRevision, and nothing else here.
 //
-// The hub BroadcastAlls these notifications to every connected client after a
-// successful mutation from ANY of them - the cross-client staleness gap this
-// store had until now (a change made in one browser tab never reached any
-// other tab's already-loaded plugins/launchLayer until a manual re-open of
-// the section). Mirrors the navigation store's identical wiring for the
-// sidebar's REST-backed refetch, applied here to this store's RPC-backed
-// fetches - independent debounced channels (not one shared one like
-// tree.ts's) since the lists are unrelated fetches that should each coalesce
-// their own bursts without waiting on each other; the marketplaces store
-// runs its own channel inside the package. The notifications' generated
-// payload types are empty ({}) in protocol/types.gen.ts, so there is nothing
-// to apply directly and a debounced re-fetch of the affected list is the
-// only option, exactly like evener/navigation/invalidated's own "just
-// refetch" contract. On the wire evener/plugin/updated genuinely sends an
-// empty map (notifyPluginUpdated, cmd/evener-hub/app_rpc.go:663), while
-// evener/launch/updated carries {cwd, layer} (notifyLaunchUpdated,
-// app_rpc.go:772-775) whose fields the generated type drops because codegen
-// can't see into Go's untyped map[string]string; this refetch is
-// payload-agnostic either way.
-const REFETCH_DEBOUNCE_MS = 250;
-
-let pluginRefetchTimer: ReturnType<typeof setTimeout> | undefined;
-let launchLayerRefetchTimer: ReturnType<typeof setTimeout> | undefined;
-
-function schedulePluginRefetch(): void {
-  clearTimeout(pluginRefetchTimer);
-  pluginRefetchTimer = setTimeout(() => {
-    void extensionsStore.getState().fetchPlugins();
-  }, REFETCH_DEBOUNCE_MS);
-}
-
-function scheduleLaunchLayerRefetch(): void {
-  clearTimeout(launchLayerRefetchTimer);
-  launchLayerRefetchTimer = setTimeout(() => {
-    void extensionsStore.getState().fetchLaunchLayer();
-  }, REFETCH_DEBOUNCE_MS);
-}
-
+// pluginRevision is the revision the HOST-SCOPED plugin consumers key their
+// requests on: usePluginPreview and useSpawnSlashCatalog build their logical
+// key from it and then issue their own evener/plugin/preview /
+// evener/spawn/slashCatalog against the SELECTED host through
+// evener/host/request. Without the bump a plugin enabled or disabled on that
+// host is never observed, so the spawn form keeps rendering the pre-change
+// list - and a plugin reconciled from that stale preview is sent as a
+// thread/start launchOverride the host no longer has. So the revision moves
+// for a remote host's update exactly as it does for the controller's own, which
+// the plugins core moves from its own subscription.
+//
+// The core's list refetch is a different matter, and is why this is written
+// here rather than delivered to the core: evener/plugin/list reads THIS hub
+// over the plain connection, and a remote host's change is no evidence about
+// this hub's plugins.
 onConnectionNotification((n) => {
-  if (n.method === "evener/plugin/updated") {
-    extensionsStore.setState((state) => ({ pluginRevision: state.pluginRevision + 1 }));
-    schedulePluginRefetch();
-  } else if (n.method === "evener/launch/updated") {
-    scheduleLaunchLayerRefetch();
-  } else if (n.method === "evener/host/notification") {
-    handleHostNotification(n.params);
-  }
+  if (n.method !== "evener/host/notification") return;
+  if (n.params.method !== "evener/plugin/updated" || isLocalHost(n.params.host)) return;
+  localInstance.plugins.setState((state) => ({ pluginRevision: state.pluginRevision + 1 }));
 });
 
-// handleHostNotification consumes a REMOTE host's config notification, which the
-// hub re-emits to this browser wrapped in evener/host/notification tagged with
-// the host that owns it (cmd/evener-hub/app_host_admin.go's
-// relayHostNotifications, broadcast to every client for every subscribed host,
-// over the remoteHostConfigNotifications allowlist that names both
-// evener/plugin/updated and evener/launch/updated).
-//
-// The plugin half is load-bearing for the spawn form. pluginRevision is the
-// revision the HOST-SCOPED plugin consumers key their requests on:
-// usePluginPreview and useSpawnSlashCatalog build their logical key from it and
-// then issue their own evener/plugin/preview / evener/spawn/slashCatalog against
-// the SELECTED host through evener/host/request. Without the bump a plugin
-// enabled or disabled on that host is never observed, so the form keeps
-// rendering the pre-change list - and a plugin reconciled from that stale
-// preview is sent as a thread/start launchOverride the host no longer has. The
-// bump therefore happens for a wrapped update exactly as it does for the
-// controller's own (component 07b review, round three).
-//
-// The refetches are a different matter: evener/plugin/list and
-// evener/launch/getLayer read THIS hub over the plain connection, so they stay
-// gated to a notification the controller emitted itself. A remote host's change
-// is not evidence about this hub's plugins, and its launch layer has no
-// host-scoped consumer here at all - the only launchLayer readers are the
-// controller-scoped settings sections (dirListSetting/mcp).
-function handleHostNotification(n: HostNotificationParams): void {
-  if (n.method === "evener/plugin/updated") {
-    extensionsStore.setState((state) => ({ pluginRevision: state.pluginRevision + 1 }));
-    if (isLocalHost(n.host)) schedulePluginRefetch();
-  } else if (n.method === "evener/launch/updated") {
-    if (isLocalHost(n.host)) scheduleLaunchLayerRefetch();
-  }
-}
-
-// resetExtensionsStoreForTests resets the store to its initial state,
-// including the module-private wiring/debounce bookkeeping above.
+// resetExtensionsStoreForTests resets the local store and every core behind it
+// to their reset state, and disposes every per-host instance so a test's remote
+// hosts do not leak into the next test. Core fields explicitly retained across
+// reset, such as the marketplace publication version, survive here too.
 // extensions.ts is a singleton store shared by the whole app, so
 // extensions.test.ts must reset it between tests to keep them isolated - no
 // production code should ever call this (mirrors threads.ts/tree.ts's own
 // reset*StoreForTests precedent).
 export function resetExtensionsStoreForTests(): void {
-  marketplaces.reset();
-  clearTimeout(pluginRefetchTimer);
-  pluginRefetchTimer = undefined;
-  clearTimeout(launchLayerRefetchTimer);
-  launchLayerRefetchTimer = undefined;
-  // The marketplaces fields are written here as well as by the core's reset:
-  // the mirror above forwards only what the core changed, so a value a test
-  // seeded straight into this store, over a core already at its initial
-  // state, would otherwise survive the reset.
+  // A per-host instance's cores hold live notification subscriptions (each
+  // core.start() wires the port), so a reset disposes them before forgetting
+  // them: a leaked subscription would refetch for a host no section can reach.
+  // dispose() is terminal, so the instance is dropped rather than reused and
+  // extensionsInstanceForHost builds a fresh one.
+  for (const entry of hostInstances.values()) disposeHostInstance(entry.instance);
+  hostInstances.clear();
+
+  localInstance.marketplaces.reset();
+  localInstance.plugins.reset();
+  localInstance.launchLayer.reset();
+  // The cores' fields are written here as well as by their resets: the mirror
+  // above forwards only what a core changed, so a value a test seeded
+  // straight into this store, over a core already at its initial state,
+  // would otherwise survive the reset.
   extensionsStore.setState({
-    marketplaces: null,
-    marketplacesLoading: false,
-    marketplacesError: null,
-    browseCatalogs: new Map(),
-    plugins: null,
-    pluginRevision: 0,
-    pluginsLoading: false,
-    pluginsError: null,
-    launchLayer: null,
-    launchLayerLoading: false,
-    launchLayerError: null,
+    ...localInstance.marketplaces.getInitialState(),
+    marketplacesPublicationVersion: localInstance.marketplaces.getState().marketplacesPublicationVersion,
+    ...localInstance.plugins.getInitialState(),
+    ...localInstance.launchLayer.getInitialState(),
   });
+  // A fresh module load reads the connection that already exists; a reset puts
+  // this singleton back the way that load leaves it, so it reads it too.
+  syncConnection(connectionStore.getState());
 }
 
 /** Directory actions shared by settings fields; the widget stays wire-free. */

@@ -183,6 +183,62 @@ afterEach(() => {
 });
 
 describe("stick-to-bottom vs. the new-content pill", () => {
+  test("a held row mounts the scroll coordinator for an otherwise dormant transcript", () => {
+    const list = makeListHandle();
+    const handle = list.ref.current;
+    (list.ref as { current: VirtualListHandle | null }).current = null;
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { rerender } = renderHook(
+      ({ heldVisible, rowCount }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("turn_system", [])]),
+          listRef: list.ref,
+          loadOlder: vi.fn(),
+          measure,
+          renderedRowCount: rowCount,
+          heldVisible,
+        }),
+      { initialProps: { heldVisible: false, rowCount: 0 } },
+    );
+
+    (list.ref as { current: VirtualListHandle | null }).current = handle;
+    rerender({ heldVisible: true, rowCount: 1 });
+
+    expect(list.scrollToIndex).toHaveBeenCalledWith(0, { align: "end" });
+  });
+
+  test("a held arrival epoch bump while scrolled away surfaces the new-content pill once", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m, heldVisible, heldEpoch, rowCount }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          renderedRowCount: rowCount,
+          heldVisible,
+          heldEpoch,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]), heldVisible: false, heldEpoch: 0, rowCount: 1 } },
+    );
+    expect(result.current.pillCount).toBe(0);
+
+    // A held steer arrives while the reader is scrolled away: no turn/item
+    // shape changed, so the epoch is the only edge. Pinned after roborev
+    // #2140 found the edge effect had no observable-behavior test at all.
+    rerender({ m: model([turn("t1", ["i1"])]), heldVisible: true, heldEpoch: 1, rowCount: 2 });
+    expect(result.current.pillCount).toBe(1);
+
+    // The same epoch again (a plain rerender, or a departure - which never
+    // bumps) adds nothing.
+    rerender({ m: model([turn("t1", ["i1"])]), heldVisible: true, heldEpoch: 1, rowCount: 2 });
+    expect(result.current.pillCount).toBe(1);
+  });
+
   test("initial end targeting uses the transformed row count", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
@@ -1659,6 +1715,353 @@ describe("jumpToBottom landing reliability", () => {
     act(() => result.current.jumpToBottom());
 
     expect(el.scrollTop).toBe(0);
+  });
+});
+
+// Opening a session lands at the end from size estimates and measures once;
+// nothing re-anchors that landing afterwards without a scroll event or an
+// item-count change. A webfont that swaps in AFTER the landing grows
+// scrollHeight with scrollTop pinned (measured 11466 -> 11487 at
+// document.fonts.ready), and a late-arriving row measurement can do the
+// same - either way the reader is left a few pixels short of the true
+// bottom with wasAtBottomRef still true, so no pill offers a way back.
+// Re-anchor once the fonts settle and on every resize of the scroll content,
+// while the reader was at the bottom before the change.
+describe("late content growth with no scroll event", () => {
+  // The issue's figures: the mount landed at the true bottom (16519 =
+  // 17221 - 702), then the content grew below while the offset stayed pinned.
+  const MOUNTED_AT_BOTTOM: ScrollMetrics = { scrollTop: 16519, scrollHeight: 17221, clientHeight: 702 };
+  const GREW_AT_BOTTOM: ScrollMetrics = { scrollTop: 16519, scrollHeight: 17366, clientHeight: 702 };
+  const TRUE_BOTTOM_AFTER_GROWTH = GREW_AT_BOTTOM.scrollHeight - GREW_AT_BOTTOM.clientHeight;
+
+  // jsdom implements neither document.fonts nor ResizeObserver; both are
+  // stubbed here so the hook's production triggers run, with the promise and
+  // the observer callback driven explicitly so "after the growth, with no
+  // scroll event" is exactly what each test stages.
+  function installFonts() {
+    let resolve!: () => void;
+    const ready = new Promise<void>((r) => {
+      resolve = r;
+    });
+    Object.defineProperty(document, "fonts", { value: { ready }, configurable: true });
+    return {
+      resolve,
+      restore: () => Reflect.deleteProperty(document, "fonts"),
+    };
+  }
+
+  interface FakeObserver {
+    targets: Element[];
+    disconnected: boolean;
+    callback: ResizeObserverCallback;
+  }
+
+  function installResizeObserver() {
+    const observers: FakeObserver[] = [];
+    class FakeResizeObserver {
+      targets: Element[] = [];
+      disconnected = false;
+      readonly callback: ResizeObserverCallback;
+      constructor(callback: ResizeObserverCallback) {
+        this.callback = callback;
+        observers.push(this);
+      }
+      observe(target: Element) {
+        this.targets.push(target);
+      }
+      unobserve() {}
+      disconnect() {
+        this.disconnected = true;
+      }
+    }
+    globalThis.ResizeObserver = FakeResizeObserver as unknown as typeof ResizeObserver;
+    return {
+      observers,
+      trigger: () => {
+        for (const observer of observers) observer.callback([], observer as unknown as ResizeObserver);
+      },
+      restore: () => Reflect.deleteProperty(globalThis, "ResizeObserver"),
+    };
+  }
+
+  function mountWithContent(start: ScrollMetrics = MOUNTED_AT_BOTTOM) {
+    const { ref, el } = makeListHandle();
+    // The scroll content VirtualList renders inside the port (its sizer): a
+    // webfont swap resizes THIS, not the port, so the observer must watch it.
+    const content = document.createElement("div");
+    el.appendChild(content);
+    const { measure, set } = makeMeasure(start);
+    const view = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(() => Promise.resolve()),
+        measure,
+      }),
+    );
+    definePort(el, start);
+    return { el, content, set, result: view.result };
+  }
+
+  test("re-anchors to the true bottom when document.fonts.ready resolves after a webfont swap grew the content", async () => {
+    const fonts = installFonts();
+    try {
+      const { el, set } = mountWithContent();
+
+      // The swap: content grew below the fold, the offset stayed pinned and
+      // NO scroll event fired (the exact 21px stranding the issue measured).
+      definePort(el, GREW_AT_BOTTOM);
+      set(GREW_AT_BOTTOM);
+      expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+
+      await act(async () => {
+        fonts.resolve();
+        await Promise.resolve();
+      });
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      fonts.restore();
+    }
+  });
+
+  test("re-anchors when a ResizeObserver tick reports the scroll content grew", () => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, content, set } = mountWithContent();
+      expect(resizeObserver.observers[0]?.targets).toContain(content);
+
+      definePort(el, GREW_AT_BOTTOM);
+      set(GREW_AT_BOTTOM);
+      expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  // The port itself can shrink under a reader at the bottom: something above
+  // or below the transcript grows (the pane header's cadence trace appearing
+  // grew the header 6px -> 10px, measured in the transcript scroll guard as
+  // clientHeight 671 -> 667; a composer growing a line as the reader types).
+  // scrollTop stays put, so no scroll event fires and the content never
+  // resized - the reader is left short of the latest lines by exactly the
+  // shrink, with wasAtBottomRef still true and no pill. A 4px shrink even
+  // still reads as "at the bottom" to isAtBottom's rounding tolerance, so
+  // nothing but a re-anchor on the port's own resize can recover it.
+  test.each([
+    ["the cadence trace's 4px header growth", 4],
+    ["a composer line's 20px", 20],
+  ])("re-anchors when the scroll port shrinks under a reader at the bottom (%s)", (_label, shrink) => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set } = mountWithContent();
+      expect(resizeObserver.observers.flatMap((observer) => observer.targets)).toContain(el);
+
+      const shrunk: ScrollMetrics = { ...MOUNTED_AT_BOTTOM, clientHeight: MOUNTED_AT_BOTTOM.clientHeight - shrink };
+      definePort(el, shrunk);
+      set(shrunk);
+      expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(shrunk.scrollHeight - shrunk.clientHeight);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  // A browser dispatches scroll events before it delivers ResizeObserver
+  // callbacks in the same frame, so a shrink that lands alongside a scroll
+  // event (the pill's own landing, say) is first seen by the scroll listener.
+  // A 4px shortfall reads as at-bottom there and becomes the baseline; the
+  // observer that follows must still see a reader short of the true end.
+  test("re-anchors a port shrink the scroll listener saw first", () => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set } = mountWithContent();
+
+      const shrunk: ScrollMetrics = { ...MOUNTED_AT_BOTTOM, clientHeight: MOUNTED_AT_BOTTOM.clientHeight - 4 };
+      definePort(el, shrunk);
+      set(shrunk);
+      act(() => {
+        el.dispatchEvent(new Event("scroll"));
+      });
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(shrunk.scrollHeight - shrunk.clientHeight);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("a reader scrolled away keeps their position when the scroll port shrinks", () => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const away: ScrollMetrics = { scrollTop: 1000, scrollHeight: 5000, clientHeight: 500 };
+      const { el, set } = mountWithContent(away);
+
+      const shrunk: ScrollMetrics = { ...away, clientHeight: 480 };
+      definePort(el, shrunk);
+      set(shrunk);
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(away.scrollTop);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  test("a reader scrolled away keeps their position when the fonts settle", async () => {
+    const fonts = installFonts();
+    try {
+      const away: ScrollMetrics = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 };
+      const awayGrown: ScrollMetrics = { scrollTop: 0, scrollHeight: 5100, clientHeight: 500 };
+      const { el, set } = mountWithContent(away);
+
+      definePort(el, awayGrown);
+      set(awayGrown);
+
+      await act(async () => {
+        fonts.resolve();
+        await Promise.resolve();
+      });
+
+      expect(el.scrollTop).toBe(0);
+    } finally {
+      fonts.restore();
+    }
+  });
+
+  test("the observer is disconnected when the mount effect tears down", () => {
+    const resizeObserver = installResizeObserver();
+    try {
+      const { ref, el } = makeListHandle();
+      el.appendChild(document.createElement("div"));
+      const { measure } = makeMeasure(MOUNTED_AT_BOTTOM);
+      const view = renderHook(() =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: model([turn("t1", ["i1"])]),
+          listRef: ref,
+          loadOlder: vi.fn(() => Promise.resolve()),
+          measure,
+        }),
+      );
+
+      expect(resizeObserver.observers[0]?.disconnected).toBe(false);
+      view.unmount();
+      expect(resizeObserver.observers[0]?.disconnected).toBe(true);
+    } finally {
+      resizeObserver.restore();
+    }
+  });
+
+  // The no-scroll-event paths carry the same gesture veto as the scroll
+  // listener: a reader mid-gesture whose content grows must not be yanked to
+  // the bottom. The marker is read, not consumed, in the re-anchor (a growth
+  // fires no scroll event), so it must survive for the gesture's own scroll
+  // event - these stub rAF to keep the one-frame marker pending for the test.
+  const GESTURES: Array<[string, (el: HTMLElement) => void]> = [
+    ["wheel", (el) => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true }))],
+    [
+      "touch",
+      (el) => {
+        el.dispatchEvent(touchEvent("touchstart", 400));
+        el.dispatchEvent(touchEvent("touchmove", 460));
+      },
+    ],
+    ["middle-button autoscroll", (el) => el.dispatchEvent(pointerEvent("pointerdown", MIDDLE_DOWN))],
+  ];
+
+  test.each(GESTURES)(
+    "a %s gesture vetoes the fonts re-anchor so the reader is not yanked",
+    async (_label, gesture) => {
+      const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+      const fonts = installFonts();
+      try {
+        const { el, set } = mountWithContent();
+        act(() => gesture(el));
+
+        definePort(el, GREW_AT_BOTTOM);
+        set(GREW_AT_BOTTOM);
+
+        await act(async () => {
+          fonts.resolve();
+          await Promise.resolve();
+        });
+
+        expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+      } finally {
+        fonts.restore();
+        raf.mockRestore();
+      }
+    },
+  );
+
+  test("a wheel gesture vetoes the ResizeObserver re-anchor too", () => {
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set } = mountWithContent();
+      act(() => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true })));
+
+      definePort(el, GREW_AT_BOTTOM);
+      set(GREW_AT_BOTTOM);
+      act(() => resizeObserver.trigger());
+
+      expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+    } finally {
+      resizeObserver.restore();
+      raf.mockRestore();
+    }
+  });
+
+  // A gesture that never produces a scroll event (a selection drag, a
+  // stationary middle-button hold) must not consume the growth as the new
+  // baseline, or the correction is permanently missed and the reader is
+  // stranded with no pill. The frame boundary that clears the marker is also
+  // when the deferred retry runs, so recovery needs no further resize/font
+  // event. This queue is driven by hand to stage that exact ordering.
+  function controllableFrames() {
+    const scheduled: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      scheduled.push(callback);
+      return scheduled.length;
+    });
+    return {
+      runAll() {
+        for (const callback of scheduled.splice(0)) callback(0);
+      },
+      restore: () => raf.mockRestore(),
+    };
+  }
+
+  test("a growth vetoed by a gesture re-anchors once the gesture's frame clears, with no later resize/font event", () => {
+    const frames = controllableFrames();
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set } = mountWithContent();
+      act(() => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true })));
+
+      definePort(el, GREW_AT_BOTTOM);
+      set(GREW_AT_BOTTOM);
+      act(() => resizeObserver.trigger());
+      expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+
+      // The frame boundary clears the gesture marker, then the deferred retry
+      // (still holding the uncorrected baseline) re-anchors to the true bottom.
+      act(() => frames.runAll());
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      resizeObserver.restore();
+      frames.restore();
+    }
   });
 });
 

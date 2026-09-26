@@ -1,275 +1,46 @@
-import type { NavigationProjectSummary, NavigationSessionSummary, Source } from "@evener/appwire-client";
+// The web's navigation selectors: the package's graph-shaped selectors,
+// re-exported unchanged, plus the two kinds that cannot leave the browser -
+// the session-watch identity cache (the one impure selector here: it mutates
+// a cross-call Map to keep a narrow subscription from re-rendering on
+// unrelated navigation churn), and the rail model, typed by the rail's own
+// node shapes (shell/rail/railNodes.ts), which never enters the package.
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import {
-  canonicalResourceKey,
-  isNavigationUnavailable,
-  keyID,
+  type NavigationStoreState,
   type NormalizedResource,
   navigationOwnedContainerKey,
-  navigationRootContainerKey,
   navigationViewScope,
-  nextNavigationOffset,
   type ResourceKey,
-  type ResourceState,
+  relativeAge,
+  selectSessionSummary,
 } from "@evener/appwire-client/state/navigation";
+import type { IsExpanded, RailSession, SessionRailNode } from "../../shell/rail/railNodes";
 import { navigationStore } from "./store";
 
-/** Relative display age for a session's updated_at, mirroring the rail's
- * long-standing row contract (now/m/h/d). Computed at adapter time like the
- * v1 path did, so staleness semantics are unchanged: a new value arrives
- * with new data. */
-export function relativeAge(updatedAt?: string): string | undefined {
-  if (!updatedAt) return undefined;
-  const timestamp = Date.parse(updatedAt);
-  if (!Number.isFinite(timestamp)) return undefined;
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return "now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
-}
-
-function normalizedRootCount(resource: ResourceState, slot: string): number | undefined {
-  const normalized = resource.normalized;
-  if (!normalized) return undefined;
-  return normalized.graph.containers.get(navigationRootContainerKey(resource.key, slot))?.children.length ?? 0;
-}
-export const selectAttentionSummary = (s: ReturnType<typeof navigationStore.getState>) => s.attention.summary;
-/** The manifest's configured launch sources (Component 06a). Empty until the
- * manifest loads, so a consumer can render across-host affordances only when a
- * remote host actually exists - the single-host UI stays untouched. */
-const NO_SOURCES: Source[] = [];
-export function selectSources(state = navigationStore.getState()): Source[] {
-  // A stable empty array, NOT a fresh `[]`: this selector is read through
-  // useSyncExternalStore, whose snapshot identity must not change on every
-  // call or the store's subscribers re-render forever.
-  //
-  // Only a SETTLED manifest may name launch sources. A resource keeps its last
-  // snapshot while loading, re-validating (`stale`), or after a failed read,
-  // and for an invalidation/reconnect that snapshot can list a host the fresh
-  // manifest has since removed or taken offline. Exposing it would let a
-  // consumer treat an outdated host as launchable - the picker would offer it
-  // and the form could submit to it - instead of falling back to local. This
-  // mirrors the store's settledness contract for normalized reads
-  // (`settledPresence` also refuses a stale resource). A consumer that must not
-  // lose a persisted choice while the manifest is in flight (the spawn draft)
-  // retains its own value rather than reading this empty list as a fallback.
-  const manifest = state.manifest;
-  if (!manifest || manifest.loading || manifest.stale || manifest.error) return NO_SOURCES;
-  return manifest.data?.sources ?? NO_SOURCES;
-}
-/** The same manifest sources, for DISPLAY only: the last-known list, whether
- * or not the read that produced it is still authoritative. A resource keeps its
- * last snapshot while loading, re-validating (`stale`), or after a failed read,
- * and a display consumer that withheld it would make the host picker disappear
- * and every remote row's offline badge flip to ONLINE for the length of the
- * refresh - the retained list is the best available description of what the
- * reader is looking at (Component 06b review, round nine).
- *
- * Only display reads this. Which host a launch may actually use is decided by
- * selectSources' settled list, so a host the fresh manifest has since removed
- * is never launchable merely because the UI still shows it. */
-export function selectDisplaySources(state = navigationStore.getState()): Source[] {
-  return state.manifest?.data?.sources ?? NO_SOURCES;
-}
-export const selectResource = (key: ResourceKey) => {
-  const resourceKey = canonicalResourceKey(key);
-  return (s: ReturnType<typeof navigationStore.getState>) => s.resources.get(keyID(resourceKey));
-};
-export const selectProjectResource = (projectKey: string) => (s: ReturnType<typeof navigationStore.getState>) =>
-  s.resources.get(keyID({ kind: "project", projectKey }));
-export const selectProjectPage =
-  (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = 50) =>
-  (s: ReturnType<typeof navigationStore.getState>) =>
-    s.resources.get(keyID({ kind: "project_page", projectKey, tier, offset, limit }));
-export const selectLocation = (ref: string) => selectResource({ kind: "location", ref });
-export function selectSectionRows(
-  section: "live" | "needs_you",
-  state = navigationStore.getState(),
-): NavigationSessionSummary[] {
-  return loadedSectionRows(state, (key) => key.kind === "section" && key.section === section);
-}
-export function selectNeedsYouRows(state = navigationStore.getState()): NavigationSessionSummary[] {
-  return selectSectionRows("needs_you", state);
-}
-export function selectNeedsYouCount(state = navigationStore.getState()): number {
-  return state.manifest?.data?.sections.needs_you.count ?? selectNeedsYouRows(state).length;
-}
-export function selectSectionRemaining(section: "live" | "needs_you", state = navigationStore.getState()): number {
-  const pages = [...state.resources.values()].filter(
-    (resource) => resource.key.kind === "section" && resource.key.section === section && resource.data !== null,
-  );
-  const last = pages
-    .sort((a, b) =>
-      a.key.kind === "section" && b.key.kind === "section"
-        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-        : 0,
-    )
-    .at(-1);
-  return (last?.data as { remaining?: number } | null)?.remaining ?? 0;
-}
-export function selectNextSectionOffset(section: "live" | "needs_you", state = navigationStore.getState()): number {
-  const pages = [...state.resources.values()].filter(
-    (resource) => resource.key.kind === "section" && resource.key.section === section,
-  );
-  const last = pages
-    .sort((a, b) =>
-      a.key.kind === "section" && b.key.kind === "section"
-        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-        : 0,
-    )
-    .at(-1);
-  if (last?.key.kind !== "section") return 0;
-  const returned =
-    normalizedRootCount(last, "sessions") ??
-    (last.data as { sessions?: NavigationSessionSummary[] } | null)?.sessions?.length ??
-    0;
-  return nextNavigationOffset(last.key.offset, returned);
-}
-export function selectCatalogRemaining(
-  catalog: "projects" | "archived_projects" | "test_runs",
-  state = navigationStore.getState(),
-): number {
-  const pages = [...state.resources.values()].filter(
-    (resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog && resource.data !== null,
-  );
-  const last = pages
-    .sort((a, b) =>
-      a.key.kind === "catalog" && b.key.kind === "catalog"
-        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-        : 0,
-    )
-    .at(-1);
-  return (last?.data as { remaining?: number } | null)?.remaining ?? 0;
-}
-export function selectNextCatalogOffset(
-  catalog: "projects" | "archived_projects" | "test_runs",
-  state = navigationStore.getState(),
-): number {
-  const pages = [...state.resources.values()].filter(
-    (resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog,
-  );
-  const last = pages
-    .sort((a, b) =>
-      a.key.kind === "catalog" && b.key.kind === "catalog"
-        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-        : 0,
-    )
-    .at(-1);
-  if (last?.key.kind !== "catalog") return 0;
-  const returned =
-    normalizedRootCount(last, "projects") ??
-    (last.data as { projects?: NavigationProjectSummary[] } | null)?.projects?.length ??
-    0;
-  return nextNavigationOffset(last.key.offset, returned);
-}
-export function selectLiveRows(state = navigationStore.getState()): NavigationSessionSummary[] {
-  return selectSectionRows("live", state);
-}
-function loadedSectionRows(
-  state: ReturnType<typeof navigationStore.getState>,
-  predicate: (key: Extract<ResourceKey, { kind: "section" | "pin_section" }>) => boolean,
-): NavigationSessionSummary[] {
-  const pages: Array<{ offset: number; limit: number; sessions: NavigationSessionSummary[] }> = [];
-  for (const resource of state.resources.values()) {
-    if (
-      (resource.key.kind !== "section" && resource.key.kind !== "pin_section") ||
-      !predicate(resource.key) ||
-      resource.data === null
-    )
-      continue;
-    pages.push({
-      offset: resource.key.offset,
-      limit: resource.key.limit,
-      sessions: (resource as ResourceState<{ sessions: NavigationSessionSummary[] }>).data?.sessions ?? [],
-    });
-  }
-  const seen = new Set<string>();
-  return pages
-    .sort((a, b) => a.offset - b.offset || a.limit - b.limit)
-    .flatMap((page) => page.sessions.filter((session) => !seen.has(session.ref) && seen.add(session.ref)));
-}
-export function selectGlobalRows(state = navigationStore.getState()): NavigationSessionSummary[] {
-  return [...selectLiveRows(state), ...selectNeedsYouRows(state)];
-}
-export interface NavigationPinSectionSummary {
-  id: string;
-  name: string;
-  member_count: number;
-}
-export interface LoadedPinSection extends NavigationPinSectionSummary {
-  sessions: NavigationSessionSummary[];
-}
-export function selectPinSectionSummaries(state = navigationStore.getState()): NavigationPinSectionSummary[] {
-  const descriptors = [...state.resources.values()]
-    .filter((resource) => resource.key.kind === "pin_catalog" && resource.data !== null)
-    .sort((a, b) => {
-      const left = a.key.kind === "pin_catalog" ? a.key.offset : 0;
-      const right = b.key.kind === "pin_catalog" ? b.key.offset : 0;
-      return left - right;
-    })
-    .flatMap((resource) => {
-      const data = resource.data as { pin_sections?: Array<{ id: string; name: string; count: number }> } | null;
-      return data?.pin_sections ?? [];
-    });
-  const seen = new Set<string>();
-  return descriptors.flatMap((descriptor) => {
-    if (seen.has(descriptor.id)) return [];
-    seen.add(descriptor.id);
-    return [{ id: descriptor.id, name: descriptor.name, member_count: descriptor.count }];
-  });
-}
-export function selectPinSections(state = navigationStore.getState()): LoadedPinSection[] {
-  return selectPinSectionSummaries(state).map((section) => ({
-    ...section,
-    sessions: loadedSectionRows(state, (key) => key.kind === "pin_section" && key.sectionId === section.id),
-  }));
-}
-export function selectProjectSummaries(state = navigationStore.getState()): NavigationProjectSummary[] {
-  const catalogOrder = { projects: 0, archived_projects: 1, test_runs: 2 } as const;
-  return [...state.resources.values()]
-    .filter((resource) => resource.key.kind === "catalog" && resource.data !== null)
-    .sort((a, b) => {
-      if (a.key.kind !== "catalog" || b.key.kind !== "catalog") return 0;
-      return catalogOrder[a.key.catalog] - catalogOrder[b.key.catalog] || a.key.offset - b.key.offset;
-    })
-    .flatMap((resource) => {
-      const data = resource.data as { projects?: NavigationProjectSummary[] } | null;
-      return data?.projects ?? [];
-    });
-}
-export const selectExpanded = (projectKey: string) => (s: ReturnType<typeof navigationStore.getState>) =>
-  s.expanded.get(projectKey) ?? selectProjectSummaries(s).find((p) => p.key === projectKey)?.default_expanded ?? false;
-export function selectSessionSummary(ref: string, state = navigationStore.getState()): NavigationSessionSummary | null {
-  const walk = (xs: NavigationSessionSummary[]): NavigationSessionSummary | null => {
-    for (const x of xs) {
-      if (x.ref === ref) return x;
-      const y = walk(x.children);
-      if (y) return y;
-    }
-    return null;
-  };
-  const rows = [...selectGlobalRows(state), ...selectPinSections(state).flatMap((section) => section.sessions)];
-  for (const resource of state.resources.values()) {
-    if (resource.key.kind === "project_page") {
-      const data = resource.data as { sessions?: NavigationSessionSummary[] } | null;
-      if (data?.sessions) rows.push(...data.sessions);
-    }
-    if (resource.key.kind === "project") {
-      const data = resource.data as {
-        current?: { sessions?: NavigationSessionSummary[] };
-        recent?: { sessions?: NavigationSessionSummary[] };
-        archived?: { sessions?: NavigationSessionSummary[] };
-      } | null;
-      for (const tier of [data?.current, data?.recent, data?.archived]) if (tier?.sessions) rows.push(...tier.sessions);
-    }
-    if (resource.key.kind === "location") {
-      const data = resource.data as { session?: NavigationSessionSummary } | null;
-      if (!isNavigationUnavailable(resource.error) && data?.session) rows.push(data.session);
-    }
-  }
-  return walk(rows);
-}
-export const findSessionNode = selectSessionSummary;
+export {
+  findSessionNode,
+  type NavigationPinSectionSummary,
+  type NavigationStoreState,
+  selectAttentionSummary,
+  selectDisplaySources,
+  selectExpanded,
+  selectGlobalRows,
+  selectLiveRows,
+  selectLocation,
+  selectNeedsYouCount,
+  selectNeedsYouRows,
+  selectNextSectionOffset,
+  selectPinSectionSummaries,
+  selectPinSections,
+  selectProjectPage,
+  selectProjectResource,
+  selectProjectSummaries,
+  selectSectionRemaining,
+  selectSessionOmittedArmedWatches,
+  selectSessionOmittedWatches,
+  selectSources,
+} from "@evener/appwire-client/state/navigation";
+export { relativeAge, selectSessionSummary };
 
 type SessionWatchesCacheEntry = Readonly<{ key: string; watches: NavigationSessionSummary["watches"] }>;
 // One entry per session ref, holding the LAST result's content key and the
@@ -305,7 +76,7 @@ export function resetSessionWatchesCacheForTests(): void {
  * navigation churn. */
 export function selectSessionWatches(
   ref: string,
-  state: ReturnType<typeof navigationStore.getState> = navigationStore.getState(),
+  state: NavigationStoreState = navigationStore.getState(),
 ): NavigationSessionSummary["watches"] {
   const summary = selectSessionSummary(ref, state);
   if (summary === null) {
@@ -324,33 +95,6 @@ export function selectSessionWatches(
   }
   return watches;
 }
-
-/** The exact number of live-watch rows the hub omitted from `ref`'s summary
- * (over the per-session cap, unrepresentable, or shed by the byte fitter). Zero
- * when the session is not materialized or carries no count. The Activity panel
- * header reads this so it never silently undercounts. */
-export function selectSessionOmittedWatches(
-  ref: string,
-  state: ReturnType<typeof navigationStore.getState> = navigationStore.getState(),
-): number {
-  const summary = selectSessionSummary(ref, state);
-  return summary?.omitted_watches ?? 0;
-}
-
-/** The armed subset of the rows `selectSessionOmittedWatches` counts. A session
- * whose armed watches exceed the hub's per-session cap retains only the first
- * of them, so the retained list alone cannot state the true armed total; the
- * rail and the Activity panel add this to the armed rows they can see. Zero
- * when the session is not materialized or carries no count. */
-export function selectSessionOmittedArmedWatches(
-  ref: string,
-  state: ReturnType<typeof navigationStore.getState> = navigationStore.getState(),
-): number {
-  const summary = selectSessionSummary(ref, state);
-  return summary?.omitted_armed_watches ?? 0;
-}
-
-import type { IsExpanded, RailSession, SessionRailNode } from "../../shell/rail/railNodes";
 
 type NormalizedSessionCacheEntry = Readonly<{
   childContainer: object | undefined;
@@ -446,7 +190,6 @@ export function selectRailModel(
       ...(value as unknown as RailSession),
       ...context,
       row_id: entity.key,
-      age: relativeAge(typeof value.updated_at === "string" ? value.updated_at : undefined),
       children: frozenChildren,
     }) as unknown as RailSession;
     normalizedSessionCache.set(

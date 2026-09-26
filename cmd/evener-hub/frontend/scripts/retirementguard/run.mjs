@@ -21,7 +21,7 @@
 //   RETIREMENT_ARTIFACT_DIR — absolute path for screenshots + result JSON
 //
 // The runner writes its three screenshots and machine-readable result to the
-// fixture-owned artifact directory (NOT the scratch that test-web-browser.sh
+// fixture-owned artifact directory (NOT the scratch that the browser gate
 // deletes on success), and prints that path. The Go test reads the exit code.
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -43,6 +43,17 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 
 // A desktop viewport — the same width at which Session is normally exercised.
 const VIEWPORT = { width: 1400, height: 900 };
+
+// The unbooted-page seam (see navigateTo in browserGuardCdp.mjs): a network
+// change can kill the dev-server module burst mid-boot while the page still
+// fires its load event. retirementharness.html boots through one entry
+// module, src/dev/retirementharness-entry.tsx, which assigns
+// window.retirementHarness at module scope - a page whose load event fired
+// without that global never booted.
+const BOOT = {
+  bootExpression: "typeof window.retirementHarness !== 'undefined'",
+  bootLabel: "the retirementharness entry global window.retirementHarness",
+};
 
 // Environment variables injected by the Go fixture.
 const HUB_URL = process.env.RETIREMENT_HUB_URL ?? "";
@@ -68,7 +79,7 @@ if (!HUB_URL || !RETIRE_URL || !DEGRADE_URL || !REF || !ARTIFACT_DIR) {
 }
 
 // Ensure the artifact directory exists (it is outside the scratch dir that
-// test-web-browser.sh deletes on success, so evidence survives green runs).
+// the browser gate deletes on success, so evidence survives green runs).
 mkdirSync(ARTIFACT_DIR, { recursive: true });
 console.log(`retirementguard artifacts: ${ARTIFACT_DIR}`);
 
@@ -155,7 +166,7 @@ async function main() {
 
     try {
       await applyViewport(send, VIEWPORT);
-      await navigateTo(page, harnessUrl);
+      await navigateTo(page, harnessUrl, BOOT);
       await waitForFonts(send);
 
       // Wait for the harness to be ready (AppwireClient connected + thread
@@ -314,7 +325,10 @@ async function main() {
           // replacement's authoritative snapshot must supersede it: a ghost
           // turn surviving here means a late old-generation frame overwrote the
           // replacement.
-          lateFrame = { ghostTurnID: "turn_old_generation", survived: postRetire.turnIDs.includes("turn_old_generation") };
+          lateFrame = {
+            ghostTurnID: "turn_old_generation",
+            survived: postRetire.turnIDs.includes("turn_old_generation"),
+          };
           if (lateFrame.survived) {
             failures.push(
               `late old-generation frame overwrote the replacement: ${lateFrame.ghostTurnID} survived the resync`,
@@ -328,28 +342,33 @@ async function main() {
 
           if (failures.length === 0) {
             // --- Submit the draft via native DOM interaction ---------------
-            // Use the real Composer: find the textarea, ensure the draft text
-            // is present, then click Send. Native input events exercise the
-            // real submission path without bypassing any React event handling.
+            // Use the real Composer: find its textbox, ensure the draft text is
+            // present, then click Send. The composer is a ProseMirror editor,
+            // so entering text means selecting its contents and pasting - the
+            // native textarea value setter belongs to the wrong element type.
             const submitResult = await evaluate(
               send,
               `(async () => {
-                // The production composer renders a real <textarea> whose
-                // textbox role is implicit, so match the element itself (and
-                // keep the explicit-role selector as a fallback).
-                const ta = document.querySelector('textarea, [role="textbox"]');
-                if (!ta) return { ok: false, error: 'composer textarea not found' };
+                const ta = document.querySelector('[role="textbox"]');
+                if (!ta) return { ok: false, error: 'composer textbox not found' };
                 const draft = window.retirementHarness.snapshot().draft;
                 if (!draft) return { ok: false, error: 'no draft to submit' };
 
-                // The draft should already be in the textarea from before retirement.
-                // If not (e.g. the compositor cleared it on reconnect), restore it.
-                if (ta.value !== draft) {
+                // The draft should already be in the composer from before
+                // retirement. If not (e.g. the compositor cleared it on
+                // reconnect), enter it the way a user would.
+                if (ta.textContent !== draft) {
                   ta.focus();
-                  const nativeInput = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-                  nativeInput.set.call(ta, draft);
-                  ta.dispatchEvent(new Event('input', { bubbles: true }));
-                  ta.dispatchEvent(new Event('change', { bubbles: true }));
+                  const selection = window.getSelection();
+                  const range = document.createRange();
+                  range.selectNodeContents(ta);
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                  const clipboard = new DataTransfer();
+                  clipboard.setData('text/plain', draft);
+                  ta.dispatchEvent(new ClipboardEvent('paste', {
+                    clipboardData: clipboard, bubbles: true, cancelable: true,
+                  }));
                 }
 
                 const beforeTurnCount = window.retirementHarness.snapshot().turnIDs.length;
@@ -359,7 +378,24 @@ async function main() {
                   b.textContent?.trim() === 'Send' || b.getAttribute('aria-label')?.toLowerCase().includes('send')
                 );
                 if (!sendBtn) return { ok: false, error: 'Send button not found' };
+                // A replacement source is still rehydrating for a moment after
+                // the resync, and the composer keeps Send disabled until it has
+                // an answer to send against. Wait for the state a user could
+                // actually click, rather than clicking a disabled control and
+                // calling the missing turn a failure.
+                const enabledBy = performance.now() + 15000;
+                while (sendBtn.disabled && performance.now() < enabledBy) {
+                  await new Promise((r) => setTimeout(r, 50));
+                }
+                if (sendBtn.disabled) return { ok: false, error: 'Send stayed disabled after replacement' };
+                let submitted = false;
+                document.addEventListener('submit', () => { submitted = true; }, { capture: true, once: true });
+                const preClick = { disabled: sendBtn.disabled, connected: sendBtn.isConnected };
                 sendBtn.click();
+                await new Promise((r) => setTimeout(r, 250));
+                if (!submitted) {
+                  return { ok: false, error: 'click did not submit the composer form ' + JSON.stringify({ ...preClick, testid: sendBtn.getAttribute('data-testid'), type: sendBtn.type, form: sendBtn.form !== null, text: ta.textContent }) };
+                }
 
                 // Wait for a new turn to appear (replacement source accepted the mutation).
                 const deadline = performance.now() + 15000;
@@ -383,6 +419,14 @@ async function main() {
                 `JSON.stringify({
                   textboxes: document.querySelectorAll('[role="textbox"]').length,
                   textareas: document.querySelectorAll('textarea').length,
+                  composerText: document.querySelector('[role="textbox"]')?.textContent ?? null,
+                  sendDisabled: [...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Send')?.disabled ?? null,
+                  harness: window.retirementHarness.debug(),
+                  sendControl: (() => {
+                    const b = [...document.querySelectorAll('button')].find((el) => el.textContent?.trim() === 'Send');
+                    return b ? { type: b.type, testid: b.getAttribute('data-testid'), disabled: b.disabled, form: b.form !== null } : null;
+                  })(),
+                  alerts: [...document.querySelectorAll('[role="alert"], [role="status"]')].map((el) => el.textContent).slice(0, 6),
                   buttons: [...document.querySelectorAll('button')].map((b) => b.textContent?.trim()).slice(0, 12),
                   bodyLength: document.body.innerHTML.length,
                 })`,

@@ -7,7 +7,12 @@ import {
   parseActivityTree,
 } from "@evener/appwire-client";
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
+import {
+  activityPanelStore,
+  EMPTY_ACTIVITY_PANEL_ENTRY,
+  retainedActivityTree,
+  useActivityPanelStore,
+} from "../../../stores/activityPanel";
 import {
   activitySummaryStore,
   EMPTY_ACTIVITY_SUMMARY_ENTRY,
@@ -145,22 +150,21 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({
 
   const fetchRoot = useCallback(
     (continuation?: { nodeID: string; token: string }, forceRoot = false) => {
+      // Both refresh paths report a failure through the same mount/session/
+      // generation guard, so a fetch that fails after the Sheet closed or the
+      // panel switched sessions cannot toast for a panel no longer on screen.
+      const bodyGeneration = bodyGenerationRef.current;
+      const onRefreshFailure = (sentence: string) => {
+        if (
+          mountedRef.current &&
+          currentSessionRef.current === sessionRef &&
+          bodyGenerationRef.current === bodyGeneration
+        ) {
+          toasts.push("error", sentence);
+        }
+      };
       if (!continuation) {
-        const bodyGeneration = bodyGenerationRef.current;
-        refreshActivityRoot(
-          sessionRef,
-          model.jobsUpdatedAt,
-          (sentence) => {
-            if (
-              mountedRef.current &&
-              currentSessionRef.current === sessionRef &&
-              bodyGenerationRef.current === bodyGeneration
-            ) {
-              toasts.push("error", sentence);
-            }
-          },
-          forceRoot,
-        );
+        refreshActivityRoot(sessionRef, model.jobsUpdatedAt, onRefreshFailure, forceRoot);
         return;
       }
       const requestID = activityPanelStore.getState().beginContinuationFetch(sessionRef, continuation.nodeID);
@@ -178,6 +182,21 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({
               kind: "continuation-failed",
               nodeID: continuation.nodeID,
               message: continuationFailureMessage(),
+            });
+            return;
+          }
+          const retained = retainedActivityTree(activityPanelStore.getState().entries.get(sessionRef));
+          if (retained && parsed.revision !== retained.revision) {
+            // The page was minted against a different revision than the tree on
+            // screen, so its cursor names positions that no longer line up.
+            // Discard it rather than grafting mismatched entries. Ask for the
+            // fresh root BEFORE settling the discard: refreshRoot defers behind
+            // the pending continuation and publishFetch then issues exactly one
+            // root fetch, rather than racing a second, redundant one after it.
+            refreshActivityRoot(sessionRef, model.jobsUpdatedAt, onRefreshFailure, true);
+            activityPanelStore.getState().publishFetch(sessionRef, requestID, {
+              kind: "continuation-discarded",
+              nodeID: continuation.nodeID,
             });
             return;
           }

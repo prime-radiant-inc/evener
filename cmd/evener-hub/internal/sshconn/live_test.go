@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -43,11 +42,13 @@ func TestLiveSSHAttachE2E(t *testing.T) {
 	}
 	// The deploy path needs an explicit BuildSource; without it localBuild fails
 	// closed, so a version-differing host would abort instead of upgrading. Default
-	// to this test file's own checkout (four directories up).
+	// to this checkout: go test runs in the package directory, four levels below
+	// the root. (Not runtime.Caller: under -trimpath it names a module path, not
+	// a file on disk.)
 	source := os.Getenv("EVENER_SSH_E2E_BUILD_SOURCE")
 	if source == "" {
-		if _, file, _, ok := runtime.Caller(0); ok {
-			source = filepath.Join(filepath.Dir(file), "..", "..", "..", "..")
+		if wd, err := os.Getwd(); err == nil {
+			source = filepath.Join(wd, "..", "..", "..", "..")
 		}
 	}
 	m := New(reg, Options{Logger: t.Logf, BuildSource: source})

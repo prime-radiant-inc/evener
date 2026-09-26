@@ -6,7 +6,7 @@ import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 
 // jsdom implements neither the Pointer Capture API nor any layout, so the two
 // browser capabilities this component leans on are stubbed here (the same
-// gap-filling shell/AppShell.test.tsx documents for ResizeObserver):
+// gap-filling resizeObserverTestUtils.ts documents for ResizeObserver):
 //   - setPointerCapture/releasePointerCapture are recorded so the tests can
 //     assert the drag actually takes and gives back capture, which is what
 //     makes a fast drag survive leaving the handle.

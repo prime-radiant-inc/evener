@@ -143,11 +143,13 @@ describe("fetch", () => {
     expect(settingsOverviewStore.getState().error).toBeNull();
   });
 
-  test("rejects with a helpful error (not a throw) when no client is connected yet", async () => {
+  test("rejects with the shared port's labelled error (not a throw) when no client is connected yet", async () => {
     await settingsOverviewStore.getState().fetch();
     const state = settingsOverviewStore.getState();
     expect(state.data).toBeNull();
-    expect(state.error).toMatch(/no client connected/);
+    expect(state.error).toBe(
+      "settingsOverview store: no client connected; call connectionStore.getState().connect(client) first",
+    );
   });
 });
 

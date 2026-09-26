@@ -810,11 +810,12 @@ func responsesContinuationRegistryHasEnabledSupport(registry map[llm.ResponsesEn
 // retries elsewhere; every remaining provider failure is terminal for this turn.
 // A cancellation propagates verbatim, but not before settling any partial the
 // round had already streamed (settleInterruptedRound).
-// The terminal path emits the failure, terminates any active goal, and settles the
-// open session at idle before returning a "provider error"-wrapped value (so
-// callers can distinguish a provider failure from agent quiescence; the original
-// error is preserved via errors.Unwrap, kata 3xbh). The outer lifecycle error
-// boundary remains an idempotent compatibility tail for this provider-owned path.
+// The terminal path emits the failure, terminates any active goal, and settles
+// the open session through the pending-aware failure boundary before returning
+// a "provider error"-wrapped value (so callers can distinguish a provider
+// failure from agent quiescence; the original error is preserved via
+// errors.Unwrap, kata 3xbh). The outer lifecycle error boundary remains an
+// idempotent tail for this provider-owned path.
 func (s *Session) handleModelError(ctx context.Context, err error, req llm.Request, contentFilterRetried *bool, contextWarningEmitted bool) (retry bool, ferr error) {
 	dec := classifyModelError(
 		isTurnCancellation(ctx, err),
@@ -866,7 +867,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		s.emit(events.EventWarning, warningDataFromError("Context length exceeded", err))
 	}
 	s.terminateGoalOnError(ctx, err)
-	s.finishProcessingAtBoundary(ctx, SessionIdle)
+	s.finishProcessingAtFailureBoundary(ctx)
 	return false, fmt.Errorf("provider error: %w", err)
 }
 

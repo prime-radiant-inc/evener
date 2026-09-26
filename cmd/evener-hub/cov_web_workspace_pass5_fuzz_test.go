@@ -89,8 +89,8 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 		case 4:
 			_ = web.workspaceData("remote:thread")
 			_ = web.workspaceData("remote:missing")
-			_ = web.liveWorkspaceCapabilities("remote:thread", hubapi.SessionCapabilities{Resume: true})
-			_, _ = web.liveWorkspaceSnapshot("missing:thread", hubapi.SessionCapabilities{Resume: true})
+			_ = web.liveWorkspaceCapabilities("remote:thread", hubapi.SessionCapabilities{Send: true})
+			_, _ = web.liveWorkspaceSnapshot("missing:thread", hubapi.SessionCapabilities{Send: true})
 		case 5:
 			_ = web.workspaceData("child")
 			_ = web.workspaceData("parent")

@@ -4,11 +4,12 @@ Parent: `2026-09-14-multi-host-evener-design.md` (§3, §4 item 3, §5 item 1).
 Sibling: `2026-09-14-multi-host-02-attach-bridge.md`.
 Spikes: `2026-09-14-multi-host-spikes-findings.md`.
 
-**Implementation status.** The `hostreg` package, `validateHostConfigs`, and the
-`hub.toml` `[[hosts]]` decoding are on `main`. The `sshconn` connection manager
-and the `hubcore.WebConfig` `RemoteHost*` wiring this spec also describes are
-implemented on `multi-host-pr04a-ssh-channel`/`multi-host-pr06a-fleet-view-go`
-and are **pending merge, not on `main`** — do not read them as shipped.
+**Implementation status.** The `hostreg` package, `validateHostConfigs`, the
+`hub.toml` `[[hosts]]` decoding (`cmd/evener-hub/config.go`;
+`cmd/evener-hub/internal/hostreg`), the `sshconn` connection manager
+(`cmd/evener-hub/internal/sshconn`), and the `hubcore.WebConfig` `RemoteHost*`
+wiring (`cmd/evener-hub/main.go:549-581`) are all on `main`. The deltas this
+spec still lists as requirements are marked inline.
 
 ## Purpose
 
@@ -26,18 +27,17 @@ not open connections, does not spawn SSH, and does not implement a source.
   `name` is the source ID surfaced in refs (`name:<sessionID>`) and URLs.
 - Validation of `name` against the ref grammar, reserve `local`, reject `..`,
   reject duplicates.
-- Reject a host list that would overflow the navigation manifest: at most **63**
-  remote hosts, because component 06's manifest caps `sources` at 64 including
-  the `local` entry (`cmd/evener-hub/navigation_projection.go`). One host over
-  the cap fails navigation for the entire hub, not just for the extra host.
-  **The cap is a registry invariant, enforced centrally in the registry add
-  paths (`New`/`Add`/`AddWithUpstreams`) as well as at config load**, so no
-  runtime mutation path can push the registry over it and break navigation for
-  every host; both surfaces return the same named `ErrTooManyHosts`. (Load-time
-  validation alone is not sufficient: it only guards the config-file path, not a
-  programmatic add.) (Implementation status: the shipped `validateHostConfigs`
-  builds a throwaway `hostreg.Registry` and neither it nor the registry has a
-  count check yet; the limit is the implementing PR's requirement.)
+- **Recorded decision (Jesse, 2026-09-26): no 64-source cap.** This bullet
+  previously required a host list larger than the navigation manifest's
+  `sources` cap to be rejected at config load and in the registry add paths
+  (`New`/`Add`/`AddWithUpstreams`) with a named `ErrTooManyHosts`, because
+  component 06 caps the manifest at 64 sources including `local`. That
+  requirement is **withdrawn, not deferred**: no count check is implemented
+  (`validateHostConfigs` builds a throwaway `hostreg.Registry`; no
+  `ErrTooManyHosts` exists in the tree) and none is to be added. Bounded fan-out
+  is a **risk accepted for v1**: an operator who configures more than 63 hosts
+  can drive navigation past that cap, which fails navigation for the whole hub
+  until the config shrinks. Do not implement the cap without a new decision.
 - An in-memory `hostreg.Registry` built from the validated list, rejecting
   duplicates at add time (a self-edge is rejected only when an explicit upstream
   list is supplied; see §"Source registration hook" and "Open questions" for the
@@ -361,31 +361,50 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
      §Open questions item 4); until then a multi-hop cycle is not refused and
      configuration is acyclic by convention only.
 
-4. **Wiring** (design settled; **implementation pending merge, not on `main`**):
+4. **Wiring** (design settled; **shipped**):
    `cmd/evener-hub/main.go` converts `cfg.Hosts` into `[]hostreg.Host` and calls
    `hostreg.New` once at startup, then builds the component-04 manager over that
    registry (`sshconn.New(hostRegistry, sshconn.Options{...})`). The same
    converted entries travel through `hubcore.WebConfig` as `RemoteHosts`,
    together with the component-04 seams `RemoteHostClient` (returns the current
-   `ch.Client()`), `RemoteHostFacts` (`sshManager.PreflightIfAttached` — the
-   non-dialing, attached-only preflight accessor mirroring
-   `ClientIfAttached`/`HandshakeIfAttached`; component 04, §"Go surface"), and
+   `ch.Client()`), `RemoteHostFacts` (a non-dialing, attached-only lookup that
+   reads one `sshManager.ChannelIfAttached` value and takes the preflight from
+   that channel only when its client is the exact generation the probe
+   resolved; component 04, §"Go surface"), and
    `RemoteHostOnline` (`sshManager.Attached`), `RemoteHostClientIfAttached`
    (`sshManager.ClientIfAttached` — the non-dialing, attached-only client
    lookup component 05's notification rebind and component 06's snapshot use),
-   and `RemoteHostHandshake` (`sshManager.HandshakeIfAttached` — the
-   attached-only attach handshake facts component 05's capability probe reads
-   for `ProtocolVersion`/`ServerInfo`/`SourceID`/`Features`; component 04,
-   §"Go surface"; component 05, §"Capability probe"). `newHubSourceRegistry`
+   and `RemoteHostHandshake` (a non-dialing, attached-only lookup built on the
+   same `sshManager.ChannelIfAttached` primitive as `RemoteHostFacts`: the
+   `remoteHostHandshakeForChannel` closure answers the attach handshake facts
+   component 05's capability probe reads for
+   `ProtocolVersion`/`ServerInfo`/`SourceID`/`Features`, refusing when the
+   channel's client is not the probe's; component 04, §"Go surface"; component
+   05, §"Capability probe"). Both facts seams read a single
+   `sshManager.ChannelIfAttached` value and apply the generation guard at the
+   call site (`ch.Client() == client`), so a reconnect between the probe's
+   client lookup and its facts read can never produce a mixed-generation
+   snapshot. That guard deliberately lives in the `remoteHostFactsForChannel` /
+   `remoteHostHandshakeForChannel` closures, **not** inside an accessor:
+   `Manager.PreflightIfAttached` and `Manager.HandshakeIfAttached` exist but have
+   no production caller. `newHubSourceRegistry`
    (`cmd/evener-hub/app_rpc.go`) registers one source per `RemoteHosts` entry at
    startup (§"Source registration hook"). No other `WebConfig` field is touched.
    (The earlier revision's `Hosts *hostreg.Registry` field is not the
-   implemented shape.) **Implementation status:** the `hostreg` package and
-   `hostreg.New` are on `main`; the `sshconn` manager and the
-   `hubcore.WebConfig` `RemoteHosts`/`RemoteHost{Client,Facts,Online}` fields are
-   implemented on the component branches (`multi-host-pr04a-ssh-channel`,
-   `multi-host-pr06a-fleet-view-go`) and are **pending merge** — they do not
-   exist on `main`, so this wiring must not be read as shipped.
+   implemented shape.) **Implementation status:** shipped. The `hostreg` package
+   and `hostreg.New`, the `sshconn` manager, and the `hubcore.WebConfig`
+   `RemoteHosts` / `RemoteHostClient` / `RemoteHostFacts` / `RemoteHostOnline`
+   fields landed with components 03/04; the attached-only additions this section
+   names (`Manager.ChannelIfAttached` / `Manager.ClientIfAttached`, wired
+   through `RemoteHostFacts` / `RemoteHostHandshake` /
+   `RemoteHostClientIfAttached`) landed with the attached-only enforcement PR.
+   `RemoteHostFacts` and `RemoteHostHandshake` are non-dialing and
+   generation-guarded (`ChannelIfAttached` + the call-site client-identity
+   check, refusing with `SessionUnavailable`), so the capability probe cannot
+   attach a dormant host through them nor cache two connections' facts as one
+   snapshot; `RemoteHostClient` remains the `Ensure`-backed dial reserved for the
+   explicit attach triggers (an explicit host in `thread/list`'s `SourceIDs`,
+   and component 06's `evener/host/attach` Connect action).
 
 ## Data flow
 
@@ -433,12 +452,11 @@ tree and last-known-good cache (`refreshRemoteThreadSnapshot`,
 - `user` set while `ssh` already contains `user@` → `ErrAmbiguousSSHUser`.
 - Empty `ssh` after trim → `ErrMissingSSH`.
 - `roots` entries empty after trim → `ErrEmptyRoot`.
-- More than 63 remote hosts → a named `ErrTooManyHosts`, returned from both
-  `LoadConfig`/`validateHostConfigs` **and** the registry add paths
-  (`New`/`Add`/`AddWithUpstreams`) so no runtime mutation can exceed the cap.
-  The manifest's 64-source cap is a hard downstream limit; rejecting at both
-  surfaces turns "navigation breaks for every host" into an error naming the
-  limit.
+- More than 63 remote hosts → **not rejected** (recorded decision, §Scope: the
+  cap is withdrawn). The manifest's 64-source limit
+  (`cmd/evener-hub/navigation_projection.go`) is a hard downstream limit, so an
+  over-limit config breaks navigation for every host; that is the accepted v1
+  risk, not a validation error.
 - Exactly one of `config_path`/`addr` set → a named error (the two are coupled;
   see §"`config_path` / `addr`").
 - A cycle refused at add time leaves the registry unchanged (candidate not
@@ -460,8 +478,8 @@ Unit tests, all without a hub or network:
   it can never reach `checkCycleLocked`; see §"Host registry"); `All()` is
   name-sorted (mirroring `appsource.Registry.All`, `registry.go`); the registry
   is safe for concurrent `Get`/`All`.
-- A host-count boundary test: 63 remote entries load; 64 fail with
-  `ErrTooManyHosts` (the `local` entry is the 64th manifest source).
+- **No host-count boundary test** (recorded decision, §Scope): the 64-source cap
+  is not implemented, so a 63/64-entry count test has nothing to assert.
 - A ref-grammar parity test: for a corpus of names, assert
   `hostreg` accepts exactly the names `appwire.ParseRef(name+":x")` accepts,
   minus the `.`, `..`, and `local` cases we deliberately exclude. This pins
@@ -497,10 +515,9 @@ Unit tests, all without a hub or network:
 8. Registry membership is independent of connectivity: with a host configured
    and its channel attached or dropped, `appsource.Registry.All()` is byte-for-
    byte the same set of source IDs.
-9. A host list with more than 63 remote entries fails `LoadConfig` with
-   `ErrTooManyHosts`; 63 entries load (the `local` entry is the 64th manifest
-   source). A programmatic add that would take the registry past 63 entries also
-   fails `ErrTooManyHosts` (the cap is not config-load-only).
+9. **Withdrawn** (recorded decision, §Scope): no `ErrTooManyHosts`, at config
+   load or on a programmatic add; an over-limit `[[hosts]]` list loads and is
+   the operator's configuration.
 
 ## PR size estimate (LOC)
 
@@ -527,10 +544,11 @@ Total ≈ **400–600 LOC**, one reviewable PR with no network, SSH, or UI surfa
   deferral.
 - **Where the registry is built (settled).** `main.go`, before the web server,
   passed through `hubcore.WebConfig` as `RemoteHosts`/`RemoteHostClient`/
-  `RemoteHostFacts`/`RemoteHostOnline`/`RemoteHostClientIfAttached` — the wiring
-  described in §Implementation approach item 4, which is **pending merge** (see
-  the header note), not on `main`. `newHubSourceRegistry` consumes
-  `cfg.RemoteHosts`; `NewWebServer` never reads `hub.toml`.
+  `RemoteHostFacts`/`RemoteHostOnline`/`RemoteHostClientIfAttached`/
+  `RemoteHostHandshake` — the wiring described in §Implementation approach item
+  4, shipped on `main` (`cmd/evener-hub/main.go:549-581`).
+  `newHubSourceRegistry` consumes `cfg.RemoteHosts`; `NewWebServer` never reads
+  `hub.toml`.
 - **Is `roots` validated or opaque?** This spec only trims/validates non-empty.
   Whether roots must be absolute or exist on the remote is component 05's
   preflight concern; leave them opaque here.

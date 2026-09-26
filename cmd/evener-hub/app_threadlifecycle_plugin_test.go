@@ -265,8 +265,8 @@ func TestThreadStartRefusesARequestCancelledDuringValidation(t *testing.T) {
 	defer cancel()
 	resolve := hubResolvePlugins
 	t.Cleanup(func() { hubResolvePlugins = resolve })
-	hubResolvePlugins = func(ctx context.Context, root string, dirs []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
-		resolution, err := resolve(ctx, root, dirs, enabled)
+	hubResolvePlugins = func(ctx context.Context, root string, dirs []string, enabled *[]string, mgr *plugins.Manager) (plugins.LaunchPluginResolution, error) {
+		resolution, err := resolve(ctx, root, dirs, enabled, mgr)
 		// The client goes while the inventory it asked for is being checked.
 		cancel()
 		return resolution, err

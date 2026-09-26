@@ -36,7 +36,12 @@ import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
-import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
+import {
+  resetThreadsStoreForTests,
+  setMutationStorageForTests,
+  subscribeMutationPersistence,
+  threadsStore,
+} from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -44,33 +49,15 @@ import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css"
 import ReadOnlyTranscript from "../transcript/Transcript";
 import * as SessionChromeModule from "./chrome/SessionChrome";
 import { resetAskDockStoreForTests } from "./composer/askDock/askDockStore";
+import { askPendingStatusChanged } from "./composer/askDock/askDockTestUtils";
 import * as ComposerModule from "./composer/Composer";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import Session from "./Session";
+import "./testing/editorGeometry";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
 import * as useTranscriptScrollModule from "./transcript/flow/useTranscriptScroll";
-
-// See draft.test.ts's identical comment: Node 26 shadows jsdom's real
-// window.localStorage with its own (non-functional under vitest) global.
-// No other test in this file touches localStorage, so stubbing it here is
-// harmless to the rest of the suite - only the seen-divider tests below
-// (kata g2ez) pre-seed a watermark through it.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 
 // The session footer's composer boundary is swapped for a visible stub here
 // ONLY to prove Session.tsx mounts it with the right ref and no longer adds a
@@ -290,8 +277,7 @@ function latestStubIntersectionObserver(): StubIntersectionObserver {
 }
 
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {
@@ -679,6 +665,24 @@ async function seedPendingSend(ref = "ref_a"): Promise<string> {
     payload: { ref, input: [{ type: "text", text: "hello" }] },
     attachments: [],
     optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
+  });
+  await refreshPendingTurnsProjection(ref);
+  await flushPendingTurnsProjectionForTests();
+  return record.clientMutationId;
+}
+
+// seedPendingSend's steer twin: the same durable write through this file's
+// own mutationStorage, with the steer family's wire method, so the pending
+// projection reconciles a held-steer entry exactly the way a real composer
+// steer does. The live-edge tests below use it as their arrival edge.
+async function seedPendingSteer(ref = "ref_a"): Promise<string> {
+  const record = await mutationStorage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/steer",
+    payload: { ref, input: [{ type: "text", text: "focus on the parser" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/steer", input: [{ type: "text", text: "focus on the parser" }] },
   });
   await refreshPendingTurnsProjection(ref);
   await flushPendingTurnsProjectionForTests();
@@ -2147,6 +2151,7 @@ test("a pending ask_user batch renders as the transcript's last row, not inside 
       method: "item/completed",
       params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
     });
+    fake.emitNotification(askPendingStatusChanged("ref_a"));
   });
 
   let dock: HTMLElement | null = null;
@@ -2218,6 +2223,7 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
         method: "item/completed",
         params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { ...item, status: "completed" } },
       });
+      fake.emitNotification(askPendingStatusChanged("ref_a"));
     });
 
     // The dock row is on screen (placement contract), and the last options
@@ -2227,6 +2233,484 @@ test("a pending ask counts the dock row in the scroll coordinator's rendered row
   } finally {
     spy.mockRestore();
   }
+});
+
+// The steering-ghost spec's live-edge row: ONE trailing virtual row hosts
+// both bottom-of-transcript tenants - the AskDock and the held-steer ghost
+// stack - because a second synthetic row would double-count against every
+// end-targeted scroll path. The tests below pin that row's composition, the
+// derived count the scroll coordinator needs (a held steer without an ask
+// used to land those paths one row short), the heldEpoch arrival signal the
+// pill consumes, and the live-surface gate that keeps a notLoaded stub from
+// showing a ghost.
+
+// Most live-edge tests hydrate a thread carrying one real turn - the same
+// readResponse-override fixture shape readOnlyEntityThread uses above. Fresh
+// object per call, never shared across tests. The dormant-session regression
+// below deliberately uses only the synthetic prelude instead.
+function liveSurfaceThread(): Partial<Thread> {
+  return {
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [{ id: "item_1", turnId: "turn_1", type: "agentMessage", text: "earlier reply", status: "completed" }],
+      },
+    ],
+  };
+}
+
+test("a dormant live session renders an idle drain in the live-edge row", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_system",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_system_prompt",
+              turnId: "turn_system",
+              type: "systemMessage",
+              text: "System prompt",
+            },
+          ],
+        },
+      ],
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/drainAsSteer",
+      payload: { ref: "ref_a", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+
+  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+  expect(document.querySelector('[data-row-id="live-edge"]')).not.toBeNull();
+  expect(screen.getByTestId("held-steer-announcements")).toBeTruthy();
+});
+
+// Spec §1's live gate (roborev #2140): held ghosts never render on
+// read-only surfaces - the same family the shared-notes surface keys on
+// (humanNoteDrafts.ts). A hold parked on a restart-required session waits
+// with the queue, not as a ghost promising delivery.
+test("a restart-required session renders no held ghost for a seeded hold", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      status: { type: "restartRequired" },
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/drainAsSteer",
+      payload: { ref: "ref_a", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  await act(async () => {});
+
+  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
+  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+});
+
+// The last departure on a dormant session must still announce (roborev
+// #2140): removing the final held steer unmounts the transcript subtree in
+// the same commit (heldVisible flips false, the dormant empty surface takes
+// over), so the announcements region has to live outside that subtree.
+test("a dormant session's last held departure still announces its outcome", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_system",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_system_prompt",
+              turnId: "turn_system",
+              type: "systemMessage",
+              text: "System prompt",
+            },
+          ],
+        },
+      ],
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/drainAsSteer",
+      payload: { ref: "ref_a", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+
+  // The departure: Stop cancels the ref's non-attempted rows - the entry
+  // leaves the held set and the dormant empty surface replaces the
+  // transcript subtree in this same commit.
+  await act(async () => {
+    await mutationStorage.cancelUnattempted("ref_a");
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+
+  await waitFor(() =>
+    expect(screen.getByTestId("held-steer-announcements").textContent).toBe(
+      "Steering message was canceled by Stop. It's kept with the queue.",
+    ),
+  );
+  // The transcript subtree went dormant; the region outlived it.
+  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+});
+
+// The live gate's two fence marks (roborev #2140 round 4): a session whose
+// status still reads active/idle can be read-only - a snapshot marked
+// resumeRequired, or a restart-blocking recovery obligation. No ghost, no
+// announcements, no live-edge row while either fence stands.
+test("a resume-required live session renders no held ghost", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
+        resumeRequired: true,
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/drainAsSteer",
+      payload: { ref: "ref_a", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  await act(async () => {});
+
+  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
+  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+});
+
+test("a recovery-fenced live session renders no held ghost", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 1, depth: 1, ids: ["q1"], texts: ["parked"], preview: ["parked"] },
+      },
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("composer-slot")).toBeTruthy());
+  // The recovery fence's obligation (the same mark liveControls' press-time
+  // rule consults) - armed here the way CommandPalette.test arms it.
+  act(() => {
+    threadsStore.setState((state) => ({
+      restartBlockingObligations: new Map(state.restartBlockingObligations).set("ref_a", Symbol()),
+    }));
+  });
+  await act(async () => {
+    await mutationStorage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/drainAsSteer",
+      payload: { ref: "ref_a", input: [] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+    });
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  await act(async () => {});
+
+  expect(screen.queryByTestId("held-steer-stack")).toBeNull();
+  expect(screen.queryByTestId("held-steer-announcements")).toBeNull();
+  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+});
+
+test("a held steer renders as the live-edge trailing row, under the AskDock when both exist", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await act(async () => {
+    await seedPendingSteer("ref_a");
+  });
+  await waitFor(() => {
+    const row = document.querySelector('[data-row-id="live-edge"]');
+    expect(row).not.toBeNull();
+    expect(row!.querySelector("[data-testid='held-steer-stack']")).not.toBeNull();
+  });
+
+  // With the ask dock pending too, both live in the ONE trailing row, dock
+  // first. Same ask_user drive the ask-dock trailing-row test above uses (a
+  // completed, unanswered ask_user call is a live pending question -
+  // deriveAskQuestions), on its own turn so it never rewrites the hydrated one.
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: { threadId: "thr_ref_a", ref: "ref_a", turn: { id: "turn_2", status: "inProgress", itemsView: "" } },
+    });
+    const item = {
+      type: "commandExecution",
+      id: "item_2",
+      turnId: "turn_2",
+      toolName: "ask_user",
+      callId: "call_2",
+      argumentsJson: JSON.stringify({
+        questions: [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }],
+      }),
+    };
+    fake.emitNotification({
+      method: "item/started",
+      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_2", item: { ...item, status: "inProgress" } },
+    });
+    fake.emitNotification({
+      method: "item/completed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_2", item: { ...item, status: "completed" } },
+    });
+    fake.emitNotification(askPendingStatusChanged("ref_a"));
+  });
+  await waitFor(() => {
+    const stack = document.querySelector("[data-testid='held-steer-stack']");
+    expect(stack).not.toBeNull();
+    const dock = document.querySelector("[data-ask-response-dock]");
+    expect(dock).not.toBeNull();
+    // DOM order: the dock precedes the stack inside the same row.
+    expect(dock!.compareDocumentPosition(stack!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+test("no trailing row renders when neither an ask nor held steering exists", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy());
+  // Scoped to the trailing row's id: ordinary turn rows carry their own
+  // data-row-id values and must keep rendering.
+  expect(document.querySelector('[data-row-id="live-edge"]')).toBeNull();
+});
+
+test("a held steer without an ask still counts in renderedRowCount (the one-row-short regression)", async () => {
+  const realUseTranscriptScroll = useTranscriptScrollModule.useTranscriptScroll;
+  const captured: Array<{ renderedRowCount?: number; heldEpoch?: number }> = [];
+  const spy = vi
+    .spyOn(useTranscriptScrollModule, "useTranscriptScroll")
+    .mockImplementation((options: Parameters<typeof realUseTranscriptScroll>[0]) => {
+      captured.push({ renderedRowCount: options.renderedRowCount, heldEpoch: options.heldEpoch });
+      return realUseTranscriptScroll(options);
+    });
+  try {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await waitFor(() => {
+      expect(captured.length).toBeGreaterThan(0);
+      expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
+    });
+    const beforeSeed = captured.at(-1)?.renderedRowCount;
+    await act(async () => {
+      await seedPendingSteer("ref_a");
+    });
+    await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+    const afterSeed = captured.at(-1)?.renderedRowCount;
+    expect(afterSeed).toBe((beforeSeed ?? 0) + 1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("heldEpoch bumps on arrival only - never on removal", async () => {
+  // Same spy shape as above, capturing options.heldEpoch instead: this is
+  // useHeldSteerEpoch's one end-to-end pin - the epoch Session feeds the
+  // scroll coordinator, observed through the options the coordinator
+  // actually received.
+  const realUseTranscriptScroll = useTranscriptScrollModule.useTranscriptScroll;
+  const epochs: number[] = [];
+  const spy = vi
+    .spyOn(useTranscriptScrollModule, "useTranscriptScroll")
+    .mockImplementation((options: Parameters<typeof realUseTranscriptScroll>[0]) => {
+      epochs.push(options.heldEpoch ?? 0);
+      return realUseTranscriptScroll(options);
+    });
+  try {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+    render(
+      <ClientProvider client={fake}>
+        <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      </ClientProvider>,
+    );
+    await act(async () => {
+      await seedPendingSteer("ref_a");
+    });
+    await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+    expect(Math.max(...epochs)).toBe(1); // arrival bumped it exactly once
+    // A departure: Stop-cancel the ref's unattempted rows through the same
+    // real write every Stop path makes (PendingChips.test.tsx's shape).
+    await act(async () => {
+      const storage = new MutationOutboxIndexedDB();
+      await storage.cancelUnattempted("ref_a");
+      storage.close();
+      await refreshPendingTurnsProjection("ref_a");
+      await flushPendingTurnsProjectionForTests();
+    });
+    await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());
+    expect(Math.max(...epochs)).toBe(1); // removal never bumps the epoch
+    // ...and never RESETS it either: the last observed value is still the
+    // arrival's 1. Math.max alone would let a reset-to-0 on removal slip
+    // through (0 is no new maximum), so the final observation is pinned
+    // directly.
+    expect(epochs.at(-1)).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("held steering renders only on a live surface: a notLoaded session shows no ghost", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { ...liveSurfaceThread(), status: { type: "notLoaded" } }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  // Wait for hydration first: with the model still pending there is no row
+  // for a different reason, and this test must fail on the status gate alone.
+  await waitFor(() => expect(screen.getByText("earlier reply")).toBeTruthy());
+  await act(async () => {
+    await seedPendingSteer("ref_a");
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(document.querySelector("[data-row-id='live-edge']")).toBeNull();
+});
+
+// The held-steer announcements region follows the ask dock's one mounting rule
+// (the pending-ask test above pins the same for its own region): the ghost
+// stack itself is a virtualized trailing row - a scroll-away unmounts it - so
+// its ONE aria-live region must live OUTSIDE the virtual list, or every
+// scroll remount would re-announce unchanged text (the AskDockAnnouncements
+// pattern; steering-ghost spec §2).
+test("the held-steer announcements region lives outside the virtual list", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await act(async () => {
+    await seedPendingSteer("ref_a");
+  });
+  await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
+
+  // The ghost stack itself IS inside the virtual list - it is the live-edge
+  // trailing row, scrolling away with the content...
+  const list = screen.getByTestId("transcript-virtual-list");
+  expect(list.contains(screen.getByTestId("held-steer-stack"))).toBe(true);
+
+  // ...while its one aria-live region stays OUTSIDE the list, so a
+  // virtualized remount of the row never re-announces unchanged text.
+  const announcements = screen.getByTestId("held-steer-announcements");
+  expect(list.contains(announcements)).toBe(false);
 });
 
 test("explains that an incompatible daemon needs an explicit restart", async () => {
@@ -2420,7 +2904,7 @@ test("explicit Resume follows the returned identity through transcript and new s
   expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(0);
   expect(hydration).toHaveBeenCalledWith(stableRef);
   expect(hydration).toHaveBeenCalledWith(currentRef);
-  expect(refresh).toHaveBeenCalledWith(currentRef);
+  expect(refresh).toHaveBeenCalledWith(currentRef, expect.any(Function));
   await act(async () => {
     await Promise.all(hydration.mock.results.map((result) => result.value));
     await Promise.all(refresh.mock.results.map((result) => result.value));
@@ -2428,7 +2912,13 @@ test("explicit Resume follows the returned identity through transcript and new s
     await flushPendingTurnsProjectionForTests();
   });
   expect(await mutationStorage.listOutbox(stableRef)).toEqual([
-    expect.objectContaining({ clientMutationId: uncertain, state: "blockedUnknown" }),
+    // The Force stop above owns this row now: it was never attempted (the
+    // seed wrote blockedUnknown directly onto an undispatched record), so the
+    // write-first stop cancels it durably before the RPC
+    // (stop-cancellation-outbox §4/§5) instead of leaving it delivery-uncertain.
+    // The row still proves the test's own point: Resume cannot resend it - a
+    // canceled row only ever leaves storage through an explicit user Retry.
+    expect.objectContaining({ clientMutationId: uncertain, state: "canceled" }),
   ]);
   expect(await mutationStorage.listOutbox(currentRef)).toHaveLength(0);
   await user.type(screen.getByRole("textbox", { name: /^message$/i }), "Follow up on current transcript");
@@ -2438,6 +2928,222 @@ test("explicit Resume follows the returned identity through transcript and new s
     expect.objectContaining({ ref: currentRef }),
   );
   await flushPendingTurnsProjectionForTests();
+});
+
+// RoboRev finding on the reduced branch: the explicit Resume passed
+// resumeStopFence(sessionRef) to refreshThread(refreshedRef) even though resume
+// can return a different identity (the line below the call already handles
+// refreshedRef !== sessionRef). That fence watches the OLD ref's generation,
+// so a Stop issued against the NEW ref while its post-resume hydration is on
+// the wire could not cancel the stale publish. A second fence for the
+// refreshed ref must join it.
+test("a Stop on the resumed identity cancels the stale post-resume publish", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  const stableRef = "local:stable-a";
+  const currentRef = "local:current-b";
+  const fake = connectFakeClient();
+  let currentReadStarted!: () => void;
+  const readStarted = new Promise<void>((resolve) => {
+    currentReadStarted = resolve;
+  });
+  let holdNext = false;
+  let resolveHeld!: (response: ThreadReadResponse) => void;
+  const held = new Promise<ThreadReadResponse>((resolve) => {
+    resolveHeld = resolve;
+  });
+  fake.on("thread/read", (params) => {
+    if (params.ref === currentRef) {
+      if (holdNext) {
+        holdNext = false;
+        currentReadStarted();
+        return held;
+      }
+      return readResponse(currentRef, { status: { type: "idle" } });
+    }
+    return readResponse(stableRef, {
+      status: { type: "notLoaded" },
+      evener: { ref: stableRef, capabilities: CAPABILITIES, resumeRequired: true, queue: { revision: 0 } },
+    });
+  });
+  fake.on("thread/resume", () => readResponse(currentRef, { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  // The resumed identity is already held by a pane somewhere (another tab, or
+  // the ref that this pane will resolve to), so its ref is tracked and the
+  // post-resume refreshThread really does hydrate it.
+  await act(async () => {
+    await threadsStore.getState().ensureThread(currentRef);
+  });
+  window.history.replaceState({}, "", "/s/local%3Astable-a");
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={fake}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  const user = userEvent.setup();
+  holdNext = true;
+  await user.click(await screen.findByRole("button", { name: "Resume session" }));
+  await act(async () => {
+    await readStarted;
+  });
+  // The Stop lands against the resumed identity while its hydration is held.
+  await act(async () => {
+    await threadsStore.getState().shutdown(currentRef);
+    resolveHeld(readResponse(currentRef, { status: { type: "idle" } }));
+  });
+  expect(await screen.findByText(/Stop canceled this pending action/)).toBeTruthy();
+  expect(window.location.pathname).toBe("/s/local%3Astable-a");
+});
+
+// RoboRev finding on the reduced branch: refreshedStopFence baselines the new
+// identity AFTER resumeThread returns, so a Stop recorded against the resumed
+// ref while the resume RPC is still in flight becomes that fence's baseline
+// and can never cancel the post-resume hydration. The resumed identity can be
+// named during that window by any surface already tracking it (here the tab
+// holds currentRef from a prior load), so the new ref must be fenced against
+// its pre-resume Stop generation, not a post-resume one.
+//
+// Staging note (RoboRev Low on fee4eb8): this is the RPC-IN-FLIGHT window -
+// the Stop is issued only after the thread/resume handler runs, so
+// beforeRequest has already passed and the post-resume identityFence is the
+// one that cancels. The reconnect window BEFORE beforeRequest is covered by
+// "a Stop on the resumed identity before the resume RPC leaves suppresses
+// the RPC" below.
+test("a Stop on the resumed identity while the resume RPC is in flight cancels the post-resume hydration", async ({
+  onTestFinished,
+}) => {
+  onTestFinished(stubSessionSlots);
+  const stableRef = "local:stable-a";
+  const currentRef = "local:current-b";
+  const fake = connectFakeClient();
+  let resumeRequested!: () => void;
+  const requested = new Promise<void>((resolve) => {
+    resumeRequested = resolve;
+  });
+  let resolveResume!: (response: ThreadReadResponse) => void;
+  const resumeHeld = new Promise<ThreadReadResponse>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/read", (params) => {
+    if (params.ref === currentRef) return readResponse(currentRef, { status: { type: "idle" } });
+    return readResponse(stableRef, {
+      status: { type: "notLoaded" },
+      evener: { ref: stableRef, capabilities: CAPABILITIES, resumeRequired: true, queue: { revision: 0 } },
+    });
+  });
+  fake.on("thread/resume", () => {
+    resumeRequested();
+    return resumeHeld;
+  });
+  fake.on("thread/shutdown", () => ({}));
+  // The resumed identity is already tracked by this tab (a prior load, a list
+  // row), so a Stop surface can name it before resumeThread resolves.
+  await act(async () => {
+    await threadsStore.getState().ensureThread(currentRef);
+  });
+  window.history.replaceState({}, "", "/s/local%3Astable-a");
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={fake}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Resume session" }));
+  await act(async () => {
+    await requested;
+  });
+  // The Stop lands against the resumed identity while the resume RPC is still
+  // on the wire. Only then does the resume response arrive.
+  await act(async () => {
+    await threadsStore.getState().shutdown(currentRef);
+    resolveResume(readResponse(currentRef, { status: { type: "idle" } }));
+  });
+  expect(await screen.findByText(/Stop canceled this pending action/)).toBeTruthy();
+  expect(window.location.pathname).toBe("/s/local%3Astable-a");
+});
+
+// RoboRev Medium on fee4eb8 (PR 1393): beforeRequest fenced only sessionRef,
+// so a Stop recorded against the resumed identity during the PRE-RPC
+// reconnect window never canceled the RPC - the post-resume identityFence
+// still caught the hydration, but the resume was already sent after the Stop
+// and won server-side. The resumed identity is unknowable before the RPC
+// returns, so the pre-resume baseline now fences GLOBALLY for the
+// beforeRequest check: any ref's acknowledged Stop in the window suppresses
+// the resume RPC.
+test("a Stop on the resumed identity before the resume RPC leaves suppresses the RPC", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  const stableRef = "local:stable-a";
+  const currentRef = "local:current-b";
+  const fake = connectFakeClient();
+  fake.on("thread/read", (params) => {
+    if (params.ref === currentRef) return readResponse(currentRef, { status: { type: "idle" } });
+    return readResponse(stableRef, {
+      status: { type: "notLoaded" },
+      evener: { ref: stableRef, capabilities: CAPABILITIES, resumeRequired: true, queue: { revision: 0 } },
+    });
+  });
+  fake.on("thread/resume", () => readResponse(currentRef, { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  // The resumed identity is already tracked by this tab (a prior load, a list
+  // row), so a Stop surface can name it before resumeThread resolves.
+  await act(async () => {
+    await threadsStore.getState().ensureThread(currentRef);
+  });
+  window.history.replaceState({}, "", "/s/local%3Astable-a");
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={fake}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  const resume = await screen.findByRole("button", { name: "Resume session" });
+  // The Stop lands in the reconnect window AFTER the click but BEFORE the
+  // resume RPC leaves: resumeThread's reconnect await (fakeClient's microtask
+  // hop) has not settled, so beforeRequest has not run yet. shutdown records
+  // its Stop synchronously, ahead of that guard - fireEvent, not userEvent,
+  // so the two calls share one synchronous turn. The action's own completion
+  // is still awaited below: write-first ordering (stop-cancellation-outbox §4)
+  // makes shutdown's durable cancel write precede its RPC, so a fire-and-
+  // forget call would complete past this test's own client and fake.
+  let shutdownCompletion!: Promise<void>;
+  act(() => {
+    fireEvent.click(resume);
+    shutdownCompletion = threadsStore.getState().shutdown(currentRef);
+  });
+  await act(async () => {});
+  // The guarded-out resume never sent the RPC - the guard's whole point.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([]);
+  expect(await screen.findByText(/Stop canceled this pending action/)).toBeTruthy();
+  expect(window.location.pathname).toBe("/s/local%3Astable-a");
+  await shutdownCompletion;
 });
 
 test("offers explicit resume after restart even without pending messages", async () => {
@@ -2462,7 +3168,7 @@ test("offers explicit resume after restart even without pending messages", async
   fireEvent.click(resume);
   await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle"));
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
-  expect(resumeTransport).toHaveBeenCalledWith("ref_a");
+  expect(resumeTransport).toHaveBeenCalledWith("ref_a", { beforeRequest: expect.any(Function) });
 });
 
 test.each(["success", "refused"])(
@@ -2548,9 +3254,13 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
-  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
-    { method: "evener/thread/forceStop", params: { ref } },
-  ]);
+  // forceStop writes its cancellation durably before the RPC, so the call can
+  // land after the click resolves; wait for it rather than racing the write.
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+      { method: "evener/thread/forceStop", params: { ref } },
+    ]),
+  );
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   if (outcome === "refused") {
     expect(await screen.findByText("Couldn't force stop session: no direct daemon ownership claim")).toBeTruthy();
@@ -2949,11 +3659,23 @@ test("recovery rejection blocks durable dispatch and refreshes the Resume contro
     await act(async () => {
       await threadsStore.getState().refreshThread(ref);
     });
+    // setInterval is frozen to control discovery, so waitFor cannot poll a
+    // storage-only update. Observe its real committed persistence edge instead.
+    const blockedWritten = new Promise<void>((resolve, reject) => {
+      const unsubscribe = subscribeMutationPersistence((refs) => {
+        if (!refs.includes(ref) || !mutationId) return;
+        void mutationStorage.getOutbox(mutationId).then((record) => {
+          if (record?.state === "blockedUnknown") resolve();
+        }, reject);
+      });
+      onTestFinished(unsubscribe);
+    });
     await act(async () => {
       await threadsStore.getState().queue(ref, "preserve this uncertain message");
       await flushPendingTurnsProjectionForTests();
     });
-    await waitFor(async () => expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown"));
+    await blockedWritten;
+    expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
     expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(false);
     const reconciled = nextReconciliation();
     await act(async () => {
@@ -3197,12 +3919,9 @@ test.each(["idle", "active"])(
   },
 );
 
-// Regression for the review finding on the footer-button removal: a FENCED
-// notLoaded snapshot (resumeRequired -> Send=false) renders no composer card
-// at all, which used to leave the ⋯ menu - the only force-stop surface -
-// unmounted. Session.tsx now mounts SessionChrome's menu-only placement in
-// the footer for exactly this state. This drives the REAL Session + Composer
-// tree (no slot stubs) to prove the menu is reachable there.
+// A fenced notLoaded snapshot must retain both a writable composer and its
+// force-stop menu. Drive the REAL Session + Composer tree (no slot stubs),
+// preserving menu confirmation, activity hydration, and passive no-resume.
 test("a fenced notLoaded session keeps force stop reachable in the pane footer", async () => {
   vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
   vi.mocked(ComposerModule.Composer).mockRestore();
@@ -3215,9 +3934,8 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     const response = readResponse(ref, { status: { type: "notLoaded" } });
     response.thread.evener.resumeRequired = !stopped;
     response.thread.evener.mutationStateAuthoritative = false;
-    // pastThreadCapabilities advertises Send for a saved snapshot; the hub's
-    // resume fence (applyThreadResumeRequirement) takes it away - which is
-    // what kills the composer's follow-up card and its chrome mount.
+    // The wire capability remains fenced; explicit user intent owns resume,
+    // not passive rendering of the writable draft and its chrome.
     if (!stopped) response.thread.evener.capabilities = { ...CAPABILITIES, send: false };
     return response;
   });
@@ -3237,12 +3955,18 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   );
   expect(activityPanelStore.getState().entries.has(ref)).toBe(false);
   expect(activitySummaryStore.getState().entries.has(ref)).toBe(false);
-  // The fence kills the composer card entirely - no invitation, no chrome.
+  // The fence must not hide the editor or its force-stop menu.
   const menuTrigger = await screen.findByRole("button", { name: /session actions/i });
   await waitFor(() => expect(activityRefs).toEqual([ref]));
   expect(activitySummaryStore.getState().entries.get(ref)?.established).toBe(true);
   expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
-  expect(screen.queryByTestId("composer-input-card")).toBeNull();
+  expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  // The composer's editor is a contenteditable div, which carries neither
+  // `disabled` nor `readOnly`; `contenteditable="true"` is the one writable
+  // state those two textarea assertions pinned (jsdom implements no
+  // contentEditable IDL property, so the attribute is the only faithful read).
+  expect(editor.getAttribute("contenteditable")).toBe("true");
   const user = userEvent.setup();
   await user.click(menuTrigger);
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
@@ -3258,4 +3982,52 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
     ]),
   );
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+});
+
+// RoboRev finding on the reduced branch (Medium): the composer's
+// `followUpEngaged = localNotLoaded || ...` mounts its placement="composer"
+// discoverActivity for every local:notLoaded snapshot, and Session.tsx mounts
+// its placement="menu" fallback for !controlsFor(model).send. The `!restartPending`
+// precondition on that fallback is what keeps the two from co-mounting: a
+// recovery-fenced stopped session is owned by the composer card (whose menu is
+// how force stop stays reachable), and only a local snapshot with no card is
+// owned by the footer. This pins the exactly-one-owner invariant the Composer
+// comment relies on across every local:notLoaded shape.
+test.each([
+  { label: "a recovery-fenced stopped session", send: false, resumeRequired: true },
+  { label: "an unfenced snapshot with no Send", send: false, resumeRequired: false },
+  { label: "an unfenced snapshot that advertises Send", send: true, resumeRequired: false },
+])("exactly one activity-discovery owner mounts for $label", async ({ send, resumeRequired }) => {
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  const fake = connectFakeClient();
+  const ref = "local:owner-invariant";
+  setNavigationTitle(ref, "Owner invariant");
+  const activityRefs: unknown[] = [];
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.capabilities = { ...CAPABILITIES, send };
+    response.thread.evener.resumeRequired = resumeRequired;
+    response.thread.evener.mutationStateAuthoritative = false;
+    return response;
+  });
+  fake.on("evener/jobs/list", (params) => {
+    activityRefs.push(params.ref);
+    return { data: emptyActivityTree(ref) };
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+      <Toast />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/read")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  // One menu trigger, one mounted chrome, and exactly one discovery request:
+  // a second owner would double any of them.
+  expect(screen.queryAllByRole("button", { name: /session actions/i })).toHaveLength(1);
+  const chromeMounts =
+    screen.queryAllByTestId("session-chrome-menu").length + screen.queryAllByTestId("session-chrome-inline").length;
+  expect(chromeMounts).toBe(1);
+  await waitFor(() => expect(activityRefs).toEqual([ref]));
 });

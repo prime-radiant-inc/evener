@@ -245,3 +245,103 @@ func TestRenderTurnIDScan_SaysSoWhenNothingIsAffected(t *testing.T) {
 		t.Errorf("rendered clean sweep must say no session is affected:\n%s", got)
 	}
 }
+
+// TestScanTurnIDs_LegacyBucketNamesSessionAndReportsRealRoot is the RED case for
+// FU1: a legacy-named bucket (a directory name identifier.ValidateProjectID
+// rejects — "0123456789abcdef" has no readable-portion/suffix split) holds a
+// session with a reserved entry-index turn id. Sweeping from the bucket dir
+// (the daemon's per-session state-dir spelling) must report the real swept
+// root — the state home that resolveBuckets up-walked to, not the bucket dir
+// the caller handed in — and the human render must name the affected session,
+// since refFor emits no ref for a legacy-named bucket and the session id is
+// the only identity the render can carry. Both assertions fail on current
+// code: StateBase stores the caller's bucket dir, and the render buries the
+// session id inside the transcript path.
+func TestScanTurnIDs_LegacyBucketNamesSessionAndReportsRealRoot(t *testing.T) {
+	stateHome := t.TempDir()
+	// "0123456789abcdef": no readable-portion/suffix split, so
+	// identifier.ValidateProjectID rejects it — a legacy-named bucket.
+	legacyBucket := stateHomeBucket(stateHome, "0123456789abcdef")
+	writeRichSession(t, legacyBucket, sidA, []schema.Turn{
+		reservedTurn(schema.TurnUserInput, "ask", "turn_11"),
+	}, nil, schema.SessionMeta{})
+
+	// Pass the bucket dir as the base — the daemon's per-session state dir
+	// spelling — so resolveBuckets up-walks to the state home and sweeps
+	// every sibling bucket under it.
+	scan, err := ScanTurnIDs(legacyBucket)
+	if err != nil {
+		t.Fatalf("ScanTurnIDs: %v", err)
+	}
+	if len(scan.Sessions) != 1 || scan.Sessions[0].SessionID != sidA {
+		t.Fatalf("Sessions = %#v, want the one affected session %s", scan.Sessions, sidA)
+	}
+
+	// Defect 2: StateBase must be the real swept root (the state home),
+	// not the project-bucket dir the caller handed in. The sweep enumerated
+	// buckets under stateHome, so that is the root the header should name.
+	if scan.StateBase != stateHome {
+		t.Errorf("StateBase = %q, want the swept root %q", scan.StateBase, stateHome)
+	}
+
+	// Defect 1: the render must name the affected session as an identity,
+	// not just bury the session id inside the transcript path. refFor emits
+	// no ref for a legacy-named bucket, so the render's "name every affected
+	// session" contract falls to the session id. Strip the path and check
+	// the id survives — on current code the path is the only place it appears.
+	got := RenderTurnIDScan(scan)
+	renderedWithoutPath := strings.ReplaceAll(got, scan.Sessions[0].TranscriptPath, "")
+	if !strings.Contains(renderedWithoutPath, sidA) {
+		t.Errorf("render does not name the affected session %s outside the transcript path:\n%s", sidA, got)
+	}
+}
+
+// TestRenderTurnIDScan_NamesAffectedSessionWhenRefEmpty is the pure-render RED
+// case for defect 1's affected-session line: when TranscriptRef is empty (a
+// legacy-named bucket refFor cannot consume) the render must still name the
+// session. On current code the affected line is "·   (<path>)" — the session
+// id appears only inside the path, so stripping the path removes it entirely.
+func TestRenderTurnIDScan_NamesAffectedSessionWhenRefEmpty(t *testing.T) {
+	scan := TurnIDScan{
+		StateBase:       "/state",
+		SessionsScanned: 1,
+		Sessions: []TurnIDSession{{
+			SessionID:      sidA,
+			TranscriptRef:  "", // legacy-named bucket: refFor emits no ref
+			TranscriptPath: "/state/sessions/" + sidA + ".transcript.jsonl",
+			ReservedTurns:  []ReservedTurn{{TurnID: "turn_11", EntryIndex: 3, Kind: "USER_INPUT"}},
+		}},
+	}
+	got := RenderTurnIDScan(scan)
+	renderedWithoutPath := strings.ReplaceAll(got, scan.Sessions[0].TranscriptPath, "")
+	if !strings.Contains(renderedWithoutPath, sidA) {
+		t.Errorf("render does not name the affected session %s when the ref is empty:\n%s", sidA, got)
+	}
+}
+
+// TestRenderTurnIDScan_NamesUnreadableSessionWhenRefEmpty is the pure-render
+// RED case for defect 1's unreadable line: the unreadable line needs the same
+// treatment as the affected line. When TranscriptRef is empty the current
+// render is "·  — <error>" — no session id at all, so the session the sweep
+// could not answer for is unnamed.
+func TestRenderTurnIDScan_NamesUnreadableSessionWhenRefEmpty(t *testing.T) {
+	scan := TurnIDScan{
+		StateBase:       "/state",
+		SessionsScanned: 1,
+		Unreadable: []UnreadableTranscript{{
+			SessionID:     sidB,
+			TranscriptRef: "", // legacy-named bucket: refFor emits no ref
+			Error:         "decode transcript entry: unknown field",
+		}},
+	}
+	got := RenderTurnIDScan(scan)
+	if !strings.Contains(got, sidB) {
+		t.Errorf("render does not name the unreadable session %s when the ref is empty:\n%s", sidB, got)
+	}
+	// The unreadable line must not leave empty parens "()" when the ref is
+	// absent — UnreadableTranscript carries no path, so empty parens hold
+	// nothing and read as an artifact, not a location.
+	if strings.Contains(got, "()") {
+		t.Errorf("render emits empty parens for an empty ref:\n%s", got)
+	}
+}

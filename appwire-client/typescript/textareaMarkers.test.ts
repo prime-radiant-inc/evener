@@ -1,10 +1,31 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { insertMarker, markerText, stripMarker } from "./textareaMarkers";
+import { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
 
 test("markerText renders the literal [image N] placeholder", () => {
   expect(markerText(1)).toBe("[image 1]");
   expect(markerText(42)).toBe("[image 42]");
+});
+
+// --- markerPattern: the ONE matcher for the literal markerText renders ------
+// Every site that scans or rewrites "[image N]" (attachmentMarkers' send-time
+// translation, recoveryDraft's renumbering, TurnFailureEndCap's retry
+// round-trip) goes through this, and these two tests pin it to markerText so
+// changing the placeholder syntax can never update the template without the
+// pattern.
+
+test("markerPattern matches exactly the literal markerText renders, capturing N", () => {
+  for (const n of [1, 42, 1000]) {
+    const marker = markerText(n);
+    const match = markerPattern().exec(marker);
+    expect(match?.[0]).toBe(marker);
+    expect(match?.[1]).toBe(String(n));
+  }
+});
+
+test("markerPattern is a global scan that finds every marker", () => {
+  const found = Array.from("[image 1] between [image 12]".matchAll(markerPattern()), (match) => Number(match[1]));
+  expect(found).toEqual([1, 12]);
 });
 
 // --- insertMarker: parity-m5-composer.md §G / test-composer-image-markers.js ---

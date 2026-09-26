@@ -15,8 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/remoteinstall"
 	"primeradiant.com/evener/internal/shellquote"
 )
 
@@ -133,10 +135,175 @@ func TestDeployTargetDirectoryMissingFailsClearly(t *testing.T) {
 	}
 }
 
+// refusingRunner fails the test when any remote command runs. The run-target
+// refusals must arrive before the controller touches the host, so a runner call
+// is itself the defect under test.
+func refusingRunner(t *testing.T) *fakeRunner {
+	t.Helper()
+	return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		t.Errorf("a remote command ran for a refused run target: %v", argv)
+		return nil, fmt.Errorf("unexpected remote command: %v", argv)
+	}}
+}
+
+// assertRunTargetRefusal pins the typed refusal, its terminality, and its
+// message: errRunTargetUnservable, the terminal type the neighbouring refusal
+// (errControllerDirty) uses, naming what the operator must fix. It is not
+// ErrDeploy: a supervisor that retried that retryable sentinel would re-refuse
+// the same misconfigured path forever (round thirteen's loop).
+func assertRunTargetRefusal(t *testing.T, err error, wants ...string) {
+	t.Helper()
+	if !errors.Is(err, errRunTargetUnservable) {
+		t.Fatalf("err = %v, want errRunTargetUnservable", err)
+	}
+	if !isTerminal(err) {
+		t.Fatalf("err = %v, want a terminal refusal (a retryable one re-refuses forever)", err)
+	}
+	if errors.Is(err, ErrDeploy) {
+		t.Fatalf("err = %v still wraps ErrDeploy, so the supervisor would retry the same refusal forever", err)
+	}
+	for _, want := range wants {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestDeployRefusesARunTargetThatCannotServeAHub pins the round-22 decision that
+// the run target must be `evener`. Release archives carry both `evener` and
+// `evener-dev`, but `evener-dev` is the development/test tooling binary
+// (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a host
+// configured to run it installs "successfully" and then fails preflight, health,
+// and restart, with the controller having already written to the host. Any other
+// basename is no better: the manager records this one path as the host's run
+// target and probes, restarts, and attaches the binary at it. The refusal is
+// therefore asserted on the recorded commands, not on the error alone: no remote
+// command, install, or push may have run, and the refusal must not depend on a
+// retry to become effective — repeating the deploy changes nothing on the host
+// because nothing reached it the first time.
+func TestDeployRefusesARunTargetThatCannotServeAHub(t *testing.T) {
+	const devTooling = "/opt/evener/bin/evener-dev"
+	const unshipped = "/opt/evener/bin/evener-hub"
+	wants := map[string][]string{
+		devTooling: {"evener-dev", "development"},
+		unshipped:  {"evener-hub"},
+	}
+
+	for _, target := range []string{devTooling, unshipped} {
+		t.Run(target, func(t *testing.T) {
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: target}
+
+			t.Run("push path", func(t *testing.T) {
+				builds := 0
+				fr := refusingRunner(t)
+				m := newTestManager(t, testRegistry(t, host), fr, Options{
+					BuildBinary: func(context.Context, string, string, string) error {
+						builds++
+						return nil
+					},
+				})
+
+				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+				assertRunTargetRefusal(t, err, wants[target]...)
+				// The ordering is the requirement. The first refusal is already
+				// the whole answer, so a supervisor's retry re-runs it with no
+				// install, push, or write to repeat.
+				if _, again := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"}); !errors.Is(again, errRunTargetUnservable) {
+					t.Fatalf("retry err = %v, want the same terminal run-target refusal", again)
+				}
+				if runs := fr.recordedRuns(); len(runs) != 0 {
+					t.Fatalf("the refused deploy reached the runner: %v", runs)
+				}
+				if builds != 0 {
+					t.Fatalf("cross-compile ran for a run target that cannot serve a hub (builds = %d)", builds)
+				}
+			})
+
+			t.Run("installer fallback", func(t *testing.T) {
+				// The fallback is reached only for a controller whose channel has
+				// a publishable artifact, so the run-target refusal must be the
+				// one that survives that admission.
+				origChannel := buildinfo.Channel
+				t.Cleanup(func() { buildinfo.Channel = origChannel })
+				buildinfo.Channel = "snapshot"
+
+				fr := refusingRunner(t)
+				m := newTestManager(t, testRegistry(t, host), fr, Options{})
+				_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+				assertRunTargetRefusal(t, err, wants[target]...)
+				if runs := fr.recordedRuns(); len(runs) != 0 {
+					t.Fatalf("the refused install reached the runner: %v", runs)
+				}
+			})
+		})
+	}
+}
+
+// TestDeployTargetAcceptsEvenerRunTargets keeps the narrowing from overreaching:
+// a configured evener_path named `evener`, wherever it lives, and the resolved
+// default are unchanged.
+func TestDeployTargetAcceptsEvenerRunTargets(t *testing.T) {
+	t.Run("configured evener_path under a non-default directory", func(t *testing.T) {
+		const exe = "/opt/evener/current/evener"
+		host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: exe}
+		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+			joined := strings.Join(argv, " ")
+			switch {
+			case strings.Contains(joined, "test -d /opt/evener/current"):
+				return nil, nil
+			case strings.Contains(joined, "evener_resolve "+exe):
+				return []byte(exe + "\n"), nil
+			default:
+				return nil, fmt.Errorf("unexpected remote command: %v", argv)
+			}
+		}}
+		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+		got, err := m.deployTarget(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+		if err != nil {
+			t.Fatalf("deployTarget: %v", err)
+		}
+		if got != exe {
+			t.Fatalf("deployTarget = %q, want the configured evener_path %q", got, exe)
+		}
+	})
+
+	t.Run("default resolution with no evener_path", func(t *testing.T) {
+		const exe = "/home/dev/.local/bin/evener"
+		host := hostreg.Host{Name: "beta", SSH: "beta.example"}
+		fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+			joined := strings.Join(argv, " ")
+			switch {
+			case strings.Contains(joined, "lsof -ti :9180"):
+				return []byte(noListenerMarker + "\n"), nil
+			case strings.Contains(joined, "command -v evener"):
+				return []byte(exe + "\n"), nil
+			case strings.Contains(joined, "evener_resolve "+exe):
+				return []byte(exe + "\n"), nil
+			default:
+				return nil, fmt.Errorf("unexpected remote command: %v", argv)
+			}
+		}}
+		m := newTestManager(t, testRegistry(t, host), fr, Options{})
+
+		got, err := m.deployTarget(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+		if err != nil {
+			t.Fatalf("deployTarget: %v", err)
+		}
+		if got != exe {
+			t.Fatalf("deployTarget = %q, want the PATH evener %q", got, exe)
+		}
+	})
+}
+
 // TestInstallerRefForMapsBuildChannel pins acceptance criterion 16: the installer
 // artifact reference is derived from buildinfo.BuildChannel(), and
 // buildinfo.Version() (a short SHA, possibly -dirty) is never passed as a tag.
 func TestInstallerRefForMapsBuildChannel(t *testing.T) {
+	// The remedy clause the refusals append is the caller's business (asserted
+	// where it reaches an operator, in deploy_help_test.go); this table is about
+	// the reference mapping alone.
+	const remedy = "set -deploy-binary or -build-source"
 	cases := []struct {
 		name    string
 		channel string
@@ -154,7 +321,7 @@ func TestInstallerRefForMapsBuildChannel(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := installerRefFor(tc.channel, tc.tag, tc.dirty)
+			got, err := installerRefFor(tc.channel, tc.tag, tc.dirty, remedy)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("installerRefFor(%q,%q,%q) err = %v, wantErr %v", tc.channel, tc.tag, tc.dirty, err, tc.wantErr)
 			}
@@ -166,8 +333,9 @@ func TestInstallerRefForMapsBuildChannel(t *testing.T) {
 }
 
 // TestInstallerDirsInstallToTheRunTarget pins acceptance criterion 17: with
-// evener_path set the installer's BINDIR is its directory (refusing an unshipped
-// basename); with evener_path empty the installer's default
+// evener_path set the installer's BINDIR is its directory (refusing any basename
+// but `evener` — evener-dev is the development tooling binary, not a run target a
+// hub can serve); with evener_path empty the installer's default
 // ~/.local/bin/evener is the run target the manager records.
 func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 	bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener"}, Preflight{Home: "/home/dev"})
@@ -178,13 +346,20 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 		t.Fatalf("installerDirs(evener_path) = (%q,%q,%q), want (/opt/evener/bin,/opt/evener/share/evener/bin,/opt/evener/bin/evener)", bindir, share, target)
 	}
 
-	if _, _, _, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); err != nil {
-		t.Fatalf("installerDirs(evener-dev): %v (install.sh ships evener-dev)", err)
+	// Round 22: release archives still carry evener-dev, but it is the development
+	// tooling binary and can never serve a hub, so it is not a run target the
+	// installer may be pointed at (component-04 criterion 17). The refusal is
+	// the terminal run-target sentinel the installer shares with the push path
+	// (checkRunTarget), so no retry of the install can change it.
+	if bindir, share, target, err := installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-dev"}, Preflight{Home: "/home/dev"}); !errors.Is(err, errRunTargetUnservable) || !isTerminal(err) {
+		t.Fatalf("installerDirs(evener-dev) err = %v, want a terminal errRunTargetUnservable", err)
+	} else if bindir != "" || share != "" || target != "" {
+		t.Fatalf("installerDirs(evener-dev) = (%q,%q,%q), want all empty", bindir, share, target)
 	}
 
 	bindir, share, target, err = installerDirs(hostreg.Host{Name: "alpha", EvenerPath: "/opt/evener/bin/evener-hub"}, Preflight{Home: "/home/dev"})
-	if !errors.Is(err, ErrDeploy) {
-		t.Fatalf("installerDirs(unshipped basename) err = %v, want ErrDeploy", err)
+	if !errors.Is(err, errRunTargetUnservable) || !isTerminal(err) {
+		t.Fatalf("installerDirs(unshipped basename) err = %v, want a terminal errRunTargetUnservable", err)
 	}
 	if bindir != "" || share != "" || target != "" {
 		t.Fatalf("installerDirs(unshipped basename) = (%q,%q,%q), want all empty", bindir, share, target)
@@ -211,33 +386,32 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 // the ref is pinned (never `latest`), and a custom run target passes BINDIR and
 // EVENER_SHARE_BINDIR so the symlink lands at evener_path.
 func TestInstallerCommandPinsRefAndDirs(t *testing.T) {
-	const size = 77
-	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin", size)
+	got := remoteinstall.Command("v1.2.3", "", "/opt/evener/bin", "/opt/evener/share/evener/bin")
 	// The script is written to a temp file and the write's status checked before it
 	// runs; a `cat … | sh` pipeline would report sh's status and hide a failed
 	// write, and any fetch here would be a mutable installer. The write's byte
 	// count is checked too (round twelve): a dropped stream reaches `cat` as a
 	// clean EOF, so the length is what proves the whole script arrived.
-	wantCheck := "cat > \"$tmp\" && v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = 77 ] && env "
+	wantCheck := "cat > \"$tmp\" && v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = " + strconv.Itoa(len(remoteinstall.Script)) + " ] && env "
 	if !strings.Contains(got, wantCheck) {
-		t.Fatalf("installerCommand does not check the script write (and its byte count) before executing the installer: %q", got)
+		t.Fatalf("the installer command does not check the script write (and its byte count) before executing the installer: %q", got)
 	}
 	if strings.Contains(got, "| env ") || strings.Contains(got, "| sh") {
-		t.Fatalf("installerCommand still pipes the script into sh: %q", got)
+		t.Fatalf("the installer command still pipes the script into sh: %q", got)
 	}
 	if strings.Contains(got, "http") || strings.Contains(got, "curl") {
-		t.Fatalf("installerCommand fetches the installer script instead of streaming the embedded copy: %q", got)
+		t.Fatalf("the installer command fetches the installer script instead of streaming the embedded copy: %q", got)
 	}
-	want := "env EVENER_INSTALL_VERSION=v1.2.3 BINDIR=/opt/evener/bin EVENER_SHARE_BINDIR=/opt/evener/share/evener/bin sh \"$tmp\""
+	want := "env EVENER_INSTALL_VERSION=v1.2.3 PREFIX='' BINDIR=/opt/evener/bin EVENER_SHARE_BINDIR=/opt/evener/share/evener/bin sh \"$tmp\""
 	if !strings.HasSuffix(got, want) {
-		t.Fatalf("installerCommand = %q, want suffix %q", got, want)
+		t.Fatalf("remoteinstall.Command = %q, want suffix %q", got, want)
 	}
-	got = installerCommand("snapshot", "", "", size)
-	if !strings.Contains(got, "EVENER_INSTALL_VERSION=snapshot") || strings.Contains(got, "BINDIR") {
-		t.Fatalf("installerCommand(default) = %q, want snapshot ref and no BINDIR override", got)
+	got = remoteinstall.Command("snapshot", "", "", "")
+	if !strings.Contains(got, "EVENER_INSTALL_VERSION=snapshot") || !strings.Contains(got, "BINDIR=''") {
+		t.Fatalf("remoteinstall.Command(default) = %q, want snapshot ref and BINDIR pinned to empty (its default)", got)
 	}
 	if strings.Contains(got, "latest") {
-		t.Fatalf("installerCommand passed `latest`: %q", got)
+		t.Fatalf("remoteinstall.Command passed `latest`: %q", got)
 	}
 }
 
@@ -350,7 +524,10 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
-			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			// This controller is on the snapshot channel (buildinfo.Channel above), so
+			// the post-restart probe requires backend_git_sha to match buildinfo.GitSHA
+			// (waitHealthy); the real hub reports the field (cmd/evener-hub/web_api.go).
+			return []byte(`{"version":"newsha","backend_git_sha":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(joined, "list-units"):
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
 		case strings.Contains(joined, "systemctl restart"):
@@ -381,7 +558,7 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 			}
 			// The streamed script's length is verified on the host before it runs
 			// (round twelve), and the length is the embedded copy's, not a constant.
-			if want := "[ \"$v\" = " + strconv.Itoa(len(installerScript)) + " ]"; !strings.Contains(joined, want) {
+			if want := "[ \"$v\" = " + strconv.Itoa(len(remoteinstall.Script)) + " ]"; !strings.Contains(joined, want) {
 				t.Fatalf("installer does not verify the streamed script's byte count (%s): %v", want, argv)
 			}
 		}
@@ -439,7 +616,11 @@ func TestDeployTargetEmptyResolvesRemotePATH(t *testing.T) {
 // space or shell metacharacter is quoted in every deploy command, so it neither
 // breaks the command nor injects additional remote commands.
 func TestDeployQuotesRemotePaths(t *testing.T) {
-	const target = "/opt/my evener/bin/evener;rm"
+	// The basename itself must be `evener` (checkRunTarget): the space and the
+	// shell metacharacter live in the directory, so the `test -d` probe and the
+	// pushed target still have to quote a path that would break the command line
+	// or inject a second remote command if it were left bare.
+	const target = "/opt/my evener/bin;rm/evener"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: target}
 	var testDirRemote, pushRemote string
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
@@ -1340,5 +1521,544 @@ func TestDeployPushFallsBackToDefaultTargetOnFreshHost(t *testing.T) {
 	}
 	if target != "/home/dev/.local/bin/evener" {
 		t.Fatalf("deploy target = %q, want the resolved default target /home/dev/.local/bin/evener", target)
+	}
+}
+
+// TestDeployPrefersTheOperatorArtifactOverTheBuildSource pins acceptance
+// criterion 3 at the runner seam, not by inference: with both seams configured
+// the bytes the push streams are the operator artifact's, and the recorded argv
+// is the push command — no cross-compile ran. The build source is a directory
+// that is not an evener checkout, so the test also fails if the dispatch ever
+// prefers the source: the source's verification refuses the deploy instead of
+// pushing the artifact.
+func TestDeployPrefersTheOperatorArtifactOverTheBuildSource(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	var pushArgv []string
+	var pushed []byte
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			pushArgv = append([]string(nil), argv...)
+			if stdin != nil {
+				pushed, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		BuildBinary: func(_ context.Context, _, _, out string) error {
+			return os.WriteFile(out, []byte("artifact-bytes"), 0o755)
+		},
+		BuildSource: t.TempDir(),
+	})
+
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if string(pushed) != "artifact-bytes" {
+		t.Fatalf("pushed bytes = %q, want the operator artifact's; the build source was compiled instead", pushed)
+	}
+	want := rawCommandArgv(m.opts, host, pushBinaryRemote("/opt/evener/bin/evener", int64(len("artifact-bytes"))))
+	if !equalArgv(pushArgv, want) {
+		t.Fatalf("push argv:\n got %v\nwant %v", pushArgv, want)
+	}
+}
+
+// TestDevControllerWithoutADeployPathAttaches covers acceptance criterion 5's
+// first half under the rule that a build VERSION is not an attach gate: an
+// identity-less "dev" controller with no deploy path attaches to a host running
+// another build, because it speaks the same protocol. The accepted difference is
+// reported (ensureOnce's notice at the attach), so it is not silent. The
+// installer refusals still reject an artifact an unstamped controller cannot
+// identify, and the deploy-configured half of criterion 5 is unchanged
+// (TestDevControllerWithADeployPathForcesTheDeploy).
+func TestDevControllerWithoutADeployPathAttaches(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	fr := &fakeRunner{
+		runFn: cannedRun(map[string][]byte{
+			"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`),
+			// A running hub matching the on-disk build, so nothing is deployed,
+			// restarted, or bootstrapped: this is the attach path.
+			"api/health": []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
+		}),
+		startFn: goodStartFn(t),
+	}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "dev"})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure = %v, want nil: a dev controller speaks the same protocol as the host", err)
+	}
+	if starts := len(fr.recordedStarts()); starts != 1 {
+		t.Fatalf("bridge Start calls = %d, want 1 (attach to the host's own build)", starts)
+	}
+}
+
+// TestDevControllerWithADeployPathForcesTheDeploy pins acceptance criterion 5's
+// second half: with a deploy path configured, an unstamped "dev" controller
+// deploys even when the host reports the very same "dev", because equality on a
+// version that carries no identity proves nothing about the code. It drives both
+// halves of that rule: the decision (ensureDecision's devUnverified branch) and
+// the deploy the decision produces, so a decision that stopped forcing the
+// deploy could not pass on the strength of the helper alone.
+func TestDevControllerWithADeployPathForcesTheDeploy(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	facts := Preflight{
+		Host:             host.Name,
+		LaunchCheckKnown: true,
+		Protocol:         appwire.ProtocolVersion,
+		Version:          "dev",
+		LaunchFlags:      []string{requiredLaunchFlag},
+	}
+
+	// No deploy path: there is nothing to install, so no deploy is decided.
+	none := newTestManager(t, testRegistry(t, host), &fakeRunner{}, Options{controllerVersionOverride: "dev"})
+	if none.deployRequired(host.Name, facts, "dev") {
+		t.Fatal("a dev controller with no deploy path required a deploy it cannot perform")
+	}
+
+	// With a deploy path the equal "dev" on both sides is still not a match.
+	builds := 0
+	var pushed []byte
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				pushed, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "dev",
+		BuildBinary: func(_ context.Context, _, _, out string) error {
+			builds++
+			return os.WriteFile(out, []byte("dev-build"), 0o755)
+		},
+	})
+	if !m.deployRequired(host.Name, facts, "dev") {
+		t.Fatal("a dev controller with a deploy path did not force the deploy, so it would attach to a build code equality cannot verify")
+	}
+	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
+		t.Fatalf("deploy: %v", err)
+	}
+	if builds != 1 {
+		t.Fatalf("cross-compiles = %d, want 1 (the forced deploy must install the controller's own build)", builds)
+	}
+	if string(pushed) != "dev-build" {
+		t.Fatalf("pushed bytes = %q, want the controller's own unstamped build", pushed)
+	}
+}
+
+// TestDirtyControllerRefusalsNameTheRemedy pins acceptance criterion 6: a dirty
+// controller's build has no reproducible identity, so the push path and the
+// installer fallback each refuse, and each refusal carries a remedy an operator
+// can act on — a clean rebuild for the push path, and the hub's flags for the
+// installer fallback through Options.DeployHelp. The refusal's type and
+// terminality are pinned by TestRound13DirtyControllerDeployRefusalIsTerminal;
+// this adds the remedy clauses, which is the half the criterion names.
+func TestDirtyControllerRefusalsNameTheRemedy(t *testing.T) {
+	const dirty = "abc1234-dirty"
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+
+	t.Run("push path", func(t *testing.T) {
+		builds := 0
+		m := newTestManager(t, testRegistry(t, host), refusingRunner(t), Options{
+			controllerVersionOverride: dirty,
+			BuildBinary: func(context.Context, string, string, string) error {
+				builds++
+				return nil
+			},
+		})
+		_, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64", Home: "/home/dev"})
+		if !errors.Is(err, errControllerDirty) {
+			t.Fatalf("err = %v, want errControllerDirty", err)
+		}
+		if !strings.Contains(err.Error(), "rebuild the controller from a clean checkout") {
+			t.Fatalf("push-path refusal does not name the remedy: %v", err)
+		}
+		if builds != 0 {
+			t.Fatalf("cross-compiles = %d, want 0 (a dirty controller has no deployable build)", builds)
+		}
+	})
+
+	t.Run("installer fallback", func(t *testing.T) {
+		const help = "set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path>"
+		err := installerRefusal(t, host, help, "release", "true")
+		if !errors.Is(err, ErrDeploy) {
+			t.Fatalf("err = %v, want ErrDeploy", err)
+		}
+		if !strings.Contains(err.Error(), help) {
+			t.Fatalf("installer refusal does not name the remedy: %v", err)
+		}
+		if strings.Contains(err.Error(), "Options.") {
+			t.Fatalf("installer refusal still names a library-internal field: %v", err)
+		}
+	})
+}
+
+// postDeployBuildRunner answers the whole ensure sequence for a linux host whose
+// evener is at /opt/evener/bin/evener and whose hub is NOT running: preflight
+// (whose launch-check reports oldsha), the deploy-target resolution, the push,
+// and the post-deploy launch-check, which reports postDeploy — the build the
+// artifact the push streamed really carries. The health probe fails before
+// anything is launched, so the host reads as "no hub present" and the deploy is a
+// fresh install rather than a restart; afterwards it answers postDeploy, the
+// version the launched binary reports.
+func postDeployBuildRunner(t *testing.T, postDeploy string) *fakeRunner {
+	t.Helper()
+	launchCalls, launches := 0, 0
+	return &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			launchCalls++
+			if launchCalls == 1 {
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			return []byte(fmt.Sprintf(`{"protocol":"evener-appwire-v5","version":%q,"launch_flags":["api-log"]}`, postDeploy)), nil
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "list-units"):
+			return nil, nil // no supervisor: an ad hoc host
+		case strings.Contains(joined, "lsof -ti :9180"):
+			return []byte(noListenerMarker + "\n"), nil // nothing is listening
+		case strings.Contains(joined, "evener_resolve"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				_, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		case strings.Contains(joined, "nohup"):
+			launches++
+			return nil, nil
+		case strings.Contains(joined, "api/health"):
+			if launches == 0 {
+				return nil, errors.New("curl: (7) Failed to connect")
+			}
+			return []byte(fmt.Sprintf(`{"version":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`, postDeploy)), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+}
+
+// TestEnsurePostDeployBuildMismatchRefusesTerminally pins acceptance criterion 8:
+// a deploy whose freshly re-read launch contract still disagrees with the
+// controller is a failed verification and never an attach. The artifact path is
+// the one the pre-push check cannot cover — an operator-supplied binary that
+// targets the right platform but was built from another tree — so the only
+// evidence the controller has is the host's own launch-check after the write.
+// The refusal is terminal: retrying re-pushes the same artifact, so it cannot
+// converge. The matching case beside it pins that a deploy which does pin the
+// controller's build attaches exactly as before.
+func TestEnsurePostDeployBuildMismatchRefusesTerminally(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	opts := Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary:               writeStageBinary,
+	}
+
+	// The stopped-host shape: there is no hub to answer a health probe, so the
+	// deploy is a fresh install and the refusal must fire before the first-attach
+	// bootstrap starts anything.
+	t.Run("a stopped host whose installed artifact reports another build", func(t *testing.T) {
+		fr := postDeployBuildRunner(t, "othersha")
+		m := newTestManager(t, testRegistry(t, host), fr, opts)
+
+		_, err := m.Ensure(context.Background(), "alpha")
+		requireUnstampedRefusal(t, err)
+		requireNoAttach(t, fr)
+		for _, argv := range fr.recordedRuns() {
+			if strings.Contains(strings.Join(argv, " "), "nohup") {
+				t.Fatalf("a hub was started on the mismatched build: %v", argv)
+			}
+		}
+	})
+
+	// The running-host shape, which is the one that attached outright before this
+	// gate existed: a live hub unit answers the restart's health probe with its own
+	// build, so the restart reads as successful while the binary the controller
+	// addressed reports another build. Without the gate the bridge starts and the
+	// host is served on a build the controller never stamped — and the next
+	// reconnect deploys again, so it re-deploys forever while attached.
+	t.Run("a running host left on a build the controller did not stamp", func(t *testing.T) {
+		fr := deployRunner(t,
+			func(call int) ([]byte, error) {
+				if call == 0 {
+					return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+				}
+				return []byte(`{"protocol":"evener-appwire-v5","version":"othersha","launch_flags":["api-log"]}`), nil
+			},
+			func(int) ([]byte, error) {
+				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			},
+		)
+		m := newTestManager(t, testRegistry(t, host), fr, opts)
+
+		_, err := m.Ensure(context.Background(), "alpha")
+		requireUnstampedRefusal(t, err)
+		requireNoAttach(t, fr)
+	})
+
+	t.Run("a deployed build that matches still attaches", func(t *testing.T) {
+		fr := deployRunner(t,
+			func(call int) ([]byte, error) {
+				if call == 0 {
+					return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+				}
+				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			},
+			func(int) ([]byte, error) {
+				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			},
+		)
+		m := newTestManager(t, testRegistry(t, host), fr, opts)
+
+		ch, err := m.Ensure(context.Background(), "alpha")
+		if err != nil {
+			t.Fatalf("Ensure: %v (a deploy whose fresh facts match the controller must still attach)", err)
+		}
+		if got := ch.Preflight().Version; got != "newsha" {
+			t.Fatalf("channel version = %q, want newsha (the deployed build)", got)
+		}
+		if starts := fr.recordedStarts(); len(starts) != 1 {
+			t.Fatalf("bridge Start calls = %d, want 1", len(starts))
+		}
+	})
+}
+
+// TestDeployArtifactUnusableIsTerminal pins the operator-artifact sibling of the
+// run-target refusal: a -deploy-binary built for another platform (the hub's
+// copyDeployBinary wraps errDeployArtifactUnusable for exactly that) is a
+// permanent operator mistake — every retry re-reads the same file — so the
+// refusal must be terminal and must not ride the retryable ErrDeploy class. The
+// build seam fails before anything is staged or pushed, so the runner must see
+// only the prebuild probes: no push, no restart, no start.
+func TestDeployArtifactUnusableIsTerminal(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(int) ([]byte, error) {
+			return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			return nil, errors.New("curl: (7) Failed to connect")
+		},
+	)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary: func(context.Context, string, string, string) error {
+			return fmt.Errorf("%w: -deploy-binary %q targets linux/arm64, but the host needs linux/amd64; supply an evener built for linux/amd64",
+				errDeployArtifactUnusable, "/tmp/evener")
+		},
+	})
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if !errors.Is(err, errDeployArtifactUnusable) {
+		t.Fatalf("Ensure err = %v, want errDeployArtifactUnusable", err)
+	}
+	if !isTerminal(err) {
+		t.Fatalf("Ensure err = %v, want a terminal refusal (retrying re-reads the same artifact)", err)
+	}
+	if errors.Is(err, ErrDeploy) {
+		t.Fatalf("Ensure err = %v still carries ErrDeploy, so the retryable class would win", err)
+	}
+	if !strings.Contains(err.Error(), "-deploy-binary") || !strings.Contains(err.Error(), "linux/amd64") {
+		t.Fatalf("refusal does not name the flag and the host target: %v", err)
+	}
+	for _, argv := range fr.recordedRuns() {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "cat >") {
+			t.Fatalf("the unusable artifact was pushed: %v", argv)
+		}
+		if strings.Contains(joined, "systemctl restart") || strings.Contains(joined, "nohup") {
+			t.Fatalf("the refused artifact restarted or started a hub: %v", argv)
+		}
+	}
+	hostGate := m.hostLock(host.Name)
+	defer m.releaseHostLock(host.Name)
+	if more := m.reconnectOnce(context.Background(), host, hostGate); more {
+		t.Fatal("reconnectOnce asked for another attempt, so the supervisor would loop on the terminal refusal")
+	}
+}
+
+// TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart pins the ordering
+// hole a running hub opened for the operator-artifact refusal: the deploy wrote a
+// build the controller did not stamp, so the restart onto it can never report the
+// expected version, and waitHealthy failed retryably (ErrRestart) BEFORE the
+// post-deploy identity gate ran. The supervisor then re-pushed and re-restarted
+// the same artifact forever. The deployed build is now judged on the fresh on-disk
+// facts before the restart path, so the permanent cause — the unstamped artifact —
+// is what surfaces, and the runner sees no restart at all.
+func TestEnsureWrongArtifactAgainstRunningHubRefusesBeforeRestart(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				// The on-disk binary before the deploy.
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
+			}
+			// The artifact the deploy wrote: right platform, foreign identity.
+			return []byte(`{"protocol":"evener-appwire-v5","version":"othersha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			// The running hub, and any process restarted onto the wrong artifact,
+			// report the foreign build.
+			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary:               writeStageBinary,
+	})
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	requireUnstampedRefusal(t, err)
+	requireNoAttach(t, fr)
+
+	// The recorded commands are the proof the retryable restart path was never
+	// entered: one push of the wrong artifact, no restart of the hub onto it (the
+	// restart is where ErrRestart used to surface and drive the loop).
+	pushes, restarts := 0, 0
+	for _, argv := range fr.recordedRuns() {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "cat >"):
+			pushes++
+		case strings.Contains(joined, "systemctl restart"):
+			restarts++
+		}
+	}
+	if pushes != 1 {
+		t.Fatalf("push count = %d, want exactly 1 (the wrong artifact is pushed once)", pushes)
+	}
+	if restarts != 0 {
+		t.Fatalf("restart count = %d, want 0 (the permanent cause must be judged before the restart path)", restarts)
+	}
+
+	// The supervisor's own iteration stands down on the terminal refusal, so it
+	// cannot re-push and re-restart the same artifact. (A fresh manual attempt
+	// pushes again — that is the manager's per-attempt behavior, not a loop; the
+	// loop the ordering opened was deploy -> restart -> ErrRestart -> deploy.)
+	hostGate := m.hostLock(host.Name)
+	defer m.releaseHostLock(host.Name)
+	if more := m.reconnectOnce(context.Background(), host, hostGate); more {
+		t.Fatal("reconnectOnce asked for another attempt, so the supervisor would loop on the terminal refusal")
+	}
+	for _, argv := range fr.recordedRuns() {
+		if strings.Contains(strings.Join(argv, " "), "systemctl restart") {
+			t.Fatalf("the terminal refusal still restarted the hub onto the wrong artifact: %v", argv)
+		}
+	}
+}
+
+// requireUnstampedRefusal asserts the terminal refusal a deploy that did not pin
+// the controller's build must produce: the sentinel, its terminality, and the
+// message naming both the build the host reports and the one it should carry.
+func requireUnstampedRefusal(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, errDeployUnstamped) {
+		t.Fatalf("Ensure err = %v, want errDeployUnstamped (a deploy that did not pin the controller's build must not attach)", err)
+	}
+	if !isTerminal(err) {
+		t.Fatalf("Ensure err = %v, want a terminal refusal (retrying re-pushes the same artifact)", err)
+	}
+	if errors.Is(err, ErrDeploy) {
+		t.Fatalf("Ensure err = %v still wraps ErrDeploy, so a supervisor would retry the same refusal forever", err)
+	}
+	for _, want := range []string{`"othersha"`, `"newsha"`, "not built from this controller's tree"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal does not name %q: %v", want, err)
+		}
+	}
+}
+
+// requireNoAttach asserts no bridge process was started for the host.
+func requireNoAttach(t *testing.T, fr *fakeRunner) {
+	t.Helper()
+	if starts := fr.recordedStarts(); len(starts) != 0 {
+		t.Fatalf("bridge Start calls = %d, want 0 (never attach to a build the controller did not deploy)", len(starts))
+	}
+}
+
+// TestEnsureRestartOnlyMismatchAttachesTheServingBuild covers the restart-only
+// half of the attach rule. A pass that restarts the hub launches the build already
+// on disk, and the bridge attaches to the RUNNING process, which the wait has
+// already made prove it reports the controller's build — here "newsha" after the
+// restart, while the on-disk file re-reads as "othersha" (a binary swapped under
+// the controller, or just a host that keeps its own build). Judging that file
+// refused a host whose serving hub is exactly the build this controller asked for.
+func TestEnsureRestartOnlyMismatchAttachesTheServingBuild(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				// The on-disk binary already matches, so ensureDecision chooses no
+				// deploy and falls to the stale-process restart.
+				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			}
+			// The re-read after the restart finds the on-disk file is not the
+			// controller's build. That is the host's business: nothing was deployed.
+			return []byte(`{"protocol":"evener-appwire-v5","version":"othersha","launch_flags":["api-log"]}`), nil
+		},
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				// The running hub is the stale process a restart replaces.
+				return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			}
+			// The restarted hub is the controller's build: what the wait requires,
+			// and what the bridge then talks to.
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+		BuildBinary:               writeStageBinary,
+	})
+
+	if _, err := m.Ensure(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Ensure = %v, want nil: the serving hub reports the controller's build", err)
+	}
+	if got := len(fr.recordedStarts()); got != 1 {
+		t.Fatalf("Start calls = %d, want 1 (attach to the verified serving process)", got)
+	}
+	restarted := false
+	for _, argv := range fr.recordedRuns() {
+		joined := strings.Join(argv, " ")
+		if strings.Contains(joined, "systemctl restart") {
+			restarted = true
+		}
+		if strings.Contains(joined, "cat >") {
+			t.Fatalf("a restart-only attempt pushed a binary: %v", argv)
+		}
+	}
+	if !restarted {
+		t.Fatal("no restart ran, so the pass under test was not the restart-only one")
 	}
 }

@@ -34,6 +34,7 @@ type delegateArgs struct {
 	WatchParent         bool
 	ForkContext         bool
 	Isolation           string
+	Name                string
 	Sandbox             string
 	SandboxNet          *bool
 	ResultSchema        map[string]any
@@ -59,6 +60,7 @@ type delegateResult struct {
 	ChildSessionID           string
 	Type                     string
 	Status                   jobstore.Status
+	Name                     string
 	Reason                   string
 	ExhaustionBudget         string
 	ExhaustionLimit          int
@@ -115,6 +117,7 @@ type sendMessageResult struct {
 	LatestActivityAt         string
 	CumulativeUsage          *schema.CumulativeUsage
 	WaitIgnoredReason        string
+	Name                     string
 	Err                      error
 }
 

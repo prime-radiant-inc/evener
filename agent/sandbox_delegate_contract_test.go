@@ -315,6 +315,15 @@ func compileDelegateParameters(t *testing.T, parameters map[string]any) *jsonsch
 
 func requireDelegateSchemaValidation(t *testing.T, compiled *jsonschema.Schema, args map[string]any, wantValid bool) {
 	t.Helper()
+	// The advertised delegate schema lists the shared intent argument as
+	// required (WithIntentParameterRequired at the advertise edge), so every
+	// realistic model-shaped sample carries one; these tests assert the
+	// sandbox controls, and injecting intent keeps a wantValid=false verdict
+	// attributable to the sandbox reason under test rather than a missing
+	// rationale.
+	if _, ok := args["intent"]; !ok {
+		args["intent"] = "Spawning a scoped delegate for the contract test"
+	}
 	err := compiled.Validate(args)
 	if gotValid := err == nil; gotValid != wantValid {
 		t.Fatalf("delegate schema valid = %v, want %v (error: %v)", gotValid, wantValid, err)

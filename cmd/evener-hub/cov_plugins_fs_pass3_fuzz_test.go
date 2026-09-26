@@ -211,7 +211,7 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 	_, _ = server.Router().Dispatch(ctx, appwire.Request{ID: appwire.NewIntID(1), Method: appwire.MethodEvenerPluginCheckNow})
 	cancelCtx, cancel := context.WithCancel(ctx)
 	cancel()
-	startPluginAutoUpgradeDaemon(cancelCtx, mgr, time.Hour, server)
+	startPluginAutoUpgradeDaemon(cancelCtx, mgr, time.Hour)
 }
 
 func fuzzExerciseUpgrade() {

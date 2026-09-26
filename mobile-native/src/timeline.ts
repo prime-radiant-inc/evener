@@ -1,4 +1,4 @@
-import type { MobileTimelineItem } from "../../mobile/src/conversation/project";
+import type { MobileTimelineItem } from "./projectedRows";
 
 type Notice = Extract<MobileTimelineItem, { kind: "notice" }>;
 
@@ -8,6 +8,8 @@ export function steeringNoticeLabel(item: Notice): string | undefined {
 	switch (item.steeringKind) {
 		case "interrupted":
 			return "Interrupted";
+		case "interrupted-salvage":
+			return "Interrupted draft";
 		case "tasks-done":
 			return "Tasks complete";
 		case "task-nudge":
@@ -38,7 +40,8 @@ export function isCriticalNotice(item: Notice): boolean {
 export function isInterruptedNotice(item: Notice): boolean {
 	return (
 		item.origin === "steering" &&
-		item.steeringKind === "interrupted" &&
+		(item.steeringKind === "interrupted" ||
+			item.steeringKind === "interrupted-salvage") &&
 		item.tone !== "warning"
 	);
 }
@@ -49,6 +52,21 @@ export type TimelineRow =
 			id: string;
 			entries: Notice[];
 	  };
+
+// A question option row's React key (TimelineItem.tsx's "question" case): the
+// option's POSITION in the question, never its label. The store's publish
+// bounds every label a timeline question row carries (projectedRows.ts's
+// truncateItem through boundQuestion, at MAX_ITEM_BYTES), so two options whose
+// labels share a prefix past the bound cut to the same string — a key that
+// reads the label keys both rows identically. Options render in the order the
+// ask offered them, so their position is the one field that cannot collide
+// past the display bound.
+export function questionOptionKey(
+	questionKey: string,
+	index: number,
+): string {
+	return `${questionKey}:${index}`;
+}
 
 export function timelineGap(before: TimelineRow, after?: TimelineRow): number {
 	if (!after) return 0;

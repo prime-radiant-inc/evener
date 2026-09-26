@@ -24,6 +24,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { initNotifications, resetNotificationsForTests } from "../../notifications";
+import { StubResizeObserver } from "../../resizeObserverTestUtils";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore } from "../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../stores/keybindings";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -34,29 +36,6 @@ import { resetMobileViewportForTests } from "../useIsMobile";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { CheatsheetOverlay } from "./CheatsheetOverlay";
 import { cheatsheetStore, closeCheatsheet, openCheatsheet } from "./cheatsheetController";
-
-// See AppShell.test.tsx for why both stubs are needed (jsdom has no
-// ResizeObserver; Node 26 shadows jsdom's localStorage accessor).
-class StubResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 
 // jsdom implements no matchMedia at all (useIsMobile.test.ts documents the
 // probe), so the mobile test installs one: the mobile query matches, every
@@ -103,10 +82,8 @@ async function openDialog(): Promise<HTMLElement> {
 }
 
 beforeAll(async () => {
-  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
-  // @ts-expect-error MemoryStorage deliberately implements only the Storage
-  // methods the stores actually call - see AppShell.test.tsx's own stub.
-  globalThis.localStorage = new MemoryStorage();
+  globalThis.ResizeObserver = StubResizeObserver;
+  installLocalStorage(new MemoryStorage());
   // Await the lazy pane/dock modules once up front, then pay react-dom's
   // per-boundary fallback throttle in one warm render - see
   // keybindingsMigration.test.tsx's beforeAll for the full reasoning.
@@ -124,8 +101,7 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
   resetKeybindingsStoreForTests();
-  // @ts-expect-error see the beforeAll stub.
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
   localStorage.clear();
   resetPrefsStoreForTests();
   resetRegistryToDefaults();

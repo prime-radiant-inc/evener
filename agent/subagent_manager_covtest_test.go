@@ -44,6 +44,61 @@ func TestSubagentManager_RemoveSession(t *testing.T) {
 	m.removeSession("nonexistent", nil) // should not panic
 }
 
+// TestSubagentManager_HasRunningChildren covers every liveness state the
+// idle-release pre-gate probes: a restored-idle record has no runner channel
+// and must read as quiet (nil done is the steady state, not liveness), an
+// open runner is busy, a closed runner is quiet, the running/driving/finalizing
+// flags are busy even with a closed channel, and a pending reconstruction is
+// busy even with no records at all.
+func TestSubagentManager_HasRunningChildren(t *testing.T) {
+	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
+	if m.hasRunningChildren() {
+		t.Fatal("empty manager reported busy")
+	}
+
+	// A restored-idle record: no runner channel ever assigned.
+	m.track(&subagent{id: "restored-idle"})
+	if m.hasRunningChildren() {
+		t.Fatal("restored-idle record (nil done) reported busy; nil done is the steady state, not liveness")
+	}
+
+	// A finished runner reads quiet.
+	closed := make(chan struct{})
+	close(closed)
+	m.track(&subagent{id: "finished", done: closed})
+	if m.hasRunningChildren() {
+		t.Fatal("closed runner reported busy")
+	}
+
+	// An executing runner reads busy.
+	m.track(&subagent{id: "running", done: make(chan struct{})})
+	if !m.hasRunningChildren() {
+		t.Fatal("open runner reported quiet")
+	}
+	m.remove("running")
+
+	// Drive and finalization flags read busy even with the runner closed.
+	m.track(&subagent{id: "driving", done: closed, driving: true})
+	if !m.hasRunningChildren() {
+		t.Fatal("driving record reported quiet")
+	}
+	m.remove("driving")
+	m.track(&subagent{id: "finalizing", done: closed, finalizing: true})
+	if !m.hasRunningChildren() {
+		t.Fatal("finalizing record reported quiet")
+	}
+	m.remove("finalizing")
+
+	// A pending reconstruction reads busy even with no records at all.
+	pending := &subagentReconstruction{done: make(chan struct{})}
+	m.mu.Lock()
+	m.reconstructing["being-restored"] = pending
+	m.mu.Unlock()
+	if !m.hasRunningChildren() {
+		t.Fatal("pending reconstruction reported quiet")
+	}
+}
+
 // TestSubagentManager_BeginReconstruction_Closing covers the closing-error
 // path (line 86-87).
 func TestSubagentManager_BeginReconstruction_Closing(t *testing.T) {

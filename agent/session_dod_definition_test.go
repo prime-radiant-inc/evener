@@ -332,7 +332,7 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 	}
 
 	tpath := filepath.Join(dir, sessionsSubdir, sessID+".transcript.jsonl")
-	_, entries, _, err := readTranscript(tpath)
+	_, entries, _, err := readTranscript(tpath, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -831,8 +831,12 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 	c.Register(f)
 
 	// Keep enough room for the full base prompt while constraining the window
-	// enough that this request crosses the warning threshold.
-	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 25_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	// enough that this request crosses the warning threshold: the prompt
+	// (system + tool schemas, which drift as tool descriptions change) sits
+	// around 25k tokens, so the window must stay above it (or ProcessInput
+	// blocks outright) yet below 1.25x it (or the request drops under the 80%
+	// warning threshold).
+	sess, err := NewSession(c, WithContextWindow(namedInstanceProfile("tiny", "openai", "m"), 28_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

@@ -30,8 +30,9 @@ import {
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
   friendlyErrorMessage,
-  groupByProvider,
+  fromEnvironment,
   isEndpointConflict,
+  isInstanceRemoveApplied,
   safeCredentialTestResult,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -50,21 +51,17 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import { ConnectProviderDialogBoundary, useConnectProviderDialogChunk } from "./ConnectProviderDialogBoundary";
 import styles from "./CredentialsSection.module.css";
-import { InstanceRow } from "./InstanceRow";
 import { InstanceSheet } from "./InstanceSheet";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { ProviderInstanceGroups } from "./ProviderInstanceGroups";
 import { confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 
 const CLASS = {
   root: requireClass(styles.root, "CredentialsSection.module.css", "root"),
   headerRow: requireClass(styles.headerRow, "CredentialsSection.module.css", "headerRow"),
   error: requireClass(styles.error, "CredentialsSection.module.css", "error"),
-  groups: requireClass(styles.groups, "CredentialsSection.module.css", "groups"),
-  group: requireClass(styles.group, "CredentialsSection.module.css", "group"),
-  groupHeader: requireClass(styles.groupHeader, "CredentialsSection.module.css", "groupHeader"),
-  list: requireClass(styles.list, "CredentialsSection.module.css", "list"),
   diagnostics: requireClass(styles.diagnostics, "CredentialsSection.module.css", "diagnostics"),
   diagnosticsHeading: requireClass(styles.diagnosticsHeading, "CredentialsSection.module.css", "diagnosticsHeading"),
   diagnosticsList: requireClass(styles.diagnosticsList, "CredentialsSection.module.css", "diagnosticsList"),
@@ -90,12 +87,22 @@ type PendingConfirm = {
 } | null;
 type CredentialTestState = { version: number; pending: boolean; result?: AuthTestResponse };
 
+// What a confirm-gated action (Remove, Clear, Clear stored key) says when the
+// hub refuses the destination the confirmation asserted: the name moved since
+// the row was read, so nothing was sent. The credential test's own sentence
+// ends "and test again" and the sheet's save wording ends "so the change was
+// not saved" - neither fits a confirmed removal or clear, so this is the
+// actions' own wording, kept here beside them rather than in the client package
+// where only cross-client messages live.
+const ENDPOINT_CHANGED_CONFIRM_ERROR =
+  "This instance changed to a different endpoint since this confirmation was opened, so nothing was changed. The provider list was refreshed; review its destination and try again.";
+
 // Diagnostics: the providers.toml load-error pointer, the user-layer note,
 // stray OAuth record notices, and registry warnings (InstanceListResponse.
 // diagnostics, spec §11.3) - mirrors launchServer.tsx's own Diagnostics
 // component (this pane's sibling settings section), a flat unordered list
 // with no stable per-entry identity of its own.
-function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
+export function Diagnostics({ diagnostics }: { diagnostics: string[] }) {
   if (diagnostics.length === 0) return null;
   return (
     <div className={CLASS.diagnostics} role="status" aria-live="polite">
@@ -372,13 +379,17 @@ export function CredentialsSection({
         // the race, so it can be checked directly; only a superseded removal
         // has to be re-read. Either way the row must be gone from the listing
         // before the removal is reported, or the guided owner's reset fires on
-        // a listing that never lost it. What must be gone is the *authored*
-        // row: a name the environment also supplies comes back as an implicit
-        // instance the moment the authored entry is removed, and requiring the
-        // name itself to vanish would report a removal that happened as
-        // unconfirmed.
+        // a listing that never lost it. What must be gone is the row the USER
+        // owns: a name the environment also supplies comes back as a row the
+        // host derives (env:<VAR>, ADC, a keyless local default), and
+        // requiring it to vanish would report a removal that happened as
+        // unconfirmed. `implicit` alone is not that test - a stored key and a
+        // signed-in Codex record are implicit rows the removal does delete, so
+        // a stale listing still holding one must not be confirmed (and a
+        // surviving one is not "environment access"). fromEnvironment answers
+        // it by source.
         const removed = (instances: InstanceEntry[]) =>
-          !instances.some((instance) => instance.name === name && !instance.implicit);
+          !instances.some((instance) => instance.name === name && !fromEnvironment(instance));
         const confirmed = applied ? removed(credentialsStore.getState().instances) : await confirmListingState(removed);
         if (!confirmed) {
           // Close the confirm dialog with the failure: the row is gone on the
@@ -397,13 +408,13 @@ export function CredentialsSection({
           if (!applied) onInstanceRemoved?.(name);
           return;
         }
-        // The authored entry is gone, but the environment can still supply
-        // access under this name, and the row that remains in the listing says
-        // so. "Removed instance X" alone would read as "no access under this
-        // name any more", which is not what the hub's own listing reports.
+        // The user's row is gone, but the environment can still supply access
+        // under this name, and the row that remains in the listing says so.
+        // "Removed instance X" alone would read as "no access under this name
+        // any more", which is not what the hub's own listing reports.
         const stillSupplied = credentialsStore
           .getState()
-          .instances.some((instance) => instance.name === name && instance.implicit);
+          .instances.some((instance) => instance.name === name && fromEnvironment(instance));
         // The name can survive the removal as an environment-supplied implicit
         // row, and a sheet left open on it would keep the removed instance's
         // dirty draft attached to a row the user never edited - a save from it
@@ -420,12 +431,46 @@ export function CredentialsSection({
       }
       setPendingConfirm(null);
     } catch (err) {
+      // The removal applied before it failed: the hub deleted the instance's
+      // credential (or its config entry) and could not put it back, so the
+      // removal stands. Reconcile it - close the confirmation and the sheet,
+      // re-read the listing, tell the owning editor the instance is gone -
+      // rather than report a failed Remove whose retry targets a missing
+      // instance. The discriminator is authoritative, so this does not wait on
+      // the listing to confirm it, and the selection is cleared the way the
+      // success path clears it: a sheet left open on the name keeps the removed
+      // instance's dirty draft attached to a row the user never edited, and a
+      // save from it would author a new override out of that draft.
+      if (kind === "remove" && isInstanceRemoveApplied(err)) {
+        setPendingConfirm(null);
+        setSelectedInstance(null);
+        await refreshListingAfterMutation();
+        toast.push("warning", friendlyErrorMessage(err));
+        onInstanceRemoved?.(name);
+        return;
+      }
       if (recoverStaleListing(err)) {
         // The confirmation holds the destination fingerprint the row showed when
         // it was opened, which is the connection that is gone: a retry against
         // the listing that lands next has to capture it again, so the dialog
         // closes rather than carrying a stale assertion into the retry.
         setPendingConfirm(null);
+        return;
+      }
+      if (isEndpointConflict(err)) {
+        // The hub refused the asserted destination: the name moved since this
+        // row was read, so nothing was sent. The confirmation holds that stale
+        // fingerprint, so leave the user able to retry - close the dialog, clear
+        // the selection the way the action's own success path does (a sheet left
+        // open would keep operating on the destination that moved), re-read the
+        // listing, and warn in this client's own words. The next confirmation
+        // captures the fingerprint now on screen; reported as a failed action,
+        // the open dialog would re-send the same refused assertion. Mirrors the
+        // mobile and TUI confirm paths.
+        setPendingConfirm(null);
+        setSelectedInstance(null);
+        await refreshListingAfterMutation();
+        toast.push("warning", ENDPOINT_CHANGED_CONFIRM_ERROR);
         return;
       }
       const verb = kind === "clear" ? "Clear" : kind === "clearStoredKey" ? "Clear stored key" : "Remove";
@@ -457,7 +502,6 @@ export function CredentialsSection({
     if (name !== null) editor(name);
   }
 
-  const groups = groupByProvider(instances);
   // useCallback'd (not a plain inline arrow) so its identity stays stable
   // across CredentialsSection re-renders - DeviceCodeDialog's own poll
   // effect depends on the onSuccess it's given, and an unstable reference
@@ -465,11 +509,11 @@ export function CredentialsSection({
   // re-render (see oauthDialogs.tsx's own comment on that effect).
   const closeEditor = useCallback(() => setOpenEditor(null), []);
   const rootRef = useRef<HTMLDivElement>(null);
-  // The pane swaps its rows out for a skeleton while a read is in flight and for
-  // the error banner when one fails, so any of those transitions - and any
-  // listing that no longer carries the focused row - can unmount the control
-  // holding the keyboard. The hook re-homes it to the pane's first control; a
-  // commit that removes nothing leaves focus where it was.
+  // A listing that no longer carries the focused row can unmount the control
+  // holding the keyboard (the rows themselves stay mounted through reads and
+  // through failed ones, so those are no longer cases here). The hook re-homes
+  // focus to the pane's first control; a commit that removes nothing leaves it
+  // where it was.
   useFocusRehome(rootRef);
 
   return (
@@ -519,34 +563,26 @@ export function CredentialsSection({
           listing carried no rows to act on. */}
       {!listingFromPreviousConnection && <Diagnostics diagnostics={diagnostics} />}
 
-      {loading && <Skeleton />}
+      {/* The skeleton is for the state it was written for - nothing to show yet
+          - never for a read that is merely in flight. The rows a refresh would
+          have swapped out are the listing the user is reading: replacing them
+          makes the pane flicker on every background read and unmounts the row
+          the keyboard is on (the connection dialog keeps its own rows for the
+          same reason). A failed read keeps the listing it already had
+          (readListing), so those rows stay too, with the banner above them. */}
+      {loading && instances.length === 0 && <Skeleton />}
       {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}
-      {!loading &&
-        !error &&
-        (instances.length === 0 ? (
-          <EmptyState title="No provider instances configured." />
-        ) : (
-          <div className={CLASS.groups}>
-            {groups.map((group) => (
-              <div key={group.providerId} className={CLASS.group}>
-                {/* `name || id`, the same label the Add dialog gives a
-                    provider - one pane must not name a provider two ways. */}
-                <div className={CLASS.groupHeader}>
-                  {availableProviders.find((p) => p.id === group.providerId)?.name || group.providerId}
-                </div>
-                <ul className={CLASS.list}>
-                  {group.instances.map((instance) => (
-                    <InstanceRow
-                      key={instance.name}
-                      instance={instance}
-                      onSelect={() => setSelectedInstance(instance.name)}
-                    />
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        ))}
+      {!loading && !error && instances.length === 0 && <EmptyState title="No provider instances configured." />}
+      {/* The provider-grouped listing is shared with the host-scoped view of a
+          remote host's own listing (ProviderInstanceGroups); this surface's
+          rows are the interactive variant. */}
+      {instances.length > 0 && (
+        <ProviderInstanceGroups
+          instances={instances}
+          availableProviders={availableProviders}
+          onSelect={setSelectedInstance}
+        />
+      )}
 
       <InstanceSheet
         name={selectedInstance}

@@ -39,6 +39,7 @@ import (
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"primeradiant.com/evener/agent/internal/mcphttp"
 	"primeradiant.com/evener/agent/mcpconfig"
 )
 
@@ -177,7 +178,7 @@ func probeOne(ctx context.Context, cfg mcpconfig.ServerConfig, deps probeDeps) R
 func transportForProbe(cfg mcpconfig.ServerConfig, deps probeDeps) (mcpsdk.Transport, error) {
 	client := deps.httpClient
 	if len(cfg.Headers) > 0 {
-		client = httpClientWithHeaders(client, cfg.Headers)
+		client = mcphttp.ClientWithHeaders(client, cfg.URL, cfg.Headers)
 	}
 
 	switch cfg.Type {
@@ -204,35 +205,4 @@ func transportForProbe(cfg mcpconfig.ServerConfig, deps probeDeps) (mcpsdk.Trans
 	default:
 		return nil, fmt.Errorf("unknown MCP transport type %q", cfg.Type)
 	}
-}
-
-// headerRoundTripper wraps an http.RoundTripper to inject headers into requests.
-type headerRoundTripper struct {
-	base    http.RoundTripper
-	headers map[string]string
-}
-
-func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	for k, v := range h.headers {
-		req.Header.Set(k, v)
-	}
-	return h.base.RoundTrip(req)
-}
-
-// httpClientWithHeaders returns a copy of base (a fresh client when base is
-// nil) that injects headers.
-func httpClientWithHeaders(base *http.Client, headers map[string]string) *http.Client {
-	client := http.Client{}
-	if base != nil {
-		client = *base
-	}
-	transport := client.Transport
-	if transport == nil {
-		transport = http.DefaultTransport
-	}
-	client.Transport = &headerRoundTripper{
-		base:    transport,
-		headers: headers,
-	}
-	return &client
 }

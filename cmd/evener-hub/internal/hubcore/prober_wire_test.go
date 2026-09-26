@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
@@ -26,6 +27,10 @@ type wireProbeEnvelopeSource struct {
 	detailed    server.DetailedStatus
 }
 
+// An entry that names no session yet has only the answer to go on, so the
+// probe cross-checks the listed root against a thread/read of the root: a
+// daemon that re-bound the port between the two calls answers them for
+// different sessions.
 func TestStatusProberRejectsMismatchedRootSnapshots(t *testing.T) {
 	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
 	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
@@ -42,6 +47,50 @@ func TestStatusProberRejectsMismatchedRootSnapshots(t *testing.T) {
 	})
 	if got.OK {
 		t.Fatalf("mismatched thread/read and thread/list roots produced a live probe: %+v", got)
+	}
+}
+
+// An entry that names its session needs no thread/read: the listed row for
+// that session is the root, and a list that carries no such row is another
+// daemon's answer. The probe must not spend a second full root snapshot on
+// an identity the entry already states.
+func TestStatusProberTakesANamedRootFromTheListAlone(t *testing.T) {
+	var reads int
+	var listParams []appwire.ThreadListParams
+	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		reads++
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "root-b", SessionID: "root-b", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}, nil
+	})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadList, func(_ context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		listParams = append(listParams, params)
+		return appwire.ThreadListResponse{Data: []appwire.Thread{
+			{ID: "root-a", SessionID: "root-a", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+			{ID: "child-1", SessionID: "child-1", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}},
+		}}, nil
+	})
+	httpSrv := httptest.NewServer(http.HandlerFunc(rpc.ServeWebSocket))
+	defer httpSrv.Close()
+	prober := &StatusProber{client: httpSrv.Client()}
+	endpoint := "ws" + strings.TrimPrefix(httpSrv.URL, "http")
+
+	got := prober.Probe(rendezvous.Entry{Endpoint: endpoint, SessionID: "root-a"})
+	if !got.OK || got.SessionID != "root-a" || got.Status != appwire.ThreadStatusActive {
+		t.Fatalf("probe of an entry naming root-a = %+v, want the listed root-a row", got)
+	}
+	if want := []string{"child-1"}; !reflect.DeepEqual(got.RunningSubagentIDs, want) {
+		t.Fatalf("running subagent ids = %v, want %v: the named root must not be counted as a child", got.RunningSubagentIDs, want)
+	}
+	if reads != 0 {
+		t.Fatalf("thread/read calls = %d, want 0 when the entry names its session", reads)
+	}
+	// The probe asks for the status-only answer; a daemon that predates the
+	// field ignores it and returns the full one, which reads the same.
+	if want := []appwire.ThreadListParams{{IncludeSubagents: true, StatusOnly: true}}; !reflect.DeepEqual(listParams, want) {
+		t.Fatalf("thread/list params = %+v, want %+v", listParams, want)
+	}
+	if got := prober.Probe(rendezvous.Entry{Endpoint: endpoint, SessionID: "root-c"}); got.OK {
+		t.Fatalf("a list with no row for the named session produced a live probe: %+v", got)
 	}
 }
 
@@ -190,6 +239,38 @@ func TestStatusProberReadsAppWireStatusIncludingNonAgentJobs(t *testing.T) {
 	}
 }
 
+// TestStatusProberCarriesDaemonCapabilities pins the other half of thread
+// parity: beside the status the probe already carries, it must carry the
+// daemon's own Evener capabilities from the same projection cut, so the
+// hub's list rows can advertise the daemon's answer rather than a hand
+// approximation. The set comes from the LISTED root, so it is the same
+// snapshot cut as the status and the diagnostics the probe carries.
+func TestStatusProberCarriesDaemonCapabilities(t *testing.T) {
+	// Wire the production seam set so the daemon's idle answer is the
+	// production shape: every capability but fork is true at idle.
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "th_wire_caps",
+		state:     appwire.ThreadStatusIdle,
+		setup:     hubtest.WireCapabilitySeams,
+	})
+	got := prober.Probe(entry)
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server")
+	}
+	if !got.CapabilitiesKnown {
+		t.Fatal("CapabilitiesKnown = false, want true: the probe must carry the daemon's capabilities answer")
+	}
+	want := appwire.ThreadCapabilities{
+		Send: true, Steer: true, Interrupt: true, Queue: true,
+		Compact: true, Clear: true, Shutdown: true, ChangeModel: true,
+		ChangeVisionModel: true, Rename: true, Goal: true, SharedNotes: true,
+		SkillInput: true, // ForkFromTurn stays the daemon's hardwired false.
+	}
+	if got.Capabilities != want {
+		t.Fatalf("capabilities = %+v, want the daemon's idle set %+v", got.Capabilities, want)
+	}
+}
+
 func TestStatusProberProjectsQuiescedStableDelegateAsIdle(t *testing.T) {
 	// A retained child can still have an active descendant projection even after
 	// its stable delegate run has settled. The stable delegate lifecycle is the
@@ -270,10 +351,13 @@ func TestStatusProberDoesNotMaskChildResumeBetweenSnapshots(t *testing.T) {
 	})
 	httpSrv := httptest.NewServer(http.HandlerFunc(rpc.ServeWebSocket))
 	defer httpSrv.Close()
+	prober := &StatusProber{client: httpSrv.Client()}
+	endpoint := "ws" + strings.TrimPrefix(httpSrv.URL, "http")
 
-	got := (&StatusProber{client: httpSrv.Client()}).Probe(rendezvous.Entry{
-		Endpoint: "ws" + strings.TrimPrefix(httpSrv.URL, "http"),
-	})
+	// An entry naming no session cross-checks the root with a thread/read,
+	// which must follow the list so a later running lifecycle cannot be
+	// mistaken for stale active work.
+	got := prober.Probe(rendezvous.Entry{Endpoint: endpoint})
 	if !got.OK {
 		t.Fatal("expected ok=true probing a real server")
 	}
@@ -282,5 +366,19 @@ func TestStatusProberDoesNotMaskChildResumeBetweenSnapshots(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, []string{"list", "read"}) {
 		t.Fatalf("probe snapshot calls = %v, want list before read to avoid masking a resume", calls)
+	}
+
+	// An entry naming its session takes root and children from the one list
+	// cut, so no second snapshot can disagree with it.
+	calls = nil
+	got = prober.Probe(rendezvous.Entry{Endpoint: endpoint, SessionID: "root"})
+	if !got.OK {
+		t.Fatal("expected ok=true probing a real server for a named session")
+	}
+	if got.RunningSubagentStates["child-resumed"] != appwire.ThreadStatusActive {
+		t.Fatalf("resumed child state = %q, want active from the listed child", got.RunningSubagentStates["child-resumed"])
+	}
+	if !reflect.DeepEqual(calls, []string{"list"}) {
+		t.Fatalf("probe snapshot calls = %v, want the list alone for a named session", calls)
 	}
 }

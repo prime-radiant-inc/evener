@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 )
@@ -220,7 +221,7 @@ func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]an
 		// its ancestor's watch on it, and a sibling must not clear another
 		// sibling's.
 		if receiverSession, receiverDelegate, ok := s.receiverWatchAnywhereByID(a.WatchID); ok {
-			if s.delegateController == nil || !s.delegateController.watchClearAuthority(s.ID(), s.owningDelegateID, receiverDelegate) {
+			if s.delegateController == nil || !s.delegateController.watchClearAuthority(s.ID(), s.owningDelegateID, receiverSession, receiverDelegate) {
 				receiver := receiverDelegate
 				if receiver == "" {
 					receiver = "session " + receiverSession
@@ -289,32 +290,73 @@ func (s *Session) configureDescendantReceiverWatch(a watchArgs) (watchResult, bo
 }
 
 func (s *Session) watchListToolResultWithDescendantReceivers(local jobWatchListToolResult) jobWatchListToolResult {
-	receiverDelegateID := s.owningDelegateID
-	for _, child := range s.stableWatchSourceSessions() {
-		if child == nil || child.jobManager == nil {
-			continue
-		}
-		descendant := child.jobManager.watchListToolResultForReceiver(s.ID(), receiverDelegateID)
+	for _, child := range s.watchHolderSessions() {
+		descendant := child.jobManager.watchListToolResultForReceiverShapes(s.ID(), s.owningDelegateID)
 		local.Watches = append(local.Watches, descendant.Watches...)
 		local.RecentWatches = append(local.RecentWatches, descendant.RecentWatches...)
 	}
+	// local already carries this session's own manager's rows, and a holder can
+	// share that manager, so the merge can duplicate a watch. Collapse by
+	// WatchID (a watch has one ID across every projection).
+	local.Watches = dedupeWatchRowsByID(local.Watches)
 	sort.SliceStable(local.Watches, func(i, j int) bool {
 		if local.Watches[i].Source != local.Watches[j].Source {
 			return local.Watches[i].Source < local.Watches[j].Source
 		}
 		return local.Watches[i].WatchID < local.Watches[j].WatchID
 	})
+	// The recent-watch rows come from several managers, each with its own
+	// latest-first, capped ring; merge them into one latest-first, capped list so
+	// the aggregate keeps the single-manager contract.
+	local.RecentWatches = dedupeWatchRowsByID(local.RecentWatches)
+	sortWatchHistoryLatestFirst(local.RecentWatches)
+	if len(local.RecentWatches) > watchHistoryCap {
+		local.RecentWatches = local.RecentWatches[:watchHistoryCap]
+	}
 	local.Count = len(local.Watches)
 	return local
 }
 
-func (s *Session) inspectDescendantReceiverWatchByID(watchID string) (jobWatchInspectToolResult, bool) {
-	receiverDelegateID := s.owningDelegateID
-	for _, child := range s.stableWatchSourceSessions() {
-		if child == nil || child.jobManager == nil {
-			continue
+// dedupeWatchRowsByID removes later rows sharing a non-empty WatchID with an
+// earlier row, preserving the first occurrence's position. Rows with an empty
+// WatchID are never treated as duplicates.
+func dedupeWatchRowsByID(rows []jobWatchInspectToolResult) []jobWatchInspectToolResult {
+	seen := make(map[string]struct{}, len(rows))
+	out := make([]jobWatchInspectToolResult, 0, len(rows))
+	for _, row := range rows {
+		if row.WatchID != "" {
+			if _, dup := seen[row.WatchID]; dup {
+				continue
+			}
+			seen[row.WatchID] = struct{}{}
 		}
-		if inspect, ok := child.jobManager.inspectReceiverWatchByID(watchID, s.ID(), receiverDelegateID); ok {
+		out = append(out, row)
+	}
+	return out
+}
+
+// sortWatchHistoryLatestFirst orders recent-watch rows by EndedAt descending,
+// with WatchID as a deterministic tie-breaker. A row whose EndedAt does not
+// parse sorts after every parseable one.
+func sortWatchHistoryLatestFirst(rows []jobWatchInspectToolResult) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		left, leftErr := time.Parse(time.RFC3339Nano, rows[i].EndedAt)
+		right, rightErr := time.Parse(time.RFC3339Nano, rows[j].EndedAt)
+		switch {
+		case leftErr == nil && rightErr == nil && !left.Equal(right):
+			return left.After(right)
+		case leftErr == nil && rightErr != nil:
+			return true
+		case leftErr != nil && rightErr == nil:
+			return false
+		}
+		return rows[i].WatchID < rows[j].WatchID
+	})
+}
+
+func (s *Session) inspectDescendantReceiverWatchByID(watchID string) (jobWatchInspectToolResult, bool) {
+	for _, child := range s.watchHolderSessions() {
+		if inspect, ok := child.jobManager.inspectReceiverWatchByIDShapes(watchID, s.ID(), s.owningDelegateID); ok {
 			return inspect, true
 		}
 	}
@@ -328,10 +370,7 @@ func (s *Session) clearDescendantReceiverWatchByID(watchID string) (watchResult,
 
 func (s *Session) clearStableReceiverWatchByID(watchID string) (watchResult, bool, error) {
 	receiverDelegateID := s.owningDelegateID
-	for _, child := range s.stableWatchSourceSessions() {
-		if child == nil || child.jobManager == nil {
-			continue
-		}
+	for _, child := range s.watchHolderSessions() {
 		if _, ok := child.jobManager.inspectReceiverWatchByID(watchID, s.ID(), receiverDelegateID); !ok {
 			continue
 		}
@@ -353,8 +392,8 @@ func (s *Session) receiverWatchAnywhereByID(watchID string) (receiverSessionID, 
 			return receiverSession, receiverDelegate, true
 		}
 	}
-	for _, holder := range s.stableWatchSourceSessions() {
-		if holder == nil || holder.jobManager == nil || holder.jobManager == s.jobManager {
+	for _, holder := range s.watchHolderSessions() {
+		if holder.jobManager == s.jobManager {
 			continue
 		}
 		if receiverSession, receiverDelegate, ok := holder.jobManager.watchReceiverIdentity(watchID); ok {
@@ -374,8 +413,8 @@ func (s *Session) jobManagerHoldingWatch(watchID string) *jobManager {
 	if s.jobManager != nil {
 		holders = append(holders, s.jobManager)
 	}
-	for _, holder := range s.stableWatchSourceSessions() {
-		if holder != nil && holder.jobManager != nil && holder.jobManager != s.jobManager {
+	for _, holder := range s.watchHolderSessions() {
+		if holder.jobManager != s.jobManager {
 			holders = append(holders, holder.jobManager)
 		}
 	}
@@ -394,6 +433,59 @@ func (s *Session) stableWatchSourceSessions() []*Session {
 	return s.delegateController.watchSourceSessions()
 }
 
+// watchHolderSessions returns every session whose job manager may hold a
+// receiver-keyed watch relevant to this session, deduplicated by job manager. It
+// covers the stable controller sources (the root runtime plus every live
+// delegate runtime) AND their live ordinary-subagent descendants:
+// configureDescendantReceiverWatch routes its watch into the target job's owner
+// manager, and resolveDescendantJobOwner finds that owner by walking
+// liveSubagentSessions, so an ordinary nested subagent's manager is a real
+// holder the stable sources alone do not name.
+func (s *Session) watchHolderSessions() []*Session {
+	if s == nil {
+		return nil
+	}
+	// Collect distinct sessions first, so a session that shares a manager with a
+	// sibling still contributes its own descendants to the traversal.
+	sessionSeen := make(map[*Session]struct{})
+	var sessions []*Session
+	add := func(session *Session) {
+		if session == nil {
+			return
+		}
+		if _, ok := sessionSeen[session]; ok {
+			return
+		}
+		sessionSeen[session] = struct{}{}
+		sessions = append(sessions, session)
+	}
+	addTree := func(root *Session) {
+		add(root)
+		for _, descendant := range root.liveDescendantSessions() {
+			add(descendant)
+		}
+	}
+	for _, source := range s.stableWatchSourceSessions() {
+		addTree(source)
+	}
+	addTree(s)
+	// Dedup by manager for the scan: two live sessions can share one manager, and
+	// a per-session scan would double every row.
+	managerSeen := make(map[*jobManager]struct{})
+	out := make([]*Session, 0, len(sessions))
+	for _, session := range sessions {
+		if session.jobManager == nil {
+			continue
+		}
+		if _, ok := managerSeen[session.jobManager]; ok {
+			continue
+		}
+		managerSeen[session.jobManager] = struct{}{}
+		out = append(out, session)
+	}
+	return out
+}
+
 // liveWatchesDeliveringToDelegate returns the armed watches that deliver to a
 // delegate and the members of the subtree rooted at it, keyed by receiver
 // identity — the #655 inventory. The stopper (parent) session is always a
@@ -403,15 +495,18 @@ func (s *Session) stableWatchSourceSessions() []*Session {
 // double-reporting. Receiver keys come from the durable descriptors, readable
 // before, during, and after a stop. Managers are deduped per delegate: two
 // live sessions can share one job manager, and a naive per-session append
-// would double every row.
+// would double every row. Both receiver-key shapes are scanned: the
+// delegate-keyed (session, delegate) pair and the session-keyed (session, "")
+// pair a configureDescendantReceiverWatch installs.
 //
-// Boundary: the scan covers managers whose runtimes are currently live
-// (stableWatchSourceSessions), plus the stopper's own. A subtree member whose
-// owning session is not live (a cold, idle descendant that no live runtime
-// registers) is not scanned — a watch held only in that member's cold manager
-// is not reported. The receiver key itself is durable, so watches held in any
-// live manager (including the stopper's) that deliver to a cold member ARE
-// reported.
+// Boundary: the scan covers the live manager-holding set — the stable
+// controller sources (root runtime plus live delegate runtimes), the stopper's
+// own manager, and the live ordinary-subagent descendants of each
+// (watchHolderSessions). A subtree member whose owning session is not live (a
+// cold, idle descendant that no live runtime registers) is not scanned — a
+// watch held only in that member's cold manager is not reported. The receiver
+// key itself is durable, so watches held in any live manager (including the
+// stopper's) that deliver to a cold member ARE reported.
 func (s *Session) liveWatchesDeliveringToDelegate(delegateID string) []watchListEntry {
 	if s == nil || delegateID == "" || s.delegateController == nil {
 		return nil
@@ -421,17 +516,9 @@ func (s *Session) liveWatchesDeliveringToDelegate(delegateID string) []watchList
 		return nil
 	}
 	var entries []watchListEntry
-	seenManagers := make(map[*jobManager]struct{})
-	for _, holder := range s.stableWatchSourceSessions() {
-		if holder == nil || holder.jobManager == nil {
-			continue
-		}
-		if _, scanned := seenManagers[holder.jobManager]; scanned {
-			continue
-		}
-		seenManagers[holder.jobManager] = struct{}{}
-		for childDelegateID, childSessionID := range receiverKeys {
-			entries = append(entries, holder.jobManager.liveWatchSummariesForReceiver(childSessionID, childDelegateID)...)
+	for _, holder := range s.watchHolderSessions() {
+		for _, key := range receiverKeys {
+			entries = append(entries, holder.jobManager.liveWatchSummariesForReceiver(key.sessionID, key.delegateID)...)
 		}
 	}
 	sort.SliceStable(entries, watchListEntryLess(entries))
@@ -454,6 +541,20 @@ func watchInspectFound(inspect jobWatchInspectToolResult) bool {
 	return inspect.Watching || inspect.Source != "" || inspect.EndReason != ""
 }
 
+// validateDelegateLabel validates a delegate name with the same alphabet
+// manage_worktree names use (worktree.ValidateName), wrapped in the
+// invalid_request convention both the create path and describe share.
+// A blank name is valid (absent label).
+func validateDelegateLabel(name string) error {
+	if name == "" {
+		return nil
+	}
+	if verr := worktree.ValidateName(name); verr != nil {
+		return fmt.Errorf("invalid_request: name: %w", verr)
+	}
+	return nil
+}
+
 // decodeDelegateArgs decodes the delegate tool's raw params into delegateArgs,
 // returning an invalid_request error for a malformed wait/allowance value. It is
 // pure over the args map (no session state), so the decode — including the
@@ -469,8 +570,11 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		Model:           stringArg(args, "model"),
 		ReasoningEffort: stringArg(args, "reasoning_effort"),
 		WatchParent:     shellBoolArg(args, "watch_parent"),
-		Isolation:       stringArg(args, "isolation"),
-		Sandbox:         stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
+		// Isolation is normalized here so every downstream consumer —
+		// create, describe — sees one shape; a padded value must not
+		// behave differently at exactly one of them.
+		Isolation: strings.TrimSpace(stringArg(args, "isolation")),
+		Sandbox:   stringArg(args, "sandbox"), // may carry "+nonet" suffix or be "nonet" alone
 	}
 	if raw, exists := args["fork_context"]; exists {
 		var ok bool
@@ -507,6 +611,20 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		default:
 			return delegateArgs{}, errors.New("invalid_request: sandbox_net must be a JSON boolean (true or false, not a quoted string)")
 		}
+	}
+	// name: a short mnemonic the caller gives the delegate. With isolation
+	// "worktree" it names the lane's git branch, so `git branch` and merges
+	// read clearly; without isolation it is a display-only label. Either way
+	// the lane directory and every addressing surface stay keyed to the
+	// delegate id. Validated here with the same alphabet manage_worktree names
+	// use — a branch-safe alphabet is also a good label alphabet — before any
+	// capacity is reserved; the worktree create core re-checks with git's own
+	// ref rules and refuses a branch that already exists.
+	if name := stringArg(args, "name"); name != "" {
+		if err := validateDelegateLabel(name); err != nil {
+			return delegateArgs{}, err
+		}
+		a.Name = name
 	}
 	// delegation_allowance: absent = the default grant (one level below the
 	// creator, resolved by createDelegate); 0 = leaf delegate; positive =
@@ -859,6 +977,7 @@ func projectStableDelegateListItem(now time.Time, visible stableDelegateVisibleR
 		Kind:                 "delegate",
 		Type:                 "delegate",
 		Status:               status.Status,
+		Name:                 snapshot.descriptor.Name,
 		Description:          snapshot.descriptor.Description,
 		OwnerSessionID:       snapshot.descriptor.OwnerSessionID,
 		VisibleToSessionID:   snapshot.descriptor.VisibleSessionID,
@@ -943,8 +1062,15 @@ func formatJobList(out jobListResult) string {
 		if label == "" && j.Command != nil {
 			label = *j.Command
 		}
+		parts := make([]string, 0, 2)
+		if j.Name != "" {
+			parts = append(parts, j.Name)
+		}
 		if label != "" {
-			fmt.Fprintf(&b, "  %s", label)
+			parts = append(parts, label)
+		}
+		if len(parts) != 0 {
+			fmt.Fprintf(&b, "  %s", strings.Join(parts, " — "))
 		}
 		var detail []string
 		if started := shortTimestamp(j.StartedAt); started != "" {
@@ -1204,6 +1330,7 @@ type stableDelegateStatusResult struct {
 	ID                 string                 `json:"id"`
 	Type               string                 `json:"type"`
 	Status             string                 `json:"status"`
+	Name               string                 `json:"name,omitempty"`
 	Task               string                 `json:"task"`
 	Description        string                 `json:"description,omitempty"`
 	AgentType          string                 `json:"agent_type"`
@@ -1232,6 +1359,7 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 		ID:                 snapshot.id,
 		Type:               "delegate",
 		Status:             string(snapshot.lifecycle),
+		Name:               descriptor.Name,
 		Task:               descriptor.Task,
 		Description:        descriptor.Description,
 		AgentType:          descriptor.AgentType,
@@ -1337,13 +1465,16 @@ type recentWatchEntry struct {
 }
 
 type jobListEntry struct {
-	ID               string   `json:"id"`
-	JobID            string   `json:"job_id,omitempty"`
-	Kind             string   `json:"kind"`
-	Type             string   `json:"type"`
-	Status           string   `json:"status"`
-	Phase            string   `json:"phase,omitempty"`
-	Reason           *string  `json:"reason,omitempty"`
+	ID     string  `json:"id"`
+	JobID  string  `json:"job_id,omitempty"`
+	Kind   string  `json:"kind"`
+	Type   string  `json:"type"`
+	Status string  `json:"status"`
+	Phase  string  `json:"phase,omitempty"`
+	Reason *string `json:"reason,omitempty"`
+	// Name is the delegate's display label (the `name` create argument);
+	// empty for shells and unnamed delegates, which render as absent.
+	Name             string   `json:"name,omitempty"`
 	Description      string   `json:"description"`
 	Task             string   `json:"task,omitempty"`
 	AgentType        string   `json:"agent_type,omitempty"`
@@ -1532,6 +1663,7 @@ type delegateSendResult struct {
 	ResolvedProfileID      string                  `json:"resolved_profile_id,omitempty"`
 	ResolvedModel          string                  `json:"resolved_model,omitempty"`
 	ReasoningEffort        string                  `json:"reasoning_effort,omitempty"`
+	Name                   string                  `json:"name,omitempty"`
 	RunStartedAt           string                  `json:"run_started_at,omitempty"`
 	RunEndedAt             string                  `json:"run_ended_at,omitempty"`
 	LatestActivityAt       string                  `json:"latest_activity_at,omitempty"`
@@ -1562,6 +1694,7 @@ type jobWatchToolResult struct {
 	Fired            bool   `json:"fired"`
 	TerminalCatchup  bool   `json:"terminal_catchup,omitempty"`
 	Status           string `json:"status,omitempty"`
+	Reason           string `json:"reason,omitempty"`
 }
 
 type jobWatchToolEventFilter struct {
@@ -1653,6 +1786,7 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		RequestedModel:      res.RequestedModel,
 		ResolvedProfileID:   res.ResolvedProfileID,
 		ResolvedModel:       res.ResolvedModel,
+		Name:                res.Name,
 		ReasoningEffort:     res.ReasoningEffort,
 		RunStartedAt:        res.RunStartedAt,
 		RunEndedAt:          res.RunEndedAt,
@@ -1735,6 +1869,7 @@ func marshalWatchResult(res watchResult, maxChars int) (any, error) {
 		Fired:              res.Fired,
 		TerminalCatchup:    res.TerminalCatchup,
 		Status:             res.Status,
+		Reason:             res.Reason,
 	}
 	if res.OneShot {
 		out.AfterSeconds = res.TimerSeconds
@@ -2032,7 +2167,8 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 		switch status {
 		case jobstore.StatusRunning,
 			jobstore.Status("idle"), jobstore.Status("settling"), jobstore.Status("stopping"), jobstore.Status("closed"),
-			jobstore.StatusCompleted, jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
+			jobstore.StatusCompleted, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled,
+			jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
 			statuses = append(statuses, status)
 		default:
 			return nil, fmt.Errorf("invalid job status %q", status)

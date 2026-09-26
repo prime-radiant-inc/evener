@@ -1,780 +1,21 @@
-import type {
-  AuthDeviceStartResponse,
-  AuthStatusResponse,
-  AuthTestResponse,
-  InstanceEntry,
-  InstanceListResponse,
-} from "@evener/appwire-client";
-import {
-  CONNECTION_REPLACED_ERROR,
-  ENDPOINT_CHANGED_TEST_MESSAGE,
-  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
-  WireError,
-} from "@evener/appwire-client";
+import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render as renderComponent, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactElement } from "react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { captureNewTabs, NEW_TAB_POLICY, openedNewTab } from "../../../../shell/openInNewTab.testSupport";
+import { useState } from "react";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { urlToPane } from "../../../../shell/routing";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../../../stores/credentials";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
-import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { ConnectProviderDialog } from "./ConnectProviderDialog";
 import { CredentialsSection } from "./CredentialsSection";
 
-// Existing cases exercise management, now reached explicitly from discovery.
-function render(element: ReactElement) {
-  const view = renderComponent(element);
-  if (element.type === ConnectProviderDialog) {
-    fireEvent.click(screen.getByText("Already configured access on this host?"));
-    fireEvent.click(screen.getByRole("button", { name: "Manage existing connections" }));
-  }
-  return view;
-}
-
-test("opens compact discovery by default and keeps management and the full editor returnable", async () => {
-  const row = instance({ name: "anthropic", providerId: "anthropic", authModes: ["apiKey"] });
-  connectFakeClient({
-    instances: [row],
-    availableProviders: [
-      {
-        id: "anthropic",
-        name: "Anthropic",
-        protocol: row.protocol,
-        auth: row.auth,
-        implicit: true,
-        authModes: ["apiKey"],
-        setup: row,
-      },
-    ],
-  });
-  renderComponent(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-  const user = userEvent.setup();
-  expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
-  await user.click(screen.getByText("Already configured access on this host?"));
-  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
-  expect(await screen.findByRole("button", { name: "Set API key" })).toBeTruthy();
-  await user.click(screen.getByRole("button", { name: "Full provider settings" }));
-  expect(await screen.findByRole("button", { name: "+ Add provider instance" })).toBeTruthy();
-  await user.click(screen.getByRole("button", { name: "+ Add provider instance" }));
-  const editor = await screen.findByRole("dialog", { name: "Add provider instance" });
-  expect(within(editor).getByLabelText("Protocol")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "All providers" })).toBeNull();
-  await user.click(within(editor).getByRole("button", { name: "Cancel" }));
-  await user.click(screen.getByRole("button", { name: "Back to connection choices" }));
-  expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
-});
-
-test("full-editor repair returns to the created connection and retained credential draft without duplicate creation", async () => {
-  const row = instance({
-    name: "team-custom",
-    providerId: "openai",
-    implicit: false,
-    baseUrl: "https://custom.example/v1",
-    authModes: ["apiKey"],
-  });
-  const provider = {
-    id: "openai",
-    name: "OpenAI",
-    protocol: row.protocol,
-    auth: row.auth,
-    implicit: false,
-    authModes: ["apiKey"],
-  };
-  let created = false;
-  let saved = false;
-  const listing = (): InstanceListResponse => ({
-    instances: created ? [{ ...row, activeSource: saved ? "store" : "none", hasStoredFile: saved }] : [],
-    availableProviders: [provider],
-  });
-  const fake = connectFakeClient(listing());
-  fake.on("evener/instance/list", listing);
-  fake.on("evener/instance/create", () => {
-    created = true;
-    return listing();
-  });
-  fake.on("evener/auth/apiKey/set", () => {
-    throw new Error("fixture save failure");
-  });
-  fake.on("evener/auth/test", () => ({ provider: "team-custom", status: "success", message: "" }));
-  const connected = vi.fn();
-  renderComponent(<ConnectProviderDialog onClose={() => {}} onConnected={connected} />);
-  const user = userEvent.setup();
-  await user.click(await screen.findByRole("button", { name: "OpenAI" }));
-  await user.click(screen.getByRole("button", { name: "Configure provider" }));
-  await user.type(screen.getByLabelText("Name"), "team-custom");
-  await user.type(screen.getByLabelText("Base URL (optional)"), "https://custom.example/v1");
-  await user.click(screen.getByRole("button", { name: "Create" }));
-  await user.type(await screen.findByLabelText("API key"), "repair-draft");
-  await user.click(screen.getByRole("button", { name: "Save and check" }));
-  expect(await screen.findByRole("alert")).toBe(document.activeElement);
-  expect(screen.getByLabelText("API key")).toHaveProperty("value", "repair-draft");
-  await user.click(screen.getByText("Advanced settings"));
-  await user.click(screen.getByRole("button", { name: "Open full connection editor" }));
-  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-  expect(screen.queryByLabelText("API key")).toBeNull();
-  await user.click(screen.getByRole("button", { name: "Full provider settings" }));
-  await user.click(screen.getByRole("button", { name: "Back to connection choices" }));
-  expect(screen.queryByLabelText("API key")).toHaveProperty("value", "repair-draft");
-  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-  fake.on("evener/auth/apiKey/set", () => {
-    saved = true;
-    return {
-      provider: "team-custom",
-      supported: true,
-      signedIn: true,
-      activeSource: "store",
-      hasStoredOAuth: false,
-      hasStoredFile: true,
-    };
-  });
-  await user.click(screen.getByRole("button", { name: "Save and check" }));
-  await user.click(await screen.findByRole("button", { name: "Continue" }));
-  expect(connected).toHaveBeenCalledWith("team-custom");
-  expect(fake.calls.filter((call) => call.method === "evener/instance/create")).toHaveLength(1);
-  expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set").map((call) => call.params)).toEqual([
-    {
-      provider: "team-custom",
-      value: "repair-draft",
-      expectedEndpointFingerprint: "fp-fixture",
-      originClientId: "test-tab",
-    },
-    {
-      provider: "team-custom",
-      value: "repair-draft",
-      expectedEndpointFingerprint: "fp-fixture",
-      originClientId: "test-tab",
-    },
-  ]);
-});
-
-// Real wrapper, stores and editors; only AppWire responses are scripted.
-function guidedRepair() {
-  let row = instance({
-    name: "openai",
-    providerId: "openai",
-    baseUrl: "https://original.example/v1",
-    authModes: ["apiKey"],
-  });
-  const listing = (): InstanceListResponse => ({
-    instances: [structuredClone(row)],
-    availableProviders: [
-      {
-        id: "openai",
-        name: "OpenAI",
-        protocol: "openai-chat",
-        auth: "bearer",
-        implicit: true,
-        authModes: ["apiKey"],
-        setup: structuredClone(row),
-      },
-      {
-        id: "anthropic",
-        name: "Anthropic",
-        protocol: "anthropic",
-        auth: "api-key",
-        implicit: true,
-        authModes: ["apiKey"],
-        setup: instance({
-          name: "anthropic",
-          providerId: "anthropic",
-          baseUrl: "https://anthropic.example",
-          authModes: ["apiKey"],
-        }),
-      },
-    ],
-  });
-  const fake = connectFakeClient(listing());
-  fake.on("evener/instance/list", listing);
-  const status: AuthStatusResponse = {
-    provider: "openai",
-    supported: true,
-    signedIn: true,
-    activeSource: "store",
-    hasStoredOAuth: false,
-    hasStoredFile: true,
-  };
-  fake.on("evener/auth/apiKey/set", () => {
-    row = { ...row, activeSource: "store", hasStoredFile: true };
-    return status;
-  });
-  fake.on("evener/auth/test", () => ({ provider: "openai", status: "success", message: "" }));
-  fake.on("evener/instance/edit", (params) => {
-    if (params.newName) row = { ...row, name: params.newName };
-    return listing();
-  });
-  const connected = vi.fn();
-  const close = vi.fn();
-  const view = renderComponent(<ConnectProviderDialog onClose={close} onConnected={connected} />);
-  const user = userEvent.setup();
-  return {
-    fake,
-    user,
-    connected,
-    close,
-    view,
-    listing,
-    status,
-    change: (patch: Partial<InstanceEntry>) => {
-      row = { ...row, ...patch };
-    },
-    async select() {
-      await user.click(await screen.findByRole("button", { name: "OpenAI" }));
-      await user.type(screen.getByLabelText("API key"), "excursion-draft");
-    },
-    async leave() {
-      await user.click(screen.getByText("Advanced settings"));
-      await user.click(screen.getByRole("button", { name: "Open full connection editor" }));
-      expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-      expect(screen.queryByLabelText("API key")).toBeNull();
-      await focusSettlesInDialog();
-    },
-    async back() {
-      await user.click(screen.getByRole("button", { name: "Back to connection choices" }));
-      expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-      await focusSettlesInDialog();
-    },
-  };
-}
-
-test.each(["save", "refresh", "check", "result"])(
-  "repair excursion invalidates %s without hidden dialogs or background checks",
-  async (phase) => {
-    const h = guidedRepair();
-    const save = deferred<AuthStatusResponse>();
-    const refresh = deferred<InstanceListResponse>();
-    const check = deferred<AuthTestResponse>();
-    await h.select();
-    if (phase === "save") h.fake.on("evener/auth/apiKey/set", () => save.promise);
-    if (phase === "refresh") h.fake.on("evener/instance/list", () => refresh.promise);
-    if (phase === "check") h.fake.on("evener/auth/test", () => check.promise);
-    await h.user.click(screen.getByRole("button", { name: "Save and check" }));
-    if (phase === "result") expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
-    else
-      expect(
-        await screen.findByRole("button", {
-          name: phase === "save" ? "Saving…" : phase === "refresh" ? "Refreshing access…" : "Checking model list…",
-        }),
-      ).toBeTruthy();
-    await h.leave();
-    const checksBefore = countCalls(h.fake, "evener/auth/test");
-    const writesBefore = countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS);
-    await act(async () => {
-      save.resolve(h.status);
-      refresh.resolve(h.listing());
-      check.resolve({ provider: "openai", status: "success", message: "" });
-      await Promise.all([save.promise, refresh.promise, check.promise]);
-    });
-    // The resolution must not open a hidden dialog or steal focus: checked at
-    // the moment it lands, before the quiesce below lets the store's own
-    // debounced read re-render the section.
-    expect(h.connected).not.toHaveBeenCalled();
-    await focusSettlesInDialog();
-    // The excursion must not let an in-flight response continue into a check or
-    // a credential write, even once everything the store schedules for itself
-    // has settled. Asserting the named calls rather than the total is what
-    // removes the load-sensitive flake: the store's debounced listing read is
-    // bookkeeping, not the background check this test is named for.
-    await quiesceCalls(h.fake);
-    expect(countCalls(h.fake, "evener/auth/test")).toBe(checksBefore);
-    expect(countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS)).toBe(writesBefore);
-    await h.back();
-    expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
-    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
-    // Leaving and returning changed nothing: invalidation is not a reportable
-    // change, so no alert may claim the connection or configuration did.
-    expect(screen.queryByText(/Connection or configuration changed/)).toBeNull();
-    expect(screen.getByRole("button", { name: phase === "save" ? "Save and check" : "Retry check" })).toHaveProperty(
-      "disabled",
-      false,
-    );
-    // The client is already settled above and Back issues no RPC, so this is a
-    // plain re-read rather than a second settle.
-    expect(countCalls(h.fake, "evener/auth/test")).toBe(checksBefore);
-    expect(countCalls(h.fake, ...CREDENTIAL_WRITE_METHODS)).toBe(writesBefore);
-  },
-  // The settle window runs on real timers and covers the store's ~250ms
-  // debounce, so these cases need more than the 5s default.
-  20000,
-);
-
-test("a listing refresh in the repair view does not take keyboard focus out of it", async () => {
-  const h = guidedRepair();
-  await h.select();
-  await h.leave();
-  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
-
-  // A refresh in flight: the row the keyboard is on has to stay mounted, or
-  // the focused button leaves the document and focus falls to <body>, where
-  // nothing brings it back - the dialog's focus scope focuses on mount only.
-  await act(async () => {
-    await credentialsStore.getState().fetch();
-  });
-  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
-});
-
-test("a failed listing refresh keeps the rows and the keyboard with the error banner", async () => {
-  const row = instance({ name: "anthropic", providerId: "anthropic", authModes: ["apiKey"] });
-  const fake = connectFakeClient({ instances: [row], availableProviders: [] });
-  render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-  const setKey = await screen.findByRole("button", { name: "Set API key" });
-  setKey.focus();
-  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
-
-  // readListing keeps the listing it already had when a refresh fails, so the
-  // rows it kept are still on screen - the keyboard's own row among them. The
-  // banner explains them; it does not replace them.
-  fake.on("evener/instance/list", () => {
-    throw new WireError("listing unavailable", -32000);
-  });
-  await act(async () => {
-    await credentialsStore.getState().fetch();
-  });
-
-  expect(screen.getByRole("alert").textContent).toContain("Failed to load providers");
-  expect(screen.getByRole("button", { name: "Set API key" })).toBe(document.activeElement);
-  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
-});
-
-// Keeping the rows mounted through a load covers the focused row surviving a
-// refresh; a listing that no longer CARRIES the row is the other half. React
-// unmounts the focused control, the browser drops focus to <body>, and the
-// scope focuses on mount only - so nothing brought it back and the user's next
-// Tab started over at the top of the document.
-test("a listing that removes the focused row hands the keyboard to the dialog's first control", async () => {
-  const first = instance({ name: "anthropic", providerId: "anthropic", authModes: ["apiKey"] });
-  const second = instance({ name: "openai", providerId: "openai", authModes: ["apiKey"] });
-  connectFakeClient({ instances: [first, second], availableProviders: [] });
-  render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-
-  const rows = await screen.findAllByRole("listitem");
-  const focusedRow = rows.find((row) => row.textContent?.includes("anthropic"));
-  expect(focusedRow).toBeTruthy();
-  const setKey = within(focusedRow as HTMLElement).getByRole("button", { name: "Set API key" });
-  setKey.focus();
-  expect(document.activeElement).toBe(setKey);
-
-  // Another client removes the instance the keyboard is on.
-  await act(async () => {
-    credentialsStore.setState({ instances: [second] });
-  });
-
-  const dialog = screen.getByRole("dialog");
-  expect(dialog.contains(focusedRow as HTMLElement)).toBe(false); // the row really did go
-  expect(document.activeElement).not.toBe(document.body);
-  expect(dialog.contains(document.activeElement)).toBe(true);
-});
-
-test("row actions wait for the replacement connection's own listing", async () => {
-  const row = instance({ name: "anthropic", providerId: "anthropic", authModes: ["apiKey"] });
-  const listing: InstanceListResponse = {
-    instances: [row],
-    availableProviders: [
-      {
-        id: "anthropic",
-        name: "Anthropic",
-        protocol: row.protocol,
-        auth: row.auth,
-        implicit: true,
-        authModes: ["apiKey"],
-        setup: row,
-      },
-    ],
-    diagnostics: ['providers.toml: unexpected key "type"'],
-  };
-  const fake = connectFakeClient(listing);
-  const user = userEvent.setup();
-  render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-  const setKey = await screen.findByRole("button", { name: "Set API key" });
-  const testConnection = screen.getByRole("button", { name: "Test connection" });
-  const add = screen.getByRole("button", { name: "Add provider instance" });
-  const settings = screen.getByRole("button", { name: "Full provider settings" });
-  for (const control of [setKey, testConnection, add, settings]) {
-    expect(control.getAttribute("aria-disabled")).toBe("false");
-  }
-  expect(screen.getByRole("list", { name: "Provider warnings" })).toBeTruthy();
-
-  // The client is replaced: the rows still on screen name instances and
-  // endpoints of the connection that went away, so nothing that would act on
-  // that listing responds until this connection's own read lands - the row
-  // controls, the add flow it would feed, and the settings surface whose sheet
-  // edits the same rows. The replacement is ready and answers auth calls, so a
-  // control that wrongly ran its handler would leave a recorded call behind;
-  // only its own listing read is held open, which is what keeps the mark on.
-  const restored = deferred<InstanceListResponse>();
-  const replacement = new FakeClient("ready");
-  replacement.on("evener/instance/list", () => restored.promise);
-  replacement.on("evener/auth/apiKey/set", () => ({
-    provider: "anthropic",
-    supported: true,
-    signedIn: true,
-    activeSource: "store",
-    hasStoredOAuth: false,
-    hasStoredFile: true,
-  }));
-  replacement.on("evener/auth/test", () => ({ provider: "openai", status: "success", message: "" }));
-  setKey.focus();
-  await act(async () => {
-    connectionStore.getState().connect(replacement);
-  });
-  for (const control of [setKey, testConnection, add, settings]) {
-    expect(control.getAttribute("aria-disabled")).toBe("true");
-  }
-  // ...and the refusal says so on screen. aria-disabled keeps the keyboard where
-  // it is, which is why these controls are not natively disabled, but a click
-  // that runs nothing must not be silent: every other credential surface reports
-  // the refusal, and silence reads as a broken button.
-  expect(screen.getByText(CONNECTION_REPLACED_ERROR)).toBeTruthy();
-  // A diagnostic describes the listing that produced it, so the replacement
-  // connection's own read has to land before warnings are shown again.
-  expect(screen.queryByRole("list", { name: "Provider warnings" })).toBeNull();
-  // The refusal is aria-disabled, not a native disabled attribute, because the
-  // keyboard's row is still mounted: a native disabled control holding focus
-  // drops focus to <body>, and the stale transition would then lose the
-  // keyboard exactly the way unmounting the row used to.
-  expect(setKey).toBe(document.activeElement);
-  // ...and refused means refused: the handlers run nothing.
-  await user.click(setKey);
-  await user.click(testConnection);
-  await user.click(add);
-  expect(screen.queryByLabelText("API key")).toBeNull();
-  expect(screen.queryByRole("dialog", { name: "Add provider instance" })).toBeNull();
-  expect(replacement.calls.filter((call) => call.method.startsWith("evener/auth/"))).toHaveLength(0);
-
-  await act(async () => {
-    fake.emitStateChange("ready");
-  });
-  // The restore read is in flight, so the rows are still the old connection's.
-  expect(setKey.getAttribute("aria-disabled")).toBe("true");
-
-  await act(async () => {
-    restored.resolve(listing);
-    await restored.promise;
-  });
-  await waitFor(() => expect(setKey.getAttribute("aria-disabled")).toBe("false"));
-  for (const control of [testConnection, add, settings]) {
-    expect(control.getAttribute("aria-disabled")).toBe("false");
-  }
-  expect(screen.queryByText(CONNECTION_REPLACED_ERROR)).toBeNull();
-  expect(screen.getByRole("list", { name: "Provider warnings" })).toBeTruthy();
-});
-
-// The gate means "there are rows on screen that a connection that is gone read".
-// A connection holding no listing at all - a cold load, or a first read that
-// failed - has nothing stale to act on: the store would allow the action, so the
-// dialog must not refuse it, and must not claim a connection was replaced when
-// none was. The store's own refusal and this gate share one predicate
-// (stores/credentials.ts's staleListingHeld) so the two cannot drift.
-test("a failed first listing read does not gate the dialog's actions", async () => {
-  const fake = new FakeClient("ready");
-  fake.on("evener/instance/list", () => {
-    throw new WireError("listing unavailable", -32000);
-  });
-  connectionStore.getState().connect(fake);
-  render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-
-  await screen.findByRole("alert");
-  expect(screen.queryByText(CONNECTION_REPLACED_ERROR)).toBeNull();
-  expect(screen.getByRole("button", { name: "Full provider settings" }).getAttribute("aria-disabled")).toBe("false");
-});
-
-test("a refresh superseded by the credential notification's own refetch is not reported as a failure", async () => {
-  const h = guidedRepair();
-  await h.select();
-  const first = deferred<InstanceListResponse>();
-  const second = deferred<InstanceListResponse>();
-  let listingCalls = 0;
-  h.fake.on("evener/instance/list", () => {
-    listingCalls += 1;
-    if (listingCalls === 1) return first.promise;
-    if (listingCalls === 2) return second.promise;
-    return h.listing();
-  });
-
-  await h.user.click(screen.getByRole("button", { name: "Save and check" }));
-  // The credential save makes the hub emit evener/auth/updated, and the store's
-  // own debounced refetch starts while this refresh's listing is still in
-  // flight - superseding it.
-  act(() => {
-    h.fake.emitNotification({ method: "evener/auth/updated", params: {} });
-  });
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 300));
-  });
-  expect(listingCalls).toBe(2);
-
-  // The dropped response then lands: the store applies nothing, so without a
-  // second ask the connector would blame the save for the coalescing race.
-  await act(async () => {
-    first.resolve(h.listing());
-  });
-  expect(screen.queryByText(/Access could not be refreshed/)).toBeNull();
-  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
-});
-
-test("a rename in full provider settings follows the guided flow back to the renamed instance", async () => {
-  const h = guidedRepair();
-  // Environment-derived instances are not renameable, so make this one authored.
-  h.change({ implicit: false });
-  await h.select();
-  await h.leave();
-  await h.user.click(screen.getByRole("button", { name: "Full provider settings" }));
-
-  // Rename the very instance the guided flow is configuring, from the
-  // section's own sheet.
-  await h.user.click(await screen.findByRole("button", { name: /openai/ }));
-  const sheet = await screen.findByRole("dialog", { name: "openai" });
-  await h.user.type(within(sheet).getByLabelText("Name"), "-renamed");
-  const save = within(sheet).getByRole("button", { name: "Save" }) as HTMLButtonElement;
-  await waitFor(() => expect(save.disabled).toBe(false));
-  await h.user.click(save);
-  await screen.findByRole("dialog", { name: "openai-renamed" });
-
-  await h.user.click(screen.getByRole("button", { name: "Back to connection choices" }));
-  // The retained draft must survive the rename, and the guided flow must act on
-  // the instance's new name rather than dead-ending on the old one.
-  expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
-  await h.user.click(screen.getByRole("button", { name: "Save and check" }));
-  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
-  expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set").at(-1)?.params).toEqual({
-    provider: "openai-renamed",
-    value: "excursion-draft",
-    expectedEndpointFingerprint: "fp-fixture",
-    originClientId: "test-tab",
-  });
-});
-
-test("removing the instance in full provider settings clears the guided draft a recreation cannot inherit", async () => {
-  const h = guidedRepair();
-  // Environment-derived instances are not removeable, so make this one authored.
-  h.change({ implicit: false });
-  let removed = false;
-  // The post-removal listing: no instance row and no implicit setup under the
-  // name, so nothing called "openai" resolves until it is recreated.
-  const emptyListing = (): InstanceListResponse => ({
-    instances: [],
-    availableProviders: [
-      { id: "openai", name: "OpenAI", protocol: "openai-chat", auth: "bearer", implicit: true, authModes: ["apiKey"] },
-      {
-        id: "anthropic",
-        name: "Anthropic",
-        protocol: "anthropic",
-        auth: "api-key",
-        implicit: true,
-        authModes: ["apiKey"],
-      },
-    ],
-  });
-  h.fake.on("evener/instance/remove", () => {
-    removed = true;
-    return emptyListing();
-  });
-  h.fake.on("evener/instance/list", () => (removed ? emptyListing() : h.listing()));
-  await h.select();
-  await h.leave();
-  await h.user.click(screen.getByRole("button", { name: "Full provider settings" }));
-
-  // Remove the very instance the guided flow is configuring, from the
-  // section's own sheet.
-  await h.user.click(await screen.findByRole("button", { name: /openai/ }));
-  const sheet = await screen.findByRole("dialog", { name: "openai" });
-  await h.user.click(within(sheet).getByRole("button", { name: "Remove" }));
-  const confirm = await screen.findByRole("dialog", { name: "Remove instance" });
-  await h.user.click(within(confirm).getByRole("button", { name: "Remove" }));
-  await screen.findByRole("dialog", { name: "Full provider settings" });
-
-  // Recreate an instance under the SAME name and provider while the guided
-  // owner stays mounted behind the sheet - with a new configuration, so it is
-  // provably a different entity than the one the draft was typed against.
-  removed = false;
-  h.change({ baseUrl: "https://recreated.example/v1" });
-  await act(async () => {
-    await credentialsStore.getState().fetch();
-  });
-
-  await h.back();
-  // The retained draft must be gone: the flow re-anchored to a fresh state for
-  // whatever now carries the name, and the old unsaved credential must not
-  // submit to the recreated instance.
-  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
-  expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
-});
-
-test("a rename reported while no guided owner is mounted cannot re-point a fresh selection", async () => {
-  const h = guidedRepair();
-  h.change({ implicit: false });
-  await h.select();
-  // Leave the guided owner entirely: back at the picker, nothing is mounted.
-  await h.user.click(screen.getByRole("button", { name: "Change provider" }));
-  expect(screen.getByRole("dialog", { name: "Connect a provider" })).toBeTruthy();
-
-  // Reach the full settings view from the picker and rename the instance
-  // there - with NO guided owner mounted to receive the report.
-  await h.user.click(screen.getByText("Already configured access on this host?"));
-  await h.user.click(screen.getByRole("button", { name: "Manage existing connections" }));
-  await h.user.click(screen.getByRole("button", { name: "Full provider settings" }));
-  await h.user.click(await screen.findByRole("button", { name: /openai/ }));
-  const sheet = await screen.findByRole("dialog", { name: "openai" });
-  await h.user.type(within(sheet).getByLabelText("Name"), "-renamed");
-  const save = within(sheet).getByRole("button", { name: "Save" }) as HTMLButtonElement;
-  await waitFor(() => expect(save.disabled).toBe(false));
-  await h.user.click(save);
-  await screen.findByRole("dialog", { name: "openai-renamed" });
-
-  // The renamed-away name comes back as a fresh implicit row, so a NEW
-  // selection mounts with the same initial name the stale report mentions.
-  // The listing stays live (instances track the harness row; the implicit
-  // row adopts the saved credential state) so either outcome completes a
-  // real save/check and the assertion isolates WHICH instance got the key.
-  let savedImplicit = false;
-  h.fake.on("evener/auth/apiKey/set", () => {
-    h.change({ activeSource: "store", hasStoredFile: true });
-    savedImplicit = true;
-    return h.status;
-  });
-  h.fake.on("evener/instance/list", () => {
-    const base = h.listing();
-    return {
-      instances: base.instances,
-      availableProviders: [
-        {
-          id: "openai",
-          name: "OpenAI",
-          protocol: "openai-chat",
-          auth: "bearer",
-          implicit: true,
-          authModes: ["apiKey"],
-          setup: instance({
-            name: "openai",
-            providerId: "openai",
-            baseUrl: "https://original.example/v1",
-            authModes: ["apiKey"],
-            ...(savedImplicit ? { activeSource: "store", hasStoredFile: true } : {}),
-          }),
-        },
-        ...base.availableProviders.slice(1),
-      ],
-    };
-  });
-  await act(async () => {
-    await credentialsStore.getState().fetch();
-  });
-
-  await h.user.click(screen.getByRole("button", { name: "Back to connection choices" }));
-  // A fresh selection of the same provider is a new editing session: it must
-  // target the openai row as listed, not be silently re-pointed at the
-  // instance that was renamed away while nothing was mounted.
-  await h.user.click(screen.getByRole("button", { name: "OpenAI" }));
-  await h.user.type(screen.getByLabelText("API key"), "fresh-selection-key");
-  await h.user.click(screen.getByRole("button", { name: "Save and check" }));
-  expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
-  expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set").at(-1)?.params).toEqual({
-    provider: "openai",
-    value: "fresh-selection-key",
-    expectedEndpointFingerprint: "fp-fixture",
-    originClientId: "test-tab",
-  });
-});
-
-test("repair excursion cancels a pending guided OAuth start without opening a hidden flow", async () => {
-  const h = guidedRepair();
-  h.change({ authModes: ["apiKey", "oauth"] });
-  await act(async () => credentialsStore.getState().fetch());
-  const pending = deferred<AuthDeviceStartResponse>();
-  h.fake.on("evener/auth/device/start", () => pending.promise);
-  await h.select();
-  await h.user.click(screen.getByRole("button", { name: "Sign in" }));
-  await h.leave();
-  const calls = h.fake.calls.length;
-  await act(async () => {
-    pending.resolve({
-      provider: "openai",
-      fallback: true,
-      flowId: "",
-      userCode: "",
-      verificationUrl: "",
-      intervalSeconds: 0,
-    });
-    await pending.promise;
-  });
-  expect(h.fake.calls).toHaveLength(calls);
-  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-  await h.back();
-  expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
-  expect(screen.getByRole("button", { name: "Sign in" })).toHaveProperty("disabled", false);
-  expect(h.connected).not.toHaveBeenCalled();
-});
-
-test.each(["destination", "source"])(
-  "repair return requires fresh %s review before checking saved access",
-  async (changed) => {
-    const h = guidedRepair();
-    await h.select();
-    await h.user.click(screen.getByRole("button", { name: "Save and check" }));
-    expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
-    await h.leave();
-    await h.user.click(screen.getByRole("button", { name: "Full provider settings" }));
-    h.change(changed === "destination" ? { baseUrl: "https://repaired.example/v1" } : { activeSource: "env" });
-    await act(async () => credentialsStore.getState().fetch());
-    await h.back();
-    expect(screen.getByLabelText("API key")).toHaveProperty("value", "excursion-draft");
-    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
-    await h.user.click(screen.getByRole("button", { name: "Retry check" }));
-    const review = await screen.findByRole("button", { name: "Use reviewed access and check" });
-    expect(h.fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
-    expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1);
-    await h.user.click(review);
-    expect(await screen.findByRole("button", { name: "Continue" })).toBeTruthy();
-    expect(h.fake.calls.filter((call) => call.method === "evener/auth/test").map((call) => call.params)).toEqual([
-      { provider: "openai", expectedEndpointFingerprint: "fp-fixture" },
-      { provider: "openai", expectedEndpointFingerprint: "fp-fixture" },
-    ]);
-  },
-);
-
-test("provider identity changes while repairing irreversibly discard the old credential draft", async () => {
-  const h = guidedRepair();
-  await h.select();
-  await h.leave();
-  h.change({ providerId: "anthropic" });
-  await act(async () => credentialsStore.getState().fetch());
-  await h.back();
-  expect(screen.getByRole("dialog", { name: "Connect Anthropic" })).toBeTruthy();
-  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
-  await h.user.click(screen.getByRole("button", { name: "Save and check" }));
-  expect(screen.getByLabelText("API key")).toBe(document.activeElement);
-  expect(h.fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
-  await h.leave();
-  h.change({ providerId: "openai" });
-  await act(async () => credentialsStore.getState().fetch());
-  await h.back();
-  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
-});
-
-test.each(["change", "cancel", "dismiss-away"])("%s after repair does not retain a guided secret", async (action) => {
-  const h = guidedRepair();
-  await h.select();
-  await h.leave();
-  if (action !== "dismiss-away") await h.back();
-  if (action === "change") {
-    await h.user.click(screen.getByRole("button", { name: "Change provider" }));
-    await h.user.click(screen.getByRole("button", { name: "Anthropic" }));
-    expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
-    await h.user.click(screen.getByRole("button", { name: "Change provider" }));
-  } else {
-    await h.user.click(screen.getByRole("button", { name: action === "cancel" ? "Cancel" : "Close" }));
-    expect(h.close).toHaveBeenCalledTimes(1);
-    h.view.unmount();
-    renderComponent(<ConnectProviderDialog onClose={h.close} onConnected={h.connected} />);
-  }
-  await h.user.click(await screen.findByRole("button", { name: "OpenAI" }));
-  expect(screen.getByLabelText("API key")).toHaveProperty("value", "");
-  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
-  expect(h.fake.calls.filter((call) => call.method.startsWith("evener/auth/"))).toHaveLength(0);
-});
-
+// This file covers the lazy chunk's entry component: the guided connect flow it
+// renders (ProviderConnection has its own file for the flow's own behavior), the
+// listing-level recovery around it, and the one handoff out of the flow - the
+// settings pane's credentials section, where existing connections are managed.
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   const row: InstanceEntry = {
     protocol: "openai-chat",
@@ -795,11 +36,16 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
   return row;
 }
 
-function connectFakeClient(list: InstanceListResponse): FakeClient {
-  const fake = new FakeClient("ready");
-  fake.on("evener/instance/list", () => list);
-  connectionStore.getState().connect(fake);
-  return fake;
+function provider(id: string, name: string, setup?: InstanceEntry): ProviderDescriptor {
+  return {
+    id,
+    name,
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: true,
+    authModes: setup?.authModes ?? ["apiKey"],
+    ...(setup ? { setup } : {}),
+  };
 }
 
 function deferred<T>() {
@@ -810,950 +56,181 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-/** Focus settling is asynchronous: React commits the panel, then the browser
- * moves focus into it. A loaded host can take longer than waitFor's one-second
- * default, which is what flaked this family. The assertion is unchanged - focus
- * must be inside the one open dialog - only the wait is load-tolerant. */
-async function focusSettlesInDialog(): Promise<void> {
-  await waitFor(() => expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true), {
-    timeout: 5000,
-  });
-}
-
-/** The RPCs this file's flows issue when a response wrongly continues past an
- * invalidation: a background check and a credential write. */
-const CREDENTIAL_WRITE_METHODS = ["evener/auth/apiKey/set", "evener/auth/credentialJson/set"];
-
-/** How many calls the fake client recorded for any of methods. */
-function countCalls(fake: FakeClient, ...methods: string[]): number {
-  return fake.calls.filter((call) => methods.includes(call.method)).length;
-}
-
-/** Waits until the fake client has recorded no new call for a settle window, so
- * an assertion taken afterwards describes a quiescent client rather than one
- * with a call still in flight. The window must exceed the store's debounced
- * refetch (~250ms after a save's evener/auth/updated), or the helper would
- * return before that read is recorded and claim a quiescence it never saw; a
- * response that wrongly continued past an invalidation issues its check in the
- * microtasks right after its deferred resolves, so it too has landed by then.
- * A client that never goes quiet is a failure, not a pass: settling is the
- * precondition every caller's assertion depends on. */
-async function quiesceCalls(fake: FakeClient): Promise<void> {
-  const settleMs = 400;
-  const deadline = Date.now() + 3000;
-  let seen = fake.calls.length;
-  while (Date.now() < deadline) {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, settleMs));
-    });
-    if (fake.calls.length === seen) return;
-    seen = fake.calls.length;
-  }
-  throw new Error("the fake client never went quiet; a call kept arriving past the settle deadline");
+/** The dialog as the app mounts it: `onClose` is what makes it go away, so the
+ * harness owns that state and the test can see the dialog actually leave. */
+function Harness({ onClose }: { onClose(): void }) {
+  const [open, setOpen] = useState(true);
+  if (!open) return null;
+  return (
+    <ConnectProviderDialog
+      onClose={() => {
+        setOpen(false);
+        onClose();
+      }}
+      onConnected={() => {}}
+    />
+  );
 }
 
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
   resetToastStoreForTests();
-  // The auth mutations carry the page's identity on the wire now, so the
-  // assertions that pin their exact params need one that cannot vary.
+  // The auth mutations carry the page's identity on the wire; pinning it keeps
+  // a recorded call's params from varying per run.
   setMutationClientIdentityForTests("test-tab");
 });
 
 afterEach(() => {
   cleanup();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  vi.useRealTimers();
+  window.history.pushState({}, "", "/");
   vi.restoreAllMocks();
 });
 
-describe("ConnectProviderDialog", () => {
-  test.each(["onboarding", "settings"])(
-    "%s recovers when its first listing is interrupted by reconnect",
-    async (view) => {
-      const old = deferred<InstanceListResponse>();
-      const fake = new FakeClient("ready");
-      fake.on("evener/instance/list", () => old.promise);
-      connectionStore.getState().connect(fake);
-      render(
-        view === "onboarding" ? (
-          <ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />
-        ) : (
-          <CredentialsSection sectionId="credentials" />
-        ),
-      );
-      await act(async () => {
-        fake.emitStateChange("reconnecting");
-        fake.on("evener/instance/list", () => ({
-          instances: [instance({ name: "recovered-provider", providerId: "anthropic", authModes: ["apiKey"] })],
-          availableProviders: [],
-        }));
-        fake.emitReady();
-        old.resolve({ instances: [], availableProviders: [] });
-        await old.promise;
-      });
-      expect(await screen.findByText("recovered-provider")).toBeTruthy();
-      expect(credentialsStore.getState().loading).toBe(false);
-    },
-  );
+test("the picker offers the connect choices and hands existing connections to the provider settings", async () => {
+  const row = instance({ name: "anthropic", providerId: "anthropic", authModes: ["apiKey"] });
+  const fake = new FakeClient("ready");
+  fake.on("evener/instance/list", () => ({
+    instances: [row],
+    availableProviders: [provider("anthropic", "Anthropic", row)],
+  }));
+  connectionStore.getState().connect(fake);
+  const close = vi.fn();
+  render(<Harness onClose={close} />);
+  const user = userEvent.setup();
 
-  test.each(["save", "refresh"])(
-    "a dismissed key editor cannot close a new draft after its %s finishes",
-    async (phase) => {
-      const row = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
-      const list = { instances: [row], availableProviders: [] };
-      const fake = connectFakeClient(list);
-      const save = deferred<AuthStatusResponse>();
-      const refresh = deferred<InstanceListResponse>();
-      fake.on("evener/auth/apiKey/set", () => save.promise);
-      render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-      const user = userEvent.setup();
-      await user.click(await screen.findByRole("button", { name: "Set API key" }));
-      await user.type(screen.getByLabelText("API key for work"), "old-key");
-      await user.click(screen.getByRole("button", { name: "Save" }));
-      const saved: AuthStatusResponse = {
-        provider: "work",
-        supported: true,
-        signedIn: true,
-        activeSource: "store",
-        hasStoredOAuth: false,
-      };
-      if (phase === "refresh") {
-        fake.on("evener/instance/list", () => refresh.promise);
-        await act(async () => {
-          save.resolve(saved);
-          await save.promise;
-        });
-      }
-      await user.click(screen.getByRole("button", { name: "Close" }));
-      if (phase === "refresh") {
-        fake.on("evener/instance/list", () => list);
-        await act(async () => credentialsStore.getState().fetch());
-      }
-      await user.click(await screen.findByRole("button", { name: "Set API key" }));
-      await user.type(screen.getByLabelText("API key for work"), "new-draft");
-      await act(async () => {
-        save.resolve(saved);
-        refresh.resolve(list);
-        await save.promise;
-        await refresh.promise;
-      });
-      expect(screen.getByLabelText("API key for work")).toHaveProperty("value", "new-draft");
-      expect(getToasts().some((toast) => toast.kind === "success")).toBe(false);
-    },
-  );
+  // The guided discovery surface, and nothing of the management view it used to
+  // grow: no instance rows, no per-row actions, no second settings dialog.
+  expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Full provider settings" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Add provider instance" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Test connection" })).toBeNull();
 
-  test("a removed API-key instance does not reopen its editor when restored", async () => {
-    const row = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
-    connectFakeClient({ instances: [row], availableProviders: [] });
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Set API key" }));
-    await act(async () => credentialsStore.setState({ instances: [] }));
-    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
-    await act(async () => credentialsStore.setState({ instances: [row] }));
-    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
+  await user.click(screen.getByText("Already configured access on this host?"));
+  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
+
+  // The affordance is a handoff, not a second editor: the real provider
+  // settings are where an existing connection is listed, edited and tested, so
+  // the dialog closes itself and the route lands on that pane's credentials
+  // section - never a dialog left standing over the pane it hands off to.
+  // Both the emitted path and the pane it resolves to are pinned: urlToPane
+  // alone would accept any legacy alias that reaches the same section.
+  expect(window.location.pathname).toBe("/settings/credentials");
+  expect(urlToPane(window.location.pathname)).toEqual({ type: "settings", params: { section: "credentials" } });
+  expect(close).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("the dialog still renders the guided flow and hands the connected name to its caller", async () => {
+  const setup = instance({
+    name: "anthropic",
+    providerId: "anthropic",
+    baseUrl: "https://api.anthropic.example/v1",
+    authModes: ["apiKey"],
   });
-
-  test("saving an API key still requires an explicit successful credential test", async () => {
-    const anthropic = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
-    let saved = false;
-    const fake = new FakeClient("ready");
-    fake.on("evener/instance/list", () => ({
-      instances: [saved ? { ...anthropic, activeSource: "store", hasStoredFile: true } : anthropic],
-      availableProviders: [],
-    }));
-    connectionStore.getState().connect(fake);
-    fake.on("evener/auth/apiKey/set", (params) => {
-      expect(params).toEqual({ provider: "work", value: "sk-test-value", originClientId: "test-tab" });
-      saved = true;
-      return {
-        provider: "work",
-        supported: true,
-        signedIn: true,
-        activeSource: "store",
-        authModes: ["apiKey"],
-        hasStoredOAuth: false,
-        hasStoredFile: true,
-      };
-    });
-    fake.on("evener/auth/test", (params) => {
-      expect(params).toEqual({ provider: "work" });
-      return { provider: "work", status: "success", message: "untrusted provider message" };
-    });
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-
-    expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(0);
-    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Set API key" }));
-    expect(screen.getAllByRole("dialog")).toHaveLength(1);
-
-    await userEvent.setup().type(screen.getByLabelText("API key for work"), "sk-test-value");
-    await userEvent.setup().click(screen.getByRole("button", { name: "Save" }));
-    const returnedChooser = await screen.findByRole("dialog", { name: "Connect provider" });
-    expect(within(returnedChooser).getByText("Configured via stored API key")).toBeTruthy();
-    expect(onConnected).not.toHaveBeenCalled();
-
-    await userEvent.setup().click(within(returnedChooser).getByRole("button", { name: "Test connection" }));
-    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
-  });
-
-  test("a save from Manage Connections carries the row's endpoint fingerprint, captured at open", async () => {
-    const row = instance({
-      name: "work",
-      providerId: "anthropic",
-      authModes: ["apiKey"],
-      endpointFingerprint: "fp-manage-open",
-    });
-    const fake = connectFakeClient({ instances: [row], availableProviders: [] });
-    fake.on("evener/auth/apiKey/set", () => ({
-      provider: "work",
+  const fake = new FakeClient("ready");
+  let saved = false;
+  fake.on("evener/instance/list", () => ({
+    instances: [saved ? { ...setup, activeSource: "store", hasStoredFile: true } : setup],
+    availableProviders: [provider("anthropic", "Anthropic", setup)],
+  }));
+  fake.on("evener/auth/apiKey/set", () => {
+    saved = true;
+    return {
+      provider: "anthropic",
       supported: true,
       signedIn: true,
       activeSource: "store",
-      authModes: ["apiKey"],
       hasStoredOAuth: false,
       hasStoredFile: true,
-    }));
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-    const user = userEvent.setup();
-
-    await user.click(await screen.findByRole("button", { name: "Set API key" }));
-    await user.type(screen.getByLabelText("API key for work"), "manage-key");
-    await user.click(screen.getByRole("button", { name: "Save" }));
-
-    await vi.waitFor(() =>
-      expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(1),
-    );
-    expect(fake.calls.find((call) => call.method === "evener/auth/apiKey/set")?.params).toEqual({
-      provider: "work",
-      value: "manage-key",
-      expectedEndpointFingerprint: "fp-manage-open",
-      originClientId: "test-tab",
-    });
+    };
   });
+  fake.on("evener/auth/test", () => ({ provider: "anthropic", status: "success", message: "" }));
+  connectionStore.getState().connect(fake);
+  const onConnected = vi.fn();
+  render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
+  const user = userEvent.setup();
 
-  test("a Manage Connections save is refused when the row's endpoint moved after the editor opened", async () => {
-    let row = instance({
-      name: "work",
-      providerId: "anthropic",
-      authModes: ["apiKey"],
-      endpointFingerprint: "fp-manage-open",
-    });
+  await user.click(await screen.findByRole("button", { name: "Anthropic" }));
+  await user.type(screen.getByLabelText("API key"), "sk-guided");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
+
+  expect(onConnected).toHaveBeenCalledWith("anthropic");
+});
+
+test.each(["onboarding", "settings"])(
+  "%s recovers when its first listing is interrupted by reconnect",
+  async (view) => {
+    const old = deferred<InstanceListResponse>();
     const fake = new FakeClient("ready");
-    fake.on("evener/instance/list", () => ({ instances: [row], availableProviders: [] }));
+    fake.on("evener/instance/list", () => old.promise);
     connectionStore.getState().connect(fake);
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Set API key" }));
-
-    // The listing re-resolves the name to a different endpoint while the field
-    // holds the secret; the capture from open time must still govern the save.
-    row = { ...row, endpointFingerprint: "fp-manage-changed" };
-    await act(async () => {
-      await credentialsStore.getState().fetch();
-    });
-
-    await user.type(screen.getByLabelText("API key for work"), "manage-key");
-    await user.click(screen.getByRole("button", { name: "Save" }));
-
-    expect(await screen.findByRole("alert")).toBeTruthy();
-    expect(screen.getByLabelText("API key for work")).toHaveProperty("value", "");
-    expect(fake.calls.filter((call) => call.method === "evener/auth/apiKey/set")).toHaveLength(0);
-  });
-
-  test("redirect OAuth returns to the chooser and still requires a successful test", async () => {
-    const codex = instance({
-      name: "personal",
-      providerId: "openai-codex",
-      auth: "oauth-openai-codex",
-      authModes: ["oauth"],
-    });
-    const fake = connectFakeClient({ instances: [codex], availableProviders: [] });
-    fake.on("evener/auth/device/start", (params) => {
-      expect(params).toEqual({ provider: "personal" });
-      return {
-        provider: "personal",
-        flowId: "unused-device-flow",
-        userCode: "unused",
-        verificationUrl: "https://verify.example",
-        intervalSeconds: 5,
-        fallback: true,
-      };
-    });
-    fake.on("evener/auth/login/start", (params) => {
-      expect(params).toEqual({ provider: "personal" });
-      return { provider: "personal", flowId: "redirect-flow", url: "https://auth.example/start" };
-    });
-    fake.on("evener/auth/login/complete", (params) => {
-      expect(params).toEqual({
-        provider: "personal",
-        flowId: "redirect-flow",
-        redirectUrl: "https://localhost/callback?code=ok",
-        originClientId: "test-tab",
-      });
-      return {
-        status: {
-          provider: "personal",
-          supported: true,
-          signedIn: true,
-          activeSource: "oauth",
-          authModes: ["oauth"],
-          hasStoredOAuth: true,
-        },
-      };
-    });
-    fake.on("evener/auth/test", () => ({ provider: "personal", status: "success", message: "ignored" }));
-    const anchors = captureNewTabs();
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-
-    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Sign in" }));
-    expect(screen.getAllByRole("dialog")).toHaveLength(1);
-    expect(openedNewTab(anchors)).toEqual({
-      url: "https://auth.example/start",
-      target: "_blank",
-      rel: NEW_TAB_POLICY,
-    });
-    await userEvent.setup().type(screen.getByLabelText("Redirect URL"), "https://localhost/callback?code=ok");
-    await userEvent.setup().click(screen.getByRole("button", { name: "Finish" }));
-
-    const returnedChooser = await screen.findByRole("dialog", { name: "Connect provider" });
-    expect(onConnected).not.toHaveBeenCalled();
-    await userEvent.setup().click(within(returnedChooser).getByRole("button", { name: "Test connection" }));
-    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
-  });
-
-  test("registry diagnostics remain visible and writesRefused disables adding an instance", async () => {
-    const userLayer = "user layer: /Users/jesse/.config/evener/providers.toml";
-    connectFakeClient({
-      instances: [],
-      availableProviders: [
-        { id: "anthropic", name: "Anthropic", protocol: "anthropic", auth: "bearer", implicit: false },
-      ],
-      diagnostics: [userLayer, 'providers.toml: unknown key "type"'],
-      userLayer,
-      writesRefused: true,
-    });
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-
-    await screen.findByText('providers.toml: unknown key "type"');
-    expect(screen.queryByText(userLayer)).toBeNull();
-    const add = screen.getByRole("button", { name: "Add provider instance" }) as HTMLButtonElement;
-    expect(add.disabled).toBe(true);
-  });
-
-  test("a healthy user-layer location is not presented as a provider warning", async () => {
-    const userLayer = "user layer: /Users/jesse/.config/evener/providers.toml";
-    connectFakeClient({
-      instances: [instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] })],
-      availableProviders: [],
-      diagnostics: [userLayer],
-      userLayer,
-    });
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-
-    await screen.findByRole("dialog", { name: "Connect provider" });
-    expect(screen.queryByRole("list", { name: "Provider warnings" })).toBeNull();
-    expect(screen.queryByText(userLayer)).toBeNull();
-  });
-
-  test("a failed credential test stays open with a safe message and can be retried", async () => {
-    const api = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
-    const fake = connectFakeClient({ instances: [api], availableProviders: [] });
-    let attempts = 0;
-    fake.on("evener/auth/test", (params) => {
-      expect(params).toEqual({ provider: "work" });
-      attempts += 1;
-      return attempts === 1
-        ? { provider: "work", status: "auth_rejected", message: "provider echoed secret sk-leak" }
-        : { provider: "work", status: "success", message: "provider success prose" };
-    });
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-
-    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Test connection" }));
-    await screen.findByText("The provider rejected these credentials. Replace the key or sign in again.");
-    expect(document.body.textContent).not.toContain("sk-leak");
-    expect(onConnected).not.toHaveBeenCalled();
-
-    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Retry test" }));
-    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
-    expect(attempts).toBe(2);
-  });
-
-  test("the connection test asserts the selected instance's fingerprint", async () => {
-    const row = instance({
-      name: "work",
-      providerId: "anthropic",
-      authModes: ["apiKey"],
-      endpointFingerprint: "fp-manage-test",
-    });
-    const fake = connectFakeClient({ instances: [row], availableProviders: [] });
-    fake.on("evener/auth/test", () => ({ provider: "work", status: "success", message: "ignored" }));
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Test connection" }));
-    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
-    expect(fake.calls.find((call) => call.method === "evener/auth/test")?.params).toEqual({
-      provider: "work",
-      expectedEndpointFingerprint: "fp-manage-test",
-    });
-  });
-
-  test("a refused assertion is shown as a changed connection, not an endpoint failure", async () => {
-    const row = instance({
-      name: "work",
-      providerId: "anthropic",
-      authModes: ["apiKey"],
-      endpointFingerprint: "fp-manage-test",
-    });
-    const listing = { instances: [row], availableProviders: [] };
-    const fake = connectFakeClient(listing);
-    // The refresh the refusal schedules must resolve, so the notice is the
-    // state the row settles into rather than a loading purgatory.
-    fake.on("evener/instance/list", () => listing);
-    fake.on("evener/auth/test", () => {
-      throw new WireError("instance changed", -32013, { evenerErrorInfo: "conflict" });
-    });
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-
-    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Test connection" }));
-
-    expect(await within(chooser).findByText(ENDPOINT_CHANGED_TEST_MESSAGE)).toBeTruthy();
-    expect(within(chooser).getByRole("button", { name: "Retry test" })).toBeTruthy();
-    expect(
-      within(chooser).queryByText(
-        "The provider endpoint could not be reached. Check the endpoint and network connection.",
+    render(
+      view === "onboarding" ? (
+        <ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />
+      ) : (
+        <CredentialsSection sectionId="credentials" />
       ),
-    ).toBeNull();
-  });
-
-  test("a destination the hub cannot fingerprint refuses the connection test", async () => {
-    // The row has a destination but the listing could not key a fingerprint for
-    // it, so there is no assertion to send and the probe must not run.
-    const row = instance({
-      name: "work",
-      providerId: "anthropic",
-      authModes: ["apiKey"],
-      baseUrl: "https://unkeyed.example/v1",
-    });
-    delete row.endpointFingerprint;
-    const fake = connectFakeClient({ instances: [row], availableProviders: [] });
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Test connection" }));
-
-    expect(await screen.findByText(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE)).toBeTruthy();
-    expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "Retry test" })).toBeTruthy();
-    expect(onConnected).not.toHaveBeenCalled();
-  });
-
-  test("cancelling the API-key editor destroys its secret and returns to the chooser", async () => {
-    const api = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
-    connectFakeClient({ instances: [api], availableProviders: [] });
-    const onClose = vi.fn();
-    render(<ConnectProviderDialog onClose={onClose} onConnected={() => {}} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-    const user = userEvent.setup();
-
-    await user.click(within(chooser).getByRole("button", { name: "Set API key" }));
-    await user.type(screen.getByLabelText("API key for work"), "secret-that-must-disappear");
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-    const returnedChooser = await screen.findByRole("dialog", { name: "Connect provider" });
-    expect(document.body.textContent).not.toContain("secret-that-must-disappear");
-    expect(onClose).not.toHaveBeenCalled();
-
-    await user.click(within(returnedChooser).getByRole("button", { name: "Set API key" }));
-    expect(screen.getByLabelText("API key for work")).toHaveProperty("value", "");
-  });
-
-  test("a registry load failure can be retried without closing the dialog", async () => {
-    const keyless = instance({
-      name: "ollama",
-      providerId: "ollama",
-      auth: "none",
-      authModes: ["none"],
-      credentialRequired: false,
-    });
-    const fake = new FakeClient("ready");
-    let attempts = 0;
-    fake.on("evener/instance/list", () => {
-      attempts += 1;
-      if (attempts === 1) throw new Error("registry unavailable");
-      return { instances: [keyless], availableProviders: [] };
-    });
-    connectionStore.getState().connect(fake);
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-
-    await screen.findByRole("alert");
-    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
-    expect(await screen.findAllByText("ollama")).toHaveLength(2);
-    expect(attempts).toBe(2);
-  });
-
-  test("a keyless instance offers connection testing without a credential editor", async () => {
-    const keyless = instance({
-      name: "ollama",
-      providerId: "ollama",
-      auth: "none",
-      authModes: ["none"],
-      credentialRequired: false,
-    });
-    const fake = connectFakeClient({ instances: [keyless], availableProviders: [] });
-    fake.on("evener/auth/test", (params) => {
-      expect(params).toEqual({ provider: "ollama" });
-      return { provider: "ollama", status: "success", message: "ignored" };
-    });
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-
-    expect(within(chooser).queryByRole("button", { name: /API key|Sign in/ })).toBeNull();
-    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Test connection" }));
-    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
-  });
-
-  test("device authorization returns to the chooser before the explicit connection test", async () => {
-    const codex = instance({
-      name: "personal",
-      providerId: "openai-codex",
-      auth: "oauth-openai-codex",
-      authModes: ["oauth"],
-    });
-    const fake = connectFakeClient({ instances: [codex], availableProviders: [] });
-    fake.on("evener/auth/device/start", () => ({
-      provider: "personal",
-      flowId: "device-flow",
-      userCode: "ABCD-EFGH",
-      verificationUrl: "https://verify.example",
-      intervalSeconds: 1,
-    }));
-    fake.on("evener/auth/device/poll", (params) => {
-      expect(params).toEqual({ provider: "personal", flowId: "device-flow", originClientId: "test-tab" });
-      return { state: "authorized" };
-    });
-    fake.on("evener/auth/test", () => ({ provider: "personal", status: "success", message: "ignored" }));
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-    const signIn = await screen.findByRole("button", { name: "Sign in" });
-    vi.useFakeTimers();
-
-    await act(async () => fireEvent.click(signIn));
-    expect(screen.getByText("ABCD-EFGH")).toBeTruthy();
-    await act(() => vi.advanceTimersByTimeAsync(1000));
-    const returnedChooser = screen.getByRole("dialog", { name: "Connect provider" });
-    expect(onConnected).not.toHaveBeenCalled();
-
-    await act(async () => fireEvent.click(within(returnedChooser).getByRole("button", { name: "Test connection" })));
-    expect(onConnected).toHaveBeenCalledTimes(1);
-  });
-
-  test.each(["replacement", "reconnect"])(
-    "a %s invalidates a pending test before the registry refresh",
-    async (change) => {
-      const response = deferred<{ provider: string; status: string; message: string }>();
-      const fake = connectFakeClient({
-        instances: [instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] })],
-        availableProviders: [],
-      });
-      fake.on("evener/auth/test", () => response.promise);
-      const onConnected = vi.fn();
-      render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-      await userEvent.setup().click(await screen.findByRole("button", { name: "Test connection" }));
-      await act(async () => {
-        if (change === "replacement") connectionStore.getState().connect(new FakeClient("connecting"));
-        else fake.emitStateChange("reconnecting");
-        response.resolve({ provider: "work", status: "success", message: "" });
-        await response.promise;
-      });
-      expect(onConnected).not.toHaveBeenCalled();
-      expect(screen.getByRole("button", { name: "Retry test" })).toBeTruthy();
-      await act(async () => {
-        connectionStore.getState().connect(fake);
-        fake.emitReady();
-        await credentialsStore.getState().fetch();
-      });
-      expect(screen.getByRole("button", { name: "Retry test" })).toBeTruthy();
-    },
-  );
-
-  test("a pending test connection is marked, not natively disabled, and keeps the focus it was clicked with", async () => {
-    const response = deferred<AuthTestResponse>();
-    const fake = connectFakeClient({
-      instances: [instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] })],
-      availableProviders: [],
-    });
-    fake.on("evener/auth/test", () => response.promise);
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Test connection" }));
-
-    // Pending is a mark, not a native disabled attribute. The click that
-    // started the test is the click that focused the button, and a native
-    // disabled control drops focus to <body> the moment it becomes disabled -
-    // the same hazard this row's other controls answer with aria-disabled.
-    const pendingButton = screen.getByRole("button", { name: "Testing connection…" });
-    expect(pendingButton.hasAttribute("disabled")).toBe(false);
-    expect(pendingButton.getAttribute("aria-disabled")).toBe("true");
-    expect(pendingButton).toBe(document.activeElement);
-    // ...and refused means refused: a click while the test is in flight runs
-    // nothing, so one test cannot be started on top of another.
-    await act(async () => fireEvent.click(pendingButton));
-    expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
-
-    await act(async () => {
-      response.resolve({ provider: "work", status: "success", message: "" });
-      await response.promise;
-    });
-    expect(onConnected).toHaveBeenCalledTimes(1);
-  });
-
-  test("a reconnect invalidates a pending OAuth start before the registry refresh", async () => {
-    const start = deferred<{
-      provider: string;
-      flowId: string;
-      userCode: string;
-      verificationUrl: string;
-      intervalSeconds: number;
-    }>();
-    const fake = connectFakeClient({
-      instances: [instance({ name: "work", providerId: "openai-codex", authModes: ["oauth"] })],
-      availableProviders: [],
-    });
-    fake.on("evener/auth/device/start", () => start.promise);
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Sign in" }));
+    );
     await act(async () => {
       fake.emitStateChange("reconnecting");
-      start.resolve({
-        provider: "work",
-        flowId: "old-flow",
-        userCode: "OLD",
-        verificationUrl: "https://login.example",
-        intervalSeconds: 5,
-      });
-      await start.promise;
-    });
-    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
-  });
-
-  test("a credential test result is discarded when the instance list changes underneath it", async () => {
-    const first = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
-    const changed = { ...first, baseUrl: "https://changed.example" };
-    const response = deferred<{ provider: string; status: string; message: string }>();
-    let listCalls = 0;
-    const fake = new FakeClient("ready");
-    fake.on("evener/instance/list", () => {
-      listCalls += 1;
-      return { instances: [listCalls === 1 ? first : changed], availableProviders: [] };
-    });
-    fake.on("evener/auth/test", () => response.promise);
-    connectionStore.getState().connect(fake);
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Test connection" }));
-
-    await act(async () => {
-      await credentialsStore.getState().fetch();
-    });
-    response.resolve({ provider: "work", status: "success", message: "ignored" });
-    await act(async () => {
-      await response.promise;
-    });
-
-    expect(onConnected).not.toHaveBeenCalled();
-    expect(
-      within(chooser).getByText("Provider configuration refreshed while testing. Test the connection again."),
-    ).toBeTruthy();
-    expect(within(chooser).getByRole("button", { name: "Retry test" })).toBeTruthy();
-  });
-
-  test("an identical instance refresh gives a pending test an explicit retry state", async () => {
-    const api = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
-    const firstTest = deferred<{ provider: string; status: string; message: string }>();
-    let testCalls = 0;
-    const fake = new FakeClient("ready");
-    fake.on("evener/instance/list", () => ({ instances: [{ ...api }], availableProviders: [] }));
-    fake.on("evener/auth/test", () => {
-      testCalls += 1;
-      return testCalls === 1 ? firstTest.promise : { provider: "work", status: "success", message: "ignored" };
-    });
-    connectionStore.getState().connect(fake);
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Test connection" }));
-
-    await act(async () => {
-      await credentialsStore.getState().fetch();
+      fake.on("evener/instance/list", () => ({
+        instances: [instance({ name: "recovered-provider", providerId: "anthropic", authModes: ["apiKey"] })],
+        availableProviders: [provider("anthropic", "Anthropic")],
+      }));
+      fake.emitReady();
+      old.resolve({ instances: [], availableProviders: [] });
+      await old.promise;
     });
     expect(
-      within(chooser).getByText("Provider configuration refreshed while testing. Test the connection again."),
+      view === "onboarding"
+        ? await screen.findByRole("button", { name: "Anthropic" })
+        : await screen.findByText("recovered-provider"),
     ).toBeTruthy();
-    firstTest.resolve({ provider: "work", status: "success", message: "ignored" });
-    await act(async () => {
-      await firstTest.promise;
-    });
-    expect(onConnected).not.toHaveBeenCalled();
+    expect(credentialsStore.getState().loading).toBe(false);
+  },
+);
 
-    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Retry test" }));
-    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
+test("a registry load failure can be retried without closing the dialog", async () => {
+  let attempts = 0;
+  const fake = new FakeClient("ready");
+  fake.on("evener/instance/list", () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("registry unavailable");
+    return { instances: [], availableProviders: [provider("anthropic", "Anthropic")] };
   });
+  connectionStore.getState().connect(fake);
+  const close = vi.fn();
+  render(<ConnectProviderDialog onClose={close} onConnected={() => {}} />);
 
-  test("a late OAuth start cannot replace a subsequently chosen API-key editor", async () => {
-    const both = instance({
-      name: "work",
-      providerId: "custom",
-      auth: "optional-bearer",
-      authModes: ["apiKey", "oauth"],
-    });
-    const start = deferred<{
-      provider: string;
-      flowId: string;
-      userCode: string;
-      verificationUrl: string;
-      intervalSeconds: number;
-    }>();
-    const fake = connectFakeClient({ instances: [both], availableProviders: [] });
-    fake.on("evener/auth/device/start", () => start.promise);
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-    const user = userEvent.setup();
-    await user.click(within(chooser).getByRole("button", { name: "Sign in" }));
-    await user.click(within(chooser).getByRole("button", { name: "Set API key" }));
-    await user.type(screen.getByLabelText("API key for work"), "unfinished-secret");
+  await screen.findByRole("alert");
+  await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
+  expect(attempts).toBe(2);
+  expect(close).not.toHaveBeenCalled();
+});
 
-    start.resolve({
-      provider: "work",
-      flowId: "late-device-flow",
-      userCode: "LATE-CODE",
-      verificationUrl: "https://verify.example",
-      intervalSeconds: 5,
-    });
-    await act(async () => {
-      await start.promise;
-    });
-
-    expect(screen.getByRole("dialog", { name: "Set API key for work" })).toBeTruthy();
-    expect(screen.getByLabelText("API key for work")).toHaveProperty("value", "unfinished-secret");
-    expect(screen.queryByText("LATE-CODE")).toBeNull();
+// The dialog is a CONTROLLER-scoped editor: every instance/auth mutation it
+// issues goes to the controller, so it must read the controller's listing --
+// never a remote host's. Component 07b keeps a remote host's listing in its
+// own store partition, which is what makes the mount-time fetch() here
+// harmless to the spawn form's remote view.
+test("mounting the dialog reads the controller's list and issues no proxied call", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("evener/instance/list", () => ({
+    instances: [instance({ name: "controller-only", providerId: "anthropic", activeSource: "store" })],
+    availableProviders: [provider("anthropic", "Anthropic")],
+  }));
+  fake.on("evener/host/request", () => {
+    throw new Error("the controller-scoped dialog must never route through the proxy");
   });
+  connectionStore.getState().connect(fake);
 
-  test("a late successful test cannot close a subsequently chosen API-key editor", async () => {
-    const api = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
-    const response = deferred<{ provider: string; status: string; message: string }>();
-    const fake = connectFakeClient({ instances: [api], availableProviders: [] });
-    fake.on("evener/auth/test", () => response.promise);
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-    const user = userEvent.setup();
-    await user.click(within(chooser).getByRole("button", { name: "Test connection" }));
-    await user.click(within(chooser).getByRole("button", { name: "Set API key" }));
-    await user.type(screen.getByLabelText("API key for work"), "unfinished-secret");
+  render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
 
-    response.resolve({ provider: "work", status: "success", message: "ignored" });
-    await act(async () => {
-      await response.promise;
-    });
-
-    expect(onConnected).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog", { name: "Set API key for work" })).toBeTruthy();
-    expect(screen.getByLabelText("API key for work")).toHaveProperty("value", "unfinished-secret");
-  });
-
-  test("an OAuth start that finishes after unmount cannot open a browser or complete the flow", async () => {
-    const codex = instance({
-      name: "personal",
-      providerId: "openai-codex",
-      auth: "oauth-openai-codex",
-      authModes: ["oauth"],
-    });
-    const start = deferred<{
-      provider: string;
-      flowId: string;
-      userCode: string;
-      verificationUrl: string;
-      intervalSeconds: number;
-      fallback: boolean;
-    }>();
-    const fake = connectFakeClient({ instances: [codex], availableProviders: [] });
-    fake.on("evener/auth/device/start", () => start.promise);
-    fake.on("evener/auth/login/start", () => ({
-      provider: "personal",
-      flowId: "redirect-flow",
-      url: "https://auth.example/start",
-    }));
-    const anchors = captureNewTabs();
-    const onConnected = vi.fn();
-    const rendered = render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-    await userEvent.setup().click(within(chooser).getByRole("button", { name: "Sign in" }));
-    rendered.unmount();
-
-    start.resolve({
-      provider: "personal",
-      flowId: "device-flow",
-      userCode: "unused",
-      verificationUrl: "https://verify.example",
-      intervalSeconds: 5,
-      fallback: true,
-    });
-    await act(async () => {
-      await start.promise;
-    });
-
-    // The dialog was dismissed before its device start resolved into the
-    // redirect fallback, so what it resolved with must not be acted on.
-    expect(anchors).toHaveLength(0);
-    expect(onConnected).not.toHaveBeenCalled();
-  });
-
-  test("an API-key editor closes if its registry instance disappears", async () => {
-    const api = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
-    let listCalls = 0;
-    const fake = new FakeClient("ready");
-    fake.on("evener/instance/list", () => {
-      listCalls += 1;
-      return { instances: listCalls === 1 ? [api] : [], availableProviders: [] };
-    });
-    connectionStore.getState().connect(fake);
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Set API key" }));
-    expect(screen.getByRole("dialog", { name: "Set API key for work" })).toBeTruthy();
-
-    await act(async () => {
-      await credentialsStore.getState().fetch();
-    });
-
-    expect(screen.queryByRole("dialog", { name: "Set API key for work" })).toBeNull();
-    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
-  });
-
-  test("saving a credential JSON still requires an explicit successful credential test", async () => {
-    const vertex = instance({
-      name: "vertex",
-      providerId: "google-vertex",
-      auth: "gcp-adc",
-      authModes: ["adc", "credentialJson"],
-    });
-    const json = '{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}';
-    let saved = false;
-    const fake = new FakeClient("ready");
-    fake.on("evener/instance/list", () => ({
-      instances: [saved ? { ...vertex, activeSource: "store", hasStoredFile: true } : vertex],
-      availableProviders: [],
-    }));
-    connectionStore.getState().connect(fake);
-    fake.on("evener/auth/credentialJson/set", (params) => {
-      expect(params).toEqual({ provider: "vertex", value: json, originClientId: "test-tab" });
-      saved = true;
-      return {
-        provider: "vertex",
-        supported: true,
-        signedIn: true,
-        activeSource: "store",
-        authModes: ["adc", "credentialJson"],
-        hasStoredOAuth: false,
-        hasStoredFile: true,
-      };
-    });
-    fake.on("evener/auth/test", (params) => {
-      expect(params).toEqual({ provider: "vertex" });
-      return { provider: "vertex", status: "success", message: "untrusted provider message" };
-    });
-    const onConnected = vi.fn();
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={onConnected} />);
-    const chooser = await screen.findByRole("dialog", { name: "Connect provider" });
-    const user = userEvent.setup();
-
-    expect(within(chooser).queryByRole("button", { name: "Set API key" })).toBeNull();
-    await user.click(within(chooser).getByRole("button", { name: "Set credential JSON" }));
-    expect(screen.getAllByRole("dialog")).toHaveLength(1);
-    expect(screen.getByRole("dialog", { name: "Set Google credential JSON for vertex" })).toBeTruthy();
-
-    await user.click(screen.getByLabelText("Credential JSON for vertex"));
-    await user.paste(json);
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    const returnedChooser = await screen.findByRole("dialog", { name: "Connect provider" });
-    expect(within(returnedChooser).getByText("Configured via stored credential JSON")).toBeTruthy();
-    expect(within(returnedChooser).getByRole("button", { name: "Replace credential JSON" })).toBeTruthy();
-    expect(onConnected).not.toHaveBeenCalled();
-
-    await user.click(within(returnedChooser).getByRole("button", { name: "Test connection" }));
-    await vi.waitFor(() => expect(onConnected).toHaveBeenCalledTimes(1));
-  });
-
-  test("a credential-JSON editor closes if its instance stops offering the mode", async () => {
-    const vertex = instance({
-      name: "vertex",
-      providerId: "google-vertex",
-      auth: "gcp-adc",
-      authModes: ["adc", "credentialJson"],
-    });
-    let listCalls = 0;
-    const fake = new FakeClient("ready");
-    fake.on("evener/instance/list", () => {
-      listCalls += 1;
-      return { instances: [listCalls === 1 ? vertex : { ...vertex, authModes: ["adc"] }], availableProviders: [] };
-    });
-    connectionStore.getState().connect(fake);
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Set credential JSON" }));
-    expect(screen.getByRole("dialog", { name: "Set Google credential JSON for vertex" })).toBeTruthy();
-
-    await act(async () => {
-      await credentialsStore.getState().fetch();
-    });
-
-    expect(screen.queryByRole("dialog", { name: "Set Google credential JSON for vertex" })).toBeNull();
-    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Set credential JSON" })).toBeNull();
-  });
-
-  test("a removed credential-JSON instance does not reopen its editor when restored", async () => {
-    const vertex = instance({
-      name: "vertex",
-      providerId: "google-vertex",
-      auth: "gcp-adc",
-      authModes: ["adc", "credentialJson"],
-    });
-    connectFakeClient({ instances: [vertex], availableProviders: [] });
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Set credential JSON" }));
-    expect(screen.getByRole("dialog", { name: "Set Google credential JSON for vertex" })).toBeTruthy();
-    await act(async () => credentialsStore.setState({ instances: [] }));
-    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
-    await act(async () => credentialsStore.setState({ instances: [vertex] }));
-    expect(screen.getByRole("dialog", { name: "Connect provider" })).toBeTruthy();
-    expect(screen.queryByRole("dialog", { name: "Set Google credential JSON for vertex" })).toBeNull();
-  });
-
-  // The dialog is a CONTROLLER-scoped editor: every instance/auth mutation it
-  // issues goes to the controller, so it must read the controller's listing --
-  // never a remote host's. Component 07b keeps a remote host's listing in its
-  // own store partition, which is what makes the mount-time fetch() here
-  // harmless to the spawn form's remote view.
-  test("mounting the dialog reads the controller's list and issues no proxied call", async () => {
-    const controller = instance({ name: "controller-only", providerId: "anthropic", activeSource: "store" });
-    const fake = connectFakeClient({ instances: [controller], availableProviders: [] });
-    fake.on("evener/host/request", () => {
-      throw new Error("the controller-scoped dialog must never route through the proxy");
-    });
-
-    render(<ConnectProviderDialog onClose={() => {}} onConnected={() => {}} />);
-
-    expect(await screen.findByText("controller-only")).toBeTruthy();
-    expect(fake.calls.some((call) => call.method === "evener/host/request")).toBe(false);
-    expect(fake.calls.filter((call) => call.method === "evener/instance/list")).toHaveLength(1);
-  });
+  expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
+  expect(fake.calls.some((call) => call.method === "evener/host/request")).toBe(false);
+  expect(fake.calls.filter((call) => call.method === "evener/instance/list")).toHaveLength(1);
 });

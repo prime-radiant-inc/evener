@@ -38,6 +38,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { jobStatusDisplay } from "../../chrome/activityFormat";
 import { EntityRef } from "../EntityRef";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
@@ -212,16 +213,24 @@ function summarizeCreate(raw: JsonObject, item: ItemModel): string {
   if (isTerminalCatchup(raw)) {
     const source = strField(raw, "source") ?? "";
     const status = strField(raw, "status");
+    const reason = strField(raw, "reason");
     // The terminal outcome is the whole reason the condition can never
     // match, so the one-liner names it ("Watch on job_a1b2 ended — job
     // completed before it could fire"). A catch-up that FIRED matched on
     // the terminal scan instead — same shape, opposite outcome.
     if (boolField(raw, "fired")) {
-      return status ? `Watch on ${source} fired on terminal scan — ${status}` : `Watch on ${source} fired`;
+      return status
+        ? `Watch on ${source} fired on terminal scan — ${jobStatusDisplay(status, reason)}`
+        : `Watch on ${source} fired`;
     }
-    return status
-      ? `Watch on ${source} ended — job ${status} before it could fire`
-      : `Watch on ${source} ended — job ended before it could fire`;
+    if (status) {
+      // Machine statuses keep the "job <status>" subject ("job completed");
+      // the command-outcome display words already name the subject.
+      const display = jobStatusDisplay(status, reason);
+      const subject = display === status ? `job ${status}` : display;
+      return `Watch on ${source} ended — ${subject} before it could fire`;
+    }
+    return `Watch on ${source} ended — job ended before it could fire`;
   }
   const timer = timerSpec(raw);
   if (timer) {
@@ -626,7 +635,9 @@ function WatchListRow({ row }: { row: WatchRow }) {
     return (
       <div className={CLASS.rowStatic} data-testid="job-watch-row">
         <Chip>{chip}</Chip>
-        <span className={CLASS.rowId} title={row.id}>
+        {/* No native title beside the id: the EntityRef's hover card is the
+         * one floating surface on it, and a title would fire both at once. */}
+        <span className={CLASS.rowId}>
           <EntityRef id={row.id} />
         </span>
         <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>
@@ -645,8 +656,8 @@ function WatchListRow({ row }: { row: WatchRow }) {
         }}
       >
         <Chip>{chip}</Chip>
-        <span className={CLASS.rowId} title={row.id}>
-          {/* The surrounding button is the disclosure, whose expanded detail carries the same watch information as the card. Keep this nested trigger out of the tab order and let its clicks reach that control. */}
+        {/* The surrounding button is the disclosure, whose expanded detail carries the same watch information as the card. Keep this nested trigger out of the tab order and let its clicks reach that control. No native title either: the hover card is the one floating surface on the id. */}
+        <span className={CLASS.rowId}>
           <EntityRef id={row.id} embedded />
         </span>
         <span className={CLASS.rowCondition}>{rowConditionPhrase(row)}</span>

@@ -2,6 +2,7 @@
 import type { ItemModel } from "@evener/appwire-client";
 import { clip, parseArgs, parseJSONObject, str, trailingBracketFooter } from "@evener/appwire-client";
 import { CopyButton } from "../../../../widgets";
+import { jobStatusDisplay } from "../../chrome/activityFormat";
 import { EntityRef } from "../EntityRef";
 import { UserMessageView } from "../messages/UserMessageItem";
 import type { ToolRenderProps } from "../toolRenderers";
@@ -65,9 +66,13 @@ function JobListBody({ item, live }: ToolRenderProps) {
         state.items.map((job) => {
           const identity = textField(job, "id") ?? textField(job, "job_id");
           if (identity === undefined) return null;
-          const fields = [textField(job, "type"), textField(job, "status"), textField(job, "phase")].filter(
-            (field): field is string => field !== undefined,
-          );
+          const rawStatus = textField(job, "status");
+          const reason = textField(job, "reason");
+          const fields = [
+            textField(job, "type"),
+            rawStatus === undefined ? undefined : jobStatusDisplay(rawStatus, reason),
+            textField(job, "phase"),
+          ].filter((field): field is string => field !== undefined);
           const description = textField(job, "description");
           return (
             <div key={identity} data-testid="job-list-row">
@@ -106,7 +111,8 @@ registerToolRenderer({
     const parsedOutput = parseJSONObject(item.output);
     const jobId = jobControlTarget(item);
     const status = parsedOutput ? str(parsedOutput, "status") : undefined;
-    return status ? `Checked ${jobId} · ${status}` : `Checked ${jobId}`;
+    const reason = parsedOutput ? str(parsedOutput, "reason") : undefined;
+    return status ? `Checked ${jobId} · ${jobStatusDisplay(status, reason)}` : `Checked ${jobId}`;
   },
   body: DelegateStatusBody,
 });

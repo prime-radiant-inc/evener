@@ -118,6 +118,28 @@ func TestSidecarJSONOmitsEmptyOptionalFields(t *testing.T) {
 	}
 }
 
+// TestSidecarBranchOrName pins the single resolution rule for a lane's git
+// branch: the recorded Branch when set, the Name for a legacy sidecar that
+// records none. Every branch-acting consumer goes through this method, never
+// through the name, so a lane whose branch differs from its directory name (a
+// delegate lane created with an explicit branch) is judged and deleted by the
+// branch git actually holds.
+func TestSidecarBranchOrName(t *testing.T) {
+	cases := []struct {
+		branch, name, want string
+	}{
+		{"feat/mnemonic", "lane-dir", "feat/mnemonic"},
+		{"", "dlg_01H", "dlg_01H"},
+		{"same", "same", "same"},
+	}
+	for _, c := range cases {
+		sc := Sidecar{Branch: c.branch, Name: c.name}
+		if got := sc.BranchOrName(); got != c.want {
+			t.Errorf("BranchOrName() with branch %q name %q = %q, want %q", c.branch, c.name, got, c.want)
+		}
+	}
+}
+
 func TestWriteSidecarExclOnFilesystem(t *testing.T) {
 	dir := t.TempDir()
 	sc := testSidecar()

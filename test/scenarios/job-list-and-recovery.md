@@ -44,7 +44,7 @@ already covered by subagent-list-and-output.md.
    >    DLG_LIST_DONE and finish." Capture the delegate_id (D4).
    > 5. Call job_list with type ["shell"] and report the job_ids.
    > 6. Call job_list with status ["running"] and report the job_ids.
-   > 7. Call job_list with status ["failed", "completed"] and report
+   > 7. Call job_list with status ["command_exited_nonzero", "completed"] and report
    >    the job_ids and statuses.
    > 8. Call job_list with no filters and report the shell job_ids IN ORDER;
    >    inspect the stable delegate separately with `subagent-list-and-output.md`.
@@ -77,8 +77,8 @@ Turn 1:
     not a shell row. J1 and J2 may be terminal by
     this point — the 2s sleep vs ~1s between steps makes this timing-
     soft; accept either running or terminal for J1/J2 here.
-  - step 7 (`status=["failed","completed"]`): J1 with `status`
-    `"failed"` (reason `exit_nonzero`, `exit_code` 7) and J2 with
+  - step 7 (`status=["command_exited_nonzero","completed"]`): J1 with `status`
+    `"command_exited_nonzero"` (reason `exit_nonzero`, `exit_code` 7) and J2 with
     `"completed"` — multi-value filters OR together. D4 is not a shell row.
   - step 9: after the confirmed stop, `status=["cancelled"]` returns
     exactly J3.
@@ -136,8 +136,8 @@ Turn 2:
 
 ## Cleanup
 
-- All jobs are terminal after step 9 / turn 2 (J3 stopped, the rest
-  completed or failed). Shut down the session; `rm -rf "$tmpdir"`.
+- All jobs are terminal after step 9 / turn 2 (J3 stopped, J2 completed, J1
+  `command_exited_nonzero`). Shut down the session; `rm -rf "$tmpdir"`.
 
 ## Sharp edges
 

@@ -271,9 +271,9 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 		t.Fatalf("override Locate = %#v, %v", overridePaths, err)
 	}
 	trace.Paths = append(trace.Paths, overridePaths)
-	direct, err := locateInBucket(fixture.directBase, nil, selector{projectID: fixture.directHash, sid: fixture.rootSID})
+	direct, err := Locate(fixture.directBase, "proj:"+fixture.directHash+":"+fixture.rootSID)
 	if err != nil || direct.ProjectID != fixture.directHash {
-		t.Fatalf("direct locateInBucket fallback = %#v, %v", direct, err)
+		t.Fatalf("direct named-bucket locate = %#v, %v", direct, err)
 	}
 	trace.Paths = append(trace.Paths, direct)
 

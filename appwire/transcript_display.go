@@ -134,6 +134,19 @@ type TranscriptDisplayConflictData struct {
 	Current         TranscriptDisplayDefault `json:"current"`
 }
 
+// TranscriptDisplayPostApplyData is the WireError.Data payload for
+// ErrorTranscriptDisplayPostApply: the patch APPLIED (Applied carries the
+// canonical applied revision and config) but a follow-up durable step
+// failed. Clients should reconcile from Applied instead of treating the
+// write as rejected - the same rule KeybindingsPostRenameData carries for
+// keybindings, shaped like TranscriptDisplayConflictData above since both
+// name the layout separately from the canonical value.
+type TranscriptDisplayPostApplyData struct {
+	EvenerErrorInfo ErrorInfo                `json:"evenerErrorInfo"`
+	Layout          TranscriptViewportClass  `json:"layout"`
+	Applied         TranscriptDisplayDefault `json:"applied"`
+}
+
 const transcriptDisplayConfigVersion = 1
 
 func TranscriptDisplayShippedDefaults() TranscriptDisplayDefaults {

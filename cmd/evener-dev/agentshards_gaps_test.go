@@ -34,6 +34,42 @@ func TestRunAgentShardsBadCount(t *testing.T) {
 	}
 }
 
+// TestEnvNonNegativeInt pins the parse AGENT_SHARD_CONCURRENCY uses: zero is a
+// legitimate value (it means "no limit"), unlike the positive-only budgets, and
+// a malformed or negative value is refused by name.
+func TestEnvNonNegativeInt(t *testing.T) {
+	t.Run("unset takes the default", func(t *testing.T) {
+		t.Setenv("EVENER_TEST_CONCURRENCY", "")
+		if got, err := envNonNegativeInt("EVENER_TEST_CONCURRENCY", 5); err != nil || got != 5 {
+			t.Fatalf("unset = (%d, %v), want (5, nil)", got, err)
+		}
+	})
+	t.Run("zero is allowed", func(t *testing.T) {
+		t.Setenv("EVENER_TEST_CONCURRENCY", "0")
+		if got, err := envNonNegativeInt("EVENER_TEST_CONCURRENCY", 5); err != nil || got != 0 {
+			t.Fatalf("0 = (%d, %v), want (0, nil)", got, err)
+		}
+	})
+	t.Run("positive value wins", func(t *testing.T) {
+		t.Setenv("EVENER_TEST_CONCURRENCY", "3")
+		if got, err := envNonNegativeInt("EVENER_TEST_CONCURRENCY", 5); err != nil || got != 3 {
+			t.Fatalf("3 = (%d, %v), want (3, nil)", got, err)
+		}
+	})
+	for _, bad := range []string{"-1", "banana"} {
+		t.Run("rejects "+bad, func(t *testing.T) {
+			t.Setenv("EVENER_TEST_CONCURRENCY", bad)
+			got, err := envNonNegativeInt("EVENER_TEST_CONCURRENCY", 5)
+			if err == nil {
+				t.Fatalf("%q accepted as %d", bad, got)
+			}
+			if !strings.Contains(err.Error(), "EVENER_TEST_CONCURRENCY") {
+				t.Fatalf("error %q does not name the variable", err)
+			}
+		})
+	}
+}
+
 // TestRunAgentShardsBadParallel covers the envPositiveInt error path for
 // AGENT_SHARD_PARALLEL in runAgentShards.
 func TestRunAgentShardsBadParallel(t *testing.T) {
@@ -178,7 +214,7 @@ func TestRunShardsScratchError(t *testing.T) {
 	isolateToolchainEnv(t)
 	var stdout, stderr bytes.Buffer
 	cfg := shardsConfig{
-		agentDir: fixtureModule(t),
+		label: "agent", envPrefix: "AGENT", pkgDir: fixtureModule(t),
 		count:    1,
 		parallel: 1,
 		stdout:   &stdout,

@@ -6,6 +6,7 @@ import { toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
 import { TranscriptImages } from "./TranscriptImages";
 import {
 	isCriticalNotice,
+	questionOptionKey,
 	steeringNoticeLabel,
 	type TimelineRow,
 } from "./timeline";
@@ -183,8 +184,9 @@ export function TimelineItem({
 						<View key={question.key} style={{ gap: 8 }}>
 							<Copy>{question.header}</Copy>
 							<Copy>{question.question}</Copy>
-							{question.options.map((option) => (
-								<Copy key={`${question.key}:${option.label}`}>
+							{question.options.map((option, index) => (
+								// biome-ignore lint/suspicious/noArrayIndexKey: an ask's options render in the order the agent offered them; their bounded labels can cut to the same string past the display bound, so position is their only collision-free identity.
+								<Copy key={questionOptionKey(question.key, index)}>
 									{option.label}
 									{option.recommended ? " (recommended)" : ""}
 									{option.detail ? ` — ${option.detail}` : ""}

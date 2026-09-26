@@ -12,7 +12,8 @@
         "apiKey"
       ],
       "hasStoredOAuth": false,
-      "envVar": "OPENAI_API_KEY"
+      "envVar": "OPENAI_API_KEY",
+      "configRevision": "4eb4fba5ab90f3bd9e54958699174b4736973081c8a2927a3ad2b11ee4ff0bf8"
     }
   },
   {
@@ -28,7 +29,8 @@
         "apiKey"
       ],
       "hasStoredOAuth": false,
-      "hasStoredFile": true
+      "hasStoredFile": true,
+      "configRevision": "db2f38c4113eafceb72af84b888b11b12cc49c88e4a4b2b9484ae3d5bab3e51e"
     }
   },
   {
@@ -43,7 +45,8 @@
       "authModes": [
         "apiKey"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "ce81db3cfdd6674d8422369fe24a3f509b7e842dbb813532d8b905ea124ca232"
     }
   },
   {
@@ -59,7 +62,8 @@
         "none",
         "apiKey"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "8dba2ed78ffbe0b86ff0005991544ed4f0ae1bf9ba4aa2436f5a6a2dbd5fac0d"
     }
   },
   {
@@ -76,7 +80,8 @@
       ],
       "hasStoredOAuth": true,
       "email": "bot@example.com",
-      "storedEmail": "bot@example.com"
+      "storedEmail": "bot@example.com",
+      "configRevision": "b78c744404251668d62f1ba300c7f42525af6e41e6082cd48b84cd21527aaf38"
     }
   },
   {
@@ -94,7 +99,8 @@
       "hasStoredOAuth": true,
       "email": "bot@example.com",
       "storedEmail": "bot@example.com",
-      "needsRefresh": true
+      "needsRefresh": true,
+      "configRevision": "b78c744404251668d62f1ba300c7f42525af6e41e6082cd48b84cd21527aaf38"
     }
   },
   {
@@ -112,7 +118,8 @@
       "hasStoredOAuth": true,
       "email": "bot@example.com",
       "storedEmail": "bot@example.com",
-      "needsLogin": true
+      "needsLogin": true,
+      "configRevision": "b78c744404251668d62f1ba300c7f42525af6e41e6082cd48b84cd21527aaf38"
     }
   },
   {
@@ -127,7 +134,8 @@
       "authModes": [
         "oauth"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "f6b6a30675b1c1ab35f46162c86e5cb24d2ecd68ee28a79fe30bc1c3622c351d"
     }
   },
   {
@@ -143,7 +151,8 @@
         "adc",
         "credentialJson"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "7a620b0fc950902a0f7945eaf285ee882b0bd93d6c8d291982ca308f3fc47989"
     }
   },
   {
@@ -160,7 +169,8 @@
         "credentialJson"
       ],
       "hasStoredOAuth": false,
-      "hasStoredFile": true
+      "hasStoredFile": true,
+      "configRevision": "94ba48477168d7433181ad6ba62a01bd2b15fb464d35204c91bbb84e31265c1f"
     }
   },
   {
@@ -175,7 +185,8 @@
       "authModes": [
         "none"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "f24d9f936df6a5706f42e4544b44ef55a46649205d7313b8d2a86f1871a4e013"
     }
   },
   {
@@ -190,7 +201,8 @@
       "authModes": [
         "apiKey"
       ],
-      "hasStoredOAuth": false
+      "hasStoredOAuth": false,
+      "configRevision": "5d12d64cb89ee2fa00af0d5624f198149e30dc4466f39a2585e28d5686258210"
     }
   },
   {
@@ -219,7 +231,8 @@
         "authModes": [
           "oauth"
         ],
-        "hasStoredOAuth": false
+        "hasStoredOAuth": false,
+        "configRevision": "f6b6a30675b1c1ab35f46162c86e5cb24d2ecd68ee28a79fe30bc1c3622c351d"
       }
     }
   },
@@ -237,7 +250,8 @@
         "authModes": [
           "apiKey"
         ],
-        "hasStoredOAuth": false
+        "hasStoredOAuth": false,
+        "configRevision": "5d12d64cb89ee2fa00af0d5624f198149e30dc4466f39a2585e28d5686258210"
       }
     }
   },
@@ -255,7 +269,8 @@
         "authModes": [
           "oauth"
         ],
-        "hasStoredOAuth": false
+        "hasStoredOAuth": false,
+        "configRevision": "f6b6a30675b1c1ab35f46162c86e5cb24d2ecd68ee28a79fe30bc1c3622c351d"
       }
     }
   },
@@ -281,6 +296,7 @@
         "activeSource": "store",
         "hasStoredFile": true,
         "hasStoredOAuth": false,
+        "configRevision": "db2f38c4113eafceb72af84b888b11b12cc49c88e4a4b2b9484ae3d5bab3e51e",
         "credentialRequired": true,
         "models": [
           {
@@ -296,6 +312,9 @@
             "id": "claude-haiku-4-5-20251001"
           },
           {
+            "id": "claude-mythos-5"
+          },
+          {
             "id": "claude-mythos-preview"
           },
           {
@@ -303,6 +322,12 @@
           },
           {
             "id": "claude-opus-4-5-20251101"
+          },
+          {
+            "id": "claude-opus-4-5-20251101[1m]"
+          },
+          {
+            "id": "claude-opus-4-5[1m]"
           },
           {
             "id": "claude-opus-4-6"
@@ -321,6 +346,12 @@
           },
           {
             "id": "claude-sonnet-4-5-20250929"
+          },
+          {
+            "id": "claude-sonnet-4-5-20250929[1m]"
+          },
+          {
+            "id": "claude-sonnet-4-5[1m]"
           },
           {
             "id": "claude-sonnet-4-6"
@@ -346,8 +377,21 @@
         "activeSource": "oauth",
         "hasStoredOAuth": true,
         "storedEmail": "bot@example.com",
+        "configRevision": "b78c744404251668d62f1ba300c7f42525af6e41e6082cd48b84cd21527aaf38",
         "credentialRequired": true,
         "models": [
+          {
+            "id": "gpt-5.6"
+          },
+          {
+            "id": "gpt-5.6-luna"
+          },
+          {
+            "id": "gpt-5.6-sol"
+          },
+          {
+            "id": "gpt-5.6-terra"
+          },
           {
             "id": "gpt-6-astra"
           }
@@ -369,6 +413,8 @@
         "activeSource": "env:OPENAI_API_KEY",
         "hasStoredOAuth": false,
         "envVar": "OPENAI_API_KEY",
+        "renameLeavesRow": true,
+        "configRevision": "4eb4fba5ab90f3bd9e54958699174b4736973081c8a2927a3ad2b11ee4ff0bf8",
         "credentialRequired": true,
         "models": [
           {
@@ -527,6 +573,8 @@
         ],
         "activeSource": "none",
         "hasStoredOAuth": false,
+        "renameLeavesRow": true,
+        "configRevision": "b4b4fc7e1978ca3698246707d66200348f5fb3982cd5f381ac487e9d0f1b42d9",
         "credentialRequired": false
       },
       {
@@ -545,6 +593,7 @@
         ],
         "activeSource": "api_key",
         "hasStoredOAuth": false,
+        "configRevision": "394e3388b5947af383ae0f20c8d66e5e2c29b63787075350c64a7eb3c3e5e319",
         "credentialRequired": true,
         "models": [
           {
@@ -560,6 +609,9 @@
             "id": "claude-haiku-4-5-20251001"
           },
           {
+            "id": "claude-mythos-5"
+          },
+          {
             "id": "claude-mythos-preview"
           },
           {
@@ -567,6 +619,12 @@
           },
           {
             "id": "claude-opus-4-5-20251101"
+          },
+          {
+            "id": "claude-opus-4-5-20251101[1m]"
+          },
+          {
+            "id": "claude-opus-4-5[1m]"
           },
           {
             "id": "claude-opus-4-6"
@@ -585,6 +643,12 @@
           },
           {
             "id": "claude-sonnet-4-5-20250929"
+          },
+          {
+            "id": "claude-sonnet-4-5-20250929[1m]"
+          },
+          {
+            "id": "claude-sonnet-4-5[1m]"
           },
           {
             "id": "claude-sonnet-4-6"
@@ -610,6 +674,7 @@
         ],
         "activeSource": "none",
         "hasStoredOAuth": false,
+        "configRevision": "aa532e2a6d3665df0f8b94876a655084d60b3f1710dbd932e93036b1584ab9d6",
         "credentialRequired": false
       },
       {
@@ -630,6 +695,7 @@
         ],
         "activeSource": "credential_headers",
         "hasStoredOAuth": false,
+        "configRevision": "aab2295a2bc17a075ffd7f1710aecfe5981337cfe5f7ce8fff9931ba257cc974",
         "credentialRequired": false
       },
       {
@@ -649,6 +715,7 @@
         ],
         "activeSource": "none",
         "hasStoredOAuth": false,
+        "configRevision": "43353326cba03398d518e458b950b00ac6055c57f6d02bac542e4072147e3b2f",
         "credentialRequired": true,
         "warnings": [
           "no credential"
@@ -667,6 +734,9 @@
             "id": "claude-haiku-4-5-20251001"
           },
           {
+            "id": "claude-mythos-5"
+          },
+          {
             "id": "claude-mythos-preview"
           },
           {
@@ -674,6 +744,12 @@
           },
           {
             "id": "claude-opus-4-5-20251101"
+          },
+          {
+            "id": "claude-opus-4-5-20251101[1m]"
+          },
+          {
+            "id": "claude-opus-4-5[1m]"
           },
           {
             "id": "claude-opus-4-6"
@@ -692,6 +768,12 @@
           },
           {
             "id": "claude-sonnet-4-5-20250929"
+          },
+          {
+            "id": "claude-sonnet-4-5-20250929[1m]"
+          },
+          {
+            "id": "claude-sonnet-4-5[1m]"
           },
           {
             "id": "claude-sonnet-4-6"
@@ -718,6 +800,7 @@
         ],
         "activeSource": "adc",
         "hasStoredOAuth": false,
+        "configRevision": "7a620b0fc950902a0f7945eaf285ee882b0bd93d6c8d291982ca308f3fc47989",
         "credentialRequired": true
       }
     ]

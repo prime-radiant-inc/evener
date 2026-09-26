@@ -15,17 +15,27 @@
 // which stay content-driven because structured markup can't false-positive
 // the way a prose pattern could (see parseSteeringNotifications below).
 
+import { jobStatusDisplay } from "@evener/appwire-client";
+
 export type NotificationTone = "success" | "warning" | "error" | "neutral";
 
 export interface ParsedNotification {
-  type: string; // delegate | job | watch | watch-send | observer-callback
+  type: "delegate" | "job" | "watch" | "watch-send" | "observer-callback";
   title: string;
   tone: NotificationTone;
-  secondary: string; // job_type · exit N · reason (quiet plumbing stays in raw)
+  // The head line's label, assembled by notificationSecondary below:
+  // intent (preferred) or description, then job type; warning heads may
+  // append the exit code and reason, and an error head shows the intent,
+  // or the description gloss when an explicit empty intent marks the
+  // block post-split.
+  secondary: string;
   jobId?: string;
   jobType?: string;
   delegateId?: string;
   watchId?: string;
+  // The caller's stated one-line rationale for the run (the shell tool call's
+  // `intent` argument, carried on the wire as the block's intent attribute).
+  intent?: string;
   description?: string;
   status?: string;
   reason?: string;
@@ -102,7 +112,15 @@ function analyzeJobNotification(
   const exitCode = optionalSignedInteger(attrs.exit_code);
 
   let disposition: JobDisposition = "unknown";
-  if (status === "failed" || status === "error" || status === "exhausted" || status.includes("fail")) {
+  if (
+    // status.includes("fail") covers failed and every *_failed machinery
+    // reason; the command-outcome statuses carry no "fail" substring.
+    status === "command_exited_nonzero" ||
+    status === "command_killed" ||
+    status === "error" ||
+    status === "exhausted" ||
+    status.includes("fail")
+  ) {
     disposition = "failure";
   } else if (status === "cancelled") {
     disposition = "cancelled";
@@ -274,6 +292,10 @@ function notificationTone(attrs: Record<string, string>, communicate: Communicat
   if (
     outerStatus.includes("fail") ||
     outerEvent.includes("fail") ||
+    outerStatus === "command_exited_nonzero" ||
+    outerEvent === "command_exited_nonzero" ||
+    outerStatus === "command_killed" ||
+    outerEvent === "command_killed" ||
     outerStatus === "error" ||
     outerEvent === "error" ||
     outerStatus === "exhausted" ||
@@ -411,6 +433,44 @@ function titleForJobNotification(attrs: Record<string, string>, type: string, pr
   }
   const status = (attrs.status || attrs.event || "notification").trim();
   if (!status) return "Job notification";
+  return terminalJobTitle(status, attrs.reason ?? "", optionalSignedInteger(attrs.exit_code));
+}
+
+// terminalJobTitle names a terminal job frame, keeping the three failure
+// vocabularies apart: "Command failed" / "Command killed" are the supervised
+// command's outcome (the daemon's command_exited_nonzero / command_killed
+// statuses — the job ran the command fine; the COMMAND is what failed), and
+// "Job failed" is reserved for the job system's own failures. Pre-split
+// blocks (status="failed" carrying a command-outcome reason) fall back on
+// the reason so durable history renders under the same words, and a
+// completed frame with a nonzero exit is the command's failure too. The
+// compared literals contain none of the four characters escapeNotificationText
+// escapes, so the raw attribute value compares directly — no entity a
+// producer could emit decodes into a literal.
+function terminalJobTitle(status: string, reason: string, exitCode?: number): string {
+  // The shared display helper owns every command-outcome word — the modern
+  // statuses and the legacy reason shapes — so the parser and every display
+  // surface stay one vocabulary.
+  const display = jobStatusDisplay(status, reason);
+  if (display !== status) return display;
+  // The glyph that tones this frame error sits in an aria-hidden seat, so
+  // the title is the only failure text a screen reader reaches — a real
+  // nonzero exit must still name the command's failure when the status
+  // word has no vocabulary of its own ("completed", or an unrecognized
+  // status). -1 is the signalled-not-exited sentinel, and failed/stopped/
+  // cancelled/exhausted are the job system's own words — a wait failure
+  // carries the underlying 127 — so those keep their status titles.
+  if (exitCode !== undefined && exitCode !== 0 && exitCode !== -1) {
+    switch (status) {
+      case "failed":
+      case "stopped":
+      case "cancelled":
+      case "exhausted":
+        break;
+      default:
+        return "Command failed";
+    }
+  }
   return `Job ${status}`;
 }
 
@@ -470,6 +530,7 @@ function notificationSecondary(
   attrs: Record<string, string>,
   tone: NotificationTone,
   description: string,
+  intent: string,
   analysis: JobNotificationAnalysis,
   notificationType?: string,
   prose?: string,
@@ -490,15 +551,33 @@ function notificationSecondary(
     // synthesized trigger), with the card prose carrying the full sentence.
     return timerSecondaryFromProse(reason, prose) ?? reason;
   }
+  // A failed job's head line is "<title> <intent>": the caller's stated
+  // rationale for the run. The exit code and reason live in the expanded
+  // card's metadata. The description attr earns a place on the error head
+  // only when an explicit empty intent marks the block post-split (the
+  // producer now always stamps intent, so that description is a
+  // producer-written gloss, never the command). A block with no intent
+  // attribute at all is pre-split history, whose description may BE the
+  // raw command (the producer's old display-label fallback,
+  // agent/job_notify.go) — a shape the parser cannot tell from a real
+  // gloss, so those show nothing rather than risk the command.
+  if (tone === "error") {
+    if (intent) return intent;
+    return attrs.intent !== undefined ? description : "";
+  }
   const bits: string[] = [];
   const type = (attrs.job_type ?? "").trim();
-  if (description) bits.push(description);
+  if (intent) bits.push(intent);
+  else if (description) bits.push(description);
   else if (type && type !== "job") bits.push(type);
+  // The exit/reason bits only ever join a WARNING head now (a stopped job's
+  // reason, a failed watch-delivery diagnostic): a plain failure tones error
+  // and returns above.
   if (analysis.disposition === "failure" && analysis.exitCode !== undefined && analysis.exitCode !== 0) {
     bits.push(`exit ${analysis.exitCode}`);
   }
   const reason = (attrs.reason ?? "").trim();
-  if (reason && (tone === "error" || tone === "warning")) bits.push(reason);
+  if (reason && tone === "warning") bits.push(reason);
   return bits.join(" · ");
 }
 
@@ -583,7 +662,7 @@ function parseJobNotification(block: string): ParsedNotification | null {
   if (!m) return null;
   const attrs = parseQuotedAttrs(m[1] ?? "");
   const bodyText = (m[2] ?? "").trim();
-  let type = "job";
+  let type: ParsedNotification["type"] = "job";
   // A watch fire names its watched job (watchNotificationFromWatch always
   // sets JobID — agent/job_watch.go), so event/status "watch" wins over the
   // job_id presence check: a job-targeted condition fire is still a watch
@@ -634,6 +713,7 @@ function parseJobNotification(block: string): ParsedNotification | null {
   const communicate =
     attrs.job_type === "delegate" ? parseCommunicateEnvelope(decodeNotificationEntities(excerpt)) : null;
   const transcriptRef = isValidTranscriptRef(attrs.transcript_ref) ? attrs.transcript_ref : undefined;
+  const intent = decodeNotificationEntities(attrs.intent ?? "").trim();
   const description = decodeNotificationEntities(attrs.description ?? "").trim();
   const analysis = analyzeJobNotification(attrs, communicate);
   // The parser's type, not the attr echo: a watch_id-reclassified delivery
@@ -644,10 +724,19 @@ function parseJobNotification(block: string): ParsedNotification | null {
     type,
     title: titleForJobNotification(attrs, type, type === "watch" ? bodyText : undefined),
     tone,
-    secondary: notificationSecondary(attrs, tone, description, analysis, type, type === "watch" ? bodyText : undefined),
+    secondary: notificationSecondary(
+      attrs,
+      tone,
+      description,
+      intent,
+      analysis,
+      type,
+      type === "watch" ? bodyText : undefined,
+    ),
     jobId: attrs.job_id?.trim() || undefined,
     jobType: attrs.job_type?.trim() || undefined,
     watchId: attrs.watch_id?.trim() || undefined,
+    intent: intent || undefined,
     description: description || undefined,
     status: attrs.status?.trim() || undefined,
     reason: attrs.reason?.trim() || undefined,

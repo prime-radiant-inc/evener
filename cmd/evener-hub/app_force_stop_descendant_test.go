@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
@@ -321,5 +322,131 @@ func TestForceStopFailedTerminationBlocksFreshDescendantActions(t *testing.T) {
 			}
 
 		})
+	}
+}
+
+// TestForceStopRefusalRejectsDescendantFences is the Medium RoboRev reported
+// against the descendant fence lifecycle: fenceDescendants always finished
+// normally, even when the request was refused before any cancellation (an
+// identity or deletion conflict under the fence), so the refusal advanced
+// descendant admission epochs and connection sequences and invalidated
+// existing clients although the refusal canceled nothing. A refusal that has
+// canceled nothing must reject the descendant fences it installed; they finish
+// normally only once the stop committed or termination was attempted.
+func TestForceStopRefusalRejectsDescendantFences(t *testing.T) {
+	for _, refusal := range []string{"deletion conflict", "identity conflict"} {
+		t.Run(refusal, func(t *testing.T) {
+			stateDir, runDir := t.TempDir(), t.TempDir()
+			parent := buildRPCParentSession(t, stateDir)
+			child := buildUpgradeDelegate(t, stateDir, parent)
+			entry := rendezvous.Entry{PID: 4242, SessionID: parent, ThreadID: parent, StateDir: stateDir, StartedAt: time.Now()}
+			writeRendezvous(t, runDir, entry)
+			locks := hubcore.NewResumeLocks()
+			store, err := hubcore.NewDeletionStore(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			original := deletionTargetState
+			calls := 0
+			deletionTargetState = func(*hubcore.DeletionStore, string, string) (hubcore.DeletionState, bool) {
+				calls++
+				if refusal == "deletion conflict" {
+					// The request's entry fence check passes; the deletion record
+					// is published before the validation that runs under the alias
+					// reservations, after the descendant fences exist.
+					return hubcore.DeletionStateDeleting, calls > 1
+				}
+				// The identity revalidation under the fence must observe a
+				// replacement claim: rewrite the entry's identity after the
+				// descendant fences exist, before the revalidation.
+				if calls == 2 {
+					entry.StartedAt = entry.StartedAt.Add(time.Minute)
+					writeRendezvous(t, runDir, entry)
+				}
+				return hubcore.DeletionStateDeleting, false
+			}
+			defer func() { deletionTargetState = original }()
+			var events []string
+			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, ResumeLocks: locks, DeletionStore: store,
+				DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+					events = append(events, "open")
+					return &forceStopProcess{events: &events}, nil
+				})}
+			params := appwire.ThreadForceStopParams{Ref: "local:" + parent}
+			if refusal == "identity conflict" {
+				expected := daemonIdentity(entry)
+				params.ExpectedDaemon = &expected
+			}
+			before := locks.RecoveryState(child)
+			stopped := forceStopThread(t.Context(), cfg, params, nil)
+			if stopped == nil {
+				t.Fatal("force stop with a pre-cancellation refusal succeeded")
+			}
+			if refusal == "deletion conflict" && !isTargetDeletedError(stopped) {
+				t.Fatalf("force stop error = %v, want the target-deleted refusal", stopped)
+			}
+			if after := locks.RecoveryState(child); after != before {
+				t.Fatalf("refused force stop left the descendant fence applied: before=%+v, after=%+v", before, after)
+			}
+			if slices.Contains(events, "kill") {
+				t.Fatalf("a refused force stop reached process control: %v", events)
+			}
+		})
+	}
+}
+
+// TestForceStopPostDrainRefusalRejectsPreCancellationDescendantFences is the
+// Medium RoboRev reported against the post-drain refusal path: refuseStop
+// rejected only the main recovery fence when the drain canceled nothing, so
+// the descendant fences installed before the cancellation stayed advanced and
+// a refused stop permanently staled existing descendant clients — their Epoch
+// and connection-level recovery sequence kept the advance the refusal should
+// have rolled back, exactly as TestForceStopRefusedAfterUncanceledDrainRollsBackFence
+// pins for the main fence. A post-drain refusal that canceled nothing must
+// reject the fences installed before the drain alongside its own; fences the
+// post-termination scan installs later stay non-rejected.
+func TestForceStopPostDrainRefusalRejectsPreCancellationDescendantFences(t *testing.T) {
+	stateDir, runDir := t.TempDir(), t.TempDir()
+	parent := buildRPCParentSession(t, stateDir)
+	child := buildUpgradeDelegate(t, stateDir, parent)
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: parent, ThreadID: parent, StateDir: stateDir, StartedAt: time.Now()})
+	locks := hubcore.NewResumeLocks()
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := deletionTargetState
+	calls := 0
+	// The request's entry fence check (call 1) and the pre-cancellation check
+	// under the alias reservations (call 2) pass; the deletion publishes after
+	// the uncanceled drain, so the post-ownership re-validation (call 3)
+	// refuses through refuseStop.
+	deletionTargetState = func(*hubcore.DeletionStore, string, string) (hubcore.DeletionState, bool) {
+		calls++
+		return hubcore.DeletionStateDeleting, calls > 2
+	}
+	defer func() { deletionTargetState = original }()
+	var events []string
+	cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, ResumeLocks: locks, DeletionStore: store,
+		DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+			events = append(events, "open")
+			return &forceStopProcess{events: &events}, nil
+		})}
+	beforeParent, beforeChild := locks.RecoveryState(parent), locks.RecoveryState(child)
+	stopped := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + parent}, nil)
+	if stopped == nil {
+		t.Fatal("force stop with a post-drain deletion succeeded")
+	}
+	if !isTargetDeletedError(stopped) {
+		t.Fatalf("force stop error = %v, want the target-deleted refusal", stopped)
+	}
+	if after := locks.RecoveryState(child); after != beforeChild {
+		t.Fatalf("refused force stop left the descendant fence applied: before=%+v, after=%+v", beforeChild, after)
+	}
+	if after := locks.RecoveryState(parent); after != beforeParent {
+		t.Fatalf("refused force stop left the recovery fence applied: before=%+v, after=%+v", beforeParent, after)
+	}
+	if slices.Contains(events, "kill") {
+		t.Fatalf("a refused force stop reached process control: %v", events)
 	}
 }

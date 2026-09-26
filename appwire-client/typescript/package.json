@@ -20,6 +20,11 @@
       "import": "./dist/docContent.js",
       "require": "./dist/docContent.js"
     },
+    "./state/connection": {
+      "types": "./dist/state/connection/index.d.ts",
+      "import": "./dist/state/connection/index.js",
+      "require": "./dist/state/connection/index.js"
+    },
     "./state/navigation": {
       "types": "./dist/state/navigation/index.d.ts",
       "import": "./dist/state/navigation/index.js",
@@ -34,6 +39,11 @@
       "types": "./dist/state/extensions/index.d.ts",
       "import": "./dist/state/extensions/index.js",
       "require": "./dist/state/extensions/index.js"
+    },
+    "./state/mutation": {
+      "types": "./dist/state/mutation/index.d.ts",
+      "import": "./dist/state/mutation/index.js",
+      "require": "./dist/state/mutation/index.js"
     }
   },
   "scripts": {
@@ -42,6 +52,7 @@
     "qualification": "node scripts/qualify-package.mjs"
   },
   "devDependencies": {
+    "tinykeys": "^4.0.0",
     "typescript": "~6.0.3",
     "ws": "^8.18.0"
   }

@@ -10,93 +10,238 @@ permissions:
   contents: read
 
 jobs:
-  # Main pushes and manual runs prove the release build produces the exact
-  # artifacts install.sh consumes; tags publish through the release job instead.
+  # GoReleaser cross-builds all targets on Linux. Publication waits for the
+  # macOS job below to replace the unsigned Darwin archive with its signed and
+  # notarized equivalent.
   build:
-    name: Build snapshot artifacts
-    if: github.ref_type != 'tag'
+    name: Build unsigned release artifacts
     runs-on: ubuntu-latest
     steps:
-      # Depth 1 suffices: snapshot mode's version template reads the commit
-      # from HEAD (ShortCommit) and no changelog is generated. The tag release
-      # job keeps a full clone for its own template needs.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
       - uses: ./.github/actions/setup-toolchain
 
-      - name: Build snapshot
+      - name: Build release artifacts without publishing
         uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"
-          args: release --snapshot --clean
+          args: ${{ github.ref_type == 'tag' && 'release --clean --skip=publish' || 'release --snapshot --clean' }}
         env:
-          BUILD_CHANNEL: snapshot
+          BUILD_CHANNEL: ${{ github.ref_type == 'tag' && 'release' || 'snapshot' }}
 
       - name: Inspect archives
         run: |
           for f in dist/*.tar.gz; do echo "== $f"; tar -tzf "$f"; done
           test -s dist/checksums.txt
 
-      - name: Upload archives
+      - name: Upload unsigned artifacts
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: evener-snapshot-artifacts
+          name: evener-unsigned-artifacts
           path: |
             dist/*.tar.gz
             dist/checksums.txt
           if-no-files-found: error
-          # The snapshot channel is republished to the `snapshot` release on
-          # every green main build; the intermediate artifact is consumed
-          # within minutes, so the 90-day default is pure storage.
           retention-days: 14
 
-  release:
-    name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+  sign-macos:
+    name: Sign and notarize macOS artifacts
+    needs: build
+    runs-on: macos-26
+    env:
+      # These are repository-level Apple credentials. The certificate is a
+      # Developer ID Application certificate exported as base64 PKCS#12; the
+      # App Store Connect API key is the same one used by ios-testflight.yml.
+      MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_P12_BASE64 }}
+      MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD }}
+      MACOS_DEVELOPER_ID_APPLICATION: ${{ vars.MACOS_DEVELOPER_ID_APPLICATION }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
+      - name: Validate Apple distribution credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in \
+            MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_P12_BASE64 \
+            MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD \
+            MACOS_DEVELOPER_ID_APPLICATION \
+            APPLE_TEAM_ID \
+            APP_STORE_CONNECT_API_KEY_ID \
+            APP_STORE_CONNECT_API_ISSUER_ID \
+            APP_STORE_CONNECT_API_KEY_CONTENT; do
+            test -n "${!name}" || {
+              echo "Missing required macOS distribution credential: $name" >&2
+              exit 1
+            }
+          done
 
-      - uses: ./.github/actions/setup-toolchain
-
-      - name: Publish with goreleaser
-        uses: goreleaser/goreleaser-action@v7
+      - name: Download unsigned artifacts
+        uses: actions/download-artifact@v8
         with:
-          version: "~> v2"
-          args: release --clean
+          name: evener-unsigned-artifacts
+          path: dist
+
+      - name: Import Developer ID certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          keychain="$RUNNER_TEMP/evener-signing.keychain-db"
+          certificate="$RUNNER_TEMP/evener-developer-id.p12"
+          keychain_password="$(openssl rand -hex 24)"
+          echo "$MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_P12_BASE64" | base64 -D > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" \
+            -P "$MACOS_DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD" \
+            -A -f pkcs12 -k "$keychain" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          identities="$(security find-identity -v -p codesigning "$keychain")"
+          printf '%s\n' "$identities"
+          grep -F -- "$MACOS_DEVELOPER_ID_APPLICATION" <<<"$identities" || {
+            echo "Imported keychain does not contain the expected Developer ID identity" >&2
+            exit 1
+          }
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security default-keychain -s "$keychain"
+          echo "MACOS_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "MACOS_SIGNING_CERTIFICATE=$certificate" >> "$GITHUB_ENV"
+
+      - name: Sign and notarize Darwin archives
+        shell: bash
         env:
-          BUILD_CHANNEL: release
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTARY_API_KEY: ${{ runner.temp }}/evener-notary-key.p8
+          NOTARY_ARCHIVE: ${{ runner.temp }}/evener-darwin-notarization.zip
+        run: |
+          set -euo pipefail
+          umask 077
+          echo "$APP_STORE_CONNECT_API_KEY_CONTENT" | base64 -D > "$NOTARY_API_KEY"
+          echo "NOTARY_API_KEY=$NOTARY_API_KEY" >> "$GITHUB_ENV"
+          echo "NOTARY_ARCHIVE=$NOTARY_ARCHIVE" >> "$GITHUB_ENV"
+          shopt -s nullglob
+          archives=(dist/evener_darwin_*.tar.gz)
+          test "${#archives[@]}" -gt 0 || {
+            echo "No Darwin archive was produced" >&2
+            exit 1
+          }
+
+          for archive in "${archives[@]}"; do
+            filename="${archive##*/}"
+            root="${filename%.tar.gz}"
+            work="$RUNNER_TEMP/$root"
+            rm -rf "$work" "$NOTARY_ARCHIVE"
+            mkdir -p "$work"
+            tar -xzf "$archive" -C "$work"
+
+            for binary in "$work/$root/evener" "$work/$root/evener-dev"; do
+              test -f "$binary" || { echo "Missing binary: $binary" >&2; exit 1; }
+              codesign --force --options runtime --timestamp \
+                --sign "$MACOS_DEVELOPER_ID_APPLICATION" "$binary"
+              codesign --verify --strict --verbose=2 "$binary"
+            done
+
+            # Notarytool accepts a zip container. The signed Mach-O binaries
+            # remain unchanged when the final tar.gz is rebuilt below; Apple's
+            # ticket is associated with their signed code identities.
+            ditto -c -k --keepParent "$work/$root" "$NOTARY_ARCHIVE"
+            xcrun notarytool submit "$NOTARY_ARCHIVE" \
+              --key "$NOTARY_API_KEY" \
+              --key-id "$APP_STORE_CONNECT_API_KEY_ID" \
+              --issuer "$APP_STORE_CONNECT_API_ISSUER_ID" \
+              --wait
+
+            rm -f "$archive"
+            COPYFILE_DISABLE=1 tar -czf "$archive" -C "$work" "$root"
+          done
+
+          (
+            cd dist
+            shasum -a 256 evener_*.tar.gz > checksums.txt
+          )
+
+      - name: Verify signed macOS artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for archive in dist/evener_darwin_*.tar.gz; do
+            tar -tzf "$archive" | grep -Eq '/evener(-dev)?$'
+            verify_dir="$RUNNER_TEMP/verify-${archive##*/}"
+            rm -rf "$verify_dir"
+            mkdir -p "$verify_dir"
+            tar -xzf "$archive" -C "$verify_dir"
+            verify_root="$verify_dir/${archive##*/}"
+            verify_root="${verify_root%.tar.gz}"
+            codesign --verify --strict --verbose=2 "$verify_root/evener"
+            codesign --verify --strict --verbose=2 "$verify_root/evener-dev"
+          done
+          (cd dist && shasum -a 256 -c checksums.txt)
+
+      - name: Upload signed artifacts
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: evener-signed-artifacts
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove temporary signing assets
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -n "${MACOS_SIGNING_KEYCHAIN:-}" && test -e "$MACOS_SIGNING_KEYCHAIN"; then
+            security delete-keychain "$MACOS_SIGNING_KEYCHAIN"
+          fi
+          rm -f "${MACOS_SIGNING_CERTIFICATE:-}" \
+            "${NOTARY_API_KEY:-}" \
+            "${NOTARY_ARCHIVE:-}"
 
   # The snapshot channel is a mutable prerelease tracking main: the tag is
   # force-moved and the artifacts replaced on every green main build.
   snapshot:
     name: Refresh snapshot channel
     if: github.ref == 'refs/heads/main'
-    needs: build
+    needs: sign-macos
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: snapshot-publish
+      cancel-in-progress: false
     steps:
-      # The steps below run git (tag/push) and gh (release view/create/upload)
-      # against this repository, and both need a checkout: git refuses to run
-      # outside a work tree ("fatal: not in a git directory", exit 128) and gh
-      # resolves the repo from the origin remote. This job only ever runs on a
-      # push to main, so a PR build cannot catch its absence.
       - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v8
         with:
-          name: evener-snapshot-artifacts
+          name: evener-signed-artifacts
           path: dist
 
+      # The concurrency group above only excludes overlapping runs; it does not
+      # order them, so an older run (a stale queued run, or a rerun of an old
+      # failure) can still take the group after a newer commit already
+      # published and move the tag backward. Skip here if main has moved on.
+      - name: Check this commit is still main's head
+        id: freshness
+        run: |
+          git fetch --depth=1 origin main
+          if [ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]; then
+            echo "snapshot: $GITHUB_SHA is no longer main's head; skipping publish"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Move snapshot tag
+        if: steps.freshness.outputs.stale != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -104,9 +249,42 @@ jobs:
           git push origin "refs/tags/snapshot" --force
 
       - name: Publish snapshot release
+        if: steps.freshness.outputs.stale != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "snapshot" >/dev/null 2>&1 || \
             gh release create "snapshot" --title "Evener snapshot" --notes "Latest successful build from main." --prerelease
-          gh release upload "snapshot" dist/*.tar.gz dist/checksums.txt --clobber
+          for attempt in 1 2 3; do
+            gh release upload "snapshot" dist/*.tar.gz dist/checksums.txt --clobber && exit 0
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          exit 1
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: sign-macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: evener-signed-artifacts
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/*.tar.gz dist/checksums.txt --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              dist/*.tar.gz dist/checksums.txt
+          fi

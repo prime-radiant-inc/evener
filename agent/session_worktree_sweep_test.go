@@ -50,9 +50,16 @@ func (r *wtRepo) unlockLane(t *testing.T, path string) {
 // shape a foreign session leaves behind at its clean close. Returns the delegate
 // id, path, and recorded base SHA.
 func (r *wtRepo) seedForeignUnlockedLane(t *testing.T) (delegateID, lanePath, baseSHA string) {
+	return r.seedForeignUnlockedLaneOnBranch(t, "")
+}
+
+// seedForeignUnlockedLaneOnBranch is seedForeignUnlockedLane with the lane cut
+// on branch ("" means the delegate id), for the divergent-branch residue-sweep
+// canary.
+func (r *wtRepo) seedForeignUnlockedLaneOnBranch(t *testing.T, branch string) (delegateID, lanePath, baseSHA string) {
 	t.Helper()
 	delegateID = r.s.delegateController.newDelegateID()
-	path, _, base, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID)
+	path, _, base, _, _, err := r.s.createDelegateWorktree(context.Background(), delegateID, branch)
 	if err != nil {
 		t.Fatalf("createDelegateWorktree: %v", err)
 	}
@@ -388,7 +395,7 @@ func TestP3CollectLane_ConcurrentWinnerCompletesRemoval(t *testing.T) {
 	}
 	defer done()
 	metaDir := metaDirForLane(path)
-	if err := r.s.collectLane(run, metaDir, id, path, true, r.s.residueSweepPolicy()); err != nil {
+	if err := r.s.collectLane(run, metaDir, id, id, path, true, r.s.residueSweepPolicy()); err != nil {
 		t.Fatalf("collectLane after concurrent removal: %v", err)
 	}
 

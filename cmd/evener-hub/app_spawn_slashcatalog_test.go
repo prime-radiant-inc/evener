@@ -237,7 +237,7 @@ func TestHubSpawnSlashCatalog_NonfatalResolverErrorKeepsEffectivePluginDirs(t *t
 	// dirs on Resolved, so the catalog keeps those same dirs and shows what
 	// the resulting session loads.
 	origResolve := hubResolvePlugins
-	hubResolvePlugins = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+	hubResolvePlugins = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string, mgr *plugins.Manager) (plugins.LaunchPluginResolution, error) {
 		return plugins.LaunchPluginResolution{}, errors.New("registry unreachable")
 	}
 	t.Cleanup(func() { hubResolvePlugins = origResolve })
@@ -402,4 +402,31 @@ func TestHubSpawnSlashCatalog_MissingCWDDoesNotLeakAncestorLocalConfig(t *testin
 	if _, ok := slashCatalogSkillNames(resp)["leaked"]; ok {
 		t.Errorf("ancestor launch.local.toml skill %q leaked into missing-cwd catalog", "leaked")
 	}
+}
+
+// TestHubSpawnSlashCatalog_MigratesALegacyNameAndBroadcasts proves
+// hubResolvePlugins resolves through cfg.PluginManager, the hub's own
+// already-wired Manager, so ResolveForLaunch -> List's migration of a
+// marketplace recorded under a name evener refuses today still broadcasts,
+// exactly as a direct evener/command/list request does
+// (TestHubCommandList_MigratesALegacyNameAndBroadcasts).
+func TestHubSpawnSlashCatalog_MigratesALegacyNameAndBroadcasts(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	pluginRoot := t.TempDir()
+	mgr := plugins.NewManager(pluginRoot)
+	plantRefusedMarketplace(t, mgr, "foo@bar")
+
+	broadcaster := newRecordingBroadcaster()
+	wirePluginStoreBroadcast(mgr, broadcaster)
+
+	cfg := hubcore.WebConfig{
+		PluginRoot:       pluginRoot,
+		LaunchConfigRoot: xdg,
+		PluginManager:    mgr,
+	}
+	if _, err := hubSpawnSlashCatalog(context.Background(), cfg, appwire.SpawnSlashCatalogParams{}); err != nil {
+		t.Fatalf("hubSpawnSlashCatalog: %v", err)
+	}
+	assertBroadcastMethods(t, broadcaster, appwire.NotifyEvenerMarketplaceUpdated, appwire.NotifyEvenerPluginUpdated)
 }

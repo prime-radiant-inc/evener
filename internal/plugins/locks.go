@@ -24,6 +24,12 @@ var (
 	lockSleep = time.Sleep
 )
 
+// errLockContention marks the store lock still held when the wait times out.
+// It carries the actionable, path-free reason - retry shortly - while the lock
+// file's path stays in the surrounding error's text, so a scrubbing caller
+// (EditMarketplace's editFailed) can keep the reason and drop the path.
+var errLockContention = errors.New("another evener plugin operation is in progress")
+
 // lockAcquirer is acquireLock's signature, which the per-area test seams
 // (installAcquireLock and its siblings) stand in for.
 type lockAcquirer func(context.Context, string, time.Duration) (func(), error)
@@ -69,16 +75,36 @@ func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lo
 // to fix, which evener-doctor reports too. The bundled lock and Doctor's
 // read-only wait on this lock are the two acquisitions that do not come
 // through here.
+//
+// The returned release also reports this session's accumulated StoreChanged
+// (store_changed.go) to the installed OnStoreChanged callback, whether or not
+// migrateMarketplaceNames itself failed, after the lock is released so a slow
+// broadcast never serializes behind the file lock.
 func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout time.Duration) (func(), error) {
 	release, err := m.acquireStoreLock(ctx, acquire, m.lockPath(), timeout)
 	if err != nil {
 		return nil, err
 	}
+	release = m.reportingRelease(release)
 	if err := m.migrateMarketplaceNames(); err != nil {
 		release()
-		return nil, err
+		return nil, m.migrationFailedErr(err)
 	}
 	return release, nil
+}
+
+// reportingRelease wraps release so that, in order: this session's
+// accumulated change is captured and cleared, the store lock is let go, and
+// only then — outside the lock — the installed callback (if any) is told
+// what changed. A session that changed nothing invokes no callback at all.
+func (m *Manager) reportingRelease(release func()) func() {
+	return func() {
+		changed, cb := m.takeStoreChanged()
+		release()
+		if (changed.Plugins || changed.Marketplaces) && cb != nil {
+			cb(changed)
+		}
+	}
 }
 
 // migrateStore takes the store lock for nothing but the migration lockStore
@@ -178,7 +204,7 @@ func flockUntil(ctx context.Context, f lockFile, lockPath string, timeout time.D
 		}
 		if lockNow().After(deadline) {
 			_ = f.Close()
-			return nil, fmt.Errorf("another evener plugin operation is in progress (locked: %s)", lockPath)
+			return nil, fmt.Errorf("%w (locked: %s)", errLockContention, lockPath)
 		}
 		lockSleep(backoff)
 		backoff *= 2

@@ -1001,7 +1001,7 @@ func TestCovIsBackgroundShellRun(t *testing.T) {
 // --- subagentTerminalStatus ---
 
 func TestCovSubagentTerminalStatus(t *testing.T) {
-	for _, s := range []string{"completed", "done", "failed", "cancelled", "stopped", "succeeded", "exhausted", "COMPLETED"} {
+	for _, s := range []string{"completed", "done", "failed", "cancelled", "stopped", "succeeded", "exhausted", "command_exited_nonzero", "command_killed", "COMPLETED"} {
 		if !subagentTerminalStatus(s) {
 			t.Errorf("%q should be terminal", s)
 		}

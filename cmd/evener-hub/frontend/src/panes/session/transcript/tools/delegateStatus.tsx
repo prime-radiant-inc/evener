@@ -142,7 +142,7 @@ function isDelegateStatus(raw: unknown): raw is DelegateStatusState {
   return true;
 }
 
-// Map a delegate's status + needs_attention to a Chip tone, reusing
+// Map a delegate's status to a Chip tone, reusing
 // classifyJobStatus's status vocabulary so failed→danger (not neutral).
 // An idle delegate whose last run failed should still show danger —
 // the lifecycle is idle, but the outcome is the most recent fact.
@@ -159,7 +159,6 @@ function isExhausted(status: string | undefined): boolean {
 }
 
 function statusToTone(state: DelegateStatusState): ChipTone {
-  if (state.needs_attention) return "attention";
   if (state.status === "idle") {
     // Idle lifecycle: show the last run's outcome, not "running".
     if (state.last_outcome?.status) {
@@ -176,7 +175,6 @@ function statusToTone(state: DelegateStatusState): ChipTone {
 }
 
 function statusLabel(state: DelegateStatusState): string {
-  if (state.needs_attention) return "Needs attention";
   return state.status ?? "unknown";
 }
 

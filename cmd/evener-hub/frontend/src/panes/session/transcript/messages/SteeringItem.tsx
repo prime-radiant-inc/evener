@@ -58,6 +58,7 @@ type LabelledKind = Exclude<SteeringKind, "current-task" | "task-list" | "notifi
 
 const KIND_LABELS: Record<LabelledKind, string> = {
   interrupted: "Interrupted",
+  "interrupted-salvage": "Interrupted draft",
   "agent-message": "Message sent",
   "hook-context": "Hook context",
   "precompact-hook": "Pre-compact hook",

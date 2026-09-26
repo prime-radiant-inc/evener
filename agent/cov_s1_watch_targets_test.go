@@ -25,7 +25,7 @@ func TestS1Cov_validateWatchTarget_CorruptLog(t *testing.T) {
 func TestS1Cov_terminalWatchTargetStatus(t *testing.T) {
 	t.Run("session_target", func(t *testing.T) {
 		jm := newTestJM(t)
-		status, terminal, err := jm.terminalWatchTargetStatus(runtimeMessageAliasCaller)
+		status, _, terminal, err := jm.terminalWatchTargetStatus(runtimeMessageAliasCaller)
 		if err != nil || terminal || status != "" {
 			t.Fatalf("session target = %q/%v/%v, want empty/false/nil", status, terminal, err)
 		}
@@ -39,7 +39,7 @@ func TestS1Cov_terminalWatchTargetStatus(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
-		status, terminal, err := jm.terminalWatchTargetStatus("job_run")
+		status, _, terminal, err := jm.terminalWatchTargetStatus("job_run")
 		if err != nil || terminal || status != "" {
 			t.Fatalf("running record = %q/%v/%v, want empty/false/nil", status, terminal, err)
 		}
@@ -54,7 +54,7 @@ func TestS1Cov_terminalWatchTargetStatus(t *testing.T) {
 			t.Fatalf("seed: %v", err)
 		}
 		s1cov_corruptJobLog(t, filepath.Join(jm.dir, "jobs.jsonl"))
-		if _, _, err := jm.terminalWatchTargetStatus("job_absent"); err == nil {
+		if _, _, _, err := jm.terminalWatchTargetStatus("job_absent"); err == nil {
 			t.Fatal("corrupt log must error")
 		}
 	})

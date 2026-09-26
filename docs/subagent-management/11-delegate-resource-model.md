@@ -1466,10 +1466,13 @@ awaiting-model, streaming, and tool-running boundaries. A binding timer checks
 every 30 seconds against the 10-minute quiet threshold and only asks the
 controller to admit an ordinary owner attention; it cannot change lifecycle,
 construct a runtime, or call the provider itself. One quiet attention is
-allowed per continuous quiet stretch. The quiet-notified latch is set only
-after the receiver transcript append fsyncs, so append failure retries the same
-private attention identity. Fresh activity re-arms the stretch. Restart starts
-no timer and performs no provider call.
+admitted per quiet window, repeating once per further window while the
+generation stays silent and running. Each committed wake takes a fresh private
+attention identity so the repeat is delivered rather than deduplicated; that
+identity is consumed only after the receiver transcript append fsyncs, so
+append failure retries the same private attention identity. Fresh activity
+resets the baseline to the new activity instant. Restart starts no timer and
+performs no provider call.
 
 Generation finalization is one process-only fence for ordinary, terminal, and
 stop outcomes. It rejects later quiet attention and drains any exact quiet

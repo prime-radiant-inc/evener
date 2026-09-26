@@ -304,6 +304,35 @@ func TestReconstructionValidationEnforcesNativeRecordSize(t *testing.T) {
 	}
 }
 
+// TestReconstructionMarksWrittenEntriesWithMachineryFlags: the doctor
+// writes current-build entries, so each must carry machinery_flagged —
+// otherwise DecodeEntry treats them as pre-flag legacy and infers machinery
+// from text shape, hiding a user's verbatim <system-notification> paste in
+// the reconstructed transcript. The synthesized reconstruction notice is
+// itself machinery and must carry the part flag.
+func TestReconstructionMarksWrittenEntriesWithMachineryFlags(t *testing.T) {
+	source := reconstructionSourceFixture(t)
+	_, entries, err := reconstructEntries(source, schema.SessionMeta{}, map[string]string{}, &reconstructionReport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) < 2 {
+		t.Fatalf("entries = %d, want at least the fixture turns plus the reconstruction notice", len(entries))
+	}
+	for i, entry := range entries {
+		if !entry.MachineryFlagged {
+			t.Errorf("entry %d lacks machinery_flagged: reconstruction writes current-build entries, so their part flags are authoritative", i)
+		}
+	}
+	notice := entries[len(entries)-1]
+	if notice.Turn.Kind != schema.TurnSteering {
+		t.Fatalf("last entry kind = %s, want the reconstruction notice steering turn", notice.Turn.Kind)
+	}
+	if len(notice.Turn.Message.Content) != 1 || !notice.Turn.Message.Content[0].Machinery {
+		t.Fatalf("reconstruction notice part = %+v, want one flagged machinery part", notice.Turn.Message.Content)
+	}
+}
+
 func TestReconstructMatchesToolResultInstantsAndPreservesRounds(t *testing.T) {
 	source := reconstructionSourceFixture(t)
 	source.Results[0].Timestamp = "2026-09-08T18:04:00.000-07:00"
@@ -1008,5 +1037,25 @@ func TestReconstructRetainsAggregateCacheUsageWithoutBreakdown(t *testing.T) {
 				t.Fatalf("cache writes = %d, want %d", *got.CacheWriteTokens, tc.aggregate)
 			}
 		})
+	}
+}
+
+// TestValidArchivedResultStatusCommandOutcomes covers the command-outcome
+// statuses in the job_status/delegate arm: an AgentsView archive can record a
+// job whose supervised command exited nonzero or died on a signal, and
+// reconstruction must not abort on it.
+func TestValidArchivedResultStatusCommandOutcomes(t *testing.T) {
+	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
+		if !validArchivedResultStatus("job_status", status) {
+			t.Errorf("validArchivedResultStatus(job_status, %q) = false, want true", status)
+		}
+		// The command-outcome statuses are shell-job statuses: a delegate's
+		// own lifecycle never carries one, so an archived delegate tool
+		// result with one is invalid, not reconstructed.
+		for _, tool := range []string{"delegate", "delegate_send"} {
+			if validArchivedResultStatus(tool, status) {
+				t.Errorf("validArchivedResultStatus(%q, %q) = true, want false", tool, status)
+			}
+		}
 	}
 }

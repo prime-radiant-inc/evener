@@ -239,7 +239,8 @@ func TestCovJobStatusArrayArg2(t *testing.T) {
 	// All valid status values.
 	validStatuses := []any{
 		"running", "idle", "settling", "stopping", "closed",
-		"completed", "failed", "exhausted", "cancelled", "stopped",
+		"completed", "command_exited_nonzero", "command_killed",
+		"failed", "exhausted", "cancelled", "stopped",
 	}
 	statuses, err = jobStatusArrayArg(map[string]any{"status": validStatuses}, "status")
 	if err != nil {
@@ -248,6 +249,7 @@ func TestCovJobStatusArrayArg2(t *testing.T) {
 	wantStatuses := []jobstore.Status{
 		jobstore.StatusRunning, jobstore.Status("idle"), jobstore.Status("settling"),
 		jobstore.Status("stopping"), jobstore.Status("closed"), jobstore.StatusCompleted,
+		jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled,
 		jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled,
 		jobstore.StatusStopped,
 	}
@@ -1452,7 +1454,7 @@ func TestCovAppendSteeringTurnDurably(t *testing.T) {
 		if len(s.history) != 1 || s.history[0].Kind != schema.TurnSteering || s.history[0].SteeringKind != events.SteeringKindNotification || s.history[0].Message.Text() != "durable steer" {
 			t.Fatalf("durable steering history = %+v", s.history)
 		}
-		loaded, err := readTranscriptFull(path)
+		loaded, err := readTranscriptFull(path, "")
 		if err != nil {
 			t.Fatalf("read persisted transcript: %v", err)
 		}

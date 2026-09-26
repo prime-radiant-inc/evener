@@ -2,7 +2,7 @@ import type { ThreadModel } from "@evener/appwire-client";
 import { sessionActionError } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { MutationOutboxRecord, MutationRecord } from "./mutationOutbox";
+import type { MutationOutboxRecord, MutationRecord, MutationRecoveryRecord } from "./mutationOutbox";
 import { registerPanelStoreEvictor, schedulePanelStoreEviction } from "./panelStoreEviction";
 import { readMutationPersistence, retryBlockedMutation, subscribeMutationPersistence, threadsStore } from "./threads";
 
@@ -12,7 +12,12 @@ export interface HumanNoteDraft {
   dirty: boolean;
   saved: boolean;
   error: string | null;
-  submitted?: { generation: number; id: string; text: string; state: "submitting" | "blockedUnknown" | "rejected" };
+  submitted?: {
+    generation: number;
+    id: string;
+    text: string;
+    state: "submitting" | "blockedUnknown" | "canceled" | "rejected";
+  };
   timer?: ReturnType<typeof setTimeout>;
   release?: () => void;
   // flush runs the pending delayed save immediately; teardown uses it so a
@@ -22,6 +27,36 @@ export interface HumanNoteDraft {
 }
 
 const drafts = createStore<{ records: Map<string, HumanNoteDraft> }>(() => ({ records: new Map() }));
+// The retained draft's status when the blocked row it was waiting on is no
+// longer in this tab's own records at all: another connection settled or
+// removed it without a canonical acknowledgement arriving here, so nothing is
+// left to settle this save and the note really is unsaved. It replaces the
+// "blocked pending session recovery" status, which claimed the write was only
+// waiting - a wait that will now never end. The draft keeps its text, stays
+// dirty, and keeps the submitted identity an acknowledgement may still arrive
+// under; absence is not an acknowledgement and is never treated as one.
+const SETTLED_ELSEWHERE_STATUS =
+  "Note is still unsaved: the blocked save it was waiting on is no longer pending in this tab";
+// The state and status text a retained row maps to on the draft's submitted
+// record: a row in the recovery store is a refusal (its reason when the daemon
+// gave one), a blocked row is still waiting on session recovery, any other
+// state is taken as-is. refreshPersistence applies this on a persistence
+// notification; the blur-save retry path applies the same mapping to the row
+// its post-retry read observes.
+function submittedStatusFor(
+  record: MutationOutboxRecord,
+  refused: MutationRecoveryRecord | undefined,
+): { state: "submitting" | "blockedUnknown" | "canceled" | "rejected"; error: string | null } {
+  const state = refused ? "rejected" : record.state;
+  const error = refused
+    ? (refused.recoveryReason ?? "Note could not be saved")
+    : state === "blockedUnknown"
+      ? "Note save is blocked pending session recovery"
+      : state === "canceled"
+        ? "Note save was canceled by Stop"
+        : null;
+  return { state, error };
+}
 let unsubscribePersistence: (() => void) | undefined;
 let persistenceRead = 0;
 function observePersistence(): void {
@@ -30,7 +65,7 @@ function observePersistence(): void {
 function refreshPersistence(): void {
   const read = ++persistenceRead;
   void readMutationPersistence()
-    .then(({ outbox, recovery }) => {
+    .then(({ outbox, optimistic, recovery }) => {
       if (read !== persistenceRead) return;
       const latest = new Map<string, MutationOutboxRecord>();
       for (const record of [...outbox, ...recovery]) {
@@ -59,13 +94,42 @@ function refreshPersistence(): void {
         if (draft?.submitted?.id !== record.clientMutationId || draft.generation !== draft.submitted.generation)
           continue;
         const refused = recovery.find((item) => item.clientMutationId === record.clientMutationId);
-        const state = refused ? "rejected" : record.state;
-        const error = refused
-          ? (refused.recoveryReason ?? "Note could not be saved")
-          : state === "blockedUnknown"
-            ? "Note save is blocked pending session recovery"
-            : null;
+        const { state, error } = submittedStatusFor(record, refused);
         put(record.targetRef, { ...draft, submitted: { ...draft.submitted, state }, error, saved: false });
+      }
+      // The optimistic store holds accepted-but-unreflected rows: another
+      // connection's "pending" receipt moved this tab's blocked note out of
+      // the outbox (settleReceipt's accepted copy, the retention notes carry
+      // since e7a2098d5), so a draft whose submitted identity now lives only
+      // there is waiting on its canonical reflection - not on session
+      // recovery. Reading only the outbox and recovery stores left the draft
+      // showing the stale blocked status for a save that had already been
+      // accepted. Map the accepted row to the draft's pending state and clear
+      // that stale error, the same mapping the post-retry lookup's accepted
+      // branch applies: the draft keeps its submitted identity so the
+      // canonical note state that arrives next still acknowledges it.
+      for (const accepted of optimistic) {
+        if (accepted.method !== "notes/human/set") continue;
+        // A row the outbox or recovery store still holds reports itself
+        // through the loop above; the optimistic copy is authoritative only
+        // for a row neither other store holds anymore.
+        if (
+          outbox.some((record) => record.clientMutationId === accepted.clientMutationId) ||
+          recovery.some((record) => record.clientMutationId === accepted.clientMutationId)
+        )
+          continue;
+        const draft = get(accepted.targetRef);
+        if (draft?.submitted?.id !== accepted.clientMutationId || draft.generation !== draft.submitted.generation)
+          continue;
+        // Idempotent: the accepted copy persists until reconcileIdentities
+        // settles it, while refreshes fire on every notification and mount.
+        if (draft.submitted.state === "submitting" && draft.error === null) continue;
+        put(accepted.targetRef, {
+          ...draft,
+          submitted: { ...draft.submitted, state: "submitting" },
+          error: null,
+          saved: false,
+        });
       }
     })
     .catch(() => {
@@ -146,8 +210,71 @@ export function blurHumanNote(ref: string, owner: symbol): void {
       if (failure) throw failure.error;
       const active = get(ref);
       if (!active?.dirty || active.focusOwners.size || active.generation !== current.generation) return;
+      // The live draft may no longer be in the state this save was armed for:
+      // another connection can accept the blocked save while the debounce (or
+      // this very await) was open, and the persistence refresh maps that
+      // accepted row to the draft's pending state without touching the armed
+      // timer. A same-generation draft that is already submitting has its
+      // write durable and waiting on canonical reflection - the blur-time
+      // guard above refuses to arm for exactly this state, and the fire-time
+      // save must recheck it live the same way. Skipping the recheck sent the
+      // save past the blocked-retry branch to a duplicate notes/human/set
+      // whose onEnqueue replaced the submitted identity the original save's
+      // acknowledgement arrives under.
+      if (active.submitted?.generation === active.generation && active.submitted.state === "submitting") return;
       if (current.submitted?.generation === current.generation && current.submitted.state === "blockedUnknown") {
-        await retryBlockedMutation(current.submitted.id);
+        const blockedId = current.submitted.id;
+        await retryBlockedMutation(blockedId, "backgroundNote");
+        // The retry's boolean is not the settlement authority: `true` only
+        // means the row no longer reads blocked to THIS tab's final lookup,
+        // which also covers another connection settling or restoring the row
+        // mid-retry on the shared outbox - a change this tab is never notified
+        // about. `false` is every way the retry can decline: this tab fenced
+        // by a Stop, a closed write gate, a stalled reconciliation, or the row
+        // simply no longer being blocked here. Either way the question left is
+        // what this ref's own records say now, asked of them directly
+        // (readMutationPersistence), never a queue-wide freshen, and never a
+        // resave.
+        const { outbox, optimistic, recovery } = await readMutationPersistence(ref);
+        const refused = recovery.find((record) => record.clientMutationId === blockedId);
+        const record = refused ?? outbox.find((record) => record.clientMutationId === blockedId);
+        // The optimistic store holds accepted-but-unreflected rows: another
+        // dispatcher's receipt (projectionState "pending") moved the row there
+        // while its canonical note state is still on the way.
+        const accepted = optimistic.find((record) => record.clientMutationId === blockedId);
+        const latest = get(ref);
+        // The same generation AND the same submitted identity: a newer edit, or
+        // an acknowledgement that landed while the read ran, owns the status now.
+        const submitted = latest?.submitted;
+        if (!latest || latest.generation !== current.generation || !submitted || submitted.id !== blockedId) return;
+        if (!record) {
+          if (accepted) {
+            // Accepted but not yet reflected: the note is pending, not
+            // settled-elsewhere. Keeping the submitted identity lets the
+            // acknowledgement that arrives with the canonical note state
+            // settle this same save.
+            put(ref, { ...latest, submitted: { ...submitted, state: "submitting" }, error: null, saved: false });
+            return;
+          }
+          // Absence from every store is not a canonical acknowledgement, so
+          // the dirty note stays exactly where it is and only its status
+          // changes.
+          put(ref, { ...latest, error: SETTLED_ELSEWHERE_STATUS });
+          return;
+        }
+        // Still blocked here: nothing settled, and the draft's blocked status
+        // is already the truth.
+        if (!refused && record.state === "blockedUnknown") return;
+        // Present in another state: the draft takes the row's actual state
+        // rather than the retry's boolean - the same mapping refreshPersistence
+        // applies on a persistence notification.
+        const { state, error } = submittedStatusFor(record, refused);
+        put(ref, {
+          ...latest,
+          submitted: { ...submitted, state },
+          error,
+          saved: false,
+        });
         return;
       }
       // The daemon's ExpectedInstanceID check is the authority on session

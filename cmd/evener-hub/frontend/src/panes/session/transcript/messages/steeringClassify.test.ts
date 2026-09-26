@@ -88,12 +88,141 @@ Job job_42 completed.
   expect(n.secondary).toBe("Inspect the workspace");
 });
 
-test("retains failure metadata alongside a job description", () => {
+test("prefers the caller's intent over the job description on the head", () => {
+  const block = `<job-notification job_id="job_42" event="completed" job_type="shell" description="legacy gloss" intent="Running &quot;go test&quot; to find the failure" status="completed" reason="exit_zero" output_bytes="12">
+Job job_42 completed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.intent).toBe('Running "go test" to find the failure');
+  expect(n.secondary).toBe('Running "go test" to find the failure');
+});
+
+// A failed job's head line is "<title> <intent>": the caller's stated
+// rationale names the purpose of the run, while the exit code and reason
+// live in the expanded card's metadata. The description attr reaches the
+// error head only when an explicit empty intent marks the block post-split
+// (the test below pins that); a block with no intent attribute at all is
+// pre-split history, whose description may be the raw command — those
+// heads show nothing.
+test("a failed job's head carries the caller's intent and nothing else", () => {
+  const block = `<job-notification job_id="job_f" event="failed" job_type="shell" description="go test ./cmd/evener-hub" intent="Running the mid-turn kill reproduction." status="failed" reason="exit_nonzero" output_bytes="13816" exit_code="1" transcript_ref="job:job_f">
+Job job_f failed. Output is available through read_transcript(transcript_ref="job:job_f") if needed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.tone).toBe("error");
+  expect(n.intent).toBe("Running the mid-turn kill reproduction.");
+  expect(n.secondary).toBe("Running the mid-turn kill reproduction.");
+  // The failure facts still parse for the expanded card's metadata.
+  expect(n.exitCode).toBe(1);
+  expect(n.reason).toBe("exit_nonzero");
+});
+
+test("a failed job without intent shows a bare head, never its command", () => {
+  // The pre-intent wire shape: description carried the command via the
+  // producer's display-label fallback.
+  const block = `<job-notification job_id="job_f" event="failed" job_type="shell" description="cd &quot;$(git rev-parse --show-toplevel)&quot; &amp;&amp; go test" status="failed" reason="exit_nonzero" exit_code="1">
+Job job_f failed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.tone).toBe("error");
+  expect(n.secondary).toBe("");
+  // The description still parses; the card's raw disclosure keeps it
+  // inspectable.
+  expect(n.description).toContain("git rev-parse");
+});
+
+test("an error head with an explicit empty intent shows the description gloss", () => {
+  // Post-split wire shape: the producer always stamps intent, so an empty
+  // value marks a real gloss in the description, never the old command
+  // fallback (which has no intent attr at all).
+  const block = `<job-notification job_id="job_g" event="failed" job_type="shell" description="Run the repository gates" intent="" status="failed" reason="exit_nonzero" exit_code="1">
+Job job_g failed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.tone).toBe("error");
+  // The parsed object keeps its empty-to-undefined normalization; the head
+  // grammar is where the empty intent's meaning shows.
+  expect(n.intent).toBeUndefined();
+  expect(n.secondary).toBe("Run the repository gates");
+});
+
+// The title keeps the three failure vocabularies apart: "Command failed" /
+// "Command killed" name the supervised command's outcome (the job ran it
+// fine — the daemon's command_exited_nonzero / command_killed statuses),
+// "Job failed" is reserved for the job system's own failures, and
+// pre-split blocks (status="failed" with a command-outcome reason) fall
+// back on the reason so history renders under the same words.
+const titleCases: Array<{
+  name: string;
+  block: string;
+  wantTitle: string;
+  wantSecondary?: string;
+  wantExitCode?: number;
+}> = [
+  {
+    name: "command_exited_nonzero titles as Command failed with error tone",
+    block: `<job-notification job_id="job_c" event="command_exited_nonzero" job_type="shell" intent="Running the mid-turn kill reproduction." status="command_exited_nonzero" reason="exit_nonzero" exit_code="1">
+Job job_c command_exited_nonzero.
+</job-notification>`,
+    wantTitle: "Command failed",
+    wantSecondary: "Running the mid-turn kill reproduction.",
+    wantExitCode: 1,
+  },
+  {
+    name: "command_killed titles as Command killed with error tone",
+    block: `<job-notification job_id="job_c" event="command_killed" job_type="shell" status="command_killed" reason="killed_by_signal: SIGKILL" exit_code="-1">
+Job job_c command_killed.
+</job-notification>`,
+    wantTitle: "Command killed",
+    wantExitCode: -1,
+  },
+  {
+    // The old wire's description-as-command still never reaches the head.
+    name: "a pre-split failed block with exit_nonzero titles as Command failed",
+    block: `<job-notification job_id="job_old" event="failed" job_type="shell" description="cd &quot;$(pwd)&quot; &amp;&amp; make check" status="failed" reason="exit_nonzero" exit_code="2">
+Job job_old failed.
+</job-notification>`,
+    wantTitle: "Command failed",
+    wantSecondary: "",
+  },
+  {
+    name: "a pre-split failed block with killed_by_signal titles as Command killed",
+    block: `<job-notification job_id="job_old" event="failed" job_type="shell" status="failed" reason="killed_by_signal: SIGTERM" exit_code="-1">
+Job job_old failed.
+</job-notification>`,
+    wantTitle: "Command killed",
+  },
+  {
+    name: "machinery failures keep the Job failed title",
+    block: `<job-notification job_id="job_m" event="failed" job_type="shell" status="failed" reason="wait_failed">
+Job job_m failed.
+</job-notification>`,
+    wantTitle: "Job failed",
+  },
+];
+
+test.each(titleCases)("$name", ({ block, wantTitle, wantSecondary, wantExitCode }) => {
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.title).toBe(wantTitle);
+  expect(n.tone).toBe("error");
+  if (wantSecondary !== undefined) expect(n.secondary).toBe(wantSecondary);
+  if (wantExitCode !== undefined) expect(n.exitCode).toBe(wantExitCode);
+});
+
+test("a nonzero-exit completion keeps failure facts off the head line", () => {
   const block = `<job-notification job_id="job_42" event="completed" job_type="delegate" description="Inspect the workspace" status="completed" reason="boom" exit_code="2">
 Job job_42 completed.
 </job-notification>`;
   const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
-  expect(n.secondary).toBe("Inspect the workspace · exit 2 · boom");
+  expect(n.tone).toBe("error");
+  // The title names the failure: the glyph's aria-hidden seat is decorative,
+  // so the title is the only failure text a screen reader reaches (RoboRev
+  // round 7's accessibility finding).
+  expect(n.title).toBe("Command failed");
+  expect(n.secondary).toBe("");
+  expect(n.description).toBe("Inspect the workspace");
+  expect(n.exitCode).toBe(2);
+  expect(n.reason).toBe("boom");
 });
 
 test("retains validated child identity and useful job fields from a completion", () => {
@@ -149,6 +278,25 @@ Job j exhausted.
   expect(notif(notificationsOf(parseSteeringNotifications(block)), 0).tone).toBe("error");
 });
 
+test("a delegate frame carrying a command-outcome status tones error even without an exit code", () => {
+  const block = `<delegate-notification delegate_id="dlg_42" event="command_exited_nonzero" status="command_exited_nonzero" reason="exit_nonzero">
+Delegate dlg_42 command_exited_nonzero.
+</delegate-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0).tone).toBe("error");
+});
+
+test("a job frame carrying a watch-send diagnostic keeps the exit bit on its warning head", () => {
+  const block = `<job-notification job_id="job_d" event="completed" job_type="shell" status="completed" reason="watch send failed: rail error" exit_code="2">
+Job job_d completed.
+</job-notification>`;
+  const n = notif(notificationsOf(parseSteeringNotifications(block)), 0);
+  expect(n.tone).toBe("warning");
+  // The exit bit is reachable: the send-rail diagnostic tones warning
+  // BEFORE the disposition arms, so a failure disposition can ride a
+  // warning head (RoboRev round-6 dead-code claim, disproven by this test).
+  expect(n.secondary).toContain("exit 2");
+});
+
 test("a nonzero exit code forces error tone even when the status is otherwise clean", () => {
   const block = `<job-notification job_id="j" event="completed" job_type="shell" status="completed" reason="" output_bytes="0" exit_code="1">
 Job j completed.
@@ -174,14 +322,54 @@ test.each([
   ["stopped", "stopped_by_parent", "-1", "warning", "shell · stopped_by_parent"],
   ["stopped", "cancelled", "-1", "warning", "shell · cancelled"],
   ["stopped", "run_timeout", "-1", "warning", "shell · run_timeout"],
-  ["failed", "killed_by_signal: terminated", "-1", "error", "shell · exit -1 · killed_by_signal: terminated"],
-  ["completed", "exit_zero", "7", "error", "shell · exit 7 · exit_zero"],
-  ["mystery", "", "7", "error", "shell · exit 7"],
+  ["failed", "killed_by_signal: terminated", "-1", "error", ""],
+  ["completed", "exit_zero", "7", "error", ""],
+  ["mystery", "", "7", "error", ""],
 ] as const)("maps %s/%s/exit %s to %s", (status, reason, exit, tone, secondary) => {
   const block = `<job-notification job_id="job_matrix" job_type="shell" status="${status}" reason="${reason}" exit_code="${exit}">
 Job job_matrix ${status}.
 </job-notification>`;
   expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({ tone, secondary });
+});
+
+test("a real nonzero exit under an unrecognized status titles the command's failure", () => {
+  const block = `<job-notification job_id="job_mystery_exit" job_type="shell" status="mystery" exit_code="7">
+Job job_mystery_exit mystery.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    title: "Command failed",
+    tone: "error",
+  });
+});
+
+test("the signalled -1 sentinel keeps the status-only title", () => {
+  const block = `<job-notification job_id="job_stopped" job_type="shell" status="stopped" reason="stopped_by_parent" exit_code="-1">
+Job job_stopped stopped.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    title: "Job stopped",
+    tone: "warning",
+  });
+});
+
+test("a wait_failed supervision failure keeps its Job failed title even with a real exit code", () => {
+  const block = `<job-notification job_id="job_wait" job_type="shell" status="failed" reason="wait_failed" exit_code="127">
+Job job_wait failed.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    title: "Job failed",
+    tone: "error",
+  });
+});
+
+test("a stopped run that exited nonzero before the stop signal keeps its Job stopped title", () => {
+  const block = `<job-notification job_id="job_late_stop" job_type="shell" status="stopped" reason="stopped_by_parent" exit_code="5">
+Job job_late_stop stopped.
+</job-notification>`;
+  expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
+    title: "Job stopped",
+    tone: "warning",
+  });
 });
 
 test("explicit failure keeps a neutral secondary without compacting malformed exit text", () => {
@@ -190,7 +378,7 @@ Job job_bad_exit failed.
 </job-notification>`;
   expect(notif(notificationsOf(parseSteeringNotifications(block)), 0)).toMatchObject({
     tone: "error",
-    secondary: "shell · wait_failed",
+    secondary: "",
     exitCode: undefined,
   });
 });

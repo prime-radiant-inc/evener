@@ -1,12 +1,15 @@
 // In-transcript job-notification card (contracts §17). Renders one parsed
 // <job-notification> / observer-callback block (steeringClassify.ts) as a card
 // that RECEDES when nothing went wrong (color-is-attention: a completed job is
-// the expected state, so success/neutral get no tint - only warning earns
-// attention, only error earns danger, each via a Chip tone). The verbatim block
-// is always kept inspectable in a raw disclosure, and the excerpt is
-// entity-decoded then rendered as ESCAPED text (React's default), never as live
-// HTML - a communicate message is the one thing rendered as markdown, through
-// the sanitizing Markdown widget.
+// the expected state, so success/neutral get no tint - warning earns an
+// attention Chip, and error announces itself with the red FailureGlyph cross
+// seated at full strength in the head's rail: an "error" pill beside a title
+// that already says "Job failed" restated the fact without adding anything
+// the glyph doesn't show). The verbatim block is always kept inspectable in
+// a raw disclosure, and the excerpt is entity-decoded then rendered as
+// ESCAPED text (React's default), never as live HTML - a communicate
+// message is the one thing rendered as markdown, through the sanitizing
+// Markdown widget.
 //
 // Scope-out recorded for T8's sweep: the legacy card's full communicate FACTS
 // list (status/commit_hashes/test_summary/artifacts as a <dl>) is not rebuilt -
@@ -20,10 +23,11 @@ import {
   expandDetailsByDefault,
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
-import { Card, Chevron, Chip, Markdown } from "../../../../widgets";
+import { Card, Chevron, Chip, Markdown, ToolIcon, type ToolIconKind } from "../../../../widgets";
 import { AnsiTailBuffer, parseAnsiLines } from "../../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
 import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
+import { FailureGlyph } from "../../../../widgets/failureglyph";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EntityRef } from "../EntityRef";
 import { OpenTranscriptButton } from "../openTranscript";
@@ -56,17 +60,32 @@ const CLASS = {
   raw: requireClass(styles.raw, "notificationcard.module.css", "raw"),
   summary: requireClass(styles.summary, "notificationcard.module.css", "summary"),
   rawBody: requireClass(styles.rawBody, "notificationcard.module.css", "rawBody"),
+  statusIcon: requireClass(styles.statusIcon, "notificationcard.module.css", "statusIcon"),
+  statusIconError: requireClass(styles.statusIconError, "notificationcard.module.css", "statusIconError"),
 };
 
 const EXCERPT_PREVIEW = 500;
 const MESSAGE_MAX = 8000;
 
-// Only warning/error earn colour (attention/danger); success + neutral recede
-// with no chip at all (the done glyph is the same neutral as any other card).
-function toneChip(tone: NotificationTone): { chipTone: "attention" | "danger"; label: string } | null {
-  if (tone === "error") return { chipTone: "danger", label: "error" };
-  if (tone === "warning") return { chipTone: "attention", label: "warning" };
-  return null;
+// The head's status glyph for every tone except error: one line-art shape per
+// parsed tone, receding in neutral ink at the rail's ambient 50% opacity like
+// every other row icon. Error is deliberately absent - it renders
+// FailureGlyph (see statusIconSeat below), the red cross that carries the
+// failure's hue as the card's one attention signal.
+const STATUS_ICON_KIND: Record<Exclude<NotificationTone, "error">, ToolIconKind> = {
+  success: "check",
+  warning: "alert",
+  neutral: "info",
+};
+
+// The error tone's presentation decision in one place: the FailureGlyph cross
+// seated at full strength, never the quiet rail's kind icon - the red cross
+// IS the failure signal. Every other tone draws its kind from the table above.
+function statusIconSeat(tone: NotificationTone): { className: string; glyph: ReactNode } {
+  if (tone === "error") {
+    return { className: CLASS.statusIconError, glyph: <FailureGlyph /> };
+  }
+  return { className: CLASS.statusIcon, glyph: <ToolIcon kind={STATUS_ICON_KIND[tone]} /> };
 }
 
 function ExcerptText({ text, ansi }: { text: string; ansi: boolean }) {
@@ -230,8 +249,24 @@ export function NotificationCard({
   const disclosureFallback =
     expandDetailsByDefault(config) || disclosureDefault(disclosureScope, scopedNotificationId, false);
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);
-  const chip = toneChip(notification.tone);
-  const transcriptRef = isValidTranscriptRef(notification.transcriptRef) ? notification.transcriptRef : undefined;
+  // Only warning earns a Chip; success + neutral recede with no chip at all
+  // (the done glyph is the same neutral as any other card). Error announces
+  // itself with the red FailureGlyph in the head's rail seat instead - a
+  // pill reading "error" beside a title that already says "Job failed"
+  // carried nothing the glyph doesn't.
+  const showWarningChip = notification.tone === "warning";
+  // The head's open affordance is the SUBAGENT control, so only a delegate
+  // notification earns it: its transcript_ref, when a frame carries one,
+  // names a child session's thread. A job notification is not a subagent
+  // report - its transcript_ref is the read_transcript ref for retained
+  // output ("job:<id>", agent/job_notify.go's jobTranscriptRef), which opens
+  // the job-log surface rather than a subagent transcript - so job
+  // notifications of any type never show the control. The job log stays
+  // reachable through the card's job-id trigger and the activity tree.
+  const transcriptRef =
+    notification.type === "delegate" && isValidTranscriptRef(notification.transcriptRef)
+      ? notification.transcriptRef
+      : undefined;
   const secondaryParts = notification.secondary ? splitTrailingWord(notification.secondary) : undefined;
   // The title-only branch (no secondary) splits the title the same way, so
   // its chevron rides the title's final word atomically. Computed eagerly: the
@@ -255,6 +290,21 @@ export function NotificationCard({
       <Chevron />
     </span>
   );
+  // Seated first in the summary, before the chip and title: the glyph rides
+  // the transcript's icon rail (see notificationcard.module.css's .statusIcon;
+  // error's full-strength variant is .statusIconError). Decorative - the
+  // title's own words ("Job completed", "Job failed") already name the status
+  // for assistive tech, so exposing the glyph would announce the same fact
+  // twice (the same ruling as every other rail icon and ThinkBlock's bulb) -
+  // which is also why FailureGlyph's own accessible name is silenced by the
+  // aria-hidden seat here, unlike its inline use on failed tool rows where it
+  // is the only failure signal.
+  const seat = statusIconSeat(notification.tone);
+  const statusIcon = (
+    <span className={seat.className} data-testid="notification-status-icon" aria-hidden="true">
+      {seat.glyph}
+    </span>
+  );
   return (
     <details className={CLASS.disclosure} open={open}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled for the same single-source-of-truth reason as ToolRow */}
@@ -269,7 +319,8 @@ export function NotificationCard({
           toggleDisclosure(disclosureKey, disclosureFallback);
         }}
       >
-        {chip && <Chip tone={chip.chipTone}>{chip.label}</Chip>}
+        {statusIcon}
+        {showWarningChip && <Chip tone="attention">warning</Chip>}
         <span className={CLASS.headingText}>
           {secondaryParts || !transcriptRef ? (
             secondaryParts ? (

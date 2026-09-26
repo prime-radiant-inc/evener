@@ -22,8 +22,11 @@
 # see scripts/lib/gate-surface-lib.sh).
 #
 # Duplicate blocks from -coverpkg are deduped by position, a block counting as
-# covered if ANY test hit it — the same accounting `coverage-floor.sh`
-# uses, so the totals here reconcile with the floors.
+# covered if ANY test hit it — the same accounting `coverage-floor.sh` uses.
+# Both scripts count through the Go covstmt primitive (`evener dev covstmt`),
+# so the totals here reconcile with the floors and a block's coverage is decided
+# in exactly one place. This script keeps the flags, usage, and validation; the
+# ranking report itself is `evener dev covstmt --gaps`.
 set -uo pipefail
 
 profile=""
@@ -47,69 +50,22 @@ done
 [ -f "$profile" ] || { echo "no such profile: $profile" >&2; exit 1; }
 case "$by" in package|file) ;; *) echo "--by must be package or file (got $by)" >&2; exit 2 ;; esac
 
-python3 - "$profile" "$by" "$top" "$zero_only" "$in_pattern" <<'PY'
-import re, sys
-profile, by, top, zero_only = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4] == "true"
-in_pattern = sys.argv[5]
+# CDPATH='' and `--`: an inherited CDPATH makes `cd` ECHO the resolved directory
+# into the command substitution (a multiline path), and `--` keeps a path
+# beginning with `-` from being read as an option. Each resolution is checked so
+# a failed `cd` aborts with a clear error instead of a empty/garbled path.
+repo_root="$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" \
+	|| { echo "coverage-gaps.sh: cannot resolve the repo root" >&2; exit 1; }
 
-# key -> (numstmts, covered) per unique block position, so -coverpkg duplicates
-# collapse the same way the floor scripts collapse them.
-blocks = {}
-line_re = re.compile(r'^(.+?):(\d+)\.(\d+),(\d+)\.(\d+) (\d+) (\d+)$')
-for line in open(profile):
-    m = line_re.match(line.strip())
-    if not m:
-        continue
-    f, sl, sc, el, ec, ns, cnt = m.groups()
-    key = (f, sl, sc, el, ec)
-    prev = blocks.get(key, (0, False))
-    blocks[key] = (int(ns), prev[1] or int(cnt) > 0)
+# The Go subcommand runs with repo_root as its cwd (so `go run` finds the
+# module), which would reinterpret a relative profile path; make it absolute
+# here, while the caller's cwd is still in effect.
+profile_dir="$(CDPATH='' cd -- "$(dirname "$profile")" && pwd)" \
+	|| { echo "coverage-gaps.sh: cannot resolve the directory of profile $profile" >&2; exit 1; }
+profile="$profile_dir/$(basename "$profile")"
 
-# --in lists the uncovered BLOCKS inside matching files, biggest first, so a
-# file with a known gap turns straight into a list of line ranges to go read.
-# Aggregates say which file to work on; this says where in it.
-if in_pattern:
-    rows = []
-    for (f, sl, sc, el, ec), (ns, covered) in blocks.items():
-        if covered or in_pattern not in f:
-            continue
-        rows.append((ns, f, int(sl), int(el)))
-    rows.sort(reverse=True)
-    if not rows:
-        print("no uncovered blocks in files matching %r" % in_pattern)
-        sys.exit(0)
-    print("%8s  %s" % ("STMTS", "location"))
-    for ns, f, sl, el in rows[:top]:
-        print("%8d  %s:%d-%d" % (ns, f, sl, el))
-    print()
-    print("showing %d of %d uncovered blocks (%d statements) in files matching %r"
-          % (min(len(rows), top), len(rows), sum(r[0] for r in rows), in_pattern))
-    sys.exit(0)
+gaps_args=(--gaps "--by=$by" "--top=$top")
+if $zero_only; then gaps_args+=(--zero); fi
+if [ -n "$in_pattern" ]; then gaps_args+=("--in=$in_pattern"); fi
 
-units = {}
-for (f, *_), (ns, covered) in blocks.items():
-    name = f if by == "file" else f.rsplit("/", 1)[0]
-    cov, tot = units.get(name, (0, 0))
-    units[name] = (cov + (ns if covered else 0), tot + ns)
-
-rows = []
-for name, (cov, tot) in units.items():
-    missing = tot - cov
-    if missing == 0:
-        continue
-    if zero_only and cov != 0:
-        continue
-    rows.append((missing, tot, cov, name))
-rows.sort(reverse=True)
-
-grand_missing = sum(t - c for c, t in ((c, t) for c, t in units.values()))
-grand_total = sum(t for _, t in units.values())
-print("%8s %8s %8s  %s" % ("MISSING", "total", "cov%", by))
-for missing, tot, cov, name in rows[:top]:
-    print("%8d %8d %7.1f%%  %s" % (missing, tot, 100.0 * cov / tot if tot else 0.0, name))
-shown = min(len(rows), top)
-print()
-print("showing %d of %d %ss with gaps; %d uncovered of %d statements overall (%.1f%%)"
-      % (shown, len(rows), by, grand_missing, grand_total,
-         100.0 * (grand_total - grand_missing) / grand_total if grand_total else 0.0))
-PY
+( cd "$repo_root" && go run ./cmd/evener-dev/bin dev covstmt "${gaps_args[@]}" "$profile" )

@@ -6,10 +6,10 @@
 // forever, and Chrome keeps a failed module fetch by URL (see
 // connectDialogChunk.ts).
 //
-// Two callers share this module: the spawn pane's below-the-fold dialog and
-// the session chrome's model-switch trigger, whose "Connect another provider"
-// entry opens the same dialog (previously with only a Suspense fallback, so a
-// rejected chunk took the session UI down with no retry).
+// Two callers mount this module's lazy chunk (ConnectProviderDialog plus its
+// instance-credential editors): the spawn pane's below-the-fold dialog and the
+// credentials section's full editor.
+
 import {
   Component,
   type JSX,
@@ -20,6 +20,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { reloadPage } from "../../../../shell/pageReload";
 import { Button, Dialog } from "../../../../widgets";
 import { isStaleConnectDialogChunkError, loadConnectDialog } from "../../../spawn/connectDialogChunk";
 
@@ -156,7 +157,7 @@ export class ConnectProviderDialogBoundary extends Component<
                 fix it. The failed retry must itself name a stale hashed
                 asset (the DockRegion chunk-boundary pattern). */}
             {this.props.reloadAvailable && isStaleConnectDialogChunkError(this.state.failure) && (
-              <Button variant="quiet" onClick={() => window.location.reload()}>
+              <Button variant="quiet" onClick={reloadPage}>
                 Reload page
               </Button>
             )}

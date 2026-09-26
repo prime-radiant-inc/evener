@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -77,6 +78,126 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 	return installid.LoadOrCreateInstallationID(stateDir)
 }
 
+// canonicalStateDir anchors a relative --state-dir to the process working
+// directory at session construction and resolves it to its physical path: a
+// state dir reached through a symlink keeps that component in an Abs-only
+// resolution, and the sandbox's file tools refuse symlinked ancestors on some
+// hosts (macOS's /tmp, /var), which would turn a path the session records —
+// attachment paths named to the model, transcript locations — into a
+// deterministic refusal for a later reader whose working directory differs.
+// Empty means "no state directory" and stays empty. A path that does not
+// resolve — most commonly a state dir that has not been created yet —
+// resolves its deepest existing ancestor instead, with the missing tail
+// joined back unchanged, so a fresh state dir behind a symlinked parent
+// records the physical path it will occupy rather than the symlinked form.
+func canonicalStateDir(dir string) string {
+	if dir == "" {
+		return dir
+	}
+	// Anchor relative paths BEFORE resolving anything —
+	// anchorRelativeStateDir carries the platform-aware anchoring
+	// rationale — then walk the components top-down, resolving
+	// symlinks as they accumulate so ".." pops the resolved parent. The
+	// walk ends at the first component that does not exist, joining the
+	// missing tail back unchanged, and always terminates: the root
+	// resolves.
+	if filepath.IsAbs(dir) {
+		return resolveStatePathComponents(dir)
+	}
+	anchored, ok := anchorRelativeStateDir(dir)
+	if !ok {
+		// No faithful anchor is available; the cleaning Abs is the
+		// best remaining answer.
+		abs, aerr := filepath.Abs(dir)
+		if aerr != nil {
+			return dir
+		}
+		return resolveStatePathComponents(abs)
+	}
+	return resolveStatePathComponents(anchored)
+}
+
+// anchorRelativeStateDir anchors a relative --state-dir for the
+// component walk. The platform split is a runtime check, not
+// per-platform files: this package's top-level production files must
+// stay loadable on every GOOS, because the dormancy inventory requires
+// packages.Load to admit them all
+// (TestDelegateControllerProductionIntegrationMatchesInventory).
+//
+// Windows routes only its volume-bearing input classes through
+// filepath.Abs, which delegates to syscall.FullPath (GetFullPathName):
+// drive-relative (C:state) belongs to the current directory of its own
+// drive and volume-root (\state) to the current drive's root, so
+// concatenating the process cwd corrupts C:state into D:\cwd\C:state.
+// GetFullPathName folds ".." lexically, an unavoidable trade for those
+// classes, whose per-drive anchoring nothing else provides. Plain
+// relative Windows inputs must NOT go through it: they fall through to
+// the raw cwd anchoring below, which keeps ".." raw for the component
+// walk to pop against a symlink or junction's physical parent.
+//
+// Every other input anchors through the RAW process cwd without
+// cleaning: anchoring through filepath.Abs can preserve a lexical
+// symlinked working directory, because os.Getwd prefers PWD whenever
+// it matches ".", so a shell that cd'd through a symlink hands us the
+// lexical form — the walk physicalizes it either way. Abs would also
+// Clean ".." lexically, which is wrong across a symlink: the kernel
+// resolves `link/../state` against the physical parent of link's
+// target, while Clean folds it to link's lexical parent. Concatenation
+// keeps every component raw so the walk can pop ".." against the
+// resolved parent. On Getwd failure no faithful anchor is available;
+// the caller falls back to the cleaning Abs.
+func anchorRelativeStateDir(dir string) (string, bool) {
+	if runtime.GOOS == "windows" && (filepath.VolumeName(dir) != "" || (len(dir) > 0 && os.IsPathSeparator(dir[0]))) {
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			return dir, false
+		}
+		return abs, true
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	return cwd + string(filepath.Separator) + dir, true
+}
+
+// resolveStatePathComponents walks an absolute path component by component,
+// resolving each existing component's symlinks before the next is applied,
+// so ".." pops the physical parent the kernel would choose. The first
+// component that does not exist ends the walk with the remaining tail joined
+// back unchanged; a component that exists but will not resolve (e.g. a
+// permission failure mid-walk) stays lexical and the walk continues.
+func resolveStatePathComponents(abs string) string {
+	sep := string(filepath.Separator)
+	vol := filepath.VolumeName(abs)
+	root := filepath.Join(vol, sep)
+	rest := strings.TrimPrefix(strings.TrimPrefix(abs, vol), sep)
+	if rest == "" {
+		return root
+	}
+	resolved := root
+	parts := strings.Split(rest, sep)
+	for i, comp := range parts {
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+		candidate := filepath.Join(resolved, comp)
+		if target, lerr := filepath.EvalSymlinks(candidate); lerr == nil {
+			resolved = target
+			continue
+		}
+		if _, serr := os.Lstat(candidate); serr != nil {
+			return filepath.Join(append([]string{resolved}, parts[i:]...)...)
+		}
+		resolved = candidate
+	}
+	return resolved
+}
+
 // escapeHistoryWithSessionProvenance escapes a restored history for the model
 // copy. Turns before the session's divergence point came from a parent, whose
 // journal this session does not hold -- and a child mutation may reuse a parent's
@@ -86,13 +207,7 @@ func resolveInstallationID(cfg SessionConfig, stateDir string) string {
 // the history being escaped, not the transcript's (see the caller's shift), so a
 // compacted fork keeps its own turns' provenance.
 func escapeHistoryWithSessionProvenance(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) []schema.Turn {
-	inherited := divergenceTurn - 1
-	if inherited <= 0 {
-		return escapeNotesHistoryTurns(history, origins)
-	}
-	if inherited >= len(history) {
-		return escapeNotesHistoryTurns(history, nil)
-	}
+	inherited := steeringOriginBoundary(divergenceTurn, len(history))
 	out := escapeNotesHistoryTurns(history[:inherited], nil)
 	return append(out, escapeNotesHistoryTurns(history[inherited:], origins)...)
 }
@@ -294,6 +409,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		jobClock = newJobActivityClock(sessionID)
 	}
 	cfg.spawn.jobActivityClock = jobClock
+	cfg.StateDir = canonicalStateDir(cfg.StateDir)
 	clientMutations, err := newClientMutationStore(cfg.StateDir, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load client mutation state: %w", err)
@@ -690,6 +806,20 @@ type RestoreSessionConfig struct {
 	// snapshot inherits the parent's answer; it does not outlive the run.
 	AgentsDocPath string
 
+	// OnRestoredTranscript, when set, receives the transcript this resume
+	// validated: the header (its SessionID already checked against the
+	// session's id), the final decoded entry list after every restore-time
+	// append, and whether a transcript was opened at all (true for a
+	// header-only one). It exists so serve can project its app identity from
+	// the one strict decode restore already did instead of re-reading the
+	// file. The session itself keeps no reference to the entries: a
+	// transcript can decode to more memory than the file holds, and a
+	// restored session -- a delegate child, a one-shot run -- would otherwise
+	// carry it for its whole life. The entries alias the slice restore goes
+	// on to fold for the delegate attention rearm right after the call, so
+	// the receiver must not mutate them.
+	OnRestoredTranscript func(header transcript.Header, entries []transcript.Entry, opened bool)
+
 	// ForceRealIO carries through to the restored Session's SessionConfig.
 	// See SessionConfig.ForceRealIO's own comment (session_config.go) - the
 	// same exported escape valve for a black-box/live test in another
@@ -767,7 +897,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		cfg.ReasoningEffort = ""
 	}
 	cfg.LifetimeContext = restoreCfg.LifetimeContext
-	cfg.StateDir = restoreCfg.StateDir
+	cfg.StateDir = canonicalStateDir(restoreCfg.StateDir)
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
 	cfg.AcquireSessionOwnership = restoreCfg.AcquireSessionOwnership
@@ -829,8 +959,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	var resumeTranscript *transcript.Writer
 	var transcriptEntries []transcript.Entry
 	var restoredTranscriptHeader transcript.Header
-	// ok flag for RestoredTranscript; captured at the open so the refresh
-	// below can't flip it.
+	// opened flag for OnRestoredTranscript; captured at the open so the
+	// refresh below can't flip it.
 	restoredTranscriptOpened := false
 	if cfg.StateDir != "" {
 		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
@@ -905,17 +1035,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// bound shifts by where the retained history begins.
 	divergenceTurn := meta.DivergenceTurn
 	if restoreCfg.resumeHistory == nil && len(transcriptEntries) > 0 {
-		divergenceTurn -= retainedFrom(transcriptEntries)
-		// Repair splices a synthetic result wherever an orphaned tool call was,
-		// so every insertion at or before the boundary shifts it right by one:
-		// the synthetic completes the call it repairs, which sits inside the
-		// inherited prefix (history_repair.go shifts the in-flight boundary the
-		// same way).
-		for _, idx := range repairInsertions {
-			if idx <= divergenceTurn-1 {
-				divergenceTurn++
-			}
-		}
+		// The resumed history starts at the retained window, and repair
+		// insertions before the fork boundary shift it right by one each
+		// (mapDivergenceThroughResumedHistory carries the mechanism).
+		divergenceTurn = mapDivergenceThroughResumedHistory(divergenceTurn, retainedFrom(transcriptEntries), repairInsertions)
 	}
 	resumeHistory = escapeHistoryWithSessionProvenance(resumeHistory, divergenceTurn, clientMutations.steeringOrigins())
 	restoredClientMutationTurns := make(map[string]string)
@@ -1219,16 +1342,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 		// Re-entry moved the scratch the caller's environment already owned onto
 		// this clone, and that scratch may be an adopted retained allocation the
-		// manifest references. Retain it rather than remove the durable
-		// directory a later resume reacquires; only a fresh mint this restore
-		// allocated is disposed.
-		if s.ownsReferencedRetainedScratch(reenteredEnv) {
-			if local, ok := reenteredEnv.(*execenv.LocalExecutionEnvironment); ok {
-				local.RetainSessionScratch()
-			}
-			return
-		}
-		disposeUnadoptedScratch(reenteredEnv)
+		// manifest references. Settle by the manifest, kind by kind: a
+		// referenced allocation is retained rather than removed, and only a
+		// fresh mint this restore allocated is disposed (round 83).
+		s.settleOwnedScratchByManifest(reenteredEnv)
 	}()
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
@@ -1326,7 +1443,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// one turn behind the file. Both refresh triggers share it so there is
 	// one refresh, not two mechanisms.
 	refreshFromDisk := func(reason string) error {
-		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), s.stateDir)
 		if err != nil {
 			return fmt.Errorf("refresh transcript after %s: %w", reason, err)
 		}
@@ -1374,17 +1491,19 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// survived but whose admission did not (a metadata save failure or a
 	// crash between the input turn and the obligation persist). It runs over
 	// ALL decoded entries — after the catalog is discovered and the
-	// transcript is attached, before setRestoredTranscript publishes the
+	// transcript is attached, before OnRestoredTranscript receives the
 	// final entry list — and never repeats a covered invocation.
 	if s.reconcilePendingSkillSelections(context.Background(), transcriptEntries) && tw != nil {
 		if err := refreshFromDisk("skill selection reconciliation"); err != nil {
 			return nil, err
 		}
 	}
-	// setRestoredTranscript and the attention rearm both run after every
+	// OnRestoredTranscript and the attention rearm both run after every
 	// restore-time transcript append, so serve and the fold see the same
 	// final entry list the file holds.
-	s.setRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
+	if restoreCfg.OnRestoredTranscript != nil {
+		restoreCfg.OnRestoredTranscript(restoredTranscriptHeader, transcriptEntries, restoredTranscriptOpened)
+	}
 	if err := s.rearmRootDelegateAttentionFromTranscript(transcriptEntries); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
 	}
@@ -1424,8 +1543,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// last in with nothing else pending, rests awaiting (spec §6, generalized
 	// by attention-status-model v5's resume rule; deriveRestoredState's own
 	// doc comment has the full walk). NewSession never runs this scan — a
-	// fresh session always starts idle.
-	restoredState := deriveRestoredState(s.history)
+	// fresh session always starts idle. steeringOrigins() gives the boundary
+	// its durable steering provenance, so a kindless legacy human-note turn
+	// is still read as a note rather than an answering steer.
+	// divergenceTurn (computed above for escapeHistoryWithSessionProvenance,
+	// and still in the same units s.history uses since escaping never
+	// changes its length) scopes the provenance to this session's own turns
+	// alone, so a forked child's inherited prefix is never decided by a
+	// reused client mutation id in the child's OWN journal.
+	steeringProvenance := s.clientMutations.steeringOrigins()
+	restoredState := deriveRestoredState(s.history, divergenceTurn, steeringProvenance)
 	// Rebuild the pending-ask SET alongside the state (ask-attention-tiering
 	// spec §2): deriveRestoredState alone only re-derives that the session
 	// rests awaiting, but every hold keyed on askPending itself — the entry
@@ -1434,7 +1561,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// isAskRound distinguishes "nothing was pending" from "an ask was pending
 	// but none of its arguments parsed"; only the latter warrants a warning,
 	// and neither may ever fail the restore.
-	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history)
+	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history, divergenceTurn, steeringProvenance)
 	if isAskRound && len(restoredAskPending) == 0 {
 		s.emit(events.EventWarning, events.WarningData{Message: "restore: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
 	}
@@ -1463,7 +1590,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// effects are all in place: an agent-last transcript with no autonomy in
 	// flight resumes awaiting rather than idle (spec v5, round-3 A2).
 	if !restoreCfg.deferRestoreSideEffects {
-		s.recomputeRestoredState()
+		s.recomputeRestoredState(divergenceTurn)
 		// Re-lock this session's own undisposed isolation lanes (spec §P3 resume
 		// re-lock). A clean close unlocked its KEPT lanes; leaving them unlocked
 		// would expose them to another session's P3 residue sweep. This is a
@@ -2444,76 +2571,23 @@ func reconnectRecoveryWarning(name string) events.WarningData {
 	}
 }
 
-// envOwnsReferencedRetainedScratch reports whether env currently owns a
-// per-session scratch directory that the durable retention manifest for owner
-// still references. Such a directory is adopted durable state a later resume
-// reacquires, so a failure teardown must retain it — release the lease, keep
-// the directory — rather than dispose it with os.RemoveAll. A freshly
-// provisioned allocation the manifest does not reference is the restore's own
-// mint and is still disposed. An environment that is not local, has no durable
-// owner, or owns nothing is not retained.
-func envOwnsReferencedRetainedScratch(owner sandbox.ScratchOwner, env execenv.ExecutionEnvironment) bool {
-	local, ok := env.(*execenv.LocalExecutionEnvironment)
-	if !ok || owner.StateDir == "" || owner.RootSessionID == "" {
-		return false
-	}
-	refs, err := local.ScratchRetentionReferences()
-	if err != nil || len(refs) == 0 {
-		return false
-	}
-	manifest, err := sandbox.LoadScratchRetention(owner)
-	if err != nil || manifest.Released || len(manifest.References) == 0 {
-		return false
-	}
-	referenced := make(map[string]struct{}, len(manifest.References))
-	for _, ref := range manifest.References {
-		dir, err := filepath.Abs(ref.Dir)
-		if err != nil {
-			continue
-		}
-		referenced[filepath.Clean(dir)] = struct{}{}
-	}
-	for _, ref := range refs {
-		dir, err := filepath.Abs(ref.Dir)
-		if err != nil {
-			continue
-		}
-		if _, ok := referenced[filepath.Clean(dir)]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-// ownsReferencedRetainedScratch is envOwnsReferencedRetainedScratch bound to
-// this session's root retention authority, so an internal failure teardown can
-// decide between retaining and disposing an environment it built.
-func (s *Session) ownsReferencedRetainedScratch(env execenv.ExecutionEnvironment) bool {
-	owner, ok := s.scratchRetentionOwner()
-	if !ok {
-		return false
-	}
-	return envOwnsReferencedRetainedScratch(owner, env)
-}
-
 // DisposeResumeScratchAfterFailure settles the per-session scratch a failed
 // resume left on the launch environment. RestoreSessionFromMetaWithConfig can
 // adopt a durable retained allocation onto env before a later initialization
 // failure, and env.DisposeUnadoptedScratch would then run os.RemoveAll over a
 // directory the root's retention manifest still references, destroying data a
 // later resume reacquires. An allocation the manifest references is therefore
-// retained (its lease released, its directory kept); anything else is the
-// restore's own fresh mint and is disposed. rootSessionID is the manifest's
-// root, exactly as the restore's own scratchRetentionOwner resolves it.
+// retained (its lease released, its directory kept); everything else is the
+// restore's own fresh mint and is disposed. The settle is per kind, so a
+// restore that adopted one kind and reprovisioned the other keeps the
+// referenced allocation and still disposes its fresh mint (round 83).
+// rootSessionID is the manifest's root, exactly as the restore's own
+// scratchRetentionOwner resolves it.
 func DisposeResumeScratchAfterFailure(stateDir, rootSessionID string, env *execenv.LocalExecutionEnvironment) {
 	if env == nil {
 		return
 	}
-	if envOwnsReferencedRetainedScratch(sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootSessionID}, env) {
-		env.RetainSessionScratch()
-		return
-	}
-	env.DisposeUnadoptedScratch()
+	settleEnvScratchByManifest(sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootSessionID}, env)
 }
 
 // DisposeRootScratchAfterFailure settles the per-session scratch a failed ROOT
@@ -2528,22 +2602,67 @@ func DisposeResumeScratchAfterFailure(stateDir, rootSessionID string, env *exece
 //
 // A failed root construction has no Session to ask for its owner, so the owner
 // is resolved from the environment's own installed binding — the root id
-// installScratchRetention published the binding under. An allocation the
-// manifest references is therefore retained (its lease released, its directory
-// kept, exactly as DisposeResumeScratchAfterFailure does for the resume path);
-// anything else is the launch's own fresh mint and is disposed. The binding is
-// read fresh here rather than passed in, so a construction that failed before
-// installScratchRetention ran still disposes its unadopted scratch.
+// installScratchRetention published the binding under. The settle is the same
+// per-kind verdict DisposeResumeScratchAfterFailure applies for the resume
+// path (round 83): an allocation the manifest references is retained (its
+// lease released, its directory kept) and everything else is the launch's own
+// fresh mint, disposed. The binding is read fresh here rather than passed in,
+// so a construction that failed before installScratchRetention ran still
+// disposes its unadopted scratch.
 func DisposeRootScratchAfterFailure(stateDir string, env *execenv.LocalExecutionEnvironment) {
 	if env == nil {
 		return
 	}
 	if binding, err := env.ScratchRetentionBinding(); err == nil {
-		owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: binding.OwnerSessionID}
-		if envOwnsReferencedRetainedScratch(owner, env) {
-			env.RetainSessionScratch()
-			return
-		}
+		settleEnvScratchByManifest(sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: binding.OwnerSessionID}, env)
+		return
 	}
 	env.DisposeUnadoptedScratch()
+}
+
+// settleEnvScratchByManifest settles the per-session scratch allocations env
+// owns against the durable retention manifest for owner, one kind at a time:
+// an allocation the manifest still references is retained — its lease
+// released, its directory kept for a later resume to reacquire — and every
+// other allocation is this failure's own fresh mint and is disposed with its
+// directory. The whole-environment verdict this replaces retained every
+// allocation when any one was referenced, so a restore that adopted one kind
+// and reprovisioned the other leaked its fresh mint beside the allocation it
+// kept (round 83). env being nil, an environment that is not local, an owner
+// with no durable identity, and a manifest that cannot be read or that is
+// Released — which names nothing a later resume reacquires — all settle as
+// disposeUnadoptedScratch already did.
+func settleEnvScratchByManifest(owner sandbox.ScratchOwner, env execenv.ExecutionEnvironment) {
+	if env == nil {
+		return
+	}
+	local, ok := env.(*execenv.LocalExecutionEnvironment)
+	if !ok || owner.StateDir == "" || owner.RootSessionID == "" {
+		disposeUnadoptedScratch(env)
+		return
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil || manifest.Released || len(manifest.References) == 0 {
+		disposeUnadoptedScratch(env)
+		return
+	}
+	referenced := make(map[string]struct{}, len(manifest.References))
+	for _, ref := range manifest.References {
+		if dir, absErr := filepath.Abs(ref.Dir); absErr == nil {
+			referenced[filepath.Clean(dir)] = struct{}{}
+		}
+	}
+	local.SettleScratchByReferences(referenced)
+}
+
+// settleOwnedScratchByManifest is settleEnvScratchByManifest bound to this
+// session's root retention authority, so an internal failure teardown can
+// settle an environment it built by the same per-kind verdict.
+func (s *Session) settleOwnedScratchByManifest(env execenv.ExecutionEnvironment) {
+	owner, ok := s.scratchRetentionOwner()
+	if !ok {
+		disposeUnadoptedScratch(env)
+		return
+	}
+	settleEnvScratchByManifest(owner, env)
 }

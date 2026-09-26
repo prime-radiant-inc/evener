@@ -12,11 +12,13 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 const (
@@ -63,7 +65,106 @@ const (
 	// cannot fit the name — see explainActivitySkippedEntry.
 	activitySkippedEntrySuffix       = " is too large to render in one response and was skipped"
 	activitySkippedEntryShortMessage = "one entry was too large to render and was skipped"
+	// activityMaxLabelRunes and activityMaxDelegateProseRunes cap the
+	// free-form text the activity projection copies out of a session's own
+	// metadata or a delegate descriptor. Both are otherwise unbounded: a
+	// session with no generated name labels itself with its OriginalPrompt
+	// verbatim (a pasted prompt can be megabytes), and a delegate's
+	// Task/Mandate/Description are whatever the spawner passed. They are the
+	// response's FIXED parts — a label sits on every session and a
+	// continuation page carries its ancestor chain's delegate metadata no
+	// matter how the entries are trimmed — so an unbounded one goes out over
+	// activityMaxEncodedBytes with nothing left to drop (see
+	// markActivityEnvelopeTooLarge). The label cap mirrors the hub's own
+	// sidebar title cap (hubcore.maxTitleRunes), which exists for the same
+	// reason; the delegate cap is far above any ordinary brief yet bounds a
+	// max-length (activityMaxNewDepth+1) ancestor chain's Task+Description to
+	// a small fraction of the envelope.
+	activityMaxLabelRunes         = 200
+	activityMaxDelegateProseRunes = 4096
+	// activityMaxDelegatePayloadBytes, activityMaxDelegateWarnings and
+	// activityMaxDelegateWarningRunes bound the remaining free-form delegate
+	// fields the projection copies verbatim: the raw terminal-packet payloads
+	// (Message, StructuredResult) and the warnings list. They sit on each
+	// delegate in a continuation page's ancestor chain, which the size trim
+	// cannot drop, so an oversized one is a fixed part of the envelope. An
+	// oversized payload is omitted rather than sliced — slicing would leave
+	// invalid JSON on the wire — and remains available from the delegate's own
+	// transcript.
+	activityMaxDelegatePayloadBytes = 16 << 10
+	activityMaxDelegateWarnings     = 8
+	activityMaxDelegateWarningRunes = 512
+	// activityAncestorTextFloorRunes is the smallest cap
+	// shrinkActivityAncestors will apply to an ancestor's prose before it stops
+	// cutting. Below this a field carries no useful text, so a page that still
+	// will not fit is genuinely over the limit rather than merely wordy.
+	activityAncestorTextFloorRunes = 64
 )
+
+// truncateActivityText caps s at maxRunes runes, appending an ellipsis when it
+// truncates so a reader can tell a capped value from a genuinely short one.
+// Rune-safe: never splits a multi-byte character.
+//
+// It walks runes only as far as the cap. Converting the whole string to a
+// []rune first — as an earlier version did — allocates proportional to the
+// INPUT (a 4 MiB label becoming a ~16 MiB slice) for a result that keeps at
+// most maxRunes runes, which defeats the memory bound the cap exists to
+// enforce.
+func truncateActivityText(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	// Runes never outnumber bytes, so a string this short cannot need cutting
+	// and does not have to be decoded.
+	if len(s) <= maxRunes {
+		return s
+	}
+	runeIndex := 0
+	cutAt := -1
+	for byteIndex := range s {
+		if runeIndex == maxRunes-1 {
+			cutAt = byteIndex
+		}
+		if runeIndex == maxRunes {
+			// s[:cutAt] is the whole string short of maxRunes-1 runes.
+			return s[:cutAt] + "…"
+		}
+		runeIndex++
+	}
+	// Multi-byte runes made the byte fast path conservative: the whole string
+	// fits after all.
+	return s
+}
+
+// boundActivityDelegatePayload clones a terminal-packet payload, or drops it
+// when it alone would dominate the envelope. Dropping beats slicing: the field
+// is json.RawMessage, so a cut would leave invalid JSON on the wire. The full
+// payload stays available from the delegate's own transcript.
+func boundActivityDelegatePayload(payload json.RawMessage) json.RawMessage {
+	if len(payload) > activityMaxDelegatePayloadBytes {
+		return nil
+	}
+	return append(json.RawMessage(nil), payload...)
+}
+
+// capActivityDelegateWarnings bounds both the number of warnings and the length
+// of each so the list cannot dominate the envelope on an ancestor chain the
+// page cannot trim. An over-long list ends with a counted note in place of the
+// warnings it dropped.
+func capActivityDelegateWarnings(warnings []string) []string {
+	if len(warnings) == 0 {
+		return nil
+	}
+	kept := min(len(warnings), activityMaxDelegateWarnings)
+	capped := make([]string, 0, kept+1)
+	for _, warning := range warnings[:kept] {
+		capped = append(capped, truncateActivityText(warning, activityMaxDelegateWarningRunes))
+	}
+	if len(warnings) > kept {
+		capped = append(capped, fmt.Sprintf("%d more warnings omitted", len(warnings)-kept))
+	}
+	return capped
+}
 
 // activityContinuation is a real, checked cursor position: resuming from
 // one re-enters the exact session a prior page's mid-list cutoff stopped
@@ -104,21 +205,20 @@ type activityContinuation struct {
 	// over a readable journal resumes into a page whose delegate list is
 	// empty — its position counting entries that are not there.
 	DelegatesUnreadable bool `json:"dlg_unreadable,omitempty"`
-	// Revision is the root's jobActivityClock revision (see
-	// activityCurrentRootRevision) at mint time — appwire.JobActivityTree's
-	// own Revision field, carried into the continuation too. Only checked
-	// on resume when the root is LIVE (loadActivitySnapshotForParamsWithCache):
-	// a live session's JobsEpoch/DelegatesEpoch above are always 0 (it
-	// reads neither fold cache), so they provide no staleness protection
-	// at all for a live continuation — 0 == 0 always passes, even across a
-	// real mutation. Revision closes that gap the same way epoch closes it
-	// for historical sessions. For a historical continuation this is still
-	// populated (mint time's
-	// activitySnapshotPersistedRevision) but not validated — the epoch
-	// fields already cover that case, and this field's value there is not
-	// guaranteed stable in the same way (a sibling's unrelated change can
-	// legitimately move it), so re-checking it would risk false staleness
-	// rejections rather than closing a real gap.
+	// Revision is the revision appwire.JobActivityTree reported for the page
+	// this token was minted with — the live jobActivityClock revision for a
+	// live root, or activitySnapshotPersistedRevision for a historical one —
+	// carried into the continuation too, and echoed back as the resumed page's
+	// own Revision (LoadSessionJobActivityTree). It is checked on resume only
+	// when the root is LIVE (loadActivitySnapshotForParams): a live
+	// session's JobsEpoch/DelegatesEpoch above are always 0 (it reads neither
+	// fold cache), so they provide no staleness protection at all for a live
+	// continuation — 0 == 0 always passes, even across a real mutation.
+	// Revision closes that gap the same way epoch closes it for historical
+	// sessions. A historical continuation is not validated on this field: the
+	// epoch fields already say whether a resume position is safe, and echoing
+	// the token's number back keeps a pagination walk's revision stable even
+	// though the persisted max it was first computed from can move under it.
 	Revision uint64 `json:"rev,omitempty"`
 }
 
@@ -367,38 +467,28 @@ func activityCurrentRootID(clock *jobActivityClock, fallback string) string {
 // files (checked in loadHistoricalActivityBase). It returns the resumeIndex
 // a continuation's mid-list cutoff carried (0 for a fresh, non-continuation
 // load), for projectBoundedActivityTree to apply against the target
-// session's own entries. A thin wrapper over
-// loadActivitySnapshotForParamsWithCache that discards the cache, for the
-// two (live-session) callers that have no further use for it.
+// session's own entries.
+//
+// The cache is created here and never returned: it lives only for this one
+// load, and every caller discards it. LoadSessionJobActivityTree used to
+// reuse it for a second full-tree walk that recomputed a continuation's
+// revision; that walk is gone (the page now echoes the token's revision), so
+// there is nothing left for a caller to do with the cache.
 func loadActivitySnapshotForParams(ctx context.Context, root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, int, error) {
-	snapshot, startDepth, resumeIndex, _, err := loadActivitySnapshotForParamsWithCache(ctx, root, params)
-	return snapshot, startDepth, resumeIndex, err
-}
-
-// loadActivitySnapshotForParamsWithCache is loadActivitySnapshotForParams'
-// full form: it also returns the historicalActivityCache the load ran
-// against, so a caller that needs to do MORE loading against the same root
-// afterward — LoadSessionJobActivityTree's revision computation, see below —
-// can reuse the same cache instead of starting a second, independently-fresh
-// one: two independent historicalActivityCache instances for what is one
-// client request would mean two independent work-unit budgets, silently
-// doubling the effective traversal-breadth allowance and letting the two
-// loads visit, and charge for, different session sets.
-func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySessionLocator, params appwire.JobsListParams) (*activitySessionSnapshot, int, int, *historicalActivityCache, error) {
 	cache := newHistoricalActivityCache(ctx, root.sessionID)
 	if strings.TrimSpace(params.Continuation) == "" {
 		visited := map[string]bool{root.sessionID: true}
 		snapshot, err := buildActivityFullSnapshot(root, visited, false, cache, 0)
-		return snapshot, 0, 0, cache, err
+		return snapshot, 0, 0, err
 	}
 	cont, err := decodeActivityContinuation(params.Continuation, root.sessionID)
 	if err != nil {
-		return nil, 0, 0, cache, err
+		return nil, 0, 0, err
 	}
 	visited := map[string]bool{root.sessionID: true}
 	snapshot, jobsEpoch, delegatesEpoch, err := buildActivityContinuationSnapshot(root, cont, visited, false, cache)
 	if err != nil {
-		return nil, 0, 0, cache, err
+		return nil, 0, 0, err
 	}
 	// The generations here are the TARGET session's own — the session whose
 	// journals a resume folds — and a mint carries that same session's, live
@@ -422,7 +512,7 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	if cont.JobsEpoch != jobsEpoch || cont.DelegatesEpoch != delegatesEpoch ||
 		cont.JobsAbsent != target.jobsAbsent || cont.DelegatesAbsent != target.delegatesAbsent ||
 		cont.DelegatesUnreadable != target.delegatesUnreadable {
-		return nil, 0, 0, cache, activityStaleContinuationError("the underlying journal changed")
+		return nil, 0, 0, activityStaleContinuationError("the underlying journal changed")
 	}
 
 	// A live session has no fold-cache generation at all (jobsEpoch and
@@ -436,10 +526,10 @@ func loadActivitySnapshotForParamsWithCache(ctx context.Context, root activitySe
 	// single request — is caught here.
 	if root.live != nil {
 		if current := activityCurrentRootRevision(root.live.jobActivityClock); cont.Revision != current {
-			return nil, 0, 0, cache, activityStaleContinuationError("the live session changed")
+			return nil, 0, 0, activityStaleContinuationError("the live session changed")
 		}
 	}
-	return snapshot, -len(cont.Path), cont.ResumeIndex, cache, nil
+	return snapshot, -len(cont.Path), cont.ResumeIndex, nil
 }
 
 // buildActivityFullSnapshot loads loc's full subtree.
@@ -661,7 +751,11 @@ func liveActivitySessionLabel(s *Session) string {
 	prompt := s.cfg.spawn.subagentTask
 	for _, turn := range s.history {
 		if turn.Kind == schema.TurnUserInput {
-			prompt = turn.Message.Text()
+			// The projection the label must match: an image paste appends a
+			// machinery note to the user turn, and the label carries the
+			// user's prose — never the note — like every other user-facing
+			// surface (bubbles, fork prefill, metadata).
+			prompt = apptranscript.UserFacingText(turn.Message)
 			break
 		}
 	}
@@ -793,7 +887,7 @@ func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string,
 // activitySessionEpochs is one session's own fold-cache generations: the
 // generation of its jobs.jsonl and of the delegates.jsonl it folds. A
 // continuation is checked against the generations of the session it TARGETS
-// (loadActivitySnapshotForParamsWithCache), so that is what a mint for that
+// (loadActivitySnapshotForParams), so that is what a mint for that
 // session has to carry — the page root's own are only right for a token
 // naming the page root.
 type activitySessionEpochs struct {
@@ -892,16 +986,22 @@ func sortedActivityChildIDs(children map[string]*activitySessionSnapshot) []stri
 // mutating either input. Durable records retain their append positions. Jobs
 // visible only in the live map are inserted by (StartedAt, JobID).
 func mergeActivityRecords(durable []*jobstore.JobRecord, live map[string]*jobstore.JobRecord) []*jobstore.JobRecord {
-	durableOrder := make([]string, 0, len(durable))
-	durableByID := make(map[string]*jobstore.JobRecord, len(durable))
+	// One index per durable job: its position in first-appearance order, with
+	// a later duplicate replacing the record in place. A history of hundreds
+	// of thousands of jobs is merged on every page a jobs list serves, so this
+	// keeps it to a single map operation per durable record.
+	durableIndex := make(map[string]int, len(durable))
+	ordered := make([]*jobstore.JobRecord, 0, len(durable))
 	for _, rec := range durable {
 		if rec == nil || rec.JobID == "" {
 			continue
 		}
-		if _, seen := durableByID[rec.JobID]; !seen {
-			durableOrder = append(durableOrder, rec.JobID)
+		if at, seen := durableIndex[rec.JobID]; seen {
+			ordered[at] = rec
+			continue
 		}
-		durableByID[rec.JobID] = rec
+		durableIndex[rec.JobID] = len(ordered)
+		ordered = append(ordered, rec)
 	}
 
 	liveByID := make(map[string]*jobstore.JobRecord, len(live))
@@ -920,20 +1020,19 @@ func mergeActivityRecords(durable []*jobstore.JobRecord, live map[string]*jobsto
 		}
 	}
 
-	merged := make([]*jobstore.JobRecord, 0, len(durableByID)+len(liveByID))
-	seen := make(map[string]bool, len(durableByID)+len(liveByID))
-	for _, jobID := range durableOrder {
-		rec := durableByID[jobID]
-		if liveRec := liveByID[jobID]; liveRec != nil {
-			rec = liveRec
+	merged := make([]*jobstore.JobRecord, 0, len(ordered)+len(liveByID))
+	for _, rec := range ordered {
+		if len(liveByID) > 0 {
+			if liveRec := liveByID[rec.JobID]; liveRec != nil {
+				rec = liveRec
+			}
 		}
 		merged = append(merged, cloneActivityRecord(rec))
-		seen[jobID] = true
 	}
 
 	liveOnly := make([]*jobstore.JobRecord, 0, len(liveByID))
 	for jobID, rec := range liveByID {
-		if !seen[jobID] {
+		if _, durable := durableIndex[jobID]; !durable {
 			liveOnly = append(liveOnly, cloneActivityRecord(rec))
 		}
 	}
@@ -1021,7 +1120,7 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 	projected := appwire.JobActivitySession{
 		SessionID:   snapshot.SessionID,
 		Ref:         snapshot.Ref,
-		Label:       snapshot.Label,
+		Label:       truncateActivityText(snapshot.Label, activityMaxLabelRunes),
 		Entries:     make([]appwire.JobActivityEntry, 0),
 		Diagnostics: append([]string(nil), snapshot.Diagnostics...),
 	}
@@ -1040,27 +1139,32 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 
 	entryIndex := 0
 	records := activityOwnedRecords(snapshot.SessionID, mergeActivityRecords(snapshot.Jobs, snapshot.LiveJobs))
+	// Reported once for the whole list, counted: one sentence per record would
+	// make Branch.Error grow with the journal, an unbounded envelope input. It
+	// is hoisted out of the loop so an early truncation return cannot make a
+	// page's error depend on how far it got.
+	if message := unsupportedActivityJobTypesError(records); message != "" {
+		appendActivityBranchError(&projected.Branch, message)
+	}
 	for _, rec := range records {
-		if rec == nil {
+		// Unsupported records (anything but a shell job) are counted once for
+		// the whole list by unsupportedActivityJobTypesError above, not
+		// rendered and not re-reported here.
+		if rec == nil || rec.Type != jobstore.JobShell {
 			continue
 		}
-		switch rec.Type {
-		case jobstore.JobShell:
-			if entryIndex < effectiveResumeIndex {
-				entryIndex++
-				continue
-			}
-			if !activityConsumeWorkUnit(budget, 1) {
-				markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, snapshot.epochs())
-				projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
-				return projected
-			}
+		if entryIndex < effectiveResumeIndex {
 			entryIndex++
-			job := projectActivityJob(rec, snapshot.Ref)
-			projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "shell", Job: &job})
-		default:
-			appendActivityBranchError(&projected.Branch, fmt.Sprintf("job %q has unsupported type %q", rec.JobID, rec.Type))
+			continue
 		}
+		if !activityConsumeWorkUnit(budget, 1) {
+			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path, entryIndex, snapshot.epochs())
+			projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
+			return projected
+		}
+		entryIndex++
+		job := projectActivityJob(rec, snapshot.Ref)
+		projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "shell", Job: &job})
 	}
 	for _, delegateID := range sortedStableActivityDelegateIDs(snapshot.StableDelegates) {
 		if entryIndex < effectiveResumeIndex {
@@ -1084,6 +1188,9 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegateSnapshot, budget *activityBudget, depth int, path []string, resumeIndex int) appwire.JobActivityDelegate {
 	descriptor := row.descriptor
 	status := projectStableDelegateStatus(budget.now, row)
+	// Mandate and Task carry the same text; truncate it once rather than
+	// repeating the work for each copy.
+	task := truncateActivityText(descriptor.Task, activityMaxDelegateProseRunes)
 	delegate := appwire.JobActivityDelegate{
 		DelegateID:          row.id,
 		OwnerSessionID:      descriptor.OwnerSessionID,
@@ -1097,19 +1204,19 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 		Status:              string(row.lifecycle),
 		ProjectionRevision:  row.revision,
 		Resumable:           row.resumable,
-		NotResumableReason:  row.notResumableReason,
-		Mandate:             descriptor.Task,
-		Task:                descriptor.Task,
-		Description:         descriptor.Description,
+		NotResumableReason:  truncateActivityText(row.notResumableReason, activityMaxDelegateProseRunes),
+		Mandate:             task,
+		Task:                task,
+		Description:         truncateActivityText(descriptor.Description, activityMaxDelegateProseRunes),
 		AgentType:           descriptor.AgentType,
 		RequestedModel:      descriptor.RequestedModel,
 		ResolvedProfileID:   descriptor.ResolvedProfileID,
 		ResolvedModel:       descriptor.ResolvedModel,
 		Model:               descriptor.ResolvedModel,
 		ReasoningEffort:     descriptor.Config.ReasoningEffort,
-		OriginTurnID:        descriptor.OriginTurnID,
-		OriginToolCallID:    descriptor.OriginToolCallID,
-		OriginItemID:        descriptor.OriginItemID,
+		OriginTurnID:        truncateActivityText(descriptor.OriginTurnID, activityMaxLabelRunes),
+		OriginToolCallID:    truncateActivityText(descriptor.OriginToolCallID, activityMaxLabelRunes),
+		OriginItemID:        truncateActivityText(descriptor.OriginItemID, activityMaxLabelRunes),
 		RunStartedAt:        status.RunStartedAt,
 		LatestActivityAt:    status.LatestActivityAt,
 		RunningForMS:        cloneInt64(status.RunningForMS),
@@ -1121,7 +1228,7 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	}
 	if row.lastOutcome != nil {
 		delegate.Outcome = string(row.lastOutcome.Status)
-		delegate.Reason = row.lastOutcome.Reason
+		delegate.Reason = truncateActivityText(row.lastOutcome.Reason, activityMaxDelegateProseRunes)
 		delegate.Terminal = !row.currentRunOpen
 		if !row.lastOutcome.EndedAt.IsZero() {
 			delegate.RunEndedAt = row.lastOutcome.EndedAt.UTC().Format(time.RFC3339Nano)
@@ -1135,10 +1242,15 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	}
 	if packet := row.latestPacket; packet != nil {
 		delegate.PacketKind = string(packet.Kind)
-		delegate.Message = append(json.RawMessage(nil), packet.Message...)
-		delegate.StructuredResult = append(json.RawMessage(nil), packet.StructuredResult...)
-		delegate.StructuredReason = packet.StructuredResultReason
-		delegate.Warnings = append([]string(nil), packet.Warnings...)
+		delegate.Message = boundActivityDelegatePayload(packet.Message)
+		delegate.StructuredResult = boundActivityDelegatePayload(packet.StructuredResult)
+		delegate.StructuredReason = truncateActivityText(packet.StructuredResultReason, activityMaxDelegateProseRunes)
+		delegate.Warnings = capActivityDelegateWarnings(packet.Warnings)
+		messageDropped := len(packet.Message) > activityMaxDelegatePayloadBytes
+		resultDropped := len(packet.StructuredResult) > activityMaxDelegatePayloadBytes
+		if messageDropped || resultDropped {
+			delegate.Diagnostics = append(delegate.Diagnostics, "terminal packet payload omitted: too large for the activity envelope")
+		}
 		if packet.StructuredResultValid != nil {
 			valid := *packet.StructuredResultValid
 			delegate.StructuredValid = &valid
@@ -1347,11 +1459,52 @@ func appendActivityBranchError(branch *appwire.JobActivityBranchState, message s
 	branch.Error += "; " + message
 }
 
+// unsupportedActivityJobTypesError summarizes the job records this projection
+// cannot render into one counted message. One sentence per record would make
+// Branch.Error grow with the journal — an unbounded envelope input, and
+// unreadable besides — while the count and the first offender are what a
+// reader needs. A single offender keeps the original per-record wording so
+// the common case reads exactly as it always did.
+func unsupportedActivityJobTypesError(records []*jobstore.JobRecord) string {
+	count := 0
+	var firstID string
+	var firstType jobstore.JobType
+	for _, rec := range records {
+		if rec == nil || rec.Type == jobstore.JobShell {
+			continue
+		}
+		count++
+		if count == 1 {
+			firstID, firstType = rec.JobID, rec.Type
+		}
+	}
+	switch count {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("job %q has unsupported type %q", offenderID(firstID), offenderType(firstType))
+	default:
+		return fmt.Sprintf("%d job records have unsupported types; first is job %q type %q", count, offenderID(firstID), offenderType(firstType))
+	}
+}
+
+// offenderID and offenderType bound the identifiers a collapsed error copies.
+// Job IDs and types are ordinarily short, but the error is fixed content the
+// envelope cannot trim, so neither is copied without a cap.
+func offenderID(id string) string { return truncateActivityText(id, activityMaxLabelRunes) }
+
+func offenderType(typ jobstore.JobType) string {
+	return truncateActivityText(string(typ), activityMaxLabelRunes)
+}
+
 func activityOutcome(status jobstore.Status) (bool, string) {
 	switch status {
 	case jobstore.StatusRunning:
 		return false, ""
-	case jobstore.StatusFailed, jobstore.StatusExhausted:
+	// A command that exited nonzero or was signalled is still a FAILURE
+	// for the activity rollup, exactly like a machinery failure or an
+	// exhausted delegate: attention follows the run, whatever broke it.
+	case jobstore.StatusFailed, jobstore.StatusCommandExitedNonzero, jobstore.StatusCommandKilled, jobstore.StatusExhausted:
 		return true, "failure"
 	case jobstore.StatusCompleted:
 		return true, "success"
@@ -1466,6 +1619,66 @@ func (r activityTrimResume) offsetAt(path []string) int {
 	return r.index
 }
 
+// shrinkActivityAncestors halves the fixed prose an ancestor chain carries,
+// dropping its packet payloads and trimming its warnings, until nothing more
+// can be cut or the page fits. It reports whether it changed anything, so a
+// caller can tell a page that fit after shrinking from one that genuinely
+// cannot fit.
+//
+// A continuation page's ancestor delegates are fixed parts: the size trim can
+// drop entries but never an ancestor, so per-field caps alone do not bound the
+// page — the SUM across up to activityMaxContinuationPathLength ancestors is
+// what must fit. This measures the actual marshaled page (so control-rune JSON
+// expansion counts) and shrinks only the ancestors, never an entry the reader
+// could otherwise have. ancestors is how many sessions from the tree's root are
+// fixed parts; the page's own target is not one of them (activityTrimResume).
+func shrinkActivityAncestors(root *appwire.JobActivitySession, ancestors int) bool {
+	if root == nil || ancestors <= 0 {
+		return false
+	}
+	changed := false
+	shrinkText := func(s string) string {
+		if n := utf8.RuneCountInString(s); n > activityAncestorTextFloorRunes {
+			changed = true
+			return truncateActivityText(s, max(activityAncestorTextFloorRunes, n/2))
+		}
+		return s
+	}
+	session := root
+	for level := 0; level < ancestors && session != nil; level++ {
+		var delegate *appwire.JobActivityDelegate
+		for _, entry := range slices.Backward(session.Entries) {
+			if entry.Delegate != nil {
+				delegate = entry.Delegate
+				break
+			}
+		}
+		if delegate == nil {
+			return changed
+		}
+		delegate.Mandate = shrinkText(delegate.Mandate)
+		delegate.Task = shrinkText(delegate.Task)
+		delegate.Description = shrinkText(delegate.Description)
+		delegate.Reason = shrinkText(delegate.Reason)
+		delegate.NotResumableReason = shrinkText(delegate.NotResumableReason)
+		delegate.StructuredReason = shrinkText(delegate.StructuredReason)
+		if delegate.Message != nil {
+			delegate.Message = nil
+			changed = true
+		}
+		if delegate.StructuredResult != nil {
+			delegate.StructuredResult = nil
+			changed = true
+		}
+		if len(delegate.Warnings) > 1 {
+			delegate.Warnings = delegate.Warnings[:len(delegate.Warnings)/2]
+			changed = true
+		}
+		session = delegate.Child
+	}
+	return changed
+}
+
 // trimActivityTreeToFit repeatedly drops the tree's trailing entry until it
 // encodes within activityMaxEncodedBytes. epochs — every visited session's
 // own generations, keyed by session ID — together with revision and resume
@@ -1487,6 +1700,16 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, epochs m
 		}
 		if len(raw) <= activityMaxEncodedBytes {
 			return tree, nil
+		}
+		// Before sacrificing entries, shrink the ancestor chain's fixed
+		// content. A continuation page carries that chain as the path back to
+		// the page's target, and per-field caps do not bound their SUM across
+		// up to activityMaxContinuationPathLength ancestors — the more so
+		// because JSON encodes a control rune as six bytes. Only fields above
+		// the floor are cut, so an ordinary chain is untouched and the entry
+		// trim below behaves exactly as before.
+		if shrinkActivityAncestors(&tree.Root, resume.depth) {
+			continue
 		}
 		dropped, ok := trimActivityTrailingEntry(&tree.Root, rootID, nil, epochs, revision, resume)
 		if !ok {

@@ -17,12 +17,26 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// confineScratchWorldBases keeps the startup reclaim from walking the machine's
+// real /tmp and /var/tmp. The reclaim takes its bases from
+// sandbox.SweepCrashedSessionScratch, which appends the world-usable host temps a
+// session temp container may live in — bases these tests cannot redirect with
+// TMPDIR or the user cache dir. A stale evener-sandbox-* entry there that this
+// process can lease but not fully remove (a foreign nested 0700 subtree under the
+// world-writable leaf) would make the reclaim report a warning and turn every
+// "no warnings" assertion below red, which AGENTS.md's determinism rule forbids.
+func confineScratchWorldBases(t *testing.T) {
+	t.Helper()
+	t.Cleanup(sandbox.SetWorldTempBasesForTesting(nil))
+}
+
 // TestReclaimCrashedSessionScratchRemovesOnlyAbandonedScratch drives the startup
 // reclaim over the base a real session allocates from (os.TempDir, TMPDIR here)
 // with three real scratch directories: one retained past the reclaim window with
 // no owner left, one whose owner still holds its lease, and one retained just
 // now. Only the first belongs to nobody.
 func TestReclaimCrashedSessionScratchRemovesOnlyAbandonedScratch(t *testing.T) {
+	confineScratchWorldBases(t)
 	base := t.TempDir()
 	workspace := t.TempDir()
 	t.Setenv("TMPDIR", base)
@@ -59,6 +73,7 @@ func TestReclaimCrashedSessionScratchRemovesOnlyAbandonedScratch(t *testing.T) {
 // to reclaim is there — and the prefixed directory sitting in the workspace's
 // own temp dir was never Evener's to remove.
 func TestReclaimCrashedSessionScratchSkipsWorkspaceContainedTempBase(t *testing.T) {
+	confineScratchWorldBases(t)
 	workspace := t.TempDir()
 	workspaceTemp := filepath.Join(workspace, "tmp")
 	if err := os.MkdirAll(workspaceTemp, 0o700); err != nil {
@@ -95,6 +110,7 @@ func TestReclaimCrashedSessionScratchSkipsWorkspaceContainedTempBase(t *testing.
 // still has to reclaim there — and a live owner in that base keeps its scratch
 // just as it does in the temp base.
 func TestReclaimCrashedSessionScratchSweepsEveryAllocationBase(t *testing.T) {
+	confineScratchWorldBases(t)
 	workspace := t.TempDir()
 	temp := t.TempDir()
 	cache := redirectUserCacheDir(t)
@@ -180,6 +196,7 @@ func newRetainedSessionScratch(t *testing.T, base, workspace string) string {
 // under that root — not merely under the directory the command started in — is
 // one Evener never allocates into.
 func TestReclaimCrashedSessionScratchAnchorsAtTheWorktreeRoot(t *testing.T) {
+	confineScratchWorldBases(t)
 	workspace := newGitWorkspace(t)
 	workspaceTemp := filepath.Join(workspace, "tmp")
 	sub := filepath.Join(workspace, "sub")
@@ -225,6 +242,7 @@ func newGitWorkspace(t *testing.T) string {
 // --dir, so the reclaim it starts has to read that same workspace and leave a
 // scratch base inside it alone.
 func TestServeReclaimsScratchAnchoredAtItsDirFlag(t *testing.T) {
+	confineScratchWorldBases(t)
 	stateDir := t.TempDir()
 	workspace := newGitWorkspace(t)
 	workspaceTemp := filepath.Join(workspace, "tmp")

@@ -1,13 +1,12 @@
 import type { ActivityCounts } from "@evener/appwire-client";
 import {
   errorKind,
-  errorText,
   friendlyErrorMessage,
   isActionUnavailable,
   isThreadNotFound,
+  type PanelLoadFailure,
+  panelLoadFailure,
   parseActivityTree,
-  sessionActionError,
-  sessionActionHeadline,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -83,6 +82,11 @@ function entryFor(entries: Map<string, ActivitySummaryEntry>, ref: string): Acti
 // previous life could still complete with (publish/fail match on requestID).
 let nextRequestID = 0;
 
+// The one name this panel's failure goes by, the same convention the tasks
+// panel keeps (taskPanelState.ts's LOAD_FAILURE): both branches of failureFor
+// report it.
+const LOAD_FAILURE = "Couldn't load activity";
+
 // A "hub-unreachable" rejection here is, with the caller-side ready-gate in
 // stores/threads.ts (issue #195's RCA), either requireReadyClient's own
 // ClientNotReadyError (waited out the bounded timeout - the hub is
@@ -95,16 +99,15 @@ let nextRequestID = 0;
 // function at all: requireReadyClient makes the caller's promise wait
 // rather than reject, so there is nothing to fail on - consistent with
 // ConnectionBanner's own "reconnecting is silent, self-healing" design.
-function failureFor(err: unknown): { headline: string; detail?: string; sentence: string } {
+function failureFor(err: unknown): PanelLoadFailure {
   if (errorKind(err) === "hub-unreachable") {
-    const headline = "Couldn't load activity";
+    const headline = LOAD_FAILURE;
     const detail = friendlyErrorMessage(err);
     return { headline, detail, sentence: `${headline}: ${detail}` };
   }
-  const headline = sessionActionHeadline("Couldn't load activity", err);
-  const sentence = sessionActionError("Couldn't load activity", err);
-  const detail = errorText(err).trim();
-  return detail ? { headline, detail, sentence } : { headline, sentence };
+  // Everything else is the package's shared failure encoding, so this panel
+  // and the tasks panel can never say two different things about one rejection.
+  return panelLoadFailure(LOAD_FAILURE, err);
 }
 
 // A continuation owns the panel's request ID until its page merges. Any root

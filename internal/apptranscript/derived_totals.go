@@ -1,10 +1,6 @@
 package apptranscript
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -45,34 +41,19 @@ type derivedTotals struct {
 // together. Callers that need only one figure should keep using the single
 // functions; this is for read paths that provably need both.
 func (c *TurnCache) DerivedTotalsFromFile(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.EvenerUsage, int, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, 0, fmt.Errorf("stat transcript: %w", err)
-	}
-	identity := scanMemoIdentity(info, fromEntryOrdinal)
-
-	c.mu.Lock()
-	if entry, ok := c.entries[path]; ok && entry.derivedTotals != nil && entry.derivedTotals.key == identity {
-		totals := entry.derivedTotals.totals
-		c.touch(path)
-		c.mu.Unlock()
-		return cloneEvenerUsage(totals.usage), totals.failedToolCall, nil
-	}
-	c.mu.Unlock()
-
-	totals, err := scanDerivedTotals(path, maxLineBytes, fromEntryOrdinal)
+	totals, err := memoizeScan(c, path, fromEntryOrdinal,
+		func(entry *turnCacheEntry) *scanMemo[derivedTotals] { return entry.derivedTotals },
+		func(entry *turnCacheEntry, memo *scanMemo[derivedTotals]) { entry.derivedTotals = memo },
+		func(value derivedTotals) derivedTotals {
+			value.usage = cloneEvenerUsage(value.usage)
+			return value
+		},
+		func() (derivedTotals, error) { return scanDerivedTotals(path, maxLineBytes, fromEntryOrdinal) },
+	)
 	if err != nil {
 		return nil, 0, err
 	}
-
-	c.mu.Lock()
-	entry := c.entries[path]
-	entry.derivedTotals = &derivedTotalsMemo{key: identity, totals: totals}
-	c.entries[path] = entry
-	c.touch(path)
-	c.evictLocked()
-	c.mu.Unlock()
-	return cloneEvenerUsage(totals.usage), totals.failedToolCall, nil
+	return totals.usage, totals.failedToolCall, nil
 }
 
 // scanDerivedTotals reads the transcript once, computing both figures with the
@@ -83,35 +64,22 @@ func (c *TurnCache) DerivedTotalsFromFile(path string, maxLineBytes int, fromEnt
 func scanDerivedTotals(path string, maxLineBytes int, fromEntryOrdinal int) (derivedTotals, error) {
 	var totals derivedTotals
 	var accumulated usageAccumulator
-	ordinal := 0
-	// toolNames resolves a result whose own record omits its name, mirroring
-	// ProjectTurn's map of the same name. It is filled from EVERY assistant
-	// entry, including ones before the divergence cut: a fork child's own
-	// result can answer a call the inherited prefix announced.
-	toolNames := map[string]string{}
-	if _, err := scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
-		ordinal++
-		var record derivedTotalsEntry
-		if err := json.Unmarshal(raw, &record); err != nil {
-			// Unreachable for any line scanSemanticTranscript admits: it has
-			// already strictly decoded the whole entry into transcript.Entry,
-			// of which this is a field-for-field subset. A failure here means
-			// this struct has drifted from schema.Turn, and skipping the
-			// record would silently undercount — reporting a wrong figure is
-			// worse than reporting none, so surface it.
-			return fmt.Errorf("decode transcript entry derived totals: %w", err)
-		}
-		counting := ordinal >= fromEntryOrdinal
-		if counting {
-			accumulated.add(record.Turn.Usage)
-		}
-		totals.failedToolCall += tallyFailedToolCalls(record.Turn.Message.Content, counting, toolNames)
-		return nil
-	}); err != nil {
+	failures := newFailureCounter()
+	if err := narrowScan(path, maxLineBytes, 1,
+		decodeNarrowEntry[derivedTotalsEntry]("derived totals"),
+		func(record derivedTotalsEntry, ordinal int) error {
+			counting := ordinal >= fromEntryOrdinal
+			if counting {
+				accumulated.add(record.Turn.Usage)
+			}
+			failures.observe(record.Turn.Message.Content, counting)
+			return nil
+		}); err != nil {
 		return derivedTotals{}, err
 	}
 	observeIndexRead(ReadStats{derivedScans: 1})
 	totals.usage = accumulated.total()
+	totals.failedToolCall = failures.count
 	return totals, nil
 }
 
@@ -126,9 +94,4 @@ type derivedTotalsEntry struct {
 		Usage   llm.Usage       `json:"usage"`
 		Message toolScanMessage `json:"message"`
 	} `json:"turn"`
-}
-
-type derivedTotalsMemo struct {
-	key    scanMemoKey
-	totals derivedTotals
 }

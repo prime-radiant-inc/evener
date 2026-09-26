@@ -1,10 +1,13 @@
 import { expect, test } from "vitest";
 import {
   AT_BOTTOM_THRESHOLD_PX,
+  contentGrewBelowViewport,
   isAtBottom,
+  isEndBelowFold,
   isNearTop,
   NEAR_TOP_THRESHOLD_PX,
   readScrollMetrics,
+  type ScrollMetrics,
 } from "./scrollMetrics";
 
 // isAtBottom: "at the bottom" means the reader is at the TRUE end of the
@@ -35,6 +38,47 @@ test("isAtBottom: false when scrolled far up", () => {
 test("isAtBottom: accepts a custom threshold, overriding the 4px default", () => {
   expect(isAtBottom({ scrollTop: 800, scrollHeight: 1000, clientHeight: 100 }, 100)).toBe(true); // gap = 100
   expect(isAtBottom({ scrollTop: 800, scrollHeight: 1000, clientHeight: 100 }, 4)).toBe(false);
+});
+
+// contentGrewBelowViewport: the geometry half of the scroll listener's
+// bottom-hold correction, which has to show a change was not the reader's own
+// scroll. The no-scroll-event re-anchor uses isEndBelowFold instead.
+const AT_BOTTOM_BEFORE: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 };
+
+test("contentGrewBelowViewport: true when content grew below a pinned offset in the same box", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 950, scrollHeight: 1021, clientHeight: 50 })).toBe(
+    true,
+  );
+});
+
+test("contentGrewBelowViewport: false when the offset already moved to the new bottom", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 971, scrollHeight: 1021, clientHeight: 50 })).toBe(
+    false,
+  );
+});
+
+test("contentGrewBelowViewport: false when the port itself changed size", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 950, scrollHeight: 1100, clientHeight: 100 })).toBe(
+    false,
+  );
+});
+
+test("contentGrewBelowViewport: false when the content did not grow", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 })).toBe(
+    false,
+  );
+});
+
+test("contentGrewBelowViewport: false when the offset moved backwards (the reader left)", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 900, scrollHeight: 1021, clientHeight: 50 })).toBe(
+    false,
+  );
+});
+
+test("contentGrewBelowViewport: false within the at-bottom threshold (nothing to correct)", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 950, scrollHeight: 1003, clientHeight: 50 })).toBe(
+    false,
+  );
 });
 
 test("AT_BOTTOM_THRESHOLD_PX is the 4px default (rounding-safe, smaller than one line of text)", () => {
@@ -80,4 +124,20 @@ test("readScrollMetrics reads scrollTop/scrollHeight/clientHeight straight off t
   Object.defineProperty(el, "clientHeight", { configurable: true, value: 400 });
 
   expect(readScrollMetrics(el)).toEqual({ scrollTop: 120, scrollHeight: 2000, clientHeight: 400 });
+});
+
+// isEndBelowFold: the exact true end, with none of isAtBottom's tolerance - a
+// reader following the bottom is re-pinned even for a 4px shortfall.
+test("isEndBelowFold: false at the exact bottom", () => {
+  expect(isEndBelowFold({ scrollTop: 950, scrollHeight: 1000, clientHeight: 50 })).toBe(false);
+});
+
+test("isEndBelowFold: true for a shortfall inside isAtBottom's tolerance", () => {
+  const shortByFour: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 46 };
+  expect(isAtBottom(shortByFour)).toBe(true);
+  expect(isEndBelowFold(shortByFour)).toBe(true);
+});
+
+test("isEndBelowFold: false for content that does not scroll at all", () => {
+  expect(isEndBelowFold({ scrollTop: 0, scrollHeight: 100, clientHeight: 200 })).toBe(false);
 });

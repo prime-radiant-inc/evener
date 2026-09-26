@@ -34,6 +34,21 @@ type transcriptDisplayStoreFaults struct {
 	AfterRename  func() error
 }
 
+// TranscriptDisplayPostApplyError wraps a durable failure that happened AFTER
+// the rename published the new revision: the stored default advanced, but a
+// follow-up directory sync or hook failed. Callers must treat the patch as
+// APPLIED - in particular the RPC layer must still broadcast Layout/Applied,
+// or every other client stays on the pre-patch revision. Same rule as
+// KeybindingsPostRenameError, for the other store.
+type TranscriptDisplayPostApplyError struct {
+	Err     error
+	Layout  appwire.TranscriptViewportClass
+	Applied appwire.TranscriptDisplayDefault
+}
+
+func (e *TranscriptDisplayPostApplyError) Error() string { return e.Err.Error() }
+func (e *TranscriptDisplayPostApplyError) Unwrap() error { return e.Err }
+
 // TranscriptDisplayStore is the hub-authoritative store for the two
 // transcript-display defaults. Desktop and Mobile revisions advance
 // independently, while one mutex serializes each durable update.
@@ -51,6 +66,14 @@ type TranscriptDisplayStore struct {
 // the load diagnostic; callers must retain both values and report the error.
 func NewTranscriptDisplayStore(stateRoot string) (*TranscriptDisplayStore, error) {
 	return newTranscriptDisplayStoreFS(afero.NewOsFs(), stateRoot, transcriptDisplayStoreFaults{})
+}
+
+// NewTranscriptDisplayStoreForTest is NewTranscriptDisplayStore plus a fault
+// hook fired after each rename publishes a patch, so tests outside this
+// package can exercise post-apply failure handling
+// (TranscriptDisplayPostApplyError).
+func NewTranscriptDisplayStoreForTest(stateRoot string, afterRenameFault func() error) (*TranscriptDisplayStore, error) {
+	return newTranscriptDisplayStoreFS(afero.NewOsFs(), stateRoot, transcriptDisplayStoreFaults{AfterRename: afterRenameFault})
 }
 
 func newTranscriptDisplayStoreFS(fs afero.Fs, stateRoot string, faults transcriptDisplayStoreFaults) (*TranscriptDisplayStore, error) {
@@ -118,6 +141,13 @@ func (s *TranscriptDisplayStore) Patch(params appwire.TranscriptDisplayDefaultsP
 		s.state = next
 	}
 	if err != nil {
+		if renamed {
+			return appwire.TranscriptDisplayPatchResponse{}, &TranscriptDisplayPostApplyError{
+				Err:     err,
+				Layout:  params.Layout,
+				Applied: cloneTranscriptDisplayDefault(*updated),
+			}
+		}
 		return appwire.TranscriptDisplayPatchResponse{}, err
 	}
 	return transcriptDisplayPatchResponse(params.Layout, *updated), nil

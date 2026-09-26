@@ -1,5 +1,5 @@
 import type { InputItem } from "@evener/appwire-client";
-import { canonicalSkillNames, markerText } from "@evener/appwire-client";
+import { canonicalSkillNames, markerPattern, markerText } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { PendingAttachment } from "../attachments/useAttachments";
 
@@ -18,7 +18,7 @@ function recordInput(record: MutationRecoveryRecord): InputItem[] {
 }
 
 function markerNumbers(text: string): number[] {
-  return Array.from(text.matchAll(/\[image (\d+)\]/g), (match) => Number(match[1]));
+  return Array.from(text.matchAll(markerPattern()), (match) => Number(match[1]));
 }
 
 function skillSelections(input: InputItem[]): string[] {
@@ -78,7 +78,7 @@ export function mergeRecoveryComposerDraft(
     markerMapping.set(attachment.marker, marker);
     return { ...attachment, marker };
   });
-  const recoveredText = recovered.text.replace(/\[image (\d+)\]/g, (match, marker: string) => {
+  const recoveredText = recovered.text.replace(markerPattern(), (match, marker: string) => {
     const replacement = markerMapping.get(Number(marker));
     return replacement === undefined ? match : markerText(replacement);
   });

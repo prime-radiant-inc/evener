@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/provenance"
@@ -49,6 +50,53 @@ func TestFormatJobNotification(t *testing.T) {
 	}, notificationExcerpt{}, true)
 	if !strings.Contains(emptyReason, `reason=""`) {
 		t.Errorf("empty reason must still be rendered:\n%s", emptyReason)
+	}
+}
+
+// The block's intent attribute carries the caller's one-line rationale for
+// the run (the shell tool call's `intent` argument, captured at launch onto
+// the job record). The web card renders it on the head line beside the
+// title, so a failed job announces WHY it ran, not just that it died. It is
+// a machine contract value for steeringClassify.ts's parser, so attr-shape
+// assertions here are contract assertions, not prose pins.
+func TestFormatJobNotificationEmitsIntent(t *testing.T) {
+	t.Parallel()
+	withIntent := formatJobNotificationBlock(jobNotification{
+		JobID: "job_X", JobType: "shell", Intent: "Running the mid-turn kill reproduction.",
+		Status: "command_exited_nonzero", Reason: "exit_nonzero",
+	}, notificationExcerpt{}, true)
+	if !strings.Contains(withIntent, `intent="Running the mid-turn kill reproduction."`) {
+		t.Errorf("notification missing intent attribute:\n%s", withIntent)
+	}
+
+	bare := formatJobNotificationBlock(jobNotification{
+		JobID: "job_Y", JobType: "shell", Status: "completed", Reason: "exit_zero",
+	}, notificationExcerpt{}, true)
+	// The intent attribute is always present: an explicit empty value marks
+	// a post-split block whose caller gave no rationale, so the parser can
+	// trust the description attr as a producer gloss and never as the old
+	// display-label fallback (which shipped the raw command and has no
+	// intent attr at all).
+	if !strings.Contains(bare, `intent=""`) {
+		t.Errorf("empty intent must still emit an explicit empty attribute:\n%s", bare)
+	}
+}
+
+// The block carries the split vocabulary verbatim: the event/status attrs
+// name the command's outcome (command_exited_nonzero / command_killed), and
+// the renderer has no status-specific branching to drift — the title words
+// are the web parser's job.
+func TestFormatJobNotificationCarriesCommandOutcomeStatuses(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"command_exited_nonzero", "command_killed"} {
+		block := formatJobNotificationBlock(jobNotification{
+			JobID: "job_X", JobType: "shell", Status: status, Reason: "exit_nonzero",
+		}, notificationExcerpt{}, true)
+		for _, want := range []string{`job_id="job_X"`, `event="` + status + `"`, `status="` + status + `"`} {
+			if !strings.Contains(block, want) {
+				t.Errorf("status %s block missing %q:\n%s", status, want, block)
+			}
+		}
 	}
 }
 
@@ -1068,7 +1116,15 @@ func TestJobNotificationFromRecordFallsBackToJobProvenance(t *testing.T) {
 	}
 }
 
-func TestJobNotificationFromRecordUsesDisplayLabelFallback(t *testing.T) {
+// The notification's label fields project the record honestly: Description
+// is the job's own gloss (the shell tool's separate description argument),
+// falling back to the delegate task — NEVER the command. The command
+// fallback that used to live here put the raw command on the web card's
+// head line, where a failed job announced its invocation instead of its
+// purpose; identification-by-command stays with the jobs listing
+// (projectJobRecordAt's jobRecordDisplayLabel). Intent — the caller's
+// stated rationale — rides its own field.
+func TestJobNotificationFromRecordLabelFields(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name        string
@@ -1085,10 +1141,9 @@ func TestJobNotificationFromRecordUsesDisplayLabelFallback(t *testing.T) {
 			want:        "explicit description",
 		},
 		{
-			name:    "command",
+			name:    "command is not a label",
 			command: "shell command",
-			task:    "delegate task",
-			want:    "shell command",
+			want:    "",
 		},
 		{
 			name: "delegate task",
@@ -1106,11 +1161,34 @@ func TestJobNotificationFromRecordUsesDisplayLabelFallback(t *testing.T) {
 				Description: tt.description,
 				Command:     tt.command,
 				Task:        tt.task,
+				Intent:      "caller's rationale",
 			})
 			if n.Description != tt.want {
 				t.Fatalf("notification description = %q, want %q", n.Description, tt.want)
 			}
+			if n.Intent != "caller's rationale" {
+				t.Fatalf("notification intent = %q, want the caller's rationale", n.Intent)
+			}
 		})
+	}
+}
+
+func TestEmitJobStartedStampsIntent(t *testing.T) {
+	t.Parallel()
+	var got events.EventData
+	jm := &jobManager{emit: func(_ events.EventKind, data events.EventData, _ *provenance.Causal) {
+		got = data
+	}}
+	jm.emitJobStarted(
+		jobstore.Event{Kind: jobstore.EventJobStarted, JobID: "job_A", Type: jobstore.JobShell},
+		&runningJob{rec: &jobstore.JobRecord{JobID: "job_A", Type: jobstore.JobShell, Intent: "caller's rationale"}},
+	)
+	started, ok := got.(events.JobStartedData)
+	if !ok {
+		t.Fatalf("emitted data = %T, want events.JobStartedData", got)
+	}
+	if started.Intent != "caller's rationale" {
+		t.Fatalf("job-started payload intent = %q, want the record's intent", started.Intent)
 	}
 }
 

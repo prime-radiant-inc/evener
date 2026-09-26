@@ -45,12 +45,13 @@ gesture.
   ```
 - **Isolate.** This card has no OAuth requirement (it authenticates via the exported
   `OPENAI_API_KEY` above, not stored OAuth state), so it gets the normal Setup-checklist
-  treatment: a throwaway `$HOME` keeps auth-token, `credentials.toml`, and session history
-  off the real `~/.evener` and `~/.local/state/evener` entirely.
+  treatment: a throwaway `$HOME` plus the shared isolation helper keeps auth-token,
+  `credentials.toml`, and session history off the real `~/.evener` and
+  `~/.local/state/evener`, and clears the `EVENER_PROVIDERS_CONFIG`/
+  `EVENER_CREDENTIALS_CONFIG` redirects so no real provider is loaded.
   ```bash
-  export HOME="$run/home"
-  mkdir -p "$HOME"
-  unset XDG_STATE_HOME
+  . scripts/lib/e2e-lib.sh
+  e2e_isolate_home "$run"
   ```
 - Start the hub on a kernel-assigned port and read the port back from its own log line.
   **Never pass `--state-dir`/`EVENER_STATE_DIR`** to the hub or any daemon in this scenario —
@@ -68,7 +69,7 @@ gesture.
     sleep 0.1
   done
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.evener/auth-token")
+  TOKEN=$(cat "$HOME/.local/state/evener/auth-token")
   curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"   # → 401 means it answered
   export EVENER_E2E_RUN="$run"   # how the sibling ask cards find this hub
   ```
@@ -195,10 +196,12 @@ gesture.
 ## Expected
 
 - **Step 2 (exact)**: `state` is `"awaiting"`; `capabilities.send` is `true` and
-  `capabilities.queue` is `false` — an awaiting session is at rest, not mid-turn
-  (`server/appwire_runtime.go:1046,1057`: `Send: !active && !closed`,
-  `Queue: … && active && !closed`). Falsify: `queue` true while `awaiting`, or the thread
-  never reports `awaiting` at all.
+  `capabilities.queue` is `true` — Send is the one status-computed flag
+  (`Send: !active && !closed`), while Queue advertises harness support and does
+  not move with the status (`server/appwire_runtime.go`'s `appCapabilitiesLocked`).
+  The client applies the status, so turn/queue is still offered only mid-turn.
+  Falsify: `queue` false while `awaiting` on a wired harness — the folded
+  `active` gate came back — or the thread never reports `awaiting` at all.
 - **Step 4**: `opts` contains both `Postgres` and `SQLite`; `tagged` contains `Postgres`
   if the model honored `recommended: true`; `dockInTranscript` is `true` — the dock is the
   transcript's trailing virtual row, not a composer child; `anchor` reads

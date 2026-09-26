@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -54,7 +55,7 @@ type appTurnProjection struct {
 }
 
 func appTurnProjectionFromTranscriptFile(path string) (appTurnProjection, error) {
-	toolNames := map[string]string{}
+	reg := apptranscript.NewToolCallRegistry()
 	entries := 0
 	projection, err := apptranscript.ItemTurnProjectionFromFile(path, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		if entryIndex > entries {
@@ -63,8 +64,9 @@ func appTurnProjectionFromTranscriptFile(path string) (appTurnProjection, error)
 		// Positioning is apptranscript's now: TurnsFromFile groups entries
 		// into logical turns and assigns each item its Position/TranscriptKey
 		// there. Re-positioning here would clobber the grouped ordinals.
-		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 	})
+	apptranscript.FlushUnpairedCommunicates(&projection.Turns, reg)
 	return appTurnProjection{turns: projection.Turns, persistedEntries: entries, nextEntry: projection.NextEntry}, err
 }
 
@@ -83,14 +85,15 @@ func appTurnsFromEntries(header transcript.Header, entries []transcript.Entry) (
 }
 
 func appTurnProjectionFromEntries(header transcript.Header, entries []transcript.Entry) (appTurnProjection, error) {
-	toolNames := map[string]string{}
+	reg := apptranscript.NewToolCallRegistry()
 	highest := 0
 	projection, err := apptranscript.ItemTurnProjectionFromEntries(header, entries, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		if entryIndex > highest {
 			highest = entryIndex
 		}
-		return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 	})
+	apptranscript.FlushUnpairedCommunicates(&projection.Turns, reg)
 	return appTurnProjection{turns: projection.Turns, persistedEntries: highest, nextEntry: projection.NextEntry}, err
 }
 
@@ -250,10 +253,53 @@ func (s *appTurnSnapshot) Seed(value any) {
 func (s *appTurnSnapshot) Apply(records []appserver.SequencedNotification) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.applyLocked(records)
+	s.applyLocked(records, nil)
 }
 
-func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification) {
+// ApplyCommitted applies one committed notification whose params the caller
+// still holds typed. Streamed deltas are read from those params instead of
+// decoding the JSON the notifier just encoded them into: deltas are most of a
+// turn's notifications. Only the string-only delta params are read this way,
+// so the snapshot never aliases slices or pointers the caller owns.
+func (s *appTurnSnapshot) ApplyCommitted(record appserver.SequencedNotification, params any) {
+	if !deltaEncodesVerbatim(params) {
+		params = nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.applyLocked([]appserver.SequencedNotification{record}, params)
+}
+
+// deltaEncodesVerbatim reports whether typed delta params carry a valid UTF-8
+// delta (their IDs are generated, so always valid). Encoding replaces invalid bytes with
+// U+FFFD, and tool output is chunked at byte offsets, so a rune can straddle
+// two deltas; such a delta is read from its encoded JSON so the snapshot
+// matches what clients were sent.
+func deltaEncodesVerbatim(params any) bool {
+	switch p := params.(type) {
+	case appwire.AgentMessageDeltaParams:
+		return utf8.ValidString(p.Delta)
+	case appwire.ReasoningSummaryDeltaParams:
+		return utf8.ValidString(p.Delta)
+	case appwire.ToolOutputDeltaParams:
+		return utf8.ValidString(p.Delta)
+	}
+	return true
+}
+
+// deltaParams fills out from typed when it holds a T, and otherwise decodes
+// raw.
+func deltaParams[T any](typed any, raw json.RawMessage, out *T) bool {
+	if params, ok := typed.(T); ok {
+		*out = params
+		return true
+	}
+	return json.Unmarshal(raw, out) == nil
+}
+
+// applyLocked applies committed records. typed is nil, or the params of the
+// single record before encoding (see ApplyCommitted).
+func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification, typed any) {
 	if len(records) == 0 {
 		return
 	}
@@ -390,6 +436,10 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 		return &turn.Items[len(turn.Items)-1]
 	}
 
+	var typedParams any
+	if len(records) == 1 {
+		typedParams = typed
+	}
 	for _, record := range records {
 		switch record.Notification.Method {
 		case appwire.NotifyTurnStarted:
@@ -418,21 +468,21 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 			}
 		case appwire.NotifyAgentMessageDelta:
 			var params appwire.AgentMessageDeltaParams
-			if json.Unmarshal(record.Notification.Params, &params) == nil {
+			if deltaParams(typedParams, record.Notification.Params, &params) {
 				if item := itemForDelta(params.TurnID, params.ItemID, "agentMessage"); item != nil {
 					item.Text += params.Delta
 				}
 			}
 		case appwire.NotifyReasoningSummaryDelta:
 			var params appwire.ReasoningSummaryDeltaParams
-			if json.Unmarshal(record.Notification.Params, &params) == nil {
+			if deltaParams(typedParams, record.Notification.Params, &params) {
 				if item := itemForDelta(params.TurnID, params.ItemID, "reasoning"); item != nil {
 					item.Text += params.Delta
 				}
 			}
 		case appwire.NotifyToolOutputDelta:
 			var params appwire.ToolOutputDeltaParams
-			if json.Unmarshal(record.Notification.Params, &params) != nil {
+			if !deltaParams(typedParams, record.Notification.Params, &params) {
 				continue
 			}
 			itemID := params.ItemID
@@ -772,7 +822,7 @@ func cloneAppThreadItem(item appwire.ThreadItem) appwire.ThreadItem {
 	clone.DurationMS = cloneInt64(item.DurationMS)
 	clone.ExitCode = cloneInt64(item.ExitCode)
 	clone.Raw = append(json.RawMessage(nil), item.Raw...)
-	clone.OutputImages = append([]appwire.OutputImage(nil), item.OutputImages...)
+	clone.OutputImages = appwire.CloneOutputImages(item.OutputImages)
 	clone.Images = make([]appwire.InputItem, len(item.Images))
 	for i := range item.Images {
 		clone.Images[i] = item.Images[i]
@@ -820,6 +870,15 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 func appThreadItemIdentityMatches(existing, incoming appwire.ThreadItem) bool {
 	if existing.TranscriptKey != "" && incoming.TranscriptKey != "" {
 		return existing.TranscriptKey == incoming.TranscriptKey
+	}
+	// agentMessage items from a flushed (reload) seed and a live re-emission
+	// share the same CallID but have different IDs (flushed:
+	// item_assistant_flushed_<callID>, live: item_assistant_<N>). Match by
+	// CallID so the live re-emission merges into the seeded flushed item
+	// rather than double-rendering on resume.
+	if existing.Type == "agentMessage" && incoming.Type == "agentMessage" &&
+		existing.CallID != "" && existing.CallID == incoming.CallID {
+		return true
 	}
 	return existing.ID == incoming.ID
 }
@@ -881,12 +940,10 @@ func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadIte
 	if incoming.Delta == "" {
 		incoming.Delta = existing.Delta
 	}
-	if len(incoming.Images) == 0 {
-		incoming.Images = existing.Images
-	}
-	if len(incoming.OutputImages) == 0 {
-		incoming.OutputImages = existing.OutputImages
-	}
+	// Output and input images each have one rule: see appwire.MergeOutputImages
+	// and appwire.MergeInputImages.
+	incoming.Images = appwire.MergeInputImages(existing.Images, incoming.Images)
+	incoming.OutputImages = appwire.MergeOutputImages(existing.OutputImages, incoming.OutputImages)
 	if incoming.ToolName == "" {
 		incoming.ToolName = existing.ToolName
 	}

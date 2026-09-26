@@ -1,27 +1,14 @@
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { ToolIcon, type ToolIconKind } from ".";
+import { PATHS, ToolIcon, type ToolIconKind } from ".";
 
 afterEach(cleanup);
 
-const ALL_KINDS: ToolIconKind[] = [
-  "terminal",
-  "file",
-  "edit",
-  "search",
-  "folder",
-  "globe",
-  "ask",
-  "tasks",
-  "delegate",
-  "transcript",
-  "job",
-  "send",
-  "skill",
-  "person",
-  "wrench",
-  "thought",
-];
+// Derived from the widget's exported PATHS, not hand-maintained: the Record's
+// type keeps the union and the paths exhaustive against each other, so this
+// list can never silently drop a kind and shrink the "every kind draws"
+// coverage below.
+const ALL_KINDS: ToolIconKind[] = Object.keys(PATHS) as ToolIconKind[];
 
 function svgOf(container: HTMLElement): SVGSVGElement {
   const svg = container.querySelector("svg");

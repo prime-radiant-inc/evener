@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/envvars"
@@ -19,6 +20,19 @@ type Manager struct {
 	Root   string           // store root
 	Now    func() time.Time // injectable clock; defaults to time.Now
 	Stderr io.Writer        // warnings sink; defaults to os.Stderr
+
+	// storeChangedMu guards pendingStoreChanged and onStoreChanged
+	// (store_changed.go). flock gives real mutual exclusion between lockStore
+	// sessions in wall-clock time, but no Go happens-before edge — nothing
+	// the race detector can see — and several of this package's own
+	// lockAcquirer test seams (installAcquireLock, marketplaceAcquireLock,
+	// gcAcquireLock) are stubbed to a no-op release in other tests, so these
+	// two fields need their own synchronization regardless of the file lock.
+	// Held only for the instant of a mark, take, install, or read (markStoreChanged,
+	// takeStoreChanged, OnStoreChanged) — never across the file-lock wait itself.
+	storeChangedMu      sync.Mutex
+	pendingStoreChanged StoreChanged
+	onStoreChanged      func(StoreChanged)
 }
 
 // NewManager returns a Manager rooted at root, or DefaultRoot() when root == "".

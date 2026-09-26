@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Idea B — Held at the boundary · steering almost-delivered</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --surface-0: #191918;
+    --surface-canvas: #1D1D1B;
+    --surface-1: #232320;
+    --surface-2: #232320;
+    --surface-inset: #20201E;
+    --hover-1: #2B2B28;
+    --hover-2: #33332F;
+    --field: #292926;
+    --edge: #34342F;
+    --edge-strong: #51514A;
+    --ink-hi: #F2F1EB;
+    --ink-mid: #B0AFA6;
+    --ink-low: #99998F;
+    --attention: #F68F3C;
+    --alive: #3DBB72;
+    --danger: #EE5C61;
+    --accent: #3D9AFF;
+    --accent-ink: #459EFF;
+    --accent-bg: color-mix(in oklab, var(--accent) 15%, var(--surface-1));
+    --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-prose: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --session-measure: 44rem;
+    --speaker-gap: 10px;
+    --speaker-gutter: 34px;
+    --radius-chip: 3px;
+    --radius-control: 4px;
+  --radius-pill: 999px;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: #111110; }
+  body { font-family: var(--font-sans); font-size: 15px; color: var(--ink-hi); display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 32px 24px 64px; }
+
+  .ideahead { max-width: 1440px; width: 100%; }
+  .ideahead .eyebrow { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-low); font-weight: 500; }
+  .ideahead h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.02em; margin: 6px 0 4px; }
+  .ideahead .thesis { color: var(--ink-mid); max-width: 68ch; line-height: 1.6; }
+  .ideahead ul { margin-top: 10px; color: var(--ink-low); font-size: 13px; line-height: 1.7; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+  .ideahead li::before { content: "— "; color: var(--edge-strong); }
+
+  .frame { width: 1440px; height: 900px; flex: none; background: var(--surface-0); border: 1px solid #0c0c0b; box-shadow: 0 24px 80px #00000099; display: grid; grid-template-columns: 260px 1fr; overflow: hidden; border-radius: 6px; }
+
+  .rail { background: var(--surface-canvas); border-right: 1px solid var(--edge); }
+  .rail .actions { display: flex; gap: 8px; padding: 12px; align-items: center; }
+  .rail .actions .act { font-size: 13px; color: var(--ink-mid); }
+  .rail .actions .new { color: var(--ink-hi); font-weight: 500; }
+  .railgroup { padding: 8px 12px; }
+  .railgroup .grouplabel { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-low); font-weight: 500; margin-bottom: 6px; }
+  .sess { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: var(--radius-control); font-size: 13px; }
+  .sess .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .sess .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess .meta { font-family: var(--font-mono); font-size: 11px; color: var(--ink-low); }
+  .sess.live-selected { background: var(--hover-2); }
+  .sess .dot.working { background: var(--alive); }
+  .sess .dot.needs { background: var(--attention); }
+  .sess .dot.idle { border: 1px solid var(--edge-strong); }
+  .sess.dim { color: var(--ink-low); }
+
+  .pane { display: flex; flex-direction: column; min-width: 0; }
+  .titlebar { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--edge); }
+  .titlebar .title { font-size: 15px; font-weight: 600; }
+  .modelchip { font-family: var(--font-mono); font-size: 11px; color: var(--ink-mid); background: var(--surface-1); border: 1px solid var(--edge); padding: 2px 6px; border-radius: var(--radius-chip); }
+  .titlebar .right { margin-left: auto; display: flex; gap: 8px; }
+  .titlebar .ghostbtn { font-size: 13px; color: var(--ink-mid); }
+
+  .transcript { flex: 1; overflow: hidden; padding: 20px 32px 12px; }
+  .column { max-width: var(--session-measure); display: flex; flex-direction: column; }
+  .column > * + * { margin-top: 8px; }
+
+  .speaker { display: flex; gap: var(--speaker-gap); align-items: flex-start; padding: 4px 0; }
+  .speaker.opens-exchange { margin-top: 24px; }
+  .avatar { width: 24px; height: 24px; border-radius: 6px; flex: none; background: linear-gradient(160deg, #4d5058, #2e2f33); color: #E8EAF0; font-size: 11px; font-weight: 600; display: grid; place-items: center; }
+  .avatar.you { background: var(--accent); color: #0d2238; }
+  .col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+  .speakerhead { display: flex; align-items: baseline; gap: 8px; font-size: 15px; }
+  .speakerhead .name { font-weight: 600; }
+  .speakerhead .time { font-size: 13px; color: var(--ink-mid); }
+  .bubble { width: fit-content; max-width: 100%; padding: 8px 12px; background: var(--accent-bg); border-radius: var(--radius-control); }
+  .bubble .btext { font-family: var(--font-prose); font-size: 18px; line-height: 1.6; color: var(--ink-hi); white-space: pre-wrap; overflow-wrap: break-word; }
+  .prose { font-family: var(--font-prose); font-size: 18px; line-height: 1.6; color: var(--ink-hi); }
+
+  .think { display: flex; align-items: center; gap: 8px; margin-left: var(--speaker-gutter); padding: 2px 0; color: var(--ink-low); font-size: 13px; }
+  .think .label { font-weight: 500; color: var(--ink-mid); }
+  .think .preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 56ch; }
+  .think .chev { font-size: 11px; }
+
+  .cluster { margin-left: var(--speaker-gutter); display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-low); padding: 2px 0; }
+  .cluster .check { color: var(--alive); }
+  .cluster .path { font-family: var(--font-mono); font-size: 12px; }
+  .cluster .expand { color: var(--ink-low); }
+
+  .tool { margin-left: var(--speaker-gutter); padding: 8px 0; }
+  .tool .row { display: flex; align-items: baseline; gap: 8px; }
+  .tool .purpose { font-size: 15px; font-weight: 500; color: var(--ink-hi); }
+  .tool .cmd { font-family: var(--font-mono); font-size: 12px; color: var(--ink-mid); background: var(--surface-inset); border: 1px solid var(--edge); padding: 2px 7px; border-radius: var(--radius-chip); }
+  .tool .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--alive); border-top-color: transparent; animation: spin 0.9s linear infinite; flex: none; align-self: center; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .tool .elapsed { font-family: var(--font-mono); font-size: 12px; color: var(--alive); margin-left: auto; }
+  .tool .out { margin-top: 6px; font-family: var(--font-mono); font-size: 12px; line-height: 1.55; color: var(--ink-low); }
+  .tool .out .hit { color: var(--ink-mid); }
+
+  /* ---- footer ---- */
+  .footer { border-top: 1px solid var(--edge); padding: 10px 16px 12px; background: var(--surface-0); }
+  .liveness { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-low); padding: 0 2px 8px; }
+  .liveness .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--alive); animation: softpulse 2.4s ease-in-out infinite; }
+  .liveness .t { font-family: var(--font-mono); color: var(--ink-mid); }
+  @keyframes softpulse { 0%, 100% { opacity: .4 } 50% { opacity: 1 } }
+
+  /* ---- IDEA B: the held queue ---- */
+  .heldqueue { display: flex; flex-direction: column; gap: 4px; padding-bottom: 10px; }
+  .heldrow {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--surface-1); border: 1px solid var(--edge);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--radius-control);
+    padding: 7px 10px;
+  }
+  .heldrow .status { flex: none; font-size: 13px; font-weight: 600; color: var(--accent-ink); }
+  .heldrow .reason { flex: none; font-size: 12.5px; color: var(--ink-mid); }
+  .heldrow .heldfor { flex: none; font-family: var(--font-mono); font-size: 11px; color: var(--ink-low); }
+  .heldrow .pos { flex: none; font-family: var(--font-mono); font-size: 11px; color: var(--ink-low); border: 1px solid var(--edge); padding: 1px 5px; border-radius: var(--radius-chip); }
+  .heldrow .preview { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--ink-hi); opacity: .85; }
+  .heldrow .dismiss { flex: none; color: var(--ink-low); font-size: 12px; padding: 0 2px; }
+  .heldrow .dismiss:hover { color: var(--ink-hi); }
+  .heldqueue .footnote { color: var(--ink-low); font-size: 11px; margin-top: 4px; }
+
+  .composer { display: flex; align-items: center; gap: 8px; background: var(--field); border: 1px solid var(--edge); border-radius: var(--radius-control); box-shadow: inset 0 1px 2px #00000066; padding: 4px 6px 4px 10px; }
+  .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .composer .placeholder { flex: 1; color: var(--ink-low); font-size: 15px; line-height: 1.6; padding: 6px 0; }
+  .composer .plus { color: var(--ink-low); font-size: 15px; padding: 0 4px; }
+  .composer .btn { font-size: 13px; font-weight: 500; border-radius: var(--radius-control); border: 1px solid transparent; padding: 4px 10px; }
+  .composer .btn.quiet { background: var(--surface-1); border-color: var(--edge); color: var(--ink-hi); }
+  .composer .btn.dangerquiet { background: transparent; color: var(--danger); }
+  .composer .btn.primary { background: var(--accent); color: #0d2238; position: relative; }
+  .composer .btn.primary .badge {
+    position: absolute; top: -7px; right: -7px;
+    background: var(--accent); color: #0d2238;
+    font-size: 10px; font-weight: 600; font-family: var(--font-sans);
+    border: 2px solid var(--surface-0); border-radius: var(--radius-pill);
+    width: 17px; height: 17px; display: grid; place-items: center;
+  }
+
+
+  /* ---- storyboard ---- */
+  .storyboard { width: 1440px; }
+  .storyboard h2 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .storyboard .sub { color: var(--ink-low); font-size: 13px; margin-bottom: 16px; }
+  .stages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .stage { border: 1px solid #262623; border-radius: 6px; overflow: hidden; background: var(--surface-0); }
+  .stage .shot { height: 350px; padding: 14px 18px; overflow: hidden; }
+  .stage .caption { border-top: 1px solid var(--edge); padding: 10px 14px; font-size: 12.5px; color: var(--ink-mid); line-height: 1.55; }
+  .stage .caption .num { color: var(--ink-hi); font-weight: 600; margin-right: 6px; }
+  .stage .caption .delta { color: var(--accent-ink); }
+  .stage .shot .heldqueue { padding: 12px 0 0; }
+</style>
+</head>
+<body>
+
+<header class="ideahead">
+  <div class="eyebrow">Steering, almost delivered — direction B of 3</div>
+  <h1>Held at the boundary — an explicit steering queue</h1>
+  <p class="thesis">The dimmed "Steering…" chip becomes a small queue of held rows, each naming the boundary it waits on, with a ticking held-time and its position in line. Every path that creates steering gets a row — a promoted queue row no longer vanishes, it moves. The Steer button carries a held-count badge so the queue is discoverable even when the footer is off-screen.</p>
+  <ul>
+    <li>Cheapest to ship: extends the existing chip strip, keeps the transcript free of optimistic items (the current ruling stands).</li>
+    <li>Covers the real vanish: promote and drain seed rows here too, settled only when the transcript item lands.</li>
+    <li>Tradeoff: the state lives where the eye isn't — a footer row plus a badge, not the message in place.</li>
+  </ul>
+</header>
+
+<div class="frame">
+  <aside class="rail">
+    <div class="actions">
+      <span class="act new">＋ New</span>
+      <span class="act">Search ⌘K</span>
+      <span class="act">Settings</span>
+    </div>
+    <div class="railgroup">
+      <div class="grouplabel">Live (2)</div>
+      <div class="sess live-selected"><span class="dot working"></span><span class="name">Refactor auth token cache</span><span class="meta">1:12</span></div>
+      <div class="sess"><span class="dot needs"></span><span class="name">Audit error handling</span><span class="meta">needs you</span></div>
+    </div>
+    <div class="railgroup">
+      <div class="grouplabel">Recent</div>
+      <div class="sess dim"><span class="dot idle"></span><span class="name">Fix flaky CI</span><span class="meta">3h</span></div>
+      <div class="sess dim"><span class="dot idle"></span><span class="name">Docs pass on appwire</span><span class="meta">2d</span></div>
+    </div>
+  </aside>
+
+  <main class="pane">
+    <div class="titlebar">
+      <span class="title">Refactor auth token cache</span>
+      <span class="modelchip">gpt-5.5</span>
+      <div class="right"><span class="ghostbtn">Details</span><span class="ghostbtn">Interrupt</span></div>
+    </div>
+
+    <div class="transcript">
+      <div class="column">
+
+        <div class="speaker opens-exchange">
+          <div class="avatar you">J</div>
+          <div class="col">
+            <div class="speakerhead"><span class="name">You</span><span class="time">5:58 PM</span></div>
+            <div class="bubble"><div class="btext">The auth token cache invalidates too aggressively — valid tokens get evicted early. Find the root cause and fix it, and check how callers use it too.</div></div>
+          </div>
+        </div>
+
+        <div class="think"><span class="label">Thought for 6s</span><span class="preview">The eviction probably keys off the wrong timestamp…</span><span class="chev">▾</span></div>
+
+        <div class="speaker">
+          <div class="avatar">E</div>
+          <div class="col">
+            <div class="speakerhead"><span class="name">Evener</span><span class="time">5:59 PM</span></div>
+            <div class="prose">I'll trace how the cache is used, then fix the eviction logic. Looking at the cache and its callers now.</div>
+          </div>
+        </div>
+
+        <div class="cluster"><span class="check">✓</span><span>4 steps ·</span><span class="path">read cache.go · grep callers · ran tests</span><span class="expand">expand</span></div>
+
+        <div class="tool">
+          <div class="row">
+            <span class="spinner"></span>
+            <span class="purpose">Find every evictExpired call site</span>
+            <span class="cmd">rg "evictExpired(" --type go</span>
+            <span class="elapsed">0:42</span>
+          </div>
+          <div class="out">
+            agent/session_cache.go<span class="hit">:118: func (c *tokenCache) evictExpired(</span><br>
+            agent/session_cache_test.go<span class="hit">:64:</span>
+          </div>
+        </div>
+
+        <div class="prose" style="margin-left: var(--speaker-gutter); color: var(--ink-mid); font-size: 13px; font-family: var(--font-sans);">◇ 2 messages steer this turn at the next boundary — held below, beside the composer.</div>
+
+      </div>
+    </div>
+
+    <div class="footer">
+      <div class="liveness"><span class="dot"></span><span>working</span><span class="t">1:12</span></div>
+
+      <!-- THE HELD QUEUE -->
+      <div class="heldqueue">
+        <div class="heldrow">
+          <span class="status">Held</span>
+          <span class="reason">delivers when this step finishes</span>
+          <span class="pos">1st</span>
+          <span class="heldfor">held 0:42</span>
+          <span class="preview">also add a regression test for the idle-but-valid case</span>
+          <span class="dismiss">✕</span>
+        </div>
+        <div class="heldrow">
+          <span class="status">Held</span>
+          <span class="reason">delivers when this step finishes</span>
+          <span class="pos">2nd</span>
+          <span class="heldfor">held 0:07</span>
+          <span class="preview">and check the callers in mobile-native too</span>
+          <span class="dismiss">✕</span>
+        </div>
+        <div class="footnote">✕ is schematic — no wire method can withdraw accepted steering today</div>
+      </div>
+
+      <div class="composer">
+        <span class="plus">＋</span>
+        <span class="placeholder">Message the agent…</span>
+        <button class="btn dangerquiet">Stop</button>
+        <button class="btn quiet">Send</button>
+        <button class="btn primary">Steer<span class="badge">2</span></button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<section class="storyboard">
+  <h2>Lifecycle</h2>
+  <div class="sub">Rows settle only on evidence — the transcript item landing — never on a guess. A promoted queue row simply moves here instead of vanishing.</div>
+  <div class="stages">
+
+    <div class="stage">
+      <div class="shot">
+        <div class="tool" style="margin-left:0">
+          <div class="row"><span class="spinner"></span><span class="purpose">Find every evictExpired call site</span><span class="cmd">rg …</span><span class="elapsed">0:42</span></div>
+        </div>
+        <div class="heldqueue">
+          <div class="heldrow">
+            <span class="status">Held</span>
+            <span class="reason">delivers when this step finishes</span>
+            <span class="pos">1st</span>
+            <span class="heldfor">held 0:00</span>
+            <span class="preview">also add a regression test…</span>
+            <span class="dismiss">✕</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption"><span class="num">1</span><b>Pressed.</b> The row appears the instant the composer clears, timer at zero. <span class="delta">Promote ("Steer now" on a queued row) lands here too</span> — same row, no vanish.</div>
+    </div>
+
+    <div class="stage">
+      <div class="shot">
+        <div class="tool" style="margin-left:0">
+          <div class="row"><span class="spinner"></span><span class="purpose">Find every evictExpired call site</span><span class="cmd">rg …</span><span class="elapsed">1:20</span></div>
+        </div>
+        <div class="heldqueue">
+          <div class="heldrow">
+            <span class="status">Held</span>
+            <span class="reason">delivers when this step finishes</span>
+            <span class="pos">1st</span>
+            <span class="heldfor">held 0:42</span>
+            <span class="preview">also add a regression test…</span>
+            <span class="dismiss">✕</span>
+          </div>
+          <div class="heldrow">
+            <span class="status">Held</span>
+            <span class="reason">delivers when this step finishes</span>
+            <span class="pos">2nd</span>
+            <span class="heldfor">held 0:07</span>
+            <span class="preview">and check the callers in mobile-native too</span>
+            <span class="dismiss">✕</span>
+          </div>
+        </div>
+      </div>
+      <div class="caption"><span class="num">2</span><b>Held.</b> <span class="delta">The wait ticks, the position is explicit, the reason names the blocker.</span> During a thinking block the reason reads "delivers when this response ends."</div>
+    </div>
+
+    <div class="stage">
+      <div class="shot">
+        <div class="cluster" style="margin-left:0"><span class="check">✓</span><span>Find every evictExpired call site · 7 hits</span></div>
+        <div class="speaker" style="margin-left:0; margin-top:10px; opacity:1">
+          <div class="avatar you">J</div>
+          <div class="col">
+            <div class="speakerhead"><span class="name">You</span><span class="time">6:01 PM</span></div>
+            <div class="bubble"><div class="btext">also add a regression test for the idle-but-valid case</div></div>
+          </div>
+        </div>
+        <div class="speaker" style="margin-left:0">
+          <div class="avatar you">J</div>
+          <div class="col">
+            <div class="speakerhead"><span class="name">You</span><span class="time">6:01 PM</span></div>
+            <div class="bubble"><div class="btext">and check the callers in mobile-native too</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="caption"><span class="num">3</span><b>Delivered.</b> Both rows cleared in the same frame the messages land in the transcript, in line order. The Steer button badge drops to zero with them.</div>
+    </div>
+
+  </div>
+</section>
+
+</body>
+</html>

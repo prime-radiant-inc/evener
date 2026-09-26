@@ -71,6 +71,27 @@ func TestCredentialsPanel_EnterTriggersSet(t *testing.T) {
 	}
 }
 
+// The remove keybinding carries the shown row's endpoint fingerprint, so the
+// hub refuses a removal confirmed against an endpoint the name no longer
+// resolves to rather than deleting a replacement instance.
+func TestCredentialsPanel_RemoveCarriesTheShownEndpointFingerprint(t *testing.T) {
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+		{Name: "anthropic", ProviderID: "anthropic", ActiveSource: "store", EndpointFingerprint: "fp-anthropic"},
+	}}})
+	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	if cmd == nil {
+		t.Fatal("x should produce a remove cmd")
+	}
+	got, ok := cmd().(InstanceRemoveMsg)
+	if !ok {
+		t.Fatalf("cmd msg = %T, want InstanceRemoveMsg", cmd())
+	}
+	if got.Name != "anthropic" || got.EndpointFingerprint != "fp-anthropic" {
+		t.Fatalf("msg = %+v, want the shown row's name and fingerprint", got)
+	}
+}
+
 // TestCredentialsPanel_EnterOnACredentialJsonInstanceSetsTheCredentialJson:
 // a gcp-adc instance takes a pasted credential JSON here, the same store the
 // web hub's Providers & credentials writes; it no longer points at the hub.

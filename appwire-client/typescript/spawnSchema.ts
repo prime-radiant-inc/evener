@@ -3,6 +3,8 @@
 // "evener/launch/schema" (LaunchOptionSchemaResponse); the collected overrides
 // go to thread/start as launchOverrides and to "evener/launch/resolve" for the
 // "show resolved config" preview.
+
+import { collectScalar } from "./launchSchema";
 import type { LaunchConfigLayer, LaunchOption, LaunchOptionSchemaResponse, MCPServerSpec } from "./types.gen";
 
 // The per-field working value the advanced UI holds, keyed by the option's
@@ -25,10 +27,13 @@ export function perLaunchEvenerOptions(schema: LaunchOptionSchemaResponse): Laun
 }
 
 // Builds the launch overrides from the advanced form state (floor §1.11,
-// spawn.js:1077-1120): a boolean left at "(default)" is dropped (tri-state), an
-// unchecked radio / empty scalar is dropped, a field flagged invalid by path
-// validation is dropped, and list/env/mcp collections are included only when
-// non-empty. The result is keyed by each option's wireField.
+// spawn.js:1077-1120): a field flagged invalid by path validation is dropped,
+// list/env/mcp collections are included only when non-empty, and every scalar
+// kind goes through launchSchema.collectScalar - the same rule the settings
+// form's collectConfig uses - so a boolean left at "(default)", an unchecked
+// radio, an empty-after-trim scalar, or an unparsable integer is dropped
+// identically in both surfaces (#1444). The result is keyed by each option's
+// wireField.
 export function collectAdvancedOverrides(options: LaunchOption[], values: AdvancedValues): LaunchConfigLayer {
   const layer: Record<string, unknown> = {};
   for (const opt of options) {
@@ -36,16 +41,6 @@ export function collectAdvancedOverrides(options: LaunchOption[], values: Advanc
     if (!field || field.invalid) continue;
     const v = field.value;
     switch (opt.kind) {
-      case "boolean":
-        if (v === "true") layer[opt.wireField] = true;
-        else if (v === "false") layer[opt.wireField] = false;
-        break;
-      case "integer":
-        if (typeof v === "string" && v.trim() !== "") {
-          const n = Number.parseInt(v, 10);
-          if (!Number.isNaN(n)) layer[opt.wireField] = n;
-        }
-        break;
       case "pathList":
       case "modelList":
       case "mcpServerList":
@@ -54,10 +49,15 @@ export function collectAdvancedOverrides(options: LaunchOption[], values: Advanc
       case "envMap":
         if (v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length > 0) layer[opt.wireField] = v;
         break;
-      default:
-        // select / radio / text / modelPicker: a non-empty string scalar.
-        if (typeof v === "string" && v !== "") layer[opt.wireField] = v;
+      default: {
+        // boolean / integer / select / radio / text / path / modelPicker: the
+        // shared scalar collector decides whether the raw string is sent.
+        if (typeof v === "string") {
+          const collected = collectScalar(opt, v);
+          if (collected) layer[opt.wireField] = collected.value;
+        }
         break;
+      }
     }
   }
   return layer as LaunchConfigLayer;

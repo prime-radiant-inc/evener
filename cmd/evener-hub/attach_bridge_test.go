@@ -34,12 +34,16 @@ func TestAttachBridgeRoundTripsInitializeAndThreadList(t *testing.T) {
 	// wrong token, because nothing inspected either.
 	var edgeMu sync.Mutex
 	var authHeader string
+	var bridgeHeader string
 	var paths []string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rpc", func(w http.ResponseWriter, r *http.Request) {
 		edgeMu.Lock()
 		if authHeader == "" {
 			authHeader = r.Header.Get("Authorization")
+		}
+		if bridgeHeader == "" {
+			bridgeHeader = r.Header.Get(bridgeOriginHeader)
 		}
 		paths = append(paths, r.URL.Path)
 		edgeMu.Unlock()
@@ -89,10 +93,13 @@ func TestAttachBridgeRoundTripsInitializeAndThreadList(t *testing.T) {
 	assertOnlyAppWireFrames(t, stdout)
 
 	edgeMu.Lock()
-	gotAuth, gotPaths := authHeader, append([]string(nil), paths...)
+	gotAuth, gotBridge, gotPaths := authHeader, bridgeHeader, append([]string(nil), paths...)
 	edgeMu.Unlock()
 	if gotAuth != "Bearer test-token" {
 		t.Fatalf("bridge authorization = %q, want %q", gotAuth, "Bearer test-token")
+	}
+	if gotBridge != "1" {
+		t.Fatalf("bridge origin marker = %q, want %q", gotBridge, "1")
 	}
 	if len(gotPaths) == 0 || gotPaths[0] != "/rpc" {
 		t.Fatalf("bridge dialed %v, want /rpc", gotPaths)
@@ -143,7 +150,7 @@ func TestAttachBridgeErrorWritesNothingToStdout(t *testing.T) {
 	deps := defaultMainDeps()
 	deps.stdin = strings.NewReader("")
 	deps.stdout = &stdout
-	deps.loadConfig = func(string) (Config, error) {
+	deps.loadConfig = func(string, bool) (Config, error) {
 		return Config{Addr: addr, HubStateRoot: root}, nil
 	}
 
@@ -223,7 +230,7 @@ func TestAttachRefusesNonLoopbackAddr(t *testing.T) {
 	deps := defaultMainDeps()
 	deps.stdin = strings.NewReader("")
 	deps.stdout = &stdout
-	deps.loadConfig = func(string) (Config, error) {
+	deps.loadConfig = func(string, bool) (Config, error) {
 		return Config{Addr: "10.1.2.3:9180", HubStateRoot: root}, nil
 	}
 	cfgPath := filepath.Join(root, "hub.toml")

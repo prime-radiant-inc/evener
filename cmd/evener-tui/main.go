@@ -135,6 +135,12 @@ func run() int {
 		m.pending.SetSend(program.Send)
 	}
 	finalModel, err := program.Run()
+	// Clear the terminal title on every exit. A model-driven quit clears it via
+	// quitCmd, but bubbletea's signal handler pushes QuitMsg/InterruptMsg into
+	// the event loop without calling Update, so SIGTERM (or SIGINT with stdin
+	// not a TTY) would otherwise leave the session title on the terminal after
+	// the process exits. The escape is a no-op when the title is already empty.
+	_, _ = fmt.Fprint(standardOutput, "\x1b]2;\x07")
 	if err != nil {
 		_, _ = fmt.Fprintf(standardError, "evener-tui: %v\n", err)
 		return 1

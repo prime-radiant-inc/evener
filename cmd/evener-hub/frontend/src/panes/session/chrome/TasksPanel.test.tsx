@@ -12,7 +12,8 @@ import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { STATUS_TONE, TasksPanel, TasksPanelBody } from "./TasksPanel";
+import { STATUS_TOUCH } from "../transcript/tools/taskCheck";
+import { TasksPanel, TasksPanelBody } from "./TasksPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -194,24 +195,22 @@ test("outcome aggregates infer an omitted remaining for labels", async () => {
   expect(screen.queryByRole("meter")).toBeNull();
 });
 
-// --- STATUS_TONE: pinning test (review finding) --------------------------
-// The mapping shipped entirely untested, which is how `cancelled: "danger"`
-// slipped through: the legacy comment cited for that choice
-// (renderer-format.js's planGlyphForStatus, "a plan item that will not
-// happen reads the same as a failure") governs only the GLYPH shape, not
-// color - the legacy's actual rendering chain (renderer-format.js:496-506
-// planStateClass + style.css:3324-3329) colors a cancelled task's glyph
-// `--ink-3` (the SAME dim neutral as pending's glyph) and its label
-// `--ink-2` with a strikethrough - neutral/receding, never danger-red. In
-// this design system's color-is-attention rule, danger-tinting a routine
-// cancellation would make reprioritized work indistinguishable from a real
-// failure. The ✕ glyph alone carries the "won't happen" distinction.
-test("pins each task status's Chip tone - cancelled reads as neutral/receding, not danger", () => {
-  expect(STATUS_TONE).toEqual({
-    open: "neutral",
-    in_progress: "alive",
-    done: "neutral",
-    cancelled: "neutral",
+// --- STATUS_TOUCH: pinning test (review finding) -------------------------
+// The panel shares the transcript card's TaskCheck glyph family (the
+// 2026-09 task-rendering unification), so the status-to-glyph mapping is the
+// one place the two surfaces could drift. The mapping keeps the cancellation
+// rule the legacy chain already settled (renderer-format.js:496-506 +
+// style.css:3324-3329): a cancelled task's glyph reads as the same dim
+// neutral as pending's, never danger - in this design system's
+// color-is-attention rule, danger-tinting a routine cancellation would make
+// reprioritized work indistinguishable from a real failure. The ✕ mark
+// alone carries the "won't happen" distinction.
+test("pins each task status's TaskCheck touch - open renders the pending box, cancelled stays neutral", () => {
+  expect(STATUS_TOUCH).toEqual({
+    open: "pending",
+    in_progress: "started",
+    done: "done",
+    cancelled: "cancelled",
   });
 });
 
@@ -295,6 +294,9 @@ test("a live row shows its latest note inline; a settled row does not", async ()
   expect((await screen.findByTestId("task-latest")).textContent).toContain(
     "Captured the compatibility changes for the release notes.",
   );
+  // The note hangs bare in the prose face, like the card's fresh note - the
+  // old "latest" label chip is gone.
+  expect(screen.queryByText("latest")).toBeNull();
 
   await user.click(screen.getByTestId("task-settled-group-summary"));
   const settledRow = screen
@@ -314,7 +316,54 @@ test("a cancelled row renders struck-through inside the settled group", async ()
 
   const cancelled = screen.getByText("Transition to implementation plan");
   expect(cancelled.getAttribute("data-struck")).toBe("true");
-  expect(cancelled.closest("[data-testid='task-row']")?.textContent).toContain("✕");
+  expect(
+    cancelled
+      .closest("[data-testid='task-row']")
+      ?.querySelector('[data-testid="task-check"]')
+      ?.getAttribute("data-touch"),
+  ).toBe("cancelled");
+});
+
+test("every row leads with the shared TaskCheck glyph matching its task's status", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
+
+  const expectTouch = async (description: string, touch: string) => {
+    const row = (await screen.findByText(description)).closest("[data-testid='task-row']");
+    expect(row?.querySelector('[data-testid="task-check"]')?.getAttribute("data-touch")).toBe(touch);
+  };
+  await expectTouch("Implement artifact store", "done");
+  await expectTouch("Transition to implementation plan", "cancelled");
+  await expectTouch("Extend transcript API", "started");
+  await expectTouch("Prepare release notes", "pending");
+});
+
+test("every row carries a visually hidden status word beside its aria-hidden glyph", async () => {
+  // TaskCheck is a picture of state, deliberately aria-hidden; the row's
+  // status rides along visually hidden instead (the same word the card's
+  // rows carry), or a screen reader cannot tell done from cancelled.
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/tasks/list", () => ({ data: DATED_TASKS }));
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await user.click(await screen.findByTestId("task-settled-group-summary"));
+
+  const expectWord = async (description: string, word: string) => {
+    const row = (await screen.findByText(description)).closest("[data-testid='task-row']");
+    const srWord = row?.querySelector("span[class*='srOnly']");
+    expect(srWord?.textContent).toBe(word);
+  };
+  await expectWord("Implement artifact store", "done");
+  await expectWord("Transition to implementation plan", "cancelled");
+  await expectWord("Extend transcript API", "started");
+  await expectWord("Prepare release notes", "pending");
 });
 
 test("a live row shows a relative updated time", async () => {

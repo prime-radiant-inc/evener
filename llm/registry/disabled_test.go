@@ -2,6 +2,7 @@ package registry
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -142,6 +143,93 @@ func TestResolve_CrossProviderAliasOfDisabledTargetIsBlocked(t *testing.T) {
 	}
 }
 
+func TestResolve_CrossProviderAliasOwnFlagOverridesTarget(t *testing.T) {
+	// The target's verdict is the cross-provider alias's default; a flag on
+	// the alias's own row — what this instance's toggle writes — overrides
+	// it both ways, so one connection can disable or re-enable the model
+	// without touching the target's record.
+	const mine = "[providers.mine]\nbase = \"openai-codex\"\napi_key = \"sk\"\n"
+
+	// Disabled here, served there.
+	r := fixtureLoad(t, nil, mine+"[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\ndisabled = true\n")
+	if _, err := r.Resolve("mine/house-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(own-disabled alias) = %v, want ErrModelDisabled", err)
+	}
+	if _, err := r.Resolve("openai/gpt-5.6"); err != nil {
+		t.Fatalf("Resolve(target) = %v, want nil: the target's connection is untouched", err)
+	}
+	if got := r.FindModel("house-model"); len(got) != 0 {
+		t.Fatalf("FindModel(house-model) = %v, want no serving instance", got)
+	}
+
+	// Served here, disabled there: the explicit false wins over the
+	// inherited verdict, and the facts still seed from the target's row.
+	control := fixtureLoad(t, nil, mine+"[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n")
+	r2 := fixtureLoad(t, nil, mine+"[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\ndisabled = false\n[providers.openai.models.\"gpt-5.6\"]\ndisabled = true\n")
+	if _, err := r2.Resolve("openai/gpt-5.6"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(target) = %v, want ErrModelDisabled", err)
+	}
+	res, err := r2.Resolve("mine/house-model")
+	if err != nil {
+		t.Fatalf("Resolve(own-enabled alias over disabled target) = %v, want nil", err)
+	}
+	// The control is the same alias with the target still served: the
+	// override path must resolve to the same facts, which proves the facts
+	// still seed from the target the flag disables (only the verdict differs).
+	want, err := control.Resolve("mine/house-model")
+	if err != nil {
+		t.Fatalf("control Resolve(alias) = %v", err)
+	}
+	if !reflect.DeepEqual(res.Caps, want.Caps) {
+		t.Fatalf("seeded caps = %+v, want the enabled target's %+v", res.Caps, want.Caps)
+	}
+	if got := r2.FindModel("house-model"); len(got) != 1 || got[0].Instance != "mine" {
+		t.Fatalf("FindModel(house-model) = %v, want the alias's own instance", got)
+	}
+}
+
+func TestResolve_CrossProviderAliasTopGlobOverridesTarget(t *testing.T) {
+	// A user top-level glob matching the alias id is an own flag too: it
+	// overrides the inherited verdict the way an exact row does, and the
+	// target's own connection stays served.
+	r := fixtureLoad(t, nil, "[models.\"house-*\"]\ndisabled = true\n[providers.mine]\nbase = \"openai-codex\"\napi_key = \"sk\"\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n")
+	if _, err := r.Resolve("mine/house-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(alias under top glob) = %v, want ErrModelDisabled", err)
+	}
+	if _, err := r.Resolve("openai/gpt-5.6"); err != nil {
+		t.Fatalf("Resolve(target) = %v, want nil", err)
+	}
+	if got := r.FindModel("house-model"); len(got) != 0 {
+		t.Fatalf("FindModel(house-model) = %v, want no serving instance", got)
+	}
+}
+
+func TestResolve_CuratedCrossProviderAliasOwnFlagOverrides(t *testing.T) {
+	// The shape the sheet shows: openai-codex's curated gpt-5.6-sol aliases
+	// onto openai's row, and a toggle authors a providers.toml row for it
+	// carrying only the flag (the hub's shadow shape: no provider header,
+	// which keeps the curated overlay in play). The alias stays an alias,
+	// and the flag overrides the verdict inherited from the disabled target.
+	r := fixtureLoad(t, nil, "[providers.openai.models.\"gpt-5.6-sol\"]\ndisabled = true\n[providers.openai-codex.models.\"gpt-5.6-sol\"]\ndisabled = false\n")
+	res, err := r.Resolve("openai-codex/gpt-5.6-sol")
+	if err != nil {
+		t.Fatalf("Resolve(curated alias, own enabled over disabled target) = %v, want nil", err)
+	}
+	if res.Model.AliasOf != "openai/gpt-5.6-sol" {
+		t.Fatalf("authored flag row de-aliased the curated row: %+v", res.Model)
+	}
+	if _, err := r.Resolve("openai/gpt-5.6-sol"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(target) = %v, want ErrModelDisabled", err)
+	}
+	got := r.FindModel("gpt-5.6-sol")
+	if !slices.Contains(got, Ref{Instance: "openai-codex", Model: "gpt-5.6-sol"}) {
+		t.Fatalf("FindModel(gpt-5.6-sol) = %v, want the codex alias served", got)
+	}
+	if slices.ContainsFunc(got, func(ref Ref) bool { return ref.Instance == "openai" }) {
+		t.Fatalf("FindModel(gpt-5.6-sol) = %v, want the disabled target's instance dropped", got)
+	}
+}
+
 func TestRecordMayDisable_AliasCycleDoesNotOverflow(t *testing.T) {
 	// A mutual cross-provider alias cycle loads (each target exists) but
 	// must not recurse forever when browse paths ask whether anything
@@ -225,21 +313,27 @@ func TestAliasTarget_CanonicalizesDatedVariant(t *testing.T) {
 	}
 }
 
-func TestAliasTarget_RefusesCrossProviderTarget(t *testing.T) {
-	// The config layer cannot author another provider's rows: toggling a
-	// cross-provider alias is refused, and nothing is writable through it.
+func TestAliasTarget_CrossProviderAliasWritesItsOwnRow(t *testing.T) {
+	// A cross-provider alias is a row of this instance, so the toggle writes
+	// the alias's own row here: the config layer cannot author the target's
+	// record, and each connection carries its own flag.
 	r := fixtureLoad(t, nil, "[providers.mine]\nbase = \"openai-codex\"\napi_key = \"sk\"\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n")
-	if _, err := r.AliasTarget("mine", "house-model"); err == nil {
-		t.Fatal("AliasTarget(cross-provider alias) must error")
+	got, err := r.AliasTarget("mine", "house-model")
+	if err != nil {
+		t.Fatalf("AliasTarget(cross-provider alias) = %v", err)
+	}
+	if got != (Ref{Instance: "mine", Model: "house-model"}) {
+		t.Fatalf("AliasTarget(cross-provider alias) = %+v, want mine/house-model", got)
 	}
 }
 
 func TestAliasTarget_CanonicalizesVariantOfAlias(t *testing.T) {
 	// A dated-suffix or region-prefixed spelling of an alias id strips down
-	// to the alias row itself. The flag still lives on the alias's target
-	// (lockstep: an alias's own flag replays for nothing), so the variant
-	// has to route through the alias branch. Writing the alias row instead
-	// is a silent no-op: the toggle reports success and nothing changes.
+	// to the alias row itself. A same-provider alias's flag still lives on
+	// its target (lockstep: the alias's own flag replays for nothing), so
+	// the variant has to route through the alias branch. Writing the alias
+	// row instead is a silent no-op: the toggle reports success and nothing
+	// changes.
 	cfg := "[providers.acme]\nbase = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9/v1\"\napi_key = \"k\"\n[providers.acme.models.\"model-x\"]\n[providers.acme.models.\"house-model\"]\nalias_of = \"model-x\"\n"
 	r := fixtureLoad(t, nil, cfg)
 	for _, variant := range []string{"house-model-20250929", "us.house-model"} {
@@ -277,10 +371,27 @@ func TestFindModel_SkipsDisabled(t *testing.T) {
 // to resolveOn's verdict across exact, glob, and re-enable shapes: a row
 // FindModel keeps must resolve, and one it drops must fail disabled.
 func TestFindModelAgreesWithResolve(t *testing.T) {
-	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-*\"]\ndisabled = true\n[providers.anthropic.models.\"claude-opus-5\"]\ndisabled = false\n")
-	models, err := r.InstanceModels("anthropic")
-	if err != nil {
-		t.Fatal(err)
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-*\"]\ndisabled = true\n[providers.anthropic.models.\"claude-opus-5\"]\ndisabled = false\n[providers.openai.models.\"gpt-5.6-sol\"]\ndisabled = true\n")
+	// Every instance's inventory must agree with Resolve, alias rows
+	// included: a cross-provider alias only agrees when the inventory's
+	// replay (modelDisabled) applies the same inherited default and own-flag
+	// override the full one does. The codex aliases above are the shapes
+	// that would drift.
+	for _, inst := range r.rankedInstances() {
+		models, err := r.InstanceModels(inst.name)
+		if err != nil {
+			t.Fatalf("InstanceModels(%s): %v", inst.name, err)
+		}
+		for _, m := range models {
+			ref := inst.name + "/" + m.ID
+			_, err := r.Resolve(ref)
+			if m.Disabled && !errors.Is(err, ErrModelDisabled) {
+				t.Fatalf("Resolve(%s) = %v, want ErrModelDisabled", ref, err)
+			}
+			if !m.Disabled && errors.Is(err, ErrModelDisabled) {
+				t.Fatalf("Resolve(%s) disabled, but the inventory says enabled", ref)
+			}
+		}
 	}
 	kept := slices.ContainsFunc(r.FindModel("claude-opus-5"), func(ref Ref) bool { return ref.Instance == "anthropic" })
 	if !kept {
@@ -288,15 +399,6 @@ func TestFindModelAgreesWithResolve(t *testing.T) {
 	}
 	if _, err := r.Resolve("anthropic/claude-opus-5"); err != nil {
 		t.Fatalf("Resolve(re-enabled) = %v, want nil", err)
-	}
-	for _, m := range models {
-		_, err := r.Resolve("anthropic/" + m.ID)
-		if m.Disabled && !errors.Is(err, ErrModelDisabled) {
-			t.Fatalf("Resolve(%s) = %v, want ErrModelDisabled", m.ID, err)
-		}
-		if !m.Disabled && errors.Is(err, ErrModelDisabled) {
-			t.Fatalf("Resolve(%s) disabled, but the inventory says enabled", m.ID)
-		}
 	}
 }
 
@@ -321,6 +423,98 @@ func TestInstanceModels_ReportsDisabledState(t *testing.T) {
 	}
 	if len(models) == 0 || !slices.IsSortedFunc(models, func(a, b InstanceModel) int { return strings.Compare(a.ID, b.ID) }) {
 		t.Fatalf("InstanceModels must be sorted by id: %+v", models)
+	}
+}
+
+// The cross-provider spelling of the same rule - the Codex family aliases
+// gpt-5.6-sol/terra/luna onto openai's rows, which is the case that made these
+// names invisible in the sheet while the picker offered them.
+func TestInstanceModels_ListsCrossProviderAliasRows(t *testing.T) {
+	r := fixtureLoad(t, nil, "[providers.openai-codex]\nbase = \"openai\"\napi_key = \"sk\"\n[providers.openai.models.\"gpt-5.6-sol\"]\ndisabled = true\n[providers.openai-codex.models.\"gpt-5.6-sol\"]\nalias_of = \"openai/gpt-5.6-sol\"\n")
+	models, err := r.InstanceModels("openai-codex")
+	if err != nil {
+		t.Fatalf("InstanceModels: %v", err)
+	}
+	byID := map[string]InstanceModel{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	alias, ok := byID["gpt-5.6-sol"]
+	if !ok {
+		t.Fatalf("alias row missing from the inventory: %+v", models)
+	}
+	if !alias.Disabled {
+		t.Fatalf("alias row must report its target's state: %+v", alias)
+	}
+}
+
+func TestInstanceModels_EveryListedRowIsToggleable(t *testing.T) {
+	// The sheet renders one switch per listed row, so every id the inventory
+	// returns must name a row a toggle can write: AliasTarget answers for all
+	// of them. A cross-provider alias answers with its own row on this
+	// instance, which is what makes its switch work per connection.
+	r := fixtureLoad(t, nil, "[providers.openai-codex]\nbase = \"openai\"\napi_key = \"sk\"\n[providers.openai.models.\"gpt-5.6-sol\"]\ndisabled = true\n[providers.openai-codex.models.\"gpt-5.6-sol\"]\nalias_of = \"openai/gpt-5.6-sol\"\n")
+	for _, instance := range []string{"openai-codex", "openai"} {
+		models, err := r.InstanceModels(instance)
+		if err != nil {
+			t.Fatalf("InstanceModels(%s): %v", instance, err)
+		}
+		if len(models) == 0 {
+			t.Fatalf("InstanceModels(%s) returned no rows", instance)
+		}
+		for _, m := range models {
+			if _, err := r.AliasTarget(instance, m.ID); err != nil {
+				t.Errorf("AliasTarget(%s, %q) = %v; every listed row must be toggleable", instance, m.ID, err)
+			}
+		}
+	}
+}
+
+func TestInstanceModels_SkipsDanglingAliasRows(t *testing.T) {
+	// A curated dangling alias — its target is gone upstream, so load hides
+	// the row with a warning — names nothing a toggle could write: AliasTarget
+	// refuses it. Listing it would render a switch that can only fail, so the
+	// inventory leaves it out and every row it does list stays toggleable.
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith("[providers.anthropic.models.\"gone\"]\nalias_of = \"claude-nope\"\n")))
+	models, err := r.InstanceModels("anthropic")
+	if err != nil {
+		t.Fatalf("InstanceModels: %v", err)
+	}
+	if slices.ContainsFunc(models, func(m InstanceModel) bool { return m.ID == "gone" }) {
+		t.Fatalf("dangling alias listed in the inventory: %+v", models)
+	}
+	for _, m := range models {
+		if _, err := r.AliasTarget("anthropic", m.ID); err != nil {
+			t.Errorf("AliasTarget(%q) = %v; every listed row must be toggleable", m.ID, err)
+		}
+	}
+	if _, err := r.AliasTarget("anthropic", "gone"); err == nil {
+		t.Fatal("AliasTarget(dangling alias) must still refuse the write")
+	}
+}
+
+func TestInstanceModels_CrossProviderAliasMatchesTargetIDGlob(t *testing.T) {
+	// Globs replay against the reference and the target row id (spec §4.1
+	// order), which is what gives a provider's shaping glob to its aliases.
+	// The light browse replay has to match the same set, or the sheet reports
+	// the opposite of what Resolve does.
+	r := fixtureLoad(t, nil, "[providers.mine]\nbase = \"openai-codex\"\napi_key = \"sk\"\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n[providers.mine.models.\"gpt-5.6*\"]\ndisabled = true\n")
+	if _, err := r.Resolve("mine/house-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(alias under target-id glob) = %v, want ErrModelDisabled", err)
+	}
+	if got := r.FindModel("house-model"); len(got) != 0 {
+		t.Fatalf("FindModel(house-model) = %v, want no serving instance", got)
+	}
+	models, err := r.InstanceModels("mine")
+	if err != nil {
+		t.Fatalf("InstanceModels: %v", err)
+	}
+	byID := map[string]InstanceModel{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	if !byID["house-model"].Disabled {
+		t.Fatalf("inventory says enabled while Resolve fails: %+v", byID["house-model"])
 	}
 }
 
@@ -350,21 +544,33 @@ func TestInstanceModels_IncludesLiveOnlyIDs(t *testing.T) {
 	}
 }
 
-func TestInstanceModels_SkipsAliasRows(t *testing.T) {
-	// The flag lives on the target, so the inventory offers no toggle on
-	// the alias itself: every row it lists is directly writable.
-	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n")
+func TestInstanceModels_ListsAliasRowsWithTheirTargetsState(t *testing.T) {
+	// An alias row names a model the provider serves under another id, and the
+	// picker offers that name, so the inventory lists it too: the toggle path
+	// names the row to write (AliasTarget), which is what makes every listed
+	// row - alias or not - directly writable. A same-provider alias writes its
+	// target, so the state it reports is the target's: the flag lives there.
+	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-opus-4-6\"]\ndisabled = true\n[providers.anthropic.models.\"house-model\"]\nalias_of = \"claude-opus-4-6\"\n")
 	models, err := r.InstanceModels("anthropic")
 	if err != nil {
 		t.Fatalf("InstanceModels: %v", err)
 	}
+	byID := map[string]InstanceModel{}
 	for _, m := range models {
-		if m.ID == "house-model" {
-			t.Fatalf("alias row must not list: %+v", models)
-		}
+		byID[m.ID] = m
 	}
-	if len(models) == 0 {
-		t.Fatal("inventory must still list the target rows")
+	alias, ok := byID["house-model"]
+	if !ok {
+		t.Fatalf("alias row missing from the inventory: %+v", models)
+	}
+	if !alias.Disabled {
+		t.Fatalf("alias row must report its target's disabled state: %+v", alias)
+	}
+	if !byID["claude-opus-4-6"].Disabled {
+		t.Fatalf("target row must stay listed and disabled: %+v", byID["claude-opus-4-6"])
+	}
+	if _, err := r.Resolve("anthropic/house-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(alias) = %v, want ErrModelDisabled (the state the row reported)", err)
 	}
 }
 

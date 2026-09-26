@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-cache-clean secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-biome lint-cache-clean secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -229,15 +229,42 @@ lint-fuzz-registry:
 lint-package-imports:
 	$(call run_quiet_lint,scripts/sdk/package-import-paths-check.sh)
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports secret-scan
+# lint-biome delegates to the frontend's own `lint` script, the same command
+# the web job's `make test-web` runs, so the two scopes are defined in exactly
+# one place and cannot drift. It runs that script from cmd/evener-hub/frontend
+# so npm resolves `biome` from that install's node_modules. No `biome` is
+# installed at the repository root (mobile-native carries its own @biomejs/biome
+# for the native tree, which a root `npx biome` never resolves), so a root
+# `npx biome` downloads the unrelated `biome@0.3.3`, which ignores its arguments
+# and exits 0 (issue
+# #1406: every root-scoped "biome both scopes" invocation reported green while
+# checking nothing). web-preflight owns the install-readiness definition the
+# other web targets use, so this gate cannot run against a stale or missing
+# node_modules.
+## Run the frontend's Biome over cmd/evener-hub/frontend/src and
+## appwire-client/typescript via the frontend `lint` script.
+## proves: Both frontend Biome scopes pass the @biomejs/biome ruleset, run by
+##   the frontend install's own `lint` script (the same command the web job
+##   runs) rather than the unrelated root-resolved `biome` package.
+## trigger: Required CI (the web job's make test-web runs the same frontend
+##   lint script); local make lint.
+## requires: The frontend node_modules install; web-preflight makes it ready
+##   (and refuses npm ci through a symlinked install).
+## fails-when: The frontend `lint` script is nonzero in either scope.
+lint-biome: web-preflight
+	$(call run_quiet_lint,cd cmd/evener-hub/frontend && npm run lint)
 
-## Go lint, formatting, tagged floors, generated outputs, imports, and secrets.
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-biome secret-scan
+
+## Go lint, formatting, tagged floors, generated outputs, imports, frontend
+## Biome, and secrets.
 ## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and
 ##   eval compile floors; the internal-type check; golangci-lint across every
 ##   workspace module; generated-output freshness; the fuzz registry check;
 ##   that no web or native import names the AppWire TypeScript package by
-##   path; and the repo secret scan.
+##   path; that the frontend's Biome lint script passes over both frontend scopes;
+##   and the repo secret scan.
 ## trigger: Required CI; local pre-merge.
-## requires: golangci-lint, gitleaks.
+## requires: golangci-lint, gitleaks, and the frontend node_modules install.
 ## fails-when: Any member of LINT_TARGETS exits nonzero.
 lint: $(LINT_TARGETS)

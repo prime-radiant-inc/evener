@@ -31,10 +31,10 @@ describe("activityPanelStore", () => {
     const first = activityPanelStore.getState().beginContinuationFetch("ref_a", "session:sess_a");
     if (first === null) throw new Error("the first page was refused");
     const second = activityPanelStore.getState().beginContinuationFetch("ref_a", "delegate:dlg_other");
-    activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: tree(2) });
+    activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: tree() });
     expect(activityPanelStore.getState().entries.get("ref_a")?.load).toMatchObject({
       kind: "ready",
-      tree: { revision: 2 },
+      tree: { revision: 1 },
     });
     expect(second).toBeNull();
   });
@@ -123,7 +123,7 @@ describe("activityPanelStore", () => {
     const first = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: tree() });
     const continuation = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
-    const patch = tree(2);
+    const patch = tree();
     patch.root.counts = { active: 99, failed: 99, completed: 99, complete: false };
     activityPanelStore.getState().publishFetch("ref_a", continuation, { kind: "ready", tree: patch });
     expect(activityPanelStore.getState().entries.get("ref_a")?.load).toMatchObject({
@@ -148,7 +148,7 @@ describe("activityPanelStore", () => {
       ? activitySummaryStore.getState().beginRootFetch("ref_a", 2, true)
       : summaryRequest;
     // Deliver the already-requested page only after the optional newer root request.
-    activityPanelStore.getState().publishFetch("ref_a", continuation, { kind: "ready", tree: tree(2) });
+    activityPanelStore.getState().publishFetch("ref_a", continuation, { kind: "ready", tree: tree() });
 
     expect(activitySummaryStore.getState().entries.get("ref_a")).toMatchObject({
       requestID: expectedGeneration,
@@ -172,7 +172,7 @@ describe("activityPanelStore", () => {
       "session:sess_a": "branch failed",
     });
     const retry = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
-    activityPanelStore.getState().publishFetch("ref_a", retry, { kind: "ready", tree: tree(2) });
+    activityPanelStore.getState().publishFetch("ref_a", retry, { kind: "ready", tree: tree() });
     expect(activityPanelStore.getState().entries.get("ref_a")?.continuationFailures).toEqual({});
   });
 
@@ -184,7 +184,7 @@ describe("activityPanelStore", () => {
     activityPanelStore.getState().setSelected("ref_a", "session:sess_a");
     activityPanelStore.getState().setExpanded("ref_a", ["session:sess_a"]);
     const continuation = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
-    activityPanelStore.getState().publishFetch("ref_a", continuation, { kind: "ready", tree: tree(2) });
+    activityPanelStore.getState().publishFetch("ref_a", continuation, { kind: "ready", tree: tree() });
     const remounted = activityPanelStore.getState().entries.get("ref_a");
     expect(remounted?.disclosure.selectedID).toBe("session:sess_a");
     expect(remounted?.disclosure.expandedIDs).toEqual(["session:sess_a"]);

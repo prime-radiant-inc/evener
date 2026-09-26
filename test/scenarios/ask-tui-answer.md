@@ -13,12 +13,12 @@ submitting through the overlay does.
   port (`docs/developing-evener/agentic-testing.md`, "Handing this hub to a sibling card"), and
   **never pass `--state-dir`/`EVENER_STATE_DIR`** to anything here:
   ```bash
-  run=${EVENER_E2E_RUN:?run ask-web-answer.md's Pre-state first, then export EVENER_E2E_RUN="$run"}
-  export HOME="$run/home"
-  unset XDG_STATE_HOME
+  run=${EVENER_E2E_RUN:?run the Pre-state in ask-web-answer.md first, then export EVENER_E2E_RUN}
+  . scripts/lib/e2e-lib.sh
+  e2e_isolate_home "$run"
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" | grep -oE '[0-9]+$' | tail -1)
   HUB=http://127.0.0.1:$PORT
-  TOKEN=$(cat "$HOME/.evener/auth-token")
+  TOKEN=$(cat "$HOME/.local/state/evener/auth-token")
   HUBPID=$(cat "$run/hub.pid")
   kill -0 "$HUBPID" 2>/dev/null || { echo "that hub is gone — re-run ask-web-answer.md's Pre-state" >&2; exit 1; }
   ```

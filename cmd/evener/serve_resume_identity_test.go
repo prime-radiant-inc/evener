@@ -17,7 +17,7 @@ import (
 
 // seedResumableSession writes a session meta and a two-entry transcript that
 // a real --resume can restore: OpenWriterForSession will strict-decode the
-// entries and RestoredTranscript will report them, so serve's identity
+// entries and hand them to serve through OnRestoredTranscript, so serve's identity
 // preparation has a choice of forms to make.
 func seedResumableSession(t *testing.T, stateDir, sessionID string, headerSessionID string) {
 	t.Helper()

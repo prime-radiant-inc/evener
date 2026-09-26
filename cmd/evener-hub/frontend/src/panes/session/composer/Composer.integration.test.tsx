@@ -10,11 +10,12 @@
 
 import type { MethodTypes, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBDatabase, IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
+import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
@@ -26,7 +27,9 @@ import {
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { replaceEditorText, selectEditorText } from "../testing/editor";
 import { askDockStore, resetAskDockStoreForTests } from "./askDock/askDockStore";
+import { ackAskUserCall } from "./askDock/askDockTestUtils";
 import { Composer as ComposerView } from "./Composer";
 import { readComposerDraft, readDraft } from "./draft";
 import { usePendingTurnEntries } from "./queue";
@@ -41,24 +44,6 @@ function Composer(props: React.ComponentProps<typeof ComposerView>) {
       <ComposerView {...props} />
     </ClientProvider>
   );
-}
-
-// See draft.test.ts's identical comment: Node 26 shadows jsdom's real
-// window.localStorage with its own (non-functional under vitest) global.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
 }
 
 class PausedCommitStorage extends MutationOutboxIndexedDB {
@@ -111,8 +96,7 @@ class CommitObservedStorage extends MutationOutboxIndexedDB {
 }
 
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
@@ -216,8 +200,8 @@ afterEach(() => {
   globalThis.indexedDB = new IDBFactory();
 });
 
-function textarea(): HTMLTextAreaElement | null {
-  return screen.queryByRole("textbox", { name: /message/i }) as HTMLTextAreaElement | null;
+function textarea(): HTMLDivElement | null {
+  return screen.queryByRole("textbox", { name: /message/i }) as HTMLDivElement | null;
 }
 
 // QueueStrip's drain-as-steer button. Its accessible name is exactly
@@ -258,7 +242,7 @@ test.each(["pointer", "keyboard"] as const)(
       },
     }));
     const user = userEvent.setup();
-    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
     const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
     await user.type(message, "ordinary focus proof");
     expect(document.activeElement).toBe(message);
@@ -286,10 +270,10 @@ test.each(["pointer", "keyboard"] as const)(
           params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "ordinary focus proof" }] }),
         },
       ]);
-      expect(message.value).toBe("");
+      expect(message.textContent).toBe("");
     });
     await flushPendingTurnsProjectionForTests();
-    expect(message.disabled).toBe(false);
+    expect(message.getAttribute("contenteditable")).toBe("true");
     expect(send.disabled).toBe(true);
     // The contract is usable composer focus, not a jsdom-specific BODY blur.
     await waitFor(() => expect(document.activeElement).toBe(message));
@@ -333,7 +317,7 @@ test.each(["pointer", "keyboard"] as const)(
     const fake = await mountComposer("ref_a");
     acceptFocusSubmission(fake, "turn/queue");
     const user = userEvent.setup();
-    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
     const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
     await user.type(message, "queue focus proof");
     expect(send.disabled).toBe(false);
@@ -357,11 +341,11 @@ test.each(["pointer", "keyboard"] as const)(
           params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "queue focus proof" }] }),
         },
       ]);
-      expect(message.value).toBe("");
+      expect(message.textContent).toBe("");
     });
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
     await flushPendingTurnsProjectionForTests();
-    expect(message.disabled).toBe(false);
+    expect(message.getAttribute("contenteditable")).toBe("true");
     expect(send.disabled).toBe(true);
     await waitFor(() => expect(document.activeElement).toBe(message));
   },
@@ -375,14 +359,14 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
     const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
     acceptFocusSubmission(fake, "turn/start");
     const user = userEvent.setup();
-    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+    const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
     const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
     await user.type(message, "delayed focus proof");
     try {
       await user.click(send);
       await storage.commitStarted;
       expect(send.disabled).toBe(true);
-      expect(message.value).toBe("delayed focus proof");
+      expect(message.textContent).toBe("delayed focus proof");
       expect(document.activeElement).toBe(message);
       expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
       fireEvent.submit(message.closest("form")!);
@@ -409,11 +393,11 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
       await act(async () => storage.release());
       await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
       await flushPendingTurnsProjectionForTests();
-      if (destination !== "replacement Composer") await waitFor(() => expect(message.value).toBe(""));
+      if (destination !== "replacement Composer") await waitFor(() => expect(message.textContent).toBe(""));
       else expect(message.isConnected).toBe(false);
       expect(document.activeElement).toBe(destinationElement);
       if (destination !== "other control")
-        expect((destinationElement as HTMLTextAreaElement).value).toBe("other draft");
+        expect((destinationElement as HTMLDivElement).textContent).toBe("other draft");
     } finally {
       storage.release();
     }
@@ -425,7 +409,7 @@ test("ordinary Send does not take another control's focus on programmatic form s
   acceptFocusSubmission(fake, "turn/start");
   render(<button type="button">Elsewhere</button>);
   const user = userEvent.setup();
-  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
   const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
   const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
   await user.type(message, "unfocused submission");
@@ -433,7 +417,7 @@ test("ordinary Send does not take another control's focus on programmatic form s
   act(() => message.closest("form")!.requestSubmit(send));
   expect(document.activeElement).toBe(elsewhere);
   await waitFor(() => {
-    expect(message.value).toBe("");
+    expect(message.textContent).toBe("");
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   });
   await flushPendingTurnsProjectionForTests();
@@ -444,17 +428,17 @@ test("ordinary Send preserves the textarea submission shortcut and next typing",
   const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
   acceptFocusSubmission(fake, "turn/start");
   const user = userEvent.setup();
-  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
   await user.type(message, "shortcut focus proof");
   await user.keyboard("{Control>}{Enter}{/Control}");
   await waitFor(() => {
-    expect(message.value).toBe("");
+    expect(message.textContent).toBe("");
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   });
   await flushPendingTurnsProjectionForTests();
   expect(document.activeElement).toBe(message);
   await user.keyboard("next draft");
-  expect(message.value).toBe("next draft");
+  expect(message.textContent).toBe("next draft");
 });
 
 test("ordinary Send retains draft and reports local failure without late focus theft", async () => {
@@ -471,7 +455,7 @@ test("ordinary Send retains draft and reports local failure without late focus t
   const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
   render(<button type="button">Elsewhere</button>);
   const user = userEvent.setup();
-  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
   const send = screen.getByRole("button", { name: "Send" }) as HTMLButtonElement;
   const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
   try {
@@ -488,7 +472,7 @@ test("ordinary Send retains draft and reports local failure without late focus t
       ),
     );
     await flushPendingTurnsProjectionForTests();
-    expect(message.value).toBe("keep failed draft");
+    expect(message.textContent).toBe("keep failed draft");
     expect(readDraft("ref_a")).toBe("keep failed draft");
     expect(send.disabled).toBe(false);
     expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
@@ -503,12 +487,12 @@ test("ordinary Send empty form no-op leaves another control focused", async () =
   const fake = await mountComposer("ref_a", idleFocusThread("ref_a"));
   render(<button type="button">Elsewhere</button>);
   const user = userEvent.setup();
-  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
   const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
   await user.click(elsewhere);
   fireEvent.submit(message.closest("form")!);
   await flushPendingTurnsProjectionForTests();
-  expect(message.value).toBe("");
+  expect(message.textContent).toBe("");
   expect(fake.calls.filter((call) => call.method === "turn/start" || call.method === "turn/queue")).toHaveLength(0);
   expect(document.activeElement).toBe(elsewhere);
 });
@@ -549,14 +533,15 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     await act(async () => {
-      fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "one message only" } });
+      replaceEditorText(textarea() as HTMLDivElement, "one message only");
+      expect(composerSteerButton().disabled).toBe(false);
       fireEvent.click(composerSteerButton());
       await committed;
       await vi.runOnlyPendingTimersAsync();
     });
     expect(screen.getByRole("status", { name: "Message storage" }).textContent).toBeTruthy();
-    expect(textarea()?.value).toBe("one message only");
-    expect(textarea()?.disabled).toBe(false);
+    expect(textarea()?.textContent).toBe("one message only");
+    expect(textarea()?.getAttribute("contenteditable")).toBe("true");
     expect(composerSteerButton().disabled).toBe(true);
     fireEvent.click(composerSteerButton());
   } finally {
@@ -564,7 +549,7 @@ test("an unconfirmed storage commit stays visible and repeated Steer clicks cann
     vi.useRealTimers();
     await flushPendingTurnsProjectionForTests();
   }
-  expect(textarea()?.value).toBe("");
+  expect(textarea()?.textContent).toBe("");
   expect(screen.queryByRole("status", { name: "Message storage" })).toBeNull();
   await act(async () => delivered);
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
@@ -611,13 +596,13 @@ test("a cancelled storage stall keeps the draft, reports the problem, and allows
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     await act(async () => {
-      fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "keep this draft" } });
+      replaceEditorText(textarea() as HTMLDivElement, "keep this draft");
       fireEvent.click(composerSteerButton());
       await reached;
       await vi.runOnlyPendingTimersAsync();
     });
     expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBeTruthy();
-    expect(textarea()?.value).toBe("keep this draft");
+    expect(textarea()?.textContent).toBe("keep this draft");
     expect(composerSteerButton().disabled).toBe(false);
     expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(0);
   } finally {
@@ -628,7 +613,7 @@ test("a cancelled storage stall keeps the draft, reports the problem, and allows
   }
   fireEvent.click(composerSteerButton());
   await flushPendingTurnsProjectionForTests();
-  expect(textarea()?.value).toBe("");
+  expect(textarea()?.textContent).toBe("");
   await act(async () => delivered);
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
 });
@@ -638,7 +623,11 @@ test("a second message queues behind a committed start even when recovery projec
     status: { type: "idle" },
     evener: {
       ref: "ref_a",
-      capabilities: { ...FULL_CAPABILITIES, queue: false, steer: false, interrupt: false },
+      // A live idle snapshot's capability set: Steer, Interrupt and Queue
+      // advertise harness support (#1375), so an idle thread on a wired daemon
+      // carries them true. The false idle set the kata-8c65 window used to
+      // carry no longer exists.
+      capabilities: FULL_CAPABILITIES,
       queue: { revision: 0 },
     },
     turns: [],
@@ -672,10 +661,10 @@ test("a second message queues behind a committed start even when recovery projec
   }
   const user = userEvent.setup();
   try {
-    await user.type(textarea() as HTMLTextAreaElement, "first message");
+    await user.type(textarea() as HTMLDivElement, "first message");
     await user.click(screen.getByTestId("composer-submit"));
-    await waitFor(() => expect(textarea()?.value).toBe(""));
-    await user.type(textarea() as HTMLTextAreaElement, "second message");
+    await waitFor(() => expect(textarea()?.textContent).toBe(""));
+    await user.type(textarea() as HTMLDivElement, "second message");
     await user.click(screen.getByTestId("composer-submit"));
     expect(await secondRequest).toBe("turn/queue");
   } finally {
@@ -742,7 +731,7 @@ test.each([
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
       await act(async () => {
-        fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "original message" } });
+        replaceEditorText(textarea() as HTMLDivElement, "original message");
         fireEvent.click(actionButton());
         await committed;
       });
@@ -752,16 +741,15 @@ test.each([
       }
       expect(actionButton().disabled).toBe(true);
       fireEvent.click(actionButton());
-      if (edited) fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "new draft" } });
-      if (edited === "same")
-        fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "original message" } });
+      if (edited) replaceEditorText(textarea() as HTMLDivElement, "new draft");
+      if (edited === "same") replaceEditorText(textarea() as HTMLDivElement, "original message");
     } finally {
       await act(async () => hold?.release());
       vi.useRealTimers();
       await flushPendingTurnsProjectionForTests();
     }
     const expectedDraft = edited === "same" ? "original message" : edited ? "new draft" : "";
-    expect(textarea()?.value).toBe(expectedDraft);
+    expect(textarea()?.textContent).toBe(expectedDraft);
     expect(readDraft("ref_a")).toBe(expectedDraft);
     await waitFor(() => expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1));
   },
@@ -788,10 +776,10 @@ test.each(["storage", "composer"] as const)(
       const fake = await mountComposer("ref_a");
       fake.on("turn/steer", () => new Promise<never>(() => undefined));
       const user = userEvent.setup();
-      await user.type(textarea() as HTMLTextAreaElement, "one submission");
+      await user.type(textarea() as HTMLDivElement, "one submission");
       await user.click(composerSteerButton());
       await flushPendingTurnsProjectionForTests();
-      expect(textarea()?.value).toBe("");
+      expect(textarea()?.textContent).toBe("");
       expect(readDraft("ref_a")).toBe("");
       expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
       expect(observed).toHaveBeenCalled();
@@ -819,7 +807,7 @@ test("the composer resends recovered text while recovery projection callbacks ar
   const fake = await mountComposer("ref_a");
   fake.on("turn/steer", () => new Promise<never>(() => undefined));
   await flushPendingTurnsProjectionForTests();
-  expect(textarea()?.value).toBe("recover me");
+  expect(textarea()?.textContent).toBe("recover me");
   const getAll = IDBObjectStore.prototype.getAll;
   const held: ReturnType<typeof holdIndexedDBEvent>[] = [];
   const spy = vi.spyOn(IDBObjectStore.prototype, "getAll").mockImplementation(function (this: IDBObjectStore, ...args) {
@@ -829,9 +817,10 @@ test("the composer resends recovered text while recovery projection callbacks ar
   });
   try {
     const user = userEvent.setup();
-    await user.type(textarea() as HTMLTextAreaElement, " edited");
+    selectEditorText(textarea() as HTMLDivElement, "recover me".length);
+    await user.keyboard(" edited");
     await user.click(composerSteerButton());
-    await waitFor(() => expect(textarea()?.value).toBe(""));
+    await waitFor(() => expect(textarea()?.textContent).toBe(""));
     expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
     await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1));
     const call = fake.calls.find((call) => call.method === "turn/steer");
@@ -843,54 +832,63 @@ test("the composer resends recovered text while recovery projection callbacks ar
   }
 });
 
+test("rejected inline skill input restores its atoms and resends edited prose with both selections", async () => {
+  const text = "Run /skill-1 and then /skill-2";
+  const skills = [
+    { type: "skill" as const, name: "skill-1" },
+    { type: "skill" as const, name: "skill-2" },
+  ];
+  const input = [{ type: "text" as const, text }, ...skills];
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const fake = await mountComposer("ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+    },
+  });
+  fake.on("turn/steer", () => new Promise<never>(() => undefined));
+  await flushPendingTurnsProjectionForTests();
+  const editor = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
+  expect(editor.textContent).toBe(text);
+  expect(
+    within(editor)
+      .getAllByTestId("composer-skill-chip")
+      .map((chip) => chip.textContent),
+  ).toEqual(["/skill-1", "/skill-2"]);
+
+  const user = userEvent.setup();
+  selectEditorText(editor, text.length);
+  await user.keyboard(" again");
+  await flushPendingTurnsProjectionForTests();
+  const editedInput = [{ type: "text", text: `${text} again` }, ...skills];
+  expect((await storage.getRecovery(original.clientMutationId))?.payload.input).toEqual(editedInput);
+  await user.click(composerSteerButton());
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1));
+  expect(fake.calls.find((call) => call.method === "turn/steer")?.params).toEqual(
+    expect.objectContaining({ input: editedInput }),
+  );
+  expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
+  expect(editor.textContent).toBe("");
+});
+
 // --- ask_user wire fixtures (mirrors AskDock.test.tsx's own harness) -------
-
-function askArgs(questions: Array<Record<string, unknown>>): string {
-  return JSON.stringify({ questions });
-}
-
-const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
 
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   act(() => {
     fake.emitNotification({
       method: "turn/started",
       params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
-    });
-  });
-}
-
-function ackAskUserCall(
-  fake: FakeClient,
-  ref: string,
-  turnId: string,
-  itemId: string,
-  callId: string,
-  questions: Array<Record<string, unknown>> = ONE_QUESTION,
-): void {
-  const base = {
-    threadId: `thr_${ref}`,
-    ref,
-    turnId,
-    item: {
-      type: "commandExecution",
-      id: itemId,
-      turnId,
-      toolName: "ask_user",
-      callId,
-      argumentsJson: askArgs(questions),
-    },
-  };
-  act(() => {
-    fake.emitNotification({
-      method: "item/started",
-      params: { ...base, item: { ...base.item, status: "inProgress" } },
-    });
-  });
-  act(() => {
-    fake.emitNotification({
-      method: "item/completed",
-      params: { ...base, item: { ...base.item, status: "completed" } },
     });
   });
 }
@@ -930,7 +928,7 @@ test("the strip's drain-as-steer reads the composer's live text at click time, n
     },
   }));
 
-  await user.type(textarea() as HTMLTextAreaElement, "steer this in live");
+  await user.type(textarea() as HTMLDivElement, "steer this in live");
   await user.click(drainButton());
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
@@ -957,10 +955,10 @@ test("a successful strip-triggered drain clears the composer's own text and draf
     },
   }));
 
-  await user.type(textarea() as HTMLTextAreaElement, "drain me too");
+  await user.type(textarea() as HTMLDivElement, "drain me too");
   await user.click(drainButton());
 
-  await waitFor(() => expect((textarea() as HTMLTextAreaElement).value).toBe(""));
+  await waitFor(() => expect((textarea() as HTMLDivElement).textContent).toBe(""));
   expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
 });
 
@@ -999,12 +997,12 @@ test("text changed while a strip-triggered drain is in flight survives the drain
       }),
   );
 
-  await user.type(textarea() as HTMLTextAreaElement, "original");
+  await user.type(textarea() as HTMLDivElement, "original");
   await user.click(drainButton()); // fires the request; handleDrain awaits the still-pending promise
 
   // The user keeps typing while the drain is in flight - a real, synchronous
   // DOM change event landing between the drain click and its settlement.
-  fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "original plus more" } });
+  replaceEditorText(textarea() as HTMLDivElement, "original plus more");
   expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
 
   resolveDrain?.();
@@ -1015,7 +1013,7 @@ test("text changed while a strip-triggered drain is in flight survives the drain
   // the time this passes.
   await new Promise((resolve) => setTimeout(resolve, 10));
 
-  expect((textarea() as HTMLTextAreaElement).value).toBe("original plus more"); // NOT cleared - text changed since the drain was triggered
+  expect((textarea() as HTMLDivElement).textContent).toBe("original plus more"); // NOT cleared - text changed since the drain was triggered
   expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
 });
 
@@ -1041,8 +1039,158 @@ test("clicking a queued row's Edit button restores its full text into an empty c
 
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
-  expect((textarea() as HTMLTextAreaElement).value).toBe("the full queued text");
+  expect((textarea() as HTMLDivElement).textContent).toBe("the full queued text");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
+});
+
+test("queue edit restores inline selections that a nonempty composer drain sends unchanged", async () => {
+  const text = "Run /skill-1 and then /skill-2 and /skill-1";
+  const skillNames = ["skill-1", "skill-2"];
+  const fake = await mountComposer("ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: {
+        revision: 0,
+        depth: 2,
+        ids: ["q1", "q2"],
+        texts: [text, "another queued message"],
+        preview: [text, "another queued message"],
+        skillNames: [skillNames, []],
+      },
+      activeTurnId: "turn_1",
+    },
+  });
+  fake.on("turn/cancelQueued", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    removedText: text,
+  }));
+  fake.on("turn/drainAsSteer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  const user = userEvent.setup();
+  const edit = screen.getAllByRole("button", { name: /edit message/i })[0];
+  if (!edit) throw new Error("missing queued message edit control");
+  await user.click(edit);
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  expect(editor.textContent).toBe(text);
+  expect(readComposerDraft("ref_a")).toEqual({ text, skillNames });
+  expect(
+    within(editor)
+      .getAllByTestId("composer-skill-chip")
+      .map((chip) => chip.textContent),
+  ).toEqual(["/skill-1", "/skill-2", "/skill-1"]);
+  await user.click(drainButton());
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/drainAsSteer")).toHaveLength(1));
+  expect(fake.calls.find((call) => call.method === "turn/drainAsSteer")?.params).toEqual(
+    expect.objectContaining({
+      input: [
+        { type: "text", text },
+        { type: "skill", name: "skill-1" },
+        { type: "skill", name: "skill-2" },
+      ],
+    }),
+  );
+  await waitFor(() => expect(editor.textContent).toBe(""));
+  expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
+});
+
+test("editing a selection-only queued entry keeps its selection as a visible chip", async () => {
+  const fake = await mountComposer("ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: {
+        revision: 0,
+        depth: 1,
+        ids: ["q1"],
+        texts: [""],
+        preview: ["[skill: probe]"],
+        skillNames: [["probe"]],
+      },
+      activeTurnId: "turn_1",
+    },
+  });
+  fake.on("turn/cancelQueued", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    removedText: "",
+  }));
+  const user = userEvent.setup();
+  const edit = screen.getAllByRole("button", { name: /edit message/i })[0];
+  if (!edit) throw new Error("missing queued message edit control");
+  await user.click(edit);
+
+  // The entry carries a selection and no prose. Its chip has to be visible in
+  // the sentence, so the reference is written out rather than the selection
+  // dropped on the way in.
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  expect(
+    within(editor)
+      .getAllByTestId("composer-skill-chip")
+      .map((chip) => chip.textContent),
+  ).toEqual(["/probe"]);
+  expect(readComposerDraft("ref_a")).toEqual({ text: "/probe", skillNames: ["probe"] });
+});
+
+test("queue edit restores inline selections when the composer already holds a draft", async () => {
+  const text = "Run /skill-1 and then /skill-2";
+  const merged = "already typing\n\nRun /skill-1 and then /skill-2";
+  const fake = await mountComposer("ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: {
+        revision: 0,
+        depth: 1,
+        ids: ["q1"],
+        texts: [text],
+        preview: [text],
+        skillNames: [["skill-1", "skill-2"]],
+      },
+      activeTurnId: "turn_1",
+    },
+  });
+  fake.on("turn/cancelQueued", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    removedText: text,
+  }));
+  const user = userEvent.setup();
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  // A draft the user already typed makes this a partial append rather than a
+  // whole-value replacement, which is the branch that must still produce chips.
+  replaceEditorText(editor, "already typing");
+
+  const edit = screen.getAllByRole("button", { name: /edit message/i })[0];
+  if (!edit) throw new Error("missing queued message edit control");
+  await user.click(edit);
+
+  expect(editor.textContent).toBe(merged);
+  expect(
+    within(editor)
+      .getAllByTestId("composer-skill-chip")
+      .map((chip) => chip.textContent),
+  ).toEqual(["/skill-1", "/skill-2"]);
+  expect(readComposerDraft("ref_a")).toEqual({ text: merged, skillNames: ["skill-1", "skill-2"] });
 });
 
 test("clicking Edit on a queued entry whose daemon skillNames slot is null restores the text and still cancels it", async () => {
@@ -1079,7 +1227,7 @@ test("clicking Edit on a queued entry whose daemon skillNames slot is null resto
 
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
-  expect((textarea() as HTMLTextAreaElement).value).toBe("plain queued text");
+  expect((textarea() as HTMLDivElement).textContent).toBe("plain queued text");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
 });
 
@@ -1103,10 +1251,10 @@ test("clicking Edit appends the restored text after a blank line when the compos
     removedText: "queued copy",
   }));
 
-  await user.type(textarea() as HTMLTextAreaElement, "my own draft");
+  await user.type(textarea() as HTMLDivElement, "my own draft");
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
-  expect((textarea() as HTMLTextAreaElement).value).toBe("my own draft\n\nqueued copy");
+  expect((textarea() as HTMLDivElement).textContent).toBe("my own draft\n\nqueued copy");
 });
 
 test("clicking a queued row's cancel button fires turn/cancelQueued with that row's expectedEntryId", async () => {
@@ -1290,7 +1438,7 @@ test("while the composer's own classic drain is in flight, the strip's Steer-now
     },
   }));
 
-  await user.type(textarea() as HTMLTextAreaElement, "drain me");
+  await user.type(textarea() as HTMLDivElement, "drain me");
   await user.click(composerSteerButton());
 
   await storage.commitStarted;
@@ -1313,7 +1461,7 @@ test("a plain send exposes its durable pending entry while the network remains u
   fake.on("turn/start", () => new Promise(() => {}));
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
 
-  await user.type(textarea() as HTMLTextAreaElement, "hello agent");
+  await user.type(textarea() as HTMLDivElement, "hello agent");
   await user.click(screen.getByRole("button", { name: /^send\b/i }));
   await storage.committed;
   await flushPendingTurnsProjectionForTests();
@@ -1331,7 +1479,7 @@ test("a queue submit also exposes its durable pending entry in the composed UI w
   fake.on("turn/queue", () => new Promise(() => {}));
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "queue"));
 
-  await user.type(textarea() as HTMLTextAreaElement, "queued message");
+  await user.type(textarea() as HTMLDivElement, "queued message");
   // "Send" in every state - a mid-turn submit still queues (that is the ROUTE,
   // which this test proves) but the verb never changes under the user; see
   // Composer.tsx's own submitLabel comment.
@@ -1381,12 +1529,12 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
     </ClientProvider>,
   );
 
-  await user.type(textarea() as HTMLTextAreaElement, "follow up");
+  await user.type(textarea() as HTMLDivElement, "follow up");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
   expect(await screen.findByText("Send is not available for this session")).toBeTruthy();
   expect(fake.calls.filter((call) => call.method === "turn/queue" || call.method === "turn/start")).toHaveLength(0);
-  expect((textarea() as HTMLTextAreaElement).value).toBe("follow up");
+  expect((textarea() as HTMLDivElement).textContent).toBe("follow up");
 
   await act(async () => {
     fake.emitNotification({
@@ -1424,7 +1572,7 @@ test("a pending ask hides and inerts the composer's input row, and the dock is n
   expect(textarea()).toBeTruthy(); // sanity: visible before any ask arrives
 
   startTurn(fake, "ref_a", "turn_1");
-  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
 
   // Excluded from the accessibility tree by the `hidden` attribute (RTL's
   // byRole queries respect it, matching real assistive-tech behavior) -
@@ -1457,7 +1605,7 @@ test("the composer un-hides once the pending ask resolves through the normal sen
     };
   });
   startTurn(fake, "ref_a", "turn_1");
-  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
   // The dock itself is the transcript's trailing row now, so this test
   // resolves the batch through the same store seam its Send button calls
   // (askDockStore.sendBatch, the real durable send path) rather than a UI
@@ -1467,7 +1615,7 @@ test("the composer un-hides once the pending ask resolves through the normal sen
   if (batchId === undefined) throw new Error("pending ask batch did not reconcile");
 
   await act(async () => {
-    await askDockStore.getState().sendBatch("ref_a", batchId);
+    await askDockStore.sendBatch("ref_a", batchId);
     await turnStarted;
     await flushPendingTurnsProjectionForTests();
   });
@@ -1502,7 +1650,7 @@ test("resolving the pending ask announces the composer's restoration via this co
   expect(screen.queryByText("Message composer ready.")).toBeNull();
 
   startTurn(fake, "ref_a", "turn_1");
-  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
   await waitFor(() => expect(askDockStore.getState().byRef.get("ref_a")?.batches.length ?? 0).toBe(1));
   expect(screen.queryByText("Message composer ready.")).toBeNull(); // not yet - still pending
 
@@ -1511,7 +1659,7 @@ test("resolving the pending ask announces the composer's restoration via this co
   const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
   if (batchId === undefined) throw new Error("pending ask batch did not reconcile");
   await act(async () => {
-    await askDockStore.getState().sendBatch("ref_a", batchId);
+    await askDockStore.sendBatch("ref_a", batchId);
   });
 
   expect(await screen.findByText("Message composer ready.")).toBeTruthy();
@@ -1531,7 +1679,7 @@ test("the queue strip stays rendered while an ask is pending, with the dock no l
   });
 
   startTurn(fake, "ref_a", "turn_1");
-  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  act(() => ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1"));
   // The queue strip is not part of the ask-pending hide: queued messages
   // stay visible (and manageable) while the input row is replaced.
   const queueHeading = await screen.findByText(/queued messages/i);
@@ -1562,10 +1710,10 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
     },
   }));
 
-  await user.type(textarea() as HTMLTextAreaElement, "first queued message");
+  await user.type(textarea() as HTMLDivElement, "first queued message");
   await user.click(screen.getByTestId("composer-submit"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
-  expect((textarea() as HTMLTextAreaElement).value).toBe(""); // clears optimistically like any other successful submit
+  expect((textarea() as HTMLDivElement).textContent).toBe(""); // clears optimistically like any other successful submit
   const queueCall = fake.calls.find((c) => c.method === "turn/queue");
   const clientMutationId = (queueCall?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
   expect(clientMutationId).toBeTruthy();
@@ -1606,7 +1754,7 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   }));
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
-  expect((textarea() as HTMLTextAreaElement).value).toBe("first queued message"); // restored into the (now empty) composer
+  expect((textarea() as HTMLDivElement).textContent).toBe("first queued message"); // restored into the (now empty) composer
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });

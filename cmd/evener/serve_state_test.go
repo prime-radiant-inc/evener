@@ -652,8 +652,10 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if thread.Thread.Status.Type != appwire.ThreadStatusIdle || !thread.Thread.Evener.Capabilities.Send || thread.Thread.Evener.Capabilities.Queue || thread.Thread.Evener.Capabilities.Interrupt {
-		t.Fatalf("thread/read = status %q, capabilities %+v; want idle, send enabled, queue and interrupt disabled", thread.Thread.Status.Type, thread.Thread.Evener.Capabilities)
+	// Queue and Interrupt advertise harness support, so an idle thread on this
+	// wired daemon reads them true (#1375); the client applies the status.
+	if thread.Thread.Status.Type != appwire.ThreadStatusIdle || !thread.Thread.Evener.Capabilities.Send || !thread.Thread.Evener.Capabilities.Queue || !thread.Thread.Evener.Capabilities.Interrupt {
+		t.Fatalf("thread/read = status %q, capabilities %+v; want idle with send/queue/interrupt advertised (queue and interrupt are harness support)", thread.Thread.Status.Type, thread.Thread.Evener.Capabilities)
 	}
 
 	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {

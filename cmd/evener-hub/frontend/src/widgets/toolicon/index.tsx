@@ -15,6 +15,12 @@
 // unregistered tool - which includes every MCP tool - falls through to the
 // DEFAULT_DESCRIPTOR's generic `wrench`. A kind therefore names a shape of
 // work (a terminal, a document, a search), never a brand.
+
+// The last four kinds name STATUS shapes, not families of work: the
+// notification card maps its parsed tone onto them (NotificationCard.tsx's
+// STATUS_ICON_KIND). They ride the same 16-grid grammar so the status glyph
+// reads as one of the family at the same stroke weight - same precedent as
+// `person` and `thought`, which are also not tools.
 //
 // Single-colour line art by construction: strokes only, no fills, no
 // hardcoded colours. The squareness guarantee is the same one chevron makes
@@ -37,12 +43,21 @@ export type ToolIconKind =
   | "skill"
   | "person"
   | "wrench"
-  | "thought";
+  | "thought"
+  | "check"
+  | "cross"
+  | "alert"
+  | "info";
 
 // One path string per kind, all on the 16x16 grid. Subpaths within a kind are
 // space-separated M-commands in the same string, so the record stays one
 // entry per glyph.
-const PATHS: Record<ToolIconKind, string> = {
+// Exported so the widget's own test can enumerate every kind from the one
+// source of truth: the Record's type demands a path per union member, so a
+// kind added to the union without a path fails the typecheck, and a path
+// without a union member fails it too - a derived test list can therefore
+// never silently drop a kind the way a hand-maintained one could.
+export const PATHS: Record<ToolIconKind, string> = {
   // A terminal frame with a `>_` prompt.
   terminal: "M2.5 3.5 H13.5 V12.5 H2.5 Z M5 6.8 L7.5 8.8 L5 10.8 M8.6 10.8 H11.2",
   // A document with a folded corner.
@@ -88,6 +103,18 @@ const PATHS: Record<ToolIconKind, string> = {
   // thought is scannable as a kind alongside the tool calls it precedes.
   thought:
     "M8 2.5 A3.8 3.8 0 0 0 5.8 9.1 C6.4 9.8 6.6 10.4 6.6 11 L6.6 11.6 H9.4 L9.4 11 C9.4 10.4 9.6 9.8 10.2 9.1 A3.8 3.8 0 0 0 8 2.5 Z M6.6 13.2 H9.4 M7.1 14.7 H8.9",
+  // A check mark (a notification's success tone): short arm up-left of the
+  // vertex, long arm to the upper right.
+  check: "M3.2 8.6 L6.5 11.9 L12.8 4.4",
+  // An X (error): two crossing diagonals, centered on the grid.
+  cross: "M4.4 4.4 L11.6 11.6 M11.6 4.4 L4.4 11.6",
+  // A triangle with an exclamation mark (warning): the bar and the dot are
+  // separate subpaths; the dot reuses the ask glyph's zero-length round-cap
+  // stroke trick.
+  alert: "M8 3 L13 12.4 H3 Z M8 6.6 L8 9 M8 11 L8.01 11",
+  // An information mark (neutral): the globe's circle with an i - dot above,
+  // stem below.
+  info: "M13.5 8 A5.5 5.5 0 1 1 2.5 8 A5.5 5.5 0 1 1 13.5 8 M8 4.9 L8.01 4.9 M8 7.4 L8 11.1",
 };
 
 export interface ToolIconProps {

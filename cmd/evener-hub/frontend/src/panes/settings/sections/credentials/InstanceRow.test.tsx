@@ -2,7 +2,19 @@ import type { InstanceEntry } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { requireClass } from "../../../../widgets/internal/requireClass";
 import { InstanceRow } from "./InstanceRow";
+import rawStyles from "./InstanceRow.module.css";
+
+// CSS Modules import as an index signature, so any dotted access on the imported
+// binding is `string | undefined` under noUncheckedIndexedAccess: requireClass
+// makes a missing class a loud error instead of a comparison that can never
+// fail. (Deliberately no member-access example in prose: the styles contract
+// test matches an import-bound name anywhere in the file's text.)
+const CLASS = {
+  row: requireClass(rawStyles.row, "InstanceRow.module.css", "row"),
+  rowButton: requireClass(rawStyles.rowButton, "InstanceRow.module.css", "rowButton"),
+};
 
 afterEach(cleanup);
 
@@ -73,17 +85,68 @@ describe("the row carries identity and status only", () => {
   });
 });
 
-// implicit is the wire's own "exists from the environment, not from
-// providers.toml" flag (InstanceEntry, appwire/types.go) - removal of an
-// implicit instance is refused server-side (spec §11.3), so the sheet
-// offers no Remove, and this badge tells the user why Edit there writes a
-// shadow instead of changing the instance itself.
-describe("implicit instances", () => {
-  test("a 'from environment' badge marks an implicit instance", () => {
+// The badge names where the instance's credential comes from, not merely
+// that no providers.toml entry shadows it: an implicit instance the user
+// signed in to or stored a key for is their own, and the badge would name a
+// source it never read.
+describe("environment-backed instances", () => {
+  test("a 'from environment' badge marks an instance an environment variable supplies", () => {
     render(
-      <InstanceRow instance={instance({ name: "groq", providerId: "groq", implicit: true })} onSelect={() => {}} />,
+      <InstanceRow
+        instance={instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" })}
+        onSelect={() => {}}
+      />,
     );
     expect(screen.getByText("from environment")).toBeTruthy();
+  });
+
+  test("a 'from environment' badge marks an instance the ADC file supplies", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "vertex",
+          providerId: "google-vertex",
+          implicit: true,
+          activeSource: "adc",
+          auth: "gcp-adc",
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.getByText("from environment")).toBeTruthy();
+  });
+
+  test("a stored key through the UI carries no badge", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "groq",
+          providerId: "groq",
+          implicit: true,
+          activeSource: "store",
+          hasStoredFile: true,
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.queryByText("from environment")).toBeNull();
+  });
+
+  test("a signed-in Codex account carries no badge", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "openai-codex",
+          providerId: "openai-codex",
+          auth: "oauth-openai-codex",
+          implicit: true,
+          activeSource: "oauth",
+          hasStoredOAuth: true,
+        })}
+        onSelect={() => {}}
+      />,
+    );
+    expect(screen.queryByText("from environment")).toBeNull();
   });
 
   test("a non-implicit instance carries no badge", () => {
@@ -225,4 +288,56 @@ describe("selection", () => {
     await user.click(screen.getByRole("button", { name: /openai-work/ }));
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
+});
+
+// The host-scoped view of a remote host's own listing renders this row
+// read-only: the same identity and meta (dot, name, chips, meta line) with no
+// button and no chevron, because nothing on a remote host's row is actionable
+// from this browser.
+describe("the read-only variant", () => {
+  test("renders the same identity and meta with no button", () => {
+    render(
+      <InstanceRow
+        instance={instance({
+          name: "on-host",
+          providerId: "anthropic",
+          isDefault: true,
+          hasStoredFile: true,
+          activeSource: "store",
+        })}
+        readOnly
+      />,
+    );
+    expect(screen.getByText("on-host")).toBeTruthy();
+    expect(screen.getByText(/default/i)).toBeTruthy();
+    expect(screen.getByText("openai-chat")).toBeTruthy();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  // Low (roborev): the read-only branch returned a bare <li>, so a remote row
+  // lost the row chrome entirely (padding, edge, radius, surface background, the
+  // 44px phone floor) while the same instance was a surface row locally. The
+  // chrome is one class now, and both variants carry it.
+  test("carries the shared row chrome class the tappable row also carries", () => {
+    const { container } = render(
+      <InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} readOnly />,
+    );
+    expect(container.querySelector("li")?.classList.contains(CLASS.row)).toBe(true);
+  });
+
+  test("the tappable row keeps the chrome class plus its interactive one", () => {
+    render(<InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} onSelect={() => {}} />);
+    const button = screen.getByRole("button", { name: /on-host/ });
+    expect(button.classList.contains(CLASS.row)).toBe(true);
+    expect(button.classList.contains(CLASS.rowButton)).toBe(true);
+  });
+});
+
+// L-2: the contract is in the props type, not in a comment. A row that is not
+// read-only must carry onSelect, or an interactive button renders with no
+// handler. This is a compile-time assertion checked by tsc: if the props type
+// stops requiring onSelect, the directive below is unused and tsc fails.
+test("the props type requires onSelect whenever the row is not read-only", () => {
+  // @ts-expect-error a row that is not readOnly must be given onSelect
+  render(<InstanceRow instance={instance({ name: "on-host", providerId: "anthropic" })} />);
 });

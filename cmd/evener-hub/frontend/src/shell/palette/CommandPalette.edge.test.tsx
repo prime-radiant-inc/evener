@@ -15,6 +15,7 @@ import "../../panes/sessionPanels";
 import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests } from "../../panes/session/composer/composerFocus";
 import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -25,24 +26,8 @@ import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
 import { renderPalette as render, scriptSearch, scriptSearchFailure } from "./paletteTestUtils";
 
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const CAPS: ThreadCapabilities = {
@@ -114,7 +99,7 @@ function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  useCommandCatalog.setState({ commands: [], loaded: false });
+  useCommandCatalog.setState(useCommandCatalog.getInitialState());
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();

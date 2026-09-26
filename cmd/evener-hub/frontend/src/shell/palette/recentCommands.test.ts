@@ -1,33 +1,13 @@
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { RECENT_COMMANDS_KEY, readRecentCommandIds, rememberCommand } from "./recentCommands";
 
 // Recent commands live at localStorage["evener.search.recentCommands"] as a
 // JSON array of ids, most-recent-first, capped at 5 (search.js:16-17,
 // 619-633). This is a legacy key OUTSIDE the evener.prefs.* namespace - pin it.
 
-// See stores/prefs.test.ts's identical comment: Node 26 shadows jsdom's real
-// window.localStorage with its own (non-functional under vitest) global, so
-// every test file that touches localStorage needs this same small in-memory
-// stand-in. Scoped to this file only.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

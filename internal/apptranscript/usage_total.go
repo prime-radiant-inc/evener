@@ -1,10 +1,6 @@
 package apptranscript
 
 import (
-	"encoding/json"
-	"fmt"
-	"os"
-
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -35,34 +31,12 @@ import (
 // are surfaced rather than swallowed, so a caller reports "unknown" instead of
 // a fabricated figure.
 func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.EvenerUsage, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("stat transcript: %w", err)
-	}
-	identity := scanMemoIdentity(info, fromEntryOrdinal)
-
-	c.mu.Lock()
-	if entry, ok := c.entries[path]; ok && entry.usageTotal != nil && entry.usageTotal.key == identity {
-		total := entry.usageTotal.total
-		c.touch(path)
-		c.mu.Unlock()
-		return cloneEvenerUsage(total), nil
-	}
-	c.mu.Unlock()
-
-	total, err := scanUsageTotal(path, maxLineBytes, fromEntryOrdinal)
-	if err != nil {
-		return nil, err
-	}
-
-	c.mu.Lock()
-	entry := c.entries[path]
-	entry.usageTotal = &usageTotalMemo{key: identity, total: total}
-	c.entries[path] = entry
-	c.touch(path)
-	c.evictLocked()
-	c.mu.Unlock()
-	return cloneEvenerUsage(total), nil
+	return memoizeScan(c, path, fromEntryOrdinal,
+		func(entry *turnCacheEntry) *scanMemo[*appwire.EvenerUsage] { return entry.usageTotal },
+		func(entry *turnCacheEntry, memo *scanMemo[*appwire.EvenerUsage]) { entry.usageTotal = memo },
+		cloneEvenerUsage,
+		func() (*appwire.EvenerUsage, error) { return scanUsageTotal(path, maxLineBytes, fromEntryOrdinal) },
+	)
 }
 
 // scanUsageTotal reads the transcript once, decoding only each entry's usage
@@ -71,25 +45,12 @@ func (c *TurnCache) UsageTotalFromFile(path string, maxLineBytes int, fromEntryO
 // reader in this package applies.
 func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwire.EvenerUsage, error) {
 	var accumulated usageAccumulator
-	ordinal := 0
-	if _, err := scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
-		ordinal++
-		if ordinal < fromEntryOrdinal {
+	if err := narrowScan(path, maxLineBytes, fromEntryOrdinal,
+		decodeNarrowEntry[usageOnlyEntry]("usage"),
+		func(record usageOnlyEntry, _ int) error {
+			accumulated.add(record.Turn.Usage)
 			return nil
-		}
-		var record usageOnlyEntry
-		if err := json.Unmarshal(raw, &record); err != nil {
-			// Unreachable for any line scanSemanticTranscript admits: it has
-			// already strictly decoded the whole entry into transcript.Entry,
-			// of which this is a field-for-field subset. A failure here means
-			// usageOnlyEntry has drifted from schema.Turn, and skipping the
-			// record would silently undercount — reporting a wrong total is
-			// worse than reporting none, so surface it.
-			return fmt.Errorf("decode transcript entry usage: %w", err)
-		}
-		accumulated.add(record.Turn.Usage)
-		return nil
-	}); err != nil {
+		}); err != nil {
 		return nil, err
 	}
 	observeIndexRead(ReadStats{usageScans: 1})
@@ -127,11 +88,6 @@ type usageOnlyEntry struct {
 	Turn struct {
 		Usage llm.Usage `json:"usage"`
 	} `json:"turn"`
-}
-
-type usageTotalMemo struct {
-	key   scanMemoKey
-	total *appwire.EvenerUsage
 }
 
 // cloneEvenerUsage hands each caller its own copy, so a caller that stamps the

@@ -9,11 +9,11 @@ connection manager, remote hub source).
 Owner surface: `cmd/evener-hub` (Go) and `cmd/evener-hub/frontend/src`
 (TypeScript). One PR-sized change, plus optional follow-up splits noted below.
 
-**Implementation status.** The Go half (06a) is implemented on
-`multi-host-pr06a-fleet-view-go` and is **pending merge, not on `main`**: the
-`sourceOnline`/`appsource.OnlineSource` interface and the truthful `Online` flag
-it drives do not exist on `main`. The frontend half (06b) is on
-`multi-host-pr06b-fleet-view-ui`.
+**Implementation status.** Both halves are on `main`: the Go half (06a) landed
+with `55952d1dd3` — the `sourceOnline`/`appsource.OnlineSource` signal and the
+truthful `Online` flag it drives (`cmd/evener-hub/web.go:67-96`;
+`cmd/evener-hub/internal/appsource/online.go`) — and the frontend half (06b)
+landed with `bdb29346ad`.
 
 ## Purpose
 
@@ -98,28 +98,24 @@ Rules this component must satisfy:
   `false` — indistinguishable in the manifest from an unreachable host. Nothing
   in this component probes or attaches a host on manifest read; a host first
   reports `true` only after a request has forced component 04 to attach it.
-  A source that reports no state defaults to online. **Implemented on
-  `multi-host-pr06a-fleet-view-go`, pending merge (none of these symbols is on
-  `main`):** `sourceOnline` (`cmd/evener-hub/web.go`) type-asserts
-  `appsource.OnlineSource` (also new on that branch,
-  `internal/appsource/online.go`) and defaults to true when the source does not
-  implement it; `apiTreeSources` uses it for remote entries, and the live-row
-  computation gates on `appThreadTreeLive` plus `sourceOnline` as well, so a
-  down host's rows are not presented as live. (`apiTreeSources` and
-  `appThreadTreeLive` themselves already exist on `main`; the `sourceOnline`
-  wiring and gating are 06a's delta.)
+  A source that reports no state defaults to online. **Shipped:**
+  `sourceOnline` (`cmd/evener-hub/web.go:86-96`) type-asserts
+  `appsource.OnlineSource` (`cmd/evener-hub/internal/appsource/online.go`) and
+  defaults to true when the source does not implement it; `apiTreeSources` uses
+  it for remote entries (`web_api_tree.go:946`), and the live-row computation
+  gates on `appThreadTreeLive` plus `sourceOnline` as well
+  (`web_api_tree.go:365`), so a down host's rows are not presented as live.
 - `Label` is bounded by `maxNavigationLabelRunes` (`navigation_schema.go`);
   host labels are short, so truncation is a safety net, not a design point.
 - The manifest `sources` array is capped at **64 entries including `local`**
   (`navigation_projection.go`: `len(inputs.Sources) > 64` is an error), and each
   element must have exactly `{id,label,kind,online}` (`navigation_schema.go`).
   With one source per configured host plus the local entry, that is at most
-  **63 remote hosts**, so component 03's `validateHostConfigs` rejects a larger
-  `[[hosts]]` list (`ErrTooManyHosts`) rather than letting one over-limit config
-  fail navigation for the entire hub (component 03, §"Host configuration"). The
-  cap is also enforced in the registry add paths, not only at config load
-  (component 03, §"Host configuration"), so no runtime mutation can push the
-  source list over 64 either.
+  **63 remote hosts**. An over-limit `[[hosts]]` list is **not** rejected:
+  component 03 records the decision that the 64-source cap is withdrawn, so a
+  config over the limit is the operator's own configuration (component 03,
+  §Scope) and the navigation failure it causes is the accepted v1 risk rather
+  than a validation error.
   The frontend mirror enforces the same element shape
   (`stores/navigation/codec.ts`, `stores/navigation/store.ts`). Do not add fields
   without changing both validators.
@@ -136,12 +132,11 @@ which the remote-source normalization already does when it backfills
 
 ### Write contract (session targeting)
 
-There is no source/host field on the start request today:
-`appwire.ThreadStartParams` (`appwire/types.go`) has no source field,
-and the generated `ThreadStartParams` matches
-(`appwire-client/typescript/types.gen.ts`). This component adds an
-explicit `source` field to `thread/start` — a bare source ID, not a ref —
-rather than overloading `Harness`. `hubThreadStart` gives it **sole authority
+The `thread/start` request carries an explicit `Source` field —
+`appwire.ThreadStartParams.Source` (`appwire/types.go:1677-1680`), a bare source
+ID, not a ref, and present in the generated bindings
+(`appwire-client/typescript/types.gen.ts`) — added by this component rather than
+overloading `Harness`. `hubThreadStart` gives it **sole authority
 when set**, consulting the legacy `launchSourceID` harness fallback only when it
 is empty (`app_threadlifecycle.go`:
 `sourceID := strings.TrimSpace(params.Source); if sourceID == "" { sourceID =
@@ -162,9 +157,10 @@ Deleting the fallback is explicitly *not* the contract — it would make a spawn
 with a non-empty harness like `"claude"` and an empty `Source` fall through to
 the local spawner in silence (`app_threadlifecycle.go:53-61`) instead of
 resolving its backend, which is the routing regression this section exists to
-prevent. **Implementation status:** the shipped 06a `hubThreadStart` resolves the
-fallback unconditionally (`multi-host-pr06a-fleet-view-go`, **pending merge, not
-on `main`**), so the host-naming refusal is a requirement, not a present fact.
+prevent. **Implementation status:** shipped — `hubThreadStart` refuses a harness
+naming a registered non-local source with `InvalidParams`
+(`refuseHarnessNamingHost`, `app_threadlifecycle.go:378`), keeping the
+`launchSourceID` fallback for every other harness value.
 
 **The host selector is controller-only; the harness is preserved.** The
 `Source` field names a source in the controller's registry; the remote hub would
@@ -191,8 +187,9 @@ routing-seam `origin` is non-empty: an effective non-local source (from a set
 `Source` or the harness fallback) is refused (`InvalidParams`) and never routed.
 The `launchSourceID` fallback above applies unchanged to local-originated
 requests. See component 05, §"The receiving hub must reject a non-local
-resolution for a remote-originated `thread/start`"; the code delta is a tracked
-follow-up.
+resolution for a remote-originated `thread/start`"; it is shipped too:
+`guardRemoteSpawnSource` (`cmd/evener-hub/host_routing_origin.go:97`) refuses a
+remote-originated spawn whose effective source is non-local.
 
 ## Implementation approach
 
@@ -251,10 +248,14 @@ only `local`, so the fan-out currently degenerates to one source.
   (and its synchronous `remoteThreadFetch` fallback) resolves the client through
   that accessor, not the `Ensure`-backed `RemoteHubClientFunc`, and skips the
   host when it reports "not attached" without dialing.
-  **Implementation status:** the shipped `refreshRemoteThreadSnapshot`
-  (`web_api_tree.go`) iterates `s.sources.All()` with no attachment gate and its
-  resolver is wired to `Ensure`; both the gate and the attached-only lookup are
-  the implementing PR's requirement, not a present fact.
+  **Implementation status:** shipped. `refreshRemoteThreadSnapshot`
+  (`web_api_tree.go`) skips a remote source whose attached-only lookup
+  (`hubcore.WebConfig.RemoteHostClientIfAttached`, backed by
+  `Manager.ClientIfAttached`) reports "not attached", without calling it, and
+  carries the host's last-known-good rows forward. The source's own resolver is
+  attached-only too, so the check and the request cannot disagree. The
+  synchronous `remoteThreadFetch` fallback runs through the same function and
+  obeys the same gate.
 - **Tree ingestion**: `navigationSnapshotInputs` folds cached remote threads
   into the same `metas`/`live` inputs as local sessions
   (`web_api_tree.go`).
@@ -327,11 +328,11 @@ only `local`, so the fan-out currently degenerates to one source.
   which the controller's folded navigation does not read; v1 keeps the stores
   controller-side and namespaces them, and does not pass a remote row through
   `ResolveProject`.
-  **Implementation status:** both handlers (`app_archive.go`,
-  `app_favorite.go`) and both param structs (`appwire/types.go`) are the
-  unqualified shape today; the source field, store namespacing, and the
-  non-local validation rule are the implementing PR's requirement, not a
-  present fact.
+  **Implementation status:** shipped. Both param structs carry `Source`
+  (`ArchiveParams`, `FavoriteSetParams`, `appwire/types.go`); both handlers
+  normalize it, validate it against the configured hosts, and key the
+  controller-side stores by `(source, kind, id)` (`app_archive.go`,
+  `app_favorite.go`; `hubcore.NormalizeDecisionSource`).
   **The one source-qualified project identity must be the key on every
   navigation surface, not only inside the projection.** The grouping rule above
   is worthless if the identity is rebuilt or dropped one layer up: the browser
@@ -470,10 +471,11 @@ only `local`, so the fan-out currently degenerates to one source.
   committed migration is a no-op. The migration preserves the decision and its
   kind/id, so no existing local favorite or archive is lost and a pre-migration
   row keeps resolving to the local host. New rows are written with their owning
-  source. **Implementation status:** neither the migration nor the source column
-  exists today, and no schema-version record exists (`sqlite_dsn.go` notes the
-  pragmas live in the DSN "rather than in a one-time migration"); this shared
-  versioned transaction is the implementing PR's requirement.
+  source. **Implementation status:** `favorite` and `archive` are rebuilt to the
+  composite key by `ensureDecisionSourceColumn` (`hubcore/archive.go:226-296`),
+  per table inside each store's `open`; the single shared, versioned step above,
+  and the `session_pin` rebuild below, remain the implementing PR's
+  requirements.
   **The local source is canonicalized to `"local"` everywhere.** The migration
   writes legacy rows' source as `"local"`, so every read must agree on that
   token: an absent, empty, or bare (unqualified) source resolves to `"local"`,
@@ -530,19 +532,21 @@ only `local`, so the fan-out currently degenerates to one source.
   key, the table rebuild, and the source-aware resolver are the implementing
   PR's requirement.
   **Project summaries must carry the owning source, and destructive
-  local-project actions must be gated by it.** The project the rail renders has
-  no host dimension today: the resolved model is `identifier.Project` =
-  `{ID, CanonicalPath}` (`identifier/project.go`), the projected entity's
-  key/name/`working_dir` reach the frontend `RailProject`
-  (`shell/rail/railNodes.ts`), and none of them names the source. Remote rows
-  are folded into the same project list, and the project context menu
-  (`projectMenuItems`, `RailRow.tsx`) unconditionally renders the destructive
+  local-project actions must be gated by it.** The resolved model is still
+  `identifier.Project` = `{ID, CanonicalPath}` (`identifier/project.go`) and
+  carries no host dimension of its own, so the qualification rides beside it:
+  the projected summary's `Sources` list reaches the frontend `RailProject`
+  (`shell/rail/railNodes.ts`), and every consumer that acts on a project must
+  use it. Remote rows are folded into the same project list, and the project
+  context menu (`projectMenuItems`, `RailRow.tsx`) still renders the destructive
   items for every project, with the delete item wired to a **controller-local**
-  call: `onDeleteProjectRequest` → `deleteProject(key, workingDir)` →
-  `evener/project/delete` (`Rail.tsx`, `actions.ts`). A remote project row can
-  therefore trigger a delete of the controller's own sessions/project state (or
-  a colliding local project), and "New session" navigates the controller to the
-  remote path. Requirements:
+  call: `onDeleteProjectRequest` → `deleteProject(key, workingDir, sources)` →
+  `evener/project/delete` (`Rail.tsx`, `actions.ts`). **Shipped:** both ends
+  refuse a project that belongs to a host — `deleteProject` before issuing any
+  request, and the `projectDelete` handler with a typed `InvalidParams`
+  (`project_delete.go:128-132`) — so a remote row cannot delete the
+  controller's own sessions; "New session" carries the project's source into the
+  spawn form. Requirements:
   - every navigation project summary carries its owning source — the same
     `ref.SourceID` host qualification the group key and the archive/favorite
     stores use, projected onto the project entity (e.g. a `source`/`host_id`
@@ -564,25 +568,25 @@ only `local`, so the fan-out currently degenerates to one source.
     project's source with each call, and "New session" carries the project's
     source into the spawn form (the `ThreadStartParams.Source` / picker path)
     rather than opening the controller at a remote path.
-  **Implementation status:** none of this exists today — `identifier.Project`
-  and `RailProject` have no source field, `projectMenuItems` renders the delete
-  item unconditionally (`RailRow.tsx`), and `deleteProject` sends a bare
-  key/working-dir to the local `evener/project/delete` (`actions.ts`). This is a
-  tracked code follow-up.
+  **Implementation status:** shipped for the delete gate and the frontend
+  ownership it reads: `ProjectDeleteParams.Source` exists (`appwire/types.go`),
+  the rail's `RailProject` carries `sources` (`railNodes.ts`), and
+  `deleteProject` refuses a project that also belongs to a host before issuing
+  any request (`actions.ts`). `identifier.Project` itself still carries no
+  source field.
   **`annotateThreadProjects` must not overwrite a validated non-local
   identity.** The merged thread-list path (and the thread-read and
   lifecycle/start responses) runs `annotateThreadProjects`
-  (`cmd/evener-hub/app_threadlist.go`) over every returned row. Today it
-  resolves each row's `CWD` with `identifier.ResolveProject` — the controller's
-  local, path-based resolver — and unconditionally writes `ProjectID` /
-  `ProjectPath`, so a remote row's project identity is clobbered by the
-  controller's view of the same path (the wrong project, or none at all, when
-  that path does not exist on the controller). The requirement: a row whose
-  source is **not** `local` (its `ref.SourceID` names a configured host) keeps
-  the `ProjectID` / `ProjectPath` the remote hub already validated against the
-  remote filesystem; `annotateThreadProjects` skips non-local rows instead of
-  re-resolving them, and any local resolution cache it keeps is keyed per source
-  so a remote path can never seed the local project for that same path.
+  (`cmd/evener-hub/app_threadlist.go`) over every returned row, resolving a
+  local row's `CWD` with `identifier.ResolveProject` — the controller's local,
+  path-based resolver — and writing `ProjectID` / `ProjectPath`. **Shipped:** a
+  row whose source is **not** `local` (its `ref.SourceID` names a configured
+  host) is skipped, keeping the `ProjectID` / `ProjectPath` the remote hub
+  already validated against the remote filesystem, because re-resolving that
+  path with the controller's own resolver would clobber the remote identity with
+  the controller's view of the same path (the wrong project, or none at all,
+  when that path does not exist on the controller)
+  (`app_threadlist.go:242-255`).
 - **Manifest source list**: `apiTreeSources`
   (`web_api_tree.go`) is consumed by `navigation_service.go` and
   projected via `navigationSources` into `NavigationManifest.Sources`
@@ -618,10 +622,10 @@ only `local`, so the fan-out currently degenerates to one source.
     The callback runs **synchronously under component 04's per-host lock and is
     non-reentrant** (component 04, §"Channel lifecycle states"): it must only record
     state or poke, and must never call `sshManager.Ensure` — that takes the same
-    lock and deadlocks. **Implementation status:** 06a wires no `OnEvent`, so
-    today the flag flips only on the next tick; this poke is the implementing
-    PR's requirement. The poke must be non-blocking (the existing buffered
-    channel send), because the lock is held.
+    lock and deadlocks. **Implementation status:** shipped — `main.go` registers
+    the poke on the manager's `OnEvent` fan-out, invalidating navigation and
+    waking the remote-thread refresher (`cmd/evener-hub/main.go:468-505`), and
+    the send is non-blocking, because the lock is held.
 3. **Offline-host rows need a distinct "source unreachable" field, never
    `Dormant`.** `NavigationSessionSummary.Dormant` is projected from
    `node.Dormant` (`navigation_projection.go`), and `Dormant` means a session
@@ -969,9 +973,9 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
     refused typed; assert the migration backfills `source = "local"` on a
     pre-existing `session_pin` row without losing it, and that a bare/empty
     local lookup still resolves to the canonical `"local"` row after migration.
-  - Source cap: a manifest built from 63 hosts + `local` validates; 64 hosts +
-    `local` (65 entries) is the over-limit case component 03's
-    `ErrTooManyHosts` prevents from being configured.
+  - Source cap: no count test — the 64-source cap is withdrawn by decision
+    (component 03, §Scope), so an over-limit manifest is a configuration the hub
+    is expected to carry.
 - **Frontend unit**: spawn form shows a host picker with local preselected and
   offline hosts disabled; picking a host sends the source field in the
   `thread/start` request (extend `panes/spawn` tests and
@@ -1011,9 +1015,9 @@ remote source maps to the host hub's hub-scoped RPC (Component 05).
    next manifest read, without waiting for the 30s background refresh; the
    invalidation is driven by the `EventAttached`/`EventDetached` poke and the
    callback never calls `Ensure`.
-7. At most 63 remote hosts can be configured: a 64th is refused at config load
-   (`ErrTooManyHosts`), so the manifest's 64-source cap (including `local`) can
-   never be exceeded by configuration.
+7. **Withdrawn** (component 03, §Scope): no 64-source cap and no
+   `ErrTooManyHosts`; an over-limit configuration loads, and the manifest's
+   64-source limit is the accepted v1 risk.
 8. Two hosts whose sessions share a working-directory path appear as two
    distinct projects (host-qualified identity), and that one qualification is
    carried as a single `"<source>:<projectID>"` string (with `local` canonical)

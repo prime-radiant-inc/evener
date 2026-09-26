@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>delegate-body-trigger-inline layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+    color: var(--ink-hi);
+  }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); margin-bottom: 2px; }
+  /* Production reserves the rail gutter only at/above the 700px breakpoint
+   * (turnblock.module.css .runContent / session.module.css .intentGroupItems,
+   * both @media (min-width: 700px)); below it the .rowIcon's negative pull is
+   * off and there is no gutter. Mirror that so each fixture width sees the real
+   * line box. */
+  .railBox { box-sizing: border-box; }
+  @media (min-width: 700px) {
+    .railBox { padding-left: var(--speaker-gutter); }
+  }
+</style>
+</head>
+<body data-font-size="m">
+<!-- Reproduces ToolRow.tsx's summary-less two-level branch (ToolRow's
+     intentControlSuppressed arm): a delegate row with NO trailing affordance
+     renders the intent as a BARE line, with the two-level body trigger sharing
+     it:
+
+       <div class="row" data-intent="true" data-intent-trailing="true"
+            data-body-trigger-intent="true">
+         <span class="intentLine">
+           <span class="rowIcon">…</span>
+           <span class="status">…</span>
+           <span class="intent">{statedIntent}</span>
+         </span>
+         <button class="bodyTrigger"><span class="chevron">…</span></button>
+       </div>
+
+     The row reproduces PRODUCTION's siblings: every delegate row carries a
+     .rowIcon and a live/settled one a .status dot, and below the 700px
+     breakpoint the .rowIcon's negative-gutter pull does not apply, so the icon
+     contributes its full outer width (34px) to the line. The whole line's
+     reservation must bound that icon, not just the .intent that begins after
+     it. Two intent lengths x two column widths:
+       short intent - the intent must hug its text edge (flex:0 1 auto): with
+         flex-grow it absorbs the slack and springs the body chevron to the
+         line's far edge;
+       long intent  - the binding case: without the reservation the intent's
+         flex base is max-content, so it claims the line and the body trigger
+         wraps to line 2; the reservation makes the intent wrap INSIDE itself
+         so the trigger stays on line 1.
+
+     The measure reports line membership via a Range over the intent's first
+     line (not a pixel snapshot), the body trigger's adjacency to that text
+     edge, and whether the trigger owns its own center hit. -->
+<div class="fixtures"></div>
+<script>
+const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+const ICON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><circle cx="8" cy="8" r="5" stroke="currentColor" stroke-width="1.5" fill="none"></circle></svg>';
+const STATUS_DOT = '<span style="display:block;width:8px;height:8px;border-radius:50%;background:var(--ink-mid)"></span>';
+
+function rowHtml(id, intent) {
+  return `
+    <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true" data-body-trigger-intent="true">
+      <span class="intentLine" id="line-${id}">
+        <span class="rowIcon" id="icon-${id}" aria-hidden="true">${ICON_SVG}</span>
+        <span class="status" id="status-${id}">${STATUS_DOT}</span>
+        <span class="intent" id="intent-${id}">${intent}</span>
+      </span>
+      <button type="button" class="bodyTrigger" id="body-${id}" aria-expanded="true">
+        <span class="chevron" id="chevron-${id}" aria-hidden="true" data-open="true">${CHEVRON_SVG}</span>
+      </button>
+    </div>`;
+}
+
+const SHORT_INTENT = "Scout the frontend for the open-widget renderer.";
+const LONG_INTENT = "Locate the delegate row renderer in the transcript pane, trace how its body trigger is composed against the bare intent, and confirm the inline placement holds when the stated intent wraps across more than one line inside the row.";
+
+const CONFIGS = [
+  { key: "narrow-short", width: 420, intent: SHORT_INTENT, shortIntent: true, label: "420px column, short intent" },
+  { key: "narrow-long", width: 420, intent: LONG_INTENT, shortIntent: false, label: "420px column, long intent (binding: must wrap inside the intent)" },
+  { key: "wide-short", width: 880, intent: SHORT_INTENT, shortIntent: true, label: "880px column, short intent" },
+  { key: "wide-long", width: 880, intent: LONG_INTENT, shortIntent: false, label: "880px column, long intent (binding)" },
+];
+
+const root = document.querySelector(".fixtures");
+for (const c of CONFIGS) {
+  const section = document.createElement("div");
+  section.className = "fixture";
+  const label = document.createElement("div");
+  label.className = "fixtureLabel";
+  label.textContent = `${c.label} (#${c.key})`;
+  const box = document.createElement("div");
+  box.className = "railBox";
+  box.style.width = `${c.width}px`;
+  box.innerHTML = rowHtml(c.key, c.intent);
+  section.append(label, box);
+  root.append(section);
+}
+
+function box(el) {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+}
+
+function firstLineBox(intentEl) {
+  const range = document.createRange();
+  range.selectNodeContents(intentEl);
+  const rects = range.getClientRects();
+  const first = rects[0];
+  let right = first.right;
+  for (const r of rects) {
+    if (r.top < first.bottom && r.bottom > first.top) right = Math.max(right, r.right);
+  }
+  return { top: first.top, bottom: first.bottom, left: first.left, right };
+}
+
+window.measure = () => {
+  return CONFIGS.map((c) => {
+    const row = document.getElementById(`row-${c.key}`);
+    const body = box(document.getElementById(`body-${c.key}`));
+    const intentEl = document.getElementById(`intent-${c.key}`);
+    const line1 = firstLineBox(intentEl);
+    const columnGap = parseFloat(getComputedStyle(row).columnGap);
+    const bodyHit = document.elementFromPoint(body.left + body.width / 2, body.top + body.height / 2);
+    return {
+      id: c.key,
+      label: c.label,
+      width: c.width,
+      shortIntent: c.shortIntent,
+      body,
+      line1,
+      sameLine: body.top < line1.bottom - 1,
+      dropBelowLine1: body.top - line1.bottom,
+      columnGap,
+      bodyLeftGap: body.left - line1.right,
+      bodyHitIsBody: Boolean(bodyHit && document.getElementById(`body-${c.key}`).contains(bodyHit)),
+    };
+  });
+};
+</script>
+</body>
+</html>

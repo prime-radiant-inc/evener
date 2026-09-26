@@ -162,19 +162,30 @@ export class ActivityList {
           if (tree.root.sessionId !== this.threadId || tree.root.ref !== this.ref)
             throw new Error("Activity belongs to another session");
           const current = this.state.tree;
-          if (current && tree.revision < current.revision)
-            throw new Error("Activity response is older than the displayed activity");
-          this.publish({
-            // Queued pages run back to back inside one load, which clears the
-            // error only once on entry; a page that succeeds after an earlier
-            // one failed has to clear it itself.
-            error: null,
-            tree: current
-              ? branch
-                ? graftContinuationTree(current, branch.id, tree)
-                : { ...tree, root: fenceRootSession(current.root, tree.root) }
-              : tree,
-          });
+          if (current && branch && tree.revision !== current.revision) {
+            // A continuation page is minted against one revision. A page from a
+            // different revision names positions that no longer line up with the
+            // retained tree, so it is discarded rather than grafted: mark the
+            // load dirty and loop, which issues a fresh root request at the
+            // current revision. The discarded branch is queued (below) and, if
+            // the fresh root still carries its continuation, re-issued against
+            // the new revision's token.
+            this.dirty = true;
+          } else {
+            if (current && tree.revision < current.revision)
+              throw new Error("Activity response is older than the displayed activity");
+            this.publish({
+              // Queued pages run back to back inside one load, which clears the
+              // error only once on entry; a page that succeeds after an earlier
+              // one failed has to clear it itself.
+              error: null,
+              tree: current
+                ? branch
+                  ? graftContinuationTree(current, branch.id, tree)
+                  : { ...tree, root: fenceRootSession(current.root, tree.root) }
+                : tree,
+            });
+          }
         }
       } catch (error) {
         if (!this.dirty && !this.disposed) {

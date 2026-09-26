@@ -133,6 +133,13 @@ type ContentPart struct {
 	ToolResult *ToolResultData `json:"tool_result,omitempty"`
 	Thinking   *ThinkingData   `json:"thinking,omitempty"`
 	WebSearch  *WebSearchData  `json:"web_search,omitempty"`
+
+	// Machinery marks a text part as session-manufactured machinery — a
+	// notification for the model the user never typed — rather than
+	// user-facing prose. Producers set it at construction; consumers that
+	// build user-facing text (apptranscript.UserFacingText) rely on it
+	// exclusively instead of matching the part's text shape.
+	Machinery bool `json:"machinery,omitempty"`
 }
 
 // ImageData holds an image content part, supplied either by URL or inline bytes.
@@ -166,9 +173,26 @@ type ToolCallData struct {
 	Arguments       json.RawMessage `json:"arguments,omitempty"`        // raw JSON object
 	ParsedArguments map[string]any  `json:"parsed_arguments,omitempty"` // populated by Parse()
 	Type            string          `json:"type,omitempty"`             // usually "function"
+	// RawArguments preserves the model's original argument bytes when they
+	// were not valid JSON and Arguments was replaced with the replay-safe {}
+	// form. It is a diagnostic record — the durable transcript keeps what the
+	// model actually sent — and never feeds provider requests.
+	RawArguments string `json:"raw_arguments,omitempty"`
 	// ThoughtSignature carries provider-specific thought-signature state (e.g., Gemini)
 	// required to continue tool-calling turns safely.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
+}
+
+// SentArguments returns the argument bytes the model actually sent: the
+// preserved raw bytes for a call whose arguments were not valid JSON
+// (Arguments holds the replay-safe {} placeholder there), else the recorded
+// arguments. Byte-faithful in both branches; callers wanting tidy edges trim
+// presentation-side.
+func (tc *ToolCallData) SentArguments() string {
+	if tc.RawArguments != "" {
+		return tc.RawArguments
+	}
+	return string(tc.Arguments)
 }
 
 // Parse unmarshals Arguments into ParsedArguments. If Arguments is nil or empty,

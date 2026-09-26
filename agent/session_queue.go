@@ -33,12 +33,18 @@ type queuedClientMutationIdentity struct {
 }
 
 func withQueuedClientMutation(ctx context.Context, queued queuedInput) context.Context {
-	return context.WithValue(ctx, queuedClientMutationContextKey{}, queuedClientMutationIdentity{
+	return context.WithValue(ctx, queuedClientMutationContextKey{}, queuedClientMutationIdentityOf(queued))
+}
+
+// queuedClientMutationIdentityOf is withQueuedClientMutation's identity for a
+// queued input, for a caller that holds the input rather than the context.
+func queuedClientMutationIdentityOf(queued queuedInput) queuedClientMutationIdentity {
+	return queuedClientMutationIdentity{
 		ClientMutationID: queued.ClientMutationID,
 		StableTurnID:     queued.StableTurnID,
 		QueueEntryID:     queued.ID,
 		SteeringCarrier:  queued.SteeringCarrier,
-	})
+	}
 }
 
 func queuedClientMutationFromContext(ctx context.Context) queuedClientMutationIdentity {
@@ -738,21 +744,57 @@ func queuedEntryPreviewLine(entry queuedInput) string {
 
 // popQueueHead removes and returns the next queued entry. Returns a zero
 // value when the queue is empty.
+//
+// The claim refuses a poisoned transcript on the same store generation it
+// claims on (popQueueHeadRefusingPoison); this form drops that refusal, which
+// claims nothing and leaves the head queued. A caller that would announce the
+// turn it claimed -- the wake and the drain loop -- reads the refusing form
+// instead, so no call can announce a turn the transcript cannot record.
 func (s *Session) popQueueHead() queuedInput {
+	queued, _ := s.popQueueHeadRefusingPoison()
+	return queued
+}
+
+// popQueueHeadRefusingPoison is the queue head's claim: it returns the entry it
+// took, or the poisoned-transcript refusal that stopped it, or neither when the
+// head is not claimable at all. The refusal is decided on the same clone the
+// claim acts on, not on a snapshot the caller read a step earlier, so a Stop,
+// a poisoning, or a queue change that lands between the caller's view of the
+// work and this claim cannot make the refusal and the claim disagree: whenever
+// this would claim, it also refuses a poisoned transcript, and a claimable
+// state that never materializes is quiet rather than an error.
+func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 	release, admissionErr := s.beginRetirementMutation("input")
 	if admissionErr != nil {
 		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("input admission failed: %v", admissionErr)})
-		return queuedInput{}
+		return queuedInput{}, nil
 	}
 	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
-		return queuedInput{}
+		return queuedInput{}, nil
+	}
+	// The writer is sampled under s.mu here, before the serializer takes
+	// clientMutations.mu; the claim reads only the writer's own lock inside, so
+	// the serializer never waits on s.mu.
+	writer := s.attachedTranscript()
+	if s.cfg.testOnly.queueHeadClaimSampled != nil {
+		s.cfg.testOnly.queueHeadClaimSampled()
 	}
 	var queued queuedInput
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		if s.cfg.testOnly.queueHeadClaimInSerializer != nil {
+			s.cfg.testOnly.queueHeadClaimInSerializer()
+		}
 		if !queueHeadClaimable(snapshot) {
 			return nil
+		}
+		// The transcript's refusal is part of the claim decision, read on the
+		// generation this claim commits against. Returning it from the mutation
+		// is what keeps the refusal from committing anything -- a nil return
+		// would save the generation the claim then declined to change.
+		if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+			return refusal
 		}
 		entry := snapshot.InputQueue[0]
 		record := snapshot.Journal[entry.ClientMutationID]
@@ -781,14 +823,19 @@ func (s *Session) popQueueHead() queuedInput {
 		queued.StableTurnID = record.StableTurnID
 		return nil
 	})
+	// A refusal is the transcript's, not the store's: distinguish it from a
+	// claim write that failed, which stands down with a warning instead.
+	if transcriptRefusedClaim(err) {
+		return queuedInput{}, err
+	}
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
-		return queuedInput{}
+		return queuedInput{}, nil
 	}
 	if queued.ClientMutationID != "" {
 		s.reflectDurableInputQueue()
 	}
-	return queued
+	return queued, nil
 }
 
 // queueHeadClaimable reports whether the queue head is one popQueueHead may
@@ -1210,6 +1257,9 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		recordPreparedSelection(selectionRecord, batch)
 		selectionBatch = batch
 	}
+	// Persist the steering's attachments before its turn is built so the
+	// message can name their durable paths (agent/image_persist.go).
+	msg.Images = s.persistInputImages(msg.Images)
 	t := schema.NewTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 	t.SteeringSource = msg.Source
 	t.SteeringKind = msg.Kind
@@ -1257,12 +1307,30 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		} else {
 			s.steeringLanded(msg.ClientMutationID)
 		}
+		// The clear must land before the event publishes: the server refreshes
+		// its ask facet on EventSteeringInjected (server/thread_envelope.go),
+		// so emitting first lets that refresh read a stale askPending=true
+		// until the next ask change (RoboRev #1806 member-3 Medium). Only the
+		// clear moves ahead of the emit -- admit/unpark stay after it, their
+		// original order, so a skill-admission failure's own EventWarning
+		// still publishes after EventSteeringInjected rather than before it.
+		s.clearAskPendingForResolvingSteer(t)
+		if hook := s.cfg.testOnly.beforeSteeringInjectedPublish; hook != nil {
+			hook()
+		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		s.admitPreparedSkillSelection(selectionBatch)
 		s.unparkSteering()
 		return steeringDelivered
 	}
 	s.recordTurn(t, t)
+	// Same ordering requirement as the client-mutation branch above: clear
+	// before the event that triggers the server's ask-facet refresh, admit
+	// after it (unchanged order).
+	s.clearAskPendingForResolvingSteer(t)
+	if hook := s.cfg.testOnly.beforeSteeringInjectedPublish; hook != nil {
+		hook()
+	}
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	s.admitPreparedSkillSelection(selectionBatch)
 	return steeringDelivered
@@ -1278,6 +1346,34 @@ func queuedInputFromSteering(msg steeringMessage) queuedInput {
 		Images:           msg.Images,
 		SkillNames:       msg.SkillNames,
 	}
+}
+
+// setSteeringCarrierClaimDrain records which steer (by client mutation id) a
+// claimed steering-carrier turn (acceptSteeringCarrierInput) is currently
+// draining, for steeringSelectionFailureIsCarrierClaim below to read; ""
+// clears it once the drain returns.
+func (s *Session) setSteeringCarrierClaimDrain(clientMutationID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.steeringCarrierClaimClientMutationID = clientMutationID
+}
+
+// steeringSelectionFailureIsCarrierClaim reports whether clientMutationID is
+// the steer a claimed steering-carrier turn is currently draining
+// (setSteeringCarrierClaimDrain above) — the turn whose mere acceptance
+// cleared askPending before this selection failure ran, PROVIDED that steer
+// itself answers the ask (steeringCarrierClaimAnswersAsk): the caller
+// (recordFailedSteeringSelection) checks both before tagging the TurnFailure
+// a resolution boundary (schema.TurnFailureInfo.SteeringCarrier) — a
+// human-note carrier's entry clear left askPending set, so this alone is not
+// sufficient.
+func (s *Session) steeringSelectionFailureIsCarrierClaim(clientMutationID string) bool {
+	if clientMutationID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.steeringCarrierClaimClientMutationID == clientMutationID
 }
 
 // recordFailedSteeringSelection durably records a steering input whose skill
@@ -1297,7 +1393,17 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 	turn := schema.NewTurn(schema.TurnFailure, llm.System(cause.Error()))
 	turn.ClientMutationID = msg.ClientMutationID
 	turn.StableTurnID = msg.StableTurnID
-	turn.Error = &schema.TurnFailureInfo{Message: cause.Error()}
+	// Tagged only when this IS the claimed carrier's own steer (
+	// steeringSelectionFailureIsCarrierClaim) AND that steer answers the ask
+	// (steeringCarrierClaimAnswersAsk, the same journal-kind check the entry
+	// clear uses): a human-note carrier's entry clear already left askPending
+	// set, so its failure must not be a resolution boundary either.
+	steeringCarrier := s.steeringSelectionFailureIsCarrierClaim(msg.ClientMutationID) &&
+		s.steeringCarrierClaimAnswersAsk(queuedClientMutationIdentity{ClientMutationID: msg.ClientMutationID, SteeringCarrier: true})
+	turn.Error = &schema.TurnFailureInfo{
+		Message:         cause.Error(),
+		SteeringCarrier: steeringCarrier,
+	}
 	turn.SkillState = &schema.SkillTurnState{Input: skillInputRecordFromQueued(input)}
 	if err := s.appendTurnAfterTranscriptWrite(
 		turn,
@@ -1487,7 +1593,20 @@ func (s *Session) SteeringQueueSnapshot() []SteeringEntry {
 // renders the bracketed selection marker so the steering turn is never
 // an empty user message.
 func steeringMessageToLLM(entry steeringMessage) llm.Message {
-	return buildSelectedUserInputMessage(entry.Text, entry.Images, entry.SkillNames)
+	msg := buildSelectedUserInputMessage(entry.Text, entry.Images, entry.SkillNames)
+	if entry.Kind != events.SteeringKindNotification {
+		return msg
+	}
+	// Notification-kind steering (e.g. the cancelled-callback-watches
+	// restart notice) is session machinery: every text part is
+	// session-authored, so flag them at construction for the display-side
+	// filter.
+	for i := range msg.Content {
+		if msg.Content[i].Kind == llm.ContentText {
+			msg.Content[i].Machinery = true
+		}
+	}
+	return msg
 }
 
 func (s *Session) popFollowUp() string {

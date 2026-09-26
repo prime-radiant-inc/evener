@@ -1,6 +1,10 @@
 // launchConfig.ts is the launch-config wire gateway both apps' launch settings
 // surfaces call through: evener/launch/{schema,getLayer,setLayer,resolve,
-// trustRepo} and evener/path/validate, each named once here as a typed method.
+// trustRepo} and the three filesystem RPCs behind the directory picker and
+// PathField - evener/path/validate, evener/dirs/create and
+// evener/paths/complete - each named once here as a typed method. The
+// filesystem three sit here because every path a launch option holds is
+// picked, validated and created through them.
 // createLaunchConfigStore wraps them in frameworkFreeStore's triple and adds
 // the one cache; LaunchSettings is the
 // per-layer draft editor the native settings screen drives over the same
@@ -37,11 +41,20 @@ export interface LaunchConfigStoreState {
   resolve(cwd: string, launchOverrides?: LaunchConfigLayer): Promise<LaunchConfigResolved>;
   trustRepo(cwd: string, hash: string): Promise<LaunchConfigResolved>;
   validatePath(path: string, kind?: string): Promise<PathValidateResponse>;
+  /** Creates one directory, for the picker's "new folder". */
+  createDirectory(path: string): Promise<void>;
+  /** Completes `prefix`, verbatim: the widget picks which of the RPC's two
+   * duties it wants per keystroke, a trailing slash listing a directory's
+   * children and a bare prefix fuzzy-completing it
+   * (TestHubRPCPathsCompleteReturnsMatchingDirectories). includeFiles adds
+   * files to the dirs-only default, and then directory entries come back with
+   * a trailing slash. */
+  completePaths(prefix: string, includeFiles: boolean): Promise<string[]>;
   /** Drops the cached schema (and any in-flight fetch) so the next schema() refetches. */
   invalidateSchema(): void;
 }
 
-/** The six wire methods as typed, uncached calls over `client`. */
+/** The eight wire methods as typed, uncached calls over `client`. */
 type LaunchConfigRequests = Omit<LaunchConfigStoreState, "invalidateSchema">;
 
 function launchConfigRequests(client: LaunchConfigClient): LaunchConfigRequests {
@@ -52,6 +65,16 @@ function launchConfigRequests(client: LaunchConfigClient): LaunchConfigRequests 
     resolve: (cwd, launchOverrides) => client.request("evener/launch/resolve", { cwd, launchOverrides }),
     trustRepo: (cwd, hash) => client.request("evener/launch/trustRepo", { cwd, hash }),
     validatePath: (path, kind) => client.request("evener/path/validate", { path, kind }),
+    createDirectory: async (path) => {
+      await client.request("evener/dirs/create", { path });
+    },
+    completePaths: async (prefix, includeFiles) => {
+      const resp = await client.request("evener/paths/complete", { prefix, includeFiles });
+      // Defence in depth against a null `data`. The hub sends [] and the wire
+      // type says string[], but a null here would reach every PathField on the
+      // page and a form must not come down over an empty directory listing.
+      return resp.data ?? [];
+    },
   };
 }
 

@@ -20,6 +20,7 @@ const (
 	ChangeDropUnknown       ChangeKind = "drop_unknown"
 	ChangeUnicodeRepair     ChangeKind = "unicode_repair"
 	ChangeMissingOuterBrace ChangeKind = "missing_outer_brace"
+	ChangeQuoteObjectKey    ChangeKind = "quote_object_key"
 	ChangeFillRequired      ChangeKind = "fill_required"
 	ChangeNormalizeDefault  ChangeKind = "normalize_default"
 	ChangeSynthesize        ChangeKind = "synthesize"

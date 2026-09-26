@@ -140,7 +140,7 @@ func TestUserMessageItemTextWithImages(t *testing.T) {
 
 // TestSubagentTerminalStatus covers the terminal-status detector.
 func TestSubagentTerminalStatus(t *testing.T) {
-	for _, status := range []string{"completed", "done", "failed", "cancelled", "stopped", "succeeded", "exhausted", "  Completed  ", "FAILED"} {
+	for _, status := range []string{"completed", "done", "failed", "cancelled", "stopped", "succeeded", "exhausted", "command_exited_nonzero", "command_killed", "  Completed  ", "FAILED"} {
 		if !subagentTerminalStatus(status) {
 			t.Errorf("subagentTerminalStatus(%q) should be true", status)
 		}

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/appserver"
 )
@@ -24,10 +23,7 @@ func TestHubCommandRegistryHasQuit(t *testing.T) {
 	if cmd.Run == nil {
 		t.Fatal("/quit has no Run")
 	}
-	gotMsg := cmd.Run(nil, "")()
-	if _, ok := gotMsg.(tea.QuitMsg); !ok {
-		t.Fatalf("/quit Run should produce tea.QuitMsg, got %T", gotMsg)
-	}
+	requireQuitCommand(t, cmd.Run(nil, ""))
 }
 
 func TestHubSlashCommandHelpListsQuit(t *testing.T) {

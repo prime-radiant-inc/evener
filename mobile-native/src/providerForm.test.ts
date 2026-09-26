@@ -41,7 +41,20 @@ it("rejects absent providers, blank names and literal credential headers", () =>
       { ...draft, credentialHeader: "Bearer literal" },
       providers,
     ),
-  ).toThrow("$VARIABLE");
+  ).toThrow(
+    "Credential header must reference a $VARIABLE or run a $(command), never a literal secret.",
+  );
+});
+
+it("accepts a command expression as credential material", () => {
+  expect(
+    createProviderParams(
+      { ...draft, credentialHeader: "Bearer $(get-work-key)" },
+      providers,
+    ),
+  ).toMatchObject({
+    credentialHeader: "Bearer $(get-work-key)",
+  });
 });
 it("leaves blank optional creation settings inherited", () => {
   expect(
@@ -69,6 +82,33 @@ it("distinguishes unchanged endpoint, replacement and explicit reset", () => {
     clearBaseUrl: true,
   });
   expect(editProviderParams({ name: "work" }, " ")).toEqual({ name: "work" });
+});
+
+// The editor was opened on one row of the listing, so its endpoint travels
+// with the save as the assertion the hub checks: a name another client has
+// re-pointed since must not have its replacement edited or renamed. A row the
+// hub could not fingerprint asserts nothing.
+it("asserts the endpoint the edited row was opened on", () => {
+  expect(
+    editProviderParams(
+      {
+        name: "work",
+        baseUrl: "https://example.test/v1",
+        endpointFingerprint: "fp-work",
+      },
+      " https://new.test ",
+    ),
+  ).toEqual({
+    name: "work",
+    baseUrl: "https://new.test",
+    expectedEndpointFingerprint: "fp-work",
+  });
+  expect(
+    editProviderParams(
+      { name: "work", baseUrl: "https://example.test/v1" },
+      "https://new.test",
+    ),
+  ).toEqual({ name: "work", baseUrl: "https://new.test" });
 });
 
 it("does not treat environment variable names as template keys", () => {

@@ -87,6 +87,19 @@ afterEach(() => {
 });
 
 describe("resetExtensionsStoreForTests", () => {
+  test("preserves the marketplace publication version across the combined-store reset", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    const before = extensionsStore.getState().marketplacesPublicationVersion;
+
+    await extensionsStore.getState().fetchMarketplaces();
+    const published = extensionsStore.getState().marketplacesPublicationVersion;
+    expect(published).toBe(before + 1);
+
+    resetExtensionsStoreForTests();
+    expect(extensionsStore.getState().marketplacesPublicationVersion).toBe(published);
+  });
+
   test("clears marketplaces fields seeded straight into the store, not only ones the core published", () => {
     extensionsStore.setState({
       marketplaces: [MARKETPLACE_A],
@@ -399,10 +412,11 @@ describe("marketplace mutation ordering", () => {
     await fetching;
     expect(extensionsStore.getState().marketplaces).toEqual([]);
     // The outrun response writes none of its three fields, the loading flag
-    // included: the mutation that outran it is followed by the hub's
-    // evener/marketplace/updated broadcast, whose refetch is what clears the
-    // flag this fetch set on its way out.
-    expect(extensionsStore.getState().marketplacesLoading).toBe(true);
+    // included - and the mutation that outran it answers all three, so the
+    // flag this fetch raised on its way out comes down with the mutation's
+    // list rather than waiting on the hub's broadcast, which a client that
+    // was away never receives.
+    expect(extensionsStore.getState().marketplacesLoading).toBe(false);
   });
 
   test("an outrun response still retires its own browse cache entry", async () => {
@@ -715,6 +729,36 @@ describe("browseMarketplace", () => {
     await drainMicrotasks();
     expect(waiterWoke).toEqual({ status: "loaded", description: undefined, plugins: [{ name: "fresh" }] });
   });
+
+  // A real reconnect's first event is a REPLACED client whose own `state` is
+  // "connecting" (AppwireClient.connect() enters "connecting" before
+  // "ready"), not "ready" itself - so this fences the browse still on the
+  // wire without also running the reconnect-while-away refetch that a
+  // "ready" transition would, which retires every catalog regardless of
+  // status and would otherwise hide this from the package's own store.
+  test("a browse still in flight when the connection is replaced does not stick on loading", async () => {
+    const fake = connectFakeClient();
+    const release = deferBrowse(fake);
+    const browsing = extensionsStore.getState().browseMarketplace("acme-plugins");
+    await drainMicrotasks();
+    expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({ status: "loading" });
+
+    const replacement = new FakeClient("connecting");
+    connectionStore.getState().connect(replacement);
+    expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
+
+    release({ name: "acme-plugins", plugins: [{ name: "stale" }] });
+    await browsing;
+    expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
+
+    replacement.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "fresh" }] }));
+    replacement.emitStateChange("ready");
+    await extensionsStore.getState().browseMarketplace("acme-plugins");
+    expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({
+      status: "loaded",
+      plugins: [{ name: "fresh" }],
+    });
+  });
 });
 
 describe("fetchPlugins", () => {
@@ -933,6 +977,182 @@ describe("completePaths", () => {
   });
 });
 
+describe("reconnect-triggered refetch", () => {
+  // The hub broadcasts evener/marketplace/updated and evener/plugin/updated to
+  // every CONNECTED client, so a change another client made while this browser
+  // was away arrives nowhere: the notification cannot recover it and the
+  // reconnect has to. The sections' own mount effect is a one-shot (it latches
+  // `started`), so without this the pane shows the pre-disconnect lists until
+  // the user navigates away and back.
+  test("a reconnect re-reads the lists something has already read", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
+    await extensionsStore.getState().fetchMarketplaces();
+    await extensionsStore.getState().fetchPlugins();
+    await extensionsStore.getState().fetchLaunchLayer();
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await drainMicrotasks();
+
+    expect(fake.calls.filter((c) => c.method === "evener/marketplace/list")).toHaveLength(2);
+    expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(2);
+    expect(fake.calls.filter((c) => c.method === "evener/launch/getLayer")).toHaveLength(2);
+  });
+
+  // pluginRevision is what the spawn form's HOST-scoped consumers key on:
+  // usePluginPreview and useSpawnSlashCatalog ask the selected host directly
+  // and never read this store's installed list. A disconnection can hide any
+  // number of plugin changes from them, so the revision has to move on the way
+  // back regardless of whether anything ever read the controller's own list -
+  // the established check belongs to the refetch decision, not to this.
+  test("a reconnect moves pluginRevision even though no section read the list", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    expect(extensionsStore.getState().pluginRevision).toBe(0);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await drainMicrotasks();
+
+    expect(extensionsStore.getState().pluginRevision).toBe(1);
+    expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(0);
+  });
+
+  // This module is lazily loaded, so it usually initializes AFTER the client is
+  // ready: the connection it must learn from is the one that already exists,
+  // not the next transition. Without that first pass the cores' first sight of
+  // the connection is the reconnect itself, which they then read as a first
+  // connection - nothing invalidated, no revision moved, exactly when a
+  // disconnection has just hidden changes from them.
+  // resetExtensionsStoreForTests puts the singleton back the way a fresh load
+  // leaves it, that pass included, which is what lets this be tested at all.
+  test("a module that initializes while the client is ready still recovers on the next reconnect", async () => {
+    const fake = connectFakeClient();
+    resetExtensionsStoreForTests();
+    expect(extensionsStore.getState().pluginRevision).toBe(0);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await drainMicrotasks();
+
+    expect(extensionsStore.getState().pluginRevision).toBe(1);
+  });
+
+  // The cores subscribe through this store's port, not to a client directly,
+  // and the port follows connectionStore (onConnectionNotification re-wires on
+  // every client change). So a notification from a client that has been
+  // replaced must reach nothing: it describes a hub this browser no longer
+  // speaks to, and acting on it would retire the new hub's caches or move the
+  // revision its consumers key on.
+  test("a notification from a replaced client moves nothing", async () => {
+    const stale = connectFakeClient();
+    stale.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    stale.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    await extensionsStore.getState().fetchPlugins();
+    await extensionsStore.getState().fetchMarketplaces();
+    await extensionsStore.getState().browseMarketplace("acme-plugins");
+
+    const current = connectFakeClient();
+    const revision = extensionsStore.getState().pluginRevision;
+    const calls = current.calls.length;
+
+    stale.emitNotification({ method: "evener/plugin/updated", params: {} });
+    stale.emitNotification({ method: "evener/marketplace/updated", params: {} });
+    await drainMicrotasks();
+
+    expect(extensionsStore.getState().pluginRevision).toBe(revision);
+    expect(current.calls).toHaveLength(calls);
+  });
+
+  // The sections' loader is a one-shot: it latches `started` when it fires the
+  // first fetch (marketplacesPlugins/index.tsx). So a read the client
+  // replacement interrupted is never asked for again by the pane, and the
+  // store has to carry the intent across the replacement itself - otherwise
+  // the settings page keeps a null list with nothing loading.
+  test("a read a client replacement interrupted is issued again, to the replacement", async () => {
+    const interrupted = connectFakeClient();
+    interrupted.on("evener/plugin/list", () => new Promise(() => {}));
+    void extensionsStore.getState().fetchPlugins();
+    await Promise.resolve();
+    expect(extensionsStore.getState().pluginsLoading).toBe(true);
+
+    // Scripted BEFORE it is connected: the recovery read goes out synchronously
+    // with the connection it recovers on.
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    connectionStore.getState().connect(replacement);
+    await drainMicrotasks();
+
+    expect(replacement.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(1);
+    expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
+    expect(extensionsStore.getState().pluginsLoading).toBe(false);
+  });
+
+  // What ConnectionBanner's retry does: connect(fresh) runs BEFORE
+  // `await fresh.connect()`, so the store is told about the replacement while
+  // it is still idle and only later hears it is ready. The read the
+  // replacement interrupted has to survive that gap, because the sections'
+  // loader latches `started` and will not ask again.
+  test("a replacement named before it is dialled still gets the read it interrupted", async () => {
+    const interrupted = connectFakeClient();
+    interrupted.on("evener/plugin/list", () => new Promise(() => {}));
+    void extensionsStore.getState().fetchPlugins();
+    await Promise.resolve();
+    expect(extensionsStore.getState().pluginsLoading).toBe(true);
+
+    const fresh = new FakeClient("idle");
+    fresh.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    connectionStore.getState().connect(fresh);
+    expect(fresh.calls).toHaveLength(0);
+
+    fresh.emitReady();
+    await drainMicrotasks();
+
+    expect(fresh.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(1);
+    expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
+    expect(extensionsStore.getState().pluginsLoading).toBe(false);
+  });
+
+  test("a reconnect reads nothing for a section that was never opened", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    await extensionsStore.getState().fetchMarketplaces();
+    const marketplaceCalls = fake.calls.filter((c) => c.method === "evener/marketplace/list").length;
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await drainMicrotasks();
+
+    expect(fake.calls.filter((c) => c.method === "evener/marketplace/list")).toHaveLength(marketplaceCalls + 1);
+    expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(0);
+    expect(fake.calls.filter((c) => c.method === "evener/launch/getLayer")).toHaveLength(0);
+  });
+
+  // A fresh screen that installs a plugin before ever fetching the list: none
+  // of pluginsLoading/plugins/pluginsError is set yet, so nothing in the
+  // store's own data marks the list as wanted - only the install still on the
+  // wire does, at the seam writeRevisioned and readRevisioned share.
+  test("a mutation issued before any list fetch still recovers on a replaced connection", async () => {
+    const interrupted = connectFakeClient();
+    interrupted.on("evener/plugin/install", () => new Promise(() => {}));
+    void extensionsStore.getState().installPlugin("linter", "acme-plugins");
+    await Promise.resolve();
+    expect(extensionsStore.getState().plugins).toBeNull();
+
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    connectionStore.getState().connect(replacement);
+    await drainMicrotasks();
+
+    expect(replacement.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(1);
+    expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
+  });
+});
+
 describe("notification-triggered refetch", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -1107,6 +1327,27 @@ describe("notification-triggered refetch", () => {
       params: { host: "buildbox", method: "evener/auth/updated", params: {} },
     });
     expect(extensionsStore.getState().pluginRevision).toBe(0);
+  });
+
+  // The fan-out subscribes one remote host per goroutine, so a wrapper tagged
+  // with the controller itself is not something the hub emits today. It is
+  // this hub's own change by definition, and the seam that drops a remote
+  // host's wrapper must not drop it with them: it is unwrapped and applied
+  // exactly as the plain notification is, revision and refetch both.
+  test("a wrapped update tagged with the controller is applied as the controller's own", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/plugin/list", () => ({ plugins: [] }));
+    await extensionsStore.getState().fetchPlugins();
+    fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "local", method: "evener/plugin/updated", params: {} },
+    });
+    expect(extensionsStore.getState().pluginRevision).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
   });
 
   test("wiring attaches as soon as a client connects, with no prior fetch call required", async () => {

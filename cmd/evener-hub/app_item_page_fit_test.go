@@ -187,6 +187,41 @@ func TestPackTranscriptItemPageTurnsListUsesSameRules(t *testing.T) {
 	}
 }
 
+// TestPackTranscriptItemPageIgnoresFixedEnvelopeInSoftLimit pins the soft
+// limit's decision basis: it bounds the transcript CONTENT the packer can
+// actually shrink by dropping items — not the fixed thread envelope (delegate
+// statuses, task aggregates) that enrich grafts onto the response and that no
+// number of drops can remove. A delegate-heavy past session carries megabytes
+// of envelope; measuring it made the packer strip every window to a single
+// item (denying the webui its initial scrollback page) while re-marshaling the
+// whole envelope once per dropped item.
+func TestPackTranscriptItemPageIgnoresFixedEnvelopeInSoftLimit(t *testing.T) {
+	identity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "incarnation-envelope", ProjectionVersion: 1}
+	candidates := testItemCandidates(appwire.TranscriptItemPageLimit)
+	got, err := packThreadReadItemCandidates(transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity:   identity,
+		Exhausted:  true,
+	}, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+		// The grafted envelope is fixed no matter which items the packer keeps.
+		response.Thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{
+			Delegates: []appwire.EvenerDelegateInfo{{
+				Task: strings.Repeat("d", transcriptRPCResultSoftLimit),
+			}},
+		}
+		return response, nil
+	})
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+	if got := len(flattenTestItems(got.Thread.Turns)); got != appwire.TranscriptItemPageLimit {
+		t.Fatalf("item count = %d, want the full %d-item page: a fixed envelope the packer cannot shrink must not drive item drops", got, appwire.TranscriptItemPageLimit)
+	}
+	if got.OlderCursor != "" {
+		t.Fatalf("older cursor = %q, want none for an exhausted page", got.OlderCursor)
+	}
+}
+
 func TestPackTranscriptItemWrappersValidateFinalResponses(t *testing.T) {
 	tests := []struct {
 		name       string

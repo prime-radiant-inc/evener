@@ -225,6 +225,19 @@ func teardownChildSessionWithPolicy(ctx context.Context, sess *Session, scratch 
 		return nil
 	}
 	releaseErr := sess.releaseRuntime(ctx, closeOptions{}, policy)
+	// A child session never runs prepareRetainedScratch, so a pool its
+	// restore-adoption refresh seeded is process-local to this session alone:
+	// the root's terminal release detaches only the root's pool, and
+	// releaseRetirementScratch runs only under the retirement policy this
+	// teardown may not carry. Seal and detach it here so its reacquired
+	// leases cannot outlive the session pinning contended slots against every
+	// later cold restore (round 15). The seal rides the pool's own lock —
+	// the same contract the terminal, retirement, and release paths already
+	// keep — so a wrapper borrow holding the lock across its install either
+	// completes before the seal or declines inside its critical section
+	// instead of reporting success over it (rounds 30 and 34).
+	sess.sealRetainedScratch()
+	sess.detachRetainedScratch()
 	// Every entry is a clone the child built for itself by entering or switching
 	// worktrees and then swapped away from: no child close runs the cleanupEnv
 	// block that drains sess.abandonedEnvs, so this is the only teardown that
@@ -427,6 +440,13 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		// automatic compaction to run unsteered. The untyped surface already
 		// keeps it (deny-list path), so listing tools: must not take it away.
 		allowed = appendUniqueStrings(allowed, "compact_context")
+		// use_skill is the skill-activation capability, not an agent-type
+		// opt-in: a brief that directs a delegate to run a skill
+		// (`use_skill("...")`) cannot be followed literally without it, and the
+		// only substitute is the untracked read_file fallback. The untyped
+		// surface already keeps it (deny-list path), so a typed role's tools:
+		// list must not silently take it away.
+		allowed = appendUniqueStrings(allowed, "use_skill")
 		// Root-only job and delegation tools in a typed role's list are
 		// allowance-gated: granted, the role keeps them and gains job_watch
 		// to supervise its delegates; a leaf loses them, on every spawn
@@ -2013,6 +2033,19 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		if reportErr := a.sess.delegateController.ReportFinalizationQuiesced(lease, a.sess); reportErr != nil {
 			a.sess.emit(events.EventWarning, warningDataFromError("delegate finalization quiescence report failed", reportErr))
 		}
+		// The schedule is armed whether or not the quiescence report
+		// succeeded, and that is load-bearing: a failed report is
+		// stale-shaped — this generation superseded, the resident runtime
+		// replaced by a racing restore, or the controller closing — and the
+		// release's own generation and claim guards refuse on exactly those,
+		// while a replacement runtime of the still-current generation is the
+		// restored-idle resident this release exists to reap. Scheduling only
+		// on report success would strand that replacement, which has no
+		// finalize tail of its own. The retention rationale and the fixture
+		// opt-out live on the seam's field comment.
+		if !a.sess.cfg.testOnly.disableDelegateIdleRelease {
+			a.sess.scheduleIdleRuntimeRelease(lease.generation)
+		}
 	}
 }
 
@@ -2182,6 +2215,7 @@ type delegateTerminalRunInputs struct {
 type delegateTerminalPacketMetadata struct {
 	Outcome           delegatestore.OutcomeStatus     `json:"outcome,omitempty"`
 	Reason            string                          `json:"reason,omitempty"`
+	Name              string                          `json:"name,omitempty"`
 	Task              string                          `json:"task,omitempty"`
 	Description       string                          `json:"description,omitempty"`
 	AgentType         string                          `json:"agent_type,omitempty"`
@@ -2305,6 +2339,7 @@ func captureDelegateStructuredResult(packet *delegatestore.TerminalPacket, input
 
 func delegateTerminalMetadataFromRun(inputs delegateTerminalRunInputs) delegateTerminalPacketMetadata {
 	metadata := delegateTerminalPacketMetadata{
+		Name:              inputs.descriptor.Name,
 		Task:              inputs.descriptor.Task,
 		Description:       inputs.descriptor.Description,
 		AgentType:         inputs.descriptor.AgentType,

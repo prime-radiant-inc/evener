@@ -186,13 +186,55 @@ func TestCovHandleInstanceRemove(t *testing.T) {
 	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
-	_, cmd = m.handleInstanceRemove(launchconfig.InstanceRemoveMsg{Name: "inst1"})
+	_, cmd = m.handleInstanceRemove(launchconfig.InstanceRemoveMsg{Name: "inst1", EndpointFingerprint: "fp-shown"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
 	result, ok := cmd().(launchconfig.InstanceMutateResultMsg)
-	if !ok || result.Err != nil || params.Name != "inst1" {
+	if !ok || result.Err != nil || params.Name != "inst1" || params.ExpectedEndpointFingerprint != "fp-shown" {
 		t.Fatalf("remove result = %#v, params = %#v", result, params)
+	}
+}
+
+// TestHandleInstanceRemoveReportsAStaleFingerprintRefusal: the hub refuses a
+// removal confirmed against an endpoint the name no longer resolves to, and
+// the model reports that refusal instead of treating the row as removed - and
+// re-reads the list, so a retry asserts the destination now on screen.
+func TestHandleInstanceRemoveReportsAStaleFingerprintRefusal(t *testing.T) {
+	listCalls := 0
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, got appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
+			if got.ExpectedEndpointFingerprint != "fp-stale" {
+				t.Errorf("params.ExpectedEndpointFingerprint = %q, want the shown fingerprint", got.ExpectedEndpointFingerprint)
+			}
+			return appwire.InstanceListResponse{}, appwire.EndpointConflict(`inst1 no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again`)
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerInstanceList, func(context.Context, appwire.EmptyParams) (appwire.InstanceListResponse, error) {
+			listCalls++
+			return appwire.InstanceListResponse{}, nil
+		})
+	})
+	defer cleanup()
+	m := newHubModel(client, "http://hub.test")
+	m.credentialsPanel = newCredentialsPanelForTest()
+	_, cmd := m.handleInstanceRemove(launchconfig.InstanceRemoveMsg{Name: "inst1", EndpointFingerprint: "fp-stale"})
+	if cmd == nil {
+		t.Fatal("cmd should not be nil with client")
+	}
+	result, ok := cmd().(launchconfig.InstanceMutateResultMsg)
+	if !ok || result.Err == nil {
+		t.Fatalf("remove result = %#v, want the hub's refusal carried", result)
+	}
+	updated, refresh := m.handleInstanceMutateResult(result)
+	if got := updated.(hubModel).err; got == nil || !strings.Contains(got.Error(), "no longer resolves to the endpoint") {
+		t.Fatalf("model err = %v, want the stale-endpoint refusal reported", got)
+	}
+	if refresh == nil {
+		t.Fatal("the stale-endpoint refusal must re-read the list so a retry asserts the destination now on screen")
+	}
+	refreshed, ok := refresh().(launchconfig.InstanceListResultMsg)
+	if !ok || refreshed.Err != nil || listCalls != 1 {
+		t.Fatalf("refresh = %#v, listCalls = %d, want one instance-list read", refreshed, listCalls)
 	}
 }
 

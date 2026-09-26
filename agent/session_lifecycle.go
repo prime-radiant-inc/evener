@@ -199,7 +199,7 @@ func (s *Session) endDispose() {
 	release()
 }
 
-// envWorkID handles one admission on envWorkWG, so its label can be dropped
+// envWorkID handles one admission in envWork, so its label can be dropped
 // again when the work returns.
 type envWorkID uint64
 
@@ -217,8 +217,10 @@ func (s *Session) registerEnvWorkLocked(label string, release func()) envWorkID 
 	if s.envWork == nil {
 		s.envWork = make(map[envWorkID]envWorkRecord)
 	}
+	if len(s.envWork) == 0 {
+		s.envWorkDrained = make(chan struct{})
+	}
 	s.envWork[id] = envWorkRecord{label: label, release: release}
-	s.envWorkWG.Add(1)
 	return id
 }
 
@@ -228,7 +230,7 @@ func (s *Session) registerEnvWorkLocked(label string, release func()) envWorkID 
 // delegate's isolation lane and the rollback that undoes it, and the rollback a
 // refused or failed operation owes after its swap has already released the
 // swap's own admission. It is the beginDispose idiom again — the closing check
-// AND the envWorkWG Add happen under one s.mu hold, so a successful Add
+// AND the admission happen under one s.mu hold, so a successful admission
 // happens-before Close()'s join. A true return MUST be paired with a (deferred)
 // endEnvWork().
 //
@@ -238,7 +240,7 @@ func (s *Session) registerEnvWorkLocked(label string, release func()) envWorkID 
 //
 // swapEnvAndRefresh calls registerEnvWorkLocked directly rather than this,
 // because it needs the environment it is adopting from out of the same lock
-// hold that reads `closing`; it is the same admission on the same WaitGroup.
+// hold that reads `closing`; it is the same admission Close() joins.
 //
 // A false return means the close was already under way when this work began.
 // There is nothing left to fence it against — the environment it would run on
@@ -285,13 +287,20 @@ func (s *Session) relabelEnvWork(id envWorkID, label string) {
 	}
 }
 
-// endEnvWork releases an admission obtained from beginEnvWork().
+// endEnvWork releases an admission obtained from beginEnvWork(). Ending a
+// handle that already ended releases nothing, so it cannot end the join early
+// while another admission is still live.
 func (s *Session) endEnvWork(id envWorkID) {
 	s.mu.Lock()
-	work := s.envWork[id]
-	delete(s.envWork, id)
+	work, live := s.envWork[id]
+	if live {
+		delete(s.envWork, id)
+		if len(s.envWork) == 0 {
+			close(s.envWorkDrained)
+			s.envWorkDrained = nil
+		}
+	}
 	s.mu.Unlock()
-	s.envWorkWG.Done()
 	if work.release != nil {
 		work.release()
 	}
@@ -330,15 +339,15 @@ func (s *Session) outstandingEnvWork() []string {
 //   - A SWAP's refresh runs under the session's own context, which this close
 //     cancelled in its step 2, well before reaching here. It stops on its own.
 //   - A ROLLBACK (worktreeCleanupRun) is DETACHED on purpose: it runs on
-//     context.Background() with a LaneClosePassBudget of its own, because the
+//     context.Background() with a close-cascade budget of its own, because the
 //     close that refused the swap — or the spawn whose lane it is taking back —
 //     has already cancelled the request context the op's runner was bound to,
 //     and a rollback through that would fail silently. Cancelling the close
 //     cannot shorten it.
 //
 // So this bound is not a restatement of the rollback's bound: the close budget
-// is one LaneClosePassBudget minted when the close began and partly spent by
-// the time it gets here, while a rollback's is a full LaneClosePassBudget
+// is one close-cascade budget minted when the close began and partly spent by
+// the time it gets here, while a rollback's is a full close-cascade budget
 // starting later. The join can therefore always expire first. That is accepted
 // rather than fixed by waiting longer, for two reasons. The cascade budget
 // (spec §P0) exists so a whole close is bounded, and this join is a participant
@@ -365,13 +374,20 @@ func (s *Session) outstandingEnvWork() []string {
 // to reap the process table under whatever is still running, which must not
 // happen silently, so the warning names it.
 func (s *Session) joinEnvWorkWithinCloseBudget(ctx context.Context) {
-	joined := make(chan struct{})
-	go func() {
-		defer close(joined)
-		s.envWorkWG.Wait()
-	}()
+	s.mu.Lock()
+	drained := s.envWorkDrained
+	s.mu.Unlock()
+	if drained == nil {
+		return
+	}
+	// testOnly seam: see testConfig.closeAwaitingEnvWork. Nil in production.
+	// Only an endEnvWork of the last live admission closes drained, and the
+	// budget is not yet spent, so the select below blocks.
+	if observe := s.cfg.testOnly.closeAwaitingEnvWork; observe != nil && ctx.Err() == nil {
+		observe()
+	}
 	select {
-	case <-joined:
+	case <-drained:
 		return
 	case <-ctx.Done():
 	}
@@ -607,7 +623,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 			// delegate lanes) over the SAME shared close budget. Store must still be
 			// open (the own-store Disposed mark is a durable append); it closes below.
 			s.disposeLaneResidueAtClose(budgetCtx)
-			s.unlockOwnManagedWorktreeAtClose()
+			s.unlockOwnManagedWorktreeAtClose(budgetCtx)
 		}
 
 		if !retirement && s.jobManager != nil {
@@ -862,15 +878,13 @@ func (s *Session) discardRestoredCandidate() {
 		// is no one left to retain them for: both go, the same decision the
 		// create-path twin of this abort (disposeUnadoptedSubagentSession) makes.
 		// The one exception is an allocation this candidate ADOPTED from the
-		// root's durable retention manifest: that directory is referenced on disk
-		// and a later resume reacquires it, so it is retained (lease released)
-		// instead of removed with the mint a fresh restore allocated.
+		// root's durable retention manifest: that directory is referenced on
+		// disk and a later resume reacquires it, so it is retained (lease
+		// released) instead of removed with the mint a fresh restore allocated.
+		// The settle is per kind, so an adopted allocation never holds its
+		// sibling fresh mint open with it (round 83).
 		env := s.environmentOwnedAtTeardown()
-		scratch := disposeChildScratch
-		if s.ownsReferencedRetainedScratch(env) {
-			scratch = retainChildScratch
-		}
-		releaseOwnedChildEnvironment(env, scratch)
+		s.settleOwnedScratchByManifest(env)
 		if s.mcpMgr != nil {
 			s.mcpMgr.Close()
 		}
@@ -1172,6 +1186,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		s.mu.Unlock()
 	}()
 
+	// A test-only seam: fail the turn before its user entry is recorded, the
+	// pre-incorporation, non-transcript failure the start path's give-back keys
+	// on. Nil in production, where it is inert.
+	if fail := s.cfg.testOnly.failTurnBeforeRecording; fail != nil {
+		return "", fail()
+	}
+
 	outputs := []string{}
 	next := input
 	nextImages := images
@@ -1200,14 +1221,30 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// append holds it across a write and an fsync), and poisoned is never
 		// cleared, so a stale read costs one turn that then meets the writer's
 		// own refusal.
-		if err := s.refuseTurnOnPoisonedTranscript(processCtx); err != nil {
+		if err := s.refuseTurnOnUnhealthyTranscript(processCtx); err != nil {
 			// A steering carrier claimed at the tail below owns the active-turn
 			// slot until something hands it back; a refusal here is before the
 			// release that follows processOneInput, exactly the stranded claim
-			// ProcessPendingUserInput's deferred release guards against. (A
-			// queued message's slot is not released: its claimed entry is
-			// re-run by restore under that id.)
-			s.releaseSteeringCarrierClaim(queuedClientMutationFromContext(processCtx))
+			// ProcessPendingUserInput's deferred release guards against.
+			identity := queuedClientMutationFromContext(processCtx)
+			s.releaseSteeringCarrierClaim(identity)
+			// A queued message the drain claimed but has not run goes back to
+			// the queue. Its claim's poison check and commit are on different
+			// resources, so a poisoning can land between them and this gate then
+			// refuses; left claimed, the message is out of the queue with
+			// ActiveTurnID pinned until restart recovery.
+			//
+			// Only when the claim has not been incorporated. An incorporated
+			// turn's transcript entry is already on disk, so settling it here
+			// would mark a durably recorded turn terminal and drop it instead of
+			// leaving it for restart recovery to run. ProcessClientMutationStart
+			// and ProcessPendingUserInput key their give-back on the same fact.
+			if identity.ClientMutationID != "" && !identity.SteeringCarrier &&
+				!s.clientMutationUserTranscriptIncorporated(identity.ClientMutationID, identity.StableTurnID) {
+				if restoreErr := s.completeClientMutationTurn(identity.ClientMutationID); restoreErr != nil {
+					err = errors.Join(err, fmt.Errorf("return claimed input: %w", restoreErr))
+				}
+			}
 			return strings.Join(outputs, "\n"), err
 		}
 		// Capture the kind actually being processed this iteration before the
@@ -1262,37 +1299,60 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// Claude Code / codex. The transcript records an interrupt
 			// marker so the model sees, on the next turn, that the
 			// previous round was cut short.
+			interruptMarkerRejected := false
 			if isTurnCancellation(processCtx, err) {
-				s.finishProcessingAtBoundary(processCtx, SessionIdle)
-				// An interrupted turn ends idle even if it posted questions (spec
-				// §5.1): the user is demonstrably present. The cards stay rendered
-				// from the transcript regardless; only the pending set — which
-				// exists purely to drive the boundary check — clears.
-				s.clearAskPending()
 				s.mu.Lock()
 				closed := s.closingOrClosedLocked()
-				turns := s.modelResponses
-				emitEnd := !s.sessionEndEmitted && !closed
-				if emitEnd {
-					s.sessionEndEmitted = true
-				}
 				s.mu.Unlock()
 
+				markerAccepted := false
 				if !closed {
 					// Append a system-reminder turn so the next request to
 					// the model includes the interrupt notice in history.
 					// This is the user-visible "interrupted here" marker
 					// in the transcript that consumers (TUI / hub) render.
 					interruptMsg := systemReminderBlock("The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.")
-					s.appendSteeringTurn(interruptMsg, events.SteeringKindInterrupted)
+					if markerErr := s.appendSteeringTurnDurablyForOwner(interruptMsg, events.SteeringKindInterrupted, s.activeTurnOwner()); markerErr != nil {
+						interruptMarkerRejected = true
+						// The cancellation is still the original turn error, but a
+						// marker that was not admitted cannot resolve the ask or
+						// open the autonomous drain. The generic failure tail settles
+						// the live boundary from the still-pending ask.
+						err = errors.Join(err, fmt.Errorf("record interrupt marker: %w", markerErr))
+					} else {
+						markerAccepted = true
+						// An interrupted turn ends idle even if it posted questions
+						// (spec §5.1): the user is demonstrably present. The cards
+						// stay rendered from the transcript regardless; only the
+						// pending set — which exists purely to drive the boundary
+						// check — clears after the marker is accepted.
+						s.clearAskPending()
+						s.finishProcessingAtBoundary(processCtx, SessionIdle)
+						s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: interruptMsg, Kind: events.SteeringKindInterrupted})
+					}
+				} else {
+					// A closing session cannot publish a marker. Preserve the
+					// existing close guard: settle the turn and discard its
+					// in-memory ask without announcing another boundary.
+					s.finishProcessingAtBoundary(processCtx, SessionIdle)
+					s.clearAskPending()
 				}
-				if emitEnd {
-					s.emit(events.EventSessionEnd, events.SessionEndData{
-						Reason:      "interrupted",
-						State:       string(SessionIdle),
-						Turns:       turns,
-						Interrupted: true,
-					})
+				if markerAccepted {
+					s.mu.Lock()
+					turns := s.modelResponses
+					emitEnd := !s.sessionEndEmitted
+					if emitEnd {
+						s.sessionEndEmitted = true
+					}
+					s.mu.Unlock()
+					if emitEnd {
+						s.emit(events.EventSessionEnd, events.SessionEndData{
+							Reason:      "interrupted",
+							State:       string(SessionIdle),
+							Turns:       turns,
+							Interrupted: true,
+						})
+					}
 				}
 				// A turn ended by a Stop parks the queue head instead of running
 				// it (wms7's ruling): the user stopped this session's work, so
@@ -1304,7 +1364,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				// the fence that would mark the Stop was already finalized by
 				// the completion above, which is why the completion reports it
 				// here.
-				if !closed && !stopSettledThisTurn {
+				if markerAccepted && !closed && !stopSettledThisTurn {
 					// Decide, then claim. popQueueHead is a durable commit, and
 					// whether this interrupt may drain depends only on the turn's
 					// context and error -- never on the queue -- so there is
@@ -1324,9 +1384,17 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 						// error because this branch returns it: without that the
 						// caller hears only the interrupt and nothing says the
 						// transcript is what stopped the drain.
-						if refusal := s.refuseBeforeClaimingOnPoisonedTranscript(); refusal != nil {
+						//
+						// The check is unconditional: an interrupt whose own
+						// record poisoned the writer still owes the caller that
+						// reason when nothing is claimable to drain. The claim
+						// re-decides it on the generation it commits against,
+						// which covers a poisoning that lands in this window.
+						if refusal := s.refuseBeforeClaimingOnUnhealthyTranscript(); refusal != nil {
 							err = errors.Join(err, refusal)
-						} else if queued := s.popQueueHead(); inputHasContent(queued.Text, queued.Images, queued.SkillNames) {
+						} else if queued, claimRefusal := s.popQueueHeadRefusingPoison(); claimRefusal != nil {
+							err = errors.Join(err, claimRefusal)
+						} else if inputHasContent(queued.Text, queued.Images, queued.SkillNames) {
 							next = queued.Text
 							nextImages = queued.Images
 							processCtx = s.contextWithSelectedSkills(withQueuedClientMutation(cfg.nextTurnContext(), queued), queued)
@@ -1339,14 +1407,26 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				}
 			}
 			// handleModelError owns terminal provider recovery: it emits the
-			// failed turn, blocks the active goal, and settles the session idle.
-			// Keep this generic tail for non-provider failures (and budget
-			// exhaustion), but do not duplicate provider goal/provenance effects.
+			// failed turn, blocks the active goal, and settles through the
+			// pending-aware failure boundary. Keep this generic tail for
+			// non-provider failures (and budget exhaustion), but do not duplicate
+			// provider goal/provenance effects.
 			if !isProviderTerminalError(err) {
 				if _, exhausted := budgetExhaustionFromError(err); !exhausted {
 					s.terminateGoalOnError(processCtx, err)
 				}
-				s.finishProcessingAtBoundary(processCtx, SessionIdle)
+				// A human-note carrier's own append failure (carrierSteerUndelivered)
+				// leaves askPending set -- its entry clear never ran
+				// (steeringCarrierClaimAnswersAsk) -- so settling idle here would
+				// report a session with a genuinely unanswered question as idle,
+				// diverging from restore's deriveRestoredState for the identical
+				// transcript and, via WireState, telling a live client nothing is
+				// waiting on them.
+				if interruptMarkerRejected {
+					s.finishProcessingAtRestoredFailureBoundary(processCtx)
+				} else {
+					s.finishProcessingAtFailureBoundary(processCtx)
+				}
 			}
 			// Every OTHER terminal boundary in this loop tells a live subscriber
 			// the corrected status: the cancellation branch above emits
@@ -1374,29 +1454,27 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// intact in s.followups for the next drain cycle instead of being silently
 		// dropped by an awaiting rest that won't run it.
 		//
-		// Proof this capture is equivalent to askPendingCount() > 0, even though
-		// it reads raw state directly (unlike SetGoal/settleGoalOnIdle/Compact,
-		// which key on the pending-ask set): processOneInput unconditionally
-		// resets s.state to SessionProcessing and s.askPending to nil at entry
-		// (above, "s.setStateIfOpenLocked(SessionProcessing)" / "s.askPending =
-		// nil") for every accepted entry kind, so whatever this call's state was
-		// before this iteration's processOneInput call is wiped before it runs.
-		// The only path that can move it OUT of SessionProcessing before
-		// processOneInput returns on the clean-completion path is
-		// deliverIfCommunicated (session_tool_round.go), which writes
-		// SessionAwaiting via finishProcessingAtBoundary exactly when
-		// askedThisRound (this round grew askPending) — i.e. exactly when
-		// askPendingCount() > 0. The general non-ask idle→awaiting upgrade,
-		// armAwaitingAtSettle, is the only OTHER writer of SessionAwaiting
-		// reachable from this loop, but it runs strictly later, at the terminal
-		// settle (below, s.armAwaitingAtSettle), which is unconditionally
-		// followed by this call's own return — it never runs before this
-		// capture within the same ProcessInputKind call, and never more than
-		// once per call. So at this exact point, s.State() == SessionAwaiting
-		// holds if and only if askPendingCount() > 0 here; the two are
-		// interchangeable at this capture only, not as a general rule elsewhere
-		// in this file.
-		awaiting := s.State() == SessionAwaiting
+		// This used to read s.State() == SessionAwaiting alone, on the premise
+		// that askPendingCount() > 0 here implied THIS round's own delta grew it
+		// (askedThisRound, which deliverIfCommunicated maps straight to
+		// SessionAwaiting) — true only because processOneInput's entry used to
+		// clear askPending unconditionally, so nothing could reach this capture
+		// with a pending ask the round itself did not just post. A steering-carrier
+		// entry whose steer does not answer the ask (a human-note update,
+		// steeringCarrierClaimAnswersAsk) now skips that entry clear, so a round
+		// that merely acknowledges the note without posting anything new leaves
+		// askPending exactly as it was — nonzero, but with askedThisRound false —
+		// and deliverIfCommunicated settles it SessionIdle at this capture point
+		// (armAwaitingAtSettle's general upgrade runs later, at the outer loop's
+		// own terminal settle, not before this capture). Reading state alone would
+		// then pop and run a follow-up while ask1 sits unanswered
+		// (TestAskUser_FollowUpNotDrainedWhilePendingAskSurvivesAHumanNoteCarrierRound
+		// pins this). askPendingCount() > 0 is checked directly alongside the
+		// state read so the gate holds regardless of which boundary state this
+		// round's own delta happened to settle on — awaitingOrHasPendingAsk
+		// samples both under one lock so a concurrent state transition or
+		// askPending mutation can't land between the two reads.
+		awaiting := s.awaitingOrHasPendingAsk()
 		var fu string
 		if !awaiting {
 			// Follow-ups need no such guard: they live in memory for this
@@ -1411,12 +1489,21 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// taking the message rather than after: a message popped for a turn
 			// that is then refused is in no transcript, no queue and no session.
 			// Left queued, it is waiting when the restart recovers the writer.
-			if err := s.refuseTurnOnPoisonedTranscript(processCtx); err != nil {
+			if err := s.refuseTurnOnUnhealthyTranscript(processCtx); err != nil {
 				return strings.Join(outputs, "\n"), err
 			}
 			// kata 111a / t5j6: each drained queued message becomes a distinct user
 			// turn; its image attachments ride along as ContentImage parts.
-			queued = s.popQueueHead()
+			//
+			// The claim refuses poison itself, on the generation it commits
+			// against, so a poisoning that lands after the check above still
+			// cannot pop a message for a turn the transcript will refuse. That
+			// refusal ends the input exactly as the check would.
+			var popRefusal error
+			queued, popRefusal = s.popQueueHeadRefusingPoison()
+			if popRefusal != nil {
+				return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
+			}
 			// User steering the turn that just ran left behind -- a queue
 			// drained as steering after its last model call was in flight --
 			// has no turn of its own, and the input is not over until it has
@@ -1433,7 +1520,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// wake, and this rung is not one. The selector sees the park too
 			// and takes goIdle ahead of the autonomous rungs.
 			if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
-				if carrier, ok := s.claimSteeringCarrierInput(); ok {
+				carrier, carrierRefusal := s.claimSteeringCarrierInput()
+				if carrierRefusal != nil {
+					return strings.Join(outputs, "\n"), s.refuseTurnOnUnhealthyTranscript(processCtx)
+				}
+				if carrier.SteeringCarrier {
 					queued = carrier
 					if s.cfg.testOnly.steeringCarrierClaimed != nil {
 						s.cfg.testOnly.steeringCarrierClaimed(carrier.StableTurnID)
@@ -1602,10 +1693,10 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 // fired — emits once.
 //
 // The state is read rather than asserted, the way the settled tail below reads
-// it. The failure exit settles to idle before calling this and so still reports
-// idle; a refusal can arrive with a question pending or a message still queued,
-// and a client told idle there would show a thread that is finished with
-// neither.
+// it. The failure exit settles through the pending-aware boundary before
+// calling this; a refusal can arrive with a question pending or a message
+// still queued, and a client told idle there would show a thread that is
+// finished with neither.
 func (s *Session) endInputAtTurnFailure() {
 	s.mu.Lock()
 	closed := s.closingOrClosedLocked()
@@ -1624,28 +1715,34 @@ func (s *Session) endInputAtTurnFailure() {
 	}
 }
 
-// refuseTurnOnPoisonedTranscript reports why no further turn may run when the
-// transcript has stopped accepting records, and ends the input the way a failed
-// turn ends one: settle the processing boundary, then emit. Admission cleared
-// the emit-once gate on its way in, so a refusal that returns without the
-// emission leaves the session looking mid-input to every client on the event
-// stream; and a refusal that emits without settling claims an idle the session
-// is not in, since a turn may already have run in this loop. Settling is a no-op
-// when no turn did, which is the first iteration's case.
+// refuseTurnOnUnhealthyTranscript reports why no further turn may run when the
+// transcript will not accept records -- poisoned, or closed -- and ends the input
+// the way a failed turn ends one: settle the processing boundary, then emit.
+// Admission cleared the emit-once gate on its way in, so a refusal that returns
+// without the emission leaves the session looking mid-input to every client on
+// the event stream; and a refusal that emits without settling claims an idle the
+// session is not in, since a turn may already have run in this loop. Settling is
+// a no-op when no turn did, which is the first iteration's case.
+//
+// Both facts, because the claims that reach here refuse both: a gate that knew
+// only the poisoned one would answer a closed writer's claim refusal as success,
+// telling the caller the input finished normally while its message or steer stays
+// unclaimed.
 //
 // It reads the writer's own lock outside s.mu (an append holds that lock across
-// a write and an fsync), and poisoned is never cleared, so a stale read costs
+// a write and an fsync), and neither fact is ever cleared, so a stale read costs
 // one turn that then meets the writer's own refusal.
-func (s *Session) refuseTurnOnPoisonedTranscript(ctx context.Context) error {
-	if !s.attachedTranscript().Poisoned() {
+func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
+	refusal := refuseOnUnhealthyTranscript(s.attachedTranscript())
+	if refusal == nil {
 		return nil
 	}
-	s.finishProcessingAtBoundary(ctx, SessionIdle)
+	s.finishProcessingAtFailureBoundary(ctx)
 	s.endInputAtTurnFailure()
-	return errTranscriptRefusesRecords()
+	return refusal
 }
 
-// refuseBeforeClaimingOnPoisonedTranscript reports why a durable claim must not
+// refuseBeforeClaimingOnUnhealthyTranscript reports why a durable claim must not
 // be taken when the transcript has stopped accepting records. The turn loop's
 // own gate refuses too, but by then the caller has already claimed its mutation
 // or taken the queue head, and a claim spent on a turn that never runs is
@@ -1658,17 +1755,110 @@ func (s *Session) refuseTurnOnPoisonedTranscript(ctx context.Context) error {
 // processing boundary to close and no subscriber waiting to hear this input end.
 // Its callers only reach it when they have work in hand, so an idle wake against
 // a dead transcript still stands down quietly.
-func (s *Session) refuseBeforeClaimingOnPoisonedTranscript() error {
-	if !s.attachedTranscript().Poisoned() {
-		return nil
+func (s *Session) refuseBeforeClaimingOnUnhealthyTranscript() error {
+	return refuseOnUnhealthyTranscript(s.attachedTranscript())
+}
+
+// refuseOnUnhealthyTranscript is refuseBeforeClaimingOnUnhealthyTranscript for a
+// writer the caller already sampled: it reports why a durable claim must not be
+// taken when the writer will not accept the turn's records -- poisoned, or
+// closed, whose ordinary appends are silent no-ops. It reads only the writer's
+// own lock, so a claim inside the mutation-store serializer can decide the
+// refusal without waiting on Session.mu: the serializer never waits on s.mu, and
+// a Session.mu holder that then reaches the serializer would deadlock. Nil-safe,
+// like the writer's own doors -- a session with no state directory has no writer
+// and so nothing to refuse.
+//
+// Both facts are decided here rather than only at the announcement, because the
+// claim commits durable state -- the active turn, the queue entry, the budget
+// slot -- before that. A closed writer refused only at the announcement would be
+// claimed, handed back and woken on every wake, committing and fsyncing twice
+// each time.
+//
+// The read is as tight as the lock order allows, but it is not atomic with the
+// claim's commit: the writer's lock and the store's are different resources, and
+// holding the writer's across the commit would invert their order. A poisoning
+// that lands between this read and the commit is therefore still possible; what
+// the claim guarantees is that the refusal and the claim decision see one
+// generation, and both claim callers give the claim back when the turn loop then
+// refuses it.
+func refuseOnUnhealthyTranscript(writer *transcript.Writer) error {
+	if writer.Poisoned() {
+		return errTranscriptRefusesRecords()
 	}
-	return errTranscriptRefusesRecords()
+	if writer.Closed() {
+		return errTranscriptClosed()
+	}
+	return nil
 }
 
 // errTranscriptRefusesRecords is the single answer both poisoned-transcript
 // guards give, so a caller sees one error whichever guard produced it.
 func errTranscriptRefusesRecords() error {
 	return fmt.Errorf("session transcript stopped accepting records: %w", transcript.ErrWriterPoisoned)
+}
+
+// transcriptRefusal is the single decision every site that a transcript can
+// refuse makes: it maps the writer's own refusal -- poisoned or closed, from a
+// door that returned one or from a sampled writer -- to the session's answer, and
+// returns nil for anything else, including a store failure.
+//
+// One function, deliberately. This change has needed it three times: a claim
+// boundary that refused a closed writer without the matching gate, two post-run
+// give-backs that knew only poison, and now the user-input append. Each instance
+// was the same class, and each was found only after the previous one was fixed,
+// because the sites asked the question in their own words. There is one answer
+// now: ask this.
+func transcriptRefusal(cause error) error {
+	if cause == nil {
+		return nil
+	}
+	if errors.Is(cause, transcript.ErrWriterPoisoned) {
+		return errTranscriptRefusesRecords()
+	}
+	if errors.Is(cause, transcript.ErrWriterClosed) {
+		return errTranscriptClosed()
+	}
+	return nil
+}
+
+// errWhileHealthyRefuses is transcriptRefusal under the name the writer door's
+// callers use, kept because the door hands back the writer's own sentinel.
+func errWhileHealthyRefuses(cause error) error {
+	return transcriptRefusal(cause)
+}
+
+// errTranscriptClosed is the closed-writer answer: the writer will not record
+// the turn, but nothing was poisoned, so it is not reported as if it had been.
+func errTranscriptClosed() error {
+	return fmt.Errorf("session transcript is closed: %w", transcript.ErrWriterClosed)
+}
+
+// transcriptRefusedClaim reports whether a claim's error is the transcript's own
+// refusal rather than a store failure. It is transcriptRefusal as a predicate, so
+// a site that only branches cannot ask a different question than a site that
+// reports: a claim site that classified only the poisoned one would take a closed
+// writer's refusal for a write failure, stand down quietly, and leave the claim
+// to be retried on every wake.
+func transcriptRefusedClaim(err error) bool {
+	return transcriptRefusal(err) != nil
+}
+
+// transcriptRefusalForWrite is transcriptRefusal for a write that has just run.
+// The door's error is the writer's refusal when the writer was already refusing,
+// but when THIS write is what broke the writer the error carries the cause (a
+// partial line), not the sentinel -- a partial append poisons the writer rather
+// than returning ErrWriterPoisoned. The post-write state is therefore part of the
+// same decision, asked the same way: refusing. It is stable by then, because the
+// failed write is what set it, under the writer's own lock.
+func (s *Session) transcriptRefusalForWrite(writeErr error) error {
+	if refusal := transcriptRefusal(writeErr); refusal != nil {
+		return refusal
+	}
+	if writeErr == nil {
+		return nil
+	}
+	return refuseOnUnhealthyTranscript(s.attachedTranscript())
 }
 
 func delegateEntryRequiresReport(kind EntryKind) bool {
@@ -1788,6 +1978,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}()
 	defer cancel()
 
+	// A steering-carrier entry (a queued human-note or answering steer with
+	// no turn of its own) only resolves the pending ask when the steer it is
+	// about to carry actually answers it: computed before the lock below
+	// since it reads the client-mutation journal, not session state.
+	queuedIdentity := queuedClientMutationFromContext(ctx)
+	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedIdentity)
+
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -1798,10 +1995,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.setStateIfOpenLocked(SessionProcessing)
 	s.turnStartedAt = s.sclock().Now()
 	s.comm = communicateResult{}
-	// Pending asks resolve with this accepted turn (spec §5.2): clear here,
-	// beside comm's reset, under the lock already held (not via the
-	// clearAskPending helper, which takes s.mu itself and would deadlock).
-	s.askPending = nil
+	// A claimed answering steering carrier has already crossed its durable
+	// admission boundary before this carrier turn runs, so preserve its
+	// established entry-clear behavior. Ordinary user input clears only after
+	// acceptUserInputWithSkillSelection has durably admitted its user turn;
+	// failed MaxTurns, environment, or transcript admission must leave the
+	// pending ask available for the next real reply and for restore.
+	if carrierAnswersAsk && queuedIdentity.SteeringCarrier {
+		s.askPending = nil
+	}
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
@@ -1812,7 +2014,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	select {
 	case <-ctx.Done():
 		s.emit(events.EventError, errorDataFromError(ctx.Err()))
-		s.finishProcessingAtBoundary(ctx, SessionIdle)
+		// Leave the processing boundary for the outer cancellation handler. It
+		// must first admit the interrupt marker, then settle Awaiting when a
+		// pending ask survives a rejected marker; settling Idle here would make
+		// finishProcessingAtFailureBoundary a no-op and diverge from restore.
 		return "", false, ctx.Err()
 	default:
 	}
@@ -1983,7 +2188,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// nowhere else. Round 0 is not re-checked: the drain loop's gate and
 		// this input's own user-input record already stand in front of it.
 		if round > 0 {
-			if err := s.refuseTurnOnPoisonedTranscript(ctx); err != nil {
+			if err := s.refuseTurnOnUnhealthyTranscript(ctx); err != nil {
 				return "", progressed, err
 			}
 		}
@@ -2011,7 +2216,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		select {
 		case <-ctx.Done():
 			s.emit(events.EventError, errorDataFromError(ctx.Err()))
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			// Leave the processing boundary for the outer cancellation handler.
+			// A cancellation between rounds has the same marker-admission and
+			// pending-ask boundary as cancellation before the first round.
 			return "", progressed, ctx.Err()
 		default:
 		}
@@ -2260,7 +2467,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			return text, progressed, nil
 		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
 		}
 		// A managed job can finish while this tool batch is running. Yield before
@@ -2268,13 +2475,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// as an EntryNotification turn. Notification turns already own their current
 		// batch and leave any later arrivals for the next wake.
 		if kind != EntryNotification && s.peekNotifications() > 0 {
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			s.finishProcessingAtFailureBoundary(ctx)
 			return "", progressed, nil
 		}
 	}
 
 	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
-	s.finishProcessingAtBoundary(ctx, SessionIdle)
+	s.finishProcessingAtFailureBoundary(ctx)
 	if goalControlsCap {
 		return lastText, progressed, nil
 	}
@@ -2336,28 +2543,40 @@ func (s *Session) returnAcceptedUserTurn(queuedIdentity queuedClientMutationIden
 // shared answer so the callers keyed on that sentinel -- the queued restore in
 // ProcessPendingUserInput -- recognize this refusal as one of theirs.
 //
+// A retained whole line is adopted by the shared pair helper, while any write
+// that recorded nothing is returned before the input is announced or the model
+// runs. This direct user-input door owns the stronger admission contract: the
+// pending ask cannot be cleared until the reply is recorded. A retained,
+// unsynced record is still adopted as the authoritative line rather than
+// appended again, which is the transcript pair's explicit retained-record
+// contract.
+//
+// Both of the writer's refusals count, not poison alone: a closed writer's plain
+// append is a silent nil no-op, so a path that knew only poison recorded the turn
+// in memory and carried on with no transcript record at all -- the failure this
+// refusal exists to prevent. The synced door reports that refusal itself, and a
+// partial append that breaks the writer returns its cause rather than a sentinel,
+// so the decision below is asked over both the write and the writer.
+//
 // Any OTHER write failure keeps recordTurn's warn-and-continue: a writer that
 // failed once still accepts the next record, and whether that is right for
 // every producer is the audit in #1181, not this path's rule to settle.
 func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
-	s.attentionMu.Lock()
-	writeErr := s.writeTranscriptLocked(turn)
-	if writeErr != nil && s.attachedTranscript().Poisoned() {
-		s.attentionMu.Unlock()
-		return errors.Join(writeErr, errTranscriptRefusesRecords())
+	err := s.appendTurnAfterTranscriptWrite(
+		turn,
+		func() error { return s.writeTranscriptSyncedLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	)
+	if err != nil {
+		// The writer's own refusal, whichever of the two facts it is, is not a
+		// write that failed: it is the transcript refusing this turn, so it takes
+		// the refusal answer rather than the warn-and-continue below.
+		if refusal := s.transcriptRefusalForWrite(err); refusal != nil {
+			return errors.Join(err, refusal)
+		}
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
-	s.mu.Lock()
-	s.history = append(s.history, turn)
-	s.logPairPersistedLocked(turn)
-	s.mu.Unlock()
-	s.attentionMu.Unlock()
-	if writeErr != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", writeErr)})
-	}
-	// A buffered write whose whole line landed but did not sync returns nil and
-	// queues its diagnostic; this path owns surfacing it, outside the lock.
-	s.surfaceTranscriptWarnings()
-	return nil
+	return err
 }
 
 func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) error {
@@ -2394,7 +2613,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				return fmt.Errorf("reserve user turn budget: %w", err)
 			}
 			s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
-			s.finishProcessingAtBoundary(ctx, SessionIdle)
+			s.finishProcessingAtFailureBoundary(ctx)
 			return &budgetExhaustionError{
 				Budget:    exhaustedBudgetTurns,
 				Limit:     s.cfg.MaxTurns,
@@ -2408,6 +2627,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	if queuedIdentity.ClientMutationID != "" &&
 		s.clientMutationUserTranscriptIncorporated(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID) {
 		s.injectDrainedSteering()
+		s.clearAskPending()
 		return nil
 	}
 
@@ -2446,6 +2666,10 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	}
 	s.mu.Unlock()
 
+	// Persist attachments before the turn is built so the message can name
+	// their durable paths (agent/image_persist.go).
+	images = s.persistInputImages(images)
+
 	if queuedIdentity.ClientMutationID == "" {
 		if !preseededInput {
 			turn := schema.NewTurn(schema.TurnUserInput, buildSelectedUserInputMessage(input, images, skillInputNames(skillInput)))
@@ -2472,8 +2696,16 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 				if err := s.beginClientMutationFailure(queuedIdentity.ClientMutationID, failure); err != nil {
 					return errors.Join(failure, fmt.Errorf("persist client start failure intent: %w", err))
 				}
-				if err := s.recoverClientMutationFailures(true); err != nil {
-					return errors.Join(failure, fmt.Errorf("record client start failure: %w", err))
+				recoveryErr := s.recoverClientMutationFailures(true)
+				userRecorded := s.clientMutationTranscriptItems(queuedIdentity.ClientMutationID, queuedIdentity.StableTurnID).User
+				if userRecorded {
+					s.clearAskPending()
+				}
+				if recoveryErr != nil {
+					return errors.Join(failure, fmt.Errorf("record client start failure: %w", recoveryErr))
+				}
+				if !userRecorded {
+					return failure
 				}
 				s.emit(events.EventUserInput, events.UserInputData{
 					Text:             input,
@@ -2496,9 +2728,17 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			}
 			return fmt.Errorf("append claimed user input: %w", err)
 		}
+		// The claimed user turn is now durable. Resolve the pending ask only
+		// after this admission point; failures before it must preserve the ask.
+		s.clearAskPending()
 		if err := s.markClaimedUserTranscriptIncorporated(queuedIdentity.ClientMutationID); err != nil {
 			return fmt.Errorf("incorporate claimed user input: %w", err)
 		}
+	}
+	if queuedIdentity.ClientMutationID == "" {
+		// The direct user turn is durable (or was durably preseeded) at this
+		// point. Earlier admission failures intentionally leave askPending set.
+		s.clearAskPending()
 	}
 	s.emit(events.EventUserInput, events.UserInputData{
 		Text:             input,
@@ -2726,6 +2966,15 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// steer it carries is already in the store, and this projection puts the
 	// full current notes beside it.
 	s.maybeAppendNotesContext()
+	// Recorded for the duration of the drain so a skill-selection failure for
+	// THIS client mutation id (recordFailedSteeringSelection, session_queue.go)
+	// can tag its TurnFailure as a resolution boundary too — this turn's mere
+	// acceptance already cleared askPending before the drain ever ran. Cleared
+	// by defer so a panic mid-drain cannot leak the claim id: a leaked id
+	// would let an unrelated later recordFailedSteeringSelection mistag its
+	// own TurnFailure SteeringCarrier and wrongly resolve an ask on restore.
+	s.setSteeringCarrierClaimDrain(identity.ClientMutationID)
+	defer s.setSteeringCarrierClaimDrain("")
 	delivered := s.injectDrainedSteering()
 	switch s.carrierSteerOutcome(identity) {
 	case carrierSteerUndelivered:
@@ -2736,7 +2985,16 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 		// end the input. (A steer whose append landed and whose store mark
 		// did not is delivered, and the turn proceeds.)
 		err := fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)
-		s.emitTurnFailure(errorDataFromError(err))
+		// Tagged only when the claimed steer itself answers the ask
+		// (steeringCarrierClaimAnswersAsk, the same journal-kind check the
+		// entry clear uses): a human-note carrier's entry clear already left
+		// askPending set, so its failure must not be a resolution boundary
+		// either, or restore would diverge from live.
+		if s.steeringCarrierClaimAnswersAsk(identity) {
+			s.emitSteeringCarrierTurnFailure(errorDataFromError(err))
+		} else {
+			s.emitTurnFailure(errorDataFromError(err))
+		}
 		return err
 	case carrierSteerFailed:
 		// The drain recorded the selection failure of the steer this turn was

@@ -7,10 +7,10 @@
 
 import type { PluginEntry } from "@evener/appwire-client";
 import { useId, useState } from "react";
-import { useExtensionsStore } from "../../../../stores/extensions";
 import { type CadenceState, Chevron, Chip, Input, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { VisuallyHidden } from "../../../../widgets/internal/VisuallyHidden";
+import { useExtensionsHostState } from "./hostStore";
 import styles from "./marketplacesPlugins.module.css";
 
 const CLASS = {
@@ -39,7 +39,7 @@ function pluginStatus(plugin: PluginEntry): CadenceState {
 }
 
 export function InstalledSection({ onSelect }: InstalledSectionProps) {
-  const plugins = useExtensionsStore((s) => s.plugins) ?? [];
+  const plugins = useExtensionsHostState((s) => s.plugins) ?? [];
   const [filterQuery, setFilterQuery] = useState("");
   const filterId = useId();
 

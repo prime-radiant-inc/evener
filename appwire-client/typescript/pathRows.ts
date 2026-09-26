@@ -7,7 +7,7 @@
 // Why rows and not nested sections: the panel is an ARIA listbox whose options
 // must be linearly navigable by ArrowUp/Down. A flat array with a `kind`
 // discriminant makes "skip the headers and the status line" a filter
-// (pickableRows) instead of a tree walk - the same shape the web model
+// (pickablePathRows) instead of a tree walk - the same shape the web model
 // picker's pickerRows.ts (widgets/modelCatalog) uses.
 
 export type PathRow =
@@ -152,6 +152,6 @@ export function buildPathRows(input: {
 }
 
 /** The rows the keyboard walks and a click can pick. */
-export function pickableRows(rows: PathRow[]): PathPickableRow[] {
+export function pickablePathRows(rows: PathRow[]): PathPickableRow[] {
   return rows.filter((row): row is PathPickableRow => row.kind !== "group" && row.kind !== "status");
 }

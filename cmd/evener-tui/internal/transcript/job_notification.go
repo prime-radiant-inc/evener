@@ -99,7 +99,12 @@ func parseJobNotificationBlock(attrsRaw, body string) JobNotificationTie {
 	jobID := strings.TrimSpace(attrs["job_id"])
 	status := strings.ToLower(strings.TrimSpace(envvars.FirstNonEmpty(attrs["status"], attrs["event"])))
 	exit := strings.TrimSpace(attrs["exit_code"])
-	isError := strings.Contains(status, "fail") || status == "error" || (exit != "" && exit != "0")
+	// The command-outcome statuses are errors on their status alone: the
+	// exit_code attribute is optional on the wire, so matching the literals
+	// keeps the flag from depending on the exit attr being present.
+	isError := strings.Contains(status, "fail") || status == "error" ||
+		status == "command_exited_nonzero" || status == "command_killed" ||
+		(exit != "" && exit != "0")
 
 	var headline string
 	// Only a delegate's terminal block legitimately carries a communicate
@@ -112,7 +117,7 @@ func parseJobNotificationBlock(attrsRaw, body string) JobNotificationTie {
 		headline = communicateHeadline(decodeNotificationEntities(body))
 	}
 	if headline == "" && status != "" {
-		headline = status
+		headline = JobStatusDisplay(status, strings.TrimSpace(attrs["reason"]))
 	}
 	return JobNotificationTie{JobID: jobID, Headline: headline, IsError: isError}
 }

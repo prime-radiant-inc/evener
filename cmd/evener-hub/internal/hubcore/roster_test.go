@@ -673,6 +673,62 @@ func TestRosterFingerprintIncludesStatusFlagsRegardlessOfOrder(t *testing.T) {
 	}
 }
 
+// An unanswered ask or a blocked escalation arriving or resolving changes
+// what the hub may offer for the session — the list-row fallback folds both
+// flags out of Clear, matching the daemon's clear gate — so each must move
+// the fingerprint on its own, or onChange never invalidates and clients keep
+// a clear affordance the RPC would refuse (or lose one it would accept).
+func TestRosterFingerprintIncludesPendingAskAndPendingEscalation(t *testing.T) {
+	base := map[string]LiveEntry{"parent": {Status: "idle"}}
+	ask := map[string]LiveEntry{"parent": {Status: "idle", PendingAsk: true}}
+	escalated := map[string]LiveEntry{"parent": {Status: "idle", PendingEscalation: true}}
+	if rosterFingerprint(base) == rosterFingerprint(ask) {
+		t.Fatal("roster fingerprint must change when an unanswered ask appears without a status change")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(escalated) {
+		t.Fatal("roster fingerprint must change when a blocked escalation appears without a status change")
+	}
+	if rosterFingerprint(ask) == rosterFingerprint(escalated) {
+		t.Fatal("roster fingerprint must distinguish an ask from an escalation")
+	}
+}
+
+// The observable half: an escalation arriving or resolving must fire
+// onChange through a real Refresh — both transitions change the Clear bit
+// list rows advertise, so a silent refresh leaves clients acting on the
+// old answer. This also pins the probe-to-roster hop: the flag the prober
+// reports must survive into the entry whose fingerprint Refresh hashes.
+func TestRosterRefreshFiresOnChangeOnEscalationTransitions(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+	prober := &runningSubagentProber{result: ProbeResult{
+		SessionID: "01PARENT",
+		Status:    "idle",
+		OK:        true,
+	}}
+	r := NewRoster(dir, prober)
+	r.Refresh()
+
+	changes := 0
+	r.SetOnChange(func() { changes++ })
+	r.Refresh()
+	if changes != 0 {
+		t.Fatalf("no-op refresh fired onChange %d times", changes)
+	}
+
+	prober.result.PendingEscalation = true
+	r.Refresh()
+	if changes != 1 {
+		t.Fatalf("escalation appearing fired onChange %d times, want 1", changes)
+	}
+
+	prober.result.PendingEscalation = false
+	r.Refresh()
+	if changes != 2 {
+		t.Fatalf("escalation resolving fired onChange %d times total, want 2", changes)
+	}
+}
+
 func TestRosterFingerprintIncludesRunningJobIdentityAndStatus(t *testing.T) {
 	base := map[string]LiveEntry{"parent": {RunningJobs: []appwire.EvenerJobInfo{{JobID: "job_shell", JobType: "shell", Status: "running"}}}}
 	statusChanged := map[string]LiveEntry{"parent": {RunningJobs: []appwire.EvenerJobInfo{{JobID: "job_shell", JobType: "shell", Status: "awaiting"}}}}

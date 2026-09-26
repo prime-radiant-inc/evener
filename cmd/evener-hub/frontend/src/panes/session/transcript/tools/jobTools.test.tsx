@@ -86,6 +86,24 @@ test("job_status: summary reads current target/id and lifecycle status", () => {
   expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output }))).toBe("Checked dlg_42 · idle");
 });
 
+test("job_status: summary states the command-outcome statuses under the card's display words", () => {
+  const d = toolRendererFor("job_status");
+  const args = JSON.stringify({ target: "job_44" });
+  const output = JSON.stringify({ id: "job_44", type: "shell", status: "command_exited_nonzero" });
+  expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output }))).toBe(
+    "Checked job_44 · Command failed",
+  );
+});
+
+test("job_status: summary joins a legacy failed record to the display word by its reason", () => {
+  const d = toolRendererFor("job_status");
+  const args = JSON.stringify({ target: "job_44" });
+  const output = JSON.stringify({ id: "job_44", type: "shell", status: "failed", reason: "exit_nonzero" });
+  expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output }))).toBe(
+    "Checked job_44 · Command failed",
+  );
+});
+
 test("job_status: falls back to the target arg with no status suffix when output isn't parseable yet", () => {
   const d = toolRendererFor("job_status");
   const args = JSON.stringify({ target: "job_43" });
@@ -210,12 +228,18 @@ test("job_status: body shows a running status pill", () => {
   expect(chip?.textContent).toContain("running");
 });
 
-test("job_status: body shows needs attention pill when needs_attention is true", () => {
+test("job_status: needs_attention stays plumbing - the lifecycle status leads the pill", () => {
   const d = toolRendererFor("job_status");
   const Body = d.body!;
   const raw = delegateStatusRaw({ needs_attention: true });
-  render(<Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />);
-  expect(screen.getByText("Needs attention")).toBeTruthy();
+  const { container } = render(
+    <Body item={item({ toolName: "job_status", output: JSON.stringify(raw), raw })} live={false} />,
+  );
+  // The chip reports the lifecycle ("running"), never the pending-wake flag
+  // (rationale at delegateLifecycleLabel).
+  const chip = container.querySelector("[class*='chip']");
+  expect(chip?.textContent).toContain("running");
+  expect(screen.queryByText("Needs attention")).toBeNull();
 });
 
 test("job_status: idle status does not receive the alive/running tone", () => {
@@ -525,6 +549,59 @@ test("job_list: rows render one entity ref and exactly one open control per iden
     expect(within(row).getByTestId("entity-trigger").textContent).toBe(ids[index]);
     expect(within(row).getAllByRole("button", { name: "Open job log" })).toHaveLength(1);
   }
+});
+
+test("job_list: rows state the command-outcome statuses under the card's display words", () => {
+  const d = toolRendererFor("job_list");
+  const Body = d.body!;
+  const ids = ["job_cen", "job_kil"];
+  render(
+    <TranscriptRenderProvider entities={jobEntityViews(ids)}>
+      <Body
+        item={item({
+          toolName: "job_list",
+          raw: {
+            items: [
+              { id: "job_cen", type: "shell", status: "command_exited_nonzero" },
+              { id: "job_kil", type: "shell", status: "command_killed" },
+            ],
+            count: ids.length,
+            total: ids.length,
+          },
+        })}
+        live={false}
+      />
+    </TranscriptRenderProvider>,
+  );
+
+  const rows = screen.getAllByTestId("job-list-row");
+  expect(rows).toHaveLength(ids.length);
+  const [exited, killed] = rows;
+  expect(exited?.textContent ?? "").toContain("Command failed");
+  expect(exited?.textContent ?? "").not.toContain("command_exited_nonzero");
+  expect(killed?.textContent ?? "").toContain("Command killed");
+  expect(killed?.textContent ?? "").not.toContain("command_killed");
+});
+
+test("job_list: rows join a legacy failed record to the display word by its reason", () => {
+  const d = toolRendererFor("job_list");
+  const Body = d.body!;
+  render(
+    <TranscriptRenderProvider entities={jobEntityViews(["job_l1"])}>
+      <Body
+        item={item({
+          toolName: "job_list",
+          raw: {
+            items: [{ id: "job_l1", type: "shell", status: "failed", reason: "exit_nonzero" }],
+            count: 1,
+            total: 1,
+          },
+        })}
+        live={false}
+      />
+    </TranscriptRenderProvider>,
+  );
+  expect(screen.getAllByTestId("job-list-row")[0]?.textContent ?? "").toContain("Command failed");
 });
 
 // --- job_stop -----------------------------------------------------------

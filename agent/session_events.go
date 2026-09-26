@@ -264,19 +264,39 @@ func (s *Session) emitWithProvenance(kind events.EventKind, data events.EventDat
 // callers on the cancellation path emit the bare event instead.
 func (s *Session) emitTurnFailure(data events.ErrorData) {
 	s.emit(events.EventError, data)
-	s.recordTurnFailure(data)
+	s.recordTurnFailure(data, false)
+}
+
+// emitSteeringCarrierTurnFailure is emitTurnFailure's steering-carrier
+// sibling: identical on the live channel, but tags the persisted TurnFailure
+// with one of the two shapes (schema.TurnFailureInfo.SteeringCarrier's own
+// doc comment) deriveRestoredAskPending/deriveRestoredState
+// (session_tools_ask.go) may treat as a resolution boundary on its own. The
+// ONLY caller of THIS function is acceptSteeringCarrierInput's
+// carrierSteerUndelivered case (session_lifecycle.go), and only when the
+// claimed steer answers the ask (steeringCarrierClaimAnswersAsk) — the turn
+// whose acceptance already cleared askPending and then recorded nothing
+// else; a human-note carrier's own append failure calls emitTurnFailure
+// instead, since its entry clear never ran. The tag's other shape, a
+// carrier-claim's own steer selection failure, is set directly by
+// recordFailedSteeringSelection (session_queue.go) without going through
+// this function, gated by the same answering check.
+func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
+	s.emit(events.EventError, data)
+	s.recordTurnFailure(data, true)
 }
 
 // recordTurnFailure persists the diagnostic of a failed turn as a TurnFailure
 // entry. It enriches the data exactly as the event pipeline does, so the
 // stored source/title/hint match what the live event carried.
-func (s *Session) recordTurnFailure(data events.ErrorData) {
+func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool) {
 	enriched := enrichErrorData(data)
 	info := schema.TurnFailureInfo{
-		Message: strings.TrimSpace(enriched.Error),
-		Source:  enriched.Source,
-		Title:   enriched.Title,
-		Hint:    enriched.Hint,
+		Message:         strings.TrimSpace(enriched.Error),
+		Source:          enriched.Source,
+		Title:           enriched.Title,
+		Hint:            enriched.Hint,
+		SteeringCarrier: steeringCarrier,
 	}
 	if enriched.Cause != nil {
 		info.Cause = &schema.TurnFailureCause{
@@ -689,7 +709,7 @@ func (s *Session) settleInterruptedRound() {
 	if !s.persistAndEmitSalvage(salvaged, model, provider) {
 		return
 	}
-	s.appendSteeringTurn(interruptSalvageSteering, events.SteeringKindInterrupted)
+	s.appendSteeringTurn(interruptSalvageSteering, events.SteeringKindInterruptedSalvage)
 }
 
 // persistSalvagedTurn records the round's best partial as a normal assistant

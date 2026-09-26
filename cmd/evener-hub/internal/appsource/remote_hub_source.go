@@ -22,7 +22,11 @@ import (
 )
 
 // RemoteHubClientFunc returns an attached, initialized AppWire client for the
-// named remote host, attaching on first use. Component 04 supplies it.
+// named remote host, attaching on first use. Component 04 supplies it. A
+// production RemoteHubSource resolves its calls through the attached-only
+// lookup instead (SetHostClientIfAttached, backed by Manager.ClientIfAttached),
+// so this dialing connector is the fallback for tests and one of the explicit
+// attach triggers the hub itself drives (`hubcore.WebConfig.RemoteHostClient`).
 type RemoteHubClientFunc func(ctx context.Context, host string) (*appwire.Client, error)
 
 // RemoteHubSource exposes a remote evener hub as one more appsource.Source on
@@ -49,6 +53,13 @@ type RemoteHubSource struct {
 	// hubcore.HostConfig; the 05a read path does not narrow by root.
 	roots  []string
 	client RemoteHubClientFunc
+	// clientIfAttached is the non-dialing, attached-only client lookup
+	// (SetHostClientIfAttached, backed by sshconn.Manager.ClientIfAttached). Every
+	// call the source serves resolves through it, so a direct read, mutation,
+	// subscription, or probe can never implicitly attach a dormant host or re-dial
+	// one that dropped. It is nil only in tests, where the wired RemoteHubClientFunc
+	// stays the fallback; production always installs it.
+	clientIfAttached func(host string) (*appwire.Client, bool)
 
 	// itemPaging retains the opaque remote item cursor behind the
 	// controller-owned cursor minted for it, mirroring the bounded local-daemon
@@ -75,6 +86,14 @@ type RemoteHubSource struct {
 	// facts is the optional component-04 preflight seam for the facts AppWire
 	// cannot report on an already-initialized connection (see HostFacts).
 	facts HostFactsFunc
+	// handshake is the optional component-04 attach-handshake seam: the
+	// InitializeResponse the live channel captured at attach, reached by host name
+	// (SetHostHandshake, backed by the remoteHostHandshakeForChannel closure over
+	// sshconn.Manager.ChannelIfAttached with the client-identity guard at the call
+	// site). The probe reads ProtocolVersion/SourceID/Features from it; HubVersion
+	// stays preflight-owned. nil leaves those to the facts seam (tests); it is
+	// never dialed for.
+	handshake HostHandshakeFunc
 
 	// online is the optional availability signal: it reports whether the
 	// remote host currently has a live channel. nil means online (the pre-06
@@ -152,6 +171,28 @@ func (s *RemoteHubSource) SetHostFacts(fn HostFactsFunc) {
 	s.facts = fn
 }
 
+// SetHostHandshake installs the component-04 attach-handshake seam the capability
+// probe reads (see HostHandshakeFunc). It is optional and expected to be called
+// once at registration before the source serves; the write is guarded by probeMu,
+// the same lock the probe reads the seam under. With no handshake seam installed
+// the preflight-owned fields come from SetHostFacts instead.
+func (s *RemoteHubSource) SetHostHandshake(fn HostHandshakeFunc) {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	s.handshake = fn
+}
+
+// SetHostClientIfAttached installs the non-dialing, attached-only client lookup
+// (backed by sshconn.Manager.ClientIfAttached) that every call this source serves
+// resolves through. It is expected to be called once at registration before the
+// source serves; nil leaves the wired RemoteHubClientFunc as the fallback so
+// tests that only inject a client function still work. With it installed a host
+// that is not currently attached yields a typed SessionUnavailable error rather
+// than a dial (component 05, §"Every other remote call is non-dialing").
+func (s *RemoteHubSource) SetHostClientIfAttached(fn func(host string) (*appwire.Client, bool)) {
+	s.clientIfAttached = fn
+}
+
 // SetHostOnline installs the availability signal: it reports whether the
 // source's remote host currently has a live channel. It is optional and
 // expected to be called once at registration before the source serves. With
@@ -187,7 +228,7 @@ func (s *RemoteHubSource) call(ctx context.Context, method string, params any, o
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	client, err := s.client(ctx, s.id)
+	client, err := s.resolveClient(ctx)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
@@ -195,6 +236,36 @@ func (s *RemoteHubSource) call(ctx context.Context, method string, params any, o
 		return s.mapConnectError(err)
 	}
 	return s.callOn(ctx, client, method, params, out)
+}
+
+// resolveClient returns the client to serve one call on. With the attached-only
+// lookup installed (production) it answers from the host's live channel and
+// reports a typed SessionUnavailable — never a dial — for a host that is not
+// attached, so a direct read, mutation, subscription, or probe cannot implicitly
+// attach a dormant host or re-dial one that dropped between a check and the call
+// (component 05, §"Every other remote call is non-dialing"). With no lookup
+// installed (tests) it falls back to the wired RemoteHubClientFunc.
+//
+// It is also the shared remote-dispatch seam the host-routing origin guard
+// enforces (component 07, §"Host-routing origin guard"): every call the source
+// serves — read, mutation, subscription, admin forward, or probe — resolves its
+// client here, so a remote-originated request is refused typed before it can
+// dispatch to any host. A request this hub serves from its own cached state
+// never reaches this seam and is unaffected.
+func (s *RemoteHubSource) resolveClient(ctx context.Context) (*appwire.Client, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := guardRemoteDispatch(ctx); err != nil {
+		return nil, err
+	}
+	if s.clientIfAttached != nil {
+		if client, ok := s.clientIfAttached(s.id); ok && client != nil {
+			return client, nil
+		}
+		return nil, appwire.SessionUnavailable("remote hub unavailable: " + s.id)
+	}
+	return s.client(ctx, s.id)
 }
 
 // callOn forwards one request on an already-resolved client and translates any
@@ -255,6 +326,22 @@ func (s *RemoteHubSource) mapConnectError(err error) error {
 		return err
 	}
 	return s.transportUnavailable(err)
+}
+
+// MapAttachError classifies one attach/connect failure exactly as this source's
+// own call and resolveClient path does. A caller that had to attach the host
+// before calling this source — the explicit thread/list fan-out, which dials
+// through the Ensure-backed RemoteHostClient and then lets the source's
+// attached-only resolver serve the list — reports the failure through this so
+// sshconn's transient attach failures (ErrSSHStart, ErrRestart) and transport
+// losses reach it as the typed SessionUnavailable the auto-resume/refusal gates
+// match, rather than as a raw transport error. The caller's own context ending
+// stays raw, exactly as call leaves it.
+func (s *RemoteHubSource) MapAttachError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return s.mapConnectError(err)
 }
 
 // transportUnavailable maps a non-wire transport failure. Caller cancellation
@@ -371,14 +458,21 @@ func isWordByte(b byte) bool {
 // remoteThreadListBudget is the deadline one controller-side ListThreads call
 // runs under, in place of the local-daemon budget (app_threadlist.go).
 //
-// This source's list resolves its client through the SSH manager, which
-// attaches the host on first use: an ssh spawn, an AppWire initialize and a
-// preflight (call → RemoteHubClientFunc → sshconn.Manager.Ensure). The
-// transport's own connect bound alone is 10s and the attach as a whole can run
-// the restart/deploy ladder, so a three-second budget does not describe this
-// call: it cuts a working attach off, and the timeout that results is
-// indistinguishable from a broken host, because both are just "no threads".
-// An unfiltered list then drops the whole host and reports success.
+// This source's list does NOT attach the host itself: ListThreads resolves its
+// client through the attached-only lookup (clientIfAttached, backed by
+// sshconn.Manager.ClientIfAttached) and never dials, so a direct read can never
+// force a dormant host online or re-dial one that dropped. The attach that can
+// precede the call is the explicit-SourceIDs trigger in the multi-source
+// fan-out (app_threadlist.go), which dials through the Ensure-backed
+// RemoteHostClient and then lets this source's attached-only resolver serve the
+// list — both under the deadline the source reports. That attach is an ssh
+// spawn, an AppWire initialize and a preflight (dial →
+// hubcore.WebConfig.RemoteHostClient → sshconn.Manager.Ensure); the transport's
+// own connect bound alone is 10s and the attach as a whole can run the
+// restart/deploy ladder, so a three-second budget does not describe this call:
+// it cuts a working attach off, and the timeout that results is
+// indistinguishable from a broken host, because both are just "no threads". An
+// unfiltered list then drops the whole host and reports success.
 //
 // This is what one list is worth waiting for: it covers the transport's 10s
 // connect bound (sshconn's defaultConnectTimeout) plus the handshake with
@@ -1435,17 +1529,13 @@ func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params j
 	if err := ctx.Err(); err != nil {
 		return s.mapCallError(err)
 	}
-	client, err := s.client(ctx, s.id)
+	client, err := s.resolveClient(ctx)
 	if err != nil {
-		// Acquiring the client dials/attaches the remote host, so a failure here
-		// means no request crossed the wire: it must stay a SessionUnavailable
-		// the auto-resume gate can act on. This is the connect mapper, matching
-		// call and mutationCall — the attach handshake is bounded by its own
-		// initTimeout child context, so a timed-out attach arrives as an
-		// ErrSSHStart chain that also satisfies errors.Is(err,
-		// context.DeadlineExceeded), which mapCallError would hand back raw
-		// while mapConnectError still classifies it (and keeps a genuine caller
-		// cancellation raw).
+		// Resolving the client is non-dialing (the attached-only lookup), so a
+		// failure here means either the host has no live channel — reported as a
+		// SessionUnavailable the auto-resume gate can act on — or the caller's own
+		// context ended. This is the connect mapper, matching call and
+		// mutationCall.
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
@@ -1520,13 +1610,13 @@ func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, 
 		// it (a raw cancellation or expired deadline), which is a safe retry.
 		return s.mapCallError(err)
 	}
-	client, err := s.client(ctx, s.id)
+	client, err := s.resolveClient(ctx)
 	if err != nil {
-		// Acquiring the client dials/attaches the host; a failure here never
-		// reached the wire, so it keeps the same safe-retry mapping as the
-		// pre-call check (a raw caller cancellation or deadline), and an attach
-		// failure classifies through the connect mapper as SessionUnavailable,
-		// exactly as call and mutationCall do.
+		// Resolving the client never dials, so a failure here never reached the
+		// wire: it keeps the same safe-retry mapping as the pre-call check (a raw
+		// caller cancellation or deadline), and an unattached host classifies
+		// through the connect mapper as SessionUnavailable, exactly as call and
+		// mutationCall do.
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
@@ -1644,7 +1734,7 @@ type remoteHubHostSubscription struct {
 // channel already has exactly one consumer (drainLoop), and a second reader
 // would race it and silently split the stream.
 func (s *RemoteHubSource) SubscribeHostNotifications(ctx context.Context) (<-chan appwire.Notification, error) {
-	client, err := s.client(ctx, s.id)
+	client, err := s.resolveClient(ctx)
 	if err != nil {
 		return nil, s.mapCallError(err)
 	}

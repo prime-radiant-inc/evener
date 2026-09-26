@@ -68,6 +68,32 @@ func (r *recordingBroadcaster) broadcasts() []recordedBroadcast {
 	return out
 }
 
+// assertBroadcastMethods fails t unless b recorded at least one broadcast
+// for each of methods.
+func assertBroadcastMethods(t *testing.T, b *recordingBroadcaster, methods ...string) {
+	t.Helper()
+	got := b.broadcasts()
+	found := make(map[string]bool, len(got))
+	for _, r := range got {
+		found[r.method] = true
+	}
+	for _, method := range methods {
+		if !found[method] {
+			t.Fatalf("broadcasts = %+v, want %v", got, methods)
+		}
+	}
+}
+
+// assertOneBroadcast fails t unless b recorded exactly one broadcast, for
+// method.
+func assertOneBroadcast(t *testing.T, b *recordingBroadcaster, method string) {
+	t.Helper()
+	got := b.broadcasts()
+	if len(got) != 1 || got[0].method != method {
+		t.Fatalf("broadcasts = %+v, want exactly one %s", got, method)
+	}
+}
+
 // newScriptedAdminClient builds an initialized AppWire client backed by an
 // in-memory stream pair whose peer answers canned responses, records every
 // request, and can push notifications on demand. No SSH, no network, no host —
@@ -369,19 +395,20 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 	// Rows are added one method at a time: a catalog method with no row fails the
 	// coverage check below, so a future addition still forces a decision.
 	policy := map[string]bool{
-		"evener/archive/set":             false,
-		"evener/auth/apiKey/clear":       true,
-		"evener/auth/apiKey/set":         true,
-		"evener/auth/credentialJson/set": true,
-		"evener/auth/device/poll":        true,
-		"evener/auth/device/start":       true,
-		"evener/auth/list":               true,
-		"evener/auth/login/complete":     true,
-		"evener/auth/login/start":        true,
-		"evener/auth/logout":             true,
-		"evener/auth/status":             true,
-		"evener/auth/test":               true,
-		"evener/command/list":            false,
+		"evener/archive/set":                false,
+		"evener/auth/apiKey/clear":          true,
+		"evener/auth/apiKey/conditionalSet": true,
+		"evener/auth/apiKey/set":            true,
+		"evener/auth/credentialJson/set":    true,
+		"evener/auth/device/poll":           true,
+		"evener/auth/device/start":          true,
+		"evener/auth/list":                  true,
+		"evener/auth/login/complete":        true,
+		"evener/auth/login/start":           true,
+		"evener/auth/logout":                true,
+		"evener/auth/status":                true,
+		"evener/auth/test":                  true,
+		"evener/command/list":               false,
 		// The resident-process controls are a LOCAL operator surface: the
 		// inventory reads this host's live processes and rendezvous records, and
 		// retirement stops a daemon after verifying its kernel-serialized
@@ -389,16 +416,37 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// remote admin proxy, so both are denied deliberately rather than left
 		// undecided — an unlisted method is refused with appwire.InvalidParams
 		// and never forwarded.
-		"evener/daemon/list":     false,
-		"evener/daemon/retire":   false,
-		"evener/dirs/create":     true, // discovery: create the host directory the spawn form asked for
-		"evener/favorite/set":    false,
-		"evener/git/head":        true, // discovery: read-only branch metadata for a remote path
-		"evener/harnesses/list":  true, // discovery: the host's own harnesses
-		"evener/host/request":    false,
-		"evener/instance/create": true,
-		"evener/instance/edit":   true,
-		"evener/instance/list":   true,
+		"evener/daemon/list":    false,
+		"evener/daemon/retire":  false,
+		"evener/dirs/create":    true, // discovery: create the host directory the spawn form asked for
+		"evener/favorite/set":   false,
+		"evener/git/head":       true, // discovery: read-only branch metadata for a remote path
+		"evener/harnesses/list": true, // discovery: the host's own harnesses
+		"evener/host/request":   false,
+		// evener/host/attach is controller-LOCAL: it dials a host this
+		// controller owns through the Ensure-backed seam. There is no host to
+		// forward to until the attach succeeds, so it is never a proxied call,
+		// and a peer hub must not be able to make this hub attach a new host by
+		// forwarding it.
+		"evener/host/attach": false,
+		// The host-management methods are controller-LOCAL like
+		// attach: they act on this controller's own config and channels
+		// (add/list/status/remove/update), so they are never proxied calls. Denied
+		// deliberately — see TestHostManageNotForwarded, which pins the same
+		// requirement from the management side.
+		"evener/host/add":    false,
+		"evener/host/list":   false,
+		"evener/host/status": false,
+		"evener/host/remove": false,
+		"evener/host/update": false,
+		// The credential push is controller-LOCAL: it reads this controller's
+		// own store and dispatches to a host itself, like evener/host/request.
+		// It is never a proxied call, so a peer hub cannot make this hub push
+		// its local credentials by forwarding the method.
+		"evener/host/pushCredentials": false,
+		"evener/instance/create":      true,
+		"evener/instance/edit":        true,
+		"evener/instance/list":        true,
 		// Two instance methods landed on the catalog after this list was
 		// written (per-model enablement and its refresh). The proxy forwards the
 		// five instance handlers the settings panes drive remotely and nothing
@@ -589,6 +637,7 @@ func TestHostAdminAllowListNamesEverySettingsPaneMethod(t *testing.T) {
 		appwire.MethodEvenerAuthLogout,
 		appwire.MethodEvenerAuthApiKeySet,
 		appwire.MethodEvenerAuthApiKeyClear,
+		appwire.MethodEvenerAuthApiKeyConditionalSet,
 		appwire.MethodEvenerAuthCredentialJsonSet,
 		appwire.MethodEvenerAuthDeviceStart,
 		appwire.MethodEvenerAuthDevicePoll,
@@ -667,10 +716,11 @@ func TestHostAdminFanOutLeavesReconnectToTheSupervisorWhileOffline(t *testing.T)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	wake := controller.takeAttachWakeOwnership(source.ID())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		controller.fanOut(ctx, source)
+		controller.fanOut(ctx, source, wake)
 	}()
 
 	// Offline: the connector must not be invoked at all, however long we wait.
@@ -781,9 +831,10 @@ func TestHostAdminFanOutStopsWhenContextCanceled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	wake := controller.takeAttachWakeOwnership(source.ID())
 	done := make(chan struct{})
 	go func() {
-		controller.fanOut(ctx, source)
+		controller.fanOut(ctx, source, wake)
 		close(done)
 	}()
 
@@ -931,6 +982,603 @@ func waitForHostNotificationSubscribers(t *testing.T, source *appsource.RemoteHu
 				why, source.HostNotificationSubscribers(), want)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestHostAdminAttachWakesBackoffSleepingFanOut pins the round-seven M1
+// finding: an EventAttached must rebind the host-notification broker
+// immediately, not after its exponential backoff (up to 30s) expires. A
+// fan-out parked in backoff while its host is offline must subscribe — pinned
+// by observing the source's host-notification subscriber count, i.e. the
+// SubscribeHostNotifications registration that starts the fresh client's
+// drain — as soon as the attach event arrives and the host reports online.
+func TestHostAdminAttachWakesBackoffSleepingFanOut(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	var online atomic.Bool
+	source.SetHostOnline(online.Load)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	wake := controller.takeAttachWakeOwnership(source.ID())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		controller.fanOut(ctx, source, wake)
+	}()
+
+	// Let the fan-out enter backoff while the host reports offline: it must
+	// not subscribe before the attach.
+	time.Sleep(250 * time.Millisecond)
+	if got := source.HostNotificationSubscribers(); got != 0 {
+		t.Fatalf("offline fan-out subscribed %d times, want 0 before the attach", got)
+	}
+
+	// The attach flips the host online and wakes the broker for it.
+	online.Store(true)
+	controller.hostAttached("m4")
+	waitForHostNotificationSubscribers(t, source, 1,
+		"the attach event did not wake the backoff-sleeping fan-out")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fanOut did not return after its context was canceled")
+	}
+}
+
+// TestHostAdminFanOutExitClearSparesReplacementWake pins the round-4 M5
+// finding: during remove/re-add churn the cancelled predecessor's deferred
+// clearAttachWake deleted whatever wake entry the host had — including the
+// channel its REPLACEMENT was parked on — so the replacement's next
+// EventAttached parked a wakeup nobody read and the fan-out slept its backoff
+// out. Wake channels are owned per fan-out generation now: the exiting loop
+// clears the entry only when it is still its own.
+func TestHostAdminFanOutExitClearSparesReplacementWake(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	var online atomic.Bool
+	source.SetHostOnline(online.Load)
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+
+	// Generation one: it parks in backoff while the host reports offline.
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	// The launch registers the generation's wake channel synchronously, the
+	// way launchFanOut does for a live launch.
+	wake1 := controller.takeAttachWakeOwnership(source.ID())
+	done1 := make(chan struct{})
+	go func() {
+		defer close(done1)
+		controller.fanOut(ctx1, source, wake1)
+	}()
+	time.Sleep(250 * time.Millisecond)
+	if got := source.HostNotificationSubscribers(); got != 0 {
+		t.Fatalf("offline fan-out subscribed %d times, want 0 before the attach", got)
+	}
+
+	// The churn's re-add launches the replacement BEFORE the cancelled
+	// predecessor exits — the removal's stop and the re-add's launch are two
+	// notifications, so the replacement can hold its wake channel while the
+	// predecessor is still winding down.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	// The re-add's launch registers the replacement's channel the same way.
+	wake2 := controller.takeAttachWakeOwnership(source.ID())
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		controller.fanOut(ctx2, source, wake2)
+	}()
+	time.Sleep(250 * time.Millisecond)
+
+	// The removal's cancellation ends generation one. Waiting for its exit
+	// makes the ordering exact: the deferred wake clear has run before the
+	// attach event below fires.
+	cancel1()
+	select {
+	case <-done1:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled fan-out did not exit")
+	}
+
+	// The attach flips the host online and wakes the replacement through the
+	// wake entry the REPLACEMENT registered. The replacement must subscribe
+	// promptly: its first backoff timer is a full hostNotificationRetryBase
+	// away, so a missed wakeup is distinguishable from a served one.
+	online.Store(true)
+	controller.hostAttached("m4")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if got := source.HostNotificationSubscribers(); got == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the attach event did not wake the replacement fan-out: the predecessor's exit cleared its wake channel")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel2()
+	select {
+	case <-done2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement fan-out did not return after its context was canceled")
+	}
+}
+
+// TestHostAdminFanOutLateCancelledPredecessorCannotOrphanReplacementWake pins
+// the round-6 M1 finding: wake ownership used to be registered asynchronously
+// inside the fanOut goroutine, so during remove/re-add churn a predecessor
+// whose body first ran AFTER its replacement registered could overwrite the
+// replacement's wake channel and then delete the map entry on exit. The
+// replacement stayed parked on an orphaned channel, missed the host's next
+// attach wakeup, and slept through its full backoff. The predecessor's body is
+// started only once the replacement is parked, so the harmful direction is
+// deterministic rather than a scheduling hope — the round-4 test's early waits
+// always let the predecessor register first and could not see this.
+func TestHostAdminFanOutLateCancelledPredecessorCannotOrphanReplacementWake(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	var online atomic.Bool
+	onlineChecks := make(chan struct{}, 16)
+	source.SetHostOnline(func() bool {
+		select {
+		case onlineChecks <- struct{}{}:
+		default:
+		}
+		return online.Load()
+	})
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+
+	// The remove/re-add churn's launch side: generation one's launch registers
+	// its wake channel under the host, the removal cancels generation one and
+	// drops the host's wake entry, and the re-add's launch registers the
+	// replacement's channel.
+	wake1 := controller.takeAttachWakeOwnership("m4")
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	defer cancel1()
+	cancel1()
+	controller.stopFanOut("m4")
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	wake2 := controller.takeAttachWakeOwnership("m4")
+
+	// The replacement runs first and parks in backoff while the host reports
+	// offline. Its first Online() check proves it holds the wake entry the
+	// re-add registered and is entering the wait, so everything the predecessor
+	// does below happens after that registration.
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		controller.fanOut(ctx2, source, wake2)
+	}()
+	select {
+	case <-onlineChecks:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement fan-out never reached its first Online() check")
+	}
+
+	// The cancelled predecessor's body runs only now, after the replacement
+	// registered — the late scheduling the pre-fix asynchronous registration
+	// could not defend against (that body registered over the replacement's
+	// channel and deleted the host's wake entry on the way out). The fixed
+	// launch binds each generation's channel before its goroutine exists, so
+	// all this body can do is exit: its ownership-checked clear spares the
+	// replacement's entry.
+	done1 := make(chan struct{})
+	go func() {
+		defer close(done1)
+		controller.fanOut(ctx1, source, wake1)
+	}()
+	select {
+	case <-done1:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled predecessor did not exit")
+	}
+
+	// The attach flips the host online and wakes the replacement through the
+	// wake entry under the host. The replacement's first backoff is a full
+	// hostNotificationRetryBase away, so a served wakeup subscribes promptly
+	// while a missed one is still sleeping when the deadline passes.
+	online.Store(true)
+	controller.hostAttached("m4")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if got := source.HostNotificationSubscribers(); got == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the attach event did not wake the replacement fan-out: the late-scheduled predecessor orphaned its wake channel")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel2()
+	select {
+	case <-done2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement fan-out did not return after its context was canceled")
+	}
+}
+
+// TestHostAdminFanOutStopSparesWakeRegisteredMidTeardown pins the low-A
+// finding: stopFanOut used to drop the host's wake entry after releasing
+// fanOutMu, so a same-name re-add whose launch ran while the removal was
+// mid-teardown registered the replacement's channel in that window and then
+// lost it to the teardown's unconditional delete — the replacement parked on
+// an orphaned channel, missed the host's next EventAttached wakeup, and slept
+// out its full backoff. The predecessor's cancel handle parks the removal's
+// teardown inside stop(), the point after which the old code still had the
+// wake delete queued, so the re-add's launch provably runs mid-teardown —
+// deterministic, not a scheduling hope. The fixed stopFanOut drops the entry
+// inside the same fanOutMu critical section, before any launch can register.
+func TestHostAdminFanOutStopSparesWakeRegisteredMidTeardown(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	var online atomic.Bool
+	onlineChecks := make(chan struct{}, 16)
+	source.SetHostOnline(func() bool {
+		select {
+		case onlineChecks <- struct{}{}:
+		default:
+		}
+		return online.Load()
+	})
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+
+	// The removed generation: its launch registered a wake entry under the
+	// host, and its fanOuts cancel handle parks the removal's teardown inside
+	// stop().
+	controller.takeAttachWakeOwnership("m4")
+	inTeardown := make(chan struct{}, 1)
+	release := make(chan struct{})
+	controller.fanOutMu.Lock()
+	controller.fanOuts["m4"] = func() {
+		inTeardown <- struct{}{}
+		<-release
+	}
+	controller.fanOutMu.Unlock()
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		controller.stopFanOut("m4")
+	}()
+	select {
+	case <-inTeardown:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopFanOut never reached the removed generation's cancel handle")
+	}
+
+	// The re-add's launch runs entirely while the removal is mid-teardown —
+	// the interleaving the registry permits and the old unlock-to-delete
+	// window admitted. The re-add registers its replacement source first — the
+	// registry makes the insert visible before the add callback fires, and the
+	// round-14 launch fence keys on that registration — then the launch
+	// registers the replacement's wake channel synchronously under fanOutMu and
+	// parks the replacement in backoff.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	sources.Add(source)
+	controller.launchFanOut(ctx2, source)
+	select {
+	case <-onlineChecks:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement fan-out never reached its first Online() check")
+	}
+
+	// The removal's teardown completes only now, with the replacement already
+	// registered: the old code's wake delete ran here and took the
+	// replacement's entry; the fixed critical section dropped the removed
+	// generation's entry before the launch could register.
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopFanOut did not finish after its cancel handle returned")
+	}
+
+	// The attach flips the host online and must wake the replacement through
+	// the wake entry the re-add registered. The replacement's first backoff
+	// is a full hostNotificationRetryBase away, so a served wakeup subscribes
+	// promptly while a missed one is still sleeping when the deadline passes.
+	online.Store(true)
+	controller.hostAttached("m4")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if got := source.HostNotificationSubscribers(); got == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the attach event did not wake the replacement fan-out: the removal's teardown cleared its wake channel")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The replacement winds down with its context, so the test leaves no
+	// goroutine behind.
+	cancel2()
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if got := source.HostNotificationSubscribers(); got == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the replacement fan-out did not unwind after its context was canceled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestHostAdminFanOutStaleRemovalCallbackSparesReplacement pins the round-14
+// finding: the registry delivers its remove callback outside its own lock, so
+// a delayed removal can run after a same-name re-add already registered its
+// replacement — and a stopFanOut keyed only by the host id would cancel the
+// replacement's fan-out and delete its wake channel, so the re-added host's
+// notifications went undelivered. The teardown is conditional on the removal
+// still being the name's latest registry word now: a registered replacement
+// spares the live fan-out and its wake entry. Deterministic, no sleeps: the
+// removal callback is delivered after the re-add's registration by direct
+// call order, an interleaving the registry's lock-free callback delivery
+// permits, and the per-name state is asserted synchronously.
+func TestHostAdminFanOutStaleRemovalCallbackSparesReplacement(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	newSource := func() (*appsource.RemoteHubSource, *atomic.Bool, chan struct{}) {
+		var online atomic.Bool
+		onlineChecks := make(chan struct{}, 16)
+		source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+			return client, nil
+		})
+		source.SetHostOnline(func() bool {
+			select {
+			case onlineChecks <- struct{}{}:
+			default:
+			}
+			return online.Load()
+		})
+		return source, &online, onlineChecks
+	}
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// The removed generation: registered and live, the way its add callback
+	// left it.
+	first, firstOnline, _ := newSource()
+	firstOnline.Store(true)
+	sources.Add(first)
+	controller.launchFanOut(ctx, first) // the add callback's body
+	waitHostSubscribers(t, first, 1)
+
+	// The removal commits its registry delete. The registry fires the remove
+	// callback after releasing its lock, so the delivery below can run
+	// arbitrarily late — this test delivers it after the re-add.
+	sources.Remove("m4")
+
+	// The re-add registers the replacement and delivers its add callback,
+	// which runs first: the replacement launches (replacing the removed
+	// generation's loop) and parks in backoff while its host reports offline.
+	second, secondOnline, secondChecks := newSource()
+	sources.Add(second)
+	controller.launchFanOut(ctx, second) // the re-add's add callback body
+	select {
+	case <-secondChecks:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement fan-out never reached its first Online() check")
+	}
+	waitHostSubscribers(t, first, 0) // the replaced loop stood down
+
+	// The delayed removal callback for the removed generation runs now, with
+	// the replacement registered: pre-fix it cancelled the replacement's
+	// cancel handle and deleted its wake entry by name alone.
+	controller.stopFanOut("m4")
+
+	// The replacement's fan-out entry survived ...
+	controller.fanOutMu.Lock()
+	_, fanOutEntry := controller.fanOuts["m4"]
+	controller.fanOutMu.Unlock()
+	if !fanOutEntry {
+		t.Fatal("a delayed removal callback for a replaced source cancelled the replacement's fan-out")
+	}
+	// ... and so did its wake channel.
+	controller.attachWakeMu.Lock()
+	_, wakeEntry := controller.attachWake["m4"]
+	controller.attachWakeMu.Unlock()
+	if !wakeEntry {
+		t.Fatal("a delayed removal callback for a replaced source cleared the replacement's wake channel")
+	}
+
+	// And the replacement is observably alive: flipping online and attaching
+	// must wake it through the surviving entry, well inside its first full
+	// backoff (hostNotificationRetryBase).
+	secondOnline.Store(true)
+	controller.hostAttached("m4")
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		if got := second.HostNotificationSubscribers(); got == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the attach event did not wake the replacement: the stale removal callback had torn it down")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	cancel()
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if got := second.HostNotificationSubscribers(); got == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the replacement fan-out did not unwind after its context was canceled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestHostAdminFanOutStaleAddCallbackLaunchesNothing pins the round-14
+// finding's other half: the registry delivers its add callback outside its
+// own lock, so a delayed add can run after a same-name remove already
+// committed — and a launchFanOut keyed only by the source id would start a
+// fan-out for a source the registry no longer holds, one that polls Online()
+// until shutdown. The launch is conditional on the callback's source still
+// being the registry's current entry now, so the stale add launches
+// nothing. Deterministic, no sleeps: the per-name state is asserted
+// synchronously after the callback body returns.
+func TestHostAdminFanOutStaleAddCallbackLaunchesNothing(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	var online atomic.Bool
+	online.Store(true) // a pre-fix launch would subscribe immediately
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	source.SetHostOnline(online.Load)
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+
+	// The add commits its registry insert; the removal commits its delete.
+	// The registry fires the add callback after releasing its lock, so its
+	// body can run arbitrarily late — this test delivers it after the removal.
+	sources.Add(source)
+	sources.Remove("m4")
+	// Nothing the launch could register outlives the callback body this test
+	// pins, so the test's own context is the launch parent.
+	controller.launchFanOut(t.Context(), source) // the delayed add callback's body
+
+	// Nothing launched: no cancel handle and no wake entry under the name.
+	controller.fanOutMu.Lock()
+	_, fanOutEntry := controller.fanOuts["m4"]
+	controller.fanOutMu.Unlock()
+	if fanOutEntry {
+		t.Fatal("a delayed add callback registered a fan-out for an already-removed source")
+	}
+	controller.attachWakeMu.Lock()
+	_, wakeEntry := controller.attachWake["m4"]
+	controller.attachWakeMu.Unlock()
+	if wakeEntry {
+		t.Fatal("a delayed add callback registered a wake entry for an already-removed source")
+	}
+
+	// And nothing comes up late: the removed source never gains a subscriber
+	// it would keep polling Online() for until shutdown.
+	time.Sleep(150 * time.Millisecond)
+	if got := source.HostNotificationSubscribers(); got != 0 {
+		t.Fatalf("a delayed add callback subscribed a removed source %d times", got)
+	}
+}
+
+// TestHostAdminFanOutNormalAddAttachRemoveStillBehaves pins the round-14
+// fence's negative space: the identity conditions must not suppress the
+// normal lifecycle. Through the registry's own hooks — add launches, an
+// EventAttached wakeup is harmless to a subscribed generation, and the prompt
+// removal still tears the fan-out down exactly once: subscribers 0 -> 1 -> 0,
+// one delivery per config notification, and no leaked per-name state.
+func TestHostAdminFanOutNormalAddAttachRemoveStillBehaves(t *testing.T) {
+	client, _, emit := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	source.SetHostOnline(func() bool { return true })
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	recorder := newRecordingBroadcaster()
+	controller := newHubHostAdminController(recorder, hosts, sources)
+	controller.start(t.Context())
+
+	// Add: the registry's add callback launches the fan-out, and it runs —
+	// subscribed and delivering.
+	sources.Add(source)
+	waitHostSubscribers(t, source, 1)
+	emit(appwire.NotifyEvenerAuthUpdated, map[string]string{"provider": "openai"})
+	expectOneHostNotification(t, recorder, "m4", appwire.NotifyEvenerAuthUpdated)
+
+	// Attach: the EventAttached wakeup is harmless to a subscribed
+	// generation, and the fan-out keeps delivering.
+	controller.hostAttached("m4")
+	emit(appwire.NotifyEvenerLaunchUpdated, map[string]string{"layer": "base"})
+	expectOneHostNotification(t, recorder, "m4", appwire.NotifyEvenerLaunchUpdated)
+
+	// Remove: the registry's remove callback must still tear the fan-out down
+	// — the round-14 fence suppresses only stale deliveries, not the prompt
+	// one. Stopped exactly once: subscribers reach zero and stay there, the
+	// per-name state is gone, and a later remote notification delivers
+	// nothing.
+	sources.Remove("m4")
+	waitHostSubscribers(t, source, 0)
+	controller.fanOutMu.Lock()
+	_, fanOutEntry := controller.fanOuts["m4"]
+	controller.fanOutMu.Unlock()
+	if fanOutEntry {
+		t.Fatal("the prompt removal left the fan-out's cancel entry behind")
+	}
+	controller.attachWakeMu.Lock()
+	_, wakeEntry := controller.attachWake["m4"]
+	controller.attachWakeMu.Unlock()
+	if wakeEntry {
+		t.Fatal("the prompt removal left the fan-out's wake entry behind")
+	}
+	emit(appwire.NotifyEvenerMarketplaceUpdated, map[string]string{"marketplace": "main"})
+	time.Sleep(100 * time.Millisecond)
+	if got := recorder.broadcasts(); len(got) != 2 {
+		t.Fatalf("broadcasts = %+v, want exactly the two pre-removal deliveries", got)
 	}
 }
 
@@ -1125,6 +1773,15 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 			t.Errorf("readOnly names %q, which is not on the proxy allow-list", name)
 		}
 	}
+	// evener/host/attach is a controller-local mutation, never a forwarded one:
+	// it must stay off both the allow-list and the forwarded-mutation set, so the
+	// proxy can never forward a dial request to a peer hub.
+	if _, ok := remoteHostAdminMethods[appwire.MethodEvenerHostAttach]; ok {
+		t.Errorf("%q must not be on the remote-admin allow-list: it is a controller-local method", appwire.MethodEvenerHostAttach)
+	}
+	if _, ok := remoteHostAdminMutationMethods[appwire.MethodEvenerHostAttach]; ok {
+		t.Errorf("%q must not be classified as a forwarded mutation: it is a controller-local method", appwire.MethodEvenerHostAttach)
+	}
 }
 
 // sharedHostRequestMethodsPath is the checked-in list the web UI's forwarded
@@ -1185,5 +1842,175 @@ func TestHostAdminAllowListCoversSharedForwardedMethods(t *testing.T) {
 		if after := len(calls()); after != before+1 {
 			t.Errorf("forwarded method %q was not forwarded (remote calls %d -> %d)", name, before, after)
 		}
+	}
+}
+
+// TestHostAdminFanOutStartsForRuntimeAddedSource pins the dynamic half of the
+// round-2 medium: the notification fan-out follows the shared source registry,
+// so a host whose source registers after start (the host-management surface's
+// runtime add) gains its fan-out immediately — and a source registered under a
+// name that already has a loop replaces that loop instead of running beside
+// it: the predecessor's subscription retires before the replacement's fan-out
+// delivers, so one host has exactly one loop.
+func TestHostAdminFanOutStartsForRuntimeAddedSource(t *testing.T) {
+	newSource := func() (*appsource.RemoteHubSource, func(method string, params any)) {
+		client, _, emit := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+			return okReply()
+		})
+		source := appsource.NewRemoteHubSource("runtime-side", nil, func(context.Context, string) (*appwire.Client, error) {
+			return client, nil
+		})
+		source.SetHostOnline(func() bool { return true })
+		return source, emit
+	}
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	recorder := newRecordingBroadcaster()
+	controller := newHubHostAdminController(recorder, hosts, sources)
+	controller.start(t.Context())
+
+	// The fan-out starts for a source registered after start returned — the
+	// runtime-add shape.
+	first, emitFirst := newSource()
+	sources.Add(first)
+	waitHostSubscribers(t, first, 1)
+	emitFirst(appwire.NotifyEvenerAuthUpdated, map[string]string{"provider": "openai"})
+	expectOneHostNotification(t, recorder, "runtime-side", appwire.NotifyEvenerAuthUpdated)
+
+	// A source registered under the same name replaces the loop: the
+	// predecessor's subscription retires and the replacement's fan-out
+	// delivers exactly one more notification.
+	second, emitSecond := newSource()
+	sources.Add(second)
+	waitHostSubscribers(t, second, 1)
+	waitHostSubscribers(t, first, 0)
+	emitSecond(appwire.NotifyEvenerMarketplaceUpdated, map[string]string{"marketplace": "main"})
+	expectOneHostNotification(t, recorder, "runtime-side", appwire.NotifyEvenerMarketplaceUpdated)
+
+	if got := recorder.broadcasts(); len(got) != 2 {
+		t.Fatalf("broadcasts = %+v, want exactly one per emitted config update", got)
+	}
+}
+
+// TestHostAdminFanOutStopsOnSourceRemoval pins the round-3 medium: Remove on
+// the shared source registry used to delete only the map entry, so the removed
+// host's fan-out goroutine kept polling Online() until shutdown and churn
+// leaked one goroutine + RemoteHubSource + fanOuts/attachWake slot per name.
+// The registry's on-remove notification now drives the controller's teardown:
+// subscribers go to zero, fanOuts drops the name, the host's attachWake entry
+// is cleared, and a notification the scripted remote still emits reaches no
+// one.
+func TestHostAdminFanOutStopsOnSourceRemoval(t *testing.T) {
+	client, _, emit := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("runtime-side", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	source.SetHostOnline(func() bool { return true })
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	recorder := newRecordingBroadcaster()
+	controller := newHubHostAdminController(recorder, hosts, sources)
+	controller.start(t.Context())
+
+	sources.Add(source)
+	waitHostSubscribers(t, source, 1)
+	emit(appwire.NotifyEvenerAuthUpdated, map[string]string{"provider": "openai"})
+	expectOneHostNotification(t, recorder, "runtime-side", appwire.NotifyEvenerAuthUpdated)
+
+	// Park a pending attach wakeup under the name first, so the removal's
+	// attachWake cleanup has an entry to clear.
+	controller.hostAttached("runtime-side")
+	controller.fanOutMu.Lock()
+	_, running := controller.fanOuts["runtime-side"]
+	controller.fanOutMu.Unlock()
+	if !running {
+		t.Fatal("the added source gained no fan-out entry")
+	}
+
+	sources.Remove("runtime-side")
+	waitHostSubscribers(t, source, 0)
+	controller.fanOutMu.Lock()
+	_, leakedFanOut := controller.fanOuts["runtime-side"]
+	controller.fanOutMu.Unlock()
+	if leakedFanOut {
+		t.Fatal("fanOuts kept the removed host's cancel entry")
+	}
+	controller.attachWakeMu.Lock()
+	_, leakedWake := controller.attachWake["runtime-side"]
+	controller.attachWakeMu.Unlock()
+	if leakedWake {
+		t.Fatal("attachWake kept the removed host's wakeup channel")
+	}
+	// The cancelled loop is gone: the remote keeps emitting, but nothing is
+	// subscribed to relay it.
+	emit(appwire.NotifyEvenerMarketplaceUpdated, map[string]string{"marketplace": "main"})
+	time.Sleep(100 * time.Millisecond)
+	if got := recorder.broadcasts(); len(got) != 1 {
+		t.Fatalf("broadcasts = %+v, want only the pre-removal fan-out delivery", got)
+	}
+}
+
+// waitHostSubscribers waits until source reports want live host-level
+// subscribers: the observable form of "the fan-out is subscribed" and "the
+// replaced loop stood down".
+func waitHostSubscribers(t *testing.T, source *appsource.RemoteHubSource, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := source.HostNotificationSubscribers(); got == want {
+			return
+		} else if time.Now().After(deadline) {
+			t.Fatalf("subscribers = %d, want %d", got, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// expectOneHostNotification waits until exactly one host-tagged fan-out
+// broadcast has landed for (host, method), and settles: a duplicate arriving
+// shortly after the first fails the test.
+func expectOneHostNotification(t *testing.T, recorder *recordingBroadcaster, host, method string) {
+	t.Helper()
+	count := func() int {
+		found := 0
+		for _, r := range recorder.broadcasts() {
+			if r.method != appwire.NotifyEvenerHostNotification {
+				continue
+			}
+			envelope, ok := r.params.(appwire.HostNotificationParams)
+			if !ok {
+				continue
+			}
+			if envelope.Host == host && envelope.Method == method {
+				found++
+			}
+		}
+		return found
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		switch got := count(); {
+		case got == 1:
+			// Settle: a second delivery from a duplicated loop would land
+			// immediately after the first.
+			time.Sleep(150 * time.Millisecond)
+			if got := count(); got != 1 {
+				t.Fatalf("host-tagged %s for %s delivered %d times, want exactly one", method, host, got)
+			}
+			return
+		case got > 1:
+			t.Fatalf("host-tagged %s for %s delivered %d times, want exactly one", method, host, got)
+		case time.Now().After(deadline):
+			t.Fatalf("timed out waiting for the host-tagged %s for %s; broadcasts = %+v", method, host, recorder.broadcasts())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -37,9 +37,13 @@ function shouldShowColdStart(model: ThreadModel, hasPendingSend: boolean, awaiti
 export function useColdStartSkeleton(sessionRef: string, model: ThreadModel | null | undefined): boolean {
   const pendingSends = usePendingTurnEntries(sessionRef, "send");
   const awaitingFirstFrame = useAwaitingFirstFrameSend(sessionRef);
-  return (
-    model !== null && model !== undefined && shouldShowColdStart(model, pendingSends.length > 0, awaitingFirstFrame)
-  );
+  // A canceled send provably never reached the daemon, so no turn is coming
+  // because of it - counting it held the skeleton up forever, clearable only
+  // by Retry or thread teardown. The same exclusion the Composer's
+  // ownPendingSend and PendingChips' isOptimistic carry; the canceled row
+  // itself stays visible where its Retry affordance lives (QueueStrip).
+  const hasPendingSend = pendingSends.some((entry) => entry.state !== "canceled");
+  return model !== null && model !== undefined && shouldShowColdStart(model, hasPendingSend, awaitingFirstFrame);
 }
 
 export function ColdStartSkeleton() {

@@ -16,6 +16,33 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// TestRemoveSessionArtifactsRemovesLock pins the residue fix: a rolled-back
+// child that never launched must not leave the .meta.json.lock that
+// SaveSessionMeta created behind in the sessions directory.
+func TestRemoveSessionArtifactsRemovesLock(t *testing.T) {
+	stateDir := t.TempDir()
+	id, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{ID: id}); err != nil {
+		t.Fatal(err)
+	}
+	lockPath := filepath.Join(stateDir, "sessions", id+".meta.json.lock")
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("SaveSessionMeta did not create the lock file: %v", err)
+	}
+	if err := RemoveSessionArtifacts(stateDir, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("rollback left a meta lock file behind: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", id+".meta.json")); !os.IsNotExist(err) {
+		t.Fatalf("rollback left the metadata behind: %v", err)
+	}
+}
+
 // buildAsideParentSession creates a parent session with a 4-entry transcript
 // (USER, ASSISTANT, USER, ASSISTANT) and a meta carrying a distinctive config
 // (sandbox mode + tool-round cap) so tests can assert the aside child inherits
@@ -57,7 +84,7 @@ func TestAsideSession_CopiesFullTranscriptAtTip(t *testing.T) {
 	// Child transcript is the full parent transcript: 4 entries ending on the
 	// final ASSISTANT turn.
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	header, entries, _, err := readTranscript(childTranscriptPath)
+	header, entries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}

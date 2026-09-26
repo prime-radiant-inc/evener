@@ -5,7 +5,7 @@ import type {
 	KeybindingsOverrides,
 	KeybindingsRule,
 } from "@evener/appwire-client";
-import { memoryKeybindingDraftStorage } from "@evener/appwire-client/testing/keybindingDraftStorage";
+import { memoryDraftStorage } from "@evener/appwire-client/testing/draftStorage";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NativePreferences } from "./nativePreferences";
 
@@ -16,7 +16,7 @@ const rules: KeybindingsRule[] = [
 ];
 
 function fixture() {
-	const drafts = memoryKeybindingDraftStorage();
+	const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
 	const storage = drafts.storage;
 	const requests: { method: string; params: unknown }[] = [];
 	const listeners = new Set<(value: AnyNotification) => void>();
@@ -40,8 +40,18 @@ function fixture() {
 		storage,
 		requests,
 		handlers,
-		failSave: () => drafts.failSave(true),
-		allowSave: () => drafts.failSave(false),
+		// A durable-intent write goes through save() for a brand new draft but
+		// replaceIf() once one is already classified (createDraftRepository's
+		// own compare-and-swap) - this fixture's "the port refuses to persist"
+		// must fail either way, the same as a real disk failure would.
+		failSave: () => {
+			drafts.failSave(true);
+			drafts.failReplace(true);
+		},
+		allowSave: () => {
+			drafts.failSave(false);
+			drafts.failReplace(false);
+		},
 		corrupt: drafts.corrupt,
 		create: () =>
 			new NativePreferences(
@@ -220,7 +230,10 @@ describe("keybinding draft recovery", () => {
 		f.corrupt();
 		const model = f.create();
 		await model.refresh();
-		expect(model.getSnapshot().keybindings.storageUnavailable).toBe(true);
+		expect(model.getSnapshot().keybindings).toMatchObject({
+			storageUnavailable: true,
+			draftUnreadable: true,
+		});
 		await expect(model.saveKeybindings(rules)).rejects.toThrow();
 		expect(f.patches()).toEqual([]);
 	});

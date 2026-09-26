@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -22,6 +23,30 @@ func registerTranscriptDisplayHandlers(server *appserver.Server, store *hubcore.
 			}
 			result, err := store.Patch(params)
 			if err != nil {
+				// A post-apply durable error means the patch APPLIED: the
+				// store already published the new revision. Returning the
+				// error without broadcasting would leave every other client
+				// on the pre-patch revision, so fan out the applied layout
+				// before surfacing the failure - and carry that same value in
+				// the error itself so the REQUESTING client can reconcile
+				// from it instead of treating its write as rejected (mirrors
+				// KeybindingsPostRenameError's rule in app_rpc_keybindings.go).
+				if postApply, ok := errors.AsType[*hubcore.TranscriptDisplayPostApplyError](err); ok {
+					server.BroadcastAll(appwire.NotifyEvenerSettingsTranscriptDisplayChanged, appwire.TranscriptDisplayChangedParams{
+						Layout:   postApply.Layout,
+						Revision: postApply.Applied.Revision,
+						Config:   postApply.Applied.Config,
+					})
+					return nil, appwire.WireError{
+						Code:    appwire.CodeInternalError,
+						Message: err.Error(),
+						Data: appwire.TranscriptDisplayPostApplyData{
+							EvenerErrorInfo: appwire.ErrorTranscriptDisplayPostApply,
+							Layout:          postApply.Layout,
+							Applied:         postApply.Applied,
+						},
+					}
+				}
 				return nil, err
 			}
 			if result.Revision != params.ExpectedRevision {

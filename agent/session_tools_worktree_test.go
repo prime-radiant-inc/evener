@@ -65,7 +65,7 @@ func TestRollbackFreshDelegateWorktreeUsesCarriedProjectMetadataDir(t *testing.T
 		return func(...string) (string, error) { return "", nil }
 	}
 
-	s.rollbackFreshDelegateWorktree("delegate", lanePath, project)
+	s.rollbackFreshDelegateWorktree("delegate", "delegate", lanePath, project)
 
 	want := filepath.Join(stateDir, "worktrees", project.ID, ".meta")
 	if gotMetaDir != want {

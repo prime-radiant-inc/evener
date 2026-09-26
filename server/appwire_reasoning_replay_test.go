@@ -158,7 +158,7 @@ func TestServerAppWireSteeringCarrierTurnStartedConsumesPendingIdentity(t *testi
 func TestServerAppWireLateCarrierReconcilesCleanupStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_late_carrier")
-	srv.SetSteerFunc(func(string) error { ; return nil })
+	wireRetrySafeCapabilities(srv)
 	srv.SetState("idle")
 	srv.SetProcessingTurn("turn_late")
 	srv.SetProcessing(false)

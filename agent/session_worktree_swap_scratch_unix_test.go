@@ -440,7 +440,7 @@ func TestWorktreeSwap_CloseAfterTheEnterRetainsTheParkedEnvironmentScratch(t *te
 	// The close drained its fence join instead of giving up on it. Both of
 	// these are tripwires for the same regression — a hook that holds the
 	// dispatch admission until the close returns — which costs the whole
-	// LaneClosePassBudget and reports work it walked past that was never
+	// close-cascade budget and reports work it walked past that was never
 	// stuck. A healthy run here is well under a second.
 	if got := fenceWarnings(<-warnings); len(got) != 0 {
 		t.Errorf("the close gave up on its environment-work fence: %q", got)
@@ -513,7 +513,7 @@ func assertMidMoveOutcome(t *testing.T, s *Session, source *execenv.LocalExecuti
 // ENVIRONMENT: whichever of the two records the swap makes for the source — the
 // enter's park or the abandoned set a later enter adds it to — is made under
 // the install's own lock hold, and close is fenced against the swap that makes
-// it (envWorkWG), so a close can never observe an installed target without the
+// it (envWork), so a close can never observe an installed target without the
 // source recorded. Both records are exercised here; both end in a released
 // lease and a kept directory.
 func TestWorktreeSwap_ScratchMintedOnTheSourceMidMoveStaysAccountedFor(t *testing.T) {

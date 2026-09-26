@@ -178,6 +178,22 @@ func (f *FakeClock) BlockedCount() int {
 	return len(f.waiters)
 }
 
+// PendingCallbacks reports how many one-shot AfterFunc callbacks are armed.
+// Unlike BlockedCount it ignores tickers and channel timers, so a test can
+// count the callbacks it cares about while a watchdog ticker whose Stop runs
+// on some other goroutine may or may not still be parked on the clock.
+func (f *FakeClock) PendingCallbacks() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, w := range f.waiters {
+		if w.fn != nil {
+			n++
+		}
+	}
+	return n
+}
+
 // Drain blocks until every AfterFunc goroutine FakeClock has dispatched so far
 // has completed. AfterFunc dispatches callbacks via `go fn()` (matching
 // time.AfterFunc), so Advance returns before a callback runs; Drain is the

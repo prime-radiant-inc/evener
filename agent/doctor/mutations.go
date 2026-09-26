@@ -321,3 +321,10 @@ func plural(n int, noun string) string {
 	}
 	return noun + "s"
 }
+
+// scannedUnder renders the not-found error tail every doctor miss carries:
+// the state root that was swept and how many buckets the scan covered, so a
+// miss is always distinguishable from a sweep that looked too narrowly.
+func scannedUnder(stateRoot string, scanned int) string {
+	return fmt.Sprintf("under %s (%d %s scanned)", stateRoot, scanned, plural(scanned, "bucket"))
+}

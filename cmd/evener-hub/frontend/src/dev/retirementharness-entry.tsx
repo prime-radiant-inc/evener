@@ -273,21 +273,41 @@ function awaitTurn(turnID: string): Promise<void> {
   });
 }
 
-// retryDraft drives the real composer a second time after retirement: type the
-// retry draft through the native textarea setter, click Send, and await the
-// replacement's accepted turn. The source drops the first attempt's reply, so
-// the turn only appears if the client replayed the same mutation id.
+// enterIntoComposer replaces the composer's contents the way a user would:
+// focus it, select everything, then paste. The composer is a ProseMirror
+// editor, not a textarea, so the native value setter belongs to the wrong
+// element type and throws instead of entering anything.
+function enterIntoComposer(text: string): void {
+  const composer = document.querySelector<HTMLElement>('[role="textbox"]');
+  if (!composer) throw new Error("retirementharness: composer textbox not found");
+  composer.focus();
+  const selection = window.getSelection();
+  if (selection) {
+    const range = document.createRange();
+    range.selectNodeContents(composer);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  const clipboard = new DataTransfer();
+  clipboard.setData("text/plain", text);
+  composer.dispatchEvent(new ClipboardEvent("paste", { clipboardData: clipboard, bubbles: true, cancelable: true }));
+}
+
+// retryDraft drives the real composer a second time after retirement: enter
+// the retry draft, click Send, and await the replacement's accepted turn. The
+// source drops the first attempt's reply, so the turn only appears if the
+// client replayed the same mutation id.
 async function retryDraft(): Promise<void> {
-  const ta = document.querySelector('textarea, [role="textbox"]') as HTMLTextAreaElement | null;
-  if (!ta) throw new Error("retirementharness: composer textarea not found");
-  ta.focus();
-  const nativeInput = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value");
-  if (!nativeInput?.set) throw new Error("retirementharness: no native textarea value setter");
-  nativeInput.set.call(ta, RETRY_DRAFT);
-  ta.dispatchEvent(new Event("input", { bubbles: true }));
-  ta.dispatchEvent(new Event("change", { bubbles: true }));
+  enterIntoComposer(RETRY_DRAFT);
   const sendBtn = [...document.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Send");
   if (!sendBtn) throw new Error("retirementharness: Send button not found");
+  // The composer keeps Send disabled until it has content to send and an
+  // answer to send against, so wait for the state a user could click.
+  const enabledBy = performance.now() + 15000;
+  while (sendBtn.disabled && performance.now() < enabledBy) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  if (sendBtn.disabled) throw new Error("retirementharness: Send stayed disabled before the retry");
   sendBtn.click();
   await awaitTurn(RETRY_TURN_ID);
 }
@@ -303,18 +323,11 @@ async function degrade(): Promise<void> {
   retireThreshold = before;
 }
 
-// typeDraft enters text through the real composer's native textarea setter
-// without submitting. Used to prove unsent input is retained, and never
-// auto-submitted, when queue/steer/settings are unavailable.
+// typeDraft enters text through the real composer without submitting. Used to
+// prove unsent input is retained, and never auto-submitted, when
+// queue/steer/settings are unavailable.
 function typeDraft(text: string): void {
-  const ta = document.querySelector('textarea, [role="textbox"]') as HTMLTextAreaElement | null;
-  if (!ta) throw new Error("retirementharness: composer textarea not found");
-  ta.focus();
-  const nativeInput = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value");
-  if (!nativeInput?.set) throw new Error("retirementharness: no native textarea value setter");
-  nativeInput.set.call(ta, text);
-  ta.dispatchEvent(new Event("input", { bubbles: true }));
-  ta.dispatchEvent(new Event("change", { bubbles: true }));
+  enterIntoComposer(text);
 }
 
 declare global {

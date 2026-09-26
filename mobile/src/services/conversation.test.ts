@@ -30,12 +30,13 @@ import type {
   ThreadTurnsListResponse,
   Turn,
   TurnCancelQueuedResponse,
+  TurnDrainAsSteerResponse,
   TurnInterruptResponse,
   TurnQueueResponse,
   TurnStartResponse,
   TurnSteerResponse,
 } from "@evener/appwire-client";
-import * as projectModule from "../conversation/project";
+import * as projectModule from "../../../mobile-native/src/projectedRows";
 import type { createActivityService } from "./activity";
 import * as activityModule from "./activity";
 import {
@@ -325,7 +326,7 @@ describe("ConversationService", () => {
       const { service } = setup({ olderCursor: "cursor-abc" });
       await service.open("ref-1");
       const result = await service.loadOlder("cursor-abc");
-      expect(result.items).toEqual([]);
+      expect(result.turnsPage).toEqual({ data: [], nextCursor: undefined });
     });
 
     it("one connection serves sequential sessions on profile A", async () => {
@@ -345,6 +346,29 @@ describe("ConversationService", () => {
   });
 
   describe("loadOlder", () => {
+    // D18 B3 round 3: the older page's own turns (carrying usage) must reach
+    // the caller alongside items, so the store can keep conversation.turns in
+    // sync with the store's own paging cursor.
+    it("returns the older page's wire turns verbatim", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      const page: ThreadTurnsListResponse = {
+        data: [
+          {
+            id: "turn-older",
+            itemsView: "fragment",
+            status: "completed",
+            usage: { inputTokens: 60, outputTokens: 40 },
+            items: [],
+          },
+        ],
+        nextCursor: undefined,
+      };
+      client.on("thread/turns/list", () => page);
+      const result = await service.loadOlder("cursor-1");
+      expect(result.turnsPage).toEqual(page);
+    });
+
     it("uses the caller-owned cursor after an ordinary completed projection", async () => {
       const { client, service } = setup({ olderCursor: "head-cursor-57" });
       await service.open("ref-1");
@@ -392,7 +416,7 @@ describe("ConversationService", () => {
       ).toHaveLength(0);
       releaseRead(makeReadResponse(thread, "fresh-cursor"));
       await refresh;
-      await expect(page).resolves.toMatchObject({ items: [] });
+      await expect(page).resolves.toMatchObject({ turnsPage: { data: [] } });
       const listCall = client.calls.find(
         (call) => call.method === "thread/turns/list",
       );
@@ -400,6 +424,96 @@ describe("ConversationService", () => {
         ref: "ref-1",
         cursor: "cursor-from-before-refresh",
       });
+    });
+
+    it("paging waits for the host's read fence, not the raw RPC response", async () => {
+      // The native host fences the projected publish (onReadComplete) around
+      // the same raw read. Paging must wait for the whole publish: a page
+      // seated once the raw response landed but before the fence settled would
+      // be seated against a projection the publish had not installed.
+      const client = new FakeAppwireClient();
+      const thread = makeThread();
+      client.on("thread/read", () => makeReadResponse(thread, "fresh-cursor"));
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [], nextCursor: undefined }) as ThreadTurnsListResponse,
+      );
+      let releaseFence!: () => void;
+      const fence = new Promise<void>((resolve) => {
+        releaseFence = resolve;
+      });
+      let fences = 0;
+      const service = createConversationService(client, {
+        onReadComplete: () => {
+          fences += 1;
+          // open()'s read is unfenced; the refresh's read is held at the fence.
+          return fences === 1 ? undefined : fence;
+        },
+      });
+      await service.open("ref-1");
+
+      const refresh = service.readProjection("ref-1");
+      const page = service.loadOlder("cursor-from-before-refresh");
+      // Let the raw read resolve; the fence is still held.
+      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      expect(
+        client.calls.filter((call) => call.method === "thread/turns/list"),
+      ).toHaveLength(0);
+
+      releaseFence();
+      await refresh;
+      await expect(page).resolves.toMatchObject({ turnsPage: { data: [] } });
+      expect(
+        client.calls.find((call) => call.method === "thread/turns/list")?.params,
+      ).toMatchObject({ ref: "ref-1", cursor: "cursor-from-before-refresh" });
+    });
+
+    it("a rejected host read fence does not fail the projected read", async () => {
+      const client = new FakeAppwireClient();
+      const thread = makeThread();
+      client.on("thread/read", () => makeReadResponse(thread, "cursor"));
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [], nextCursor: undefined }) as ThreadTurnsListResponse,
+      );
+      const service = createConversationService(client, {
+        onReadComplete: () => Promise.reject(new Error("mutation storage down")),
+      });
+      await service.open("ref-1");
+      // The authoritative read succeeded; the fence failure leaves the durable
+      // dispatch gate blocked but must not fail the projection.
+      await expect(service.readProjection("ref-1")).resolves.toMatchObject({
+        olderCursor: "cursor",
+      });
+    });
+
+    it("invokes the host read fence only after the projection commits", async () => {
+      const client = new FakeAppwireClient();
+      // A malformed capabilities payload makes projection validation throw
+      // after the raw response, so the fence must never run.
+      const broken = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: null,
+          queue: { revision: 0 },
+        } as unknown as Thread["evener"],
+      });
+      client.on("thread/read", () => makeReadResponse(makeThread(), "cursor"));
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [], nextCursor: undefined }) as ThreadTurnsListResponse,
+      );
+      let fences = 0;
+      const service = createConversationService(client, {
+        onReadComplete: () => {
+          fences += 1;
+        },
+      });
+      await service.open("ref-1");
+      fences = 0;
+      client.on("thread/read", () => makeReadResponse(broken, "cursor"));
+      await expect(service.readProjection("ref-1")).rejects.toThrow();
+      expect(fences).toBe(0);
     });
 
     it("does not page after the pending read is closed", async () => {
@@ -453,7 +567,7 @@ describe("ConversationService", () => {
       ).toHaveLength(0);
       releaseLatest(makeReadResponse(thread, "latest-cursor"));
       await refresh2;
-      await expect(page).resolves.toMatchObject({ items: [] });
+      await expect(page).resolves.toMatchObject({ turnsPage: { data: [] } });
       expect(
         client.calls.find((call) => call.method === "thread/turns/list")
           ?.params,
@@ -519,104 +633,64 @@ describe("ConversationService", () => {
       expect(result.nextCursor).toBe("next-cursor");
     });
 
-    // A page goes through the package's page merge, so a reload page that
-    // carries a tool call and its result as two items sharing a callId (in
-    // separate wire turns, as apptranscript mints them) shows one settled
-    // tool row carrying the result, exactly as the web renders that page.
-    it("folds a page's tool call and result into one row through the package's page merge", async () => {
+    // D23d: the service hands the page's wire turns to the store verbatim —
+    // the store's own merge folds a call and its result (the package's
+    // across-turn merge, covered store-side) — so a page that carries a tool
+    // call and its result as two items sharing a callId (in separate wire
+    // turns, as apptranscript mints them) reaches the store exactly as the
+    // wire served it.
+    it("returns a page's call and result wire turns verbatim, for the store's merge to fold", async () => {
       const { client, service } = setup();
       await service.open("ref-1");
-      client.on(
-        "thread/turns/list",
-        () =>
-          ({
-            data: [
+      const page: ThreadTurnsListResponse = {
+        data: [
+          {
+            id: "turn-call",
+            itemsView: "fragment",
+            status: "completed",
+            items: [
               {
-                id: "turn-call",
-                itemsView: "fragment",
-                status: "completed",
-                items: [
-                  {
-                    id: "item_tool_1",
-                    type: "commandExecution",
-                    toolName: "shell",
-                    callId: "call-1",
-                    argumentsJson: '{"command":"make"}',
-                    status: "inProgress",
-                    transcriptKey: "k:call",
-                    position: { entry: 1, item: 0 },
-                  },
-                ] as ThreadItem[],
+                id: "item_tool_1",
+                type: "commandExecution",
+                toolName: "shell",
+                callId: "call-1",
+                argumentsJson: '{"command":"make"}',
+                status: "inProgress",
+                transcriptKey: "k:call",
+                position: { entry: 1, item: 0 },
               },
+            ] as ThreadItem[],
+          },
+          {
+            id: "turn-result",
+            itemsView: "fragment",
+            status: "completed",
+            items: [
               {
-                id: "turn-result",
-                itemsView: "fragment",
+                id: "item_tool_result_1",
+                type: "commandExecution",
+                toolName: "shell",
+                callId: "call-1",
+                output: "ok",
+                exitCode: 0,
                 status: "completed",
-                items: [
-                  {
-                    id: "item_tool_result_1",
-                    type: "commandExecution",
-                    toolName: "shell",
-                    callId: "call-1",
-                    output: "ok",
-                    exitCode: 0,
-                    status: "completed",
-                    transcriptKey: "k:result",
-                    position: { entry: 2, item: 0 },
-                  },
-                ] as ThreadItem[],
+                transcriptKey: "k:result",
+                position: { entry: 2, item: 0 },
               },
-            ],
-          }) as ThreadTurnsListResponse,
-      );
+            ] as ThreadItem[],
+          },
+        ],
+      };
+      client.on("thread/turns/list", () => page);
 
       const result = await service.loadOlder("opaque-cursor");
-      expect(result.items).toHaveLength(1);
-      expect(result.items[0]).toMatchObject({
-        kind: "activity",
-        id: "item_tool_1",
-        state: "completed",
-        detail: { arguments: '{"command":"make"}', output: "ok", exitCode: 0 },
-      });
+      expect(result.turnsPage).toEqual(page);
     });
 
-    // A replayed input image reaches a page with no bytes and no stamped url,
-    // only its content sha; the package resolves it to the hub's
-    // /s/{session}/images/{sha} route, so the page must hydrate under the real
-    // thread id — a placeholder id would name a session the hub cannot serve.
-    it("routes an older page's sha-only image through the real thread id", async () => {
-      const { client, service } = setup();
-      await service.open("ref-1");
-      const sha = "a".repeat(64);
-      client.on(
-        "thread/turns/list",
-        () =>
-          ({
-            data: [
-              {
-                id: "turn-older",
-                itemsView: "fragment",
-                status: "completed",
-                items: [
-                  {
-                    id: "u-older",
-                    type: "userMessage",
-                    text: "see attached",
-                    images: [{ type: "image", name: "shot.png", metadata: { sha } }],
-                  },
-                ] as ThreadItem[],
-              },
-            ],
-          }) as ThreadTurnsListResponse,
-      );
-
-      const result = await service.loadOlder("opaque-cursor");
-      expect(result.items[1]).toMatchObject({
-        kind: "attachments",
-        id: "u-older:attachments",
-        items: [{ id: "u-older:0", src: `/s/thread-1/images/${sha}`, name: "shot.png" }],
-      });
-    });
+    // A replayed input image's sha-route resolution moved store-side with
+    // D23d (the service hands the wire page over verbatim; the store's merge
+    // hydrates the page under the real thread id) — see the store suite's
+    // "routes an older page's sha-only image through the real thread id".
 
     it("preserves fragment completeness metadata for the page boundary", async () => {
       const { client, service } = setup();
@@ -685,7 +759,7 @@ describe("ConversationService", () => {
         "stale transcript cursor",
       );
       const result = await service.loadOlder("caller-cursor-is-ignored");
-      expect(result.items).toEqual([]);
+      expect(result.turnsPage).toEqual({ data: [], nextCursor: undefined });
       expect(listCalls).toBe(2);
       const reads = client.calls.filter(
         (call) => call.method === "thread/read",
@@ -2550,55 +2624,10 @@ describe("ConversationService", () => {
 
   });
 
-  // I3: projectOlderTurns must never emit actionable kind:'question' rows
-  // from historical pages. A pending ask cannot legitimately be older than
-  // newer continuation turns, and page-local projection otherwise resurrects
-  // settled calls. All other projected page items/order/dedupe/cursor are
-  // preserved — only question rows are omitted.
-  describe("I3: projectOlderTurns omits question rows from historical pages", () => {
-    it("completed ask_user + agentMessage => question omitted, other content retained", async () => {
-      const { client, service } = setup();
-      // Build turns with a completed ask_user + agentMessage.
-      const askUserTurn: Turn = {
-        id: "t-old-1",
-        items: [
-          {
-            type: "commandExecution",
-            id: "ask-old",
-            toolName: "ask_user",
-            status: "completed",
-            argumentsJson:
-              '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}',
-          },
-          {
-            type: "agentMessage",
-            id: "msg-old",
-            text: "old message",
-            status: "completed",
-          },
-        ],
-        itemsView: "default",
-        status: "completed",
-      };
-      client.on(
-        "thread/turns/list",
-        () =>
-          ({
-            data: [askUserTurn],
-            nextCursor: undefined,
-          }) as ThreadTurnsListResponse,
-      );
-
-      await service.open("ref-1");
-      const result = await service.loadOlder("cursor-1");
-      const items = result.items;
-
-      // No question items — the completed ask_user must not be resurrected.
-      expect(items.some((i) => i.kind === "question")).toBe(false);
-      // Other content retained — agentMessage projected as assistant.
-      expect(items.some((i) => i.kind === "assistant")).toBe(true);
-    });
-  });
+  // I3: the service-side historical-page question filter died with
+  // projectOlderTurns (D23d) — the ask gate lives in the projection the
+  // store re-projects through (liveAskQuestions), covered by the store
+  // suite's "a page ask_user item renders as its tool row..." fixture.
 });
 
 describe("queue action receipts", () => {
@@ -2851,6 +2880,123 @@ describe("observed queue guards", () => {
         },
       },
     ]);
+  });
+  // A drain's receipt names the queue intents it consumed
+  // (consumedClientMutationIds, issue #1704). Wire-shaped: the daemon omits
+  // the key entirely when nothing was consumed (never an empty array), so the
+  // decoded receipt must mirror that -- present only when the daemon named it.
+  it("keeps a drain's consumedClientMutationIds on the decoded receipt when the daemon named some", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/drainAsSteer",
+      () =>
+        ({
+          receipt: makeReceipt("steer", {
+            consumedClientMutationIds: ["queued-1", "queued-2"],
+          }),
+        }) as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    const receipt = await service.steer(textInput("steer this"), 4);
+    expect(receipt.consumedClientMutationIds).toEqual([
+      "queued-1",
+      "queued-2",
+    ]);
+  });
+  it("omits consumedClientMutationIds from the decoded receipt when the daemon consumed nothing", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/drainAsSteer",
+      () => ({ receipt: makeReceipt("steer") }) as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    const receipt = await service.steer(textInput("steer this"), 4);
+    expect(receipt).not.toHaveProperty("consumedClientMutationIds");
+  });
+  it("rejects a drain receipt with an empty consumedClientMutationIds array", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/drainAsSteer",
+      () =>
+        ({
+          receipt: makeReceipt("steer", {
+            consumedClientMutationIds: [],
+          }),
+        }) as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.steer(textInput("steer this"), 4)).rejects.toThrow(
+      /ConversationService/,
+    );
+  });
+  // #1759: a receipt may carry additive keys a shipped build has never seen;
+  // the decoder ignores them rather than rejecting the whole receipt.
+  it("ignores an additive receipt key the decoder does not know", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/drainAsSteer",
+      () =>
+        ({
+          receipt: makeReceipt("steer", {
+            futureAdditiveField: "ignored",
+          } as Partial<MutationReceipt>),
+        }) as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    const receipt = await service.steer(textInput("steer this"), 4);
+    expect(receipt).toMatchObject({
+      clientMutationId: "cmid-1",
+      disposition: "applied",
+      threadId: "thread-1",
+      projectionState: "pending",
+      turnId: "turn-1",
+    });
+    expect(receipt).not.toHaveProperty("futureAdditiveField");
+  });
+  it("ignores an additive receipt key on a mutation other than drain", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/queue",
+      () =>
+        ({
+          receipt: makeReceipt("queue", {
+            futureAdditiveField: "ignored",
+          } as Partial<MutationReceipt>),
+        }) as TurnQueueResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.queue(textInput("queued"))).resolves.toMatchObject({
+      clientMutationId: "cmid-1",
+      queueEntryIds: ["queue-1"],
+    });
+  });
+  it("still rejects a receipt missing a key the decoder requires", async () => {
+    const { client, service } = setup();
+    const { threadId: _omitted, ...withoutThreadId } = makeReceipt("steer");
+    client.on(
+      "turn/drainAsSteer",
+      () => ({ receipt: withoutThreadId }) as unknown as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.steer(textInput("steer this"), 4)).rejects.toThrow(
+      /ConversationService/,
+    );
+  });
+  it("still rejects a known receipt key on a mutation kind that does not expect it", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/queue",
+      () =>
+        ({
+          receipt: makeReceipt("queue", {
+            turnId: "misplaced",
+          } as Partial<MutationReceipt>),
+        }) as TurnQueueResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.queue(textInput("queued"))).rejects.toThrow(
+      /ConversationService/,
+    );
   });
 });
 

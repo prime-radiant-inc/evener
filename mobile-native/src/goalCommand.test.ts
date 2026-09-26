@@ -1,4 +1,3 @@
-import { DatabaseSync } from "node:sqlite";
 import { expect, it } from "vitest";
 import type {
 	ModelListResponse,
@@ -13,8 +12,9 @@ import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
 import { submitComposerCommand } from "./composerCommand";
 import { DraftDocument } from "./draftDocument";
-import { type DraftDatabase, DraftRepository } from "./draftRepository";
+import { DraftRepository } from "./draftRepository";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
+import { openSqliteSyncDouble } from "./sqliteSync.testkit";
 
 const commandContext = {
 	isCurrent: () => true,
@@ -127,13 +127,8 @@ it.each([
 ])(
 	"checkpoints %s and preserves a newer draft through acknowledgement loss",
 	async (command, method) => {
-		const db = new DatabaseSync(":memory:");
-		const repository = new DraftRepository({
-			execSync: (sql) => db.exec(sql),
-			runSync: (sql, ...params) => db.prepare(sql).run(...params),
-			getFirstSync: <T>(sql: string, ...params: string[]) =>
-				(db.prepare(sql).get(...params) as T | undefined) ?? null,
-		});
+			const { database: db, port } = openSqliteSyncDouble();
+			const repository = new DraftRepository(port);
 		const destination = { hubId: "hub", sessionRef: "local:test" };
 		const document = new DraftDocument(() => repository, destination);
 		const { io, service } = boundary();
@@ -255,14 +250,8 @@ it("preserves newer live work state across an older hydration and isolates sessi
 });
 
 it("checkpoints goal changes, retains uncertain delivery, and clears without consuming an ordinary draft", async () => {
-	const db = new DatabaseSync(":memory:");
-	const adapter: DraftDatabase = {
-		execSync: (sql) => db.exec(sql),
-		runSync: (sql, ...params) => db.prepare(sql).run(...params),
-		getFirstSync: <T>(sql: string, ...params: string[]) =>
-			(db.prepare(sql).get(...params) as T | undefined) ?? null,
-	};
-	const repository = new DraftRepository(adapter);
+	const { database: db, port } = openSqliteSyncDouble();
+	const repository = new DraftRepository(port);
 	const destination = { hubId: "hub", sessionRef: "local:test" };
 	const { io, objectives, service, thread } = boundary();
 	const document = new DraftDocument(() => repository, destination);
@@ -334,13 +323,8 @@ it.each([false, true])(
 );
 
 function commandDraft() {
-	const db = new DatabaseSync(":memory:");
-	const repository = new DraftRepository({
-		execSync: (sql) => db.exec(sql),
-		runSync: (sql, ...params) => db.prepare(sql).run(...params),
-		getFirstSync: <T>(sql: string, ...params: string[]) =>
-			(db.prepare(sql).get(...params) as T | undefined) ?? null,
-	});
+	const { database: db, port } = openSqliteSyncDouble();
+	const repository = new DraftRepository(port);
 	const destination = { hubId: "hub", sessionRef: "local:test" };
 	return { db, document: new DraftDocument(() => repository, destination) };
 }

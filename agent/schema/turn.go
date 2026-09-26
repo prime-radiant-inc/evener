@@ -141,6 +141,29 @@ type TurnFailureInfo struct {
 	// instead of substring-matching Message. Nil means the failure source is
 	// unknown.
 	Cause *TurnFailureCause `json:"cause,omitempty"`
+	// SteeringCarrier marks the TurnFailure shapes that are ALSO a resolution
+	// boundary: a steering carrier turn whose acceptance already cleared
+	// askPending before it recorded nothing else useful. Two shapes set it:
+	//   - the carrier's own steer failed to append, so it recorded nothing
+	//     else at all — no TurnSteering, no TurnUserInput, nothing
+	//     (agent/session_lifecycle.go's acceptSteeringCarrierInput,
+	//     carrierSteerUndelivered).
+	//   - the carrier's claimed steer failed its skill-selection prepare
+	//     (agent/session_queue.go's recordFailedSteeringSelection, when the
+	//     failing steer is the one the carrier claim is draining).
+	// Both read the turn's mere ACCEPTANCE as having already cleared
+	// askPending unconditionally on entry, before its steer ever tried to
+	// land (processOneInput's "Pending asks resolve with this accepted turn")
+	// — but ONLY when the claimed steer itself answers the ask
+	// (steeringCarrierClaimAnswersAsk, agent/session_tools_ask.go): a
+	// human-note carrier's entry clear is skipped, so its own failure
+	// (either shape) leaves this false and askPending stays live-pending.
+	//
+	// turnResolvesAskBoundary (agent/session_tools_ask.go) reads this flag as
+	// a resolution boundary for deriveRestoredAskPending/deriveRestoredState,
+	// so a restore agrees with the live session on whether this failure left
+	// askPending live-pending.
+	SteeringCarrier bool `json:"steering_carrier,omitempty"`
 }
 
 // TurnFailureCause is the structured root cause of a failed turn. It mirrors
@@ -172,63 +195,73 @@ type GoalContinuationInfo struct {
 
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
+// Fields MUST stay declared in alphabetical JSON-key order: the public
+// line projection (agent's publicTranscriptLine) re-marshals the turn
+// through string-keyed maps, which sort keys alphabetically, and relies
+// on this struct's field order matching that sort so a projected line
+// stays byte-identical to the persisted one.
+// TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn
+// pins the round trip. attention_id, attention_resolution, and
+// delegate_delivery_commits are deleted by the projection rather than
+// projected, so turns carrying them are not byte-identical by design;
+// they stay sorted here too so a future key lands in one obvious place.
 type Turn struct {
-	Kind      TurnKind    `json:"kind"`      // category of this history item
-	Message   llm.Message `json:"message"`   // the underlying LLM message
-	Timestamp time.Time   `json:"timestamp"` // when the turn was recorded (UTC)
-	// Usage carries the token-usage stats reported by the provider; set only on
-	// assistant turns.
-	Usage llm.Usage `json:"usage"`
+	AttemptGroupID string `json:"attempt_group_id,omitempty"`
+	// AttentionID identifies steering that requires durable terminal cleanup.
+	// It is empty for ordinary steering and all non-steering turns.
+	AttentionID string `json:"attention_id,omitempty"`
+	// AttentionResolution is set only on TurnAttentionResolution turns.
+	AttentionResolution *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
+	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
+	// preserves the logical turn identity across live events and transcript
+	// recovery for both client input and daemon goal continuations.
+	ClientMutationID        string                   `json:"client_mutation_id,omitempty"`
+	DelegateDeliveryCommits []DelegateDeliveryCommit `json:"delegate_delivery_commits,omitempty"`
+	// Error carries the diagnostic of a terminally failed turn. Set only on
+	// TurnFailure turns; nil everywhere else.
+	Error *TurnFailureInfo `json:"error,omitempty"`
+	// GoalContinuation marks goal-engine steering that opens a fresh logical
+	// turn and displays a compact notice rather than its model instructions.
+	GoalContinuation *GoalContinuationInfo `json:"goal_continuation,omitempty"`
+	// Hook carries the detail of one completed plugin hook. Set only on
+	// TurnHookCompleted turns; nil everywhere else.
+	Hook    *HookInfo   `json:"hook,omitempty"`
+	Kind    TurnKind    `json:"kind"`    // category of this history item
+	Message llm.Message `json:"message"` // the underlying LLM message
+	// ModelSwitch carries resolved identities on TurnModelSwitch turns.
+	ModelSwitch *ModelSwitchInfo `json:"model_switch,omitempty"`
+	// OwningTurnID identifies the logical turn that owns an ordinary steering
+	// entry. It differs from StableTurnID, which identifies the client mutation.
+	OwningTurnID           string `json:"owning_turn_id,omitempty"`
+	ResponseContextMarker  string `json:"response_context_marker,omitempty"`
+	ResponseEndpoint       string `json:"response_endpoint,omitempty"`
+	ResponseEndpointFamily string `json:"response_endpoint_family,omitempty"`
+	// ResponseID is the provider's response identifier (from llm.Response.ID),
+	// recorded on assistant turns and surfaced in ATIF trajectory export.
+	ResponseID                      string `json:"response_id,omitempty"`
+	ResponseIDHash                  string `json:"response_id_hash,omitempty"`
+	ResponseModel                   string `json:"response_model,omitempty"`
+	ResponseProtocol                string `json:"response_protocol,omitempty"`
+	ResponseProvider                string `json:"response_provider,omitempty"`
+	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
+	ResponseRequestModel            string `json:"response_request_model,omitempty"`
+	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
+	// SkillState carries explicit typed operation records, not inferred history.
+	SkillState   *SkillTurnState `json:"skill_state,omitempty"`
+	StableTurnID string          `json:"stable_turn_id,omitempty"`
+	// SteeringKind records what a TurnSteering entry was (events.SteeringKind*),
+	// so a reloaded transcript labels a steer the same way the live path did.
+	SteeringKind string `json:"steering_kind,omitempty"`
 	// SteeringSource records the provenance of a TurnSteering entry:
 	// "user" for human-sent steering (the UI steer action or queued user
 	// input drained as steering), empty for daemon/system nudges. Persisted
 	// so replay/hydration can render user steering as user speech
 	// (issue #24). Empty on non-steering turns.
-	SteeringSource string `json:"steering_source,omitempty"`
-	// SteeringKind records what a TurnSteering entry was (events.SteeringKind*),
-	// so a reloaded transcript labels a steer the same way the live path did.
-	SteeringKind string `json:"steering_kind,omitempty"`
-	// GoalContinuation marks goal-engine steering that opens a fresh logical
-	// turn and displays a compact notice rather than its model instructions.
-	GoalContinuation *GoalContinuationInfo `json:"goal_continuation,omitempty"`
-	// AttentionID identifies steering that requires durable terminal cleanup.
-	// It is empty for ordinary steering and all non-steering turns.
-	AttentionID string `json:"attention_id,omitempty"`
-	// AttentionResolution is set only on TurnAttentionResolution turns.
-	AttentionResolution     *AttentionResolutionInfo `json:"attention_resolution,omitempty"`
-	DelegateDeliveryCommits []DelegateDeliveryCommit `json:"delegate_delivery_commits,omitempty"`
-	// ClientMutationID identifies retry-safe client-authored input. StableTurnID
-	// preserves the logical turn identity across live events and transcript
-	// recovery for both client input and daemon goal continuations.
-	ClientMutationID string `json:"client_mutation_id,omitempty"`
-	StableTurnID     string `json:"stable_turn_id,omitempty"`
-	// SkillState carries explicit typed operation records, not inferred history.
-	SkillState *SkillTurnState `json:"skill_state,omitempty"`
-	// OwningTurnID identifies the logical turn that owns an ordinary steering
-	// entry. It differs from StableTurnID, which identifies the client mutation.
-	OwningTurnID string `json:"owning_turn_id,omitempty"`
-	// Error carries the diagnostic of a terminally failed turn. Set only on
-	// TurnFailure turns; nil everywhere else.
-	Error *TurnFailureInfo `json:"error,omitempty"`
-	// Hook carries the detail of one completed plugin hook. Set only on
-	// TurnHookCompleted turns; nil everywhere else.
-	Hook *HookInfo `json:"hook,omitempty"`
-	// ModelSwitch carries resolved identities on TurnModelSwitch turns.
-	ModelSwitch *ModelSwitchInfo `json:"model_switch,omitempty"`
-	// ResponseID is the provider's response identifier (from llm.Response.ID),
-	// recorded on assistant turns and surfaced in ATIF trajectory export.
-	ResponseID                      string `json:"response_id,omitempty"`
-	ResponseIDHash                  string `json:"response_id_hash,omitempty"`
-	ResponseProvider                string `json:"response_provider,omitempty"`
-	ResponseModel                   string `json:"response_model,omitempty"`
-	ResponseRequestModel            string `json:"response_request_model,omitempty"`
-	AttemptGroupID                  string `json:"attempt_group_id,omitempty"`
-	ResponseEndpointFamily          string `json:"response_endpoint_family,omitempty"`
-	ResponseProtocol                string `json:"response_protocol,omitempty"`
-	ResponseEndpoint                string `json:"response_endpoint,omitempty"`
-	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
-	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
-	ResponseContextMarker           string `json:"response_context_marker,omitempty"`
+	SteeringSource string    `json:"steering_source,omitempty"`
+	Timestamp      time.Time `json:"timestamp"` // when the turn was recorded (UTC)
+	// Usage carries the token-usage stats reported by the provider; set only on
+	// assistant turns.
+	Usage llm.Usage `json:"usage"`
 }
 
 // NewTurn creates a Turn with the current UTC time.

@@ -154,7 +154,7 @@ func jwccExerciseConfigureFailures(t *testing.T) {
 
 	status := jwccManager(t)
 	wcvpAppendStoreJob(t, status, "job_nonterminal", status.sessionID, jobstore.StatusRunning)
-	if got, terminal, err := status.terminalWatchTargetStatus("job_nonterminal"); err != nil || terminal || got != "" {
+	if got, _, terminal, err := status.terminalWatchTargetStatus("job_nonterminal"); err != nil || terminal || got != "" {
 		t.Fatalf("nonterminal status = (%q, %v, %v)", got, terminal, err)
 	}
 

@@ -6,11 +6,12 @@
 //   showSteer = busy && capabilities.steer
 //   Send      = ... && deriveSendQueueAvailability(status, capabilities)
 //
-// Two of the hub's capabilities are themselves defined by whether a turn is
-// in flight (server/appwire_runtime.go's appCapabilities: Send is !active,
-// Queue is active; Steer is harness support alone and the composer applies
-// the status), so a snapshot cut before the turn says queue=false about the
-// turn that follows. Reading it back once
+// Send is the hub capability defined by whether a turn is in flight
+// (server/appwire_runtime.go's appCapabilities: Send is !active), while Steer,
+// Interrupt and Queue advertise harness support and the composer applies the
+// status itself. A snapshot cut before the turn therefore says send=true about
+// a session that is running by the time the status frame lands. Reading the
+// stale set back once
 // the status has moved on produced kata 06t8's report exactly: submit a reply,
 // and the session it KNOWS is running shows no Steer, no Stop, and a Send that
 // stays grey however much you type — until a reload re-reads the snapshot from
@@ -41,6 +42,8 @@ import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import "../testing/editorGeometry";
+import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 
@@ -57,27 +60,8 @@ function Composer(props: React.ComponentProps<typeof ComposerView>) {
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { resetStoplessComposerSightingsForTests, stoplessComposerSightings } from "./stoplessComposer";
 
-// See draft.test.ts's identical comment: Node 26 shadows jsdom's real
-// window.localStorage with its own (non-functional under vitest) global.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const REF = "ref_a";
@@ -103,9 +87,9 @@ const COLD_CAPABILITIES: ThreadCapabilities = {
 };
 
 // What a LIVE daemon with every callback wired advertises, verbatim from
-// server/appwire_runtime.go's appCapabilities. `active` is the whole
-// difference, and it is the reason a snapshot cannot be reused across a
-// status change. Steer is harness support and does not move with it.
+// server/appwire_runtime.go's appCapabilities. `active` moves Send alone;
+// Steer, Interrupt and Queue are harness support and do not move with it. The
+// difference is still why a snapshot cannot be reused across a status change.
 function daemonCapabilities(active: boolean): ThreadCapabilities {
   return {
     send: !active,
@@ -117,7 +101,7 @@ function daemonCapabilities(active: boolean): ThreadCapabilities {
     shutdown: true,
     changeModel: true,
     changeVisionModel: true,
-    queue: active,
+    queue: true,
     goal: true,
     sharedNotes: true,
     rename: true,
@@ -264,8 +248,14 @@ test("a resumed cold session's controls follow the turn it is running", async ()
 test("a live idle session's controls follow the turn its own send starts", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
 
-  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
+  // Queue advertises harness support, so an idle snapshot on a queue-capable
+  // harness reads true (#1375) and the composer is still a plain send: the
+  // status, not the bit, decides which control that is.
+  expect(threadsStore.getState().threads.get(REF)?.capabilities.queue).toBe(true);
   await type("another thought");
+  expect(submitButton().disabled).toBe(false);
+
+  emitTurnStart(fake, "turn_5", daemonCapabilities(true));
 
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
@@ -540,11 +530,11 @@ test("a Steer clicked between turn/completed and turn/started sends turn/steer, 
   expect(screen.queryByText(/no active turn/i)).toBeNull();
 });
 
-// A genuine turn failure ends with turn/completed{status: "failed"} and no
-// status frame behind it (the projector's EventError branch; the agent returns
-// the failure before the EventSessionEnd that only a clean completion or an
-// interrupt reaches, kata s8x8). The reducer settles the session idle on that
-// frame, so Stop and Steer leave and Send returns.
+// A genuine turn failure ends with turn/completed{status: "failed"} followed
+// by its own thread/status/changed(idle) frame, capabilities inline (the
+// agent's failure exit, agent/session_lifecycle.go endInputAtTurnFailure, kata
+// hen0). The status frame turns Stop and Steer off and gives Send back; the
+// failed stamp alone leaves the controls alone.
 test("a failed turn takes Stop and Steer off and gives Send back", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
@@ -560,6 +550,16 @@ test("a failed turn takes Stop and Steer off and gives Send back", async () => {
         ref: REF,
         turn: { id: "turn_5", status: "failed", itemsView: "", error: { message: "rate limited" } },
       },
+    });
+  });
+
+  // The turn ended; its status frame has not arrived.
+  expect(threadsStore.getState().threads.get(REF)?.status.type).toBe("active");
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${REF}`, ref: REF, status: { type: "idle" }, capabilities: daemonCapabilities(false) },
     });
   });
 

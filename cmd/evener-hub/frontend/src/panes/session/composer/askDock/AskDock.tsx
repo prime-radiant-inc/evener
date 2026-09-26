@@ -196,7 +196,7 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
   function selectTab(index: number, focus: boolean) {
     const question = batch.questions[index];
     if (!question) return;
-    askDockStore.getState().setActive(sessionRef, batch.id, question.key);
+    askDockStore.setActive(sessionRef, batch.id, question.key);
     if (focus) tabRefs.current[index]?.focus();
   }
 
@@ -207,7 +207,7 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
     // submit the batch with the question on screen implicitly skipped.
     if (sendDisabled) return;
     if (advanceTarget !== undefined) {
-      askDockStore.getState().setActive(sessionRef, batch.id, advanceTarget);
+      askDockStore.setActive(sessionRef, batch.id, advanceTarget);
       return;
     }
     onSend(batch.id);
@@ -277,9 +277,9 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
         answer={answerFor(answers, question.key)}
         disabled={batch.sending}
         onResolutionChange={(resolution: AskResolution | null) =>
-          askDockStore.getState().setAnswer(sessionRef, question.key, resolution)
+          askDockStore.setAnswer(sessionRef, question.key, resolution)
         }
-        onNoteChange={(note) => askDockStore.getState().setNote(sessionRef, question.key, note)}
+        onNoteChange={(note) => askDockStore.setNote(sessionRef, question.key, note)}
       />
     );
   }
@@ -489,7 +489,7 @@ export function AskDock({ ref: sessionRef }: AskDockProps) {
     const dock = dockRef.current;
     if (!dock) return;
     const focusFirst = () => {
-      askDockStore.getState().markPendingGreeted(sessionRef);
+      askDockStore.markPendingGreeted(sessionRef);
       dock.querySelector<HTMLElement>(FIRST_CONTROL_SELECTOR)?.focus();
     };
     if (typeof IntersectionObserver !== "function") {
@@ -508,7 +508,7 @@ export function AskDock({ ref: sessionRef }: AskDockProps) {
   if (batches.length === 0) return null;
 
   async function handleSend(batchId: string) {
-    const outcome = await askDockStore.getState().sendBatch(sessionRef, batchId);
+    const outcome = await askDockStore.sendBatch(sessionRef, batchId);
     if (outcome.outcome === "error") {
       // Already the finished sentence, labelled by the store - the one place
       // that can still tell a failed send from the failed session resume

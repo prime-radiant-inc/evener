@@ -39,6 +39,18 @@ func (s *Session) State() SessionState {
 	return s.state
 }
 
+// awaitingOrHasPendingAsk reports whether the session is SessionAwaiting or
+// has an unresolved ask_user question, sampling state and the pending set
+// under one lock. The drain-ladder gate (session_lifecycle.go) needs both
+// facts as of the SAME instant: two separate locked calls (State() then
+// askPendingCount()) could observe a state transition or an askPending
+// mutation land between them.
+func (s *Session) awaitingOrHasPendingAsk() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state == SessionAwaiting || len(s.askPending) > 0
+}
+
 // WireState is the externally-reported session state. It equals State()
 // except for one override: an idle session with undelivered job notifications
 // or claimable queued input reads as "active" because work the session owns
@@ -248,21 +260,127 @@ func (s *Session) setStateIfOpenLocked(state SessionState) {
 }
 
 func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionState) {
-	transitioned := false
-	var turnMS int64
 	s.mu.Lock()
+	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
+	s.mu.Unlock()
+	s.finishProcessingAtBoundaryEvents(ctx, transitioned, turnMS)
+}
+
+// transitionProcessingAtBoundaryLocked publishes a processing boundary while
+// the caller holds s.mu. The restored transcript boundary nests this under
+// attentionMu so the state assignment cannot race a new durable transcript
+// append between restoration and publication.
+func (s *Session) transitionProcessingAtBoundaryLocked(state SessionState) (transitioned bool, turnMS int64) {
 	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 		s.state = state
 		turnMS = s.accumulateWorkLocked()
 		transitioned = true
 	}
-	s.mu.Unlock()
+	return transitioned, turnMS
+}
+
+func (s *Session) finishProcessingAtBoundaryEvents(ctx context.Context, transitioned bool, turnMS int64) {
 	if transitioned {
 		s.emit(events.EventTurnEnded, events.TurnEndedData{TurnDurationMS: turnMS})
 		if err := s.drainPendingWatchSendsAtBoundary(ctx); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: "watch send retry at processing boundary failed: " + err.Error()})
 		}
 		s.finishActiveProvenance()
+	}
+}
+
+// finishProcessingAtFailureBoundary settles a failed turn to the same boundary
+// state restore derives from its transcript. A pending ask survives provider,
+// retry-budget, and other terminal failures, so those paths must remain
+// awaiting instead of reporting idle to the live client.
+func (s *Session) finishProcessingAtFailureBoundary(ctx context.Context) {
+	state := SessionIdle
+	if s.askPendingCount() > 0 {
+		state = SessionAwaiting
+	}
+	s.finishProcessingAtBoundary(ctx, state)
+}
+
+// finishProcessingAtRestoredFailureBoundary settles an interrupt whose marker
+// was rejected by the same transcript-tail rule restore uses. Marker rejection
+// can follow an admitted reply, which clears askPending before a completed
+// tool-results turn leaves the durable session awaiting. Generic failures keep
+// the pending-set rule above; this path is only for an interrupt marker that
+// never became a boundary record.
+func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context) {
+	// recordTurn retains the live pair before an ordinary transcript write
+	// reports a clean rollback. Read the transcript while attentionMu excludes
+	// another append, and hold it through state publication so this boundary
+	// sees only recorded or adopted turns. The read parses the whole
+	// transcript file under attentionMu — the door every append and fold
+	// publication passes — so a large transcript stalls appends for the
+	// parse duration. The path is rare (only a rejected interrupt marker)
+	// and matches the existing convention (snapshotDelegateContext reads
+	// under the same door); if it ever matters in practice, derive the
+	// decisive tail from the last compaction anchor (retainedFrom already
+	// identifies it) instead of the full file.
+	var restoredHistory []schema.Turn
+	var restoredRepairInsertions []int
+	retained := 0
+	path := s.TranscriptPath()
+	s.attentionMu.Lock()
+	if path != "" {
+		_, entries, _, err := readTranscript(path, s.stateDir)
+		if err == nil {
+			restoredHistory, restoredRepairInsertions = resumeHistoryIndexed(entries)
+			retained = retainedFrom(entries)
+		}
+	}
+	release := func(transitioned bool, turnMS int64) {
+		s.mu.Unlock()
+		if hook := s.cfg.testOnly.beforeRestoredFailureBoundaryDoorRelease; hook != nil {
+			hook()
+		}
+		s.attentionMu.Unlock()
+		s.finishProcessingAtBoundaryEvents(ctx, transitioned, turnMS)
+	}
+
+	s.mu.Lock()
+	divergence := s.fork.divergence
+	if restoredHistory != nil {
+		// Map the immutable full-transcript divergence into the resumed
+		// history's coordinates (retained window plus repair insertions)
+		// before consulting journal provenance.
+		divergence = mapDivergenceThroughResumedHistory(divergence, retained, restoredRepairInsertions)
+	}
+	origins := s.clientMutations.steeringOrigins()
+	if restoredHistory == nil {
+		// Without a readable transcript there is no confirmed replacement for
+		// the live history. Preserve the existing pending-aware failure rule.
+		state := SessionIdle
+		if len(s.askPending) > 0 {
+			state = SessionAwaiting
+		}
+		transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
+		release(transitioned, turnMS)
+		return
+	}
+	state := deriveRestoredState(restoredHistory, divergence, origins)
+	pending, isAskRound := deriveRestoredAskPending(restoredHistory, divergence, origins)
+	transitioned, turnMS := s.transitionProcessingAtBoundaryLocked(state)
+	if transitioned {
+		// The settlement is atomic with the state publication: a no-op
+		// transition (already settled, or closing) leaves the live pending
+		// set untouched rather than half-settling it against an unchanged
+		// state.
+		s.askPending = pending
+	}
+	release(transitioned, turnMS)
+	if transitioned && isAskRound && len(pending) == 0 {
+		// Mirror the restore path's warning — gated on the settlement it
+		// describes: an ask round the transcript says was pending, but
+		// none of whose questions parsed, left the pending-ask holds
+		// inert. On a no-op transition the live pending set was left
+		// untouched, so the holds still apply and the warning would be
+		// false. An operator hitting that on the interrupt-rejection path
+		// gets the same diagnostic a restart emits (session_init.go), and
+		// neither may ever fail the boundary.
+		s.emit(events.EventWarning, events.WarningData{Message: "interrupt boundary: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
 	}
 }
 
@@ -355,11 +473,15 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 // first time — live children, pending notifications, queued input — are
 // available to check. Restored active goals are deliberately not autonomy —
 // they are not re-kicked on restore ("loaded but idle"), so amber is what
-// surfaces the stall (spec v5, round-3 A2).
-func (s *Session) recomputeRestoredState() {
+// surfaces the stall (spec v5, round-3 A2). divergenceTurn is the same value
+// its one caller (RestoreSessionFromMetaWithConfig) already computed for
+// escapeHistoryWithSessionProvenance, in the same units as s.history at this
+// point: a forked child's inherited prefix must not be decided by this
+// session's own journal (steeringOriginBoundary).
+func (s *Session) recomputeRestoredState(divergenceTurn int) {
 	s.mu.Lock()
 	idle := s.state == SessionIdle && !s.closingOrClosedLocked()
-	target := deriveRestoredState(s.history)
+	target := deriveRestoredState(s.history, divergenceTurn, s.clientMutations.steeringOrigins())
 	s.mu.Unlock()
 	if !idle || target != SessionAwaiting {
 		return
@@ -385,8 +507,11 @@ func (s *Session) armAwaitingAtSettle(hadOutput, goalKicked bool) {
 	// Runnable user steering is queued input for this purpose: a carrier that
 	// returned its steer undelivered leaves it for the next wake, and a
 	// session that will move on its own is not waiting on the user.
-	target := settleTerminalState(hadOutput, goalKicked,
-		s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
+	target := SessionAwaiting
+	if s.askPendingCount() == 0 {
+		target = settleTerminalState(hadOutput, goalKicked,
+			s.peekNotifications() > 0, s.QueueDepth() > 0 || s.hasRunnableUserSteering(), len(s.liveSubagentSessions()) > 0)
+	}
 	if target != SessionAwaiting {
 		return
 	}

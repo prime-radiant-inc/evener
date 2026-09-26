@@ -74,11 +74,17 @@ type shellResult struct {
 	Reason              string
 	RunningInBackground bool
 	TimedOut            bool
-	ExitCode            *int
-	Output              string
-	Truncated           bool
-	TotalBytes          int64
-	DroppedBytes        int64
+	// WaitElapsedMS is the measured foreground wait for a promoted command:
+	// how long the tool actually blocked before the wait bound expired and the
+	// command became a durable background job. Zero for every non-promoted
+	// result. It lets the model's pacing arithmetic use the real wait
+	// (~max_wait_ms) rather than the command's intended duration (#501).
+	WaitElapsedMS int64
+	ExitCode      *int
+	Output        string
+	Truncated     bool
+	TotalBytes    int64
+	DroppedBytes  int64
 	// settle is non-nil when the command finished within its max_wait_ms bound.
 	// Calling settle(true) commits the delayed job (making it durable) and
 	// finalizes it, returning its job_id. Calling settle(false) discards the
@@ -240,6 +246,10 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		}
 	}
 
+	// waitStarted is measured on the same clock that arms the wait timer, so
+	// the elapsed wait reported to the model is the real interval the mockable
+	// clock observed, not the command's own intended duration (#501).
+	waitStarted := jm.clock.Now()
 	timer := jm.clock.NewTimer(blockTimeout)
 	defer timer.Stop()
 	var ctxDone <-chan struct{}
@@ -324,6 +334,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			Reason:              "foreground_timeout",
 			RunningInBackground: true,
 			TimedOut:            true,
+			WaitElapsedMS:       jm.clock.Now().Sub(waitStarted).Milliseconds(),
 			Output:              output,
 			Truncated:           truncated,
 			TotalBytes:          total,
@@ -746,11 +757,14 @@ func shellTerminalDecisionWithSignal(stopStatus jobstore.Status, stopReason stri
 	if exitCode == 0 {
 		return jobstore.StatusCompleted, "exit_zero"
 	}
+	// A signalled or nonzero exit is the COMMAND's outcome, not the job
+	// system's failure: the machinery launched, supervised, and reaped the
+	// process fine. Only the wait/supervision arms above stay StatusFailed.
 	if exitCode < 0 {
 		if signalName == "" {
-			return jobstore.StatusFailed, "killed_by_signal"
+			return jobstore.StatusCommandKilled, "killed_by_signal"
 		}
-		return jobstore.StatusFailed, "killed_by_signal: " + signalName
+		return jobstore.StatusCommandKilled, "killed_by_signal: " + signalName
 	}
-	return jobstore.StatusFailed, "exit_nonzero"
+	return jobstore.StatusCommandExitedNonzero, "exit_nonzero"
 }

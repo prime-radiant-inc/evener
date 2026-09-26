@@ -41,7 +41,8 @@ import {
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
-import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { MutationDispatcher } from "./mutationDispatcher";
+import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
@@ -53,6 +54,8 @@ import {
   readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
+  resumeStopBaseline,
+  resumeStopFence,
   retryBlockedMutation,
   setMutationStorageForTests,
   subscribeMutationPersistence,
@@ -950,6 +953,141 @@ describe("useThreadsStore.ensureThread", () => {
     expect(model?.capabilities.queue).toBe(true);
     expect(model?.status).toEqual({ type: "active", activeFlags: ["streaming"] });
     expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
+  });
+
+  test("a refresh preserves a live active turn omitted by the snapshot cut", async () => {
+    const fake = connectFakeClient();
+    let readCount = 0;
+    const cut = { reached: false };
+    let resolveRefresh: ((response: ThreadReadResponse) => void) | null = null;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) {
+        return readResponse("ref_a", {
+          status: { type: "active" },
+          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+        });
+      }
+      return new Promise<ThreadReadResponse>((resolve) => {
+        resolveRefresh = resolve;
+      });
+    });
+
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+      },
+    });
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["turn_m5", "turn_m6"]);
+
+    const refreshing = threadsStore.getState().refreshThread("ref_a");
+    await flushUntil(() => resolveRefresh !== null);
+    const baselineHydrations = threadsStore.getState().hydrations.get("ref_a") ?? 0;
+    const finishRefresh = resolveRefresh as unknown as (response: ThreadReadResponse) => void;
+    finishRefresh(
+      markResponseCut(
+        readResponse("ref_a", {
+          status: { type: "active" },
+          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+          evener: {
+            ref: "ref_a",
+            capabilities: CAPABILITIES,
+            queue: { revision: 0 },
+            activeTurnId: "turn_m6",
+          },
+        }),
+        cut,
+      ),
+    );
+    await emitAtResponseCut(
+      cut,
+      "ref_a",
+      () => {
+        fake.emitNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thr_ref_a",
+            ref: "ref_a",
+            turnId: "turn_m6",
+            item: {
+              type: "agentMessage",
+              id: "item_assistant_m6",
+              turnId: "turn_m6",
+              text: "skillguard turn complete",
+              status: "completed",
+            },
+          },
+        });
+        fake.emitNotification({
+          method: "turn/completed",
+          params: {
+            threadId: "thr_ref_a",
+            ref: "ref_a",
+            turn: { id: "turn_m6", status: "completed", itemsView: "" },
+          },
+        });
+      },
+      () => (threadsStore.getState().hydrations.get("ref_a") ?? 0) > baselineHydrations,
+    );
+    await refreshing;
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_m5", "turn_m6"]);
+    expect(model?.turns[1]?.items[0]?.text).toBe("skillguard turn complete");
+    expect(model?.turns[1]?.status).toBe("completed");
+    expect(model?.activeTurnId).toBeUndefined();
+  });
+
+  test("a refresh does not preserve a same-numbered turn from a replaced instance", async () => {
+    const fake = connectFakeClient();
+    let readCount = 0;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (readCount === 1) {
+        return readResponse("ref_a", {
+          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+        });
+      }
+      return readResponse("ref_a", {
+        turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+        evener: {
+          ref: "ref_a",
+          instanceId: "replacement-instance",
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+          activeTurnId: "turn_m6",
+        },
+      });
+    });
+
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+      },
+    });
+    await threadsStore.getState().refreshThread("ref_a");
+
+    expect(
+      threadsStore
+        .getState()
+        .threads.get("ref_a")
+        ?.turns.map((turn) => turn.id),
+    ).toEqual(["turn_m5"]);
   });
 
   // The generation is how a mounted consumer notices a WHOLESALE model
@@ -4265,6 +4403,93 @@ describe("useThreadsStore.drainAsSteer", () => {
       input: [],
     });
   });
+
+  // A drain's own thread/queueChanged push names the client mutation ids it
+  // consumed (issue #1704), so the client settles those optimistic turn/queue
+  // records by positive evidence -- never by inferring consumption from
+  // sequence order.
+  test("a queueChanged naming consumed ids settles the matching optimistic queue record", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const inspector = new MutationOutboxIndexedDB();
+    let record: Awaited<ReturnType<typeof inspector.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await inspector.listOptimistic("ref_a");
+    }
+    if (!record) throw new Error("queued record never reached the optimistic store");
+
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: [record.clientMutationId],
+      },
+    });
+
+    let settled = false;
+    for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
+      settled = (await inspector.getOptimistic(record.clientMutationId)) === undefined;
+    }
+    expect(settled).toBe(true);
+    inspector.close();
+  });
+
+  // A malformed consumedClientMutationIds (anything that is not an array of
+  // non-empty strings) must be ignored outright: a string is itself iterable
+  // character-by-character, so an unguarded spread would settle a record
+  // named by coincidence rather than by the daemon. The fixed id below ("a")
+  // is deliberately a substring of the malformed value, so an unguarded
+  // spread of "abc" would wrongly retire it.
+  test("a malformed consumedClientMutationIds on a queueChanged push is ignored, not iterated", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "a" });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    let record: Awaited<ReturnType<typeof storage.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await storage.listOptimistic("ref_a");
+    }
+    if (!record) throw new Error("queued record never reached the optimistic store");
+    expect(record.clientMutationId).toBe("a");
+
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: "abc",
+      },
+    } as unknown as AnyNotification);
+    await settleCallerContinuations();
+
+    expect(await storage.getOptimistic("a")).toBeDefined();
+    storage.close();
+  });
 });
 
 describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {
@@ -4273,7 +4498,7 @@ describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {
     await ensureActiveMutationTarget(fake, "ref_a");
     fake.on("turn/promoteQueuedAsSteer", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
 
-    await threadsStore.getState().promoteQueuedAsSteer("ref_a", 1, "entry_2");
+    await threadsStore.getState().promoteQueuedAsSteer("ref_a", 1, "entry_2", { text: "queued message" });
     await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/promoteQueuedAsSteer"));
 
     const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
@@ -5056,6 +5281,121 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     const persistence = await readMutationPersistence("ref_a");
     expect(persistence.outbox).toHaveLength(1);
     expect(persistence.outbox[0]?.method).toBe("thread/clear");
+  });
+
+  // A canceled row's only exits are explicit Retry and the thread going
+  // away: when the clear lands, the row leaves with the history it belonged
+  // to (docs/design/stop-cancellation-outbox.md §6).
+  test("clearThread removes the ref's canceled rows once the clear lands", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await threadsStore.getState().ensureThread("ref_a");
+    const canceled = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "stopped before sending" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_a");
+
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
+    await threadsStore.getState().clearThread("ref_a");
+
+    await waitFor(async () => {
+      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+    });
+  });
+
+  // RoboRev's detached-promise finding: discardCanceledMutations fires the pin
+  // refresh without awaiting it, and refreshMutationPins reads storage
+  // (listOutbox/listOptimistic) - reads that can reject (a timeout, a
+  // VersionError, a retired connection) after the discard already committed.
+  // The fired promise must stay inside the discard's best-effort envelope
+  // rather than escaping as an unhandled rejection. Reaching the end of this
+  // test instead of the runner failing on an unhandled rejection is the
+  // assertion, the same rule as the credentials retry test.
+  test("a pin-refresh read failing after a successful discard stays best-effort, not an unhandled rejection", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await threadsStore.getState().ensureThread("ref_a");
+    const canceled = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "stopped before sending" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_a");
+
+    // The discard commits; the pin refresh that follows reads storage, and
+    // that read fails. The wrapper only arms the failure after the real
+    // discard resolves and fires it exactly once - clearThread's own awaited
+    // pin refresh that follows must keep the real reads - so the discard
+    // itself stays real and only its fired refresh pays the failure.
+    const realDiscardCanceled = storage.discardCanceled.bind(storage);
+    const realListOptimistic = storage.listOptimistic.bind(storage);
+    storage.discardCanceled = (targetRef: string) =>
+      realDiscardCanceled(targetRef).then((discarded) => {
+        storage.listOptimistic = () => {
+          storage.listOptimistic = realListOptimistic;
+          return Promise.reject(new Error("pin refresh read failed"));
+        };
+        return discarded;
+      });
+
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
+    await threadsStore.getState().clearThread("ref_a");
+
+    await waitFor(async () => {
+      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+    });
+    // Let a would-be unhandled rejection surface: a few real event-loop turns,
+    // each a real storage read the same runtime serves.
+    const probe = new MutationOutboxIndexedDB();
+    for (let round = 0; round < 5; round += 1) await probe.listOutbox("ref_a");
+    probe.close();
+    expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+  });
+
+  // The other half of §6's removal rule: the hub's durable deletion fence is
+  // the moment the ref provably no longer exists, so its canceled rows go too.
+  test("a hub-deleted thread's canceled rows are removed when the deletion fence lands", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient();
+    const canceled = await storage.enqueueIntent({
+      targetRef: "ref_gone",
+      threadId: "thr_ref_gone",
+      method: "turn/queue",
+      payload: { ref: "ref_gone", input: [{ type: "text", text: "stopped before sending" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_gone");
+    fake.on("thread/read", () => {
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+
+    // A deleted ref's ensureThread never settles (its retry loop treats every
+    // rejection as transient); the deletion fence, not the promise, is the
+    // observable outcome.
+    void threadsStore.getState().ensureThread("ref_gone");
+
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
+    });
+    await waitFor(async () => {
+      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+    });
   });
 
   // One representative Conflict-mapping test standing in for every
@@ -6322,6 +6662,121 @@ describe("useThreadsStore.watchThread", () => {
     await watching;
 
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+
+  test("a watched refresh preserves a live active turn omitted by the snapshot cut", async () => {
+    const a = connectFakeClient();
+    a.on("thread/read", () =>
+      readResponse("ref_a", {
+        turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+      }),
+    );
+
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    a.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+      },
+    });
+    const liveWatched = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(liveWatched?.turns.map((turn) => turn.id)).toEqual(["turn_m5", "turn_m6"]);
+
+    const b = new FakeClient("ready");
+    const cut = { reached: false };
+    let resolveRefresh: ((response: ThreadReadResponse) => void) | null = null;
+    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRefresh = resolve)));
+    connectionStore.getState().connect(b);
+    await flushUntil(() => resolveRefresh !== null);
+    const finishRefresh = resolveRefresh as unknown as (response: ThreadReadResponse) => void;
+    finishRefresh(
+      markResponseCut(
+        readResponse("ref_a", {
+          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_m6" },
+        }),
+        cut,
+      ),
+    );
+    await emitAtResponseCut(
+      cut,
+      "ref_a",
+      () => {
+        b.emitNotification({
+          method: "item/completed",
+          params: {
+            threadId: "thr_ref_a",
+            ref: "ref_a",
+            turnId: "turn_m6",
+            item: {
+              type: "agentMessage",
+              id: "item_assistant_m6",
+              turnId: "turn_m6",
+              text: "skillguard watched turn complete",
+              status: "completed",
+            },
+          },
+        });
+        b.emitNotification({
+          method: "turn/completed",
+          params: {
+            threadId: "thr_ref_a",
+            ref: "ref_a",
+            turn: { id: "turn_m6", status: "completed", itemsView: "" },
+          },
+        });
+      },
+      () => threadsStore.getState().watchedThreads.get("ref_a") !== liveWatched,
+    );
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_m5", "turn_m6"]);
+    expect(model?.turns[1]?.items[0]?.text).toBe("skillguard watched turn complete");
+    expect(model?.turns[1]?.status).toBe("completed");
+    expect(model?.activeTurnId).toBeUndefined();
+  });
+
+  test("a watched refresh does not preserve a same-numbered turn from a replaced instance", async () => {
+    const a = connectFakeClient();
+    a.on("thread/read", () =>
+      readResponse("ref_a", {
+        turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+      }),
+    );
+
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    a.emitNotification({
+      method: "turn/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turn: { id: "turn_m6", status: "inProgress", itemsView: "", startedAt: 1000 },
+      },
+    });
+    const liveWatched = threadsStore.getState().watchedThreads.get("ref_a");
+
+    const b = new FakeClient("ready");
+    b.on("thread/read", () =>
+      readResponse("ref_a", {
+        turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+        evener: {
+          ref: "ref_a",
+          instanceId: "replacement-instance",
+          capabilities: CAPABILITIES,
+          queue: { revision: 0 },
+          activeTurnId: "turn_m6",
+        },
+      }),
+    );
+    connectionStore.getState().connect(b);
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a") !== liveWatched);
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.turns.map((turn) => turn.id)).toEqual(["turn_m5"]);
   });
 
   test("restarts a pending initial watched hydrate on a client swap and waits for the new client's model", async () => {
@@ -8579,6 +9034,43 @@ test("saved snapshots retain restart protection for subsequently discovered outb
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
 });
 
+// RoboRev finding on the reduced branch: the refreshThread beforePublish fence
+// is what keeps a stale post-resume hydration from publishing over a newer Stop.
+// Only the fence's ordering was proven before (the FakeClient tests assert a
+// function was passed, never that a throw cancels the read's result). This
+// proves the invariant at the store boundary: a throwing fence rejects the call
+// and leaves the published model, the mutation-authority set and the hydration
+// counter exactly as they were.
+test("a throwing beforePublish cancels a refreshThread publication", async () => {
+  setMutationStorageForTests(new MutationOutboxIndexedDB());
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  const before = threadsStore.getState();
+  const publishedModel = before.threads.get("ref_a");
+  expect(publishedModel?.status.type).toBe("idle");
+  expect(before.mutationAuthorityRefs.has("ref_a")).toBe(true);
+  const hydrations = before.hydrations.get("ref_a");
+  // The pending read would replace the model and drop authority if it published.
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      preview: "replacement",
+      evener: { ref: "ref_a", mutationStateAuthoritative: false, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    }),
+  );
+  const fence = new Error("Stop canceled this pending action");
+  await expect(
+    threadsStore.getState().refreshThread("ref_a", () => {
+      throw fence;
+    }),
+  ).rejects.toBe(fence);
+  const after = threadsStore.getState();
+  expect(after.threads.get("ref_a")).toBe(publishedModel);
+  expect(after.mutationAuthorityRefs.has("ref_a")).toBe(true);
+  expect(after.hydrations.get("ref_a")).toBe(hydrations);
+});
+
 for (const state of ["blockedUnknown", "submitting"] as const) {
   test(`incompatible refresh preserves ${state} until a compatible snapshot arrives`, async () => {
     const storage = new MutationOutboxIndexedDB({ createMutationId: () => "upgrade-pending" });
@@ -9038,8 +9530,24 @@ test.each(["active", "idle"].flatMap((status) => [true, false].map((accepted) =>
   "periodic discovery resumes authority checks for saved $status delegates, accepted=$accepted",
   async ({ status, accepted }) => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    // Per-case private IndexedDB factory, the same pattern this file uses for
+    // its other directly driven storage cases. A fresh factory is its own
+    // in-memory database namespace: this test awaits only the FIRST settle
+    // call, so its reconciliation tail can still be running when the case ends,
+    // and a shared (even uniquely named) database let that tail linger in the
+    // worker's factory. A private factory means the tail cannot write into a
+    // sibling case's records, a rerun cannot inherit a stale `delegate-periodic`
+    // record (whose duplicate `add` would mask the real failure as a
+    // ConstraintError), and no database is left behind in the shared global
+    // factory that the suite's deleteMutationDatabase() never touches.
+    const indexedDB = new IDBFactory();
+    const databaseName = `evener-mutation-outbox-periodic-${status}-${accepted}`;
     try {
-      const storage = new MutationOutboxIndexedDB({ createMutationId: () => "delegate-periodic" });
+      const storage = new MutationOutboxIndexedDB({
+        indexedDB,
+        databaseName,
+        createMutationId: () => "delegate-periodic",
+      });
       const record = await storage.enqueueIntent({
         targetRef: "ref_a",
         method: "turn/queue",
@@ -9253,6 +9761,641 @@ test.each(["accepted", "absent", "unavailable"])(
   },
 );
 
+// RoboRev finding on the reduced branch: a background note save only verifies
+// that the blocked row it retries is a note, but the targeted resync it drives
+// (handleReady) schedules dispatch for the WHOLE target - so saving a note in
+// the background could submit unrelated pending mutations for the same session
+// as a side effect. The background path must not dispatch at all; the durable
+// outbox's own lifecycle scan owns resending the note.
+test("a background note save does not dispatch an unrelated pending mutation", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB();
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+    let sends = 0;
+    fake.on("turn/queue", () => {
+      sends += 1;
+      throw new RequestTimeoutError("response lost");
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // An unrelated pending send for the same target, left submitting by the
+    // first dispatch's lost response.
+    await threadsStore.getState().queue("ref_a", "unrelated queued work");
+    await flushIndexedDBUntil(() => sends === 1);
+    expect(sends).toBe(1);
+    // The blocked note the background save is retrying.
+    const note = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "notes/human/set",
+      payload: { ref: "ref_a", note: "draft", expectedInstanceId: "thr_ref_a" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.markUnknown(note.clientMutationId, "blockedUnknown");
+    expect(await retryBlockedMutation(note.clientMutationId, "backgroundNote")).toBe(true);
+    // The save's resync is fully awaited above; this drains anything it may
+    // have scheduled. The unrelated record must still be unsent...
+    await flushIndexedDBUntil(() => sends >= 2);
+    expect(sends).toBe(1);
+    // ...and that assertion is not vacuous: the record is still submitting (a
+    // lost response leaves it dispatchable - mutationDispatcher's bare "stop"),
+    // so the outbox's own periodic discovery scan resends it the moment its
+    // interval is advanced. The same drain proving the resend here is what
+    // would have proven a dispatch the save armed, had it armed one.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => sends >= 2);
+    expect(sends).toBe(2);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// #1716: the background path fences its own dispatch, but the authoritative
+// read it drives (handleReady -> refreshTrackedThread) still reconciled the
+// WHOLE target: restoreProvenAbsent reopened every blockedUnknown row for the
+// ref that the fresh read did not name, so saving a note in the background
+// returned an unrelated blocked chat mutation to submitting, where the
+// outbox's next lifecycle scan would dispatch it. A background retry may
+// reopen only the record it carries.
+test("a background note save does not reopen an unrelated blocked record for the same target", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB();
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // Drain the initial hydration's own reconciliation so the only reopen left
+    // to observe belongs to the note retry below.
+    await threadsStore.getState().refreshThread("ref_a");
+    // An unrelated mutation for the same target, left delivery-uncertain by a
+    // lost response.
+    const unrelated = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a", input: [{ type: "text", text: "unrelated" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "unrelated" }] },
+    });
+    await storage.markAttempted(unrelated.clientMutationId);
+    await storage.markUnknown(unrelated.clientMutationId, "blockedUnknown");
+    // The blocked note the background save retries.
+    const note = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "notes/human/set",
+      payload: { ref: "ref_a", note: "draft", expectedInstanceId: "thr_ref_a" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.markAttempted(note.clientMutationId);
+    await storage.markUnknown(note.clientMutationId, "blockedUnknown");
+
+    expect(await retryBlockedMutation(note.clientMutationId, "backgroundNote")).toBe(true);
+
+    // The reconciliation ran and reopened the note it was asked to retry...
+    expect((await storage.getOutbox(note.clientMutationId))?.state).toBe("submitting");
+    // ...but the unrelated blocked row for the same target is untouched.
+    expect((await storage.getOutbox(unrelated.clientMutationId))?.state).toBe("blockedUnknown");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// RoboRev finding on the reduced branch: refreshThread's beforePublish fence is
+// checked before publication, but the dispatch it schedules at its tail was
+// unconditional. reconcileIdentities is held open here so the Stop lands after
+// that fence has already passed; the dispatch must recheck it (as handleReady's
+// targeted tail does at the scheduling point) rather than run after a Stop.
+test("a Stop during refreshThread's reconciliation is not overtaken by its dispatch", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "refresh-stop" });
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  let sends = 0;
+  fake.on("turn/start", (params) => {
+    sends += 1;
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  // Drain the initial hydration's own reconciliation before arming the gate, so
+  // the held call is unambiguously the refreshed read's.
+  await threadsStore.getState().refreshThread("ref_a");
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+  });
+  const release = deferred<void>();
+  let reconciliationStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    reconciliationStarted = resolve;
+  });
+  const reconcile = MutationDispatcher.prototype.reconcileIdentities;
+  const spy = vi.spyOn(MutationDispatcher.prototype, "reconcileIdentities").mockImplementation(async function (
+    this: MutationDispatcher,
+    ...args
+  ) {
+    reconciliationStarted();
+    await release.promise;
+    return reconcile.apply(this, args);
+  });
+  try {
+    const fence = resumeStopFence("ref_a");
+    const refresh = threadsStore.getState().refreshThread("ref_a", fence);
+    await started;
+    // The Stop lands while the refreshed read's reconciliation is in flight,
+    // after its beforePublish fence has already been evaluated once.
+    await threadsStore.getState().shutdown("ref_a");
+    release.resolve();
+    await expect(refresh).rejects.toThrow("Stop canceled this pending action");
+    await flushIndexedDBUntil(() => sends >= 1);
+    expect(sends).toBe(0);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+// RoboRev Medium on d7a264d4 (PR 1393): the beforePublish recheck that rejects
+// a Stop-overtaken refreshThread runs only after the refresh has already
+// banked what it earned on the way - publication opened the ref's dispatch
+// gate, and reconciliation cleared the recovery-blocked obligation the stopped
+// snapshot had armed. The rejection left both banked, so the outbox's own later
+// discovery scan dispatched the queued mutation anyway, on the strength of a
+// refresh the Stop had just canceled. The fence must unwind what it canceled:
+// the gate closes and the obligation re-arms before the rejection.
+test("a later discovery cannot dispatch what a Stop-canceled refresh earned", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "refresh-stop-discovery" });
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    // The stopped session the recovery UX opens on: recovery-blocked until a
+    // resume proves otherwise - and stopped again once the Stop below lands.
+    let status = "restartRequired";
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+    fake.on("thread/shutdown", () => ({}));
+    let sends = 0;
+    fake.on("turn/start", (params) => {
+      sends += 1;
+      return {
+        receipt: mutationReceipt(params.clientMutationId),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // Drain the stopped snapshot's own reconciliation before arming anything,
+    // so the held call below is unambiguously the resumed read's.
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    // A message queued while the session was recovery-blocked, never attempted.
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+    });
+    // The resume: a fresh authoritative snapshot whose reconciliation is the
+    // window the Stop lands in.
+    status = "idle";
+    const release = deferred<void>();
+    let reconciliationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      reconciliationStarted = resolve;
+    });
+    const reconcile = MutationDispatcher.prototype.reconcileIdentities;
+    const spy = vi.spyOn(MutationDispatcher.prototype, "reconcileIdentities").mockImplementation(async function (
+      this: MutationDispatcher,
+      ...args
+    ) {
+      reconciliationStarted();
+      await release.promise;
+      return reconcile.apply(this, args);
+    });
+    try {
+      const fence = resumeStopFence("ref_a");
+      const refresh = threadsStore.getState().refreshThread("ref_a", fence);
+      await started;
+      // The Stop lands while the resume's reconciliation is in flight, and the
+      // stopped daemon's fresh reads are recovery-blocked again.
+      await threadsStore.getState().shutdown("ref_a");
+      status = "restartRequired";
+      release.resolve();
+      await expect(refresh).rejects.toThrow("Stop canceled this pending action");
+      // Publication itself was not undone - the finding's premise - so the
+      // canceled refresh's earned dispatchability is all there is to unwind.
+      expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+      // The outbox's own later discovery scan must not dispatch the queued
+      // mutation on the strength of the canceled refresh.
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushIndexedDBUntil(() => sends >= 1);
+      expect(sends).toBe(0);
+      // The recovery-blocked obligation the canceled refresh's reconciliation
+      // cleared is restored: Retry stays fenced until a fresh snapshot proves
+      // recovery again.
+      expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// RoboRev Medium on PR 1393 (b04a358): 33605e1a2 unwound a Stop-canceled
+// refresh at refreshThread's tail recheck, but a Stop that lands while the
+// refreshed read is still in flight cancels at refreshTrackedThread's
+// PRE-publication fence instead. That throw rejects the hydration before
+// publication - refreshTrackedThread re-reports it, refreshThread's await
+// rejects, and the tail recheck the cleanup is attached to is never reached.
+// The dispatch gate the resume banked (the enqueue's replay gate, or an
+// earlier refresh's publication) and the recovery obligation its proven
+// snapshot cleared both stay standing, and the outbox's own later discovery
+// scan dispatches the queued mutation despite the acknowledged Stop. The
+// pre-publication evaluation must unwind the canceled refresh too.
+test("a later discovery cannot dispatch what a Stop during a refresh's pre-publication left banked", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "refresh-stop-prepublication" });
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    // The stopped session the recovery UX opens on: recovery-blocked until a
+    // resume proves otherwise - and stopped again once the Stop below lands.
+    let status = "restartRequired";
+    // The one-shot read hold: the refresh under test parks its thread/read on
+    // `holdRead`, so the Stop below lands in that refresh's pre-publication
+    // window; every later read (the scan's resync among them) answers live.
+    let holdRead: Promise<void> | undefined;
+    let heldReadArrived!: () => void;
+    const readArrived = new Promise<void>((resolve) => {
+      heldReadArrived = resolve;
+    });
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", { status: { type: status } });
+      const hold = holdRead;
+      holdRead = undefined;
+      if (!hold) return response;
+      heldReadArrived();
+      return hold.then(() => response);
+    });
+    fake.on("thread/shutdown", () => ({}));
+    let sends = 0;
+    fake.on("turn/start", (params) => {
+      sends += 1;
+      return {
+        receipt: mutationReceipt(params.clientMutationId),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // Drain the stopped snapshot's own reconciliation before arming anything.
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    // A message queued while the session was recovery-blocked, never attempted.
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+    });
+    // The resume's proven snapshot: its publication opens the replay gate and
+    // its reconciliation clears the obligation - recovery banked, exactly
+    // what a later Stop must unwind again.
+    status = "idle";
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
+    expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+    // One more refresh, and its read hangs: the Stop lands before that
+    // refresh ever publishes.
+    const release = deferred<void>();
+    holdRead = release.promise;
+    const fence = resumeStopFence("ref_a");
+    const refresh = threadsStore.getState().refreshThread("ref_a", fence);
+    await readArrived;
+    // The Stop lands while the refreshed read is in flight, and the stopped
+    // daemon's fresh reads are recovery-blocked again.
+    await threadsStore.getState().shutdown("ref_a");
+    status = "restartRequired";
+    release.resolve();
+    await expect(refresh).rejects.toThrow("Stop canceled this pending action");
+    // Publication itself never happened - the fence canceled it first - so
+    // the canceled refresh must still unwind what recovery banked before it.
+    expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("idle");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    // The outbox's own later discovery scan must not dispatch the queued
+    // mutation on the strength of the state the Stop left banked.
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => sends >= 1);
+    expect(sends).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// RoboRev Medium (PR 1393 fresh review, 0708b9b): both of a Stop-canceled
+// refresh's unwind evaluations ran unconditionally, so a SUPERSEDED refresh's
+// stale fence could clobber a newer resume's success. The old refresh's held
+// read resolves late; its pre-Stop baseline still throws at the
+// pre-publication evaluation; and the unconditional unwind then re-armed the
+// restart-blocking obligation and closed the dispatch gate that the NEWER
+// refresh - the one that began after the Stop, published a fresh snapshot, and
+// reconciled - had just earned. The unwind must be owned by currency: only
+// the ref's newest tracked-hydration attempt may unwind, because only it can
+// still speak for the state a Stop would cancel. A superseded refresh banked
+// nothing itself (publishThreadHydration refuses it), and the newer attempt
+// owns the ref's convergence from fresh state.
+test("a superseded refresh's stale Stop fence cannot unwind a newer resume's state", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "superseded-unwind" });
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    // The stopped session the recovery UX opens on: recovery-blocked until a
+    // resume proves otherwise.
+    let status = "restartRequired";
+    // The one-shot read hold: the refresh under test parks its thread/read on
+    // `holdRead`, so the Stop and the newer resume below land inside that
+    // refresh's pre-publication window; every later read answers live.
+    let holdRead: Promise<void> | undefined;
+    let heldReadArrived!: () => void;
+    const readArrived = new Promise<void>((resolve) => {
+      heldReadArrived = resolve;
+    });
+    fake.on("thread/read", () => {
+      const response = readResponse("ref_a", { status: { type: status } });
+      const hold = holdRead;
+      holdRead = undefined;
+      if (!hold) return response;
+      heldReadArrived();
+      return hold.then(() => response);
+    });
+    fake.on("thread/shutdown", () => ({}));
+    let sends = 0;
+    fake.on("turn/start", (params) => {
+      sends += 1;
+      return {
+        receipt: mutationReceipt(params.clientMutationId),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // Drain the stopped snapshot's own reconciliation before arming anything.
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    // A message queued while the session was recovery-blocked, never attempted.
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+    });
+    // The refresh under test: fenced with a PRE-Stop baseline, its read held.
+    const release = deferred<void>();
+    holdRead = release.promise;
+    const fence = resumeStopFence("ref_a");
+    const refresh = threadsStore.getState().refreshThread("ref_a", fence);
+    await readArrived;
+    // The Stop lands while the held read is still in flight.
+    await threadsStore.getState().shutdown("ref_a");
+    // The newer resume: a fresh fenced refresh captured AFTER the Stop. It
+    // supersedes the held read and proves recovery from a fresh snapshot -
+    // its publication opens the gate and its reconciliation clears the
+    // obligation.
+    status = "idle";
+    const resumeFence = resumeStopFence("ref_a");
+    const resumed = threadsStore.getState().refreshThread("ref_a", resumeFence);
+    await resumed;
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
+    // The held read releases late: its PRE-Stop fence still throws, and the
+    // rejection is still its caller's honest cancellation - but the superseded
+    // refresh must not unwind the newer resume's banked state.
+    release.resolve();
+    await expect(refresh).rejects.toThrow("Stop canceled this pending action");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
+    // The newer resume's dispatchability stands. The shutdown durably canceled
+    // the pre-Stop probe row (the stacked stop-cancellation semantics), so the
+    // proof the gate is open is the design's own release path: an explicit
+    // Retry after the resume dispatches it.
+    expect((await storage.getOutbox("superseded-unwind"))?.state).toBe("canceled");
+    expect(await retryBlockedMutation("superseded-unwind", "user")).toBe(true);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => sends >= 1);
+    expect(sends).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// The same currency rule at the SECOND unwind site - refreshThread's tail
+// recheck: a refresh can publish and still be overtaken before its tail runs
+// (its reconciliation is the window), and a newer refresh that published after
+// the Stop must not have its state re-armed over by the older refresh's tail
+// cancellation. The older refresh's reconciliation clear is legitimately
+// canceled by the acknowledged Stop, but the OBLIGATION re-arm closes the
+// newer refresh's reconciliation out (its captured obligation symbol no
+// longer matches), leaving the resumed session fenced with no fresh proof
+// pending - the clobber, reached from the tail instead of the pre-publication
+// evaluation.
+test("a refresh overtaken before its tail recheck cannot unwind the newer resume's state", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "overtaken-tail-unwind" });
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    // The stopped session the recovery UX opens on: recovery-blocked until a
+    // resume proves otherwise - and stopped again once the Stop below lands.
+    let status = "restartRequired";
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: status } }));
+    fake.on("thread/shutdown", () => ({}));
+    let sends = 0;
+    fake.on("turn/start", (params) => {
+      sends += 1;
+      return {
+        receipt: mutationReceipt(params.clientMutationId),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // Drain the stopped snapshot's own reconciliation before arming anything.
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    // A message queued while the session was recovery-blocked, never attempted.
+    await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+    });
+    // The resume's proven snapshot: the refresh under test publishes it, and
+    // its held reconciliation is the window where the Stop and the newer
+    // refresh both land.
+    status = "idle";
+    const release = deferred<void>();
+    let reconciliationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      reconciliationStarted = resolve;
+    });
+    const reconcile = MutationDispatcher.prototype.reconcileIdentities;
+    const spy = vi.spyOn(MutationDispatcher.prototype, "reconcileIdentities").mockImplementation(async function (
+      this: MutationDispatcher,
+      ...args
+    ) {
+      reconciliationStarted();
+      await release.promise;
+      return reconcile.apply(this, args);
+    });
+    try {
+      const fence = resumeStopFence("ref_a");
+      const refresh = threadsStore.getState().refreshThread("ref_a", fence);
+      await started;
+      // The Stop lands while the resume-proving refresh's reconciliation is
+      // in flight.
+      await threadsStore.getState().shutdown("ref_a");
+      // The newer resume: a fresh fenced refresh captured after the Stop. Its
+      // own read answers live and it PUBLISHES during the held reconciliation
+      // (its reconciliation chains behind the held one); its publication is
+      // the store's per-ref hydration counter advancing.
+      const published = (threadsStore.getState().hydrations.get("ref_a") ?? 0) + 1;
+      const resumeFence = resumeStopFence("ref_a");
+      const resumed = threadsStore.getState().refreshThread("ref_a", resumeFence);
+      await vi.waitFor(() => expect(threadsStore.getState().hydrations.get("ref_a") ?? 0).toBe(published));
+      // The held reconciliation completes; the overtaken refresh's tail
+      // recheck then finds the acknowledged Stop and throws - its rejection
+      // is its caller's honest cancellation, but it must not unwind the newer
+      // resume's state.
+      release.resolve();
+      await expect(refresh).rejects.toThrow("Stop canceled this pending action");
+      await resumed;
+      expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
+      // The newer resume's dispatchability stands. The shutdown durably
+      // canceled the pre-Stop probe row (the stacked stop-cancellation
+      // semantics), so the proof the gate is open is the design's own release
+      // path: an explicit Retry after the resume dispatches it.
+      expect((await storage.getOutbox("overtaken-tail-unwind"))?.state).toBe("canceled");
+      expect(await retryBlockedMutation("overtaken-tail-unwind", "user")).toBe(true);
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushIndexedDBUntil(() => sends >= 1);
+      expect(sends).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// RoboRev Medium on fee4eb8 (PR 1393): pruning a ref's Stop generation on
+// release could make a fence miss a REAL Stop in one interleaving - the
+// baseline sees the absent entry as 0, the Stop records a nonzero sequence
+// value, release deletes the entry, and the fence reads absent-as-0 again,
+// equal to its own baseline. Stop generations now persist for the page
+// session, so the Stop a fence was captured before still reads as a landed
+// Stop after any release.
+test("a fence captured before a Stop still fires after the ref is released", async () => {
+  setMutationStorageForTests(new MutationOutboxIndexedDB());
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  // Captured before any Stop: the ref's absent entry reads as 0.
+  const fence = resumeStopFence("ref_a");
+  const baseline = resumeStopBaseline();
+  await threadsStore.getState().shutdown("ref_a");
+  threadsStore.getState().releaseThread("ref_a");
+  expect(fence).toThrow("Stop canceled this pending action");
+  expect(() => baseline("ref_a")).toThrow("Stop canceled this pending action");
+  expect(() => baseline()).toThrow("Stop canceled this pending action");
+});
+
+// Stop generations persist for the page session. Retention makes release
+// truthful where pruning could only be conservative: a fence captured AFTER
+// a Stop reads the retained generation as exactly its own baseline - no NEW
+// Stop - and stays quiet across a bare release, because release is not a
+// Stop. The page-wide sequence still never reissues a value, so a Stop
+// landing after a re-ensure fires every fence captured before it. (This
+// restructures the pruning test added with the sequence: that test pinned
+// prune-as-reset, which fired post-Stop fences on release precisely because
+// deletion destroyed the information retention now keeps.)
+test("releasing a ref retains its Stop generation across release and re-ensure", async () => {
+  setMutationStorageForTests(new MutationOutboxIndexedDB());
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await threadsStore.getState().shutdown("ref_a");
+  // Captured after the Stop: quiet before AND after a bare release - the
+  // retained value is exactly the captured baseline.
+  const settledFence = resumeStopFence("ref_a");
+  const settledBaseline = resumeStopBaseline();
+  threadsStore.getState().releaseThread("ref_a");
+  settledFence();
+  settledBaseline("ref_a");
+  settledBaseline();
+  // A fence captured before a SECOND Stop still fires: retention never
+  // recycles the first Stop's value, and the sequence never reissues it.
+  const staleFence = resumeStopFence("ref_a");
+  const staleBaseline = resumeStopBaseline();
+  await threadsStore.getState().ensureThread("ref_a");
+  await threadsStore.getState().shutdown("ref_a");
+  expect(staleFence).toThrow("Stop canceled this pending action");
+  expect(() => staleBaseline("ref_a")).toThrow("Stop canceled this pending action");
+  threadsStore.getState().releaseThread("ref_a");
+});
+
+// The no-ref form of the baseline is the beforeRequest fence: the resume RPC's
+// reconnect window ends before the resumed identity is knowable, so the check
+// cannot name a ref and instead fires on ANY Stop acknowledged since the
+// snapshot. Values only grow (the page-wide sequence), so an increased entry
+// is exactly a landed Stop; a released ref's retained entry compares equal to
+// its snapshot, which is correct - release is not a Stop.
+test("the global resume Stop baseline fires on any ref's Stop and on nothing else", async () => {
+  setMutationStorageForTests(new MutationOutboxIndexedDB());
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await threadsStore.getState().ensureThread("ref_b");
+  const baseline = resumeStopBaseline();
+  // Nothing moved: quiet.
+  baseline();
+  // A Stop against ANY ref - not just the one a fence could name - fires it.
+  await threadsStore.getState().shutdown("ref_b");
+  expect(() => baseline()).toThrow("Stop canceled this pending action");
+  // A baseline taken after that Stop is quiet again, and a bare release of an
+  // already-stopped ref does not move it.
+  const settled = resumeStopBaseline();
+  threadsStore.getState().releaseThread("ref_b");
+  settled();
+  threadsStore.getState().releaseThread("ref_a");
+});
+
 test("persistent journal failures wait for periodic recovery between attempts", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {
@@ -9373,6 +10516,96 @@ test("clear response fences goal responses from the previous instance", async ()
   await threadsStore.getState().setGoal("ref_a", "new objective");
   expect(threadsStore.getState().threads.get("ref_a")?.goal?.objective).toBe("new objective");
   expect(threadsStore.getState().watchedThreads.get("ref_a")?.goal?.objective).toBe("new objective");
+});
+
+// RoboRev Medium (PR 1393 fresh review, b04a358): the local recovery fence was
+// enforced only by the surfaces that render their own refusal - Composer's
+// availabilityFor and QueueStrip's press handlers, both of which check above
+// the store's send action. The alternate send paths call threadsStore.send
+// directly - the palette's slash fallthrough and the ask dock's batch send
+// pass text alone, a failed turn's Retry passes text with attachments - and
+// each could enqueue a durable turn/start for a fenced local session: intent
+// the hub's recovery admission refuses for the obligation's whole window, so
+// it could only park until an explicit Resume clears the fence. The store's
+// shared admission must refuse exactly as those surfaces do.
+test("a recovery-fenced local session's send refuses at admission for every caller's shape", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "send-fence" });
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  // A Stop in flight arms the fence while the snapshot still reads idle -
+  // the window the liveControls predicate exists for. QueueStrip.test seeds
+  // this same obligation directly.
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set("local:session", Symbol()),
+  }));
+  await expect(threadsStore.getState().send("local:session", "/plain text")).rejects.toThrow(
+    "Send isn't available until this session is resumed",
+  );
+  await expect(
+    threadsStore
+      .getState()
+      .send("local:session", "retry text", [{ marker: 1, mediaType: "image/png", data: "AQID", name: "first.png" }]),
+  ).rejects.toThrow("Send isn't available until this session is resumed");
+  expect(await storage.listOutbox("local:session")).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// RoboRev Medium (PR 1393 fresh review, 0708b9b): 91764c32d6 fenced only the
+// send action at its own admission, so every OTHER durable action still
+// funneled an obligation-blocked local session's intent straight into the
+// outbox: steer, queue, drainAsSteer, promoteQueuedAsSteer, cancelQueued,
+// clearThread and setHumanNote each parked a mutation the hub's recovery
+// admission refuses for the obligation's whole window (sessionActionRecoveryError
+// is reached by every one of those methods' handlers - withDeletionTargetOwnership
+// for the turn verbs and thread/clear, relayWithResume's durable leg for
+// notes/human/set), to deliver or fail only after an explicit Resume. The fence
+// must read the obligation at enqueueMutationIntent - the one funnel every
+// durable action passes through - and refuse exactly the verbs the hub refuses,
+// so no caller shape can park what the fence exists to keep unparked.
+// turn/interrupt is the deliberate exemption: Stop is how the fenced window
+// ends, the Stop button is never disabled by the fence, and the typed
+// /interrupt agrees with the button (commands.ts's own carve-out), so
+// interrupt still enqueues and settles after Resume.
+test("a recovery-fenced local session's non-send durable admissions refuse at the shared funnel", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "shared-fence" });
+  setMutationStorageForTests(storage);
+  const fake = connectMutationClient();
+  const ref = "local:session";
+  await threadsStore.getState().ensureThread(ref);
+  // A Stop in flight arms the fence while the snapshot still reads idle -
+  // the window the liveControls predicate exists for (same seeding as the
+  // send-fence test above).
+  threadsStore.setState((state) => ({
+    restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+  }));
+  await expect(threadsStore.getState().steer(ref, "steer text")).rejects.toThrow(
+    "Steer isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().queue(ref, "queued text")).rejects.toThrow(
+    "Queue isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().drainAsSteer(ref, "drain text")).rejects.toThrow(
+    "Drain isn't available until this session is resumed",
+  );
+  await expect(
+    threadsStore.getState().promoteQueuedAsSteer(ref, 0, "entry_1", { text: "queued text" }),
+  ).rejects.toThrow("Queue actions aren't available until this session is resumed");
+  await expect(threadsStore.getState().cancelQueued(ref, 0, "entry_1")).rejects.toThrow(
+    "Queue actions aren't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().clearThread(ref)).rejects.toThrow(
+    "Clear isn't available until this session is resumed",
+  );
+  await expect(threadsStore.getState().setHumanNote(ref, "note text")).rejects.toThrow(
+    "Notes aren't available until this session is resumed",
+  );
+  // turn/interrupt is the exemption: Stop stays pressable through the fence,
+  // so its admission still enqueues. The dispatcher keeps refusing the
+  // obligation, so nothing reaches the wire.
+  await threadsStore.getState().interrupt(ref);
+  const outbox = await storage.listOutbox(ref);
+  expect(outbox.map((record) => record.method)).toEqual(["turn/interrupt"]);
+  expect(fake.calls.filter((call) => call.method === "turn/interrupt")).toEqual([]);
 });
 
 test("force stop uses the independent recovery API and fences uncertain outcomes", async () => {
@@ -9509,4 +10742,1627 @@ test("a healthy authoritative refresh releases the fence after refused force sto
   await refresh.mock.results[0]?.value;
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
   expect(fake.calls.some((call) => call.method === "thread/resume")).toBe(false);
+});
+
+test("a stale client's ready callback cannot begin a generation for a replaced client", async () => {
+  const stale = new FakeClient("connecting");
+  const current = new FakeClient("ready");
+  current.on("thread/read", () => readResponse("ref_test"));
+  const staleReady = vi.spyOn(stale, "onReady");
+  connectionStore.getState().connect(stale);
+  connectionStore.setState({
+    features: { ...(await stale.connect()).features },
+  });
+  // The callback the module registered on `stale`, captured before it ever
+  // fires - `stale` is still mid-handshake, so nothing has begun yet.
+  const staleReadyCallback = staleReady.mock.calls[0]?.[0];
+  expect(staleReadyCallback).toBeDefined();
+
+  connectionStore.getState().connect(current);
+  connectionStore.setState({
+    features: { ...(await current.connect()).features },
+  });
+  // Seed the current store with a tracked ref so handleReady would refresh it
+  // if the stale callback somehow did trigger.
+  await threadsStore.getState().ensureThread("ref_test");
+  // Verify there's at least one tracked ref: if the stale callback ran its body,
+  // it would clear this set to empty via setState({ mutationAuthorityRefs: new Set() }).
+  expect(threadsStore.getState().threads.has("ref_test")).toBe(true);
+  expect(threadsStore.getState().mutationAuthorityRefs.size).toBeGreaterThan(0);
+  const authorityRefsSizeBeforeStale = threadsStore.getState().mutationAuthorityRefs.size;
+
+  // The race this fixes: `stale`'s own dispatch can snapshot its ready
+  // handlers before rewireClient's unsubscribe removes this one, so it
+  // still runs - after `current` is already the wired client. Without the
+  // guard, the stale callback would run its body: readyEpoch += 1,
+  // setState({ mutationAuthorityRefs: new Set() }), then call
+  // handleReady(stale, epoch).
+  staleReadyCallback?.(await stale.connect());
+
+  // The stale callback must not have run its body. If it had, mutationAuthorityRefs
+  // would have been cleared to empty via setState({ mutationAuthorityRefs: new Set() })
+  // in its first statement after incrementing readyEpoch.
+  expect(threadsStore.getState().mutationAuthorityRefs.size).toBe(authorityRefsSizeBeforeStale);
+});
+
+// docs/design/stop-cancellation-outbox.md: the user's click is the cancel
+// moment, recorded durably on the outbox rows themselves.
+describe("Stop cancellation as durable outbox state", () => {
+  // §9.1: the UI's real Stop path is the cancellation path.
+  test("interrupt durably cancels the ref's pending rows and a later discovery scan does not resend them", async () => {
+    // Fake the outbox's interval so the only scans are the ones this test
+    // drives explicitly; flushIndexedDBUntil still works (it awaits real
+    // IndexedDB operations, never timers).
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const storage = new MutationOutboxIndexedDB();
+    try {
+      setMutationStorageForTests(storage);
+      const fake = connectMutationClient();
+      await ensureActiveMutationTarget(fake, "ref_a");
+      // A queued send still waiting in the outbox: never attempted.
+      const queued = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thr_ref_a",
+        method: "turn/queue",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "queued behind the stop" }] },
+        attachments: [],
+        optimisticDisplay: null,
+      });
+      let queuedSends = 0;
+      fake.on("turn/queue", (params) => {
+        queuedSends += 1;
+        return { receipt: mutationReceipt(params.clientMutationId) };
+      });
+      fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+      await threadsStore.getState().interrupt("ref_a");
+
+      // The interrupt dispatches (its own record settles, leaving only the
+      // canceled row) even though the canceled row sorts ahead of it.
+      await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
+      expect(fake.calls.some((call) => call.method === "turn/interrupt")).toBe(true);
+      expect((await storage.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+      await flushIndexedDBUntil(() => false);
+      expect((await storage.listOutbox("ref_a")).map((record) => record.method)).toEqual(["turn/queue"]);
+      expect(queuedSends).toBe(0);
+
+      // A later discovery scan finds the ref (the canceled row still pins it)
+      // but cannot resend it.
+      let notified = false;
+      const unsubscribe = subscribeMutationPersistence(() => {
+        notified = true;
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(2000);
+        await flushIndexedDBUntil(() => notified);
+        expect(notified).toBe(true);
+        await flushIndexedDBUntil(() => queuedSends > 0);
+        expect(queuedSends).toBe(0);
+        expect((await storage.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // §9.5: the cancellation write is the cancel moment, so its failure aborts
+  // the stop before the daemon is touched, and the stop stays retryable.
+  test("forceStop aborts before touching the daemon when the cancellation write fails", async () => {
+    let failWrites = true;
+    const storage = new MutationOutboxIndexedDB({
+      beforeCommit(operation) {
+        if (failWrites && operation === "cancelUnattempted") throw new Error("storage unavailable");
+      },
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient();
+    const forceStopRpc = vi.spyOn(fake, "forceStop").mockResolvedValue(undefined);
+
+    await expect(threadsStore.getState().forceStop("ref_a")).rejects.toThrow("storage unavailable");
+    expect(forceStopRpc).not.toHaveBeenCalled();
+
+    failWrites = false;
+    await threadsStore.getState().forceStop("ref_a");
+    expect(forceStopRpc).toHaveBeenCalledWith("ref_a");
+  });
+
+  test("shutdown aborts before touching the daemon when the cancellation write fails", async () => {
+    let failWrites = true;
+    const storage = new MutationOutboxIndexedDB({
+      beforeCommit(operation) {
+        if (failWrites && operation === "cancelUnattempted") throw new Error("storage unavailable");
+      },
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient();
+    fake.on("thread/shutdown", () => ({}));
+
+    await expect(threadsStore.getState().shutdown("ref_a")).rejects.toThrow("storage unavailable");
+    expect(fake.calls.some((call) => call.method === "thread/shutdown")).toBe(false);
+
+    failWrites = false;
+    await threadsStore.getState().shutdown("ref_a");
+    expect(fake.calls.some((call) => call.method === "thread/shutdown")).toBe(true);
+  });
+
+  // §4's boundary: with no mutation store at all (IndexedDB unavailable to
+  // this tab) there are no durable rows a resurrection hazard could come
+  // from, so write-first has nothing to protect and the stop proceeds.
+  test("forceStop and shutdown proceed when no mutation store exists", async () => {
+    const indexedDB = globalThis.indexedDB;
+    vi.stubGlobal("indexedDB", undefined);
+    try {
+      const fake = connectFakeClient();
+      const forceStopRpc = vi.spyOn(fake, "forceStop").mockResolvedValue(undefined);
+      fake.on("thread/shutdown", () => ({}));
+
+      await threadsStore.getState().forceStop("ref_a");
+      expect(forceStopRpc).toHaveBeenCalledWith("ref_a");
+      await threadsStore.getState().shutdown("ref_a");
+      expect(fake.calls.some((call) => call.method === "thread/shutdown")).toBe(true);
+    } finally {
+      vi.stubGlobal("indexedDB", indexedDB);
+    }
+  });
+
+  // §9.7: only an explicit user Retry releases a canceled row.
+  test("an explicit Retry releases a canceled row and dispatches it", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const queued = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "stopped, then retried" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_a");
+    let queuedSends = 0;
+    fake.on("turn/queue", (params) => {
+      queuedSends += 1;
+      return { receipt: mutationReceipt(params.clientMutationId) };
+    });
+
+    expect(await retryBlockedMutation(queued.clientMutationId)).toBe(true);
+
+    await flushIndexedDBUntil(() => queuedSends > 0);
+    expect(queuedSends).toBe(1);
+    // The receipt settled the retried row: nothing is left canceled.
+    await flushIndexedDBUntil(() => false);
+    expect(await storage.getOutbox(queued.clientMutationId)).toBeUndefined();
+  });
+
+  test("a background retry never releases a canceled row", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const queued = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "still stopped" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_a");
+
+    expect(await retryBlockedMutation(queued.clientMutationId, "backgroundNote")).toBe(false);
+
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+    expect((await storage.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+  });
+});
+
+// docs/design/stop-cancellation-outbox.md §9 items 2-4: the durability
+// integrations only a full store can express. Units 1-3 pinned the storage
+// transitions, the Stop paths, and the dispatcher's race guards in isolation;
+// these run the real threads store end to end over rows a real Stop canceled -
+// across a reload (fresh runtime, fresh connection, same durable database),
+// across a second connection to that database, and across an explicit Resume
+// followed by the explicit Retry that is a canceled row's only release.
+//
+// §9 item 8 (clear/delete removal) is already pinned store-level above
+// ("clearThread removes the ref's canceled rows once the clear lands" and the
+// deletion-fence test beside it), so it is not re-run here.
+describe("Stop cancellation durability across reload, tabs, and resume", () => {
+  // §9 item 9: every wait in this battery fails loudly when its condition never
+  // arrives. flushIndexedDBUntil above ends silently at its turn bound and
+  // relies on the caller's next expect to notice; that is not enough for waits
+  // whose negative is the point (a resend that must never happen), so this
+  // variant names what failed to arrive.
+  async function flushUntilArrived(what: string, arrived: () => boolean | Promise<boolean>, maxTurns = 60) {
+    const probe = new MutationOutboxIndexedDB();
+    try {
+      for (let turn = 0; turn < maxTurns && !(await arrived()); turn += 1) await probe.listTargetRefs();
+    } finally {
+      probe.close();
+    }
+    if (!(await arrived())) throw new Error(`never arrived after ${maxTurns} IndexedDB turns: ${what}`);
+  }
+
+  function queueIntent(text: string) {
+    return {
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: null,
+    };
+  }
+
+  // §9 item 2 - the §2 reload hazard, end to end. The old mechanism kept the
+  // cancellation fact in per-tab memory, and a reload's hydration is the one
+  // moment restoreProvenAbsent reopens rows, armed with an empty in-memory
+  // cancel set: the exact resurrection window. The durable state must survive
+  // the reload itself - a fresh runtime, a fresh connection, the same
+  // database - and a hydration that re-arms dispatch without sending a single
+  // canceled row.
+  test("a reload rehydrates and re-arms dispatch without resurrecting or resending canceled rows", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const before = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(before);
+      const firstClient = connectMutationClient();
+      await ensureActiveMutationTarget(firstClient, "ref_a");
+      const queued = await before.enqueueIntent(queueIntent("queued when the stop landed"));
+      const blocked = await before.enqueueIntent(queueIntent("blocked when the stop landed"));
+      await before.markUnknown(blocked.clientMutationId, "blockedUnknown");
+      firstClient.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+      firstClient.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+      await threadsStore.getState().interrupt("ref_a");
+      await flushUntilArrived("tab A's interrupt to dispatch", () =>
+        firstClient.calls.some((call) => call.method === "turn/interrupt"),
+      );
+      expect(firstClient.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+      expect((await before.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+      expect((await before.getOutbox(blocked.clientMutationId))?.state).toBe("canceled");
+
+      // The reload: the page's entire in-memory fact set is gone - runtime,
+      // store state, connection - while the durable rows survive it untouched.
+      before.close();
+      resetThreadsStoreForTests();
+      connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+      const after = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(after);
+      const reloadedClient = connectMutationClient();
+      reloadedClient.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+      await ensureActiveMutationTarget(reloadedClient, "ref_a");
+
+      // The fresh connection reads the same durable rows, and the hydration's
+      // reconciliation - the one reopen path - left them canceled.
+      expect((await after.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+      expect((await after.getOutbox(blocked.clientMutationId))?.state).toBe("canceled");
+      expect(reloadedClient.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+
+      // A discovery scan - the reload's re-armed dispatchability is exactly
+      // what it sees now - still sends nothing.
+      let scanNotified = false;
+      const unsubscribe = subscribeMutationPersistence(() => {
+        scanNotified = true;
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(2000);
+        await flushUntilArrived("the post-reload discovery scan to run", () => scanNotified);
+        expect(reloadedClient.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+      } finally {
+        unsubscribe();
+      }
+
+      // Liveness control, so "nothing dispatched" cannot be vacuous: the
+      // reloaded store still sends NEW work over the same armed machinery,
+      // proving the ref is dispatchable and the canceled rows specifically
+      // are what it holds back.
+      await threadsStore.getState().queue("ref_a", "sent after the reload");
+      await flushUntilArrived("the post-reload send to dispatch", () =>
+        reloadedClient.calls.some((call) => call.method === "turn/queue"),
+      );
+      expect(
+        reloadedClient.calls
+          .filter((call) => call.method === "turn/queue")
+          .map((call) => (call.params as { input?: { text?: string }[] }).input?.[0]?.text),
+      ).toEqual(["sent after the reload"]);
+      expect((await after.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+      expect((await after.getOutbox(blocked.clientMutationId))?.state).toBe("canceled");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // §9 item 3: two connections over one database. Tab A is the live store
+  // holding the Stop; tab B is a second MutationOutboxIndexedDB connection
+  // making exactly the reads its own hydration and discovery would make
+  // against the shared rows - including while tab A's interrupt is still on
+  // the wire, the interleave the old in-memory set survived only by
+  // transaction-ordering luck.
+  test("a second connection over the same database cannot resurrect tab A's canceled rows", async () => {
+    const tabA = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(tabA);
+    const clientA = connectMutationClient();
+    await ensureActiveMutationTarget(clientA, "ref_a");
+    const queued = await tabA.enqueueIntent(queueIntent("queued in tab A"));
+    const blocked = await tabA.enqueueIntent(queueIntent("blocked in tab A"));
+    await tabA.markUnknown(blocked.clientMutationId, "blockedUnknown");
+    let queuedSends = 0;
+    clientA.on("turn/queue", (params) => {
+      queuedSends += 1;
+      return { receipt: mutationReceipt(params.clientMutationId) };
+    });
+    // Hold the interrupt's RPC on the wire: the Stop is already durably
+    // canceled (the click committed), tab A's dispatch of the interrupt is
+    // parked, and tab B wakes and runs its scan in that window.
+    let releaseInterrupt!: () => void;
+    let interruptOnWire = false;
+    clientA.on("turn/interrupt", (params) => {
+      interruptOnWire = true;
+      return new Promise((resolve) => {
+        releaseInterrupt = () => resolve({ receipt: mutationReceipt(params.clientMutationId) });
+      });
+    });
+
+    await threadsStore.getState().interrupt("ref_a");
+    await flushUntilArrived("tab A's interrupt to reach the wire", () => interruptOnWire);
+
+    const tabB = new MutationOutboxIndexedDB();
+    try {
+      // Tab B's scan reads the shared rows: the two the Stop canceled stay
+      // canceled, and the interrupt itself is the one record still live.
+      expect((await tabB.listOutbox("ref_a")).map((record) => record.state)).toEqual([
+        "canceled",
+        "canceled",
+        "submitting",
+      ]);
+      // Tab B's reconciliation - the hydration's reopen path, run with none of
+      // tab A's memory - reopens nothing.
+      expect(await tabB.restoreProvenAbsent("ref_a", new Set())).toEqual([]);
+      expect((await tabB.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+      expect((await tabB.getOutbox(blocked.clientMutationId))?.state).toBe("canceled");
+      // Tab B's dispatch pick is the still-in-flight interrupt record - the
+      // FIFO head it honestly owes the daemon - and never a canceled row.
+      expect((await tabB.nextDispatchable("ref_a"))?.method).toBe("turn/interrupt");
+    } finally {
+      tabB.close();
+    }
+
+    // Tab A's interrupt settles, and its own store-level reconciliation over
+    // the same shared rows (the wakeup's targeted resync) cannot resurrect
+    // them either.
+    releaseInterrupt();
+    await flushUntilArrived("the interrupt record to settle out of the outbox", async () =>
+      (await tabA.listOutbox("ref_a")).every((record) => record.method !== "turn/interrupt"),
+    );
+    await threadsStore.getState().refreshThread("ref_a");
+    expect((await tabA.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+    expect((await tabA.getOutbox(blocked.clientMutationId))?.state).toBe("canceled");
+    expect(queuedSends).toBe(0);
+
+    // Liveness: tab A's store still sends new work through the shared outbox.
+    await threadsStore.getState().queue("ref_a", "tab A sends after the stop");
+    await flushUntilArrived("tab A's new send to dispatch", () => queuedSends === 1);
+    expect((await tabA.getOutbox(queued.clientMutationId))?.state).toBe("canceled");
+    expect((await tabA.getOutbox(blocked.clientMutationId))?.state).toBe("canceled");
+  });
+
+  // An enqueue clicked before the Stop but whose durable write had not yet
+  // been issued when the stop's cancel transaction committed - a cold tab's
+  // connection still opening, its runtime still starting, while a warm tab's
+  // Stop lands - is the one interleave IndexedDB's transaction ordering cannot
+  // fence: the engine's FIFO puts that write AFTER the cancel scan, so the row
+  // would commit "submitting" and dispatch into the session the user just
+  // stopped. The durable stop-epoch barrier (§4) closes it: the enqueue
+  // captures the ref's stop epoch at click time, and a Stop landing in
+  // between makes the row commit born-"canceled" - still announced for the
+  // canceled queue strip, never dispatched. The seam wrapper below only
+  // delays the adapter's real write; the write that lands is the real one.
+  test("an in-flight enqueue whose write lands after the stop's cancel commits canceled, never dispatched", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    const realEnqueueIntent = storage.enqueueIntent.bind(storage);
+    const writeReached = deferred<void>();
+    const writeRelease = deferred<void>();
+    storage.enqueueIntent = (...args: Parameters<typeof realEnqueueIntent>) => {
+      writeReached.resolve();
+      return writeRelease.promise.then(() => realEnqueueIntent(...args));
+    };
+
+    // The send is clicked and in flight; its write waits at the seam.
+    const send = threadsStore.getState().queue("ref_a", "clicked before the stop");
+    await writeReached.promise;
+    // The Stop's cancel commits while the send's write is still in flight.
+    await threadsStore.getState().interrupt("ref_a");
+    // The send's write finally issues - after the cancel, the finding's order.
+    writeRelease.resolve();
+    await send;
+
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/interrupt"));
+    await flushIndexedDBUntil(() => false);
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+    const queued = (await storage.listOutbox("ref_a")).find((record) => record.method === "turn/queue");
+    expect(queued?.state).toBe("canceled");
+  });
+
+  // RoboRev PR #1873 medium, the fresh review's stop-epoch capture race: the
+  // capture was requested after `await runtime.start`, so on a connection that
+  // is still opening at the click — the finding's cold tab — everything else
+  // could take the queue position first: a warm tab's Stop committed during the
+  // opening wait, the capture read the POST-Stop epoch, the comparison passed
+  // equal, and the row committed "submitting" into the session the user just
+  // stopped. The capture's read transaction must be REQUESTED at true click
+  // time — inside the click's own synchronous prefix, before any startup wait
+  // in the enqueue chain — so the engine's creation-order queue puts the
+  // capture ahead of every write the click precedes, and the Stop that commits
+  // during this tab's connection setup leaves its bump where the enqueue's own
+  // comparison reads it.
+  test("an enqueue whose click requests the capture first fences a Stop committed during its connection setup", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    // The other tab: a second real connection to the same durable database —
+    // no store of ours, exactly a warm sibling whose Stop is a real write.
+    const tabA = new MutationOutboxIndexedDB();
+
+    // The cold tab: THIS store's connection is closed at the click, so the
+    // capture read must reopen it before it can run — the finding's opening
+    // wait, however long the engine takes to satisfy it.
+    storage.close();
+
+    // The click. queue()'s synchronous prefix must request the capture read —
+    // and with it the reopen — before yielding to the event loop.
+    const send = threadsStore.getState().queue("ref_a", "clicked before the stop");
+    // The warm tab's Stop commits while the cold tab's connection is still
+    // opening, before the barrier read resolves. No yield precedes it: this
+    // is exactly the queue position the click-time request has to own.
+    await tabA.enqueueInterruptAndCancel({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    await send;
+
+    // The Stop's own cancel scan committed before the row existed, so the
+    // epoch barrier is the only fence that can still catch it — and must:
+    // the capture was requested at the click, the Stop's bump landed after
+    // it, and the enqueue's own comparison reads the bumped epoch.
+    const queued = (await storage.listOutbox("ref_a")).find((record) => record.method === "turn/queue");
+    expect(queued?.state).toBe("canceled");
+    // Born-canceled rows never dispatch: the send clicked before the Stop
+    // must not reach the daemon after it.
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+  });
+
+  // §4's honest boundary, the verdict's minimum test: a Stop whose durable
+  // write is CREATED before the capture read's transaction can exist — a cold
+  // tab whose connection is still opening at the Stop's click, or an engine
+  // whose cross-connection scheduling puts a concurrent Stop's write ahead of
+  // a capture requested in the same instant — commits before the barrier read
+  // resolves, and the capture then reads the POST-Stop epoch. The comparison
+  // passes equal and the row commits "submitting": the barrier cannot fence
+  // it, because the database holds no record of the click and a cold tab holds
+  // no connection to read one with. No client-side mechanism closes this
+  // window; §4 bounds it (the click requests the capture, so every Stop
+  // created after that request is fenced), and this test pins the residual's
+  // shape — the row goes live and dispatches, indistinguishable in the
+  // database from §9 item 10's deliberate post-Stop send, which must send.
+  // A future change that claims to close this window must update §4 first,
+  // and this pin is what forces that reckoning.
+  test("the residual window: a Stop committed before the capture read's transaction exists refreshes the baseline invisibly", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    // The other tab's Stop, as a real write on a second real connection.
+    const tabA = new MutationOutboxIndexedDB();
+    const stopCommitted = tabA.enqueueInterruptAndCancel({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+
+    // The capture read held at the seam until the Stop has committed — the
+    // cold-open order: the read that lands is the real one, its transaction
+    // simply cannot exist before the Stop's write does.
+    const realReadStopEpoch = storage.readStopEpoch.bind(storage);
+    storage.readStopEpoch = async (targetRef: string) => {
+      await stopCommitted;
+      return realReadStopEpoch(targetRef);
+    };
+
+    await threadsStore.getState().queue("ref_a", "clicked before the stop");
+
+    // The residual: the capture read the post-Stop epoch, the comparison
+    // passed equal, and the row committed "submitting".
+    const queued = (await storage.listOutbox("ref_a")).find((record) => record.method === "turn/queue");
+    expect(queued?.state).toBe("submitting");
+    // ... and it dispatches — the one resurrection shape the barrier cannot
+    // close, bounded to the window above and pinned here.
+    await flushUntilArrived("the residual's send to dispatch", () =>
+      fake.calls.some((call) => call.method === "turn/queue"),
+    );
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  });
+
+  // RoboRev PR #1873 Low, the fresh review: the click-time capture was
+  // awaited OUTSIDE the try whose catch disarms the ref when the durable
+  // enqueue fails, so a capture that rejects - a stalled read's
+  // MutationStorageTimeoutError, a VersionError from a versionchange, a
+  // retired connection - aborted the submission AND left the ref armed in
+  // dispatchableMutationRefs with no durable row behind it. A later
+  // discovery pass that names the ref then ran its dispatch work anyway,
+  // for a ref with nothing of its own to dispatch. The failed capture must
+  // be treated exactly like the failed enqueue it precedes: disarmed on the
+  // way out.
+  test("a rejecting stop-epoch capture aborts the submission without leaving the ref's dispatch bookkeeping armed", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      const fake = connectMutationClient();
+      await ensureActiveMutationTarget(fake, "ref_a");
+      fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+      // The ref's one durable row is terminal: a canceled row keeps the ref
+      // in listTargetRefs - so a later discovery pass names it - while
+      // nextDispatchable provably has nothing to give. Exactly the ref whose
+      // stale arm would cost a dispatch pass's work for nothing.
+      const seeded = await storage.enqueueIntent(queueIntent("canceled before the failed click"));
+      await storage.cancelUnattempted("ref_a");
+      expect((await storage.getOutbox(seeded.clientMutationId))?.state).toBe("canceled");
+
+      // The capture fails the way a stalled or retired connection does.
+      storage.readStopEpoch = async () => {
+        throw new MutationStorageTimeoutError();
+      };
+
+      // The submission aborts and leaves nothing durable behind.
+      await expect(threadsStore.getState().queue("ref_a", "past a stalled capture")).rejects.toThrow(
+        MutationStorageTimeoutError,
+      );
+      expect((await storage.listOutbox("ref_a")).filter((record) => record.state === "submitting")).toEqual([]);
+
+      // A later discovery pass names the ref (its canceled row). What the
+      // pass must NOT do is dispatch work for it: the failed click armed
+      // nothing. scheduleMutationDispatch filters refs through the armed
+      // bookkeeping and calls the dispatcher synchronously within the pass,
+      // right after the persistence notification - so once the pass has
+      // named the ref, the dispatcher either was or was not asked, with no
+      // further settling in between.
+      let discoveredRefA = false;
+      const unsubscribed = subscribeMutationPersistence((refs) => {
+        if (refs.includes("ref_a")) discoveredRefA = true;
+      });
+      const dispatchTargets = vi.spyOn(MutationDispatcher.prototype, "dispatchTargets");
+      try {
+        await vi.advanceTimersByTimeAsync(2000);
+        await flushUntilArrived("the discovery pass to name the ref", () => discoveredRefA);
+        expect(dispatchTargets.mock.calls.some(([refs]) => Array.from(refs).includes("ref_a"))).toBe(false);
+        // And nothing reached the wire for the ref's dead row either.
+        expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+      } finally {
+        dispatchTargets.mockRestore();
+        unsubscribed();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // RoboRev PR #1873 medium, the fresh review's Retry-path gap: the stop-epoch
+  // barrier was captured and compared only on the enqueue path.
+  // retryBlockedMutation reads the row as canceled and then releases it with
+  // no capture of its own, so a Stop in another tab committing between that
+  // read and the release is silently defeated: its cancel scan skips the row
+  // (isCancelableByStop excludes "canceled"), the release resurrects it to
+  // "submitting", and the dispatch tail sends the message the second Stop
+  // meant to cancel. The release now carries §4's click-time capture - the
+  // row and the ref's stop epoch read in ONE transaction requested in the
+  // click's synchronous prefix, the enqueue barrier's own rule - and a Stop
+  // landing between the capture and the release refuses it: a newer Stop
+  // outranks an earlier Retry, commit-order, the same comparison the enqueue
+  // barrier carries.
+  test("a Retry whose release lands after another tab's Stop stays canceled and never dispatches", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const canceled = await storage.enqueueIntent(queueIntent("canceled by the first stop"));
+    await storage.cancelUnattempted("ref_a");
+    expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    // The release seam: the retry has read the row and passed its press-time
+    // checks; its release write waits at the seam. The write that lands is
+    // the real one.
+    const realReleaseCanceled = storage.releaseCanceled.bind(storage);
+    const releaseReached = deferred<void>();
+    const releaseGate = deferred<void>();
+    storage.releaseCanceled = (...args: Parameters<typeof realReleaseCanceled>) => {
+      releaseReached.resolve();
+      return releaseGate.promise.then(() => realReleaseCanceled(...args));
+    };
+
+    // The user's Retry click.
+    const retry = retryBlockedMutation(canceled.clientMutationId);
+    await releaseReached.promise;
+
+    // The second tab's Stop commits between the retry's read and its release:
+    // its cancel scan skips the already-canceled row - exactly the finding's
+    // premise - and its epoch bump is the one trace the release must catch.
+    const tabB = new MutationOutboxIndexedDB();
+    try {
+      const interrupt = await tabB.enqueueInterruptAndCancel({
+        targetRef: "ref_a",
+        method: "turn/interrupt",
+        payload: { ref: "ref_a" },
+        attachments: [],
+        optimisticDisplay: { method: "turn/interrupt" },
+      });
+      expect((await tabB.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+
+      // The release finally issues - after the Stop, the finding's order. A
+      // newer Stop outranks the earlier Retry: the release refuses, the
+      // retry reports the press-time refusal, and the row stays canceled for
+      // the Stop that claimed it.
+      releaseGate.resolve();
+      expect(await retry).toBe(false);
+      expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+      // Nothing re-cancels it, so the dispatch machinery is the only thing
+      // that could resurrect it: the FIFO head is the second Stop's own
+      // interrupt, never the row the Retry tried to release.
+      await flushIndexedDBUntil(() => false);
+      expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+      expect((await storage.nextDispatchable("ref_a"))?.clientMutationId).toBe(interrupt.clientMutationId);
+    } finally {
+      tabB.close();
+    }
+
+    // Liveness control, so the refusal is the barrier and not a broken
+    // retry: a Retry pressed AFTER the newer Stop - its capture reads the
+    // post-Stop epoch - is §9 item 7's deliberate post-Stop send, and it
+    // must still release and dispatch.
+    expect(await retryBlockedMutation(canceled.clientMutationId)).toBe(true);
+    await flushUntilArrived("the deliberate post-Stop retry to dispatch", () =>
+      fake.calls.some((call) => call.method === "turn/queue"),
+    );
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
+  });
+
+  // The same finding's cold-connection shape, the capture-race fix's own rule
+  // (the enqueue barrier's d8eec70232 lesson): the capture is a read, and a
+  // read must wait for the tab's own connection. A Retry clicked while this
+  // tab's connection is closed must REQUEST the capture read inside the
+  // click's synchronous prefix - the request itself issues the reopen - so
+  // the capture is the first transaction the reopened connection creates and
+  // a warm tab's Stop committed during that opening wait lands its bump
+  // where the release's comparison reads it. A capture requested after any
+  // startup wait instead reads the POST-Stop epoch, the comparison passes
+  // equal, and the release resurrects the row into the session the other
+  // tab just stopped.
+  test("a Retry whose click requests the capture first fences a Stop committed during its connection setup", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const canceled = await storage.enqueueIntent(queueIntent("canceled by the first stop"));
+    await storage.cancelUnattempted("ref_a");
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    // The other tab: a second real connection to the same durable database —
+    // no store of ours, exactly a warm sibling whose Stop is a real write.
+    const tabB = new MutationOutboxIndexedDB();
+
+    // The cold tab: THIS store's connection is closed at the click, so the
+    // capture read must reopen it before it can run — the finding's opening
+    // wait, however long the engine takes to satisfy it.
+    storage.close();
+
+    // The click. retryBlockedMutation's synchronous prefix must request the
+    // capture read — and with it the reopen — before yielding to the event
+    // loop.
+    const retry = retryBlockedMutation(canceled.clientMutationId);
+    // The warm tab's Stop commits while the cold tab's connection is still
+    // opening, before the capture read resolves. No yield precedes it: this
+    // is exactly the queue position the click-time request has to own.
+    await tabB.enqueueInterruptAndCancel({
+      targetRef: "ref_a",
+      method: "turn/interrupt",
+      payload: { ref: "ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "turn/interrupt" },
+    });
+    expect(await retry).toBe(false);
+    // The Stop's own cancel scan skipped the canceled row, so the epoch
+    // barrier is the only fence that can still catch it — and must.
+    expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+    tabB.close();
+  });
+
+  // RoboRev PR #1873 low, the fresh review: cancelUnattemptedMutations
+  // suppressed its persistence notification when its own write canceled
+  // nothing, but zero is exactly what this tab observes when a sibling tab's
+  // Stop already canceled the rows — and the raw storage write announces
+  // nothing over the BroadcastChannel either — so this tab's cached
+  // projection and pins stayed on the pre-cancel view until the next
+  // discovery scan refreshed them. Every successful cancel write must
+  // notify, zero included, the same rule the discard paths carry.
+  test("a stop whose rows a sibling tab already canceled still refreshes this tab's projection", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      const fake = connectMutationClient();
+      await ensureActiveMutationTarget(fake, "ref_a");
+      const queued = await storage.enqueueIntent(queueIntent("canceled by the sibling tab"));
+      fake.on("thread/shutdown", () => ({}));
+
+      // The sibling tab's Stop already canceled the row, so this tab's own
+      // cancel write will observe zero — the finding's precondition.
+      const sibling = new MutationOutboxIndexedDB();
+      const siblingCanceled = await sibling.cancelUnattempted("ref_a");
+      sibling.close();
+      expect(siblingCanceled).toEqual([queued.clientMutationId]);
+
+      // Fake timers pin the discovery interval: no scan may be what
+      // refreshes the projection, so the notify under test is the only
+      // thing that can fire here. The flush first drains every discovery
+      // the setup armed, so the baseline below is honest.
+      await flushIndexedDBUntil(() => false);
+      let notified = false;
+      const unsubscribe = subscribeMutationPersistence((refs) => {
+        if (refs.includes("ref_a")) notified = true;
+      });
+      try {
+        expect(notified).toBe(false);
+        await threadsStore.getState().shutdown("ref_a");
+        await flushUntilArrived("the zero-cancel stop to refresh this tab's projection", () => notified);
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // §9 item 4: a canceled row must not ride a Resume back out. The stopped
+  // session's recovery flow - Force stop, the recovery obligation it leaves,
+  // the explicit Resume that clears it - all run between the cancellation and
+  // the row's only release, an explicit user Retry.
+  test("an explicit Resume reconciles without resending, and Retry only then dispatches", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const stopped = await storage.enqueueIntent(queueIntent("stopped by the force stop"));
+    let queuedSends = 0;
+    fake.on("turn/queue", (params) => {
+      queuedSends += 1;
+      return { receipt: mutationReceipt(params.clientMutationId) };
+    });
+    fake.on("evener/thread/forceStop", () => ({}));
+
+    // The user's Force stop: write-first cancellation, then the RPC, then the
+    // recovery obligation a stopped session carries.
+    await threadsStore.getState().forceStop("ref_a");
+    expect(queuedSends).toBe(0);
+    expect((await storage.getOutbox(stopped.clientMutationId))?.state).toBe("canceled");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+
+    // The pane's re-read after the stop lands the stopped snapshot, which
+    // keeps the obligation in place - and Retry stays refused while it holds.
+    fake.on("thread/read", (params) =>
+      readResponse(params.ref ?? "ref_a", {
+        status: { type: "restartRequired" },
+        evener: {
+          ref: params.ref ?? "ref_a",
+          capabilities: CAPABILITIES,
+          resumeRequired: true,
+          mutationStateAuthoritative: false,
+          queue: { revision: 0 },
+        },
+      }),
+    );
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(true);
+    expect(await retryBlockedMutation(stopped.clientMutationId)).toBe(false);
+
+    // Explicit Resume, exactly the Session pane's own flow: baseline the Stop
+    // generations, resume, then refresh the resumed identity so the store's
+    // reconciliation publishes the live snapshot.
+    fake.on("thread/resume", () => readResponse("ref_a", { status: { type: "idle" } }));
+    fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { status: { type: "idle" } }));
+    const stopBaseline = resumeStopBaseline();
+    const { thread } = await fake.resumeThread("ref_a", { beforeRequest: stopBaseline });
+    const refreshedRef = thread.evener.ref;
+    await threadsStore.getState().refreshThread(refreshedRef, () => stopBaseline(refreshedRef));
+
+    // The resume's reconciliation published the live, authoritative snapshot -
+    // obligation cleared, ref re-armed by its still-canceled row - and resent
+    // nothing.
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
+    expect(queuedSends).toBe(0);
+    expect((await storage.getOutbox(stopped.clientMutationId))?.state).toBe("canceled");
+
+    // Retry after Resume is the one release: it dispatches, and the receipt
+    // settles the row out of the outbox.
+    expect(await retryBlockedMutation(stopped.clientMutationId)).toBe(true);
+    await flushUntilArrived("the retried send to dispatch", () => queuedSends === 1);
+    await flushUntilArrived(
+      "the retried row to settle out of the outbox",
+      async () => (await storage.getOutbox(stopped.clientMutationId)) === undefined,
+    );
+    expect(queuedSends).toBe(1);
+  });
+
+  // RoboRev PR #1873 medium: a canceled note row's only exits were an explicit
+  // user Retry (the note editor never offers one - its retry branch is gated
+  // on blockedUnknown) and the thread going away. The user's next blur-save IS
+  // the retry: when that newer notes/human/set commits, the canceled row it
+  // supersedes must leave the outbox with it, or it pins the ref (with its
+  // note text in durable storage) until the thread is cleared or deleted.
+  test("a newer committed note save discards the canceled note row it supersedes", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const canceled = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "notes/human/set",
+      payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a", note: "stopped before saving" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    await threadsStore.getState().interrupt("ref_a");
+    await flushUntilArrived(
+      "the Stop's cancellation to land",
+      async () => (await storage.getOutbox(canceled.clientMutationId))?.state === "canceled",
+    );
+
+    // The note editor's next save after the Stop: a fresh intent for the same
+    // note, exactly what blurHumanNote enqueues (its blockedUnknown-gated
+    // retry branch cannot release a canceled row).
+    fake.on("notes/human/set", (params) => ({
+      note: params.note ?? "",
+      receipt: mutationReceipt(params.clientMutationId),
+    }));
+    await threadsStore.getState().setHumanNote("ref_a", "saved after the stop");
+
+    // The newer save commits and takes the superseded canceled row with it:
+    // the ref no longer carries any note row at all.
+    await flushUntilArrived("the canceled note row to leave with the newer save's commit", async () =>
+      (await storage.listOutbox("ref_a")).every((record) => record.method !== "notes/human/set"),
+    );
+    expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
+  });
+
+  // RoboRev PR #1873 medium, the press half: a clear's discard of canceled
+  // rows is best-effort (a storage failure keeps them visible for exactly
+  // this moment), so the press itself must refuse what the discard could not
+  // remove. A row whose enqueue-time instance the clear already replaced has
+  // no honest release: the daemon would fence the stale send, and releasing it
+  // lets it dispatch against a thread the user just cleared.
+  test("Retry refuses a row whose instance a clear already replaced, even when the clear-time discard failed", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      // The design's own best-effort boundary, staged at the commit seam: the
+      // clear's discard write fails, so the canceled row stays durable past
+      // the clear (stop-cancellation-outbox §6).
+      beforeCommit: (operation) => {
+        if (operation === "discardCanceled") throw new Error("discard commit failed");
+      },
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const canceled = await storage.enqueueIntent(queueIntent("canceled before the clear"));
+    await storage.cancelUnattempted("ref_a");
+
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [], id: "thr_cleared" })));
+    await threadsStore.getState().clearThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.threadId).toBe("thr_cleared");
+
+    // The press the finding stages: the cleared thread is published, the
+    // canceled row is still durable, and the user hits Retry. It must refuse.
+    expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+    expect(await retryBlockedMutation(canceled.clientMutationId)).toBe(false);
+    expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+  });
+
+  // RoboRev PR #1873 medium, the fresh review's instance identity mismatch,
+  // the Retry half: the press-time instance check compared the row's
+  // threadId with the press model's threadId, so a replacement that rotated
+  // the instance while retaining the thread id passed it — and Retry
+  // released and sent a mutation whose expectedInstanceId names an instance
+  // the daemon already fenced away. The press must compare the same fused
+  // identity the fence uses: the row's enqueue-time instance against the
+  // press model's.
+  test("Retry refuses a row whose instance a replacement rotated under the same thread id", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      // The design's own best-effort boundary, staged at the commit seam:
+      // the publication-driven discard of the rotated-away instance's rows
+      // fails, so the canceled row stays durable past the replacement — and
+      // the press itself must refuse what the discard could not remove.
+      beforeCommit: (operation) => {
+        if (operation === "discardCanceled") throw new Error("discard commit failed");
+      },
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+
+    const canceled = await storage.enqueueIntent({
+      ...queueIntent("canceled before the replacement"),
+      instanceId: "thr_ref_a",
+    });
+    await threadsStore.getState().interrupt("ref_a");
+    await flushUntilArrived(
+      "the Stop to cancel the queued row",
+      async () => (await storage.getOutbox(canceled.clientMutationId))?.state === "canceled",
+    );
+
+    // The replacement publishes: same thread id, rotated instance.
+    fake.on("thread/read", (params) =>
+      readResponse(params.ref ?? "ref_a", {
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, instanceId: "cleared-instance", queue: { revision: 0 } },
+      }),
+    );
+    await threadsStore.getState().refreshThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.threadId).toBe("thr_ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.instanceId).toBe("cleared-instance");
+
+    // The press: the discard could not remove the row, and it belongs to the
+    // rotated-away instance, so Retry must refuse — the daemon would fence
+    // the stale send anyway.
+    expect(await retryBlockedMutation(canceled.clientMutationId)).toBe(false);
+    expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+  });
+
+  // The same finding's persistence half: cleanup and Retry can only compare
+  // the identity the durable row carries, so every store-enqueued intent
+  // must persist its enqueue-time instance next to the thread id it already
+  // carried — the raw model instance, fused with the threadId at comparison
+  // time exactly the way expectedInstanceId is.
+  test("a store-enqueued intent persists its enqueue-time instance identity", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    // A send the daemon never answers keeps the row durable to be read.
+    fake.on("turn/queue", () => new Promise(() => {}));
+
+    await threadsStore.getState().queue("ref_a", "sent under thr_ref_a");
+
+    const queued = (await storage.listOutbox("ref_a")).find((record) => record.method === "turn/queue");
+    expect(queued).toMatchObject({ threadId: "thr_ref_a", instanceId: "thr_ref_a" });
+    storage.close();
+  });
+
+  // RoboRev PR #1873 medium, the ordering half: the cleared model must not
+  // publish while the ref's canceled rows are still durable. Publish first and
+  // every reader of the published state - a Retry press, a discovery scan -
+  // faces a thread that claims to be cleared but still holds live canceled
+  // rows in storage.
+  test("the cleared model publishes only after the clear's canceled-row discard commits", async () => {
+    const events: string[] = [];
+    const storage = new MutationOutboxIndexedDB({
+      beforeCommit: (operation) => {
+        if (operation === "discardCanceled") events.push("discard-committed");
+      },
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await storage.enqueueIntent(queueIntent("canceled before the clear"));
+    await storage.cancelUnattempted("ref_a");
+
+    const unsubscribe = threadsStore.subscribe((state) => {
+      if (state.threads.get("ref_a")?.threadId === "thr_cleared") events.push("cleared-published");
+    });
+    try {
+      fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [], id: "thr_cleared" })));
+      await threadsStore.getState().clearThread("ref_a");
+    } finally {
+      unsubscribe();
+    }
+
+    // The discard reached its commit boundary before the cleared model first
+    // published, never after. (The store's clear path publishes through two
+    // setStates, so "cleared-published" can legitimately appear more than
+    // once; the ordering is the assertion.)
+    expect(events.indexOf("discard-committed")).toBeGreaterThan(-1);
+    expect(events.indexOf("discard-committed")).toBeLessThan(events.indexOf("cleared-published"));
+  });
+
+  // RoboRev PR #1873 medium: §6's removal was tied to the LOCAL clear response
+  // (applyClearResponse), so a clear settled by ANOTHER tab - whose response
+  // and best-effort removal never reach this store - left this tab's canceled
+  // rows attached to the cleared thread, still offering Retry. The model
+  // transition every tab observes on its own (the daemon's resync push, this
+  // tab's re-read) is the authoritative signal - the BroadcastChannel wakeup
+  // is a timing hint, never an authority - so the removal rides it, scoped to
+  // the instance the transition provably replaced.
+  test("a clear settled by another tab is still removed when this tab observes the replacement instance", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = `cross-tab-clear-${crypto.randomUUID()}`;
+    const tabB = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(tabB);
+    const clientB = connectMutationClient();
+    await ensureActiveMutationTarget(clientB, "ref_a");
+
+    // The Stop residue: a canceled row enqueued against the live instance,
+    // canceled through the store's real Stop path (which also mints the
+    // mutation runtime this tab's observation needs).
+    const canceled = await tabB.enqueueIntent(queueIntent("canceled before the clear"));
+    clientB.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    await threadsStore.getState().interrupt("ref_a");
+    await flushUntilArrived(
+      "the Stop to cancel the queued row",
+      async () => (await tabB.getOutbox(canceled.clientMutationId))?.state === "canceled",
+    );
+
+    // Another tab: a second storage connection and dispatcher - the package's
+    // own shape, no threads store of ours - dispatches and settles a
+    // thread/clear over the same durable database. Its response never reaches
+    // this tab's store, and this staging wires none of its own §6 cleanup, so
+    // only the OBSERVING tab's transition can remove the row.
+    const tabA = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const clientA = new FakeClient("ready");
+    clientA.on("thread/clear", (params) =>
+      clearResponse(params, testThread("ref_a", { turns: [], id: "thr_cleared" })),
+    );
+    const dispatcherA = new MutationDispatcher(tabA, { getClient: () => clientA });
+    await tabA.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "thread/clear",
+      payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "thread/clear" },
+    });
+    await dispatcherA.dispatchTargets(["ref_a"]);
+    expect(clientA.calls.some((call) => call.method === "thread/clear")).toBe(true);
+
+    // This tab observes the clear the way every subscribed tab does: the
+    // daemon's resync push lands, this tab re-reads, and the replacement
+    // instance publishes over the one the canceled row belonged to.
+    clientB.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_cleared" }));
+    act(() => {
+      clientB.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
+    });
+
+    // The observation drove the removal: the superseded instance's canceled
+    // row left with it, in this tab.
+    await flushUntilArrived(
+      "the observing tab to discard the superseded instance's canceled row",
+      async () => (await tabB.getOutbox(canceled.clientMutationId)) === undefined,
+    );
+    tabA.close();
+  });
+
+  // RoboRev PR #1873 medium, the fresh review's instance identity mismatch,
+  // the cross-tab-removal half: §6's removal detected the replaced instance
+  // by comparing threadId, but the fencing identity is `instanceId ??
+  // threadId` (the expectedInstanceId every payload carries), so a
+  // replacement that rotated the instance while retaining the thread id was
+  // invisible to it — the superseded instance's canceled rows stayed
+  // attached, still offering Retry, until the thread went away. The
+  // detection and the row matching must both compare the fused identity.
+  test("an instance rotated under the same thread id still removes the superseded instance's canceled rows", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = `cross-tab-instance-${crypto.randomUUID()}`;
+    const tabB = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(tabB);
+    const clientB = connectMutationClient();
+    await ensureActiveMutationTarget(clientB, "ref_a");
+
+    // The Stop residue: a canceled row carrying the enqueue-time instance
+    // identity this tab's model presented (the fixture's instanceId equals
+    // its thread id).
+    const canceled = await tabB.enqueueIntent({ ...queueIntent("canceled before the clear"), instanceId: "thr_ref_a" });
+    clientB.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    await threadsStore.getState().interrupt("ref_a");
+    await flushUntilArrived(
+      "the Stop to cancel the queued row",
+      async () => (await tabB.getOutbox(canceled.clientMutationId))?.state === "canceled",
+    );
+
+    // Another tab settles a thread/clear that rotates the instance while
+    // RETAINING the thread id — the exact shape threadId-only detection
+    // cannot see.
+    const tabA = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const clientA = new FakeClient("ready");
+    clientA.on("thread/clear", (params) =>
+      clearResponse(
+        params,
+        testThread("ref_a", {
+          turns: [],
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, instanceId: "cleared-instance", queue: { revision: 0 } },
+        }),
+      ),
+    );
+    const dispatcherA = new MutationDispatcher(tabA, { getClient: () => clientA });
+    await tabA.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "thread/clear",
+      payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "thread/clear" },
+    });
+    await dispatcherA.dispatchTargets(["ref_a"]);
+
+    // This tab observes the replacement the way every subscribed tab does:
+    // the resync push lands, this tab re-reads, and the rotated instance
+    // publishes over the one the canceled row belonged to — same thread id.
+    clientB.on("thread/read", (params) =>
+      readResponse(params.ref ?? "ref_a", {
+        evener: { ref: "ref_a", capabilities: CAPABILITIES, instanceId: "cleared-instance", queue: { revision: 0 } },
+      }),
+    );
+    act(() => {
+      clientB.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
+    });
+    await flushUntilArrived(
+      "the rotated instance to publish",
+      () => threadsStore.getState().threads.get("ref_a")?.instanceId === "cleared-instance",
+    );
+
+    // The observation drove the removal on the fused identity: the
+    // rotated-away instance's canceled row left with it, in this tab.
+    await flushUntilArrived(
+      "the observing tab to discard the rotated-away instance's canceled row",
+      async () => (await tabB.getOutbox(canceled.clientMutationId)) === undefined,
+    );
+    tabA.close();
+  });
+
+  // RoboRev PR #1873 medium, examined and REFUTED: "during initial hydration
+  // putThreadModels runs before the runtime exists, so a replacement-instance
+  // transition leaves stale canceled rows permanently." No publication can run
+  // pre-runtime: the mutation runtime is minted unconditionally by the FIRST
+  // client-ready (rewireClient's direct handleReady call for an already-ready
+  // client; handleReady's opening getMutationRuntime), and every
+  // path that can observe a replacement instance - tracked and watched
+  // hydrations, the clear response, escalation resolution, older-page merges -
+  // completes a client RPC after that ready. The guard's early return is
+  // reachable only when no runtime can EVER exist (IndexedDB unavailable to
+  // the tab), where there are no durable rows to clean, so returning is the
+  // correct behavior there. This test pins the refutation at the earliest
+  // publication any page can make - a seeded old-instance row, a fresh page's
+  // very first hydration carrying the replacement instance, and no mutation
+  // ever sent, so the runtime owes its existence to the ready flow alone - and
+  // goes red if a future change breaks the ready-time mint or the observation.
+  test("the earliest possible replacement-instance publication already finds a runtime and discards the superseded rows", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    // Another tab's Stop residue against the OLD instance, plus a canceled row
+    // of an instance no transition ever supersedes: the removal is scoped to
+    // the instance the publication provably replaced, so that row must stay.
+    const superseded = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_old",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "canceled against the old instance" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    const unrelated = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_keep",
+      method: "turn/queue",
+      payload: { ref: "ref_a", input: [{ type: "text", text: "canceled against an unrelated instance" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.cancelUnattempted("ref_a");
+
+    // The page opens tracking the OLD instance, seeded the way a list row
+    // hydrates from hub state. Nothing has minted a runtime yet: no mutation
+    // was sent and no hydration has completed.
+    // The old instance seeds with its full identity (the fixture's id override
+    // rotates threadId and instanceId together — the shape a real replacement
+    // carries, and the only shape the fused detection can observe).
+    threadsStore.setState({
+      threads: new Map([["ref_a", hydrateThread(readResponse("ref_a", { id: "thr_old" }), "ref_a", 1000)]]),
+    });
+
+    // The client connects - ready - and the ready flow mints the runtime
+    // BEFORE any publication can complete. The first hydration then publishes
+    // the REPLACEMENT instance (another tab cleared the thread).
+    const fake = connectMutationClient();
+    fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_new" }));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    // The transition's cleanup ran at that earliest publication: the
+    // superseded instance's row left, the unrelated instance's row stays.
+    await flushUntilArrived(
+      "the earliest publication's transition cleanup to discard the superseded row",
+      async () => (await storage.getOutbox(superseded.clientMutationId)) === undefined,
+    );
+    expect((await storage.getOutbox(unrelated.clientMutationId))?.state).toBe("canceled");
+  });
+
+  // RoboRev PR #1873 medium, the pin half: the cross-tab removal notified
+  // persistence only when it deleted a row and never refreshed the pin set.
+  // publishAndReconcileThreadHydration's own pin refresh races the
+  // fire-and-forget discardCanceledOfInstance write, so the refresh can read
+  // the row before the discard commits, pin the ref, and leave the pin stale
+  // once the row is gone - and releaseThread returns early on a pinned ref,
+  // so the cleared thread's model stays in `threads` forever after its last
+  // pane closes. This test pins that whole chain, with the race's order made
+  // deterministic at the storage seam: the cleanup write is held until the
+  // hydration's own pin refresh has read the row, then commits.
+  test("a cross-tab cleanup that removes the last row also refreshes the pin releaseThread waits on", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      // The ref's ONLY durable row is another tab's Stop residue against the
+      // old instance; the tracked model is that old instance, pane-held.
+      const canceled = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thr_old",
+        method: "turn/queue",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "canceled against the old instance" }] },
+        attachments: [],
+        optimisticDisplay: null,
+      });
+      await storage.cancelUnattempted("ref_a");
+      threadsStore.setState({
+        threads: new Map([["ref_a", hydrateThread(readResponse("ref_a", { id: "thr_old" }), "ref_a", 1000)]]),
+      });
+      const fake = connectMutationClient();
+      fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_old" }));
+      await threadsStore.getState().ensureThread("ref_a");
+
+      // Hold the cleanup's durable write at the seam: the discard is issued by
+      // the transition's publication, and the write that lands is the real
+      // one - only its completion waits for the test.
+      const realDiscard = storage.discardCanceledOfInstance.bind(storage);
+      const discardReached = deferred<void>();
+      const discardRelease = deferred<void>();
+      storage.discardCanceledOfInstance = (targetRef: string, instanceThreadId: string) => {
+        discardReached.resolve();
+        return discardRelease.promise.then(() => realDiscard(targetRef, instanceThreadId));
+      };
+
+      // The re-read every subscribed tab runs when the daemon's resync push
+      // lands: the replacement instance publishes, the cleanup fires (held at
+      // the seam), and the hydration's own pin refresh reads the still-durable
+      // row - the raced order that leaves the pin stale without this fix.
+      fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_new" }));
+      await threadsStore.getState().refreshThread("ref_a");
+      await discardReached.promise;
+      // The refresh drive also schedules a dispatch whose tail re-reads pins;
+      // hold the discard until that last scheduled refresh has completed too,
+      // so every pin read the drive can make has seen the pre-discard view.
+      // Releasing after that leaves the pin stale - the finding's chain -
+      // unless the cleanup's own tail refreshes it.
+      await flushIndexedDBUntil(() => false);
+      discardRelease.resolve();
+
+      // The pane closes. A stale pin makes releaseThread return early and the
+      // cleared thread's model leak; the cleanup's own pin refresh must let
+      // the release drop it.
+      threadsStore.getState().releaseThread("ref_a");
+      await flushUntilArrived(
+        "the superseded row to leave",
+        async () => (await storage.getOutbox(canceled.clientMutationId)) === undefined,
+      );
+      await flushUntilArrived(
+        "the released pane's model to leave threads",
+        () => !threadsStore.getState().threads.has("ref_a"),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The same finding's notify half, the cross-tab path: a cleanup that removes
+  // nothing still has to notify persistence (the rule the deletion-fence path
+  // already carries) - zero says what THIS tab's write removed, never what
+  // another tab may have removed from under this tab's cached projection.
+  test("a cross-tab cleanup that removes nothing still notifies persistence", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_old" }));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    let notified = false;
+    const unsubscribe = subscribeMutationPersistence((refs) => {
+      if (refs.includes("ref_a")) notified = true;
+    });
+    try {
+      // The superseded instance holds no canceled rows: the cleanup succeeds
+      // with zero, and the notify is the whole observable.
+      fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_new" }));
+      await threadsStore.getState().refreshThread("ref_a");
+      await flushUntilArrived("the zero-row cross-tab cleanup to notify persistence", () => notified);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  // RoboRev PR #1873 medium, the fresh review's zero-deletion half: the
+  // cross-tab cleanup refreshed the mutation pin only when it deleted at
+  // least one row, but zero is exactly what another tab's identical cleanup
+  // leaves THIS tab's write — the finding's interleave: the row was this
+  // tab's pin, the other tab removed it, and this tab's own cleanup then
+  // succeeds with nothing to remove. The stale pin keeps releaseThread from
+  // dropping the cleared model, so the refresh must follow every successful
+  // cleanup, zero included — the local discard path's own rule.
+  test("a cross-tab cleanup that removes nothing still refreshes the pin releaseThread waits on", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      // The ref's ONLY durable row is another tab's Stop residue against the
+      // old instance; the tracked model is that old instance, pane-held.
+      const canceled = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thr_old",
+        method: "turn/queue",
+        payload: { ref: "ref_a", input: [{ type: "text", text: "canceled against the old instance" }] },
+        attachments: [],
+        optimisticDisplay: null,
+      });
+      await storage.cancelUnattempted("ref_a");
+      threadsStore.setState({
+        threads: new Map([["ref_a", hydrateThread(readResponse("ref_a", { id: "thr_old" }), "ref_a", 1000)]]),
+      });
+      const fake = connectMutationClient();
+      fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_old" }));
+      await threadsStore.getState().ensureThread("ref_a");
+
+      // Hold this tab's cleanup at the seam, the finding's order made
+      // deterministic: the re-read publishes the replacement, the cleanup
+      // issues (held), and the hydration's own pin refresh reads the
+      // still-durable row and pins the ref.
+      const realDiscard = storage.discardCanceledOfInstance.bind(storage);
+      const discardReached = deferred<void>();
+      const discardRelease = deferred<void>();
+      storage.discardCanceledOfInstance = (targetRef: string, supersededInstanceId: string) => {
+        discardReached.resolve();
+        return discardRelease.promise.then(() => realDiscard(targetRef, supersededInstanceId));
+      };
+      fake.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_new" }));
+      await threadsStore.getState().refreshThread("ref_a");
+      await discardReached.promise;
+      await flushIndexedDBUntil(() => false);
+
+      // The other tab removes the row while this tab's cleanup is still
+      // held: the durable row leaves through the OTHER connection, so the
+      // write this tab finally issues finds nothing to remove — the zero the
+      // finding names.
+      const tabA = new MutationOutboxIndexedDB();
+      await tabA.discardCanceledOfInstance("ref_a", "thr_old");
+      await flushUntilArrived(
+        "the other tab's removal to land",
+        async () => (await storage.getOutbox(canceled.clientMutationId)) === undefined,
+      );
+      discardRelease.resolve();
+
+      // The pane closes. A stale pin makes releaseThread return early and
+      // the cleared thread's model leak; the zero-row cleanup's own pin
+      // refresh must let the release drop it.
+      threadsStore.getState().releaseThread("ref_a");
+      await flushUntilArrived(
+        "the released pane's model to leave threads",
+        () => !threadsStore.getState().threads.has("ref_a"),
+      );
+      tabA.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // RoboRev PR #1873 medium, the fresh review's fire-and-forget supersede
+  // discard: the post-settle cleanup of superseded canceled note rows
+  // committed with no storage-change notification and no pin refresh, so the
+  // settle's own notification — the dispatcher's post-settlement refresh,
+  // already passed — was the last word on the ref. When the discard commits
+  // after that (its write is asynchronous by design: the settle's commit
+  // boundary must not wait on the scan), the removal is invisible to every
+  // projection and pin this runtime holds until some unrelated storage event
+  // happens to fire. The cleanup's own commit must notify the owning
+  // runtime — the same zero-included rule the discard paths carry — and the
+  // pin refresh follows the notification, so a releaseThread waiting on the
+  // pin drops the model whose row just left.
+  test("the supersede discard's own commit notifies the owning runtime", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    let notifies = 0;
+    const unsubscribe = subscribeMutationPersistence((refs) => {
+      if (refs.includes("ref_a")) notifies += 1;
+    });
+    try {
+      // The class's own commit-boundary seam announces the discard's moment:
+      // its write body is done, the durable commit event is pending, and every
+      // notification the settle chain emits has already passed.
+      const discardBoundaryReached = deferred<void>();
+      const storage = new MutationOutboxIndexedDB({
+        beforeCommit: (operation) => {
+          if (operation === "discardCanceled") discardBoundaryReached.resolve();
+        },
+      });
+      setMutationStorageForTests(storage);
+      const fake = connectMutationClient();
+      await ensureActiveMutationTarget(fake, "ref_a");
+      fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+      fake.on("notes/human/set", (params) => ({
+        note: params.note ?? "",
+        receipt: mutationReceipt(params.clientMutationId),
+      }));
+      // The Stop's canceled note row is the ref's pin (the interrupt's
+      // dispatch tail refreshes the pin with the row still durable).
+      const canceledNote = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thr_ref_a",
+        method: "notes/human/set",
+        payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a", note: "stopped before saving" },
+        attachments: [],
+        optimisticDisplay: null,
+      });
+      await threadsStore.getState().interrupt("ref_a");
+      await flushUntilArrived(
+        "the Stop to cancel the note row",
+        async () => (await storage.getOutbox(canceledNote.clientMutationId))?.state === "canceled",
+      );
+      await flushIndexedDBUntil(() => false, 4);
+
+      // The note editor's next save after the Stop — the store's real path:
+      // enqueue, dispatch, settle, and the post-settle supersede discard
+      // (its commit boundary announces through the seam above).
+      const save = threadsStore.getState().setHumanNote("ref_a", "saved after the stop");
+      await save;
+      await discardBoundaryReached.promise;
+      // The settle's own notification has already passed; this is the count
+      // it leaves behind at the discard's commit boundary.
+      const notifiesBeforeCommit = notifies;
+      // The commit must itself notify the owning runtime: nothing else runs
+      // after it — the settle's notification is in the past, and a
+      // fire-and-forget write with no notification of its own leaves the
+      // removal invisible to every projection and pin this runtime holds.
+      await flushUntilArrived(
+        "the discard's commit to notify the owning runtime",
+        () => notifies > notifiesBeforeCommit,
+      );
+      // The superseded row did leave, and the pin the discard took with it
+      // follows the notification's refresh: the pane closes and the model
+      // drops instead of staying pinned for a row that no longer exists.
+      await flushUntilArrived(
+        "the supersede discard to commit",
+        async () => (await storage.getOutbox(canceledNote.clientMutationId)) === undefined,
+      );
+      threadsStore.getState().releaseThread("ref_a");
+      await flushUntilArrived(
+        "the released pane's model to leave threads",
+        () => !threadsStore.getState().threads.has("ref_a"),
+      );
+    } finally {
+      unsubscribe();
+      vi.useRealTimers();
+    }
+  });
+
+  // RoboRev PR #1873 low, the notify half: a zero-discard success still has
+  // to notify persistence. Zero says what THIS tab's write removed - never what
+  // another tab removed from under this tab's cached projection, and the
+  // notify is what refreshes that projection (the queue strip's rows, the
+  // note editor's statuses).
+  test("a deletion fence's zero-discard cleanup still notifies persistence", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    let notified = false;
+    const unsubscribe = subscribeMutationPersistence((refs) => {
+      if (refs.includes("ref_gone")) notified = true;
+    });
+    try {
+      fake.on("thread/read", () => {
+        throw new WireError("target has been deleted: local:ref_gone", -32001, {
+          evenerErrorInfo: "actionUnavailable",
+          mutationOutcome: "targetDeleted",
+          retryDisposition: "none",
+        });
+      });
+      // The ref holds no rows at all: the fence's discard succeeds with zero -
+      // the exact success whose notification was suppressed.
+      void threadsStore.getState().ensureThread("ref_gone");
+      await waitFor(() => {
+        expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
+      });
+      await flushUntilArrived("the zero-discard cleanup to notify persistence", () => notified);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  // RoboRev PR #1873 low, the pins half: the discard that removes a ref's
+  // last row must refresh the mutation pin. Without the refresh the stale pin
+  // keeps releaseThread from dropping the model of a thread the hub has
+  // proven deleted.
+  test("the deletion fence's discard refreshes the pin so the last release drops the model", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_gone");
+    // A pinned durable row: enqueued durably, then canceled by a real Stop
+    // whose interrupt settles.
+    const canceled = await storage.enqueueIntent({
+      targetRef: "ref_gone",
+      threadId: "thr_ref_gone",
+      method: "turn/queue",
+      payload: { ref: "ref_gone", input: [{ type: "text", text: "canceled before the deletion" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    await threadsStore.getState().interrupt("ref_gone");
+    await flushUntilArrived(
+      "the Stop to cancel the queued row",
+      async () => (await storage.getOutbox(canceled.clientMutationId))?.state === "canceled",
+    );
+    // Let the interrupt's own dispatch tail run out of the way; the canceled
+    // row is the ref's pin, exactly the pin the fence's discard must refresh.
+    await flushIndexedDBUntil(() => false, 4);
+
+    // The hub's deletion fence lands: the canceled row leaves with the ref.
+    fake.on("thread/read", () => {
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+    await threadsStore
+      .getState()
+      .refreshThread("ref_gone")
+      .catch(() => undefined);
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
+    });
+    await flushUntilArrived(
+      "the fence's discard to remove the canceled row",
+      async () => (await storage.getOutbox(canceled.clientMutationId)) === undefined,
+    );
+    await flushIndexedDBUntil(() => false, 4);
+
+    // The pane goes away: with the pin refreshed, the last release drops the
+    // deleted thread's model instead of holding it for a row that no longer
+    // exists.
+    threadsStore.getState().releaseThread("ref_gone");
+    expect(threadsStore.getState().threads.has("ref_gone")).toBe(false);
+  });
 });

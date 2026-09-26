@@ -495,8 +495,8 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                       1,
 	{filename: "session_tools_jobs.go", function: "stableDelegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                        1,
 	{filename: "status.go", function: "(*Session).DetailedStatus", kind: "lifecycle method", symbol: "Snapshot"}:                                                                       1,
-	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStop", kind: "lifecycle method", symbol: "stopReconcileRequirements"}:                                1,
-	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStop", kind: "lifecycle method", symbol: "Reconcile"}:                                                1,
+	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "stopReconcileRequirements"}:                     1,
+	{filename: "delegate_tree_stop.go", function: "(*delegateTreeController).drainStopAbandonable", kind: "lifecycle method", symbol: "Reconcile"}:                                     1,
 }
 
 type delegateControllerDormancyViolation struct {
@@ -729,7 +729,7 @@ func (*delegateToolResultCommit) Complete(bool) {}
 	return files, file, info, pkg
 }
 
-func newDelegateControllerTestHarness(t *testing.T, turnLimit, driveLimit int) (*delegateTreeController, string) {
+func newDelegateControllerTestHarness(t testing.TB, turnLimit, driveLimit int) (*delegateTreeController, string) {
 	t.Helper()
 	root := t.TempDir()
 	path := filepath.Join(root, "delegate-events.jsonl")
@@ -763,7 +763,7 @@ func seedDelegateControllerIdle(t *testing.T, c *delegateTreeController, id, par
 	}
 }
 
-func seedDelegateControllerRunning(t *testing.T, c *delegateTreeController, id, parentID string) {
+func seedDelegateControllerRunning(t testing.TB, c *delegateTreeController, id, parentID string) {
 	t.Helper()
 	c.mu.Lock()
 	defer c.mu.Unlock()

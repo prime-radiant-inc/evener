@@ -25,6 +25,7 @@ import { lazy } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
@@ -34,6 +35,7 @@ import { resetWorkspaceStoreForTests } from "../workspace";
 import { adaptNavigationResources, archiveSessionIdentity, Rail } from "./Rail";
 import railStyles from "./Rail.module.css";
 import { EXPANSION_STORAGE_KEY } from "./railExpansion";
+import * as railNodeExports from "./railNodes";
 import { projectNodes } from "./railNodes";
 import { RailRenderObserver } from "./railRenderObserver";
 
@@ -323,6 +325,74 @@ describe("resource-backed Rail", () => {
       expect(rule).toBeDefined();
       expect(rule).not.toContain("text-transform: uppercase");
       expect(rule).not.toContain("letter-spacing:");
+    }
+  });
+
+  // The rail owns the clock its rows' relative stamps are measured against. An
+  // idle session sends no further navigation data, so without a live clock the
+  // row's "last update" label sat at its build value ("now") until a page
+  // refresh - the reported sidebar bug.
+  test("an idle live row's relative age advances with the rail's own clock", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-02-01T12:00:00Z");
+      vi.setSystemTime(start);
+      installState([
+        sectionResource("live", [
+          summary({
+            ref: "local:idle",
+            title: "Idle row",
+            state: "idle",
+            updated_at: new Date(start - 1_000).toISOString(),
+          }),
+        ]),
+      ]);
+      render(<Rail />);
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("now");
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("1m");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The clock's subscription boundary. activeWorkSummary runs on every
+  // SessionRow render, so counting it pins whether a tick woke the memoized row
+  // or only its stamp - the boundary the row's own comment claims, and the same
+  // one ActivityTree.watchTick.test.tsx pins for the activity tree.
+  test("a clock tick wakes only the age stamp, not the row around it", () => {
+    vi.useFakeTimers();
+    try {
+      const start = Date.parse("2026-02-01T12:00:00Z");
+      vi.setSystemTime(start);
+      installState([
+        sectionResource("live", [
+          summary({
+            ref: "local:idle",
+            title: "Idle row",
+            state: "idle",
+            updated_at: new Date(start - 1_000).toISOString(),
+          }),
+        ]),
+      ]);
+      const rowBody = vi.spyOn(railNodeExports, "activeWorkSummary");
+      render(<Rail />);
+      const atRest = rowBody.mock.calls.length;
+      // The spy was live for the initial render (the row really did render
+      // through it), so a tick's count staying put means the row stayed asleep.
+      expect(atRest).toBeGreaterThan(0);
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+      // The stamp advanced...
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("1m");
+      // ...while the row it lives in never re-rendered.
+      expect(rowBody.mock.calls.length).toBe(atRest);
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
     }
   });
 
@@ -2224,3 +2294,510 @@ describe("resource-backed Rail", () => {
 });
 
 // Legacy mode tests removed — legacy tree store retired per R50.
+
+// The rail's organize-by host grouping: the whole feature gates on a settled
+// manifest listing at least one non-local source (the spawn picker's own
+// gate), the pref picks the shape, and Live groups under host subheaders
+// whenever its rows span more than one host. Pinned sections and the
+// archived tier keep the user's own arrangement whatever the mode.
+describe("host grouping (organize by)", () => {
+  const remoteManifest = (): NavigationManifest =>
+    manifest({
+      sources: [
+        { id: "local", label: "this host", kind: "local", online: true },
+        { id: "devbox", label: "devbox", kind: "appwire", online: true },
+      ],
+      sections: { live: { count: 2 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+    });
+  const hostGroupedResources = (): ResourceState[] => [
+    sectionResource("live", [
+      summary({ ref: "local:l1", title: "Local live run" }),
+      summary({ ref: "devbox:d1", title: "Devbox live run", host_id: "devbox" }),
+    ]),
+    catalogResource([
+      { key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"], default_expanded: true },
+    ]),
+    projectResource("p", [
+      summary({ ref: "local:p1", title: "Local project run" }),
+      summary({ ref: "devbox:p1", title: "Devbox project run", host_id: "devbox" }),
+    ]),
+  ];
+
+  beforeEach(() => {
+    resetPrefsStoreForTests();
+  });
+
+  test("stays flat with no organize control while the manifest lists no remote source, whatever the pref says", () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState([
+      sectionResource("live", [summary({ ref: "local:l1", title: "Local live run" })]),
+      catalogResource([{ key: "p", name: "Project", session_count: 1 }]),
+      projectResource("p", [summary({ ref: "local:p1", title: "Project run" })]),
+    ]);
+    render(<Rail />);
+    expect(screen.queryByRole("button", { name: "Organize by" })).toBeNull();
+    expect(screen.queryAllByTestId("rail-row-host-group")).toHaveLength(0);
+    expect(screen.getByRole("heading", { name: "Projects" })).toBeTruthy();
+    expect(screen.getByText("Local live run")).toBeTruthy();
+  });
+
+  // A flat row's launch must name this hub in the URL: the /new prefill
+  // overwrites the spawn draft's source, so a draft left on a remote host
+  // cannot survive the click and silently launch there.
+  test("a flat project row names this hub on launch, not the draft's last choice", () => {
+    installState([
+      catalogResource([{ key: "p", name: "Project", session_count: 1, working_dir: "/repo/next" }]),
+      projectResource("p", [summary({ ref: "local:p1", title: "Project run" })]),
+    ]);
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: "New session in Project" }));
+    expect(`${window.location.pathname}${window.location.search}`).toBe("/new?dir=%2Frepo%2Fnext&host=local");
+    window.history.replaceState({}, "", "/");
+  });
+
+  // Flat mode renders while the manifest has named no remote source, which
+  // includes the first-load window where remote-owned projects are already
+  // listed in the catalog: their launch must not fall back to this hub with
+  // the remote working_dir.
+  test("a flat row whose project lives on a host the manifest has not named offers no launch", () => {
+    installState([
+      catalogResource([
+        { key: "r", name: "Remote-owned", session_count: 1, sources: ["devbox"], working_dir: "/repo/remote" },
+      ]),
+      projectResource("r", [summary({ ref: "devbox:r1", title: "Devbox run", host_id: "devbox" })]),
+    ]);
+    render(<Rail />);
+    expect(screen.queryByRole("button", { name: "New session in Remote-owned" })).toBeNull();
+  });
+
+  test("offers the organize control once a remote source is listed; project-first keeps the Projects title and branches rows by host", () => {
+    installState(hostGroupedResources(), remoteManifest());
+    render(<Rail />);
+    expect(screen.getByRole("button", { name: "Organize by" })).toBeTruthy();
+    // Live spans two hosts, so it groups under subheaders in host order -
+    // this hub first - and both stay expanded by default.
+    const live = sectionRoot("Live");
+    expect(
+      within(live)
+        .getAllByTestId("rail-row-host-group")
+        .map((row) => row.textContent),
+    ).toEqual(["this host", "devbox"]);
+    expect(within(live).getByText("Devbox live run")).toBeTruthy();
+    // The default mode keeps the Projects title and its project rows; inside
+    // a project a branch renders per host with loaded rows, and each starts
+    // collapsed like any project branch.
+    const projects = sectionRoot("Projects");
+    expect(
+      within(projects)
+        .getAllByTestId("rail-row-host-group")
+        .map((row) => row.textContent),
+    ).toEqual(["this host", "devbox"]);
+    expect(within(projects).queryByText("Devbox project run")).toBeNull();
+    // The branch is a disclosure: activating it reveals the host's rows.
+    fireEvent.click(within(projects).getByText("devbox"));
+    expect(within(projects).getByText("Devbox project run")).toBeTruthy();
+  });
+
+  test("choosing Host, then project re-titles the section, regroups, and persists the choice", () => {
+    installState(hostGroupedResources(), remoteManifest());
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: "Organize by" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Host, then project" }));
+    expect(prefsStore.getState().sidebarGrouping).toBe("host-project");
+    expect(screen.getByRole("heading", { name: "Hosts" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Projects" })).toBeNull();
+    // Hosts are the top groups now, in the same host order Live uses.
+    expect(
+      within(sectionRoot("Hosts"))
+        .getAllByTestId("rail-row-host-group")
+        .map((row) => row.textContent),
+    ).toEqual(["this host", "devbox"]);
+  });
+
+  test("a single-host Live stays flat even in host-first mode", () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState([sectionResource("live", [summary({ ref: "local:l1", title: "Only local" })])], remoteManifest());
+    render(<Rail />);
+    expect(screen.getByRole("button", { name: "Organize by" })).toBeTruthy();
+    expect(within(sectionRoot("Live")).queryAllByTestId("rail-row-host-group")).toHaveLength(0);
+    expect(within(sectionRoot("Live")).getByText("Only local")).toBeTruthy();
+  });
+
+  test("pinned and archived sections keep their own rows under host-first grouping", () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState(
+      [
+        sectionResource("live", [
+          summary({ ref: "local:l1", title: "Local live run" }),
+          summary({ ref: "devbox:d1", title: "Devbox live run", host_id: "devbox" }),
+        ]),
+        resource(
+          { kind: "pin_catalog", offset: 0, limit: 100 },
+          {
+            generation_id: "g1",
+            revision: 1,
+            pin_sections: [{ id: "notes", name: "Research", count: 2 }],
+            remaining: 0,
+          },
+        ),
+        resource(
+          { kind: "pin_section", sectionId: "notes", offset: 0, limit: 50 },
+          {
+            generation_id: "g1",
+            revision: 1,
+            sessions: [
+              summary({ ref: "local:pinned", title: "Pinned local run" }),
+              summary({ ref: "devbox:pinned", title: "Pinned remote run", host_id: "devbox" }),
+            ],
+            remaining: 0,
+          },
+        ),
+        resource(
+          { kind: "catalog", catalog: "archived_projects", offset: 0, limit: 100 },
+          {
+            projects: [{ key: "old", name: "Old project", session_count: 1, sources: ["local", "devbox"] }],
+            remaining: 0,
+          },
+        ),
+        projectResource("old", [summary({ ref: "devbox:old1", title: "Archived remote run", host_id: "devbox" })]),
+      ],
+      remoteManifest(),
+    );
+    render(<Rail />);
+    // Pinned rows stay flat: pinning is the user's own arrangement, and host
+    // grouping never rewrites it.
+    const pins = sectionRoot("Research");
+    expect(within(pins).queryAllByTestId("rail-row-host-group")).toHaveLength(0);
+    expect(within(pins).getByText("Pinned local run")).toBeTruthy();
+    expect(within(pins).getByText("Pinned remote run")).toBeTruthy();
+    // The archived tier keeps its project-group shape too. It starts
+    // collapsed (the only section that does), so open it first.
+    fireEvent.click(sectionDisclosure(/Archived sessions/));
+    const archived = sectionRoot(/Archived sessions/);
+    expect(within(archived).queryAllByTestId("rail-row-host-group")).toHaveLength(0);
+    expect(within(archived).getByText("Old project")).toBeTruthy();
+  });
+
+  test("a reveal walks the host group and project copy its target row hides behind (host-first)", async () => {
+    const restoreScroll = stubScrollIntoView();
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState(
+      [
+        catalogResource([{ key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"] }]),
+        projectResource("p", [summary({ ref: "devbox:target", title: "Target row", host_id: "devbox" })]),
+      ],
+      remoteManifest(),
+    );
+    const consumed = vi.fn();
+    try {
+      render(<Rail revealTarget="devbox:target" onRevealConsumed={consumed} />);
+      await act(async () => undefined);
+      expect(within(sectionRoot("Hosts")).getByText("Target row")).toBeTruthy();
+      expect(consumed).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreScroll();
+    }
+  });
+
+  // The reveal chain must come from the section that actually renders the row:
+  // a test-run project stays in the flat Test runs section whatever the
+  // grouping, so host-mode ids for it would expand folds that exist nowhere.
+  test("a reveal to a test-run row expands the Test runs fold, never phantom host groups (host-first)", async () => {
+    const restoreScroll = stubScrollIntoView();
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState(
+      [
+        resource(
+          { kind: "catalog", catalog: "test_runs", offset: 0, limit: 100 },
+          {
+            generation_id: "g1",
+            revision: 1,
+            projects: [{ key: "t", name: "Test run", session_count: 1 }],
+            remaining: 0,
+          },
+        ),
+        projectResource("t", [summary({ ref: "local:target", title: "Target row" })]),
+      ],
+      remoteManifest(),
+    );
+    const consumed = vi.fn();
+    try {
+      render(<Rail revealTarget="local:target" onRevealConsumed={consumed} />);
+      await act(async () => undefined);
+      expect(within(sectionRoot("Test runs")).getByText("Target row")).toBeTruthy();
+      expect(consumed).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreScroll();
+    }
+  });
+
+  // The lazy-load effect must key on the ids the current grouping actually
+  // renders: expanding a host-first copy fetches the project's rows, or the
+  // copy sticks on its loading placeholder forever.
+  test("expanding a host-first copy of an unloaded project loads its rows", async () => {
+    const loadProject = vi.fn().mockResolvedValue(undefined);
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ "projectnode:p@devbox": true }));
+    installState(
+      [catalogResource([{ key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"] }])],
+      remoteManifest(),
+    );
+    navigationStore.setState({ loadProject });
+    try {
+      render(<Rail />);
+      await act(async () => undefined);
+      expect(loadProject).toHaveBeenCalledWith("p");
+    } finally {
+      localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    }
+  });
+
+  test("collapsing one copy while a sibling stays expanded does not re-fire the project load", async () => {
+    const loadProject = vi.fn(
+      (_projectKey: string): Promise<ResourceState<NavigationProjectResource>> => new Promise(() => undefined),
+    );
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState(
+      [catalogResource([{ key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"] }])],
+      remoteManifest(),
+    );
+    navigationStore.setState({ loadProject });
+    render(<Rail />);
+    const copies = within(sectionRoot("Hosts")).getAllByText("Project");
+    expect(copies).toHaveLength(2);
+    const [first, second] = copies;
+    if (!first || !second) throw new Error("expected both host copies to render");
+    // Expand both copies: one load fires; the in-flight guard holds the second.
+    fireEvent.click(first);
+    await act(async () => undefined);
+    fireEvent.click(second);
+    await act(async () => undefined);
+    expect(loadProject).toHaveBeenCalledTimes(1);
+    // Collapsing one copy while the other stays expanded must not clear the
+    // project-wide guard and re-fire a duplicate concurrent load.
+    fireEvent.click(first);
+    await act(async () => undefined);
+    expect(loadProject).toHaveBeenCalledTimes(1);
+  });
+
+  // Live rows group under host subheaders in BOTH grouped modes, so a Live
+  // tier's root rows sit at depth 1 there: the project line and the pin-star
+  // rule must follow the row's tier, not its nesting depth.
+  test("grouped Live rows still name their project under the host subheaders", () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState(
+      [
+        sectionResource("live", [
+          summary({ ref: "local:l1", session_id: "l1", title: "Local live", project: "Evener", host_id: "local" }),
+          summary({ ref: "devbox:l2", session_id: "l2", title: "Devbox live", project: "Radiant", host_id: "devbox" }),
+        ]),
+      ],
+      remoteManifest(),
+    );
+    render(<Rail />);
+    const live = sectionRoot("Live");
+    // The subheader answers "which machine"; the row's second line still
+    // answers "which project" - the one fact a Live row exists to carry.
+    expect(within(live).getByText("Evener")).toBeTruthy();
+    expect(within(live).getByText("Radiant")).toBeTruthy();
+  });
+
+  test("host grouping holds its shape across a manifest revalidation (last-known sources)", () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    installState([catalogResource([{ key: "p", name: "Project", session_count: 1 }])], remoteManifest());
+    render(<Rail />);
+    expect(screen.getByRole("heading", { name: "Hosts" })).toBeTruthy();
+    // An invalidation that targets the manifest marks it stale; grouping is
+    // a layout decision and must not blink to flat for the read's length.
+    const settled = navigationStore.getState().manifest;
+    if (!settled) throw new Error("no manifest installed");
+    act(() => {
+      navigationStore.setState({ manifest: { ...settled, stale: true } });
+    });
+    expect(screen.getByRole("heading", { name: "Hosts" })).toBeTruthy();
+  });
+
+  test("a host branch born mid-session opens itself instead of hiding the rows on screen", async () => {
+    prefsStore.setState({ sidebarGrouping: "project-host" });
+    localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    const local = summary({ ref: "local:l1", session_id: "l1", title: "Local row", host_id: "local", state: "active" });
+    installState(
+      [
+        catalogResource([{ key: "p", name: "Project", session_count: 2, sources: ["local", "devbox"] }]),
+        projectResource("p", [local], 1),
+      ],
+      remoteManifest(),
+    );
+    render(<Rail />);
+    fireEvent.click(screen.getByText("Project"));
+    await act(async () => undefined);
+    const projects = sectionRoot("Projects");
+    // The project's loaded rows sit on this hub alone, so they render flat.
+    expect(within(projects).getByText("Local row")).toBeTruthy();
+    // The reveal brings the second host's rows: the branches that appear
+    // must open themselves - rows already on screen must not vanish
+    // behind a collapsed branch.
+    const loaded = projectResource("p", [
+      local,
+      summary({ ref: "devbox:d1", session_id: "d1", title: "Devbox row", host_id: "devbox", state: "active" }),
+    ]);
+    act(() => {
+      navigationStore.setState((state) => ({
+        resources: new Map([...state.resources, [keyID(loaded.key), loaded]]),
+      }));
+    });
+    await act(async () => undefined);
+    try {
+      expect(within(projects).getByText("Local row")).toBeTruthy();
+      expect(within(projects).getByText("Devbox row")).toBeTruthy();
+    } finally {
+      localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    }
+  });
+
+  test("a host-first copy that gains rows mid-session opens itself instead of hiding them", async () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    const local = summary({ ref: "local:l1", session_id: "l1", title: "Local row", host_id: "local", state: "active" });
+    installState(
+      [
+        catalogResource([{ key: "p", name: "Project", session_count: 2, sources: ["local", "devbox"] }]),
+        projectResource("p", [local], 1),
+      ],
+      remoteManifest(),
+    );
+    render(<Rail />);
+    const hosts = sectionRoot("Hosts");
+    // Both hosts claim the project, but only this hub's rows are loaded:
+    // its copy holds them while the devbox copy sits empty. Open the
+    // loaded one, the same view the user would have on screen. Rail order
+    // puts this hub's copy first, the same host order the section's group
+    // rows pin.
+    const localCopy = within(hosts).getAllByText("Project").at(0);
+    if (!localCopy) throw new Error("no project copy rendered");
+    fireEvent.click(localCopy);
+    await act(async () => undefined);
+    expect(within(hosts).getByText("Local row")).toBeTruthy();
+    // The reveal brings the second host's rows: the copy that gains them
+    // must open itself - the new rows must not hide behind a closed copy.
+    const loaded = projectResource("p", [
+      local,
+      summary({ ref: "devbox:d1", session_id: "d1", title: "Devbox row", host_id: "devbox", state: "active" }),
+    ]);
+    act(() => {
+      navigationStore.setState((state) => ({
+        resources: new Map([...state.resources, [keyID(loaded.key), loaded]]),
+      }));
+    });
+    await act(async () => undefined);
+    try {
+      expect(within(hosts).getByText("Local row")).toBeTruthy();
+      expect(within(hosts).getByText("Devbox row")).toBeTruthy();
+    } finally {
+      localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    }
+  });
+
+  test("a fresh load's data is the at-rest shape: project-first branches stay collapsed", async () => {
+    prefsStore.setState({ sidebarGrouping: "project-host" });
+    localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    installState([], emptyManifest());
+    render(<Rail />);
+    await act(async () => undefined);
+    // The rail mounts before navigation data lands - the store starts with
+    // no manifest and no resources. The branches that arrive WITH the
+    // catalog and rows are the at-rest shape, not mid-session births.
+    act(() => {
+      installState(
+        [
+          catalogResource([{ key: "p", name: "Project", session_count: 2, sources: ["local", "devbox"] }]),
+          projectResource("p", [
+            summary({ ref: "local:l1", session_id: "l1", title: "Local row", host_id: "local", state: "active" }),
+            summary({ ref: "devbox:d1", session_id: "d1", title: "Devbox row", host_id: "devbox", state: "active" }),
+          ]),
+        ],
+        remoteManifest(),
+      );
+    });
+    await act(async () => undefined);
+    try {
+      // Open the project: whatever the birth effect wrote now shows. At
+      // rest, both branches stay collapsed and their rows stay hidden.
+      fireEvent.click(screen.getByText("Project"));
+      await act(async () => undefined);
+      expect(screen.queryByText("Local row")).toBeNull();
+      expect(screen.queryByText("Devbox row")).toBeNull();
+    } finally {
+      localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    }
+  });
+
+  test("a fresh load's data is the at-rest shape: host-first copies stay collapsed", async () => {
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    installState([], emptyManifest());
+    render(<Rail />);
+    await act(async () => undefined);
+    act(() => {
+      installState(
+        [
+          catalogResource([{ key: "p", name: "Project", session_count: 2, sources: ["local", "devbox"] }]),
+          projectResource("p", [
+            summary({ ref: "local:l1", session_id: "l1", title: "Local row", host_id: "local", state: "active" }),
+            summary({ ref: "devbox:d1", session_id: "d1", title: "Devbox row", host_id: "devbox", state: "active" }),
+          ]),
+        ],
+        remoteManifest(),
+      );
+    });
+    await act(async () => undefined);
+    try {
+      const hosts = sectionRoot("Hosts");
+      expect(within(hosts).queryByText("Local row")).toBeNull();
+      expect(within(hosts).queryByText("Devbox row")).toBeNull();
+    } finally {
+      localStorage.removeItem(EXPANSION_STORAGE_KEY);
+    }
+  });
+
+  test("a reveal reaches a subagent nested under a collapsed carrier session (host-first)", async () => {
+    const restoreScroll = stubScrollIntoView();
+    prefsStore.setState({ sidebarGrouping: "host-project" });
+    const parent = summary({
+      ref: "devbox:parent",
+      session_id: "parent",
+      title: "Parent run",
+      host_id: "devbox",
+      children: [
+        summary({
+          ref: "devbox:child",
+          session_id: "child",
+          title: "Nested target",
+          host_id: "devbox",
+          kind: "subagent",
+          state: "active",
+        }),
+      ],
+    });
+    installState(
+      [
+        catalogResource([
+          { key: "p", name: "Project", session_count: 1, sources: ["local", "devbox"], default_expanded: true },
+        ]),
+        projectResource("p", [parent]),
+      ],
+      remoteManifest(),
+    );
+    const consumed = vi.fn();
+    try {
+      render(<Rail revealTarget="devbox:child" onRevealConsumed={consumed} />);
+      await act(async () => undefined);
+      // The chain must open the carrier session's own row, or the nested
+      // target never renders and the reveal never consumes.
+      expect(within(sectionRoot("Hosts")).getByText("Nested target")).toBeTruthy();
+      expect(consumed).toHaveBeenCalledTimes(1);
+    } finally {
+      restoreScroll();
+    }
+  });
+});

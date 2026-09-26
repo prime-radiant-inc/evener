@@ -453,3 +453,104 @@ func TestDoctorEvener_EveryCommandDispatches(t *testing.T) {
 		}
 	}
 }
+
+// TestDoctorEvener_LocateNotFoundIsErrorResultNotEmptyStruct proves a locate
+// miss surfaces as an error result — the error text naming where the sweep
+// looked — and never as the zero Paths struct. The tool layer renders a
+// non-nil erroring value as the tool-result content, so returning the zero
+// struct alongside the error printed an all-empty JSON object to the model:
+// a miss was indistinguishable from a resolver that found nothing to say.
+func TestDoctorEvener_LocateNotFoundIsErrorResultNotEmptyStruct(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucket := newBucketUnder(t, stateHome)
+	writeDoctorFixtureSession(t, bucket)
+	missing := doctorTestSID(t)
+
+	rt := doctorToolForTest(t, stateHome)
+	out, err := rt.Exec(context.Background(), nil, map[string]any{
+		"command": "locate", "selector": missing,
+	})
+	if err == nil {
+		t.Fatal("locate of a missing session should error")
+	}
+	if out != nil {
+		t.Errorf("locate miss returned %T (%v), want nil — the zero struct marshals as an all-empty result", out, out)
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("err = %v, want a not-found error naming the search scope", err)
+	}
+}
+
+// TestDoctorEvener_MissesSurfaceErrorTextNotZeroStruct widens the
+// error-result contract from locate to every selector-taking command: a miss
+// must surface the doctor's explicit not-found text, never the command
+// function's zero struct — the tool layer renders a non-nil erroring value
+// as the result content, so a zero struct would print an all-empty JSON
+// object and hide where the sweep looked.
+func TestDoctorEvener_MissesSurfaceErrorTextNotZeroStruct(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucket := newBucketUnder(t, stateHome)
+	writeDoctorFixtureSession(t, bucket)
+	missing := doctorTestSID(t)
+
+	rt := doctorToolForTest(t, stateHome)
+	cases := []map[string]any{
+		{"command": "locate", "selector": missing},
+		{"command": "transcript", "selector": missing},
+		{"command": "transcript", "selector": missing, "count": "read_file"},
+		{"command": "transcript", "selector": missing, "health": true},
+		{"command": "apilog", "selector": missing},
+		{"command": "apilog", "selector": missing, "validate": true},
+		{"command": "apilog", "selector": missing, "health": true},
+		{"command": "jobs", "selector": missing},
+		{"command": "mutations", "selector": missing},
+		{"command": "watches", "selector": missing},
+		{"command": "tree", "selector": missing},
+	}
+	for _, args := range cases {
+		out, err := rt.Exec(context.Background(), nil, args)
+		if err == nil {
+			t.Errorf("%v: want not-found error, got nil (out=%v)", args, out)
+			continue
+		}
+		if out != nil {
+			t.Errorf("%v: miss returned %T (%v), want nil so the error text is the result content", args, out, out)
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("%v: err = %v, want the explicit not-found text", args, err)
+		}
+	}
+}
+
+// TestDoctorEvener_LocateFromBucketStateDirSweepsSiblingBuckets proves the
+// daemon's own invocation shape (the session's state dir is its project
+// bucket directory — see userdirs.StateHomeForBucketDir): a bare-id locate
+// with no state_dir argument must still resolve a session living in a
+// sibling project bucket — the forensic scenario the doctoring diagnosis
+// hit, where a sibling-bucket session was invisible to every bare-id lookup.
+func TestDoctorEvener_LocateFromBucketStateDirSweepsSiblingBuckets(t *testing.T) {
+	stateHome := newStateHome(t)
+	bucketA := newBucketUnder(t, stateHome)
+	bucketB := newBucketUnder(t, stateHome)
+	sidA := writeDoctorFixtureSession(t, bucketA)
+	writeDoctorFixtureSession(t, bucketB)
+
+	// The session's own state dir is bucketB — the per-project bucket shape.
+	rt := doctorToolForTest(t, bucketB)
+	out, err := rt.Exec(context.Background(), nil, map[string]any{
+		"command": "locate", "selector": sidA,
+	})
+	if err != nil {
+		t.Fatalf("doctor_evener locate from bucket state dir: %v", err)
+	}
+	paths, ok := out.(doctor.Paths)
+	if !ok {
+		t.Fatalf("locate result = %T, want doctor.Paths", out)
+	}
+	if want := filepath.Join(bucketA, "sessions", sidA+".transcript.jsonl"); paths.TranscriptPath != want {
+		t.Errorf("transcript_path = %q, want sibling-bucket path %q", paths.TranscriptPath, want)
+	}
+	if paths.ProjectID != filepath.Base(bucketA) {
+		t.Errorf("project_id = %q, want sibling bucket dir name %q", paths.ProjectID, filepath.Base(bucketA))
+	}
+}

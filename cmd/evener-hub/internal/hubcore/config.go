@@ -10,9 +10,11 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -59,12 +61,24 @@ type WebConfig struct {
 	CredsStore                *credentials.Store // credentials store; passed to auth controller
 	PluginDirs                []string           // explicit plugin dirs; when empty, default to ~/.config/evener/plugins/*
 	PluginRoot                string             // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/evener/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
-	MCPConfigPath             string             // MCP config file path; when empty, default to ~/.config/evener/mcp.json
-	Registry                  *ProviderRegistry  // live provider registry; the instance, auth, credential-test and model surfaces all read it
-	ProvidersConfigPath       string             // path to providers.toml; the instances pane is its only writer
-	CredentialsPath           string             // path to credentials.toml; handed to every spawned child as EVENER_CREDENTIALS_CONFIG
-	NoUserLayer               bool               // EVENER_PROVIDERS_CONFIG is present and empty: no user layer at all (spec §10). A file that fails to load adds to this per call; it is not folded in here.
-	APILogDefault             bool               // hub.toml api_log floor for hub-spawned daemons; applied when no launch layer sets api_log
+	// PluginManager, when set, is the hub's own already-wired *plugins.Manager
+	// for PluginRoot — constructed once per server by newWebServer, so the
+	// appRPC server and every consumer reached through it (the plugin CRUD
+	// handlers, a launch's plugin-inventory resolution via hubResolvePlugins,
+	// and the three background maintenance paths in main_background.go:
+	// hubStartUpgrade, seedHubMarketplaces, startHubPluginMaintenance's GC)
+	// reaches the same Manager instead of a second, unwired one over a
+	// possibly different root. Each WebConfig value carries its own — never a
+	// package global — so two servers in one process never answer for each
+	// other. nil falls back to a fresh plugins.NewManager(PluginRoot); every
+	// test that never builds a server leaves this nil and gets that fallback.
+	PluginManager       *plugins.Manager
+	MCPConfigPath       string            // MCP config file path; when empty, default to ~/.config/evener/mcp.json
+	Registry            *ProviderRegistry // live provider registry; the instance, auth, credential-test and model surfaces all read it
+	ProvidersConfigPath string            // path to providers.toml; the instances pane is its only writer
+	CredentialsPath     string            // path to credentials.toml; handed to every spawned child as EVENER_CREDENTIALS_CONFIG
+	NoUserLayer         bool              // EVENER_PROVIDERS_CONFIG is present and empty: no user layer at all (spec §10). A file that fails to load adds to this per call; it is not folded in here.
+	APILogDefault       bool              // hub.toml api_log floor for hub-spawned daemons; applied when no launch layer sets api_log
 
 	Archive     *ArchiveStore    // archive decision store; nil when not configured (tree uses empty decisions)
 	Favorite    *FavoriteStore   // favorite decision store; nil when not configured
@@ -81,18 +95,61 @@ type WebConfig struct {
 	// config order. newHubSourceRegistry registers one
 	// appsource.RemoteHubSource per entry.
 	RemoteHosts []hostreg.Host
+	// RemoteHostRegistry is the controller's live host registry: the one
+	// *hostreg.Registry the SSH manager dials through (sshconn.New), the
+	// attach handler validates against, and the host-management surface
+	// (evener/host/add|list|status|remove|update) mutates — one shared instance, so
+	// a host added at runtime is attachable without a restart. nil (tests,
+	// embedders) makes the constructors' fallback build one registry and
+	// share it across every surface: the SSH manager's own registry when a
+	// manager is threaded (the instance its dial paths and AddHost/RemoveHost
+	// mutate), else a fresh one built from RemoteHosts.
+	RemoteHostRegistry *hostreg.Registry
+	// RemoteHostSSHManager owns the live SSH channels for the configured
+	// hosts. The host-management surface wires it in so Remove tears the
+	// removed host's channel down through the manager's atomic RemoveHost
+	// rather than leaving a supervisor or channel behind. nil leaves
+	// host-management removal without channel teardown (tests).
+	RemoteHostSSHManager *sshconn.Manager
+	// RemoteHostConfigPath is the selected hub.toml path. The host-management
+	// surface persists its UI-added hosts in a sidecar beside this file; empty
+	// disables sidecar persistence (the surface stays memory-only).
+	RemoteHostConfigPath string
 	// RemoteHostClient returns an attached, initialized AppWire client for a
 	// remote host, attaching over SSH on first use (component 04). nil
 	// disables remote hosts (tests).
 	RemoteHostClient func(ctx context.Context, host string) (*appwire.Client, error)
+	// RemoteHostClientIfAttached returns the current attached AppWire client for
+	// a remote host ONLY while a live channel is installed, without dialing
+	// (component 04's Manager.ClientIfAttached). The non-explicit read paths —
+	// every RemoteHubSource call, the empty-filter thread/list fan-out, and the
+	// background snapshot — resolve through this seam rather than
+	// RemoteHostClient, so none can eagerly attach a dormant host or re-dial one
+	// that dropped. nil leaves those paths on the dialing RemoteHostClient
+	// (tests).
+	RemoteHostClientIfAttached func(host string) (*appwire.Client, bool)
 	// RemoteHostFacts returns the component-04 preflight facts (protocol
 	// version, hub version, OS/arch, advertised features) for the AppWire
-	// connection behind client, the exact generation RemoteHostClient resolved
-	// for the capability probe; an implementation must answer from that same
-	// generation rather than racing a reconnect. The capability probe combines
-	// the facts with its AppWire reads. nil leaves the preflight-owned fields
-	// zero-valued (tests).
+	// connection behind client, the exact generation the probe resolved for the
+	// capability probe. An implementation must answer from that same generation
+	// rather than racing a reconnect: it reads one
+	// sshconn.Manager.ChannelIfAttached value and refuses (a typed
+	// SessionUnavailable) when that channel's client is not client, so a probe
+	// can never cache a snapshot assembled from two connections. The capability
+	// probe combines the facts with its AppWire reads. nil leaves the
+	// preflight-owned fields zero-valued (tests).
 	RemoteHostFacts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
+	// RemoteHostHandshake returns the attach handshake facts (ProtocolVersion,
+	// ServerInfo, SourceID, Features) captured when a remote host's channel
+	// attached, ONLY while a live channel is installed, without dialing. In
+	// production it is a closure over component 04's Manager.ChannelIfAttached
+	// with the client-identity guard at the call site, not
+	// Manager.HandshakeIfAttached (which has no production caller). It takes
+	// client — the exact generation the probe resolved — and reports false when
+	// the installed channel is a different one, so the probe cannot pair one
+	// connection's wire reads with another's handshake. nil leaves those fields
+	// zero-valued (tests).
+	RemoteHostHandshake func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
 	// RemoteHostOnline reports whether the controller's channel to host is
 	// currently attached (component 06). Nil leaves every remote host online
 	// (tests).
@@ -151,6 +208,12 @@ type ResumeRequest struct {
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Resume
 	Provider      string   // instance the launch selected; gated against the registry before spawning
+
+	// CompletionOwned is set only by explicit thread/resume. Automatic resume
+	// retains the configured startup budget; explicit restore awaits readiness,
+	// child exit, or caller/Stop cancellation instead of guessing its duration.
+	CompletionOwned bool
+	ActiveResume    *ActiveResume // hub-owned launch lifetime; never serialized on AppWire
 }
 
 // DaemonTarget is the daemon a rendezvous entry names, as the process verifier

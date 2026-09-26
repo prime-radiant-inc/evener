@@ -42,9 +42,21 @@
  * text, into the gutter; the kind is ambient context, not content). The slot
  * is --speaker-avatar-size wide so the glyph centres on the same column the
  * speaker avatars occupy; the widget strokes currentColor, and both .label
- * and .summary set --ink-low, so no colour is declared here. align-self:
+ * and .summary set --ink-mid, so no colour is declared here. align-self:
  * center because .summary's baseline alignment would seat the icon's box on
- * its bottom edge instead of centring the glyph on the text. */
+ * its bottom edge instead of centring the glyph on the text.
+ *
+ * The deliberate NON-consumer of the shared rail seat
+ * (styles/railseat.module.css): the label row is single-line, so there is no
+ * line-1 pinning to do (no height: 1lh, no font-size matching - the bulb is
+ * a fixed 14px stroke, not a text glyph in a wrapping row), .label's center
+ * alignment seats it (align-self: center, not the seat's flex-start), and its
+ * margin-right is the FULL speaker gap because the label flex row has no
+ * column gap for the seat's netting arithmetic to subtract. The pull rides
+ * the CONTAINERS below (for the .summary clipping reason documented there),
+ * so .gutterPull is not composed either. railseat.contract.test.ts pins this
+ * stance, so a future "compose the seat" cleanup has to argue with it rather
+ * than silently change the thought row's seating. */
 .icon {
   flex: none;
   align-self: center;

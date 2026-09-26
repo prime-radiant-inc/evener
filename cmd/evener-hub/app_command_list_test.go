@@ -6,8 +6,10 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"testing"
 
@@ -175,6 +177,25 @@ func TestHubCommandList_IncludesRegistryEnabledPlugin(t *testing.T) {
 	}
 }
 
+// TestHubCommandList_MigratesALegacyNameAndBroadcasts proves hubCommandList's
+// Manager broadcasts even when no mutation RPC is involved: ResolveForLaunch
+// -> resolveForLaunch -> List takes the store lock to rename a marketplace
+// recorded under a name evener refuses today, which writes both store files
+// (saveRename).
+func TestHubCommandList_MigratesALegacyNameAndBroadcasts(t *testing.T) {
+	pluginRoot := t.TempDir()
+	mgr := plugins.NewManager(pluginRoot)
+	plantRefusedMarketplace(t, mgr, "foo@bar")
+
+	broadcaster := newRecordingBroadcaster()
+	wirePluginStoreBroadcast(mgr, broadcaster)
+	cfg := hubcore.WebConfig{PluginRoot: pluginRoot, PluginManager: mgr}
+	if _, err := hubCommandList(context.Background(), cfg); err != nil {
+		t.Fatalf("hubCommandList: %v", err)
+	}
+	assertBroadcastMethods(t, broadcaster, appwire.NotifyEvenerMarketplaceUpdated, appwire.NotifyEvenerPluginUpdated)
+}
+
 func TestHubCommandList_MultiplePluginsSortedByName(t *testing.T) {
 	dirA := t.TempDir()
 	writeCommandListTestPlugin(t, dirA, "plugin-a")
@@ -250,5 +271,43 @@ func TestHubCommandList_ViaTypedRPCClient(t *testing.T) {
 	}
 	if len(resp.Commands) != 1 || resp.Commands[0].Name != "greet" {
 		t.Fatalf("Commands = %+v, want a single %q entry", resp.Commands, "greet")
+	}
+}
+
+// TestSortCommandDescriptors_StableForEqualKeys pins the (Name, PluginName,
+// Source) ordering to a stable sort. These three fields are the whole sort key,
+// so rows that agree on all three are only distinguished by their original
+// discovery order; an unstable sort is free to shuffle them, making the
+// advertised catalog flakier than the input. The rows are interleaved before
+// sorting so an unstable pdqsort actually has to move equal-key elements.
+func TestSortCommandDescriptors_StableForEqualKeys(t *testing.T) {
+	names := []string{"alpha", "bravo", "charlie", "delta", "echo"}
+	const perName = 4
+	var commands []appwire.CommandDescriptor
+	for round := range perName {
+		for _, name := range names {
+			commands = append(commands, appwire.CommandDescriptor{
+				Name:        name,
+				PluginName:  "greeter",
+				Source:      "plugin",
+				Description: fmt.Sprintf("%s-%02d", name, round),
+			})
+		}
+	}
+	sortCommandDescriptors(commands)
+	// Names sort ascending, and a stable sort keeps each name's rows in the
+	// round order they were discovered in, so the whole result is determined.
+	var want []string
+	for _, name := range names {
+		for round := range perName {
+			want = append(want, fmt.Sprintf("%s-%02d", name, round))
+		}
+	}
+	got := make([]string, len(commands))
+	for i, c := range commands {
+		got[i] = c.Description
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("order = %v, want %v (equal-key rows must keep discovery order)", got, want)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/worktree"
@@ -82,6 +81,8 @@ func TestWorktreeSwitch_CloseWaitsForTheRefusedSwitchTargetUnlock(t *testing.T) 
 	cleanupObserved := make(chan struct{})
 	var cleanupDuringUnlock, holding atomic.Bool
 	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
+	closeAwaiting := observeCloseAwaitingEnvWork(r.s)
+	rollbackHeld := make(chan struct{})
 
 	// Hold the rollback at the one command that identifies it — the unlock of
 	// the switch target — and watch for the close reaching environment cleanup
@@ -95,10 +96,9 @@ func TestWorktreeSwitch_CloseWaitsForTheRefusedSwitchTargetUnlock(t *testing.T) 
 		return func(args ...string) (string, error) {
 			if len(args) == 3 && args[0] == "worktree" && args[1] == "unlock" && args[2] == laneA &&
 				holding.CompareAndSwap(false, true) {
-				select {
-				case <-cleanupObserved:
+				close(rollbackHeld)
+				if closeWalkedPastHeldWork(t, closeAwaiting, cleanupObserved) {
 					cleanupDuringUnlock.Store(true)
-				case <-time.After(closeFenceProbe):
 				}
 			}
 			return inner(args...)
@@ -106,6 +106,15 @@ func TestWorktreeSwitch_CloseWaitsForTheRefusedSwitchTargetUnlock(t *testing.T) 
 	}
 
 	closeDone := armCloseDuringSwap(r, nil)
+	// The swap is refused as soon as the close begins, and the rollback only
+	// starts after it. Hold the close short of its environment-work join until
+	// the rollback's git is held, so the join it then arrives at can only be
+	// blocked by an admission that covers the rollback.
+	armedCloseBegun := r.s.cfg.testOnly.closeAfterDisposeSweepJoin
+	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() {
+		armedCloseBegun()
+		awaitCloseFenceSignal(t, rollbackHeld, "the refused switch holding its target unlock")
+	}
 
 	_, err = r.switchOp(t, map[string]any{"name": "a"})
 	<-closeDone

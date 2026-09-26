@@ -3,8 +3,10 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"reflect"
@@ -13,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/foldcache"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -40,25 +43,52 @@ func readPendingDelegateAttention(path, expectedSessionID string) ([]string, err
 }
 
 func readDelegateAttentionFold(path, expectedSessionID string) (delegateAttentionFold, error) {
+	fold, _, err := readDelegateAttentionFoldConsuming(path, expectedSessionID)
+	return fold, err
+}
+
+// readDelegateAttentionFoldConsuming is readDelegateAttentionFold reporting the
+// byte offset through the last complete line the reader consumed. That count
+// is the foldcache Extend contract's consumed-through offset: it excludes the
+// unterminated trailing line ReadLine drains and discards, and it counts only
+// bytes the reader actually saw, so an append or a repair truncation moving
+// EOF mid-read is reflected exactly. A missing transcript reports the empty
+// fold at offset 0, the same missing-as-empty semantics as
+// readDelegateAttentionFold.
+func readDelegateAttentionFoldConsuming(path, expectedSessionID string) (delegateAttentionFold, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return newDelegateAttentionFold(), nil
+			return newDelegateAttentionFold(), 0, nil
 		}
-		return delegateAttentionFold{}, fmt.Errorf("open delegate attention transcript: %w", err)
+		return delegateAttentionFold{}, 0, fmt.Errorf("open delegate attention transcript: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	reader := bufio.NewReaderSize(f, 64*1024)
-	headerRead := false
+	return extendDelegateAttentionFoldFrom(f, 0, newDelegateAttentionFold(), expectedSessionID)
+}
+
+// extendDelegateAttentionFoldFrom folds the complete lines r yields onto
+// prior, where r is positioned at byte offset from of the transcript. From
+// byte zero it reads and checks the header first; from anywhere else the
+// header was checked by the read that produced prior. It reports the offset
+// through the last complete line, the contract readDelegateAttentionFoldConsuming
+// documents.
+func extendDelegateAttentionFoldFrom(r io.Reader, from int64, prior delegateAttentionFold, expectedSessionID string) (delegateAttentionFold, int64, error) {
+	reader := bufio.NewReaderSize(r, 64*1024)
+	headerRead := from > 0
+	consumed := from
 	entries := make([]transcript.Entry, 0)
 	for {
-		line, complete, _, readErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
+		line, complete, read, readErr := transcript.ReadLine(reader, transcript.DefaultMaxLineBytes)
 		if readErr != nil {
-			return delegateAttentionFold{}, readErr
+			return delegateAttentionFold{}, 0, readErr
 		}
 		if !complete {
+			// The drained unterminated tail is not consumed: a torn line that
+			// completes later grows the file, and the next read refolds.
 			break
 		}
+		consumed += read
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
@@ -66,24 +96,106 @@ func readDelegateAttentionFold(path, expectedSessionID string) (delegateAttentio
 		if !headerRead {
 			header, err := transcript.DecodeHeader(line)
 			if err != nil {
-				return delegateAttentionFold{}, err
+				return delegateAttentionFold{}, 0, err
 			}
 			if header.SessionID != expectedSessionID {
-				return delegateAttentionFold{}, fmt.Errorf("delegate attention transcript session %q, want %q", header.SessionID, expectedSessionID)
+				return delegateAttentionFold{}, 0, fmt.Errorf("delegate attention transcript session %q, want %q", header.SessionID, expectedSessionID)
 			}
 			headerRead = true
 			continue
 		}
 		entry, err := transcript.DecodeEntry(line)
 		if err != nil {
-			return delegateAttentionFold{}, err
+			return delegateAttentionFold{}, 0, err
 		}
 		entries = append(entries, entry)
 	}
 	if !headerRead {
-		return delegateAttentionFold{}, errors.New("delegate attention transcript has no header")
+		return delegateAttentionFold{}, 0, errors.New("delegate attention transcript has no header")
 	}
-	return foldDelegateAttention(entries)
+	fold, err := extendDelegateAttention(prior, entries)
+	if err != nil {
+		return delegateAttentionFold{}, 0, err
+	}
+	return fold, consumed, nil
+}
+
+// readExistingDelegateAttentionFoldCompute is the compute step behind the
+// read-path fold memo (see readExistingDelegateAttentionFold): the fold plus
+// the bytes it consumed, the foldcache Extend contract's toOffset. A package
+// var, like scanDelegateJournal and scanJobJournal in jobs_activity_past.go, so
+// tests can count fold computations without instrumenting the filesystem.
+var readExistingDelegateAttentionFoldCompute = readDelegateAttentionFoldConsuming
+
+// delegateAttentionFoldCacheEntries bounds the read-path fold memo by number of
+// distinct transcripts retained. One memo entry holds one delegateAttentionFold
+// — the attention turns, resolutions, and delivery commits of one child, not
+// its whole transcript — so entries are small and bounded by that child's
+// attention traffic, and a hub reading a fleet of delegate-heavy sessions keeps
+// at most this many folds resident. Sizing follows the same distinct-journal
+// budgeting style as historicalDelegateFoldCacheEntries: a generous count for
+// a cheaply-sized payload.
+const delegateAttentionFoldCacheEntries = 512
+
+// delegateAttentionFoldMemo is one cached fold's payload. The session id rides
+// in the payload because foldcache keys by path alone: a transcript path reused
+// across sessions must never serve another session's fold, so
+// readExistingDelegateAttentionFold checks it after a hit.
+type delegateAttentionFoldMemo struct {
+	sessionID string
+	fold      delegateAttentionFold
+}
+
+// delegateAttentionFoldCache memoizes read-path attention folds by transcript
+// path, with foldcache's staleness rules standing in for the hand-rolled
+// size-and-mtime gate this used to be: an append-only transcript that changed
+// recomputes, an unchanged one serves the memo. Without it, every status sweep
+// re-read and re-decoded every eligible delegate child's full transcript —
+// O(total delegate bytes) per thread/read (a 251-child session measured
+// 175.6MB re-read per click). The cached fold is shared and MUST be treated as
+// read-only by callers, the same contract TurnCache documents for its
+// memoized slices.
+var delegateAttentionFoldCache = foldcache.New[delegateAttentionFoldMemo](delegateAttentionFoldCacheEntries)
+
+// extendDelegateAttentionFold is the Extend delegateAttentionFoldCache reads a
+// transcript through. Every call refolds from byte zero and fromOffset/prior go
+// unused, although the fold itself could resume (extendDelegateAttention is a
+// left fold); the cache pays for itself by skipping the read entirely while a
+// transcript is unchanged, the hot case in the per-click status sweeps. The
+// ctx an Extend call runs with is detached from every caller by
+// foldcache.Get, so there is no cancellation to check mid-read.
+func extendDelegateAttentionFold(expectedSessionID string) foldcache.Extend[delegateAttentionFoldMemo] {
+	return func(_ context.Context, path string, _ int64, _ delegateAttentionFoldMemo) (delegateAttentionFoldMemo, int64, error) {
+		// toOffset is the byte count the reader itself consumed, through the
+		// last complete line — never a size stat'd against the file from the
+		// outside. A stat can only bound the fold from beyond the reader: an
+		// append racing the read moves EOF forward underneath it and a repair
+		// truncation moves it back, and no stat before or after can say which
+		// bytes the fold actually saw. The consumed count is exact by
+		// construction (see readDelegateAttentionFoldConsuming): it excludes
+		// the drained unterminated tail and includes only bytes read, so the
+		// recorded offset can never claim content the fold did not fold. The
+		// append race would otherwise serve a turn-less fold as an
+		// unchanged-transcript hit indefinitely
+		// (TestReadExistingDelegateAttentionFoldRacingAppendStaysVisible),
+		// and the repair race would probe past the truncated file and fail
+		// the read
+		// (TestReadExistingDelegateAttentionFoldRepairRacingTheFoldSucceeds).
+		fold, consumed, err := readExistingDelegateAttentionFoldCompute(path, expectedSessionID)
+		if err != nil {
+			return delegateAttentionFoldMemo{}, 0, err
+		}
+		// readDelegateAttentionFold is missing-as-empty for historical
+		// callers; this boundary is strict, including a removal racing the
+		// fold, so a transcript that vanished between the size stat above and
+		// the fold's open errors here instead of serving (and caching) an
+		// empty fold. The bypass in delegate_tree_attention.go carries the
+		// same check for the sessions it serves directly.
+		if _, err := os.Stat(path); err != nil {
+			return delegateAttentionFoldMemo{}, 0, fmt.Errorf("stat delegate attention transcript after read: %w", err)
+		}
+		return delegateAttentionFoldMemo{sessionID: expectedSessionID, fold: fold}, consumed, nil
+	}
 }
 
 type delegateAttentionFold struct {
@@ -96,7 +208,20 @@ type delegateAttentionFold struct {
 }
 
 func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, error) {
-	fold := newDelegateAttentionFold()
+	return extendDelegateAttention(newDelegateAttentionFold(), entries)
+}
+
+// extendDelegateAttention continues the fold prior with entries. The fold is a
+// strict left fold: each entry is checked and applied against the state the
+// entries before it built, and nothing an entry does reaches back to change an
+// earlier decision, so folding a transcript's prefix and then extending with
+// the rest decides exactly what one fold over the whole transcript decides.
+// prior is never modified; a caller may still hold it.
+func extendDelegateAttention(prior delegateAttentionFold, entries []transcript.Entry) (delegateAttentionFold, error) {
+	if len(entries) == 0 {
+		return prior, nil
+	}
+	fold := prior.clone()
 	for _, entry := range entries {
 		turn := entry.Turn
 		if err := foldDelegateDeliveryCommits(&fold, turn); err != nil {
@@ -195,6 +320,17 @@ func newDelegateAttentionFold() delegateAttentionFold {
 		resolutions:       make(map[string]delegateAttentionResolution),
 		resumeGenerations: make(map[string]uint64),
 		deliveryCommits:   make(map[string]string),
+	}
+}
+
+func (f delegateAttentionFold) clone() delegateAttentionFold {
+	return delegateAttentionFold{
+		order:             slices.Clone(f.order),
+		content:           maps.Clone(f.content),
+		turns:             maps.Clone(f.turns),
+		resolutions:       maps.Clone(f.resolutions),
+		resumeGenerations: maps.Clone(f.resumeGenerations),
+		deliveryCommits:   maps.Clone(f.deliveryCommits),
 	}
 }
 
@@ -1097,7 +1233,108 @@ func (s *Session) readDelegateAttentionFold(path, sessionID string) (delegateAtt
 	if readFold := s.cfg.testOnly.delegateAttentionReadFold; readFold != nil {
 		return readFold(path, sessionID)
 	}
-	return readDelegateAttentionFold(path, sessionID)
+	return s.attentionFoldCursor.read(path, sessionID)
+}
+
+// delegateAttentionFoldTailBytes is how much of the folded prefix, ending at
+// the cursor's offset, a resumed read re-reads and compares. One page costs
+// the same read as a few bytes and covers the whole of most trailing records.
+const delegateAttentionFoldTailBytes = 4096
+
+// delegateAttentionFoldCursor keeps a resident Session's attention fold of its
+// own transcript, so the check-append-verify reads of every delivery and
+// resolution decode only what was appended since the last read instead of the
+// whole transcript (a long root's runs to ~100MB, and it is read about five
+// times per delegate report). The zero value is an empty cursor, and the
+// Session's attentionMu guards it.
+//
+// Every read still reads the file: a resumed read decodes the bytes past the
+// offset, so the verify after an append sees the appended record on disk
+// exactly as a full read would. What a resumed read trusts is the prefix, and
+// it trusts it only while the file is provably the one that was folded, grown
+// by appends: the same session, the same file (device and inode, so a
+// replacement renamed over the path refolds), at least as long as the offset
+// (a truncation refolds), and the recorded trailing bytes still at the offset
+// (a truncation that regrew past it refolds). Any other outcome, and any
+// error, folds from byte zero.
+//
+// Those checks cover every change the transcript's writers make. The resident
+// writer appends, and rolls back only its own failed append, all under
+// attentionMu — which every read here also holds, so a read never sees a record
+// that is later taken back. A cold writer appends, and on open trims an
+// unterminated tail, which a fold never consumes. What the checks cannot see is
+// an in-place rewrite before the tail window that keeps the file's identity,
+// its length, and its last delegateAttentionFoldTailBytes; nothing writes a
+// transcript that way.
+//
+// This is not delegateAttentionFoldCache (foldcache) for three reasons. It
+// resumes only when a grown file's mtime moved, and a delivery's appends can
+// land within one coarse mtime tick of the previous write, so the verify
+// after an append would refold from zero; it has no file-identity check; and
+// its shared LRU can evict the root's entry during a hub-wide sweep.
+type delegateAttentionFoldCursor struct {
+	sessionID string
+	file      os.FileInfo
+	offset    int64
+	tail      []byte
+	fold      delegateAttentionFold
+}
+
+// read returns the fold of the transcript at path, with readDelegateAttentionFold's
+// decisions: the same fold, the same errors, and the empty fold for a missing
+// file. The cursor is left empty unless this read succeeds on a regular file.
+// The returned fold is the one the next read resumes from, so callers must not
+// change it.
+func (c *delegateAttentionFoldCursor) read(path, sessionID string) (delegateAttentionFold, error) {
+	previous := *c
+	*c = delegateAttentionFoldCursor{}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return newDelegateAttentionFold(), nil
+		}
+		return delegateAttentionFold{}, fmt.Errorf("open delegate attention transcript: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return delegateAttentionFold{}, fmt.Errorf("stat delegate attention transcript: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		// Only a regular file has offsets to resume from; anything else is
+		// folded as a stream, from its start, every time.
+		fold, _, err := extendDelegateAttentionFoldFrom(f, 0, newDelegateAttentionFold(), sessionID)
+		return fold, err
+	}
+	from, prior := int64(0), newDelegateAttentionFold()
+	if previous.resumes(f, info, sessionID) {
+		from, prior = previous.offset, previous.fold
+		if _, err := f.Seek(from, io.SeekStart); err != nil {
+			return delegateAttentionFold{}, fmt.Errorf("seek delegate attention transcript: %w", err)
+		}
+	}
+	fold, consumed, err := extendDelegateAttentionFoldFrom(f, from, prior, sessionID)
+	if err != nil {
+		return delegateAttentionFold{}, err
+	}
+	tail := make([]byte, min(consumed, delegateAttentionFoldTailBytes))
+	if _, err := f.ReadAt(tail, consumed-int64(len(tail))); err != nil {
+		return delegateAttentionFold{}, fmt.Errorf("read delegate attention transcript tail: %w", err)
+	}
+	*c = delegateAttentionFoldCursor{sessionID: sessionID, file: info, offset: consumed, tail: tail, fold: fold}
+	return fold, nil
+}
+
+// resumes reports whether f is the file c folded, grown only by appends since.
+func (c delegateAttentionFoldCursor) resumes(f *os.File, info os.FileInfo, sessionID string) bool {
+	if c.file == nil || c.sessionID != sessionID || !os.SameFile(c.file, info) || info.Size() < c.offset {
+		return false
+	}
+	tail := make([]byte, len(c.tail))
+	if _, err := f.ReadAt(tail, c.offset-int64(len(tail))); err != nil {
+		return false
+	}
+	return bytes.Equal(tail, c.tail)
 }
 
 // resolveAttentionDurably appends attention markers through the one writer
@@ -1125,7 +1362,7 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 		return errors.New("attention resolution requires an attached transcript writer")
 	}
 	path := transcriptPath(stateDir, sessionID)
-	fold, err := readDelegateAttentionFold(path, sessionID)
+	fold, err := s.attentionFoldCursor.read(path, sessionID)
 	if err != nil {
 		return err
 	}
@@ -1145,7 +1382,7 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 	if err := appendDelegateAttentionResolutions(writer, fold, ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
-	verified, err := readDelegateAttentionFold(path, sessionID)
+	verified, err := s.attentionFoldCursor.read(path, sessionID)
 	if err != nil {
 		return err
 	}
@@ -1255,7 +1492,7 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 	} else if err := reopened.EstablishDurability(); err != nil {
 		return err
 	}
-	verified, err := readDelegateAttentionFold(path, sessionID)
+	verified, err := s.attentionFoldCursor.read(path, sessionID)
 	if err != nil {
 		return err
 	}
@@ -1275,19 +1512,27 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 	return writer.Close()
 }
 
+// appendDelegateAttentionResolutions appends a resolution for each of ids that
+// fold does not already record, once per ID however often ids repeats it. It
+// leaves fold unchanged: a resident Session's fold is its attention cursor's,
+// which must hold only what the file holds, or the verify read after this
+// append would confirm it from memory.
 func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegateAttentionFold, ids []string, disposition delegateAttentionResolution, resumeGeneration uint64) error {
 	if err := validateDelegateAttentionResolutions(fold, ids, disposition, resumeGeneration); err != nil {
 		return err
 	}
+	appended := make(map[string]bool, len(ids))
 	for _, attentionID := range ids {
+		if appended[attentionID] {
+			continue
+		}
 		if previous, resolved := fold.resolutions[attentionID]; resolved && previous == disposition && fold.resumeGenerations[attentionID] == resumeGeneration {
 			continue
 		}
 		if err := writer.AppendSynced(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
 			return fmt.Errorf("attention %q resolution was not durably appended: %w", attentionID, err)
 		}
-		fold.resolutions[attentionID] = disposition
-		fold.resumeGenerations[attentionID] = resumeGeneration
+		appended[attentionID] = true
 	}
 	return nil
 }

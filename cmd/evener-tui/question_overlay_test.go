@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/evener/cmd/evener-tui/internal/msgrender"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 )
 
@@ -97,6 +98,21 @@ func TestPendingAskQuestions_SteeringDoesNotResolve(t *testing.T) {
 	got := pendingAskQuestions(messages)
 	if len(got) != 1 {
 		t.Fatalf("pending after steering = %#v, want still-pending (steering is not a resolving user turn)", got)
+	}
+}
+
+// ChatMessage does not retain the steering kind, so pending-ask behavior for
+// steering messages is covered by TestPendingAskQuestions_SteeringDoesNotResolve.
+// This test keeps the separate rendering contract load-bearing: salvage text
+// remains visible in the TUI transcript.
+func TestInterruptedSalvageRenderKeepsContent(t *testing.T) {
+	const salvage = "salvaged fragment before interruption"
+	message := transcript.ChatMessage{
+		Kind: transcript.MsgSteering,
+		Text: salvage,
+	}
+	if rendered := msgrender.RenderMessage(message, 100, false); !strings.Contains(rendered, salvage) {
+		t.Fatalf("interrupted salvage render = %q, want retained content %q", rendered, salvage)
 	}
 }
 

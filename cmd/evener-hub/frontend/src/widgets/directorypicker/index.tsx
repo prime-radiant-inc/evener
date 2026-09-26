@@ -212,6 +212,10 @@ export function DirectoryPicker({
               className={CLASS.row}
               type="button"
               key={path}
+              // The sidebar truncates this text, so the full path rides on
+              // hover for sighted users; aria-label already carries it for
+              // assistive tech.
+              title={path}
               disabled={busy}
               aria-label={`Open recent ${path}`}
               onClick={() => void browse(path)}

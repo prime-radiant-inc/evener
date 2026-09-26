@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vi
 import "../../panes/sessionPanels";
 import { QUEUE_EMPTY, QUEUE_UNAVAILABLE, STEER_UNAVAILABLE } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -67,27 +68,8 @@ afterAll(
   }),
 );
 
-// See stores/prefs.test.ts: Node 26 shadows jsdom's localStorage with a
-// non-functional global, so every localStorage-touching test file needs this.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 const CAPS: ThreadCapabilities = {
@@ -278,7 +260,7 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   topNotesStore.getState().resetForTests();
-  useCommandCatalog.setState({ commands: [], loaded: false });
+  useCommandCatalog.setState(useCommandCatalog.getInitialState());
   resetWorkspaceStoreForTests();
   resetPrefsStoreForTests();
   resetNavigationStoreForTests();
@@ -402,7 +384,6 @@ test("an unhydrated focused session keeps every command listed and only Notes un
 test("filterCommands never lists a plugin catalog entry, focused session or not", () => {
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" }],
-    loaded: true,
   });
   expect(filterCommands(buildPaletteContext(), "/rev").commands.some((c) => c.id === "review")).toBe(false);
 
@@ -413,7 +394,6 @@ test("filterCommands never lists a plugin catalog entry, focused session or not"
 test("catalog commands are absent from commandsInScope without a focused session", () => {
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" }],
-    loaded: true,
   });
 
   expect(commandsInScope(buildPaletteContext()).some((command) => command.id === "review")).toBe(false);
@@ -433,7 +413,6 @@ test("sessionBuiltinCommands is every session-scoped BUILT-IN, unavailableReason
   focusSession("ref_a");
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", description: "plugin cmd", source: "plugin" }],
-    loaded: true,
   });
   seedModel("ref_a", { capabilities: { ...CAPS, compact: false } });
 

@@ -122,6 +122,21 @@ var hubRelayIdleInterval = 250 * time.Millisecond
 // acknowledges speculatively or allocates a worker per attacker-chosen target.
 const hubRelayPendingDeliveryLimit = 64
 
+// hubTransientOwnershipBudget bounds how long a path without a request
+// context of its own waits for a session alias that a deletion or a
+// long-running Resume may hold: long enough for transient ownership to
+// resolve, bounded so the caller cannot be parked indefinitely. The
+// workspaceData reads in web_workspace.go keep their own inline 3s budgets;
+// those sites predate this constant.
+const hubTransientOwnershipBudget = 3 * time.Second
+
+// relayPublicationGuardTimeout bounds how long the per-frame publication guard
+// waits for the target alias. A deletion or a long-running Resume holds that
+// alias; a bounded wait lets transient ownership resolve so an acknowledged
+// frame is still published, while the fan-out and its publicationDone drain can
+// never be parked indefinitely.
+const relayPublicationGuardTimeout = hubTransientOwnershipBudget
+
 const (
 	relayRetryMinDelay = 100 * time.Millisecond
 	relayRetryMaxDelay = 5 * time.Second
@@ -224,6 +239,24 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork 
 	}
 	notification.Params = stamped
 	return notification
+}
+
+// relayGaveUpCapabilities is the action set the relay advertises beside the
+// idle status it synthesizes when a mid-turn daemon stops answering. It is the
+// hub's own answer, so it applies the same gate stampClosedThreadCapabilities
+// uses: only a local thread is this hub's to answer for, because only a local
+// session is the past index's to resume. A non-local (federated) source keeps
+// the masked set it sent — nil means "no update", and advertising a resume
+// story the hub cannot honour would offer actions it would refuse. The fork
+// field is resolved through the same ownership fence a past read uses, so the
+// pushed set and the read that follows it cannot drift.
+func relayGaveUpCapabilities(cfg hubcore.WebConfig, relayKey string, thread appwire.Thread) *appwire.ThreadCapabilities {
+	if !strings.HasPrefix(relayKey, "local:") {
+		return nil
+	}
+	set := pastThreadCapabilities()
+	set.ForkFromTurn = applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn
+	return &set
 }
 
 // stampResyncTarget names the route a fanned-out daemon-gone resync is being
@@ -386,6 +419,12 @@ func relayNotificationRoutingKey(notification appwire.Notification, sourceID str
 
 func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) hubRelayFunctions {
 	relayIdleInterval := hubRelayIdleInterval
+	// The relay's background goroutines fence against the lookup captured
+	// here, never the live seam: they outlive the request that started them.
+	relayTargetState := deletionTargetState
+	backgroundFenceError := func(ref, threadID string) error {
+		return relayTargetState.fenceError(cfg, ref, threadID, ref, "")
+	}
 	retryClock := newRelayRetryClock()
 	if cfg.RelayHooks.RetryWait != nil {
 		retryClock = relayRetryClockFunc(cfg.RelayHooks.RetryWait)
@@ -704,11 +743,41 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if cfg.RelayHooks.AfterCanonicalPublishEntry != nil {
 					cfg.RelayHooks.AfterCanonicalPublishEntry(target.relayKey, notification)
 				}
-				_, publicationErr := withDeletionTargetOwnership(context.Background(), cfg, target.ref, target.threadID, "", func() (struct{}, error) {
-					server.Broadcast(target.relayKey, notification.Method, notification.Params)
-					return struct{}{}, nil
-				})
-				_ = publicationErr
+				// The guard is best-effort: it only keeps a frame from being
+				// published while the target is being deleted, and its error is
+				// already discarded. Wait for the alias with a bounded timeout so
+				// transient deletion or Resume ownership does not drop an
+				// acknowledged frame, while the fan-out and its publicationDone
+				// drain still cannot be parked indefinitely. On expiry the frame
+				// is skipped as before — an explicit Resume can hold the alias
+				// longer than the guard — but the delivery is acknowledged
+				// afterwards, so the skipped frame would be a silent gap in the
+				// subscriber's projection: broadcast a resync naming the target
+				// first, and the subscriber re-reads instead of missing an
+				// acknowledged notification.
+				// Fast path: an immediately free alias needs no guard context or
+				// timer. A contended or unresolved target falls through to the
+				// bounded wait unchanged.
+				var release func()
+				var lockErr error
+				if fastRelease, ok := tryLockDeletionTarget(cfg, target.ref, target.threadID); ok {
+					release = fastRelease
+				} else {
+					guardCtx, cancelGuard := context.WithTimeout(context.Background(), relayPublicationGuardTimeout)
+					release, lockErr = lockDeletionTarget(guardCtx, cfg, target.ref, target.threadID)
+					cancelGuard()
+				}
+				if lockErr == nil {
+					if backgroundFenceError(target.ref, target.threadID) == nil {
+						server.Broadcast(target.relayKey, notification.Method, notification.Params)
+					}
+					release()
+				} else {
+					server.Broadcast(target.relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+						ThreadID: target.threadID,
+						Ref:      target.ref,
+					})
+				}
 				var closeHandle bool
 				relayMu.Lock()
 				target.state.publications--
@@ -1211,7 +1280,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				publish, release := commandFunctions(existing, state)
 				return existing, state, publish, release, nil
 			}
-			relayCtx, cancelRelay := context.WithCancel(context.Background())
+			// The server owns the canonical relay: its Shutdown ends the
+			// fan-out rather than leaving it to an idle tick.
+			relayCtx, cancelRelay := context.WithCancel(server.Lifetime())
 			handle := &hubRelayHandle{
 				ready:         make(chan struct{}),
 				ctx:           relayCtx,
@@ -1517,6 +1588,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			existing := relayedThreads[relayKey]
 			if existing == nil {
 				relayCtx, cancelRelay = context.WithCancel(context.WithoutCancel(ctx))
+				// relayCtx keeps the starting request's values but not its
+				// cancellation, since the relay outlives that request. The
+				// server that serves the relay owns it instead, from the first
+				// subscribe on: its Shutdown ends the relay rather than leaving
+				// it to an idle tick, which never comes while a subscriber stays
+				// registered. The hook is released once the relay itself ends.
+				stopOnServerShutdown := context.AfterFunc(server.Lifetime(), cancelRelay)
+				context.AfterFunc(relayCtx, func() { stopOnServerShutdown() })
 				// Label every attach this relay issues with its own key. A source
 				// that keys its subscriptions by remote thread identity uses it to
 				// tell this relay re-attaching from a second relay that reached the
@@ -1590,6 +1669,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			finishHandleLocked(relayHandle, err)
 			relayMu.Unlock()
+			cancelRelay()
 			return err
 		}
 		relayMu.Unlock()
@@ -1716,6 +1796,20 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			// per stall: clearing activeTurnID makes every later call in the same
 			// stall a no-op, so continued backoff never re-broadcasts the same
 			// failure.
+			//
+			// Both frames name the relay's target. The synthesized failure is the
+			// turn's; the session STATUS is thread/status/changed's, never
+			// turn/completed's — the daemon's real failure exit emits the same
+			// pair (agent/session_lifecycle.go's endInputAtTurnFailure announces
+			// EventSessionEnd{Reason:"turn_failed"} as
+			// thread/status/changed(idle)). Without the status frame a client
+			// that leaves the status to the status frame, as the shared web and
+			// mobile reducer now does, would keep the session active with Stop
+			// and Steer still showing and Send withheld — the exact stall this
+			// synthesis exists to end. The capabilities are the hub's own answer
+			// for a session whose daemon is gone (relayGaveUpCapabilities, the set
+			// a past read returns), because the departing daemon's set describes
+			// the turn that is over.
 			giveUpOnActiveTurn := func(cause error) {
 				if activeTurnID == "" {
 					return
@@ -1726,8 +1820,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if cause != nil {
 					message += ": " + cause.Error()
 				}
-				server.Broadcast(relayKey, appwire.NotifyTurnCompleted, map[string]any{
-					"turn": appwire.Turn{
+				server.Broadcast(relayKey, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
+					ThreadID: threadID,
+					Ref:      subscribeParams.Ref,
+					Turn: appwire.Turn{
 						ID:     turnID,
 						Status: appwire.TurnStatusFailed,
 						Error: &appwire.TurnError{
@@ -1735,6 +1831,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 							Source:  "hub",
 						},
 					},
+				})
+				server.Broadcast(relayKey, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+					ThreadID:     threadID,
+					Ref:          subscribeParams.Ref,
+					Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+					Capabilities: relayGaveUpCapabilities(cfg, relayKey, thread),
 				})
 			}
 			recordFailure := func(cause error) {
@@ -1801,12 +1903,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			subscribeForRecovery := func() (hubRelaySubscriptionResult, bool) {
 				result := make(chan hubRelaySubscriptionResult, 1)
 				go func() {
-					if err := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); err != nil {
+					if err := backgroundFenceError(subscribeParams.Ref, threadID); err != nil {
 						result <- hubRelaySubscriptionResult{err: err}
 						return
 					}
 					notifications, err := subscribeRelayRecovery(relayCtx, source, recoveryParams)
-					if fenceErr := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); fenceErr != nil {
+					if fenceErr := backgroundFenceError(subscribeParams.Ref, threadID); fenceErr != nil {
 						err = fenceErr
 					}
 					result <- hubRelaySubscriptionResult{notifications: notifications, err: err}
@@ -1952,7 +2054,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			ref = appwire.Ref{SourceID: sourceID, ThreadID: thread.ID}.String()
 		}
-		source, err := sourceForThreadWithDeletionFence(cfg, sources, ref, thread.ID)
+		source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, ref, thread.ID)
 		if err != nil {
 			return nil //nolint:nilerr // best-effort relay: an unresolvable source means nothing to relay, not a caller error
 		}

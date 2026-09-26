@@ -44,13 +44,21 @@ func newQueuePersistTestSession(t *testing.T, dir string) *Session {
 // `evener serve --resume` uses.
 func restoreQueuePersistTestSession(t *testing.T, dir, id string) *Session {
 	t.Helper()
+	return restoreQueuePersistTestSessionWith(t, dir, id, RestoreSessionConfig{})
+}
+
+// restoreQueuePersistTestSessionWith is restoreQueuePersistTestSession with
+// restoreCfg; it supplies StateDir.
+func restoreQueuePersistTestSessionWith(t *testing.T, dir, id string, restoreCfg RestoreSessionConfig) *Session {
+	t.Helper()
 	meta, err := schema.LoadSessionMeta(dir, id)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
+	restoreCfg.StateDir = dir
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, restoreCfg)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 	}

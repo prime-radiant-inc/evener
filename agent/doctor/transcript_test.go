@@ -23,6 +23,20 @@ func toolCall(name, args string) llm.ContentPart {
 		ID: "tc-" + name, Name: name, Arguments: json.RawMessage(args)}}
 }
 
+// rejectedToolCall is toolCall for a call whose arguments were not valid
+// JSON: Arguments holds the replay-safe {} placeholder while raw_arguments
+// carries the model's bytes.
+func rejectedToolCall(name, raw string) llm.ContentPart {
+	return rejectedToolCallWithID("tc-"+name, name, raw)
+}
+
+// rejectedToolCallWithID is rejectedToolCall with an explicit ID, for fixtures
+// holding several distinct rejected calls to the same tool.
+func rejectedToolCallWithID(id, name, raw string) llm.ContentPart {
+	return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+		ID: id, Name: name, Arguments: json.RawMessage(`{}`), RawArguments: raw}}
+}
+
 func toolResult(name string, content any, isError bool) llm.ContentPart {
 	return llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
 		ToolCallID: "tc-" + name,
@@ -236,6 +250,59 @@ func TestTranscript_ToolCallShowsExplicitIntent(t *testing.T) {
 	out := RenderTranscript(r, "markdown")
 	if !strings.Contains(out, "intent: list the directory") {
 		t.Fatalf("rendered transcript missing intent line:\n%s", out)
+	}
+}
+
+// TestTranscript_ToolCallShowsRejectedRawArguments pins the post-mortem
+// contract for a call whose arguments were not valid JSON: the record keeps
+// the model's raw bytes in raw_arguments while arguments holds the
+// replay-safe {} placeholder, and the doctor render must show what the model
+// actually sent, not the placeholder.
+func TestTranscript_ToolCallShowsRejectedRawArguments(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	sid := sidC
+	const rawRejected = `{"update":[{"id":1},{id: 2, status: "in_progress"}]}`
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			rejectedToolCall("rejected", rawRejected),
+		}}),
+	}
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
+
+	r, err := Transcript(base, sid, TranscriptOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(r.Turns[0].ToolCalls); got != 1 {
+		t.Fatalf("tool calls = %d, want 1", got)
+	}
+	if got := r.Turns[0].ToolCalls[0].Arguments; got != rawRejected {
+		t.Fatalf("Arguments = %q, want the raw bytes verbatim %q", got, rawRejected)
+	}
+	if got := r.Turns[0].ToolCalls[0].ArgPreview; got != rawRejected {
+		t.Fatalf("ArgPreview = %q, want the raw bytes verbatim %q", got, rawRejected)
+	}
+
+	out := RenderTranscript(r, "markdown")
+	if !strings.Contains(out, rawRejected) {
+		t.Fatalf("rendered transcript hides the rejected call's raw arguments:\n%s", out)
+	}
+
+	// Old records (written before raw_arguments existed) have no
+	// raw_arguments field and render their arguments exactly as before.
+	legacy := []schema.Turn{
+		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			toolCall("read_file", `{"path":"x"}`),
+		}}),
+	}
+	writeRichSession(t, bucket, sidB, legacy, nil, schema.SessionMeta{})
+	lr, err := Transcript(base, sidB, TranscriptOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := lr.Turns[0].ToolCalls[0].Arguments; got != `{"path":"x"}` {
+		t.Fatalf("legacy record Arguments = %q, want unchanged %q", got, `{"path":"x"}`)
 	}
 }
 

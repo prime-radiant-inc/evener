@@ -3,7 +3,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { connectionStore } from "../stores/connection";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
@@ -11,6 +11,7 @@ import { AppShell } from "./AppShell";
 import { DockRegion, resetDockChunkForTests } from "./DockRegion";
 import * as dockHostChunk from "./dockHostChunk";
 import { resetDockHostLoaderForTests } from "./dockHostChunk";
+import * as pageReload from "./pageReload";
 import { resetWorkspaceStoreForTests } from "./workspace";
 
 // The DockHost chunk is a separate network request from index.html (345kB of
@@ -219,8 +220,8 @@ test("a successful retry is reused after DockRegion unmounts and remounts", asyn
 
 test("a cache-busted retry that still names a stale hashed chunk offers a page reload", async () => {
   vi.mocked(loadDockHost).mockRejectedValue(new Error(CHUNK_ERROR));
-  const reload = vi.fn();
-  vi.stubGlobal("location", { ...window.location, reload });
+  const reload = vi.spyOn(pageReload, "reloadPage").mockImplementation(() => {});
+  onTestFinished(() => reload.mockRestore());
   const user = userEvent.setup();
 
   render(<DockRegion />);

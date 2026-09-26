@@ -774,6 +774,6 @@ func TestStopOnACarrierParksItsUnrecordedSteerAndTheHoldNamesIt(t *testing.T) {
 // claimSteeringCarrierTurn is the tests' shorthand for claimSteeringCarrierInput
 // when only the reserved turn id the claim published matters.
 func (s *Session) claimSteeringCarrierTurn() (turnID string, ok bool) {
-	carrier, ok := s.claimSteeringCarrierInput()
-	return carrier.StableTurnID, ok
+	carrier, _ := s.claimSteeringCarrierInput()
+	return carrier.StableTurnID, carrier.SteeringCarrier
 }

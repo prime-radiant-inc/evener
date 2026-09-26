@@ -11,9 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -37,10 +40,10 @@ var (
 func intg_buildMCPServer(t *testing.T) string {
 	t.Helper()
 	intgMCPServerOnce.Do(func() {
-		intgMCPServerDir, errIntgMCPServer = os.MkdirTemp("", "evener-intgmcpserver-*")
-		if errIntgMCPServer != nil {
-			return
-		}
+		// The same placement rule as the worktree base repo: a package
+		// fixture must outlive the test that first builds it, so it never
+		// lands inside an isolated test's own t.TempDir.
+		intgMCPServerDir = packageFixtureTempDir(t, "evener-intgmcpserver-*")
 		intgMCPServerPath = filepath.Join(intgMCPServerDir, "intgmcpserver")
 		cmd := exec.Command("go", "build", "-o", intgMCPServerPath, "./testdata/intgmcpserver")
 		out, err := cmd.CombinedOutput()
@@ -373,6 +376,169 @@ func TestIntg_RestoreSession_LateErrorClosesMCPManager(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); statErr != nil {
 		t.Fatalf("MCP server exit marker %s missing after synchronous cleanup: %v", marker, statErr)
+	}
+}
+
+// TestIntg_DelegateIdleReleasesStdioMCPServer pins the idle runtime release
+// contract: a stable delegate whose generation finalized must release its
+// resident runtime — which kills its stdio MCP server subprocess — while it
+// sits idle, and must stay resumable via the cold restore path.
+//
+// Before the fix, a finalized delegate was retained as a live session (a
+// terminal record kept warm for resume), so its plugin-provided stdio MCP
+// server process stayed alive as long as its daemon did — effectively forever
+// for a hub-spawned per-thread daemon (fleet evidence: 715 leaked chrome MCP
+// server processes across 55 daemons at diagnosis time). The exit marker
+// proves the child's server actually exited: the parent session's own server
+// (same plugin config, so the same marker path) stays connected for the whole
+// test, so a marker can only have been written by the released child's
+// server.
+func TestIntg_DelegateIdleReleasesStdioMCPServer(t *testing.T) {
+	t.Parallel()
+	bin := intg_buildMCPServer(t)
+	marker := filepath.Join(t.TempDir(), "released.marker")
+
+	dir := makePluginDir(t, "mcpplug")
+	mcpJSON, err := json.Marshal(map[string]any{
+		"mcpServers": map[string]any{
+			"svc": map[string]any{"command": bin, "args": []string{marker}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal .mcp.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".mcp.json"), mcpJSON, 0644); err != nil {
+		t.Fatalf("write .mcp.json: %v", err)
+	}
+
+	parentClient := llm.NewClient()
+	parentClient.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("parent")
+	}})
+
+	var factoryCalls atomic.Int64
+	factory := func() *llm.Client {
+		factoryCalls.Add(1)
+		c := llm.NewClient()
+		c.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+			return agenttest.FinalResponse("delegate done")
+		}})
+		registerTestSessionNamer(c)
+		return c
+	}
+
+	cfg := SessionConfig{
+		StateDir:         t.TempDir(),
+		PluginDirs:       []string{dir},
+		MaxSubagentDepth: 1,
+	}
+	cfg.testOnly.childClientFactory = factory
+	// Shrink the follow-up grace so the scheduled release fires within the
+	// poll window below; production keeps the default grace.
+	shortGrace := 100 * time.Millisecond
+	cfg.testOnly.delegateIdleReleaseDelay = &shortGrace
+
+	sess, err := NewSession(parentClient, withTestSessionNamer(parentClient, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	drainDone := make(chan struct{})
+	go func() {
+		for range sess.Events() {
+		}
+		close(drainDone)
+	}()
+	defer func() {
+		sess.Close()
+		<-drainDone
+	}()
+
+	// TRIPWIRE: scripted adapters plus an in-process MCP subprocess; the
+	// markers and completion normally settle in well under a second. 30s only
+	// fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	res := sess.createDelegate(ctx, delegateArgs{Task: "run once", DelegationAllowance: new(0)})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v (status=%s reason=%s)", res.Err, res.Status, res.Reason)
+	}
+	delegateID := res.DelegateID
+	childID := res.ChildSessionID
+	if delegateID == "" || childID == "" {
+		t.Fatalf("createDelegate returned empty ids: %+v", res)
+	}
+	child := sess.subagents.get(childID)
+	if child == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	child.mu.Lock()
+	done := child.done
+	child.mu.Unlock()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatalf("delegate run did not finish: %v", ctx.Err())
+	}
+
+	// Bracket continuity, part one: the parent's own server shares the
+	// child's plugin config and therefore its marker path, so the marker
+	// alone proves only that SOME server exited. A parent echo alive on both
+	// sides of the wait attributes the exit to the child; the parent has no
+	// shutdown path in this test, and its echo after the wait closes the
+	// bracket.
+	if out := intg_mcpEcho(t, sess, "plugin_mcpplug_svc__echo", "parent-alive-before"); out != "echo: parent-alive-before" {
+		t.Fatalf("parent MCP echo before the release wait = %q, want %q", out, "echo: parent-alive-before")
+	}
+
+	// The release runs on a timer after the (here tiny) follow-up grace, so
+	// poll for the child's MCP server to exit rather than assuming ordering.
+	// TRIPWIRE: the release normally fires well inside a second of the 100ms
+	// grace; 15s only bounds a genuine hang.
+	waitForCondition(t, 15*time.Second, "idle release of delegate "+delegateID+" to stop its stdio MCP server (marker "+marker+")", func() bool {
+		_, statErr := os.Stat(marker)
+		return statErr == nil
+	})
+
+	// Scope: the parent's own plugin MCP server stays connected and callable.
+	if out := intg_mcpEcho(t, sess, "plugin_mcpplug_svc__echo", "parent-alive"); out != "echo: parent-alive" {
+		t.Errorf("parent MCP echo = %q, want %q", out, "echo: parent-alive")
+	}
+
+	// Resumability: a send to the idle delegate must restore it cold (a fresh
+	// child client) and complete another generation.
+	// A fresh bound for the restore phase: the release-wait context's 30s is
+	// mostly spent by the marker poll, and the send must not inherit a
+	// nearly-expired context under load.
+	// TRIPWIRE: the scripted send and restore complete in well under a
+	// second; 30s only bounds a genuine hang.
+	restoreCtx, restoreCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer restoreCancel()
+	send := (delegateRuntime{owner: sess}).send(restoreCtx, delegateID, "run again", 0).result
+	if send.Err != nil {
+		t.Fatalf("delegate_send after idle release: %+v", send)
+	}
+	var restored *subagent
+	// TRIPWIRE: the cold restore normally appears within milliseconds of the
+	// send; 15s only bounds a genuine hang.
+	waitForCondition(t, 15*time.Second, "cold-restored record for delegate "+delegateID, func() bool {
+		restored = sess.subagents.get(childID)
+		return restored != nil && restored != child
+	})
+	restored.mu.Lock()
+	rdone := restored.done
+	restored.mu.Unlock()
+	select {
+	case <-rdone:
+	case <-restoreCtx.Done():
+		t.Fatalf("restored run did not finish: %v", restoreCtx.Err())
+	}
+	// The cold restore reuses the restoring parent's client — the same
+	// binding a post-restart restore gets — so the spawn factory must have
+	// been called exactly once; the new record for the same child session ID
+	// completing a run is the cold-path proof.
+	if got := factoryCalls.Load(); got != 1 {
+		t.Errorf("childClientFactory calls = %d, want 1 (cold restore reuses the parent client)", got)
 	}
 }
 

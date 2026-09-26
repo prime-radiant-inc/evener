@@ -203,15 +203,15 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 // dependent that terminates between this read and the gate's fold (or the
 // settle's re-check) can cost one no-progress fold — with a pre-loaded streak
 // that can fire the breaker one turn before the already-armed report lands
-// (the report still arrives and the block is now transcript-visible); and a
-// wedged delegate yields at most one quiet-watchdog wake per quiet stretch,
-// after which the hold parks the goal on a supervised-but-silent dependent
-// until the delegate's own turn budget (or a hung-tool timeout) forces its
-// terminal notification — the wedge is surfaced to the user and model on
-// that one wake, and repeat watchdog cadence is a delegate-supervision
-// follow-up, not this gate's. The hold also requires both serve-loop
-// callbacks to be wired, which only root daemon sessions are: delegate-child
-// sessions are out of scope (see the wiring note in armGoalContinuation).
+// (the report still arrives and the block is now transcript-visible). A
+// wedged delegate is covered: the quiet watchdog now repeats once per quiet
+// window while the delegate stays silent-and-running (see
+// delegateLiveState.quietNotifiedAt), so the hold parks the goal only between
+// wakes and the wedge keeps resurfacing to the user and model until the
+// delegate's own turn budget (or a hung-tool timeout) forces its terminal
+// notification. The hold also requires both serve-loop callbacks to be wired,
+// which only root daemon sessions are: delegate-child sessions are out of
+// scope (see the wiring note in armGoalContinuation).
 //
 // It takes delegate-controller and job-manager locks and must never be called
 // with goalUpdateMu or s.mu held (see the askPending lock-discipline comment

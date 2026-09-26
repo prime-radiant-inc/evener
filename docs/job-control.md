@@ -191,7 +191,8 @@ output.
 
 ## Status and reason model
 
-Shell rows use `running`, `completed`, `failed`, `cancelled`, or `stopped` as
+Shell rows use `running`, `completed`, `failed`, `command_exited_nonzero`,
+`command_killed`, `cancelled`, or `stopped` as
 their lifecycle status. A stable delegate's current `status` is only `running`
 or `idle`; its prior generation is summarized separately in `last_outcome` with
 `completed`, `failed`, `exhausted`, `cancelled`, or `stopped`.
@@ -201,7 +202,9 @@ or `idle`; its prior generation is summarized separately in `last_outcome` with
 | `running` | shell or delegate status | A shell has a live or believed-live process, or a delegate has an open generation. | `stop_pending`, `foreground_timeout` for shell | progress/match as configured |
 | `idle` | delegate status | No delegate generation is processing; resumability is separate metadata. | usually `null` | none by lifecycle alone |
 | `completed` | shell status or delegate `last_outcome` | Work ended normally. | `exit_zero` for shell; otherwise usually `null` | typed terminal attention |
-| `failed` | shell status or delegate `last_outcome` | Created work ran or attempted to run and failed. | `exit_nonzero`, `killed_by_signal: SIGNAL`, `start_failed`, `finalize_failed`, `forward_failed`, `missing_terminal`, `terminal_error`, `runtime_lost` as applicable | typed terminal attention |
+| `failed` | shell status or delegate `last_outcome` | For a shell, the job system's own machinery failed (launch, supervision, reaping, finalization); for a delegate `last_outcome`, the delegate's run itself failed. | `start_failed`, `wait_failed`, `finalize_failed`, `forward_failed`, `missing_terminal`, `terminal_error`, `runtime_lost` as applicable | typed terminal attention |
+| `command_exited_nonzero` | shell status | The supervised command exited nonzero. The job machinery launched, supervised, and reaped it fine — the COMMAND is what failed. | `exit_nonzero` | typed terminal attention |
+| `command_killed` | shell status | The supervised command died on a signal. | `killed_by_signal: SIGNAL` | typed terminal attention |
 | `exhausted` | delegate `last_outcome` | A delegate generation reached its turn or tool-round budget. | `turn_budget_exhausted`, `tool_round_budget_exhausted` | delegate terminal packet |
 | `cancelled` | shell status or delegate `last_outcome` | Evener intentionally stopped work and confirmed cancellation. | `stopped_by_parent` | typed terminal attention |
 | `stopped` | shell status or delegate `last_outcome` | Work did not complete and Evener cannot attribute it to normal failure or confirmed cancellation. | `runtime_lost`, `cancelled`, `run_timeout` | typed terminal attention |
@@ -233,10 +236,14 @@ two-state `running`/`idle` model above.
 stateDiagram-v2
     [*] --> running: job_started
     running --> completed: success / exit 0
-    running --> failed: error / exit nonzero / denied
+    running --> command_exited_nonzero: exit nonzero
+    running --> command_killed: killed_by_signal
+    running --> failed: error / denied
     running --> cancelled: job_stop confirmed
     running --> stopped: runtime_lost / cancelled / run_timeout
     completed --> [*]
+    command_exited_nonzero --> [*]
+    command_killed --> [*]
     failed --> [*]
     cancelled --> [*]
     stopped --> [*]
@@ -340,10 +347,16 @@ Foreground timeout / promotion return shape:
   "status": "running",
   "reason": "foreground_timeout",
   "timed_out": true,
+  "wait_elapsed_ms": 120000,
   "output": "bounded output text",
   "truncated": false
 }
 ```
+
+`wait_elapsed_ms` is how long the foreground wait actually blocked before the
+promotion. It lets the agent's pacing arithmetic use the real wait (the session
+command timeout that expired) rather than the duration the command was asked to
+run, which can be much longer.
 
 Shell approval is not fully designed here. If policy requires approval before a shell command may start, Evener must not execute before approval. The shipped contract permits either:
 
@@ -904,7 +917,7 @@ Target shape:
 
 ```json
 {
-  "status": ["running", "idle", "completed", "failed", "exhausted", "cancelled", "stopped"],
+  "status": ["running", "idle", "completed", "failed", "command_exited_nonzero", "command_killed", "exhausted", "cancelled", "stopped"],
   "type": ["shell", "delegate"],
   "limit": 50,
   "include_nested": false
@@ -1003,7 +1016,7 @@ fresh activity, which is the signal the quiet watchdog acts on. A per-action
 
 `command` is shell-only and omitted for delegates.
 
-`exit_code` is the process's own exit status only for a job that exited on its own (`completed`/`failed`). A `cancelled`, `stopped`, or `run_timeout` job was signalled rather than exiting cleanly, so it has no real exit status: `exit_code` is `-1` (a sentinel, not a shell code). Interpret a non-`completed` job from its `status` + `reason`, never from `exit_code`.
+`exit_code` is the process's own exit status only for a job that exited on its own (`completed`/`command_exited_nonzero`). A `command_killed`, `cancelled`, `stopped`, or `run_timeout` job was signalled rather than exiting cleanly, so it has no real exit status: `exit_code` is `-1` (a sentinel, not a shell code). Interpret a job that did not exit on its own from its `status` + `reason`, never from `exit_code`.
 
 `job_list` returns a collection. Status/stop operate on one typed `target`.
 
@@ -1209,7 +1222,7 @@ Delegate generations never create job records. A shell job record contains:
 {
   "job_id": "job_...",
   "type": "shell",
-  "status": "running|completed|failed|cancelled|stopped",
+  "status": "running|completed|command_exited_nonzero|command_killed|failed|cancelled|stopped",
   "reason": null,
   "description": "...",
   "command": "...",
@@ -1358,8 +1371,10 @@ Rules:
 - Watch wake-ups and observer frames are opt-in through `job_watch`.
 - Evener supervises each running stable delegate with a built-in quiet watchdog.
   Ten minutes without parent-observable activity emits one owner attention keyed
-  by `delegate_id`; fresh activity re-arms it. The watchdog only reports—it
-  never steers, resumes, or stops the delegate.
+  by `delegate_id`, and it repeats once per further ten-minute window while the
+  delegate stays silent and running. Fresh activity resets the baseline, so a
+  progressing delegate never fires. The watchdog only reports—it never steers,
+  resumes, or stops the delegate.
 - Notification delivery state is internal; there is no `job_ack`.
 - The `end_turn=true` warning naming still-running jobs depends on whether the
   session outlives the turn. Where it does, the warning keeps promising each

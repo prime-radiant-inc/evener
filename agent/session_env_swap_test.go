@@ -386,14 +386,59 @@ func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 	wg.Wait()
 }
 
-// closeFenceProbe bounds the window a fence test gives a close to reach
-// environment cleanup while it holds admitted environment work. This is an
-// absence proof: the join is exactly what keeps close out of cleanup while the
-// work is held, so there is no ordering signal to await, only a window to let
-// pass. A scripted close reaches cleanup in well under a second when the join
-// is missing, so two seconds is a tripwire with margin; it is spent on every
-// passing run.
-const closeFenceProbe = 2 * time.Second
+// closeFenceTripwire bounds each wait a fence test makes on a close-fence
+// signal. It is a tripwire only: the mechanism is the signal itself, which a
+// scripted close delivers in well under a second either way, so this fires
+// only on a genuine hang.
+const closeFenceTripwire = 30 * time.Second
+
+// observeCloseAwaitingEnvWork arms s to report the moment its close arrives at
+// the environment-work join with admitted work outstanding, and returns the
+// channel that closes then. See testConfig.closeAwaitingEnvWork.
+func observeCloseAwaitingEnvWork(s *Session) <-chan struct{} {
+	awaiting := make(chan struct{})
+	var once sync.Once
+	s.cfg.testOnly.closeAwaitingEnvWork = func() { once.Do(func() { close(awaiting) }) }
+	return awaiting
+}
+
+// closeWalkedPastHeldWork is called from inside admitted environment work a
+// test is holding while the session closes. It waits until the close either
+// blocks at its environment-work join (fenced: the join is what keeps the
+// close out of everything after it) or reaches violation, a step the close
+// must not take while the work is held, and reports whether it took that step.
+//
+// A close whose join sits after violation signals both, but violation first
+// and on the closing goroutine, so it is already visible by the time fenced
+// is: the second check catches that order however the first select resolved.
+func closeWalkedPastHeldWork(t *testing.T, fenced, violation <-chan struct{}) bool {
+	t.Helper()
+	select {
+	case <-fenced:
+	case <-violation:
+	case <-time.After(closeFenceTripwire): // TRIPWIRE: a scripted close signals in well under a second; this only catches a hang.
+		t.Error("the close neither waited at its environment-work join nor reached the step it must not take while work is held")
+		return false
+	}
+	select {
+	case <-violation:
+		return true
+	default:
+		return false
+	}
+}
+
+// awaitCloseFenceSignal blocks until signal closes, reporting what failed to
+// happen if the tripwire fires first. Tests use it to hold a close short of
+// its environment-work join until the work they mean to fence is held.
+func awaitCloseFenceSignal(t *testing.T, signal <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(closeFenceTripwire): // TRIPWIRE: a scripted operation reaches its held point in well under a second; this only catches a hang.
+		t.Errorf("%s never happened", what)
+	}
+}
 
 // A swap that passed its closing check is admitted: the session promised to
 // finish it. Its refresh then runs git on the environment it is installing —
@@ -418,6 +463,7 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 
 	r.s.cfg.testOnly.closeAfterDisposeSweepJoin = func() { close(closeBegun) }
 	r.s.cfg.testOnly.envCleanupObserved = func(execenv.ExecutionEnvironment) { close(cleanupObserved) }
+	closeAwaiting := observeCloseAwaitingEnvWork(r.s)
 	r.s.cfg.testOnly.swapEnvAfterAdopt = func(refreshCtx context.Context) {
 		go func() {
 			defer close(closeDone)
@@ -430,10 +476,8 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 		if refreshCtx.Err() == nil {
 			refreshLiveAfterClose.Store(true)
 		}
-		select {
-		case <-cleanupObserved:
+		if closeWalkedPastHeldWork(t, closeAwaiting, cleanupObserved) {
 			cleanupDuringRefresh.Store(true)
-		case <-time.After(closeFenceProbe):
 		}
 	}
 
@@ -460,7 +504,7 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 // process table under whatever is still running, so it says what it walked
 // past, by name.
 func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(t *testing.T) {
-	shortenCloseCascadeBudget(t, 200*time.Millisecond)
+	budget := shortenCloseCascadeBudget(t, 200*time.Millisecond)
 
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
@@ -479,7 +523,7 @@ func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(
 		<-closeBegun
 		// Stand in for a refresh whose git ignores the cancellation the close
 		// already delivered: outlast the whole budget.
-		time.Sleep(2 * LaneClosePassBudget)
+		time.Sleep(2 * budget)
 	}
 
 	_, err := r.create(t, map[string]any{"name": "lane"})
@@ -509,13 +553,13 @@ func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(
 
 // shortenCloseCascadeBudget cuts the shared close-cascade budget for one test
 // and restores it afterwards, so a fence test can watch the join give up
-// without waiting out the production thirty seconds. LaneClosePassBudget is
-// the package var both ensureCloseBudget and worktreeCleanupRun read.
-func shortenCloseCascadeBudget(t *testing.T, d time.Duration) {
+// without waiting out the production thirty seconds. The close-budget accessor
+// is what both ensureCloseBudget and worktreeCleanupRun read.
+func shortenCloseCascadeBudget(t *testing.T, d time.Duration) time.Duration {
 	t.Helper()
-	old := LaneClosePassBudget
-	LaneClosePassBudget = d
-	t.Cleanup(func() { LaneClosePassBudget = old })
+	restore := SetLaneClosePassBudget(d)
+	t.Cleanup(restore)
+	return d
 }
 
 // collectWarningsUntilClosed drains every EventWarning off sess until its close

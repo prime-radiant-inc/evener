@@ -1,4 +1,4 @@
-import type { ActivityJob, ActivityTree, EvenerDelegateInfo, ItemModel, TurnModel } from "@evener/appwire-client";
+import type { ActivityJob, ActivityTree, ItemModel, TurnModel } from "@evener/appwire-client";
 import { buildEntityView, type EntityView } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -6,6 +6,7 @@ import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/work
 import { navigationStore } from "../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { EntityRef } from "./EntityRef";
+import { delegateView } from "./entityView.testFixture";
 
 beforeAll(async () => {
   await import("../");
@@ -100,43 +101,6 @@ function watchView(
   const turns: TurnModel[] = [{ id: "turn-1", status: "completed", items: [item] }];
   const view = buildEntityView({ sessionRef: "local:s", turns, stale: false, ended: false }).get(id);
   if (!view) throw new Error("expected watch fixture to resolve");
-  return view;
-}
-
-function delegateView(
-  id = "dlg_x",
-  state: { stale?: boolean; ended?: boolean } = {},
-  overrides: Partial<EvenerDelegateInfo> = {},
-): EntityView {
-  const view = buildEntityView({
-    sessionRef: "local:s",
-    delegates: [
-      {
-        ownerSessionId: "s",
-        rootSessionId: "s",
-        childSessionId: "child",
-        transcriptRef: "local:child",
-        type: "delegate",
-        lifecycle: "running",
-        phase: "running",
-        status: "running",
-        resumable: true,
-        needsAttention: false,
-        projectionRevision: 1,
-        task: "Review the first line\nthen continue",
-        agentType: "reviewer",
-        resolvedModel: "gpt-test",
-        runningForMs: 2_000,
-        usage: { inputTokens: 1_200, outputTokens: 300 },
-        ...overrides,
-        delegateId: id,
-      },
-    ],
-    turns: [],
-    stale: state.stale ?? false,
-    ended: state.ended ?? false,
-  }).get(id);
-  if (!view) throw new Error("expected delegate fixture to resolve");
   return view;
 }
 
@@ -358,6 +322,70 @@ test("focusing the OpenButton reveals the entity card after the shared delay", (
   advance(1);
 
   expect(screen.getByRole("tooltip").textContent).toContain("Compile the frontend");
+});
+
+test("job card states an exited-nonzero run as Command failed", () => {
+  vi.useFakeTimers();
+  const view = jobView(
+    "job_cen",
+    "Compile the frontend",
+    {},
+    {
+      status: "command_exited_nonzero",
+      outcome: "failure",
+      exitCode: 2,
+    },
+  );
+  render(<EntityRef view={view} id="job_cen" />);
+
+  fireEvent.focus(screen.getByTestId("entity-trigger"));
+  advance(300);
+
+  const card = screen.getByRole("tooltip");
+  expect(card.textContent).toContain("Command failed");
+  expect(card.textContent).not.toContain("command_exited_nonzero");
+});
+
+test("job card states a signal-killed run as Command killed", () => {
+  vi.useFakeTimers();
+  const view = jobView(
+    "job_kil",
+    "Compile the frontend",
+    {},
+    {
+      status: "command_killed",
+      outcome: "failure",
+    },
+  );
+  render(<EntityRef view={view} id="job_kil" />);
+
+  fireEvent.focus(screen.getByTestId("entity-trigger"));
+  advance(300);
+
+  const card = screen.getByRole("tooltip");
+  expect(card.textContent).toContain("Command killed");
+  expect(card.textContent).not.toContain("command_killed");
+});
+
+test("job card joins a legacy failed record to the display word by its reason", () => {
+  vi.useFakeTimers();
+  const view = jobView(
+    "job_legacy",
+    "Compile the frontend",
+    {},
+    {
+      status: "failed",
+      outcome: "failure",
+      reason: "exit_nonzero",
+      exitCode: 2,
+    },
+  );
+  render(<EntityRef view={view} id="job_legacy" />);
+
+  fireEvent.focus(screen.getByTestId("entity-trigger"));
+  advance(300);
+
+  expect(screen.getByRole("tooltip").textContent).toContain("Command failed");
 });
 
 test("falls back to the shared render-context entity map", () => {

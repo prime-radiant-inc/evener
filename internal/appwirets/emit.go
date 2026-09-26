@@ -3,7 +3,13 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -49,6 +55,10 @@ type rawField struct {
 	elemType  reflect.Type // pointer already stripped
 	isPointer bool
 	optional  bool // omitempty
+	// doc is the Go doc comment above the field, verbatim lines joined by
+	// "\n", or "" when the field is undocumented. reflect.Type carries no
+	// comments, so fieldDoc reads it back out of the Go source.
+	doc string
 }
 
 // rawFieldsOf returns t's JSON-visible fields in declaration order,
@@ -84,10 +94,203 @@ func rawFieldsOf(t reflect.Type) []rawField {
 			json:      name,
 			elemType:  ft,
 			isPointer: isPointer,
-			optional:  strings.Contains(opts, "omitempty"),
+			// omitzero omits only the zero value, so a tagged field can still
+			// be absent from a frame and is optional to a client just as an
+			// omitempty one is. The two differ in what they send for an empty
+			// slice, not in whether the key can be missing.
+			optional: strings.Contains(opts, "omitempty") || strings.Contains(opts, "omitzero"),
+			doc:      fieldDoc(t.PkgPath(), t.Name(), f.Name),
 		})
 	}
 	return out
+}
+
+// modulePath is this module's import-path prefix. The catalog's wire types all
+// live in this module (appwire, hubapi, events), so packageDir can turn a
+// reflect.Type's PkgPath into a source directory.
+const modulePath = "primeradiant.com/evener"
+
+// parsedFieldDocs caches parsed doc comments per package import path: type
+// name -> field Go name -> comment text. A present key with a nil value is a
+// package whose comments were already looked for and are simply absent (or
+// unreadable), so a miss is not re-parsed. Parsing is lazy and one package is
+// read at most once per process, which keeps EmitCatalog deterministic.
+var parsedFieldDocs = map[string]map[string]map[string]string{}
+
+// fieldDoc returns the doc comment text for a struct field, or "" when the
+// field, type, or package has none. pkgPath, typeName, and fieldName come from
+// reflection, so a type defined in a test's own package (pkgPath "main") has no
+// source under the module and resolves to "" — undocumented test types must
+// keep emitting byte-identically.
+func fieldDoc(pkgPath, typeName, fieldName string) string {
+	if pkgPath == "" || typeName == "" {
+		return ""
+	}
+	docs, ok := parsedFieldDocs[pkgPath]
+	if !ok {
+		docs = parsePackageFieldDocs(pkgPath)
+		parsedFieldDocs[pkgPath] = docs
+	}
+	return docs[typeName][fieldName]
+}
+
+// parsePackageFieldDocs parses every non-test .go file in pkgPath's directory
+// and records the doc comment on each named struct's fields. A package that
+// cannot be located or read yields an empty map rather than an error: a missing
+// comment is not a codegen failure.
+func parsePackageFieldDocs(pkgPath string) map[string]map[string]string {
+	dir, ok := packageDir(pkgPath)
+	if !ok {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	result := map[string]map[string]string{}
+	fset := token.NewFileSet()
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments)
+		if err != nil {
+			continue
+		}
+		collectStructFieldDocs(file, result)
+	}
+	return result
+}
+
+// collectStructFieldDocs records field.Doc from every named struct type
+// declaration in file. Embedded fields carry no names of their own, so their
+// flattened fields take their comment from the embedded type's own declaration
+// during rawFieldsOf's recursion.
+func collectStructFieldDocs(file *ast.File, result map[string]map[string]string) {
+	for _, decl := range file.Decls {
+		genDecl, ok := decl.(*ast.GenDecl)
+		if !ok || genDecl.Tok != token.TYPE {
+			continue
+		}
+		for _, spec := range genDecl.Specs {
+			typeSpec, ok := spec.(*ast.TypeSpec)
+			if !ok {
+				continue
+			}
+			structType, ok := typeSpec.Type.(*ast.StructType)
+			if !ok || structType.Fields == nil {
+				continue
+			}
+			for _, field := range structType.Fields.List {
+				if field.Doc == nil {
+					continue
+				}
+				fields := result[typeSpec.Name.Name]
+				if fields == nil {
+					fields = map[string]string{}
+					result[typeSpec.Name.Name] = fields
+				}
+				for _, name := range field.Names {
+					fields[name.Name] = commentText(field.Doc)
+				}
+			}
+		}
+	}
+}
+
+// commentText flattens a comment group to its text, one line per source line,
+// dropping the "//" or "/* */" markers and the conventional leading space.
+func commentText(group *ast.CommentGroup) string {
+	var lines []string
+	for _, comment := range group.List {
+		if text, ok := strings.CutPrefix(comment.Text, "//"); ok {
+			lines = append(lines, strings.TrimPrefix(text, " "))
+			continue
+		}
+		text := strings.TrimSuffix(strings.TrimPrefix(comment.Text, "/*"), "*/")
+		for line := range strings.SplitSeq(text, "\n") {
+			lines = append(lines, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "*")))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// packageDir resolves a module import path to its source directory.
+func packageDir(pkgPath string) (string, bool) {
+	if pkgPath != modulePath && !strings.HasPrefix(pkgPath, modulePath+"/") {
+		return "", false
+	}
+	root, ok := moduleRoot()
+	if !ok {
+		return "", false
+	}
+	rel := strings.TrimPrefix(strings.TrimPrefix(pkgPath, modulePath), "/")
+	return filepath.Join(root, filepath.FromSlash(rel)), true
+}
+
+// moduleRoot finds the directory of this module's go.mod. It walks up from the
+// working directory first: that path is always real, whereas this file's own
+// compiled-in path is module-relative under `-trimpath` (a build flag this
+// repo's shard runner forwards), which would make a runtime.Caller-only
+// resolver silently find no sources and strip every JSDoc comment.
+func moduleRoot() (string, bool) {
+	if wd, err := os.Getwd(); err == nil {
+		if root, ok := findModuleRoot(wd); ok {
+			return root, true
+		}
+	}
+	_, file, _, ok := runtime.Caller(0)
+	if !ok || !filepath.IsAbs(file) {
+		return "", false
+	}
+	return findModuleRoot(filepath.Dir(file))
+}
+
+// findModuleRoot walks up from dir to the nearest directory whose go.mod
+// declares this module, so a nested module on the way up (the repo has one
+// under agent/) is skipped rather than mistaken for the root.
+func findModuleRoot(dir string) (string, bool) {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	for {
+		if data, err := os.ReadFile(filepath.Join(dir, "go.mod")); err == nil && declaresModule(data) {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+func declaresModule(goMod []byte) bool {
+	for line := range strings.SplitSeq(string(goMod), "\n") {
+		if fields := strings.Fields(line); len(fields) == 2 && fields[0] == "module" && fields[1] == modulePath {
+			return true
+		}
+	}
+	return false
+}
+
+// writeFieldDoc emits doc as an indented JSDoc block above a field, or nothing
+// when doc is empty. Silence for an empty comment is what keeps types.gen.ts
+// byte-identical for undocumented fields.
+func writeFieldDoc(b *strings.Builder, doc string) {
+	if doc == "" {
+		return
+	}
+	b.WriteString("  /**\n")
+	for line := range strings.SplitSeq(doc, "\n") {
+		if line == "" {
+			b.WriteString("   *\n")
+			continue
+		}
+		fmt.Fprintf(b, "   * %s\n", strings.ReplaceAll(line, "*/", `*\/`))
+	}
+	b.WriteString("   */\n")
 }
 
 // typeExpr returns the TypeScript type expression for t (a field's element
@@ -159,6 +362,7 @@ func emitInterface(name string, t reflect.Type) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "export interface %s {\n", name)
 	for _, f := range rawFieldsOf(t) {
+		writeFieldDoc(&b, f.doc)
 		tsType := typeExpr(f.elemType)
 		if f.isPointer && !f.optional {
 			tsType += " | null"
@@ -176,32 +380,78 @@ func emitInterface(name string, t reflect.Type) string {
 // registry accumulates named TS interfaces discovered while walking the
 // catalog, keyed by name, so each is emitted exactly once regardless of how
 // many methods/notifications/fields reference it.
+//
+// A TS interface has one bare name, but two Go types in different packages can
+// share one. reflect.Type identity is package-qualified (two same-named structs
+// in different packages are distinct reflect.Types), so a second claimant of an
+// already-registered name is detected here rather than silently dropped: if the
+// two render byte-identically the dedup is invisible and safe, but if they
+// differ, emitting either would quietly mistype the other, so the generator
+// panics. A same-named pair that diverges is exactly the #1016 trap — before
+// this, the first claimant won and the second type was never emitted at all.
 type registry struct {
 	order []string
 	types map[string]reflect.Type
+	// walked records every reflect.Type whose fields have been visited, so the
+	// emission-equal dedup path still surfaces a divergent same-named *nested*
+	// type instead of skipping the second claimant's subtree, and so a type
+	// reachable through two paths cannot recurse forever.
+	walked map[reflect.Type]bool
 }
 
 func newRegistry() *registry {
-	return &registry{types: map[string]reflect.Type{}}
-}
-
-func (r *registry) has(name string) bool {
-	_, ok := r.types[name]
-	return ok
+	return &registry{
+		types:  map[string]reflect.Type{},
+		walked: map[reflect.Type]bool{},
+	}
 }
 
 // addNamed registers t under name if not already present, then walks its
 // fields to discover further nested named types transitively. t is nil for
 // a notification payload with no dedicated Go type.
 func (r *registry) addNamed(name string, t reflect.Type) {
-	if r.has(name) {
+	if prev, ok := r.types[name]; ok {
+		if prev == t {
+			return
+		}
+		// Distinct types claiming one TS name. When both render the same
+		// interface the generated file cannot tell them apart, so dropping one
+		// is safe; otherwise there is no correct single interface to emit.
+		if emitInterface(name, prev) != emitInterface(name, t) {
+			panic(fmt.Sprintf(
+				"appwirets: type name %q collides between %s and %s; give one a distinct Go type name so the generated TypeScript has a single, correct interface",
+				name, typeIdentity(prev), typeIdentity(t)))
+		}
+		r.walkFields(t)
 		return
 	}
 	r.types[name] = t
 	r.order = append(r.order, name)
+	r.walkFields(t)
+}
+
+// walkFields discovers the named types nested in t's fields, once per
+// reflect.Type. A nil t (a notification payload with no dedicated Go type) has
+// no fields to walk.
+func (r *registry) walkFields(t reflect.Type) {
+	if t == nil || r.walked[t] {
+		return
+	}
+	r.walked[t] = true
 	for _, f := range rawFieldsOf(t) {
 		r.discover(f.elemType)
 	}
+}
+
+// typeIdentity renders t package-qualified for a collision diagnostic.
+func typeIdentity(t reflect.Type) string {
+	if t == nil {
+		return "<nil>"
+	}
+	if pkg := t.PkgPath(); pkg != "" {
+		return pkg + "." + t.Name()
+	}
+	return t.String()
 }
 
 // discover finds named struct types reachable from t (through slice/map

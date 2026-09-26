@@ -1,6 +1,8 @@
-/* Job-notification card. Neutral by default (a completed job recedes); tone
- * colour is spent only via the Chip in the head (its danger/attention tones are
- * allowlisted), so every rule here stays on neutral ink/surface tokens. */
+/* Job-notification card. Neutral by default (a completed job recedes). Tone
+ * colour is spent in exactly two places: the warning Chip in the head, and
+ * the failure tone's FailureGlyph cross (whose --danger lives in the widget's
+ * own allowlisted stylesheet) seated at full strength by .statusIconError
+ * below. Every rule here stays on neutral ink/surface tokens. */
 .root {
   width: 100%;
   min-width: 0;
@@ -24,6 +26,32 @@
 
 .head::-webkit-details-marker {
   display: none;
+}
+
+/* The status glyph in the rail beside the head's first line - the same seat
+ * ToolRow's .rowIcon gives the tool-kind glyph, composed from the shared
+ * icon-rail seat (styles/railseat.module.css): .seat is the avatar-column
+ * slot geometry (its margin-right net of this head's own --space-2 gap
+ * seats the title at the content edge), .gutterPull the breakpoint-gated
+ * reach into .runContent's reserved padding. Composed, not restated, so the
+ * rail's glyphs cannot drift apart; railseat.contract.test.ts pins the
+ * wiring. */
+.statusIcon {
+  composes: seat from "../../../../styles/railseat.module.css";
+  /* biome-ignore lint/suspicious/noDuplicateProperties: css-modules composes takes one declaration per composed class, each with its own `from` */
+  composes: gutterPull from "../../../../styles/railseat.module.css";
+}
+
+/* The failure tone's seat variant: the sibling .statusIcon seat at FULL
+ * strength. The red cross is the card's one attention signal now that the
+ * error Chip is gone, so the seat's ambient 50% recede is the one declaration
+ * it overrides - the same strength decision as ToolRow's inline
+ * FailureGlyph. Colour itself comes from the FailureGlyph widget's
+ * stylesheet, never named here. Composing the sibling (not restating its
+ * composed pair) keeps the two seats from ever drifting apart. */
+.statusIconError {
+  composes: statusIcon;
+  opacity: 1;
 }
 
 .headingText {

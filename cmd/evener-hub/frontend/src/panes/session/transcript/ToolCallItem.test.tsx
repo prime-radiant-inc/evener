@@ -69,7 +69,10 @@ test.each(["running", "completed"])(
       </TranscriptRenderProvider>,
     );
 
-    expect(screen.getByTestId("delegate-lifecycle").textContent).toBe("Status unavailable");
+    // Expanded at settle, the card's merged status line carries the word; the
+    // standalone lifecycle div is suppressed while the card is mounted.
+    expect(screen.queryByTestId("delegate-lifecycle")).toBeNull();
+    expect(screen.getByTestId("subagent-stats").textContent).toContain("Status unavailable");
     expect(screen.getByTestId("subagent-row").dataset.kind).toBe("unknown");
     expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
     expect(screen.getByRole("button", { name: "Open transcript" }).closest("button[aria-expanded]")).toBeNull();
@@ -97,6 +100,27 @@ test("renders the resolved descriptor's summary", () => {
   registerToolRenderer({ match: "tci_tool_a", summary: () => "did a thing" });
   render(<ToolCallItem item={item({ toolName: "tci_tool_a" })} turn={turn} live={false} />);
   expect(screen.getByText("did a thing")).toBeTruthy();
+});
+
+// The descriptor's statusLine hook mounts in the row's status slot on BOTH
+// render paths - the summary-only branch (no body) and the expandable one.
+// The descriptor owns WHETHER it renders; the row owns where. (The expanded
+// prop's live flow is proven by the delegate tests, which collapse real rows.)
+test("mounts a descriptor statusLine on both row render paths", () => {
+  const StatusLine = ({ item }: { item: ItemModel }) => <div data-testid="tt-status-line" data-id={item.id} />;
+  registerToolRenderer({ match: "tci_statusline", summary: () => "statusline tool", statusLine: StatusLine });
+  const summaryOnly = render(<ToolCallItem item={item({ toolName: "tci_statusline" })} turn={turn} live={false} />);
+  expect(summaryOnly.getByTestId("tt-status-line").dataset.id).toBe("item_1");
+  summaryOnly.unmount();
+
+  registerToolRenderer({
+    match: "tci_statusline_body",
+    summary: () => "statusline tool with body",
+    body: () => <div data-testid="tt-body" />,
+    statusLine: StatusLine,
+  });
+  const expandable = render(<ToolCallItem item={item({ toolName: "tci_statusline_body" })} turn={turn} live={false} />);
+  expect(expandable.getByTestId("tt-status-line").dataset.id).toBe("item_1");
 });
 
 test("settled intent-bearing commandExecution rows stack intent over the demoted summary", () => {
@@ -614,10 +638,10 @@ test("a descriptor's own failed() predicate marks the row even with no wire erro
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe("true");
 });
 
-test("a descriptor's detail() becomes the row's hover title, never its headline text", () => {
-  registerToolRenderer({ match: "tci_detail", summary: () => "Ran false", detail: () => "exit 1" });
+test("a descriptor's summary stays the row's only hover-visible text - no row-level native title", () => {
+  registerToolRenderer({ match: "tci_detail", summary: () => "Ran false" });
   render(<ToolCallItem item={item({ toolName: "tci_detail" })} turn={turn} live={false} />);
-  expect(screen.getByTestId("tool-row").getAttribute("title")).toBe("exit 1");
+  expect(screen.getByTestId("tool-row").getAttribute("title")).toBe(null);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran false");
 });
 
@@ -686,6 +710,124 @@ test("an expanded row of a descriptor WITHOUT summaryWhenExpanded keeps its summ
   render(<ToolCallItem item={item({ toolName: "tci_keep_summary" })} turn={turn} live={false} />);
   expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
+});
+
+test("a function-form summaryWhenExpanded derives its swap text from the item", () => {
+  // The task card's expanded line recaps THIS call's change, so the swap
+  // text must be derivable per item, the way summary() itself is - the
+  // static string form still serves a descriptor whose placeholder is fixed
+  // (shell's "Ran a shell command").
+  registerToolRenderer({
+    match: "tci_summary_fn",
+    summary: () => "did a thing",
+    summaryWhenExpanded: (item) => `did a thing to ${item.id}`,
+    body: () => <div>body text</div>,
+    autoExpand: () => true,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_summary_fn" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing to item_1");
+});
+
+test("a foldByDefault descriptor settles folded even at activity level, and opens on click", () => {
+  // Activity (the app's default level) force-expands every body through the
+  // config default, so a card whose collapsed line already carries the news -
+  // the task card - needs a per-descriptor opt-out to land as one quiet
+  // line. The reader's own toggle still opens it, and it still wins afterward
+  // (the shared disclosure store), exactly like any other row.
+  registerToolRenderer({
+    match: "tci_fold_by_default",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_fold_by_default" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+  expandRow();
+  expect(screen.getByTestId("tool-call-body").textContent).toBe("body text");
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+});
+
+test("foldByDefault still settles closed when the descriptor also sets autoExpand", () => {
+  // The two flags answer different questions: foldByDefault is the posture
+  // claim ("the collapsed line carries the news"), autoExpand the
+  // settle-moment nudge. The posture claim wins - a descriptor setting
+  // both must land folded, or "the fallback stays closed at every level"
+  // has an exception and the quiet-line contract is half-true.
+  registerToolRenderer({
+    match: "tci_fold_auto",
+    summary: () => "the news",
+    foldByDefault: true,
+    autoExpand: () => true,
+    body: () => <div>body text</div>,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_fold_auto" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+});
+
+test("an errored tool row still force-expands under a foldByDefault descriptor", () => {
+  // foldByDefault beats posture defaults, not attribution: "only failure
+  // earns the eye" survives the fold, or a failed task_list call would
+  // hide its error behind the quiet-line posture (the task card's own
+  // failed-mutation test catches exactly this at the card level).
+  registerToolRenderer({
+    match: "tci_fold_fail",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  render(
+    <ToolCallItem item={item({ toolName: "tci_fold_fail", error: "task 9 not found" })} turn={turn} live={false} />,
+  );
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(screen.getByText("task 9 not found")).toBeTruthy();
+});
+
+test("a row whose failure is corroborated after it settled still force-opens", () => {
+  // `failed` is read reactively (like superseded), not only stashed at the
+  // settle transition: a row that settled clean but later turns out to have
+  // failed opens the moment the failure is known. The force-open is
+  // attribution, not a settle-time posture, and the fold cannot hide it.
+  registerToolRenderer({
+    match: "tci_late_fail",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  const view = render(<ToolCallItem item={item({ toolName: "tci_late_fail" })} turn={turn} live={false} />);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  view.rerender(
+    <ToolCallItem item={item({ toolName: "tci_late_fail", error: "late boom" })} turn={turn} live={false} />,
+  );
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
+  expect(screen.getByText("late boom")).toBeTruthy();
+});
+
+test("a foldByDefault descriptor stays folded under the full preset's open baseline, and still opens on click", () => {
+  // Full is the strongest force-open the app has: entering the level
+  // establishes an open disclosure baseline for the whole scope, and only an
+  // explicit store entry outranks a baseline. foldByDefault is the
+  // descriptor's claim that its collapsed line already carries the news, so
+  // its posture must hold there too - settled folded, with the reader's own
+  // click still winning (the explicit entry beats everything).
+  registerToolRenderer({
+    match: "tci_fold_full",
+    summary: () => "the news",
+    foldByDefault: true,
+    body: () => <div>body text</div>,
+  });
+  renderAtLevel(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "full" }),
+    "tci_fold_full_scope",
+    <ToolCallItem item={item({ toolName: "tci_fold_full" })} turn={turn} live={false} />,
+  );
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
+  expect(screen.queryByTestId("tool-call-body")).toBeNull();
+  expandRow();
+  expect(screen.getByTestId("tool-call-body").textContent).toBe("body text");
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 });
 
 test('honest status:"failed" corroborates a failure even with no error text', () => {
@@ -1118,6 +1260,80 @@ test("the same read_file row at tools level still shows Open beside on its summa
   expect(trailing.contains(screen.getByRole("button", { name: /open beside/i }))).toBe(true);
 });
 
+// --- The intent-only density hook (toolcallitem.module.css's
+// [data-intent-only] override): the row sits at the tight half-step rhythm
+// exactly while it shows its stated rationale line and nothing else. Any
+// state that adds a line - the summary line, an expanded body, a status
+// line below the row - drops the hook, so opening a row restores the full
+// item rhythm. ---------------------------------
+
+registerToolRenderer({
+  match: "tci_density",
+  summary: () => "Ran npm test",
+  body: () => <div data-testid="tci-density-body" />,
+});
+registerToolRenderer({ match: "tci_bodyless", summary: () => "did a thing" });
+
+const densityRow = item({
+  toolName: "tci_density",
+  description: "Running the density tests",
+  output: "done",
+});
+
+test("a collapsed intent row at intent level carries the density hook; opening either disclosure drops it", () => {
+  renderIntentLevel(<ToolCallItem item={densityRow} turn={turn} live={false} />);
+  // Collapsed: one rationale line, so the row takes the half-step rhythm.
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBe("true");
+  // Opening the summary line (the intent trigger's disclosure at this
+  // level) gives the row its second line: the full rhythm returns.
+  toggleRow();
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+  // Opening the body adds the body: still the full rhythm.
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
+  expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("the same row at tools level never carries the hook - its summary line is open by default", () => {
+  renderTools(<ToolCallItem item={densityRow} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("an intent-less row never carries the hook: its summary line cannot collapse behind an intent", () => {
+  renderIntentLevel(<ToolCallItem item={item({ toolName: "tci_density", output: "done" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("a body-less row showing intent over its summary never carries the hook", () => {
+  renderIntentLevel(
+    <ToolCallItem
+      item={item({ toolName: "tci_bodyless", description: "Why it ran", output: "done" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
+test("a delegate card never carries the hook: its lifecycle line or open card always adds a second line", () => {
+  resetThreadsStoreForTests();
+  const card = item({
+    toolName: "delegate",
+    description: "Inspect the independent child",
+    output: JSON.stringify({ delegate_id: "dlg_abc123", status: "running", transcript_ref: "local:child1" }),
+  });
+  // Settled: the card auto-expands at settle, so the row shows more than
+  // its intent.
+  renderIntentLevel(<ToolCallItem item={card} turn={turn} live={false} sessionRef="ref_a" />);
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+  // Collapsed by hand: the standalone lifecycle line below the intent is
+  // the row's second line, so the tight rhythm still does not apply.
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
+  expect(screen.getByTestId("delegate-lifecycle")).toBeTruthy();
+  expect(screen.getByTestId("tool-call-item").dataset.intentOnly).toBeUndefined();
+});
+
 // A delegate card is intent-only by design - its descriptor deliberately puts
 // the Open transcript control on the intent line ("visible folded or not"), so
 // the intent-level gate must not swallow it (the phone editorial gate needs it).
@@ -1374,9 +1590,13 @@ test("delegate tool rows use a single top-level disclosure trigger owned by Tool
     />,
   );
   // The disclosure trigger is a real button[aria-expanded] (ToolRow),
-  // not a native <details>/<summary> - exactly one per tool call.
-  const triggers = container.querySelectorAll('[data-testid="tool-row-trigger"][aria-expanded]');
+  // not a native <details>/<summary> - exactly one per tool call. A
+  // summary-less delegate row has no summary line to disclose, so its one
+  // top-level control is the body trigger; a second intent trigger would be a
+  // duplicate control and chevron for the same body (#1253 review).
+  const triggers = container.querySelectorAll('[data-testid="tool-row-body-trigger"][aria-expanded]');
   expect(triggers).toHaveLength(1);
+  expect(container.querySelectorAll('[data-testid="tool-row-trigger"][aria-expanded]')).toHaveLength(0);
 });
 
 test("a live, unsettled delegate call renders a running/working status dot (never unknown)", () => {
@@ -1693,6 +1913,148 @@ test.each(["chat", "intent"] as const)(
     expect(screen.getByTestId("tool-row-intent").textContent).toBe("Delegating the flaky suite");
   },
 );
+
+// --- #1253: the same summary-less delegate row stays single-level at every
+//     level whose content vector defaults the summary line open (tools and up),
+//     whether its intent is stated or derived from the prompt/task fallback.
+test.each(["tools", "activity", "full"] as const)(
+  "a delegate row at the %s level renders no empty summary line (body trigger on the intent line)",
+  (level) => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    const { container } = renderWithConfig(
+      config,
+      item({
+        id: `delegate_summaryless_${level}`,
+        toolName: "delegate",
+        description: "Delegating the flaky suite",
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+      }),
+    );
+    // A delegate row renders no summary text, so no summary-open region (empty
+    // or otherwise) may be mounted at any verbosity level.
+    expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+    expect(container.querySelector('[data-body-trigger="true"]')).toBeNull();
+    // The body trigger rides the intent line instead.
+    expect(screen.getByTestId("tool-row").getAttribute("data-body-trigger-intent")).toBe("true");
+  },
+);
+
+test.each(["tools", "activity", "full"] as const)(
+  "a prompt-fallback delegate row at the %s level renders no empty summary line",
+  (level) => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    const { container } = renderWithConfig(
+      config,
+      item({
+        id: `delegate_promptonly_${level}`,
+        toolName: "delegate",
+        // No description: the intent is derived from the prompt fallback, so
+        // the raw statedIntent is absent while the row still has an intent.
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+      }),
+    );
+    expect(screen.getByTestId("tool-row-intent").textContent).toBe("Run the flaky suite");
+    expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+    expect(container.querySelector('[data-body-trigger="true"]')).toBeNull();
+    expect(screen.getByTestId("tool-row").getAttribute("data-body-trigger-intent")).toBe("true");
+  },
+);
+
+// The delegate row's ONE control is its body trigger: clicking it mounts and
+// unmounts the card (there is no second intent trigger to divide the role).
+test.each(["activity", "full"] as const)(
+  "the delegate row's single body control mounts and unmounts the card at the %s level",
+  (level) => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    renderWithConfig(
+      config,
+      item({
+        id: `delegate_single_control_${level}`,
+        toolName: "delegate",
+        description: "Delegating the flaky suite",
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+      }),
+    );
+    expect(screen.queryByTestId("tool-row-trigger")).toBeNull();
+    const control = screen.getByTestId("tool-row-body-trigger");
+    // The delegate descriptor auto-expands, so the card starts open.
+    expect(control.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+
+    fireEvent.click(control);
+    expect(control.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("tool-call-body")).toBeNull();
+
+    fireEvent.click(control);
+    expect(control.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+  },
+);
+
+// --- #1253 review: the subscriber-delegate row's sole body control carries
+//     the visible intent's accessible name and the status association the
+//     suppressed intent trigger used to provide.
+test("a summary-less delegate row names its sole body control from the intent and describes its status", () => {
+  seedCurrentDelegate("ref_current", "dlg_named", "running");
+  render(
+    <ToolCallItem
+      item={item({
+        id: "delegate_named_control",
+        toolName: "delegate",
+        description: "Delegating the flaky suite",
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+        output: JSON.stringify({ delegate_id: "dlg_named", status: "running", transcript_ref: "local:sess_child" }),
+      })}
+      turn={turn}
+      sessionRef="ref_current"
+      live={false}
+    />,
+  );
+
+  // One control, named from the visible intent rather than the blanked summary
+  // (which would reduce it to the bare "Tool call" fallback).
+  const control = screen.getByTestId("tool-row-body-trigger");
+  expect(screen.queryByTestId("tool-row-trigger")).toBeNull();
+  expect(screen.getByRole("button", { name: "Delegating the flaky suite" })).toBe(control);
+  // The status the suppressed intent trigger used to describe stays associated
+  // with that one control.
+  const status = screen.getByTestId("tool-row-status");
+  expect(control.getAttribute("aria-describedby")).toBe(status.id);
+});
+
+// --- #1253 review: a collapsed two-level row names its intent and body
+//     controls DISTINCTLY. The intent fallback on the body trigger belongs only
+//     to the summary-less row whose intent control is suppressed; a row that
+//     still has an intent disclosure must not hand the body trigger the same
+//     accessible name, or a screen reader sees two adjacent, identically named
+//     buttons that do different things.
+test("a collapsed two-level row keeps distinct accessible names for its intent and body controls", () => {
+  registerToolRenderer({ match: "tci_two_level_names", summary: () => "Ran the suite", body: () => <div>body</div> });
+  const chatConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  renderWithConfig(
+    chatConfig,
+    item({ id: "two_level_names", toolName: "tci_two_level_names", description: "Running the test suite" }),
+  );
+
+  // Chat level: the summary line is collapsed, so no body trigger is in flow.
+  expect(screen.queryByTestId("tool-row-body-trigger")).toBeNull();
+
+  // Reach the state where the body is expanded while the summary is hidden:
+  // open the summary, expand the body, then collapse the summary again. The
+  // body trigger now rides the intent line beside the intent disclosure.
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  fireEvent.click(screen.getByTestId("tool-row-body-trigger"));
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+
+  const intentTrigger = screen.getByTestId("tool-row-trigger");
+  const bodyTrigger = screen.getByTestId("tool-row-body-trigger");
+  // The intent disclosure is content-named from the intent; exactly one button
+  // carries that name.
+  expect(intentTrigger.getAttribute("aria-label")).toBeNull();
+  expect(screen.getAllByRole("button", { name: "Running the test suite" })).toHaveLength(1);
+  // The body trigger keeps the bare fallback rather than duplicating it.
+  expect(bodyTrigger.getAttribute("aria-label")).toBe("Tool call");
+});
 
 // --- entity cards on ids in non-content summary fields ---------------------
 //

@@ -191,7 +191,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 				}
 			}
 			offendingPath := offendingField(err2)
-			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingPath, offendingKeyword(err2))
+			res.PrevalErr = repair.ExplainSchemaError(requestedVisible, t.Definition.Parameters, healed, offendingPath, offendingKeywordLocation(err2))
 			if promotedOutputString && isCommunicateOutputSchemaPath(offendingPath) {
 				res.PrevalErr += "\n" + communicateOutputStringObjectError("the decoded object did not satisfy the communicate output schema")
 			}
@@ -554,14 +554,14 @@ func offendingField(err error) string {
 	return strings.Trim(ve.InstanceLocation, "/")
 }
 
-// offendingKeyword extracts the failing JSON-Schema keyword's name from a
-// jsonschema validation error — the last segment of the deepest cause's
-// KeywordLocation (e.g. "maxLength" for a string that exceeded its limit, or
-// "required" for a missing required property). ExplainSchemaError uses it to
-// surface the actual constraint that rejected a present field instead of the
-// generic "wrong type or value" message. Returns "" when no keyword can be
-// pinpointed.
-func offendingKeyword(err error) string {
+// offendingKeywordLocation returns the deepest failing cause's KeywordLocation
+// (e.g. "/properties/x/maxLength" for a string that exceeded its limit,
+// "/oneOf/0/not" for the delegate pairing rule, or "/oneOf" for a bare
+// combinator). ExplainSchemaError derives the keyword name from its last
+// segment and uses the full location to tell the oneOf multiple-match shape (a
+// bare "/oneOf" with no per-arm causes) from a nested combinator failure whose
+// location is deeper. Returns "" when no location can be pinpointed.
+func offendingKeywordLocation(err error) string {
 	var ve *jsonschema.ValidationError
 	if !errors.As(err, &ve) {
 		return ""
@@ -569,9 +569,5 @@ func offendingKeyword(err error) string {
 	for len(ve.Causes) > 0 {
 		ve = ve.Causes[0]
 	}
-	kw := strings.Trim(ve.KeywordLocation, "/")
-	if i := strings.LastIndex(kw, "/"); i >= 0 {
-		return kw[i+1:]
-	}
-	return kw
+	return ve.KeywordLocation
 }

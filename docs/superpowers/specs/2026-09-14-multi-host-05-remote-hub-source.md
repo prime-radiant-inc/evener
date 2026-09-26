@@ -7,10 +7,9 @@ analysis is the keystone deliverable.
 
 **Citation convention.** Symbols (method constants, handler functions, files)
 are authoritative and were verified on `multi-host-pr05a..d` and
-`multi-host-pr06a-fleet-view-go`. Catalog and handler line numbers are omitted
-deliberately: they shift as methods are added and the reviewer's base
-(`origin/main`) is not the branch this spec describes. A `*.md:NNN` reference,
-where it survives, is a hint, not pinning.
+`multi-host-pr06a-fleet-view-go`, both since landed on `origin/main`. Catalog
+and handler line numbers are omitted deliberately because they shift as methods
+are added; a `*.md:NNN` reference, where it survives, is a hint, not pinning.
 
 ## Purpose
 
@@ -334,9 +333,15 @@ provider; keep it out of the attach probe and expose it as an explicit refresh.
 `*Channel`.** `Channel.Handshake()` exists on the component-04 `Channel`, but
 `RemoteHubSource` holds only the seams installed from `hubcore.WebConfig`, so
 component 04 must also expose the same facts for a host by name: a
-`RemoteHostHandshake func(host string) (appwire.InitializeResponse, bool)`
-seam (backed by a `Manager.HandshakeIfAttached`, component 04, §"Go surface"),
-installed as `SetHostHandshake` (§"Registration and default-source selection").
+`RemoteHostHandshake func(host string, client *appwire.Client)
+(appwire.InitializeResponse, bool)` seam (backed by
+`remoteHostHandshakeForChannel`, built on `Manager.ChannelIfAttached` with the
+client-identity guard at the call site; component 04, §"Go surface"), installed
+as `SetHostHandshake` (§"Registration and default-source selection"). It carries
+the client the probe resolved and reports `false` when the installed channel is
+a different generation, so the probe cannot pair one connection's wire reads
+with another's handshake (the shipped seam is the same shape as
+`RemoteHostFacts`' generation guard).
 Without it the probe cannot populate `ProtocolVersion`, `HubVersion`
 (`ServerInfo`), `HubSourceID`, or `Features` for a `RemoteHubSource` — none of
 the existing `RemoteHostClient`/`RemoteHostFacts`/`RemoteHostOnline`/
@@ -382,21 +387,30 @@ The source's optional seams are installed once at registration, all from
   absent source.
 - `SetHostFacts(cfg.RemoteHostFacts)` — the component-04 preflight facts the
   probe needs (`HostFacts`, `remote_hub_probe.go`), backed by
-  `Manager.PreflightIfAttached` (component 04, §"Go surface"): the non-dialing,
-  attached-only preflight accessor mirroring `ClientIfAttached` and
-  `HandshakeIfAttached`. `Manager` stores live channels privately, so without
-  this accessor `cmd/evener-hub/main.go` cannot construct `cfg.RemoteHostFacts`
-  and `HostCapabilities.OS`/`Arch` stay permanently unpopulated (see §"Probe
-  reaches the handshake facts…" above for the same shape on the handshake
-  facts).
+  `Manager.ChannelIfAttached` (component 04, §"Go surface").
+  `cmd/evener-hub/main.go` reads one
+  `Manager.ChannelIfAttached` value and takes the preflight from the same
+  channel whose client is the probe's `client`, refusing with a typed
+  `SessionUnavailable` when it is a different generation — the attached-only
+  form of the old `ch.Client() != client` guard, so the probe never caches a
+  snapshot assembled from two connections. `Manager` stores live channels
+  privately, so without this accessor `cmd/evener-hub/main.go` cannot construct
+  `cfg.RemoteHostFacts` and `HostCapabilities.OS`/`Arch` stay permanently
+  unpopulated (see §"Probe reaches the handshake facts…" above for the same
+  shape on the handshake facts).
 - `SetHostHandshake(cfg.RemoteHostHandshake)` — the attach handshake facts the
   capability probe needs (`ProtocolVersion`, `ServerInfo`, `SourceID`,
-  `Features`), backed by `Manager.HandshakeIfAttached` (component 04, §"Go
-  surface"). It returns the `InitializeResponse` for a host only while a live
-  channel is installed, `(zero, false)` otherwise, and takes the manager-wide
-  mutex, so it is safe from the `EventAttached` callback exactly like
-  `ClientIfAttached`. Without this seam the probe cannot populate those four
-  fields for a `RemoteHubSource` (see §"Capability probe").
+  `Features`), backed by `remoteHostHandshakeForChannel` in
+  `cmd/evener-hub/main.go` (component 04, §"Go surface"), which reads one
+  `Manager.ChannelIfAttached` value and applies the generation guard at the call
+  site (`ch.Client() == client`). It returns the `InitializeResponse` for a host
+  only while a live channel is installed and only when that channel's client is
+  the probe's `client`, `(zero, false)` otherwise; the lookup itself takes the
+  manager-wide mutex, so it is safe from the `EventAttached` callback exactly
+  like `ClientIfAttached`. `Manager.HandshakeIfAttached` exists but has no
+  production caller — the guard is deliberately not inside an accessor. Without
+  this seam the probe cannot populate those four fields for a
+  `RemoteHubSource` (see §"Capability probe").
 - `SetHostClientIfAttached(cfg.RemoteHostClientIfAttached)` where
   `RemoteHostClientIfAttached` is `sshManager.ClientIfAttached` (component 04,
   §"Go surface") — the **non-dialing, attached-only client lookup**. It returns
@@ -468,9 +482,9 @@ The controller's chosen host is expressed purely by *which*
 with its own default routing when the harness is empty. No other `Source` method
 carries a host selector: every other method addresses an existing thread by
 `Ref`, which is translated (above). **Implementation status:** the shipped 05c
-`StartThread` (`remote_hub_mutations.go`) rewrites `remote.Harness = "evener"`
-and does not clear `Source` at all; forwarding the harness and clearing `Source`
-is the 05c requirement, not a present fact.
+`StartThread` (`remote_hub_mutations.go`) clears `Source` and neutralizes
+`Harness` to `"evener"`; forwarding the caller's harness rather than
+overwriting it is the requirement, not a present fact.
 
 **The receiving hub must reject a non-local resolution for a remote-originated
 `thread/start`.** The controller-side harness refusal is bounded by the
@@ -487,9 +501,11 @@ request whose routing-seam `origin` is non-empty (remote-originated),
 harness fallback) would be any non-local source is refused typed
 (`InvalidParams`) and must never be routed. The `launchSourceID` fallback
 remains for local-originated requests under component 06's contract ("Write
-contract (session targeting)"). **Implementation status:** neither the
-`origin`-aware refusal nor the harness restriction exists today; it is a
-requirement, and the code delta is a tracked follow-up (component 05a/06).
+contract (session targeting)"). **Implementation status:** shipped — both
+refusals are in `hubThreadStart`: `refuseHarnessNamingHost`
+(`app_threadlifecycle.go`) refuses a harness naming a registered non-local
+source, and `guardRemoteSpawnSource` (`cmd/evener-hub/host_routing_origin.go`)
+refuses a remote-originated spawn whose effective source is non-local.
 
 `hubThreadResume` already routes a non-local ref to its source
 (`app_threadlifecycle.go`), so resuming a remote session by
@@ -691,11 +707,16 @@ a host nobody asked for. Component 04 must therefore also provide an
 client only while a live channel is installed, and reports "not attached"
 without dialing (e.g. `ClientIfAttached(host) (*appwire.Client, bool)`) — and
 component 06's snapshot must use that, not the `Ensure`-backed resolver, so the
-check and the request cannot disagree. **Implementation status:** both the gate
-and the attached-only lookup are the implementing PR's requirement; the shipped
-`refreshRemoteThreadSnapshot` (`web_api_tree.go`) iterates `s.sources.All()` with
-no attachment gate, and `RemoteHubClientFunc` is wired to `Ensure`, so neither
-exists yet.
+check and the request cannot disagree. **Implementation status:** shipped.
+`sshconn.Manager.ClientIfAttached` exists (component 04a) and is installed on
+the source through `hubcore.WebConfig.RemoteHostClientIfAttached` /
+`SetHostClientIfAttached`; `refreshRemoteThreadSnapshot`
+(`web_api_tree.go`), and its synchronous `remoteThreadFetch` fallback, gate on
+it and skip an unattached host without a call, carrying the host's
+last-known-good rows forward instead of blanking them. `RemoteHubClientFunc` is
+no longer what the source resolves calls through — the source resolves every
+call through the attached-only lookup (see the next section) — so the gate and
+the request cannot disagree.
 
 **The same gate applies to the primary `thread/list` fan-out, not only the
 snapshot.** A **non-explicit** fleet-wide `thread/list` (empty `SourceIDs`) must
@@ -712,7 +733,13 @@ manager (component 04, §"Channel lifecycle states"), the attachment-based
 that explicit list is one of the intended attach triggers (alongside component
 06's Connect action), the opposite of the implicit empty-filter fan-out. So the
 rule is: empty filter ⇒ attached-only, no dial; explicit host in `SourceIDs` ⇒
-may attach.
+may attach. **Implementation status:** shipped. `hubThreadListWithSourceTimeout`
+(`app_threadlist.go`) skips a remote source for an empty filter when the
+attached-only lookup reports it not attached, and attaches an explicitly named
+remote host (`RemoteHostClient`, the `Ensure`-backed dial) before calling the
+  source — one of the two shipped attach triggers, alongside the component-06
+  Connect action (`evener/host/attach`, the browser-reachable explicit attach
+  handler in `app_host_attach.go`).
 
 **Every other remote call is non-dialing, not just the snapshot and the
 non-explicit list.** The gate above covers the background snapshot and the
@@ -741,10 +768,21 @@ first-attach bootstrap those two drive (component 04 §5). In particular a spawn
 on an offline host is refused, not attached: component 06 disables an offline
 host for a spawn and offers the Connect action instead, so `thread/start` never
 reaches `Ensure` either. **Implementation status:** `ClientIfAttached` exists on
-the manager (04a), but the shipped `RemoteHubClientFunc` is wired to
-`Ensure` + `ch.Client()` for *all* calls (`remote_hub_source.go`), so the
-attached-only resolution for direct calls is the implementing PR's requirement,
-not a present fact.
+the manager (04a) and is now the source's resolver for *all* calls:
+`RemoteHubSource.resolveClient` (`remote_hub_source.go`) answers from
+`SetHostClientIfAttached` when installed (production), returning
+`appwire.SessionUnavailable("remote hub unavailable: <host>")` for a host with
+no live channel, and never dials. The wired `RemoteHubClientFunc` is only the
+fallback for tests that inject a client function without the attached-only seam.
+The capability probe reads its handshake facts (`ProtocolVersion`, `ServerInfo`,
+`SourceID`, `Features`) through `hubcore.WebConfig.RemoteHostHandshake` /
+`SetHostHandshake` (backed by the `remoteHostHandshakeForChannel` closure over
+`Manager.ChannelIfAttached`, with the client-identity guard at the call site)
+and its preflight facts through `RemoteHostFacts` / `SetHostFacts` (backed by
+the `remoteHostFactsForChannel` closure over `Manager.ChannelIfAttached`). The
+generation guard (`ch.Client() == client`) lives in those closures, not inside
+`Manager.PreflightIfAttached` / `Manager.HandshakeIfAttached`, which have no
+production caller.
 
 Subscription lifetime is the other difference. `RemoteHubSource` must
 **reference-count subscriptions per remote thread ID** and issue the remote
@@ -803,8 +841,10 @@ Ref translation detail (`remote_hub_refs.go`):
     hub as a host): such a request is served from local state only, and an
     attempt to route it onward is refused typed. That caller-identity guard
     terminates an A→B→A chain even though the config alone cannot detect it
-    (design §2 "Topology"; §Open questions item 3). It is a requirement of this
-    component's routing seam, not a present fact.
+    (design §2 "Topology"; §Open questions item 3). It is shipped: the refusal
+    is enforced at the routing seam's two shared guards
+    (`appsource.guardRemoteDispatch`, `cmd/evener-hub/host_routing_origin.go`'s
+    `guardRemoteHostDial`), so no handler carries its own origin check.
   - **The origin signal is an explicit bridge marker on the
     connection, never `InitializeParams.ClientInfo`.** `ClientInfo` is
     caller-supplied and spoofable, and no origin/hop field exists today in the
@@ -834,10 +874,16 @@ Ref translation detail (`remote_hub_refs.go`):
     **role** (bridge marker present ⇒ *remote-originated*; marker absent ⇒
     *local*), and the routing seam stamps that role into the request context, so
     every handler can read `origin` (empty for a local request, non-empty for a
-    remote-originated one). **Implementation status:** neither the marker header,
-    the edge's role classification, nor the request-context `origin` exists
-    today (`cmd/evener-hub/web.go`, `cmd/evener-hub/internal/hubedge/auth_token.go`); this is
-    the design record, and the code delta is a tracked follow-up.
+    remote-originated one). **Implementation status:** shipped. `evener hub
+    attach --stdio` presents the marker (`cmd/evener-hub/attach.go`), the `/rpc`
+    edge classifies the role and stamps it into the request context
+    (`cmd/evener-hub/web.go`), and the guard refuses remote-originated remote
+    dispatch at its shared seams: the `Ensure`-backed dial
+    (`guardRemoteHostDial`) and the remote-hub client resolution every
+    `RemoteHubSource` call passes through (`appsource.guardRemoteDispatch`), so
+    a request arriving over a bridge cannot ride an already-attached source
+    either. The trust basis above is unchanged: the marker is cooperative-only
+    until the role is bound to a server-verifiable signal.
     The refusal is enforced at the **typed fan-out seam**, not by a check inside
     a handler: the multi-source fan-out (`hubThreadListWithSourceTimeout`,
     `app_threadlist.go`) — and any other path that routes a ref to more than one
@@ -855,12 +901,13 @@ Ref translation detail (`remote_hub_refs.go`):
     remote-originated `thread/list` (and each other fan-out path) and asserts it
     is never routed to a second remote source, with the typed refusal surfaced;
     and a local-originated request still fanned normally.
-  - **Implementation status:** the shipped `remapRemoteSourceIDs`
-    (`remote_hub_refs.go`, `multi-host-pr05a-remote-hub-source`) returns `nil`
-    for an empty incoming filter — which `ListThreads` forwards as unfiltered —
-    and returns an empty slice for an omitting filter. The `["local"]`-for-empty
-    rule, the "must not reach the remote / must error" half, and the per-row drop
-    are the implementing PR's requirements, not present facts.
+  - **Implementation status:** shipped. `remapRemoteSourceIDs`
+    (`remote_hub_refs.go`) returns `["local"]` for an empty incoming
+    filter; `ListThreads` (`remote_hub_source.go`) answers an explicit
+    exclusion that names no other source with an empty response instead of
+    widening it to an unfiltered list; and `translateOut`
+    (`remote_hub_refs.go`) drops the one unrepresentable row while
+    keeping the valid rows beside it.
 - Outbound threads: set `Thread.Source = s.id`; rewrite `Thread.Evener.Ref`
   from `local:X` to `s.id + ":" + X`; rewrite `Thread.Evener.ParentRef` the same
   way (sub-thread aliases). Leave `Thread.Evener.InstanceID` untouched: it is an
@@ -1065,9 +1112,9 @@ The identity must rotate when the observed window is rewritten (an item
 replaced, the transcript re-projected) so a stale continuation cannot splice
 two different projections; the retention/rotation policy and the per-thread
 serialization of paging are the implementing PR's.
-`remote_hub_source_paging_test.go` (`multi-host-pr05a-remote-hub-source`,
-pending merge) is the shape to keep — a multi-page round trip through the real
-packer, plus stale/rotated-boundary refusals.
+`remote_hub_source_paging_test.go` (shipped with 05a) pins the shape — a
+multi-page round trip through the real packer, plus stale/rotated-boundary
+refusals.
 
 **Image URLs are host-scoped and must be rewritten through the controller.**
 A hub stamps image URLs into the thread snapshots it returns: the sha-addressed

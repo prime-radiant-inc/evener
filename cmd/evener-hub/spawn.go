@@ -22,11 +22,20 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/orphanpipe"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )
 
 const evenerLaunchCheckTimeout = 30 * time.Second
+
+// evenerLaunchCheckWaitDelay bounds how long a launch-check's output pipe may
+// stay open after the check exits or its context ends. Killing the check does
+// not close a pipe a grandchild inherited (a wrapper script around evener is
+// enough), and without this the call would wait for that grandchild however
+// long it lives, turning evenerLaunchCheckTimeout into no bound at all. A
+// check with no stray children reaches EOF at exit and never waits on it.
+const evenerLaunchCheckWaitDelay = time.Second
 
 // daemonLaunchOutputLimit bounds how much of a failed launch's daemon log is
 // quoted back to the operator as the reason it would not start.
@@ -39,6 +48,7 @@ var (
 	spawnRemoveAll                  = os.RemoveAll
 	listEvenerLaunchModelContractFn = listEvenerLaunchModelContract
 	listRendezvousForWait           = rendezvous.List
+	startResumeChild                = startResumeCommand
 )
 
 // daemonProcessCommand builds the subprocess that runs an `evener serve`
@@ -193,7 +203,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 		NoUserLayer:         childNoUserLayer(h.NoUserLayer, h.Registry),
 		CredentialsPath:     h.CredentialsPath,
 	})
-	if err := validateProviderCredentials(req.Provider, h.Registry); err != nil {
+	if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	if err := validateEvenerLaunchContract(ctx, h.EvenerBinary, req.Resolved.Effective.Model, req.Env); err != nil {
@@ -249,7 +259,14 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 		CredentialsPath:     h.CredentialsPath,
 	})
 	if req.Provider != "" {
-		if err := validateProviderCredentials(req.Provider, h.Registry); err != nil {
+		// The resume request carries the model the session persisted
+		// (resumeRequestForConfig builds it from the session meta), so the
+		// gate judges the very model the resumed session runs — a row may
+		// override the auth scheme, and the instance view can vouch for a
+		// launch that model cannot authenticate. The child's arguments stay
+		// model-stripped (buildResumeArgs) and the launch-contract check
+		// below stays model-blind; only the credential gate is model-aware.
+		if err := validateProviderCredentials(req.Provider, req.Resolved.Effective.Model, h.Registry); err != nil {
 			prepareDone(err)
 			return rendezvous.Entry{}, err
 		}
@@ -482,6 +499,12 @@ type waitConfig struct {
 	startedAfter time.Time
 }
 
+// completionOwnedResumeTimeout is the hub-side bound on a completion-owned
+// resume's rendezvous wait, mirroring the client's own RESUME_REQUEST_TIMEOUT_MS
+// (10m): no client waits longer, so the bound only fires for callers with no
+// deadline of their own. A var so tests can shrink it.
+var completionOwnedResumeTimeout = 10 * time.Minute
+
 // withRendezvousTimeout applies the production startup budget when it is
 // positive. A non-positive timeout leaves the caller's context as the only
 // bound, which lets deterministic host-process tests await the rendezvous edge
@@ -512,6 +535,53 @@ func ResumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	return resumeDaemon(ctx, evenerBinary, runDir, req, timeout, os.Stderr)
 }
 
+// resumeChild is the process-launch boundary. The launcher retains the exact
+// child's kill/wait handles; cancellation never rediscovers a PID to signal.
+type resumeChild struct {
+	pid  int
+	kill func() error
+	wait func() error
+}
+
+func startResumeCommand(cmd *exec.Cmd) (resumeChild, error) {
+	if err := cmd.Start(); err != nil {
+		return resumeChild{}, err
+	}
+	return resumeChild{pid: cmd.Process.Pid, kill: cmd.Process.Kill, wait: cmd.Wait}, nil
+}
+
+// resumeCleanupError is separate from the original launch failure so a Stop
+// waiting on Resume can refuse to claim cleanup while preserving both causes.
+type resumeCleanupError struct{ cause error }
+
+func (e *resumeCleanupError) Error() string {
+	return "resume child cleanup is unconfirmed: " + e.cause.Error()
+}
+func (e *resumeCleanupError) Unwrap() error { return e.cause }
+
+func reapResumeChild(child resumeChild, reaped <-chan struct{}, active *hubcore.ActiveResume) error {
+	if err := child.kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		if active != nil {
+			// The kill handle must outlive the launcher, which is about to
+			// return: retaining it on the active lifetime lets the stop that
+			// drains this Resume retry the kill until the child is confirmed
+			// reaped, instead of stranding a live child no later action can
+			// address behind the retained cleanup error.
+			active.RetainChildCleanup(child.kill)
+		}
+		select {
+		case <-reaped:
+			return nil
+		default:
+			return &resumeCleanupError{cause: err}
+		}
+	}
+	// Only the original waiter reads Wait. Even when rendezvous waiting already
+	// consumed its exit result, this closed channel still proves reaping ended.
+	<-reaped
+	return nil
+}
+
 // resumeDaemon is ResumeDaemon against a caller-supplied hub log, which is the
 // hub's own stderr in production.
 func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration, hubLog io.Writer) (entry rendezvous.Entry, launchErr error) {
@@ -537,42 +607,93 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	}
 	dlog.attach(cmd)
 	startedAt := time.Now()
-	if err := cmd.Start(); err != nil {
+	if err := ctx.Err(); err != nil {
 		launchDone(err)
 		dlog.close()
 		dlog.removeIfUncommitted()
+		failure := errors.Join(rendezvousWaitError(ctx), err)
+		return rendezvous.Entry{}, launchFailureError(launchFailurePrefix("resume", failure), failure, "")
+	}
+	if req.ActiveResume != nil {
+		if err := req.ActiveResume.BeforeLaunch(); err != nil {
+			launchDone(err)
+			dlog.close()
+			dlog.removeIfUncommitted()
+			return rendezvous.Entry{}, fmt.Errorf("prepare resume ownership: %w", err)
+		}
+	}
+	child, err := startResumeChild(cmd)
+	if err != nil {
+		dlog.close()
+		dlog.removeIfUncommitted()
+		if req.ActiveResume != nil {
+			req.ActiveResume.ChildReaped()
+			if cleanupErr := req.ActiveResume.LaunchFinished(true, nil); cleanupErr != nil {
+				err = errors.Join(err, &resumeCleanupError{cause: cleanupErr})
+			}
+		}
+		launchDone(err)
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
 	}
 	launchDone(nil)
 	// The child holds its own descriptor from here on.
 	dlog.close()
 	exited := make(chan error, 1)
+	reaped := make(chan struct{})
+	activeResume := req.ActiveResume
 	go func() {
-		exited <- cmd.Wait()
+		exited <- child.wait()
+		if activeResume != nil {
+			activeResume.ChildReaped()
+		}
+		close(reaped)
 	}()
+	finishLaunch := func(failed bool, cleanupErr error) error {
+		if req.ActiveResume != nil {
+			if err := req.ActiveResume.LaunchFinished(failed, cleanupErr); err != nil {
+				// LaunchFinished already classifies a retained cleanup
+				// failure; wrap only an unclassified one so the "cleanup is
+				// unconfirmed" text is not duplicated.
+				if cleanup, ok := errors.AsType[*resumeCleanupError](err); ok {
+					return cleanup
+				}
+				return &resumeCleanupError{cause: err}
+			}
+			return nil
+		}
+		return cleanupErr
+	}
+	if req.CompletionOwned {
+		// A completion-owned resume answers to its caller's lifecycle, but the
+		// rendezvous wait still gets a hub-side bound: the web client caps its
+		// own wait at RESUME_REQUEST_TIMEOUT_MS (10m), and a client without a
+		// deadline must not hold the session's ownership aliases forever while
+		// each relay/isLive/workspace read degrades against the lock.
+		timeout = completionOwnedResumeTimeout
+	}
 	waitCtx, cancel := withRendezvousTimeout(ctx, timeout)
 	defer cancel()
 	waitStarted := time.Now()
-	trace.record(waitCtx, "rendezvous", "begin", waitStarted, nil, cmd.Process.Pid, 0)
-	entry, err = waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
-	trace.record(waitCtx, "rendezvous", "complete", waitStarted, err, cmd.Process.Pid, 0)
+	trace.record(waitCtx, "rendezvous", "begin", waitStarted, nil, child.pid, 0)
+	entry, err = waitForRendezvousOrExit(waitCtx, runDir, child.pid, exited, WithStartedAfter(startedAt))
+	trace.record(waitCtx, "rendezvous", "complete", waitStarted, err, child.pid, 0)
 	if err != nil {
-		_ = cmd.Process.Kill()
+		err = errors.Join(err, finishLaunch(true, reapResumeChild(child, reaped, activeResume)))
 		tail := dlog.tail(daemonLaunchOutputLimit)
-		trace.record(waitCtx, "failed_start", "complete", waitStarted, err, cmd.Process.Pid, len(tail))
+		trace.record(waitCtx, "failed_start", "complete", waitStarted, err, child.pid, len(tail))
 		failure := launchFailureError(launchFailurePrefix("resume", err), err, tail)
 		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, failure
 	}
 	if err := dlog.promote(); err != nil {
-		_ = cmd.Process.Kill()
-		promotionErr := fmt.Errorf("promote daemon log: %w", err)
+		promotionErr := errors.Join(fmt.Errorf("promote daemon log: %w", err), finishLaunch(true, reapResumeChild(child, reaped, activeResume)))
 		tail := dlog.tail(daemonLaunchOutputLimit)
-		trace.record(ctx, "failed_start", "complete", waitStarted, promotionErr, cmd.Process.Pid, len(tail))
+		trace.record(ctx, "failed_start", "complete", waitStarted, promotionErr, child.pid, len(tail))
 		failure := launchFailureError(launchFailurePrefix("resume", promotionErr), promotionErr, tail)
 		dlog.removeIfUncommitted()
 		return rendezvous.Entry{}, failure
 	}
+	_ = finishLaunch(false, nil)
 	_, _ = io.WriteString(hubLog, daemonSpawnBanner(entry.SessionID, entry.PID, dlog.path))
 	return entry, nil
 }
@@ -722,39 +843,96 @@ func resolveEvenerStateDirWithProject(workDir, override, stateHome string) (iden
 	return project, stateDir, nil
 }
 
-// validateProviderCredentials refuses a launch whose instance has no
+// validateProviderCredentials refuses a launch whose target has no
 // credential the child could resolve, so the failure is a launch error the
-// user can read rather than a 401 mid-session. The registry answers every
-// part of it (spec §11.3): auth = none and optional-bearer need nothing,
-// oauth-openai-codex is satisfied by the instance's OAuth record, gcp-adc by
-// the ADC variable or file, and everything else by a resolved key or
-// credential header — with the endpoint stop of §10 already applied, so a
-// gateway that inherits no vendor key is refused here.
+// user can read rather than a 401 mid-session. A launch names a model, and
+// the child resolves instance/model through that model's own row-merged
+// transport — a row may override the auth scheme or header — so the gate
+// judges that transport, not the per-instance listing (which describes the
+// bare-name launch alone); with no model it judges the listing view. The
+// judgment is structural for command expressions: the gate counts a
+// command-bearing credential slot as present and never executes it — the
+// child alone runs credential commands (the evaluation contract), so the
+// preflight neither mints a second token nor blocks a launch on a
+// transient command failure the child's retry would survive. The registry
+// answers every part of it (spec §11.3): auth = none and optional-bearer
+// need nothing, oauth-openai-codex is satisfied by the instance's OAuth
+// record, gcp-adc by the ADC variable or file, and everything else by a
+// resolved key or credential header — with the endpoint stop of §10
+// already applied, so a gateway that inherits no vendor key is refused here.
 //
 // A nil registry or an empty provider name means there is nothing to check.
-func validateProviderCredentials(provider string, reg *hubcore.ProviderRegistry) error {
+func validateProviderCredentials(provider, model string, reg *hubcore.ProviderRegistry) error {
 	name := strings.ToLower(strings.TrimSpace(provider))
 	if name == "" || reg == nil || reg.Get() == nil {
 		return nil
 	}
 	r := reg.Get()
-	if inst, ok := r.Instance(name); ok {
-		switch inst.Auth {
+	// The launch's model arrives as launchconfig materialized it:
+	// provider-qualified (cmdutil.ModelRef.Qualified()). Strip this
+	// instance's own prefix once, for the refusal message and the judgment
+	// alike — ResolveGateCredential strips again, harmlessly.
+	if ref := registry.ParseRef(model); strings.EqualFold(ref.Instance, name) {
+		model = ref.Model
+	}
+	if r.HasInstance(name) {
+		// The listing says the instance exists; the judgment is the gate's
+		// own view of the launch — ResolveGateCredential handles the
+		// provider-qualified model form, judges the model's transport, and
+		// executes no command expression. A named model the child refuses
+		// — disabled, or one that does not resolve — is refused here too,
+		// before the spawn, with the model's own verdict rather than a
+		// credential message for a launch that never happens.
+		res, err := r.ResolveGateCredential(name, model)
+		if err != nil {
+			return appwire.HubLaunchError(err.Error())
+		}
+		switch res.Transport.Auth {
 		case registry.AuthNone, registry.AuthOptionalBearer:
 			return nil
 		}
-		if inst.CredentialSource != "none" {
+		if res.Credential.Source != "none" {
 			return nil
 		}
-		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: %s", name, strings.Join(inst.Warnings, "; ")))
+		target := name
+		if model != "" {
+			target = name + "/" + model
+		}
+		return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: %s", target, strings.Join(res.Warnings, "; ")))
 	}
 	// Not an instance: a curated implicit provider whose credential does not
 	// resolve in this environment (spec §5.1), or a name nothing declares.
 	if p, ok := r.Provider(name); ok && registry.BoolValue(p.Implicit) {
+		// The judgment is the launch's own — the named model's row, or
+		// the default row when the caller named none — resolved the way
+		// the instance branch's gate resolves it, never executing a
+		// command. Not the provider's model-less shape: a row override
+		// that flips the scheme flips the remedy with it, or the gate
+		// points at a credential the launch never reads. A named model
+		// the child refuses is the preflight's own refusal, before the
+		// spawn — not a bare-launch scheme to offer a credential remedy
+		// against.
+		res, err := r.ResolveGateCredential(name, model)
+		if err != nil {
+			return appwire.HubLaunchError(err.Error())
+		}
+		// The named launch's own judgment: its row's scheme and
+		// credential. A row pinned to none or optional-bearer
+		// launches with nothing to configure; a resolved credential
+		// is satisfied; anything else takes the remediation for the
+		// row's own scheme below.
+		switch res.Transport.Auth {
+		case registry.AuthNone, registry.AuthOptionalBearer:
+			return nil
+		}
+		if res.Credential.Source != "none" {
+			return nil
+		}
+		scheme := res.Transport.Auth
 		// The Codex transport reads no key at all (spec §5.1), so its
 		// api_key_env list is empty and the key advice below would name
 		// nothing. Point at the flow that does configure it.
-		if p.Transport.Auth == registry.AuthOAuthOpenAICodex {
+		if scheme == registry.AuthOAuthOpenAICodex {
 			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: run `evener openai login --instance %s`", name, name))
 		}
 		// gcp-adc reads no key either, and it can be unconfigured two ways
@@ -762,7 +940,7 @@ func validateProviderCredentials(provider string, reg *hubcore.ProviderRegistry)
 		// registry says which variables this environment still owes it and
 		// what is wrong with the ones it has. Otherwise the URL resolves and
 		// it is the credential that did not.
-		if p.Transport.Auth == registry.AuthGCPADC {
+		if scheme == registry.AuthGCPADC {
 			if p.Hidden {
 				unset, problems := r.UnresolvedBaseURL(name)
 				reasons := append([]string(nil), problems...)
@@ -828,6 +1006,17 @@ func launchCheckWaitError(ctx context.Context) error {
 	return appwire.HubLaunchError("evener launch-check timed out")
 }
 
+// runLaunchCheck runs a launch-check and returns its combined output, bounding
+// the wait for its output pipe with evenerLaunchCheckWaitDelay. When that bound
+// is what ended the wait but the check itself exited 0, the check answered: a
+// child it left behind merely held the pipe open after the complete response
+// was written, so it is not a failure of the check (see orphanpipe).
+func runLaunchCheck(cmd *exec.Cmd) ([]byte, error) {
+	cmd.WaitDelay = evenerLaunchCheckWaitDelay
+	out, err := cmd.CombinedOutput()
+	return out, orphanpipe.ChildErr(cmd, err)
+}
+
 // requiredLaunchFlag is the serve flag the hub passes on every spawn and
 // resume (the api_log floor pins both directions), so every child binary
 // must advertise it in launch-check's launch_flags before the hub will
@@ -848,7 +1037,7 @@ func validateEvenerLaunchContract(ctx context.Context, evenerBinary, model strin
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, evenerBinary, args...)
 	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	out, err := runLaunchCheck(cmd)
 	if checkCtx.Err() != nil {
 		return launchCheckWaitError(checkCtx)
 	}
@@ -883,7 +1072,7 @@ func listEvenerLaunchModelContract(ctx context.Context, evenerBinary string, env
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, evenerBinary, "launch-check", "--protocol", appwire.ProtocolVersion, "--json", "--models")
 	cmd.Env = env
-	out, err := cmd.CombinedOutput()
+	out, err := runLaunchCheck(cmd)
 	if checkCtx.Err() != nil {
 		return appwire.ModelListResponse{}, launchCheckWaitError(checkCtx)
 	}

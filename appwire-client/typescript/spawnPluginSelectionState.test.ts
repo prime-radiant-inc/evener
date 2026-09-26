@@ -3,6 +3,7 @@
 import { describe, expect, test } from "vitest";
 import {
   type PluginSelectionState,
+  pluginSelectionFromOverrides,
   reconcilePluginSelection,
   selectAllPlugins,
   selectNoPlugins,
@@ -100,5 +101,32 @@ describe("plugin selection state", () => {
       enabledPlugins: ["a"],
     });
     expect(overrides).toEqual({ sandbox: "off", maxRounds: 2 });
+  });
+
+  test("pluginSelectionFromOverrides decodes the omitted and explicit forms", () => {
+    expect(pluginSelectionFromOverrides({ sandbox: "off" })).toEqual({ mode: "default" });
+    expect(pluginSelectionFromOverrides({ enabledPlugins: [] })).toEqual({ mode: "explicit", names: [] });
+    expect(pluginSelectionFromOverrides({ enabledPlugins: ["b", "a"] })).toEqual({
+      mode: "explicit",
+      names: ["b", "a"],
+    });
+  });
+
+  test("pluginSelectionFromOverrides does not alias the overrides array", () => {
+    const overrides: LaunchConfigLayer = { enabledPlugins: ["a"] };
+    const selection = pluginSelectionFromOverrides(overrides);
+    if (selection.mode === "explicit") selection.names.push("b");
+    expect(overrides.enabledPlugins).toEqual(["a"]);
+  });
+
+  test("a selection round-trips through withPluginSelection and back", () => {
+    const overrides: LaunchConfigLayer = { sandbox: "off", maxRounds: 2 };
+    for (const selection of [
+      { mode: "default" },
+      { mode: "explicit", names: [] },
+      { mode: "explicit", names: ["a", "b"] },
+    ] satisfies PluginSelectionState[]) {
+      expect(pluginSelectionFromOverrides(withPluginSelection(overrides, selection))).toEqual(selection);
+    }
   });
 });

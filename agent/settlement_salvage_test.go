@@ -73,7 +73,7 @@ func sessionHistory(s *Session) []schema.Turn {
 
 func transcriptTurns(t *testing.T, path string) []schema.Turn {
 	t.Helper()
-	data, err := readTranscriptFull(path)
+	data, err := readTranscriptFull(path, "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -429,8 +429,8 @@ func TestSettlement_InterruptMidRetryGroupSalvagesPartial(t *testing.T) {
 	if steering.Message.Text() != wantInterruptSteering {
 		t.Errorf("interrupt steering = %q, want %q", steering.Message.Text(), wantInterruptSteering)
 	}
-	if steering.SteeringKind != events.SteeringKindInterrupted {
-		t.Errorf("interrupt steering kind = %q, want %q", steering.SteeringKind, events.SteeringKindInterrupted)
+	if steering.SteeringKind != events.SteeringKindInterruptedSalvage {
+		t.Errorf("interrupt steering kind = %q, want %q", steering.SteeringKind, events.SteeringKindInterruptedSalvage)
 	}
 	if strings.Contains(steering.Message.Text(), "provider") {
 		t.Errorf("interrupt steering = %q makes a provider-failure claim the user's interrupt does not support", steering.Message.Text())

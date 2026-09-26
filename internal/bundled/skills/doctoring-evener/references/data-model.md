@@ -53,9 +53,14 @@ it was never read). Under an XDG home the layout is:
     <SID>.json                  ← client mutations (SIBLING of sessions/)
 ```
 
-- The **bucket** is `hexHash(key)` where `key` is the git origin URL, or the
-  working directory when there is no origin (one OR the other, not concatenated);
-  `hexHash` = `hex(sha256(key)[:8])` = **16 hex chars** (`RuntimeDir` / `hexHash`).
+- The **bucket** directory is named by the project identity `Project.ID` — a
+  readable path-derived name with a fixed 10-character base62 suffix (for
+  example `home-jesse-fSbf9SeZqM`), resolved from the project's canonical
+  path (`identifier.ResolveProject` / `ProjectFromCanonicalPath`;
+  `agent.RuntimeDir` lays the bucket at
+  `<stateHome>/evener/projects/<Project.ID>`). `hexHash` (`nonProjectHash`)
+  is deliberately unrelated to project identity — cache/test signatures
+  only.
 - **transcript, API log, and meta are flat files** named
   `<SID>.transcript.jsonl` / `<SID>.api.jsonl` / `<SID>.meta.json` directly
   under `sessions/` (`transcriptPath`, `APILogPath`).
@@ -69,15 +74,19 @@ it was never read). Under an XDG home the layout is:
   bucket-level `mutations/` dir that is a **sibling** of `sessions/`, not a file
   under it (`clientMutationFilePath`).
 - When `EVENER_STATE_DIR` / the tool's `state_dir` argument is set, that path
-  **is** the bucket
-  (sessions sit directly under it — no `evener/projects/<hash>` layer). This is the
-  E2E / scratch-root shape.
+  **is** the bucket the session writes (sessions sit directly under it). It
+  is routinely the session's own project bucket directory under
+  `<stateHome>/evener/projects/` — the daemon's per-project shape — and
+  `locate`/`sessions` still sweep every sibling bucket under that state
+  root. Only a true override / scratch root (a directory outside any
+  `evener/projects/` layout) is a single-bucket root.
 
 Parent, observer, and delegate sub-sessions are different SIDs and frequently
 live in **different buckets**. Don't assume one bucket.
 
 **Read it via:** `doctor_evener` `locate <selector>` (resolves all six paths +
-bucket hash; never recompute the hash by hand — resolve by glob).
+the bucket — the project id; never derive the bucket name by hand, resolve
+it).
 
 ---
 
@@ -156,8 +165,10 @@ record). You never read raw events for answers — you read the **folds**:
 ### Jobs
 
 A `JobRecord` is the folded state of one job: `Status` (running / completed /
-failed / cancelled / stopped / exhausted), the `Reason` that produced it (e.g.
-`run_timeout`), `ExitCode`, `OutputBytes`, `StartedAt` / `EndedAt`, the
+failed / cancelled / stopped / exhausted / command_exited_nonzero /
+command_killed), the `Reason` that produced it (e.g. `run_timeout`; the
+command-outcome statuses carry `exit_nonzero` or `killed_by_signal`, the
+latter with the reaper's signal name appended), `ExitCode`, `OutputBytes`, `StartedAt` / `EndedAt`, the
 `NotifyState` (`terminal_notification_state` on disk — a terminal job still
 `pending` never told its caller; `delivered` was rendered into the caller's own
 notification turn, and `consumed` means the caller read the terminal

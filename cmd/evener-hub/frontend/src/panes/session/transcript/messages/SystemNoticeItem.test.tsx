@@ -5,6 +5,7 @@ import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { formatCharCount, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
 import { prefsStore, resetPrefsStoreForTests } from "../../../../stores/prefs";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
@@ -13,28 +14,8 @@ import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { itemRendererFor } from "../types";
 import { SystemNoticeItem } from "./SystemNoticeItem";
 
-// See TurnSeparator.test.tsx's identical comment: Node 26 shadows jsdom's real
-// window.localStorage with its own (non-functional under vitest) global. These
-// tests render through TurnBlock, which reads the transcript visibility prefs.
-class MemoryStorage {
-  private store = new Map<string, string>();
-  getItem(key: string): string | null {
-    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
-  }
-  setItem(key: string, value: string): void {
-    this.store.set(key, String(value));
-  }
-  removeItem(key: string): void {
-    this.store.delete(key);
-  }
-  clear(): void {
-    this.store.clear();
-  }
-}
-
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
-  globalThis.localStorage = new MemoryStorage();
+  installLocalStorage(new MemoryStorage());
 });
 
 beforeEach(() => {

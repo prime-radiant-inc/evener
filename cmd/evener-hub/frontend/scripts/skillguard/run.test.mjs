@@ -48,3 +48,86 @@ describe("railRowsExpr readiness predicate", () => {
     expect(evaluateExpr(driver.railRowsExpr())).toEqual({ rows: [] });
   });
 });
+
+// selectAll feeds the queue journey's replacement edit: the driver selects the
+// draft a queued entry returned and types over it. The editor adopts a DOM
+// selection asynchronously, so a render landing in between can leave the caret
+// where it was and the next typeText would then read -- and type into -- a
+// position the scenario never meant. These pin the confirm/re-apply/fail
+// contract against a scripted state sequence, no browser needed.
+describe("selectAll holds the whole-text selection", () => {
+  const editState = (start, end, value = "PROSE_QUEUE_14c first pass /pkg:probe") => ({
+    value,
+    start,
+    end,
+    focused: true,
+  });
+
+  function scriptedDriver(script) {
+    const driver = new Driver({ url: "http://127.0.0.1/", artifactDir: "", controlPath: "", milestonePath: "" });
+    const ranges = [];
+    // Both reads come from the same script: the pre-selection state, then the
+    // state the editor settled on.
+    driver.composerEditState = async () => script.shift();
+    driver.settleComposer = async () => script.shift();
+    driver.selectRange = async (_ref, start, end) => {
+      ranges.push([start, end]);
+    };
+    return { driver, ranges };
+  }
+
+  test("returns after one selection when the editor holds it", async () => {
+    const { driver: d, ranges } = scriptedDriver([editState(0, 0), editState(0, 37)]);
+    await d.selectAll("ref_a");
+    expect(ranges).toEqual([[0, 37]]);
+  });
+
+  test("re-applies the selection a render reset, then returns", async () => {
+    const { driver: d, ranges } = scriptedDriver([
+      editState(0, 0),
+      editState(37, 37),
+      editState(37, 37),
+      editState(0, 37),
+    ]);
+    await d.selectAll("ref_a");
+    expect(ranges).toEqual([
+      [0, 37],
+      [0, 37],
+    ]);
+  });
+
+  test("re-applies when the draft grew after the selection was placed", async () => {
+    // The range was placed for the short draft; the editor then rendered a
+    // longer one and mapped the selection to the old prefix. Comparing against
+    // the length read before the range (11) would read that as a whole-text
+    // hold and strand the tail, so the settled text is the yardstick.
+    const { driver: d, ranges } = scriptedDriver([
+      editState(0, 0, "SHORT_DRAFT"),
+      editState(0, 11),
+      editState(0, 37),
+      editState(0, 37),
+    ]);
+    await d.selectAll("ref_a");
+    expect(ranges).toEqual([
+      [0, 11],
+      [0, 37],
+    ]);
+  });
+
+  test("reports an editor that will not hold the selection", async () => {
+    // Every settle reports the reset caret, so no attempt ever holds: the guard
+    // must fail, not type into the collapsed caret.
+    const { driver: d, ranges } = scriptedDriver([
+      editState(0, 0),
+      editState(37, 37),
+      editState(37, 37),
+      editState(37, 37),
+      editState(37, 37),
+      editState(37, 37),
+      editState(37, 37),
+      editState(37, 37),
+    ]);
+    await expect(d.selectAll("ref_a")).rejects.toThrow(/would not hold the whole-text selection/);
+    expect(ranges.length).toBe(4);
+  });
+});

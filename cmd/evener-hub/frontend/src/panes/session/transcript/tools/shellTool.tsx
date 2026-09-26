@@ -78,6 +78,30 @@ function shellExitCode(item: ItemModel): number | undefined {
   return item.exitCode ?? parseShellExitCode(item.output ?? "");
 }
 
+// The buffered-env trailer's exact full-line shape (agent/session_tools_
+// shell.go's runBufferedShell ends the output in this bare line).
+const BUFFERED_TRAILER_RE = /\bexit_code=(-?\d+) duration_ms=\d+ timed_out=(?:true|false)$/;
+
+// exitTrailerCode reads the output's own TERMINAL exit trailer, shape-aware:
+// the daemon's bracketed "[… exit N …]" final segment (trailingBracketFooter
+// already returns only the last bracketed segment), or the buffered-env
+// trailer as the output's final non-empty line. Never a bare "exit_code=N"
+// token echoed mid-stream by the command's own stdout (a test runner printing
+// that string is not a trailer), which parseShellExitCode's whole-output
+// fallback scan accepts - this stricter read exists for the body's
+// synthesized-footer gate below, where a false positive would suppress the
+// number's only authoritative copy.
+function exitTrailerCode(output: string): number | undefined {
+  const footer = trailingBracketFooter(output);
+  if (footer !== undefined) {
+    const bracketed = /\bexit (-?\d+)\b/.exec(footer);
+    if (bracketed) return Number(bracketed[1]);
+  }
+  const finalLine = output.trimEnd().split("\n").pop() ?? "";
+  const buffered = BUFFERED_TRAILER_RE.exec(finalLine);
+  return buffered ? Number(buffered[1]) : undefined;
+}
+
 // The row summary owns collapsed command presentation. The expanded body owns
 // a readable formatted command block and the output block independently.
 function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
@@ -96,15 +120,46 @@ function ShellBodyContent({ item, live, cwd, sessionRef }: ToolRenderProps) {
   }
   buffer.current.live = live;
   const tail = buffer.current.tail.update(output);
-  if (command === "" && output === "") return null;
-  const body =
-    live || !tail.truncated
-      ? tail.renderedText
-      : `earlier output not retained — showing the last ${TAIL_MAX_CHARS.toLocaleString("en-US")} chars\n${tail.renderedText}`;
+  // The typed exit code's one home is the captured output's trailing footer,
+  // but the wire carries the two independently: an output can exist with NO
+  // exit trailer of either shape while the typed ItemModel.exitCode is present
+  // (a stored transcript predating footer-baking replayed by a newer daemon, a
+  // buffered path that lost its line). With the row's hover title retired, the
+  // body is the number's only home, so it synthesizes the daemon's own footer
+  // shape for exactly that gap - display-only, like the truncated-tail notice
+  // below, so Copy output keeps the raw evidence. Two guards keep the
+  // synthesis honest: the -1 sentinel of a signalled job (job-control.md:1012
+  // - "not a shell code"; formatShellResult omits it from the footer for the
+  // same reason) never fabricates an exit line, and an output trailer only
+  // suppresses the synthesis when its code AGREES with the typed value, so a
+  // trailer that disagrees leaves the authoritative typed footer standing
+  // beside the verbatim raw text.
+  const exitFooter =
+    item.exitCode !== undefined && item.exitCode >= 0 && exitTrailerCode(output) !== item.exitCode
+      ? `[exit ${item.exitCode}]`
+      : undefined;
+  const renderedOutput =
+    tail.renderedText === "" && output === ""
+      ? exitFooter
+      : exitFooter === undefined
+        ? tail.renderedText
+        : `${tail.renderedText}\n${exitFooter}`;
+  if (command === "" && renderedOutput === undefined) return null;
   return (
     <>
       {command !== "" && <ShellCommandBlock command={command} copyText={rawCommand} />}
-      {output !== "" && <CodeBlock text={body} copyText={tail.copyText} copyLabel="Copy output" ansi />}
+      {renderedOutput !== undefined && (
+        <CodeBlock
+          text={
+            live || !tail.truncated
+              ? renderedOutput
+              : `earlier output not retained — showing the last ${TAIL_MAX_CHARS.toLocaleString("en-US")} chars\n${renderedOutput}`
+          }
+          copyText={tail.copyText}
+          copyLabel="Copy output"
+          ansi
+        />
+      )}
     </>
   );
 }
@@ -143,24 +198,17 @@ registerToolRenderer({
   fold: "consequential",
   // The exit code is NOT in the summary: a nonzero exit is announced by the
   // row's failure glyph instead (A2 - "exit 1" as the headline made every
-  // failure look like a footnote). The number itself stays reachable via
-  // detail() below, which the row shows both as a hover title and as real text
-  // in the expanded body.
+  // failure look like a footnote). The number's home is the real text at the
+  // tail of the expanded body: formatShellResult bakes "[exit N]" into the
+  // captured output itself (agent/session_tools_shell.go) — and when the
+  // output carries no trailer of either shape, the body synthesizes the typed
+  // code's line instead (see ShellBodyContent's exitFooter).
   summary(item: ItemModel, ctx?: ToolSummaryContext) {
     const command = stripRedundantCd(shellCommand(parseArgs(item.argumentsJSON)), ctx?.cwd);
     return `Ran ${command}`;
   },
   body: ShellBody,
   failed: nonzeroExit,
-  // The exit code, and ONLY the exit code. It deliberately does not carry the
-  // command as well: detail() renders as the row's hover title, and folding
-  // the command in would put a second copy of the call under the row. The
-  // expanded body already shows the command pretty-printed
-  // (ShellCommandBlock), so nothing is lost.
-  detail(item: ItemModel) {
-    const exitCode = shellExitCode(item);
-    return exitCode === undefined ? undefined : `exit ${exitCode}`;
-  },
   // The row summary IS the raw one-line command; the expanded body renders
   // that same command pretty-printed. Showing both on an open row duplicated
   // the call, so while expanded the summary text swaps to this placeholder:

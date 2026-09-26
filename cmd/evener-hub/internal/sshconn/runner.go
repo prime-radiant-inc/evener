@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/orphanpipe"
 	"primeradiant.com/evener/internal/shellquote"
 )
 
@@ -109,7 +110,8 @@ func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]by
 	stderr := cappedBuffer{limit: runOutputLimit}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	cmd.WaitDelay = runWaitDelay
+	err := orphanpipe.ChildErr(cmd, cmd.Run())
 	switch {
 	case err != nil:
 		return append(stdout.buf.Bytes(), stderr.buf.Bytes()...),
@@ -128,6 +130,13 @@ func (execRunner) Run(ctx context.Context, argv []string, stdin io.Reader) ([]by
 	}
 	return stdout.buf.Bytes(), nil
 }
+
+// runWaitDelay bounds how long a one-shot command's output pipes may stay open
+// after ssh exits or ctx ends. Whatever the user's ssh config starts alongside
+// ssh (a ProxyCommand, a LocalCommand) inherits those pipes, and killing ssh on
+// ctx expiry does not kill it, so without this bound ctx would not bound Run
+// (see orphanpipe).
+const runWaitDelay = time.Second
 
 // runOutputLimit caps one stream from a one-shot command. Preflight output is a
 // few hundred bytes; the cap exists so a hostile or broken remote command cannot
@@ -246,6 +255,18 @@ func sshBaseArgv(o Options) []string {
 	}
 }
 
+// sshIdentityArgv is the host's SSH identity option: ["-i", key] when the entry
+// carries a key path, else nothing (ssh resolves the identity the way the
+// operator's ssh_config does). It is inserted before the "--" destination
+// terminator like every other option, so a key path that begins with "-" is
+// read as an argument to -i rather than as an ssh option.
+func sshIdentityArgv(h hostreg.Host) []string {
+	if p := strings.TrimSpace(h.KeyPath); p != "" {
+		return []string{"-i", p}
+	}
+	return nil
+}
+
 // sshDest is ssh's destination argument, always placed after the "--" option
 // terminator. A registry value that begins with "-" has to be read as a
 // hostname and never as an ssh option: "-oProxyCommand=..." would otherwise run
@@ -281,6 +302,7 @@ func evenerCommand(path string) string {
 // caller using it hands the remote shell an expression to evaluate on purpose.
 func rawCommandArgv(o Options, h hostreg.Host, remote string) []string {
 	argv := sshBaseArgv(o)
+	argv = append(argv, sshIdentityArgv(h)...)
 	argv = append(argv, sshDest(h)...)
 	return append(argv, remote)
 }
@@ -292,6 +314,7 @@ func rawCommandArgv(o Options, h hostreg.Host, remote string) []string {
 // be executed there instead of passed to evener.
 func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 	argv := sshBaseArgv(o)
+	argv = append(argv, sshIdentityArgv(h)...)
 	argv = append(argv, sshDest(h)...)
 	argv = append(argv, shellquote.RemoteWord(evenerCommand(h.EvenerPath)))
 	for _, a := range args {
@@ -303,8 +326,8 @@ func evenerCommandArgv(o Options, h hostreg.Host, args ...string) []string {
 // channelArgv is the exact non-interactive bridge form:
 //
 //	ssh -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
-//	    -o ServerAliveCountMax=<n> -- <dest> <evener_path> hub attach --stdio
-//	    [--config <path>] [--addr <addr>]
+//	    -o ServerAliveCountMax=<n> [-i <key_path>] -- <dest> <evener_path> \
+//	    hub attach --stdio [--config <path>] [--addr <addr>]
 //
 // The optional flags carry the host's own hub.toml and the address the operator
 // configured for it (per-host Addr, else Options.HubAddr). Passing --addr from

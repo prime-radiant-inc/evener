@@ -68,30 +68,16 @@ export interface AskDockRefState {
 // caller adds no label of its own.
 export type SendBatchOutcome = { outcome: "sent" } | { outcome: "error"; message: string } | { outcome: "stale" };
 
+// AskDockState is pure data: the per-ref bookkeeping a view binds to. Every
+// action this store exposes is store-bound (AskDockStore) - the shape its own
+// reconcile/beginSend/finishSend/followThreads already use - so a view reaches
+// them as askDockStore.X, never askDockStore.getState().X.
 export interface AskDockState {
   byRef: Map<string, AskDockRefState>;
   // How many batch ids this store has minted. Ids are purely local (never on
   // the wire), so a counter is the whole scheme; it lives in state so a reset
   // to the initial state restarts it, purely for readable test output.
   mintedBatches: number;
-  setAnswer(ref: string, key: string, resolution: AskResolution | null): void;
-  setNote(ref: string, key: string, note: string): void;
-  // setActive records which question tab is visible for a batch. A key that
-  // does not belong to the named batch is a no-op (never navigate the reader
-  // to a question that is not there).
-  setActive(ref: string, batchId: string, key: string): void;
-  // markPendingGreeted records that the dock has auto-focused for this ref's
-  // current pending set. No-op while nothing is pending - there is nothing to
-  // greet.
-  markPendingGreeted(ref: string): void;
-  // sendBatch composes `batchId`'s current answers and submits them through
-  // the host's send path (no dedicated wire method for answers exists). It
-  // re-checks the batch still exists and isn't already sending before ever
-  // calling send - a stale click (the ask already resolved elsewhere, or a
-  // double-click on the same batch) is a silent no-op, never a duplicate/blind
-  // request. Throws if the store was built without a sender: that is a
-  // programming error, not an outcome the dock can show.
-  sendBatch(ref: string, batchId: string): Promise<SendBatchOutcome>;
 }
 
 export interface AskDockThreadsSnapshot {
@@ -116,6 +102,24 @@ export interface AskDockPorts {
 }
 
 export interface AskDockStore extends FrameworkFreeStore<AskDockState> {
+  setAnswer(ref: string, key: string, resolution: AskResolution | null): void;
+  setNote(ref: string, key: string, note: string): void;
+  // setActive records which question tab is visible for a batch. A key that
+  // does not belong to the named batch is a no-op (never navigate the reader
+  // to a question that is not there).
+  setActive(ref: string, batchId: string, key: string): void;
+  // markPendingGreeted records that the dock has auto-focused for this ref's
+  // current pending set. No-op while nothing is pending - there is nothing to
+  // greet.
+  markPendingGreeted(ref: string): void;
+  // sendBatch composes `batchId`'s current answers and submits them through
+  // the host's send path (no dedicated wire method for answers exists). It
+  // re-checks the batch still exists and isn't already sending before ever
+  // calling send - a stale click (the ask already resolved elsewhere, or a
+  // double-click on the same batch) is a silent no-op, never a duplicate/blind
+  // request. Throws if the store was built without a sender: that is a
+  // programming error, not an outcome the dock can show.
+  sendBatch(ref: string, batchId: string): Promise<SendBatchOutcome>;
   /** Follow `threads`: every ref whose ThreadModel reference changes is
    * reconciled against its live question scan. Returns the disposer. */
   followThreads(threads: AskDockThreads): () => void;
@@ -364,9 +368,36 @@ function withLiveQuestions(
 
 /** Builds an empty ask-dock store over the host's ports. */
 export function createAskDockStore({ send }: AskDockPorts = {}): AskDockStore {
-  const store = createFrameworkFreeStore<AskDockState>((_set, get) => ({
+  const store = createFrameworkFreeStore<AskDockState>(() => ({
     byRef: new Map(),
     mintedBatches: 0,
+  }));
+
+  // Applies one ref transition, copying and notifying only when it changed.
+  const updateRef = (ref: string, change: (refState: AskDockRefState) => AskDockRefState | undefined): boolean => {
+    const s = store.getState();
+    const next = change(s.byRef.get(ref) ?? EMPTY_REF_STATE);
+    if (next === undefined) return false;
+    store.setState({ byRef: new Map(s.byRef).set(ref, next) });
+    return true;
+  };
+
+  const beginSend = (ref: string, batchId: string): boolean =>
+    updateRef(ref, (refState) => withSending(refState, batchId));
+
+  const finishSend = (ref: string, batchId: string, accepted: boolean): void => {
+    updateRef(ref, (refState) => withSendFinished(refState, batchId, accepted));
+  };
+
+  const reconcile = (ref: string, live: readonly AskQuestionRef[]): void => {
+    const s = store.getState();
+    const next = withLiveQuestions(s.byRef.get(ref) ?? EMPTY_REF_STATE, live, s.mintedBatches);
+    if (next === undefined) return;
+    store.setState({ byRef: new Map(s.byRef).set(ref, next.refState), mintedBatches: next.mintedBatches });
+  };
+
+  return {
+    ...store,
 
     setAnswer(ref, key, resolution) {
       updateRef(ref, (refState) => withAnswer(refState, key, resolution));
@@ -388,7 +419,7 @@ export function createAskDockStore({ send }: AskDockPorts = {}): AskDockStore {
       if (send === undefined) {
         throw new Error("ask-dock store has no sender: pass { send } to createAskDockStore before sendBatch");
       }
-      const refState = get().byRef.get(ref);
+      const refState = store.getState().byRef.get(ref);
       const batch = refState?.batches.find((b) => b.id === batchId);
       if (!refState || !batch || batch.sending) return { outcome: "stale" };
 
@@ -416,34 +447,7 @@ export function createAskDockStore({ send }: AskDockPorts = {}): AskDockStore {
         return { outcome: "error", message: sessionActionError("Couldn't send answers", err) };
       }
     },
-  }));
 
-  // Applies one ref transition, copying and notifying only when it changed.
-  function updateRef(ref: string, change: (refState: AskDockRefState) => AskDockRefState | undefined): boolean {
-    const s = store.getState();
-    const next = change(s.byRef.get(ref) ?? EMPTY_REF_STATE);
-    if (next === undefined) return false;
-    store.setState({ byRef: new Map(s.byRef).set(ref, next) });
-    return true;
-  }
-
-  function beginSend(ref: string, batchId: string): boolean {
-    return updateRef(ref, (refState) => withSending(refState, batchId));
-  }
-
-  function finishSend(ref: string, batchId: string, accepted: boolean): void {
-    updateRef(ref, (refState) => withSendFinished(refState, batchId, accepted));
-  }
-
-  function reconcile(ref: string, live: readonly AskQuestionRef[]): void {
-    const s = store.getState();
-    const next = withLiveQuestions(s.byRef.get(ref) ?? EMPTY_REF_STATE, live, s.mintedBatches);
-    if (next === undefined) return;
-    store.setState({ byRef: new Map(s.byRef).set(ref, next.refState), mintedBatches: next.mintedBatches });
-  }
-
-  return {
-    ...store,
     reconcile,
     beginSend,
     finishSend,

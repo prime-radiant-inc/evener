@@ -267,7 +267,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			instDir := t.TempDir()
 			tomlPath := filepath.Join(instDir, "providers.toml")
 			writeMinimalProvidersToml(t, tomlPath)
-			instCtl := newTestInstancesController(t, tomlPath, instDir, t.TempDir())
+			instCtl := newTestInstancesController(t, tomlPath, instDir, t.TempDir(), nil)
 			instServer := appserver.NewServer(appserver.ServerConfig{})
 			registerInstanceHandlers(instServer, instCtl)
 			for _, c := range []struct {
@@ -398,6 +398,9 @@ func FuzzExactAppRPC(f *testing.F) {
 			observeHubRelayFunctions = func(got hubRelayFunctions) { idleRelay = got }
 			idleServer = newHubAppServer(idleCfg, registry)
 			observeHubRelayFunctions = nil
+			// The subscriber below is never unregistered, so no idle tick ends
+			// this relay; its server's shutdown does.
+			t.Cleanup(func() { _ = idleServer.Shutdown(context.Background()) })
 			idleThread := thread
 			idleSource := &exactRPCSource{scriptedAppSource: &scriptedAppSource{id: "idle", thread: idleThread}, notifications: make(chan appwire.Notification)}
 			_ = idleRelay.startRelay(context.Background(), idleSource, appwire.ThreadReadParams{}, idleThread)
@@ -470,6 +473,6 @@ func instServerForExactSetDefaultError(t *testing.T) *appserver.Server {
 	path := filepath.Join(dir, "providers.toml")
 	writeMinimalProvidersToml(t, path)
 	server := appserver.NewServer(appserver.ServerConfig{})
-	registerInstanceHandlers(server, newTestInstancesController(t, path, dir, t.TempDir()))
+	registerInstanceHandlers(server, newTestInstancesController(t, path, dir, t.TempDir(), nil))
 	return server
 }

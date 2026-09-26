@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -801,7 +802,7 @@ func TestRetirementResumeFences(t *testing.T) {
 		// The request was admitted before this recovery began; finishing the
 		// stop without a recovery requirement still invalidates its epoch.
 		abort := f.locks.BeginForceStop([]string{f.sessionID})
-		abort(false)
+		abort.Finish(false)
 		close(f.peerMutationGate)
 
 		result := <-done
@@ -948,6 +949,62 @@ func TestResumeAfterConfirmedRetirementSpawnsResolvedTarget(t *testing.T) {
 	}
 }
 
+// TestRetirementResumeSiblingAliasDeletionFencesOwnershipGroup pins the same
+// ownership-group fence on the retirement path: the deletion record names only
+// a sibling alias in the resolved group while the path validated only the
+// resolved target, so the whole group must be fenced under the alias locks
+// before live-owner reuse or replacement.
+func TestRetirementResumeSiblingAliasDeletionFencesOwnershipGroup(t *testing.T) {
+	requested := hubtest.SessionID(t)
+	target := hubtest.SessionID(t)
+	sibling := hubtest.SessionID(t)
+	locks := hubcore.NewResumeLocks()
+	// A completed clear over a three-alias ownership group, with the resolved
+	// routing recorded requested -> target. The fence names only the sibling.
+	if err := locks.PersistForceStop([]string{requested, target, sibling}, target); err != nil {
+		t.Fatalf("PersistForceStop: %v", err)
+	}
+	epoch := locks.RecoveryState(requested).Epoch
+	if err := locks.ExplicitResumeCompleted(target, epoch); err != nil {
+		t.Fatalf("ExplicitResumeCompleted: %v", err)
+	}
+	locks.RecordResolvedSession(requested, target, epoch)
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(filepath.Base(hubtest.ProjectDir(t, t.TempDir(), "deleted")), []hubcore.DeletionTarget{{Ref: "local:" + sibling, ThreadID: sibling}}); err != nil {
+		t.Fatal(err)
+	}
+	launches := 0
+	runDir := t.TempDir()
+	prevRefresh := hubRosterRefresh
+	hubRosterRefresh = func(context.Context, *hubcore.Roster) error { return nil }
+	t.Cleanup(func() { hubRosterRefresh = prevRefresh })
+	cfg := hubcore.WebConfig{
+		RunDir:        runDir,
+		Roster:        hubcore.NewRoster(runDir, nil),
+		ResumeLocks:   locks,
+		DeletionStore: store,
+		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			launches++
+			return rendezvous.Entry{}, errors.New("sibling-deleted group reached launcher")
+		}},
+	}
+	err = resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + requested})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("sibling deletion fence error=%v", err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.MutationOutcome != appwire.MutationOutcomeTargetDeleted {
+		t.Errorf("deletion outcome=%#v", wire.Data)
+	}
+	if launches != 0 {
+		t.Fatalf("sibling-deleted group launch count=%d", launches)
+	}
+}
+
 // TestResumeAfterConfirmedRetirementRecordsResolvedSession is the round-16
 // regression: a successful retirement recovery must record the replacement the
 // alias resolved to, or the alias keeps walking a stale hop. The recorded chain
@@ -1020,6 +1077,288 @@ func TestResumeAfterConfirmedRetirementRecordsResolvedSession(t *testing.T) {
 	if got := locks.ResolvedSessionID(alias); got != target {
 		t.Fatalf("ResolvedSessionID(%q) = %q after a successful retirement resume, want the live replacement %q (the stale hop is %q)", alias, got, target, stale)
 	}
+}
+
+// captureHubStderr redirects the hub's lifecycle log destination (os.Stderr)
+// into a pipe for the duration of fn and returns what was written. Both pipe
+// ends are closed and os.Stderr restored through t.Cleanup, so an early
+// t.Fatalf or panic cannot leak a descriptor or leave stderr redirected.
+func captureHubStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stderr
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Stderr = original
+		_ = writeEnd.Close()
+		_ = readEnd.Close()
+	})
+	os.Stderr = writeEnd
+	fn()
+	_ = writeEnd.Close()
+	os.Stderr = original
+	data, _ := io.ReadAll(readEnd)
+	return string(data)
+}
+
+// TestResumeAfterConfirmedRetirementRecordsLifecycle requires that a resume
+// triggered by daemon retirement carries the same correlated lifecycle trace as
+// an explicit resume: an operation=resume stream whose records carry the
+// requested identity in session_id and, for every stage at or after ownership
+// resolution, the resolved target in resolved_session_id. The log destination
+// is the hub's own stderr, not a configurable seam, so capture it around the
+// call.
+func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
+	requested := hubtest.SessionID(t)
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	target := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	if requested == target {
+		t.Fatal("fixture requires distinct requested and resolved session IDs")
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        target,
+			SessionID: target,
+			Source:    "local",
+			Evener:    appwire.EvenerThread{Ref: params.Ref, InstanceID: target},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+
+	runDir := t.TempDir()
+	spawner := &fakeRPCSpawner{resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		if req.SessionID != target {
+			t.Fatalf("resume request session = %q, want the resolved target %q", req.SessionID, target)
+		}
+		entry := rendezvous.Entry{
+			PID:        106,
+			Protocol:   appwire.ProtocolVersion,
+			Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+			SourceID:   "local",
+			ThreadID:   target,
+			SessionID:  target,
+			WorkingDir: workingDir,
+		}
+		writeRendezvous(t, runDir, entry)
+		return entry, nil
+	}}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	locks := hubcore.NewResumeLocks()
+	if err := locks.PersistForceStop([]string{requested, target}, target); err != nil {
+		t.Fatalf("PersistForceStop: %v", err)
+	}
+	epoch := locks.RecoveryState(requested).Epoch
+	if err := locks.ExplicitResumeCompleted(target, epoch); err != nil {
+		t.Fatalf("ExplicitResumeCompleted: %v", err)
+	}
+	locks.RecordResolvedSession(requested, target, epoch)
+
+	cfg := hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      hubcore.NewRoster(runDir, nil),
+		ResumeLocks: locks,
+		Spawner:     spawner,
+		Past:        past,
+	}
+
+	var resumeErr error
+	data := captureHubStderr(t, func() {
+		resumeErr = resumeAfterConfirmedRetirement(t.Context(), cfg, newHubSourceRegistry(cfg), appwire.TurnStartParams{Ref: "local:" + requested})
+	})
+	if resumeErr != nil {
+		t.Fatalf("resumeAfterConfirmedRetirement: %v", resumeErr)
+	}
+	records := assertThreadLifecycleRecords(t, data)
+	for _, record := range records {
+		if record["operation"] != "resume" || record["session_id"] != requested {
+			t.Fatalf("lost retirement-resume correlation: %#v, want operation=resume session_id=%s", record, requested)
+		}
+	}
+	assertThreadLifecycleOutcome(t, records, "request", "success", "none")
+	assertThreadLifecycleOutcome(t, records, "ownership", "success", "none")
+	// Only the stages recorded after resumeOwnership resolves the alias carry the
+	// resolved identity, exactly as the explicit path's post-resolution stages do.
+	for _, stage := range []string{"lock_wait", "lock_held", "discovery", "protocol_check", "owner_lookup", "request_preparation", "spawner_resume", "post_launch_discovery", "daemon_read"} {
+		assertThreadLifecycleOutcome(t, records, stage, "success", "none")
+		for _, record := range records {
+			if record["stage"] == stage && record["resolved_session_id"] != target {
+				t.Fatalf("%s lost resolved identity: %#v, want resolved_session_id=%s", stage, record, target)
+			}
+		}
+	}
+}
+
+// TestResumeAfterConfirmedRetirementRecordsAdmissionFailure requires that a
+// retirement resume refused by an admission fence, before it ever reaches the
+// spawn half, still emits the request pair: the path must remain observable
+// exactly when it fails.
+func TestResumeAfterConfirmedRetirementRecordsAdmissionFailure(t *testing.T) {
+	requested := hubtest.SessionID(t)
+	locks := hubcore.NewResumeLocks()
+	// An in-flight force stop leaves Stopping > 0, so the admission re-check
+	// refuses the retirement resume. finish.Finish(false) is the caller acknowledging
+	// the refused force stop; the fence itself is what the test needs held.
+	finish := locks.BeginForceStop([]string{requested})
+	t.Cleanup(func() { finish.Finish(false) })
+	runDir := t.TempDir()
+	cfg := hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      hubcore.NewRoster(runDir, nil),
+		ResumeLocks: locks,
+	}
+
+	var resumeErr error
+	data := captureHubStderr(t, func() {
+		resumeErr = resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + requested})
+	})
+	if resumeErr == nil {
+		t.Fatal("resumeAfterConfirmedRetirement unexpectedly succeeded under an admission fence")
+	}
+	records := assertThreadLifecycleRecords(t, data)
+	for _, record := range records {
+		if record["operation"] != "resume" || record["session_id"] != requested {
+			t.Fatalf("lost refused-resume correlation: %#v, want operation=resume session_id=%s", record, requested)
+		}
+	}
+	assertThreadLifecycleOutcome(t, records, "request", "error", "failed")
+}
+
+// TestResumeAfterConfirmedRetirementRecordsLiveReplacementIdentity requires
+// that the reuse-a-live-replacement early return records the resolved identity:
+// ownership resolves the alias before that return, so its deferred request
+// completion must carry resolved_session_id=target like every other
+// post-resolution outcome.
+func TestResumeAfterConfirmedRetirementRecordsLiveReplacementIdentity(t *testing.T) {
+	alias := hubtest.SessionID(t)
+	stale := hubtest.SessionID(t)
+	target := hubtest.SessionID(t)
+
+	locks := hubcore.NewResumeLocks()
+	// A completed redirect alias -> stale is on record; the live entry below
+	// names target as the current session while still claiming alias, so
+	// resumeOwnership resolves target from live evidence.
+	if err := locks.PersistForceStop([]string{alias, stale}, stale); err != nil {
+		t.Fatalf("PersistForceStop: %v", err)
+	}
+	epoch := locks.RecoveryState(alias).Epoch
+	if err := locks.ExplicitResumeCompleted(stale, epoch); err != nil {
+		t.Fatalf("ExplicitResumeCompleted: %v", err)
+	}
+	locks.RecordResolvedSession(alias, stale, epoch)
+
+	entry := rendezvous.Entry{
+		PID:          6101,
+		Address:      "127.0.0.1:6101",
+		Endpoint:     "ws://127.0.0.1:6101/rpc",
+		Protocol:     appwire.ProtocolVersion,
+		SourceID:     "local",
+		ThreadID:     alias,
+		SessionID:    target,
+		WorkspaceRef: "local:" + alias,
+		InstanceID:   "live-replacement-instance",
+		StateDir:     t.TempDir(),
+		StartedAt:    time.Unix(1700003000, 0).UTC(),
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, entry)
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:          entry,
+		SessionID:      target,
+		Status:         appwire.ThreadStatusIdle,
+		Lifecycle:      &appwire.DaemonLifecycle{Phase: "resident", Blockers: []appwire.DaemonBlocker{}},
+		LifecycleFresh: true,
+	})
+	prevRefresh := hubRosterRefresh
+	hubRosterRefresh = func(context.Context, *hubcore.Roster) error { return nil }
+	t.Cleanup(func() { hubRosterRefresh = prevRefresh })
+
+	cfg := hubcore.WebConfig{RunDir: runDir, Roster: roster, ResumeLocks: locks}
+
+	var resumeErr error
+	data := captureHubStderr(t, func() {
+		resumeErr = resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + alias})
+	})
+	if resumeErr != nil {
+		t.Fatalf("resumeAfterConfirmedRetirement: %v", resumeErr)
+	}
+	records := assertThreadLifecycleRecords(t, data)
+	for _, record := range records {
+		if record["operation"] != "resume" || record["session_id"] != alias {
+			t.Fatalf("lost live-replacement correlation: %#v, want operation=resume session_id=%s", record, alias)
+		}
+	}
+	complete := false
+	for _, record := range records {
+		if record["stage"] != "request" || record["state"] != "complete" {
+			continue
+		}
+		complete = true
+		if record["result"] != "success" || record["resolved_session_id"] != target {
+			t.Fatalf("request completion: %#v, want success resolved_session_id=%s", record, target)
+		}
+	}
+	if !complete {
+		t.Fatalf("missing request completion: %#v", records)
+	}
+}
+
+// TestResumeAfterConfirmedRetirementRecordsLockWait pins that lock waiting is
+// observable on the retirement path: the lock_wait begin record must be
+// emitted before the alias mutex is acquired, so a resume blocked behind a
+// concurrent force stop or explicit resume is attributable to lock contention
+// rather than to a slow daemon exit or spawn.
+func TestResumeAfterConfirmedRetirementRecordsLockWait(t *testing.T) {
+	id := hubtest.SessionID(t)
+	locks := hubcore.NewResumeLocks()
+	lock := locks.For(id)
+	lock.Lock()
+	release := sync.OnceFunc(lock.Unlock)
+	defer release()
+
+	w := &threadLifecycleWaitWriter{waiting: make(chan struct{})}
+	ctx, _ := withThreadLifecycleLog(t.Context(), "resume", id, w)
+	runDir := t.TempDir()
+	cfg := hubcore.WebConfig{RunDir: runDir, Roster: hubcore.NewRoster(runDir, nil), ResumeLocks: locks}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- resumeAfterConfirmedRetirement(ctx, cfg, nil, appwire.TurnStartParams{Ref: "local:" + id})
+	}()
+
+	select {
+	case <-w.waiting:
+		// lock_wait/begin was recorded while the alias mutex is still held.
+	case <-time.After(10 * time.Second):
+		t.Fatal("lock_wait begin was not recorded before lock acquisition while the alias mutex was held")
+	}
+	release()
+
+	finished := false
+	defer func() {
+		release()
+		if !finished {
+			<-done
+		}
+	}()
+	// The spawner is unconfigured, so the resume fails after the lock section;
+	// this test asserts the lock stages, not the outcome.
+	<-done
+	finished = true
+
+	records := assertThreadLifecycleRecords(t, w.String())
+	assertThreadLifecycleOutcome(t, records, "lock_wait", "success", "none")
+	assertThreadLifecycleOutcome(t, records, "lock_held", "success", "none")
 }
 
 func TestRetirementResumeUnreadableDiscoveryFails(t *testing.T) {
@@ -1181,6 +1520,29 @@ func TestAwaitRetiredOwnerFallsBackToThreadID(t *testing.T) {
 	}
 	if openedSessionID != entry.ThreadID {
 		t.Fatalf("opened session identity = %q, want the ThreadID fallback %q", openedSessionID, entry.ThreadID)
+	}
+}
+
+// TestAwaitRetiredOwnerOpensTheOwnerAsRetiring pins the flake behind
+// TestE2E_SendPromptToARetiredSession: a committed-retiring daemon releases its
+// session API log before the process exits, and the force-stop verifier treats
+// a process without that log as unverified. Opened as an ordinary target, the
+// owner in that window was refused and awaitRetiredOwner returned
+// LifecycleUnavailable("retiring") at once, so a prompt sent during retirement
+// failed instead of resuming. The owner must be opened as a Retiring target,
+// whose handle confirms exit without requiring the log.
+func TestAwaitRetiredOwnerOpensTheOwnerAsRetiring(t *testing.T) {
+	entry := rendezvous.Entry{PID: 4332, SessionID: "retiring-session", StateDir: t.TempDir(), StartedAt: time.Now()}
+	var opened daemonprocess.Target
+	controller := forceStopControllerFunc(func(target daemonprocess.Target) (daemonprocess.Process, error) {
+		opened = target
+		return nil, daemonprocess.ErrExited
+	})
+	if err := awaitRetiredOwner(t.Context(), hubcore.WebConfig{DaemonProcesses: controller}, entry); err != nil {
+		t.Fatalf("awaitRetiredOwner: %v", err)
+	}
+	if !opened.Retiring {
+		t.Fatalf("opened the retiring owner as %+v; want Retiring so its released API log does not refuse the exit wait", opened)
 	}
 }
 
