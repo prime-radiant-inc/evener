@@ -20,8 +20,19 @@ test("unexpected console output fails the check, naming the method and its first
   target.error("second");
 
   expect(guard.takeUnexpectedOutput()).toBe(
-    'Unexpected console output: console.warn("first 1") and 1 more call(s). Assert expected output with vi.spyOn(console, ...).',
+    'Unexpected console output: console.warn("first", 1) and 1 more call(s). If the test expects it, spy with vi.spyOn(console, "warn").mockImplementation(() => {}) and assert the calls.',
   );
+});
+
+test("the report shows each argument's detail: objects as JSON, errors by message, the rest as text", () => {
+  const { target } = fakeConsole();
+  const guard = guardConsoleOutput(target);
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+
+  target.error({ id: 1 }, new Error("boom"), cyclic, undefined);
+
+  expect(guard.takeUnexpectedOutput()).toContain('console.error({"id":1}, Error: boom, [object Object], undefined)');
 });
 
 test("the check clears what it reported, so one test's output is not blamed on the next", () => {
