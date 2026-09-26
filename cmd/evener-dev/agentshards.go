@@ -817,10 +817,43 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		for n := 0; n < surveyContextAfter && end < len(lines) && !surveyFrameworkLine(lines[end]); n++ {
 			end++
 		}
+		deferFallbackLine := func(index int) bool {
+			if surveyFrameworkLine(lines[index]) {
+				return false
+			}
+			owner := fallbackOwners[index].owner
+			if fallbackOwners[index].verdict {
+				owner = name
+			}
+			if owner == "" || owner == name {
+				return false
+			}
+			claim, ok := fallbackClaims[owner]
+			if !ok {
+				claim = surveyFallbackLaterFailureClaim(lines, i, maxBlocks, owner)
+				fallbackClaims[owner] = claim
+			}
+			if claim.name == "" || index < claim.lastRun {
+				return false
+			}
+			deferredLines[claim.name] = append(deferredLines[claim.name], index)
+			return true
+		}
 		if len(deferred) > 0 || start == i || surveyFailureHasMismatchedOwner(lines, i) {
 			if expanded, ok := expandSurveyFailure(lines, i, start, emittedLines, deferred); ok {
+				unselected := make([]int, 0, i-start)
+				for index := start; index < i; index++ {
+					if _, alreadyEmitted := emittedLines[index]; alreadyEmitted || deferFallbackLine(index) {
+						continue
+					}
+					unselected = append(unselected, index)
+				}
 				for _, excerpt := range expanded {
 					_, _ = fmt.Fprintln(w, excerpt)
+				}
+				for _, index := range unselected {
+					_, _ = fmt.Fprintln(w, lines[index])
+					emittedLines[index] = struct{}{}
 				}
 				for _, excerpt := range lines[i+1 : end] {
 					_, _ = fmt.Fprintln(w, excerpt)
@@ -839,22 +872,8 @@ func replaySurveyFailures(w io.Writer, path string, maxBlocks int) {
 		}
 		for index := start; index < end; index++ {
 			if index < i {
-				if !surveyFrameworkLine(lines[index]) {
-					owner := fallbackOwners[index].owner
-					if fallbackOwners[index].verdict {
-						owner = name
-					}
-					if owner != "" && owner != name {
-						claim, ok := fallbackClaims[owner]
-						if !ok {
-							claim = surveyFallbackLaterFailureClaim(lines, i, maxBlocks, owner)
-							fallbackClaims[owner] = claim
-						}
-						if claim.name != "" && index >= claim.lastRun {
-							deferredLines[claim.name] = append(deferredLines[claim.name], index)
-							continue
-						}
-					}
+				if deferFallbackLine(index) {
+					continue
 				}
 			}
 			if _, alreadyEmitted := emittedLines[index]; alreadyEmitted {
