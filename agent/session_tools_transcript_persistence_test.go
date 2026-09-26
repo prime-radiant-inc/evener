@@ -16,6 +16,7 @@ import (
 )
 
 func TestSessionCanceledAPILogReadStaysOutOfSemanticTranscript(t *testing.T) {
+	t.Parallel()
 	const bodySentinel = "PRIVATE_CANCELED_API_BODY_SENTINEL"
 	stateDir := newBucket(t)
 	client := llm.NewClient()

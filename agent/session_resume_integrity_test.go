@@ -13,6 +13,7 @@ import (
 )
 
 func TestRestoreSessionRejectsCorruptTranscriptWithoutMutation(t *testing.T) {
+	t.Parallel()
 	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	stateDir := t.TempDir()
 	meta := resumeIntegrityMeta(sessionID)
@@ -39,6 +40,7 @@ func TestRestoreSessionRejectsCorruptTranscriptWithoutMutation(t *testing.T) {
 }
 
 func TestRestoreSessionRejectsTranscriptSessionMismatchWithoutMutation(t *testing.T) {
+	t.Parallel()
 	const requestedID = "02wMz5Txv1C3Hut0M8GCeB"
 	stateDir := t.TempDir()
 	meta := resumeIntegrityMeta(requestedID)
@@ -65,6 +67,7 @@ func TestRestoreSessionRejectsTranscriptSessionMismatchWithoutMutation(t *testin
 }
 
 func TestRestoreSessionRejectsSymlinkTranscriptWithoutMutation(t *testing.T) {
+	t.Parallel()
 	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
 	stateDir := t.TempDir()
 	meta := resumeIntegrityMeta(sessionID)

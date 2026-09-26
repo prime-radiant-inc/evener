@@ -8,6 +8,7 @@ import (
 )
 
 func TestSetHumanNoteJournalFaultRetryDeliversWithoutRewrite(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	s.clientMutations.faults.AfterEffectSnapshotRename = func() error { return errors.New("lost response") }
 	if _, err := s.SetHumanNote("save", " note\nvalue "); err == nil {
@@ -30,6 +31,7 @@ func TestSetHumanNoteJournalFaultRetryDeliversWithoutRewrite(t *testing.T) {
 }
 
 func TestSetHumanNoteJournalFaultInterveningSaveKeepsNewer(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	s.clientMutations.faults.AfterEffectSnapshotRename = func() error { return errors.New("lost response") }
 	if _, err := s.SetHumanNote("save", "note A"); err == nil {

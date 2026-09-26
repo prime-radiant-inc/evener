@@ -26,6 +26,7 @@ import (
 const skillActivationSnapshotFixture = `{"revision":7,"inventory":{"scope:alpha":{"ordinary":{"identity":{"name":"scope:alpha","declared_name":"alpha","source":"/fixture/alpha/SKILL.md","file_digest":"file-1","rendered_digest":"render-1"},"description":"fixture-description","controls":{"disable_model_invocation":false,"user_invocable":false},"route":"user_slash","invocation_id":"inv-1","user_authorized":true},"preload":{"name":"scope:alpha","description":"frozen-description","source":"/fixture/frozen/SKILL.md","file_digest":"frozen-file","rendered_digest":"frozen-render"}}},"obligations":[{"invocation_id":"inv-1","tool_call_id":"tool-1","client_mutation_id":"mutation-1","atomic_group_id":"group-1","identity":{"name":"scope:alpha","declared_name":"alpha","source":"/fixture/alpha/SKILL.md","file_digest":"file-1","rendered_digest":"render-1"},"route":"user_slash"}],"pinned_note_gen":19,"next_operation_gen":23}`
 
 func TestSkillActivation_RestoreSessionFromMeta(t *testing.T) {
+	t.Parallel()
 	var meta schema.SessionMeta
 	if err := json.Unmarshal([]byte(`{"id":"resume-skills","profile_id":"openai","model":"gpt-5.2","pinned_note":"opaque-note","skills":`+skillActivationSnapshotFixture+`}`), &meta); err != nil {
 		t.Fatal(err)
@@ -71,6 +72,7 @@ func TestSkillActivation_RestoreSessionFromMeta(t *testing.T) {
 }
 
 func TestSkillActivation_PolicyMatrix(t *testing.T) {
+	t.Parallel()
 	for _, disabled := range []bool{false, true} {
 		for _, user := range []bool{false, true} {
 			controls := skill.InvocationControls{DisableModelInvocation: disabled, UserInvocable: user}
@@ -183,6 +185,7 @@ func TestSkillActivation_PrepareCurrentControlsAndExactSource(t *testing.T) {
 }
 
 func TestSkillActivation_PrepareFailureIsAtomic(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, contents, code string }{
 		{"invalid_metadata", "---\nname: alpha\ndescription: fixture\nuser-invocable: invalid\n---\nbody", "invalid_metadata"},
 		{"source_changed", "---\nname: renamed\ndescription: fixture\n---\nbody", "source_changed"},
@@ -214,6 +217,7 @@ func TestSkillActivation_PrepareFailureIsAtomic(t *testing.T) {
 }
 
 func TestSkillActivation_PrepareFrozenAndLegacyDoNotAuthorize(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	d := activationSource(t, t.TempDir(), "disable-model-invocation: true\nuser-invocable: false\n", "opaque-frozen")
 	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{d.CatalogName: d}}
@@ -233,6 +237,7 @@ func TestSkillActivation_PrepareFrozenAndLegacyDoNotAuthorize(t *testing.T) {
 }
 
 func TestSkillActivation_ContinuationWithoutCatalog(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	d := activationSource(t, t.TempDir(), "disable-model-invocation: true\n", "opaque-materialized-builtin")
 	prior := activationRecord(d, true)
@@ -274,6 +279,7 @@ func TestSkillActivation_ContinuationWithoutCatalog(t *testing.T) {
 }
 
 func TestSkillActivation_PrepareUnknownAndCancelled(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.skills = skill.Catalog{}
 	_, err := s.prepareSkillActivations(context.Background(), []skillInvocation{{Name: "missing", Route: "model_tool"}})
@@ -286,6 +292,7 @@ func TestSkillActivation_PrepareUnknownAndCancelled(t *testing.T) {
 }
 
 func TestSkillActivation_SaveMetaAndSnapshotIsolation(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	if err := json.Unmarshal([]byte(skillActivationSnapshotFixture), &s.skillLifecycle); err != nil {
 		t.Fatal(err)
@@ -331,6 +338,7 @@ func TestSkillActivation_SaveMetaAndSnapshotIsolation(t *testing.T) {
 }
 
 func TestSkillActivation_SaveMetaReturnsFilesystemFailure(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	blocker := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(blocker, []byte("opaque-blocker"), 0600); err != nil {
@@ -349,6 +357,7 @@ func TestSkillActivation_SaveMetaReturnsFilesystemFailure(t *testing.T) {
 }
 
 func TestSkillActivation_LegacyRestoreHasEmptyOrdinaryState(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	meta := schema.SessionMeta{ID: "legacy-skill-session", ProfileID: "openai", Model: "gpt-5.2", PinnedNote: "opaque-legacy-note"}
@@ -374,6 +383,7 @@ func TestSkillActivation_LegacyRestoreHasEmptyOrdinaryState(t *testing.T) {
 }
 
 func TestSkillActivation_RecordTurnCopiesTypedState(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := newSession(t, withDir(dir), withConfig(SessionConfig{StateDir: dir, MaxSubagentDepth: 1}))
 	path := s.TranscriptPath()
@@ -416,6 +426,7 @@ func TestSkillActivation_RecordTurnCopiesTypedState(t *testing.T) {
 }
 
 func TestSkillActivation_PrepareReloadsRelaxedControls(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	dir := t.TempDir()
 	d := activationSource(t, dir, "disable-model-invocation: true\nuser-invocable: false\n", "opaque-hidden")
@@ -1347,6 +1358,7 @@ func TestSkillActivation_RawRead(t *testing.T) {
 // already-minted identity. The pre-Close LoadSessionMeta captures exactly the
 // on-disk state a crash right after the mint would leave behind.
 func TestMintSkillOperationID_SurvivesRestartWithoutInterveningSave(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	stateDir := t.TempDir()
 	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
@@ -1379,6 +1391,7 @@ func TestMintSkillOperationID_SurvivesRestartWithoutInterveningSave(t *testing.T
 // invocations (and two obligations/carriers) under the SAME InvocationID —
 // dedup preserves the request order, keeping the first occurrence.
 func TestPrepareSelectedInput_DuplicateNamesInvokeOnce(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_dup1")
 	writeSkillMD(t, root, "second", "---\nname: second\ndescription: fixture\n---\nBODY_dup2")

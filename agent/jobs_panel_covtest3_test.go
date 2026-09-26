@@ -10,6 +10,7 @@ import (
 // TestSessionJobOutputTail_JobNotFound covers the isJobNotFoundErr branch
 // (jobs_panel.go:50-52): a missing job id returns found=false, no error.
 func TestSessionJobOutputTail_JobNotFound(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	s := &Session{jobManager: jm}
 	_, found, err := s.JobOutputTail("job_does_not_exist", 0, 0)
@@ -25,6 +26,7 @@ func TestSessionJobOutputTail_JobNotFound(t *testing.T) {
 // branch (jobs_panel.go:53-55): a job whose output file does not exist yet
 // returns found=true with an empty tail and no error.
 func TestSessionJobOutputTail_OutputNotExist(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	// Finalize the job so it goes through the store path, but do not create
@@ -53,6 +55,7 @@ func TestSessionJobOutputTail_OutputNotExist(t *testing.T) {
 // TestSessionJobOutputTail_Success covers the success path
 // (jobs_panel.go:58): a live job with output returns the tail content.
 func TestSessionJobOutputTail_Success(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	output := []byte("hello world output\n")

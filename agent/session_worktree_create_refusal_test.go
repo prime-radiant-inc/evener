@@ -95,6 +95,7 @@ func assertLaneRolledBack(t *testing.T, sr *scriptedLaneRepo, r *wtRepo, name, p
 // dir, so the rollback must use the dir the create wrote to, not one derived
 // from the lane path.
 func TestWorktreeCreate_RefusedMidSwapLeavesNoLaneBehind(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"lane", "sub/lane"} {
 		t.Run(name, func(t *testing.T) {
 			sr := newScriptedLaneRepo(t)
@@ -117,6 +118,7 @@ func TestWorktreeCreate_RefusedMidSwapLeavesNoLaneBehind(t *testing.T) {
 // git runner is bound to, so a rollback through that runner fails silently.
 // The rollback has to run on an independent, bounded control context.
 func TestWorktreeCreate_RefusedMidSwapRollsBackOnACancelledRequestContext(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	contextBoundScriptedGit(sr)
@@ -137,6 +139,7 @@ func TestWorktreeCreate_RefusedMidSwapRollsBackOnACancelledRequestContext(t *tes
 // Any failure after the create core succeeded leaves the same lane, branch,
 // and sidecar behind as the refusal does, so every one of them rolls back.
 func TestWorktreeCreate_FailureAfterTheCoreRollsBack(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	path, sidecar := createLaneExpectations(t, r, "lane")
@@ -157,6 +160,7 @@ func TestWorktreeCreate_FailureAfterTheCoreRollsBack(t *testing.T) {
 // just for the swap: walk past it and the environment is torn down mid-rollback,
 // leaving behind the very lane the rollback was removing.
 func TestWorktreeCreate_CloseWaitsForTheRefusedCreateRollback(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	path, sidecar := createLaneExpectations(t, r, "lane")

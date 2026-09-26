@@ -28,6 +28,7 @@ import (
 // clears the active turn instead of leaving the execution claimed and the turn
 // pinned until a restart.
 func TestFinalizeInterruptHoldsNoSessionLock(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "finalize-outside-session-mu", "already recorded")
@@ -74,6 +75,7 @@ func TestFinalizeInterruptHoldsNoSessionLock(t *testing.T) {
 // that tries to interleave blocks on the door the announcement holds
 // (issue #1165 review).
 func TestStartAnnouncementHoldsTheTranscriptDoor(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
@@ -144,6 +146,7 @@ func armPoisonAtStoreCommitAfter(t *testing.T, sess *Session, skip int) {
 // but the running turn must not be published, and the claim goes back so
 // recovery can run it (issue #1165 review).
 func TestStartClaimDoesNotPublishWhenPoisonLandsAtTheCommit(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
@@ -181,6 +184,7 @@ func TestStartClaimDoesNotPublishWhenPoisonLandsAtTheCommit(t *testing.T) {
 // the wake's queue-head claim. The message must go back to the queue and no
 // running turn may be published (issue #1165 review).
 func TestWakeDoesNotPublishWhenPoisonLandsAtTheClaimCommit(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "queued-poisoned-at-commit", "runs after the restart")
@@ -208,6 +212,7 @@ func TestWakeDoesNotPublishWhenPoisonLandsAtTheClaimCommit(t *testing.T) {
 // until a restart. It must go back through the queue path instead (issue #1165
 // review).
 func TestQueuedRecoveryClaimPoisonedAtTheCommitIsReturned(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "queued-recovery-poisoned-at-commit", "runs after the restart")
@@ -243,6 +248,7 @@ func TestQueuedRecoveryClaimPoisonedAtTheCommitIsReturned(t *testing.T) {
 // regressed, ActiveTurnID would stay pinned to a turn that never runs and every
 // later turn/start would be refused until a restart (issue #1165 review).
 func TestCarrierAnnouncementPoisonedAtTheCommitReleasesTheSlot(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	if err := sess.SteerFromUser("carried after the window"); err != nil {
 		t.Fatalf("SteerFromUser: %v", err)
@@ -279,6 +285,7 @@ func TestCarrierAnnouncementPoisonedAtTheCommitReleasesTheSlot(t *testing.T) {
 // interrupted drops a durably accepted message and pins ActiveTurnID
 // (issue #1165 review).
 func TestStopReturnsAClaimedQueuedMessageRatherThanLosingIt(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "stopped-during-claim", "runs after the Stop")
@@ -308,6 +315,7 @@ func TestStopReturnsAClaimedQueuedMessageRatherThanLosingIt(t *testing.T) {
 // publish a turn that records nothing. It must refuse with its own reason rather
 // than being reported as poisoned (issue #1165 review).
 func TestWhileHealthyRefusesAClosedWriter(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	writer := sess.attachedTranscript()
@@ -334,6 +342,7 @@ func TestWhileHealthyRefusesAClosedWriter(t *testing.T) {
 // execution whose turn is already on disk; requeueing that on a Stop appends and
 // processes the message twice (issue #1165 review).
 func TestStopDoesNotRequeueAClaimedQueuedMessageAlreadyInTheTranscript(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "claimed-and-recorded", "already recorded")
@@ -370,6 +379,7 @@ func TestStopDoesNotRequeueAClaimedQueuedMessageAlreadyInTheTranscript(t *testin
 // fsyncing twice on every wake, which is a self-sustaining loop
 // (issue #1165 review).
 func TestClosedTranscriptClaimIsRefusedBeforeItCommits(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "closed-transcript-claim", "runs")
@@ -406,6 +416,7 @@ func TestClosedTranscriptClaimIsRefusedBeforeItCommits(t *testing.T) {
 // caller the input finished normally while the message stayed unclaimed
 // (issue #1165 review).
 func TestTurnGateRefusesAClosedTranscript(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	if err := sess.attachedTranscript().Close(); err != nil {
@@ -423,6 +434,7 @@ func TestTurnGateRefusesAClosedTranscript(t *testing.T) {
 // claimed with the active turn pinned and its budget spent, on a turn that could
 // never record (issue #1165 review).
 func TestStartClaimGoesBackWhenTheTranscriptClosesAfterTheAnnounce(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
@@ -456,6 +468,7 @@ func TestStartClaimGoesBackWhenTheTranscriptClosesAfterTheAnnounce(t *testing.T)
 // with no transcript record at all -- an input the session believes it ran and no
 // restart can recover (issue #1165 review).
 func TestUserInputAppendRefusesAClosedTranscript(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	if err := sess.attachedTranscript().Close(); err != nil {
@@ -494,6 +507,7 @@ func TestUserInputAppendRefusesAClosedTranscript(t *testing.T) {
 // recorded", and requeued it is appended and processed a second time
 // (issue #1165 review).
 func TestCompletionDoesNotRequeueAClaimedQueuedMessageAlreadyInTheTranscript(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "completion-claimed-recorded", "already recorded")
@@ -536,6 +550,7 @@ func TestCompletionDoesNotRequeueAClaimedQueuedMessageAlreadyInTheTranscript(t *
 // turn is announced and the steer stays where it is for the restart
 // (issue #1165).
 func TestWakeRefusesTheSteeringCarrierWhenPoisonLandsBeforeTheClaim(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	if err := sess.SteerFromUser("carried after the window"); err != nil {
 		t.Fatalf("SteerFromUser: %v", err)
@@ -572,6 +587,7 @@ func TestWakeRefusesTheSteeringCarrierWhenPoisonLandsBeforeTheClaim(t *testing.T
 // -- a parked steer is idle work, exactly as it is when the Stop is already in
 // place (issue #1165).
 func TestWakeStandsDownWhenAStopParksTheSteerBeforeTheClaim(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	if err := sess.SteerFromUser("parked by a stop that lands late"); err != nil {
 		t.Fatalf("SteerFromUser: %v", err)
@@ -613,6 +629,7 @@ func TestWakeStandsDownWhenAStopParksTheSteerBeforeTheClaim(t *testing.T) {
 // claim whose turn will die. The message stays queued for the restart
 // (issue #1165).
 func TestPoisonedTranscriptRefusesTheQueueHeadClaim(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "queued-behind-a-dead-transcript", "runs after the restart")
@@ -683,6 +700,7 @@ func TestClaimSamplesSessionMuOutsideTheStoreSerializer(t *testing.T) {
 // cheap pre-check and before the claim used to announce a phantom turn that the
 // transcript could never record (issue #1165 review).
 func TestStartClaimDoesNotAnnounceATurnItRefused(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
@@ -722,6 +740,7 @@ func TestStartClaimDoesNotAnnounceATurnItRefused(t *testing.T) {
 // finalizes the claimed start in between must find a runner to cancel, or the
 // start runs despite having been stopped (issue #1165 review).
 func TestStartClaimReportsArmedBeforeTheClaimCommits(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
@@ -752,6 +771,7 @@ func TestStartClaimReportsArmedBeforeTheClaimCommits(t *testing.T) {
 // refuses it, and the pending entry stays active behind a phantom running turn
 // (issue #1165 review).
 func TestStartClaimRefusesAnIncorporatedStartRecoveryWhenPoisoned(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	runningStartTurn(t, sess, "incorporated-start-recovery", "already on disk")
@@ -778,6 +798,7 @@ func TestStartClaimRefusesAnIncorporatedStartRecoveryWhenPoisoned(t *testing.T) 
 // entry already landed and whose turn is still the active one, and selecting it
 // announces that turn as running just like the start branch does.
 func TestStartClaimRefusesAnIncorporatedQueuedRecoveryWhenPoisoned(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "incorporated-queued-recovery", "already on disk")
@@ -811,6 +832,7 @@ func TestStartClaimRefusesAnIncorporatedQueuedRecoveryWhenPoisoned(t *testing.T)
 // claim must go back to the queue rather than sit claimed with ActiveTurnID
 // pinned until restart recovery (issue #1165 review).
 func TestRefusedTurnGateReturnsADrainClaimedQueuedMessage(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "claimed-then-refused", "runs after the restart")
@@ -845,6 +867,7 @@ func TestRefusedTurnGateReturnsADrainClaimedQueuedMessage(t *testing.T) {
 // recoverable, and terminalizing it here marks a durably recorded turn dead and
 // drops it instead of leaving it for restart recovery (issue #1165 review).
 func TestRefusedTurnGateKeepsAnIncorporatedClaim(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	runningStartTurn(t, sess, "incorporated-start", "already on disk")
@@ -879,6 +902,7 @@ func TestRefusedTurnGateKeepsAnIncorporatedClaim(t *testing.T) {
 // report a poisoned transcript for work the claim never touched (issue #1165
 // review).
 func TestStartClaimDoesNotRefusePoisonWithNothingClaimable(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	poisonSessionTranscript(t, sess)

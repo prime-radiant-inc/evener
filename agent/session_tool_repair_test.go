@@ -31,6 +31,7 @@ func editTool(t *testing.T) *tool.RegisteredTool {
 }
 
 func TestExecTool_DelegateRejectsUnsupportedWaitWithoutStarting(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	s.stateDir = t.TempDir()
 
@@ -64,6 +65,7 @@ func TestExecTool_DelegateRejectsUnsupportedWaitWithoutStarting(t *testing.T) {
 }
 
 func TestPrepareToolCall_AliasesArgs(t *testing.T) {
+	t.Parallel()
 	et := editTool(t)
 	call := llm.ToolCallData{ID: "c1", Name: "edit_file",
 		Arguments: json.RawMessage(`{"file_path":"/x","old_str":"a","new_string":"b"}`)}
@@ -84,6 +86,7 @@ func TestPrepareToolCall_AliasesArgs(t *testing.T) {
 }
 
 func TestPrepareToolCall_UnknownTool(t *testing.T) {
+	t.Parallel()
 	call := llm.ToolCallData{ID: "c1", Name: "reed_file", Arguments: json.RawMessage(`{}`)}
 	res := prepareToolCall(call, nil, []string{"read_file", "edit_file"}, "reed_file", "communicate", "")
 	if res.PrevalErr == "" {
@@ -104,6 +107,7 @@ func TestPrepareToolCall_EmptyArgsValidForNoRequiredTool(t *testing.T) {
 }
 
 func TestPrepareToolCall_SynthesizesStableIDWhenEmpty(t *testing.T) {
+	t.Parallel()
 	et := editTool(t)
 	call := llm.ToolCallData{Name: "edit_file",
 		Arguments: json.RawMessage(`{"file_path":"/x","old_string":"a","new_string":"b"}`)}
@@ -117,6 +121,7 @@ func TestPrepareToolCall_SynthesizesStableIDWhenEmpty(t *testing.T) {
 // syntax problem: the error must say so, and no repair may run (a "healed"
 // truncated write would silently write a truncated file).
 func TestPrepareToolCall_TruncatedByLength(t *testing.T) {
+	t.Parallel()
 	et := editTool(t)
 	truncated := json.RawMessage(`{"file_path":"/x","old_string":"a","new_string":"unterminat`)
 	res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "edit_file", Arguments: truncated},
@@ -134,6 +139,7 @@ func TestPrepareToolCall_TruncatedByLength(t *testing.T) {
 // "missing required field" — the same misdiagnosis the truncation message
 // exists to prevent.
 func TestPrepareToolCall_TruncatedBeforeAnyArgs(t *testing.T) {
+	t.Parallel()
 	et := editTool(t)
 	res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "edit_file",
 		Arguments: json.RawMessage(``)},
@@ -159,6 +165,7 @@ func TestPrepareToolCall_LengthStopEmptyArgsNoRequired(t *testing.T) {
 // Valid JSON on a length-stopped turn executes normally — the truncation may
 // have landed after this tool call closed.
 func TestPrepareToolCall_LengthStopWithValidArgs(t *testing.T) {
+	t.Parallel()
 	et := editTool(t)
 	res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "edit_file",
 		Arguments: json.RawMessage(`{"file_path":"/x","old_string":"a","new_string":"b"}`)},
@@ -169,6 +176,7 @@ func TestPrepareToolCall_LengthStopWithValidArgs(t *testing.T) {
 }
 
 func TestPrepareToolCall_TaskListInheritEffortIsValid(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	if err := reg.Register(regTool(tool.DefTaskList([]string{"low", "medium", "high"}))); err != nil {
 		t.Fatalf("register task_list: %v", err)
@@ -189,6 +197,7 @@ func TestPrepareToolCall_TaskListInheritEffortIsValid(t *testing.T) {
 // repair package's hand-built fixtures out of sync fails loudly here, not
 // silently in the leaf package's tests.
 func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	if err := reg.Register(regTool(tool.DefTaskList(nil))); err != nil {
 		t.Fatalf("register task_list: %v", err)
@@ -241,6 +250,7 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 
 // A non-length stop keeps the existing invalid-JSON coaching path.
 func TestPrepareToolCall_BrokenJSONNonLengthStop(t *testing.T) {
+	t.Parallel()
 	et := editTool(t)
 	res := prepareToolCall(llm.ToolCallData{ID: "c1", Name: "edit_file",
 		Arguments: json.RawMessage(`{"file_path": nope}`)},

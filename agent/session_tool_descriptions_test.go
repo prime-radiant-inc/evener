@@ -16,6 +16,7 @@ import (
 // agent/internal/tool cannot see these, so a tool registered here but
 // omitted there would otherwise ship bare parameters with both gates green.
 func TestSessionRegisteredToolsDocumentParameters(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	defs := s.reg.Definitions()
 	if len(defs) < 20 {
@@ -40,6 +41,7 @@ func descriptionMentions(desc string, n int) bool {
 // cap, and the char-budget effect that makes ~500 the typical page must not
 // masquerade as the enforced ceiling.
 func TestDefListDirLimitProseMatchesEnforcedDefault(t *testing.T) {
+	t.Parallel()
 	def := toolpkg.DefListDir()
 	props, ok := def.Parameters["properties"].(map[string]any)
 	if !ok {

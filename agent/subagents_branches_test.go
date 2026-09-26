@@ -16,6 +16,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestSubagentStatusConstants(t *testing.T) {
+	t.Parallel()
 	if SubagentRunning != "running" {
 		t.Fatalf("SubagentRunning = %q", SubagentRunning)
 	}
@@ -38,6 +39,7 @@ func TestSubagentStatusConstants(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSubagentResultStruct(t *testing.T) {
+	t.Parallel()
 	r := subagentResult{
 		AgentID:       "agent_1",
 		Status:        SubagentCompleted,
@@ -60,6 +62,7 @@ func TestSubagentResultStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateSalvagedDraftNote(t *testing.T) {
+	t.Parallel()
 	if delegateSalvagedDraftNote == "" {
 		t.Fatalf("expected non-empty constant")
 	}
@@ -70,6 +73,7 @@ func TestDelegateSalvagedDraftNote(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHasString(t *testing.T) {
+	t.Parallel()
 	items := []string{"a", "b", "c"}
 	if !hasString(items, "b") {
 		t.Fatalf("expected true for existing item")
@@ -87,6 +91,7 @@ func TestHasString(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAppendUniqueStrings(t *testing.T) {
+	t.Parallel()
 	t.Run("new items added", func(t *testing.T) {
 		result := appendUniqueStrings([]string{"a"}, "b", "c")
 		if len(result) != 3 || result[1] != "b" || result[2] != "c" {
@@ -124,6 +129,7 @@ func TestAppendUniqueStrings(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRemoveStrings(t *testing.T) {
+	t.Parallel()
 	t.Run("items removed", func(t *testing.T) {
 		result := removeStrings([]string{"a", "b", "c"}, []string{"b"})
 		if len(result) != 2 || result[0] != "a" || result[1] != "c" {
@@ -157,6 +163,7 @@ func TestRemoveStrings(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestEnsureRecoveryReaderNilRegistry(t *testing.T) {
+	t.Parallel()
 	names := []string{"read_file", "exec_command"}
 	result := ensureRecoveryReader(names, nil)
 	if len(result) != 2 {
@@ -165,6 +172,7 @@ func TestEnsureRecoveryReaderNilRegistry(t *testing.T) {
 }
 
 func TestEnsureRecoveryReaderNoRecoveryNeeded(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	names := []string{"read_file", "exec_command"}
 	result := ensureRecoveryReader(names, reg)
@@ -178,6 +186,7 @@ func TestEnsureRecoveryReaderNoRecoveryNeeded(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRootOnlySubagentTools(t *testing.T) {
+	t.Parallel()
 	tools := rootOnlySubagentTools()
 	if len(tools) == 0 {
 		t.Fatalf("expected non-empty root-only tools")
@@ -189,6 +198,7 @@ func TestRootOnlySubagentTools(t *testing.T) {
 }
 
 func TestIsRootOnlyJobPresenceTool(t *testing.T) {
+	t.Parallel()
 	if !isRootOnlyJobPresenceTool("delegate") {
 		t.Fatalf("expected delegate to be root-only job presence tool")
 	}
@@ -198,6 +208,7 @@ func TestIsRootOnlyJobPresenceTool(t *testing.T) {
 }
 
 func TestIsRootOnlySubagentTool(t *testing.T) {
+	t.Parallel()
 	if !isRootOnlySubagentTool("manage_worktree") {
 		t.Fatalf("expected manage_worktree to be root-only subagent tool")
 	}
@@ -211,6 +222,7 @@ func TestIsRootOnlySubagentTool(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestProtectedGrantTools(t *testing.T) {
+	t.Parallel()
 	tools := protectedGrantTools()
 	if len(tools) != 1 || tools[0] != "ask_user" {
 		t.Fatalf("expected ['ask_user'], got %v", tools)
@@ -218,6 +230,7 @@ func TestProtectedGrantTools(t *testing.T) {
 }
 
 func TestIsProtectedGrantTool(t *testing.T) {
+	t.Parallel()
 	if !isProtectedGrantTool("ask_user") {
 		t.Fatalf("expected ask_user to be protected")
 	}
@@ -231,6 +244,7 @@ func TestIsProtectedGrantTool(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRemoveRootOnlySubagentTools(t *testing.T) {
+	t.Parallel()
 	input := []string{"read_file", "delegate", "exec_command", "manage_worktree"}
 	result := removeRootOnlySubagentTools(input)
 	if hasString(result, "delegate") {
@@ -252,6 +266,7 @@ func TestRemoveRootOnlySubagentTools(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBaseSubagentToolPolicyAllTools(t *testing.T) {
+	t.Parallel()
 	agent := &plugin.Agent{AllTools: true}
 	allTools, allowed, denied := baseSubagentToolPolicy(agent, false)
 	if !allTools {
@@ -263,6 +278,7 @@ func TestBaseSubagentToolPolicyAllTools(t *testing.T) {
 }
 
 func TestBaseSubagentToolPolicyWithTools(t *testing.T) {
+	t.Parallel()
 	agent := &plugin.Agent{Tools: []string{"read_file", "exec_command"}}
 	allTools, allowed, denied := baseSubagentToolPolicy(agent, false)
 	if allTools {
@@ -284,6 +300,7 @@ func TestBaseSubagentToolPolicyWithTools(t *testing.T) {
 }
 
 func TestBaseSubagentToolPolicyCanDelegate(t *testing.T) {
+	t.Parallel()
 	allTools, allowed, denied := baseSubagentToolPolicy(nil, true)
 	if allTools {
 		t.Fatalf("expected allTools=false")
@@ -297,6 +314,7 @@ func TestBaseSubagentToolPolicyCanDelegate(t *testing.T) {
 }
 
 func TestBaseSubagentToolPolicyNoDelegate(t *testing.T) {
+	t.Parallel()
 	allTools, _, denied := baseSubagentToolPolicy(nil, false)
 	if allTools {
 		t.Fatalf("expected allTools=false")
@@ -311,6 +329,7 @@ func TestBaseSubagentToolPolicyNoDelegate(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFrozenSubagentToolNamesAllTools(t *testing.T) {
+	t.Parallel()
 	result := frozenSubagentToolNames(true, nil, nil)
 	if len(result) != 1 || result[0] != "*" {
 		t.Fatalf("expected ['*'], got %v", result)
@@ -318,6 +337,7 @@ func TestFrozenSubagentToolNamesAllTools(t *testing.T) {
 }
 
 func TestFrozenSubagentToolNamesAllowed(t *testing.T) {
+	t.Parallel()
 	result := frozenSubagentToolNames(false, []string{"read_file"}, nil)
 	if len(result) != 1 || result[0] != "read_file" {
 		t.Fatalf("expected ['read_file'], got %v", result)
@@ -325,6 +345,7 @@ func TestFrozenSubagentToolNamesAllowed(t *testing.T) {
 }
 
 func TestFrozenSubagentToolNamesDeniedOnly(t *testing.T) {
+	t.Parallel()
 	result := frozenSubagentToolNames(false, nil, []string{"delegate"})
 	if result != nil {
 		t.Fatalf("expected nil for denied-only, got %v", result)
@@ -332,6 +353,7 @@ func TestFrozenSubagentToolNamesDeniedOnly(t *testing.T) {
 }
 
 func TestFrozenSubagentToolNamesEmpty(t *testing.T) {
+	t.Parallel()
 	result := frozenSubagentToolNames(false, nil, nil)
 	if result != nil {
 		t.Fatalf("expected nil for all-empty, got %v", result)
@@ -343,12 +365,14 @@ func TestFrozenSubagentToolNamesEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFrozenStableDelegateSandboxMatchesNilNil(t *testing.T) {
+	t.Parallel()
 	if !frozenStableDelegateSandboxMatches(nil, nil) {
 		t.Fatalf("expected true for nil nil")
 	}
 }
 
 func TestFrozenStableDelegateSandboxMatchesNilWant(t *testing.T) {
+	t.Parallel()
 	if frozenStableDelegateSandboxMatches(nil, &delegatestore.SandboxSnapshot{}) {
 		t.Fatalf("expected false for nil got, non-nil want")
 	}
@@ -359,6 +383,7 @@ func TestFrozenStableDelegateSandboxMatchesNilWant(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLocalEnvPolicyNameNonLocal(t *testing.T) {
+	t.Parallel()
 	if localEnvPolicyName(nil) != "" {
 		t.Fatalf("expected empty for non-local env")
 	}
@@ -369,6 +394,7 @@ func TestLocalEnvPolicyNameNonLocal(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLocalEnvPolicyFromName(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		valid bool
@@ -394,6 +420,7 @@ func TestLocalEnvPolicyFromName(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCloneMapEmpty(t *testing.T) {
+	t.Parallel()
 	if cloneMap(nil) != nil {
 		t.Fatalf("expected nil for nil map")
 	}
@@ -403,6 +430,7 @@ func TestCloneMapEmpty(t *testing.T) {
 }
 
 func TestCloneMapValid(t *testing.T) {
+	t.Parallel()
 	in := map[string]any{"key": "value", "num": 42}
 	out := cloneMap(in)
 	if out == nil {
@@ -423,6 +451,7 @@ func TestCloneMapValid(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCloneShallowMapEmpty(t *testing.T) {
+	t.Parallel()
 	if cloneShallowMap(nil) != nil {
 		t.Fatalf("expected nil for nil map")
 	}
@@ -432,6 +461,7 @@ func TestCloneShallowMapEmpty(t *testing.T) {
 }
 
 func TestCloneShallowMapValid(t *testing.T) {
+	t.Parallel()
 	in := map[string]any{"key": "value"}
 	out := cloneShallowMap(in)
 	if out == nil || out["key"] != "value" {
@@ -444,12 +474,14 @@ func TestCloneShallowMapValid(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSubagentNeedsCommunicateNudgeNilAgent(t *testing.T) {
+	t.Parallel()
 	if !subagentNeedsCommunicateNudge(nil) {
 		t.Fatalf("expected true for nil agent")
 	}
 }
 
 func TestSubagentNeedsCommunicateNudgeBuiltinSubagent(t *testing.T) {
+	t.Parallel()
 	agent := &plugin.Agent{PluginName: "builtin", Name: "subagent"}
 	if !subagentNeedsCommunicateNudge(agent) {
 		t.Fatalf("expected true for builtin/subagent")
@@ -457,6 +489,7 @@ func TestSubagentNeedsCommunicateNudgeBuiltinSubagent(t *testing.T) {
 }
 
 func TestSubagentNeedsCommunicateNudgeOtherAgent(t *testing.T) {
+	t.Parallel()
 	agent := &plugin.Agent{PluginName: "builtin", Name: "other"}
 	if subagentNeedsCommunicateNudge(agent) {
 		t.Fatalf("expected false for non-subagent agent")
@@ -468,6 +501,7 @@ func TestSubagentNeedsCommunicateNudgeOtherAgent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRestoreFrozenSkillBodiesEmptyNamesEmptyBodies(t *testing.T) {
+	t.Parallel()
 	bodies, err := restoreFrozenSkillBodies(nil, nil)
 	if err != nil || bodies != nil {
 		t.Fatalf("expected nil/nil for empty input")
@@ -475,6 +509,7 @@ func TestRestoreFrozenSkillBodiesEmptyNamesEmptyBodies(t *testing.T) {
 }
 
 func TestRestoreFrozenSkillBodiesNamesWithBodiesMismatch(t *testing.T) {
+	t.Parallel()
 	_, err := restoreFrozenSkillBodies(nil, []string{"body1"})
 	if err == nil {
 		t.Fatalf("expected error for bodies without names")
@@ -482,6 +517,7 @@ func TestRestoreFrozenSkillBodiesNamesWithBodiesMismatch(t *testing.T) {
 }
 
 func TestRestoreFrozenSkillBodiesNamesWithoutBodies(t *testing.T) {
+	t.Parallel()
 	_, err := restoreFrozenSkillBodies([]string{"skill1"}, nil)
 	if err == nil {
 		t.Fatalf("expected error for names without bodies")
@@ -489,6 +525,7 @@ func TestRestoreFrozenSkillBodiesNamesWithoutBodies(t *testing.T) {
 }
 
 func TestRestoreFrozenSkillBodiesCountMismatch(t *testing.T) {
+	t.Parallel()
 	_, err := restoreFrozenSkillBodies([]string{"s1", "s2"}, []string{"body1"})
 	if err == nil {
 		t.Fatalf("expected error for count mismatch")
@@ -496,6 +533,7 @@ func TestRestoreFrozenSkillBodiesCountMismatch(t *testing.T) {
 }
 
 func TestRestoreFrozenSkillBodiesEmptyBody(t *testing.T) {
+	t.Parallel()
 	_, err := restoreFrozenSkillBodies([]string{"s1"}, []string{"  "})
 	if err == nil {
 		t.Fatalf("expected error for empty body")
@@ -503,6 +541,7 @@ func TestRestoreFrozenSkillBodiesEmptyBody(t *testing.T) {
 }
 
 func TestRestoreFrozenSkillBodiesValid(t *testing.T) {
+	t.Parallel()
 	bodies, err := restoreFrozenSkillBodies([]string{"s1", "s2"}, []string{"body1", "body2"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -517,6 +556,7 @@ func TestRestoreFrozenSkillBodiesValid(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPreparedSubagentRunStruct(t *testing.T) {
+	t.Parallel()
 	p := &preparedSubagentRun{
 		task:       "do the work",
 		agentType:  "default",
@@ -533,11 +573,13 @@ func TestPreparedSubagentRunStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPreparedSubagentRunDisposeUnadoptedNil(t *testing.T) {
+	t.Parallel()
 	var p *preparedSubagentRun
 	p.disposeUnadopted() // should be a no-op for nil
 }
 
 func TestPreparedSubagentRunDisposeUnadoptedNilSub(t *testing.T) {
+	t.Parallel()
 	p := &preparedSubagentRun{sub: nil}
 	p.disposeUnadopted() // should be a no-op for nil sub
 }
@@ -547,6 +589,7 @@ func TestPreparedSubagentRunDisposeUnadoptedNilSub(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDisposeUnadoptedSubagentSessionNil(t *testing.T) {
+	t.Parallel()
 	disposeUnadoptedSubagentSession(nil) // should be a no-op
 }
 
@@ -555,6 +598,7 @@ func TestDisposeUnadoptedSubagentSessionNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSubagentStruct(t *testing.T) {
+	t.Parallel()
 	sub := &subagent{
 		id:        "dlg_1",
 		status:    SubagentRunning,
@@ -573,6 +617,7 @@ func TestSubagentStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSandboxSnapshotFromEnvNilEnv(t *testing.T) {
+	t.Parallel()
 	if sandboxSnapshotFromEnv(nil) != nil {
 		t.Fatalf("expected nil for nil env")
 	}
@@ -587,12 +632,14 @@ func TestSandboxSnapshotFromEnvNilEnv(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDefaultSubagentInstructions(t *testing.T) {
+	t.Parallel()
 	if defaultSubagentInstructions == "" {
 		t.Fatalf("expected non-empty constant")
 	}
 }
 
 func TestDefaultDelegatingSubagentInstructions(t *testing.T) {
+	t.Parallel()
 	if defaultDelegatingSubagentInstructions == "" {
 		t.Fatalf("expected non-empty constant")
 	}
@@ -603,12 +650,14 @@ func TestDefaultDelegatingSubagentInstructions(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRootOnlyJobPresenceTools(t *testing.T) {
+	t.Parallel()
 	if !hasString(rootOnlyJobPresenceTools, "delegate") {
 		t.Fatalf("expected delegate in rootOnlyJobPresenceTools: %v", rootOnlyJobPresenceTools)
 	}
 }
 
 func TestRootOnlyWorktreeTools(t *testing.T) {
+	t.Parallel()
 	if !hasString(rootOnlyWorktreeTools, "manage_worktree") {
 		t.Fatalf("expected manage_worktree in rootOnlyWorktreeTools: %v", rootOnlyWorktreeTools)
 	}
@@ -619,6 +668,7 @@ func TestRootOnlyWorktreeTools(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStableDelegateToolNameCeilingNilRegistry(t *testing.T) {
+	t.Parallel()
 	if stableDelegateToolNameCeiling(nil, "communicate", false, nil, nil, false, false, "") != nil {
 		t.Fatalf("expected nil for nil registry")
 	}
@@ -629,6 +679,7 @@ func TestStableDelegateToolNameCeilingNilRegistry(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSubagentEmitField(t *testing.T) {
+	t.Parallel()
 	called := false
 	sub := &subagent{
 		emit: func(kind events.EventKind, data events.EventData) {
@@ -646,6 +697,7 @@ func TestSubagentEmitField(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSubagentTimeFields(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	sub := &subagent{
 		createdAt: now,
@@ -661,6 +713,7 @@ func TestSubagentTimeFields(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLocalEnvPolicyFromNameAllPolicy(t *testing.T) {
+	t.Parallel()
 	policy, ok := localEnvPolicyFromName("all")
 	if !ok || policy != execenv.EnvPolicyAll {
 		t.Fatalf("expected EnvPolicyAll for 'all', got %v ok=%v", policy, ok)
@@ -668,6 +721,7 @@ func TestLocalEnvPolicyFromNameAllPolicy(t *testing.T) {
 }
 
 func TestLocalEnvPolicyFromNameNonePolicy(t *testing.T) {
+	t.Parallel()
 	policy, ok := localEnvPolicyFromName("none")
 	if !ok || policy != execenv.EnvPolicyNone {
 		t.Fatalf("expected EnvPolicyNone for 'none', got %v ok=%v", policy, ok)
@@ -675,6 +729,7 @@ func TestLocalEnvPolicyFromNameNonePolicy(t *testing.T) {
 }
 
 func TestLocalEnvPolicyFromNameCoreOnlyPolicy(t *testing.T) {
+	t.Parallel()
 	policy, ok := localEnvPolicyFromName("core_only")
 	if !ok || policy != execenv.EnvPolicyCoreOnly {
 		t.Fatalf("expected EnvPolicyCoreOnly for 'core_only', got %v ok=%v", policy, ok)
@@ -682,6 +737,7 @@ func TestLocalEnvPolicyFromNameCoreOnlyPolicy(t *testing.T) {
 }
 
 func TestLocalEnvPolicyFromNameDefaultPolicy(t *testing.T) {
+	t.Parallel()
 	policy, ok := localEnvPolicyFromName("default")
 	if !ok || policy != execenv.EnvPolicyDefault {
 		t.Fatalf("expected EnvPolicyDefault for 'default', got %v ok=%v", policy, ok)

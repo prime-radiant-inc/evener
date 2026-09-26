@@ -9,6 +9,7 @@ import (
 
 // TestNewSubagentManager_DefaultLimit covers the default limit (lines 52-53).
 func TestNewSubagentManager_DefaultLimit(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	if m.maxRetainedTerminal != defaultMaxRetainedTerminal {
 		t.Fatalf("limit = %d, want %d", m.maxRetainedTerminal, defaultMaxRetainedTerminal)
@@ -17,6 +18,7 @@ func TestNewSubagentManager_DefaultLimit(t *testing.T) {
 
 // TestNewSubagentManager_CustomLimit covers the custom limit.
 func TestNewSubagentManager_CustomLimit(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 100)
 	if m.maxRetainedTerminal != 100 {
 		t.Fatalf("limit = %d, want 100", m.maxRetainedTerminal)
@@ -25,6 +27,7 @@ func TestNewSubagentManager_CustomLimit(t *testing.T) {
 
 // TestSubagentManager_Get covers get for existing and missing subagents.
 func TestSubagentManager_Get(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	if got := m.get("nonexistent"); got != nil {
 		t.Fatal("expected nil for nonexistent subagent")
@@ -33,6 +36,7 @@ func TestSubagentManager_Get(t *testing.T) {
 
 // TestSubagentManager_Remove covers remove for existing and missing.
 func TestSubagentManager_Remove(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	m.remove("nonexistent") // should not panic
 }
@@ -40,6 +44,7 @@ func TestSubagentManager_Remove(t *testing.T) {
 // TestSubagentManager_RemoveSession covers removeSession with matching and
 // non-matching sessions.
 func TestSubagentManager_RemoveSession(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	m.removeSession("nonexistent", nil) // should not panic
 }
@@ -51,6 +56,7 @@ func TestSubagentManager_RemoveSession(t *testing.T) {
 // flags are busy even with a closed channel, and a pending reconstruction is
 // busy even with no records at all.
 func TestSubagentManager_HasRunningChildren(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	if m.hasRunningChildren() {
 		t.Fatal("empty manager reported busy")
@@ -102,6 +108,7 @@ func TestSubagentManager_HasRunningChildren(t *testing.T) {
 // TestSubagentManager_BeginReconstruction_Closing covers the closing-error
 // path (line 86-87).
 func TestSubagentManager_BeginReconstruction_Closing(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	m.closing = true
 	_, _, _, err := m.beginReconstruction("child1")
@@ -113,6 +120,7 @@ func TestSubagentManager_BeginReconstruction_Closing(t *testing.T) {
 // TestSubagentManager_TrackIfAbsent_Closing covers the closing-error path
 // (line 117-118).
 func TestSubagentManager_TrackIfAbsent_Closing(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	m.closing = true
 	sub := &subagent{id: "test"}
@@ -125,6 +133,7 @@ func TestSubagentManager_TrackIfAbsent_Closing(t *testing.T) {
 // TestSubagentManager_AdmitReconstructed_Closing covers the closing-error
 // path (line 133-134).
 func TestSubagentManager_AdmitReconstructed_Closing(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	m.closing = true
 	_, _, err := m.admitReconstructed(nil, func(s *subagent) error { return nil })
@@ -136,6 +145,7 @@ func TestSubagentManager_AdmitReconstructed_Closing(t *testing.T) {
 // TestSubagentManager_AdmitReconstructed_NilSub covers the nil-sub error
 // path (line 136-137).
 func TestSubagentManager_AdmitReconstructed_NilSub(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	_, _, err := m.admitReconstructed(nil, func(s *subagent) error { return nil })
 	if err == nil {
@@ -146,6 +156,7 @@ func TestSubagentManager_AdmitReconstructed_NilSub(t *testing.T) {
 // TestSubagentManager_BeginReconstructionSideEffects_Closing covers the
 // closing path (line 161-165).
 func TestSubagentManager_BeginReconstructionSideEffects_Closing(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	m.closing = true
 	sub := &subagent{id: "child1"}
@@ -163,18 +174,21 @@ func TestSubagentManager_BeginReconstructionSideEffects_Closing(t *testing.T) {
 // TestSubagentManager_WaitForReconstructionSideEffects covers the no-active
 // path (line 181-182 returns immediately when no active side effects).
 func TestSubagentManager_WaitForReconstructionSideEffects(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	m.waitForReconstructionSideEffects() // should not block when no active effects
 }
 
 // TestSubagentManager_WaitForReconstructions_NoPending covers the empty path.
 func TestSubagentManager_WaitForReconstructions_NoPending(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	m.waitForReconstructions() // should not block when no pending
 }
 
 // TestSubagentManager_Sessions covers the sessions accessor.
 func TestSubagentManager_Sessions_Empty(t *testing.T) {
+	t.Parallel()
 	m := newSubagentManager(func(events.EventKind, events.EventData) {}, 0)
 	sessions := m.sessions()
 	if len(sessions) != 0 {
@@ -184,6 +198,7 @@ func TestSubagentManager_Sessions_Empty(t *testing.T) {
 
 // TestSubagentReconstructionWait covers the wait method (lines 71-73).
 func TestSubagentReconstructionWait(t *testing.T) {
+	t.Parallel()
 	r := &subagentReconstruction{done: make(chan struct{})}
 	go func() {
 		close(r.done)

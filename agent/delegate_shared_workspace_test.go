@@ -139,6 +139,7 @@ func TestSharedWorkspaceDelegateWarning_ClosedDelegateIsNotRunning(t *testing.T)
 // second concurrently running shared delegate still launches and carries exactly
 // one advisory, and the first one carries none.
 func TestCreateDelegateSharedWorkspaceAdvisory(t *testing.T) {
+	t.Parallel()
 	root, client, _ := newDelegateResourceBootstrapSession(t)
 	adapter := newSharedWorkspaceBarrierAdapter()
 	client.Register(adapter)

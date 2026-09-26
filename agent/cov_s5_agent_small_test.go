@@ -10,6 +10,7 @@ import (
 // CoreToolNames stands up a throwaway session and returns the schema-bearing
 // core tool names.
 func TestS5Cov_CoreToolNames(t *testing.T) {
+	t.Parallel()
 	names, err := CoreToolNames()
 	if err != nil {
 		t.Fatalf("CoreToolNames: %v", err)
@@ -25,6 +26,7 @@ func TestS5Cov_CoreToolNames(t *testing.T) {
 
 // builtinAgents parses the embedded agent definitions.
 func TestS5Cov_BuiltinAgents(t *testing.T) {
+	t.Parallel()
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -40,6 +42,7 @@ func TestS5Cov_BuiltinAgents(t *testing.T) {
 }
 
 func TestS5Cov_TaskReminderFull(t *testing.T) {
+	t.Parallel()
 	store := taskpkg.NewTaskStore(t.TempDir(), "s")
 	// Empty store yields no reminder.
 	if got := taskReminderFull(store); got != "" {
@@ -70,6 +73,7 @@ func TestS5Cov_TaskReminderFull(t *testing.T) {
 }
 
 func TestS5Cov_FormatCurrentTaskSteering(t *testing.T) {
+	t.Parallel()
 	out := formatCurrentTaskSteering(taskpkg.Task{ID: 7, Description: "title", Prompt: "  instructions  "}, true)
 	for _, want := range []string{`id="7"`, "<TITLE>title</TITLE>", "<INSTRUCTIONS>", "instructions", "mark task 7 as done"} {
 		if !strings.Contains(out, want) {

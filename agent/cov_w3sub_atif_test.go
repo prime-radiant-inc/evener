@@ -34,6 +34,7 @@ func w3sub_writeATIFTranscript(t *testing.T, dir string) string {
 }
 
 func TestW3Sub_ExportATIF_ErrorArms(t *testing.T) {
+	t.Parallel()
 	t.Run("invalid provider handle mode", func(t *testing.T) {
 		dir := t.TempDir()
 		src := w3sub_writeATIFTranscript(t, dir)

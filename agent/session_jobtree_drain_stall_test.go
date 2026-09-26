@@ -91,6 +91,7 @@ func (d *stallDriver) releaseKick(t *testing.T) {
 // continuously stalled past DrainStallTimeout. The drain must RETURN (not hang),
 // emit ONE warning naming the stuck job, and yield the last result.
 func TestDrainStallWatchdogFiresOnGenuineStall(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name  string
 		jobID string
@@ -167,6 +168,7 @@ func (d *stallDriver) assertParked(t *testing.T, msg string) {
 // TestDrainStallWatchdogSparesRunningDrainJob verifies an owned running managed
 // job remains live work even well past the timeout, so the drain keeps waiting.
 func TestDrainStallWatchdogSparesRunningDrainJob(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name string
 		typ  jobstore.JobType
@@ -198,6 +200,7 @@ func TestDrainStallWatchdogSparesRunningDrainJob(t *testing.T) {
 // TestDrainStallWatchdogSpareDrivingChild verifies a driving child keeps the
 // drain alive past the timeout.
 func TestDrainStallWatchdogSpareDrivingChild(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	root := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
 	child := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true}))
@@ -224,6 +227,7 @@ func TestDrainStallWatchdogSpareDrivingChild(t *testing.T) {
 // TestDrainStallWatchdogSparePendingWatchSend verifies a pending caller-targeted
 // watch send (deliverable) keeps the drain alive past the timeout.
 func TestDrainStallWatchdogSparePendingWatchSend(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
 
@@ -255,6 +259,7 @@ func TestDrainStallWatchdogSparePendingWatchSend(t *testing.T) {
 // wedge. Its three siblings cover a running managed job, a driving child, and a
 // pending watch send; this is the hasPendingDelegateDeliveries signal.
 func TestDrainStallWatchdogSparePendingDelegateDelivery(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
 
@@ -321,6 +326,7 @@ func assertDrainNotCut(t *testing.T, sess *Session, clk *agenttest.FakeClock) {
 // lets Close() SIGKILL an armed completion. The give-up must re-run the pass
 // when the wake edge is set, exactly as the quiescence return already does.
 func TestDrainStallGiveUpRechecksTheWakeEdge(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClock()
 	sess := newSession(t, withConfig(SessionConfig{clock: clk, NoProjectPrompts: true}))
 	seedOwnedDurablePending(t, sess.jobManager, "shell-wedge", jobstore.JobShell)

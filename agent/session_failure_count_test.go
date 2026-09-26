@@ -35,6 +35,7 @@ func erroredResultTurn(callID string) schema.Turn {
 }
 
 func TestFailedToolCallsSnapshotStartsMeasuredAtZero(t *testing.T) {
+	t.Parallel()
 	// Zero is a real measurement here, not an absence: the session has a
 	// transcript and nothing in it has failed. The strip renders nothing either
 	// way, but only one of the two claims is something the strip may make.
@@ -52,6 +53,7 @@ func TestFailedToolCallsSnapshotStartsMeasuredAtZero(t *testing.T) {
 }
 
 func TestFailedToolCallsSnapshotRisesAsFailuresAreRecorded(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newSession(t, withDir(dir), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: dir}))
 	defer sess.Close()
@@ -71,6 +73,7 @@ func TestFailedToolCallsSnapshotRisesAsFailuresAreRecorded(t *testing.T) {
 }
 
 func TestFailedToolCallsSnapshotIsAbsentWithoutAStateDir(t *testing.T) {
+	t.Parallel()
 	// No transcript means nobody counted. A session that reported a confident 0
 	// here would be vouching for a run it never recorded.
 	sess := newSession(t, withConfig(SessionConfig{MaxSubagentDepth: 1}))
@@ -82,6 +85,7 @@ func TestFailedToolCallsSnapshotIsAbsentWithoutAStateDir(t *testing.T) {
 }
 
 func TestFailedToolCallsSnapshotCoversTheWholeSessionAfterResume(t *testing.T) {
+	t.Parallel()
 	// The figure has to be whole-session, not since-restart: a resumed session
 	// that restarted its count at 0 would under-report exactly like a windowed
 	// one, and under-reporting is the harm the count exists to prevent.
@@ -120,6 +124,7 @@ func TestFailedToolCallsSnapshotCoversTheWholeSessionAfterResume(t *testing.T) {
 }
 
 func TestFailedToolCallsSnapshotDoesNotChargeAForkChildTheParentsFailures(t *testing.T) {
+	t.Parallel()
 	// A fork child's transcript opens with a verbatim copy of the parent's
 	// prefix. DivergenceTurn is where the child's own history begins, and it
 	// bounds the live count exactly as it bounds the token sum.
@@ -157,6 +162,7 @@ func TestFailedToolCallsSnapshotDoesNotChargeAForkChildTheParentsFailures(t *tes
 }
 
 func TestFailedToolCallsSnapshotSurvivesTheSessionEnding(t *testing.T) {
+	t.Parallel()
 	// A session that ends while someone is watching keeps being served from the
 	// daemon until the next read reroutes to disk. Its settled count has to
 	// still be there, or the figure vanishes at the moment it stops changing.

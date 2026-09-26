@@ -12,6 +12,7 @@ import (
 // append fails the clear returns the error and the watch config stays reachable
 // (the rejecting mark is rolled back), so the model can retry.
 func TestW2Watch_clearWatchByIDMatchingTeardownAppendError(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	res, err := jm.configureWatch(watchArgs{Target: "*", Events: []string{"job.notification"}})
 	if err != nil {
@@ -57,6 +58,7 @@ func TestW2Watch_clearWatchByIDMatchingTeardownAppendError(t *testing.T) {
 // A durable clear for an unknown watch id loads the durable watch table to mint
 // its WatchCleared event; when that load fails the store error propagates.
 func TestW2Watch_clearWatchByIDDurableLoadError(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	if _, err := jm.createShell(createShellOpts{Command: "x"}); err != nil {
 		t.Fatalf("createShell: %v", err)

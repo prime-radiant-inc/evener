@@ -72,6 +72,7 @@ func sbxResolve(t *testing.T, facts sandbox.HostFacts, cwd string, mode sandbox.
 }
 
 func TestSandboxSnapshotRoundTrip(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	net := true
@@ -108,6 +109,7 @@ func TestSandboxSnapshotRoundTrip(t *testing.T) {
 }
 
 func TestSandboxSnapshotOffIsNil(t *testing.T) {
+	t.Parallel()
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	if snapshot := sandboxSnapshotFromEnv(env); snapshot != nil {
 		t.Fatalf("an off environment must yield a nil snapshot, got %#v", snapshot)
@@ -118,6 +120,7 @@ func TestSandboxSnapshotOffIsNil(t *testing.T) {
 }
 
 func TestDiscardRestoredCandidateDisposesSandboxScratch(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	client := llm.NewClient()
@@ -149,6 +152,7 @@ func TestDiscardRestoredCandidateDisposesSandboxScratch(t *testing.T) {
 // directory or the flock lease under it: disposing only the sandbox-owned
 // scratch leaves the unsandboxed one, and its lease, for the life of the process.
 func TestDiscardRestoredCandidateDisposesUnsandboxedScratch(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	candidate := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -183,6 +187,7 @@ func TestDiscardRestoredCandidateDisposesUnsandboxedScratch(t *testing.T) {
 // has to make the same distinction — otherwise aborting one candidate deletes the
 // scratch dir out from under the live parent still working in it.
 func TestDiscardRestoredCandidateLeavesASharedEnvironmentAlone(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -219,6 +224,7 @@ func TestDiscardRestoredCandidateLeavesASharedEnvironmentAlone(t *testing.T) {
 }
 
 func TestDelegateDescriptorJSONRoundTripSnapshot(t *testing.T) {
+	t.Parallel()
 	net := false
 	descriptor := delegatestore.Descriptor{
 		ChildSessionID: "child",
@@ -1172,6 +1178,7 @@ func TestSpawnedSubagentSessionFailureDisposesTheChildScratch(t *testing.T) {
 // releases the unsandboxed one's lease and keeps the directory), and leave a
 // shared environment alone, since it belongs to the live parent.
 func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 
@@ -1238,6 +1245,7 @@ func TestDisposeUnadoptedSubagentSessionDisposesEveryScratchItOwns(t *testing.T)
 // what rolls it back. The construction it wraps runs the child's git snapshot, which mints an
 // unsandboxed environment's scratch, so this rollback has to drop both dirs too.
 func TestDelegateIsolationCleanupDisposesEveryScratchItOwns(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	owner := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
