@@ -189,17 +189,16 @@ func TestHubModelReconnectsAfterHubConnectionDrops(t *testing.T) {
 	// rather than routed, because the read that re-subscribes has not run yet.
 	// Its only job is to show that the reconnect listens to the new feed at
 	// all: without a re-armed wait, nothing consumes it.
-	replacementApp.BroadcastAll(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+	replacementApp.BroadcastAll(appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
 		ThreadID: "01SEND",
 		Ref:      "local:01SEND",
-		TurnID:   "turn_4",
-		Item: appwire.ThreadItem{
+		Items: []appwire.ThreadItem{{
 			Type:   "agentMessage",
 			ID:     "item_agent_8",
 			TurnID: "turn_4",
 			Text:   "listening again",
 			Status: "completed",
-		},
+		}},
 	})
 	listening := false
 	for _, followUp := range runBatchedCmds(t, cmd) {
@@ -222,17 +221,16 @@ func TestHubModelReconnectsAfterHubConnectionDrops(t *testing.T) {
 	// Now that the re-read has re-subscribed, a frame ROUTED by subscription
 	// has to land in the transcript. That is the recovery the kata is about:
 	// live updates resume without restarting the TUI.
-	replacementApp.Broadcast("01SEND", appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+	replacementApp.Broadcast("01SEND", appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
 		ThreadID: "01SEND",
 		Ref:      "local:01SEND",
-		TurnID:   "turn_4",
-		Item: appwire.ThreadItem{
+		Items: []appwire.ThreadItem{{
 			Type:   "agentMessage",
 			ID:     "item_agent_9",
 			TurnID: "turn_4",
 			Text:   "back online",
 			Status: "completed",
-		},
+		}},
 	})
 	updated, _ = m.Update(waitHubNotification(m.frames)())
 	m = updated.(hubModel)

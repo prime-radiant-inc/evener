@@ -118,17 +118,16 @@ func TestHubModelReReadHoldsPostCutFrameUntilSnapshotApplied(t *testing.T) {
 	// closed, but this model has not applied either yet.
 	snapshot := cmd()
 
-	app.Broadcast("01SEND", appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+	app.Broadcast("01SEND", appwire.NotifyHistoryUpdated, appwire.HistoryUpdatedParams{
 		ThreadID: "01SEND",
 		Ref:      "local:01SEND",
-		TurnID:   "turn_4",
-		Item: appwire.ThreadItem{
+		Items: []appwire.ThreadItem{{
 			Type:   "agentMessage",
 			ID:     "item_agent_7",
 			TurnID: "turn_4",
 			Text:   "rollback finished",
 			Status: "completed",
-		},
+		}},
 	})
 	awaitPostCutFrame(t, frames, "rollback finished")
 
@@ -244,7 +243,7 @@ func drainFeed(t *testing.T, feed *hubFrameFeed) []string {
 }
 
 func deltaFrame(delta string) appwire.Message {
-	return appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{Delta: delta})
+	return appwire.NotificationMessage(appwire.NotifyOverlayDelta, appwire.OverlayDeltaParams{Field: appwire.OverlayDeltaText, Delta: delta})
 }
 
 // The connection carries concurrent requests, so the feed sees response frames
