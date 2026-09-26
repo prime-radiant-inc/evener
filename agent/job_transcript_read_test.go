@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -257,6 +258,32 @@ func TestLocateLocalJobDoesNotReadUnrelatedSessionStores(t *testing.T) {
 	}
 }
 
+// TestLocateLocalJob_LegacyNamedSiblingBucket asserts that a job seeded in a
+// legacy-named sibling bucket (whose name fails ValidateProjectID) is
+// findable by locateLocalJob. The sibling sweep must not filter by
+// ValidateProjectID, matching enumerateBuckets (PR #2163's agent-side
+// counterpart). Currently the sweep at line 73 skips dirs whose name
+// ValidateProjectID rejects.
+func TestLocateLocalJob_LegacyNamedSiblingBucket(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	// "0123456789abcdef": no readable-portion/suffix split, so
+	// identifier.ValidateProjectID rejects it.
+	legacy := localJobProjectBucket(t, stateHome, "0123456789abcdef")
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, legacy, owner, jobID, "", "legacy job output\n", true)
+
+	loc, err := locateLocalJob(current, jobID)
+	if err != nil {
+		t.Fatalf("job in legacy-named sibling bucket not found: %v", err)
+	}
+	if filepath.Base(loc.StateDir) != "0123456789abcdef" {
+		t.Fatalf("located job in %q, want legacy bucket 0123456789abcdef", filepath.Base(loc.StateDir))
+	}
+}
+
 func TestReadLocalJobSnapshotIgnoresPersistedAbsoluteOutputPath(t *testing.T) {
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
@@ -342,4 +369,385 @@ func (r *localJobDirReader) ReadDir(n int) ([]fs.DirEntry, error) {
 func (r *localJobDirReader) Close() error {
 	r.closed = true
 	return nil
+}
+
+// TestLocateLocalJob_StraySiblingDirDoesNotBreakLookup asserts that a stray
+// directory (with no jobs.jsonl) beside the real target bucket does not abort
+// the entire lookup. After round 1 removed the ValidateProjectID filter, the
+// sweep visits every directory; a missing jobs.jsonl in a sibling must be
+// treated as not-found, not as a hard error that aborts the search.
+func TestLocateLocalJob_StraySiblingDirDoesNotBreakLookup(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	// Real target: a valid sibling bucket with the job.
+	sibling := localJobProjectBucket(t, stateHome, localJobSiblingProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, sibling, owner, jobID, "", "sibling job output\n", true)
+
+	// Stray: a directory under projects/ with no jobs.jsonl at all.
+	_ = localJobProjectBucket(t, stateHome, "stray-dir-no-jobs")
+
+	loc, err := locateLocalJob(current, jobID)
+	if err != nil {
+		t.Fatalf("stray sibling dir broke lookup: %v", err)
+	}
+	if filepath.Base(loc.StateDir) != localJobSiblingProject {
+		t.Fatalf("located job in %q, want %q", filepath.Base(loc.StateDir), localJobSiblingProject)
+	}
+}
+
+// TestLocateLocalJob_CorruptSiblingDirDoesNotBreakLookup asserts that a
+// corrupt jobs.jsonl in a sibling directory (for the same owner session) does
+// not abort the lookup when the target exists in another sibling. After
+// round 1 removed the ValidateProjectID filter, the sweep visits every
+// directory; a corrupt jobs.jsonl in a non-target sibling must be treated as
+// not-found (skipped), not as a hard error that aborts the search for the
+// real target.
+func TestLocateLocalJob_CorruptSiblingDirDoesNotBreakLookup(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	// Real target: a valid sibling bucket with the job.
+	sibling := localJobProjectBucket(t, stateHome, localJobSiblingProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, sibling, owner, jobID, "", "sibling job output\n", true)
+
+	// Corrupt sibling: a directory with a corrupt jobs.jsonl for the SAME
+	// owner session (so findLocalJobInProject tries to read it). The file
+	// exists but contains invalid JSON, which ReadEvents reports as an error.
+	corruptDir := localJobProjectBucket(t, stateHome, "corrupt-bucket")
+	corruptPath := filepath.Join(jobsDir(corruptDir, owner), "jobs.jsonl")
+	if err := os.MkdirAll(filepath.Dir(corruptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(corruptPath, []byte("NOT VALID JSON\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loc, err := locateLocalJob(current, jobID)
+	if err != nil {
+		t.Fatalf("corrupt sibling dir broke lookup: %v", err)
+	}
+	if filepath.Base(loc.StateDir) != localJobSiblingProject {
+		t.Fatalf("located job in %q, want %q", filepath.Base(loc.StateDir), localJobSiblingProject)
+	}
+}
+
+// --- roborev fix round 3: RED test for finding 2 ---
+
+// TestLocateLocalJob_CorruptSiblingDirSurfacesErrorWhenTargetNotFound asserts
+// that when the target job lives ONLY in a corrupt sibling bucket (and is not
+// found elsewhere), the corruption error propagates instead of being masked
+// as "job not found". The round 2 fix skipped ALL sibling errors, so genuine
+// corruption was swallowed. The fix: retain the first sibling error; if the
+// lookup would finish not-found, return that retained error — this preserves
+// stray-dir tolerance when the target is found elsewhere and surfaces
+// corruption when it is not.
+func TestLocateLocalJob_CorruptSiblingDirSurfacesErrorWhenTargetNotFound(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+
+	// The ONLY bucket with the target job is corrupt: its jobs.jsonl exists but
+	// contains invalid JSON. ReadEvents returns an error (not nil,nil) for
+	// corrupt content, so findLocalJobInProject returns an error.
+	corruptDir := localJobProjectBucket(t, stateHome, "corrupt-only-bucket")
+	corruptPath := filepath.Join(jobsDir(corruptDir, owner), "jobs.jsonl")
+	if err := os.MkdirAll(filepath.Dir(corruptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(corruptPath, []byte("NOT VALID JSON\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := locateLocalJob(current, jobID)
+	if err == nil {
+		t.Fatal("expected error for corrupt-only sibling, got nil")
+	}
+	// The error must NOT be "job not found" — it must surface the corruption.
+	if strings.Contains(err.Error(), "not found") {
+		t.Fatalf("corrupt sibling error was masked as not-found: %v", err)
+	}
+	// The error must mention the corruption or the read failure.
+	if !strings.Contains(err.Error(), "corrupt") && !strings.Contains(err.Error(), "read") {
+		t.Fatalf("error does not surface corruption: %v", err)
+	}
+}
+
+// TestLocateLocalJob_RejectsSymlinkedSessionsDir asserts that locateLocalJob
+// does not find a job through a symlinked sessions/ directory. Today
+// findLocalJobInProject builds jobsDir (stateDir/sessions/owner) and reads
+// jobs.jsonl through the symlink, so a job from outside the state root
+// surfaces via job:<id> reads.
+func TestLocateLocalJob_RejectsSymlinkedSessionsDir(t *testing.T) {
+	stateHome := t.TempDir()
+	bucket := localJobProjectBucket(t, stateHome, "test-0123456789")
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+
+	// Seed a job in an outside dir.
+	outside := t.TempDir()
+	seedLocalJob(t, outside, owner, jobID, "/decoy/outside.log", "outside\n", false)
+
+	// Replace the bucket's sessions/ with a symlink to the outside dir.
+	if err := os.RemoveAll(filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "sessions"), filepath.Join(bucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+
+	// locateLocalJob should NOT find the job through the symlinked sessions/.
+	_, err := locateLocalJob(bucket, jobID)
+	if err == nil {
+		t.Fatal("locateLocalJob found a job through a symlinked sessions/ dir; should reject")
+	}
+}
+
+// --- roborev fix round 7: RED test ---
+
+// TestLocateLocalJob_SymlinkedSiblingBucketSurfacesJobNotFound asserts that
+// a lookup for a nonexistent job with an UNRELATED symlinked sibling bucket
+// returns "job not found" — not the symlink rejection error from the sibling.
+// The round-6 symlink guards make findLocalJobInProject return a non-nil
+// "symlinks are not allowed" error for a symlinked sessions/ in a non-target
+// bucket; the round-3 retainedErr mechanism retains it and surfaces it
+// instead of the honest "job not found" result, masking the real outcome
+// with a misleading message.
+func TestLocateLocalJob_SymlinkedSiblingBucketSurfacesJobNotFound(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+
+	// Sibling bucket with symlinked sessions/ pointing outside.
+	siblingBucket := localJobProjectBucket(t, stateHome, localJobSiblingProject)
+	outside := t.TempDir()
+	outsideSessions := filepath.Join(outside, "sessions")
+	if err := os.MkdirAll(outsideSessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(siblingBucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outsideSessions, filepath.Join(siblingBucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The job does NOT exist anywhere. The lookup should return "job not
+	// found", not the symlink error from the unrelated sibling bucket.
+	_, err := locateLocalJob(current, jobID)
+	if err == nil {
+		t.Fatal("expected error for nonexistent job, got nil")
+	}
+	if !isJobNotFoundErr(err) {
+		t.Fatalf("expected job-not-found error for nonexistent job with unrelated symlinked sibling, got: %v", err)
+	}
+}
+
+// TestLocateLocalJob_SymlinkedTargetBucketStillSurfacesSymlinkError asserts
+// that when the symlinked sibling bucket DOES contain the target job, the
+// symlink error is still surfaced — the fix must only classify symlink errors
+// from non-target buckets as skip-worthy, not suppress them everywhere.
+func TestLocateLocalJob_SymlinkedTargetBucketStillSurfacesSymlinkError(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+
+	// Seed the target job in an outside dir, then symlink sessions/ to it.
+	outside := t.TempDir()
+	seedLocalJob(t, outside, owner, jobID, "/decoy/outside.log", "outside\n", false)
+
+	siblingBucket := localJobProjectBucket(t, stateHome, localJobSiblingProject)
+	if err := os.RemoveAll(filepath.Join(siblingBucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "sessions"), filepath.Join(siblingBucket, "sessions")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The target IS in the symlinked bucket. The symlink error must be
+	// surfaced, not suppressed — the symlink guard protects against reads
+	// outside the state root.
+	_, err := locateLocalJob(current, jobID)
+	if err == nil {
+		t.Fatal("expected symlink error for target in symlinked bucket, got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("expected error mentioning symlink, got: %v", err)
+	}
+}
+
+// TestLocateLocalJob_FIFOJournalRejectedWithoutBlocking asserts that a FIFO at
+// the job journal path is rejected without blocking. Pre-fix: jobstore.ReadEvents
+// opens the journal with a plain os.Open which blocks on a FIFO indefinitely;
+// symlinkErrorDeep checks symlinks but a FIFO is a non-symlink non-regular
+// entry that passes the symlink check. Post-fix: the journal is Lstat'd and
+// required to be a regular file before ReadEvents is called, so the FIFO is
+// rejected quickly without blocking.
+func TestLocateLocalJob_FIFOJournalRejectedWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	sh := t.TempDir()
+	bucket := filepath.Join(sh, "evener", "projects", localJobCurrentProject)
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, bucket, owner, jobID, "/dev/null", "MARKER\n", true)
+
+	// Replace the journal with a FIFO.
+	journalPath := filepath.Join(jobsDir(bucket, owner), "jobs.jsonl")
+	if err := os.Remove(journalPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("mkfifo", journalPath).Run(); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+
+	// Run the lookup under a bounded timeout so a hang FAILS FAST instead
+	// of hanging the test suite. The pre-fix code blocks on os.Open(FIFO).
+	done := make(chan error, 1)
+	go func() {
+		_, err := locateLocalJob(bucket, jobID)
+		done <- err
+	}()
+	select {
+	case <-done:
+		// The call returned without blocking — pass. The FIFO is rejected
+		// by the Lstat+IsRegular guard; whether err is nil (silently dropped)
+		// or non-nil (unreadable journal) is acceptable — the key invariant
+		// is that we did NOT block.
+		// TRIPWIRE: the Lstat+IsRegular guard rejects the FIFO in microseconds; 5s only fires on a genuine hang (pre-fix os.Open(FIFO) blocks forever).
+	case <-time.After(5 * time.Second):
+		t.Fatal("locateLocalJob blocked on a FIFO journal for 5s; the " +
+			"journal must be Lstat'd and required to be a regular file " +
+			"before ReadEvents opens it")
+	}
+}
+
+// TestLocateLocalJobRetainedTarget_FIFOOutputRejectedWithoutBlocking asserts
+// the same regular-file guard on the job output file path.
+func TestLocateLocalJobRetainedTarget_FIFOOutputRejectedWithoutBlocking(t *testing.T) {
+	t.Parallel()
+	sh := t.TempDir()
+	bucket := filepath.Join(sh, "evener", "projects", localJobCurrentProject)
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, bucket, owner, jobID, "/dev/null", "MARKER\n", true)
+
+	// Replace the output file with a FIFO.
+	outputPath := filepath.Join(jobsDir(bucket, owner), "jobs", jobID+".log")
+	if err := os.Remove(outputPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Command("mkfifo", outputPath).Run(); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := locateLocalJobRetainedTarget(bucket, jobID)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		_ = err // returned without blocking — pass
+		// TRIPWIRE: the Lstat+IsRegular guard rejects the FIFO in microseconds; 5s only fires on a genuine hang (pre-fix os.Open(FIFO) blocks forever).
+	case <-time.After(5 * time.Second):
+		t.Fatal("locateLocalJobRetainedTarget blocked on a FIFO output " +
+			"file for 5s; the output path must be Lstat'd and required " +
+			"to be a regular file before reading")
+	}
+}
+
+// TestFindLocalJobInProject_NonErrNotExistLstatSurfaces (FU3 round 12, M1)
+// asserts findLocalJobInProject propagates a non-ErrNotExist Lstat error on the
+// job journal instead of masking it as "not found". Pre-fix, every Lstat error
+// (including EACCES/ENOTDIR) was masked as a skip-worthy miss, hiding genuine
+// unreadability. Post-fix, only os.ErrNotExist is a miss; any other Lstat error
+// is wrapped and returned. The fixture makes the owner sessions dir a regular
+// file so os.Lstat of jobs.jsonl under it returns ENOTDIR (a non-ErrNotExist,
+// root-independent error); symlinkErrorDeep ignores Lstat errors (it only
+// checks the symlink bit), so it returns nil and the journal-site Lstat
+// discipline is the code path exercised.
+func TestFindLocalJobInProject_NonErrNotExistLstatSurfaces(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	bucket := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+
+	// Make the owner sessions dir a regular FILE so Lstat of the journal path
+	// below it returns ENOTDIR — a non-ErrNotExist error that must propagate.
+	ownerDir := jobsDir(bucket, owner) // <bucket>/sessions/<owner>
+	if err := os.MkdirAll(filepath.Dir(ownerDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ownerDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, found, err := findLocalJobInProject(bucket, owner, jobID)
+	if err == nil {
+		t.Fatalf("findLocalJobInProject masked a non-ErrNotExist Lstat error as not-found (found=%v); expected a propagated 'stat journal' error", found)
+	}
+	if found {
+		t.Fatal("expected found=false, got true")
+	}
+	if !strings.Contains(err.Error(), "stat journal") {
+		t.Fatalf("expected error wrapping the journal Lstat failure ('stat journal'), got: %v", err)
+	}
+}
+
+// TestLocateLocalJobRetainedTarget_OutputNotRegularRejected is a regression guard
+// for the round-11 output-path IsRegular guard — NOT a round-12 M2 RED. It pins
+// the Lstat'd-output invariant (the output leaf must be a regular file) without
+// over-claiming the documented residual TOCTOU window: a swap between the Lstat
+// and jobstore's internal by-path open is explicitly NOT closed (the round-12
+// M2 fix documented it, not closed it — see the comment at
+// locateLocalJobRetainedTarget in job_transcript_read.go). A non-regular,
+// non-symlink entry (a directory) at the output leaf passes symlinkErrorDeep but
+// is rejected by the IsRegular guard. This test PASSES on round-12 production
+// reverted to base 7a8bdd9232 (the guard predates round 12), so it is retained as
+// a round-11 regression guard, not a round-12 RED.
+func TestLocateLocalJobRetainedTarget_OutputNotRegularRejected(t *testing.T) {
+	t.Parallel()
+	sh := t.TempDir()
+	bucket := filepath.Join(sh, "evener", "projects", localJobCurrentProject)
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	seedLocalJob(t, bucket, owner, jobID, "/dev/null", "MARKER\n", true)
+
+	// Replace the output file with a directory: non-symlink (passes
+	// symlinkErrorDeep) but non-regular (caught by the IsRegular guard).
+	outputPath := filepath.Join(jobsDir(bucket, owner), "jobs", jobID+".log")
+	if err := os.Remove(outputPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(outputPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := locateLocalJobRetainedTarget(bucket, jobID)
+	if err == nil {
+		t.Fatal("expected 'output is not a regular file' error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("expected 'output is not a regular file' error, got: %v", err)
+	}
 }

@@ -209,7 +209,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if v, ok := args["case_insensitive"].(bool); ok {
 				ci = v
 			}
-			maxRes := 100
+			maxRes := execenv.DefaultGrepMaxResults
 			if v, ok := args["max_results"].(float64); ok && int(v) > 0 {
 				maxRes = int(v)
 			}

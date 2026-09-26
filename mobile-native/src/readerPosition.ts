@@ -104,7 +104,7 @@ export function resolveReaderAnchor(
 }
 export function isReaderAnchorLoaded(
 	anchor: ReaderAnchor,
-	items: readonly import("../../mobile/src/conversation/project").MobileTimelineItem[],
+	items: readonly import("./projectedRows").MobileTimelineItem[],
 ): boolean {
 	for (const item of items) {
 		if (resolveReaderAnchor(anchor, [item]) !== null) return true;

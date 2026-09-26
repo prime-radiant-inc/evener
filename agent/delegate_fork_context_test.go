@@ -97,7 +97,7 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 			if failures, measured := child.FailedToolCallsSnapshot(); !measured || failures != 0 {
 				t.Errorf("child charged for parent's tool failure: %d, measured=%v", failures, measured)
 			}
-			data, err := readTranscriptFull(transcriptPath(root.stateDir, child.id))
+			data, err := readTranscriptFull(transcriptPath(root.stateDir, child.id), "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -226,7 +226,7 @@ func TestDelegateForkContext_ColdResumePreservesSnapshot(t *testing.T) {
 	if !meta.IsSubagent || meta.DivergenceTurn == 0 || meta.OriginalPrompt != "child-unit-sentinel" || child.reg.Get("ask_user") != nil {
 		t.Fatalf("restored delegate lost identity or gained permissions: %+v", meta)
 	}
-	data, err := readTranscriptFull(transcriptPath(root.stateDir, child.id))
+	data, err := readTranscriptFull(transcriptPath(root.stateDir, child.id), "")
 	if err != nil {
 		t.Fatal(err)
 	}

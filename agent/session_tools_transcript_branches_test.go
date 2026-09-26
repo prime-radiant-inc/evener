@@ -3322,3 +3322,59 @@ func TestParseReadSessionTranscriptArgsMaxBytesWithBody(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 var _ = fmt.Sprintf
+
+// --- roborev fix round 3: RED test for finding 5 ---
+
+// TestApiLogResultTranscriptPlaceholder_LegacyBucketCarriesCallTranscriptRef
+// asserts that when the result's transcript_ref is empty (legacy-bucket bare-ID
+// read, where refFor returns ""), the re_read handle falls back to the original
+// call's transcript_ref. Without this, the handle has source=api_log and no
+// transcript_ref, which resolves to the CURRENT session — a different session
+// from the one the model just read.
+func TestApiLogResultTranscriptPlaceholder_LegacyBucketCarriesCallTranscriptRef(t *testing.T) {
+	call := llm.ToolCallData{
+		Name:      "read_session_transcript",
+		Arguments: json.RawMessage(`{"transcript_ref":"02wMz5Txv5aIxgf9yVdd0N","source":"api_log"}`),
+	}
+	// Result from a legacy-bucket read: ref is empty because refFor returns ""
+	// for grammar-incompatible bucket names.
+	resultJSON := `{"source":"api_log","transcript_ref":"","attempt":{"attempt_id":"att_1"}}`
+	result := tool.ExecResult{ToolName: "read_session_transcript", Output: resultJSON}
+
+	placeholder, ok := apiLogResultTranscriptPlaceholder(call, result)
+	if !ok {
+		t.Fatalf("expected ok=true for api_log result with empty transcript_ref")
+	}
+	// The placeholder must carry the original call's transcript_ref so the
+	// re_read handle resolves to the SAME session the model just read.
+	if !strings.Contains(placeholder, "02wMz5Txv5aIxgf9yVdd0N") {
+		t.Fatalf("re_read handle lost the transcript_ref for legacy-bucket api_log read; placeholder does not carry the bare session ID, so it resolves to the CURRENT session:\n%s", placeholder)
+	}
+}
+
+// TestApiLogResultTranscriptPlaceholder_SizeOverflowPreservesFallbackRef
+// asserts that when the placeholder exceeds 1 KiB, the response still
+// carries the fallback transcript_ref so the re_read handle resolves to the
+// same session, not the current session. Today the size-overflow branch
+// returns a generic re_read handle with no transcript_ref.
+func TestApiLogResultTranscriptPlaceholder_SizeOverflowPreservesFallbackRef(t *testing.T) {
+	sid := "02wMz5Txv5aIxgf9yVdd0N"
+	call := llm.ToolCallData{
+		Name:      "read_session_transcript",
+		Arguments: json.RawMessage(`{"transcript_ref":"` + sid + `","source":"api_log"}`),
+	}
+	// Result with a large body that exceeds 1 KiB when encoded.
+	largeBody := strings.Repeat("x", 1200)
+	resultJSON := `{"source":"api_log","transcript_ref":"","attempt":{"attempt_id":"att_1"},"body":{"body":"` + largeBody + `","offset_bytes":0}}`
+	result := tool.ExecResult{ToolName: "read_session_transcript", Output: resultJSON}
+
+	placeholder, ok := apiLogResultTranscriptPlaceholder(call, result)
+	if !ok {
+		t.Fatal("expected ok=true for api_log result")
+	}
+	// The placeholder must still carry the transcript_ref so the re_read
+	// handle resolves to the same session, not the current session.
+	if !strings.Contains(placeholder, sid) {
+		t.Fatalf("size-overflow placeholder lost the transcript_ref; re_read targets current session:\n%s", placeholder)
+	}
+}

@@ -100,17 +100,23 @@ func (m *Manager) checkHostAddr(host hostreg.Host) error {
 	return nil
 }
 
-// validateHubAddr accepts the addresses a hub can actually listen on: a
-// loopback host, localhost, or a wildcard bind (which loopbackAddr normalizes to
-// loopback for probing). Anything else — including a missing port — is refused
-// rather than probed.
-func validateHubAddr(name, addr string) error {
+// ValidateHubAddrShape reports why addr cannot be a hub listen address: it is
+// not host:port, its port is unusable, or its host is not a loopback literal,
+// localhost, or a wildcard bind (which loopbackAddr normalizes to loopback for
+// probing). Everything else — including a missing port — is refused rather than
+// probed.
+//
+// It deliberately carries no sentinel: each caller wraps it in its own
+// taxonomy — this package's checkHostAddr wraps ErrHostAddr, and the hub's
+// config validation wraps its ErrHostAddr — so the one accepted address shape
+// lives here and load-time validation cannot drift from the probe.
+func ValidateHubAddrShape(addr string) error {
 	hostPart, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("%w: host %q address %q is not host:port: %w", ErrHostAddr, name, addr, err)
+		return fmt.Errorf("address %q is not host:port: %w", addr, err)
 	}
 	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("%w: host %q address %q has no usable port", ErrHostAddr, name, addr)
+		return fmt.Errorf("address %q has no usable port", addr)
 	}
 	switch hostPart {
 	case "", "localhost", "0.0.0.0", "::":
@@ -118,7 +124,16 @@ func validateHubAddr(name, addr string) error {
 	}
 	ip := net.ParseIP(hostPart)
 	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("%w: host %q address %q is not a loopback or wildcard bind", ErrHostAddr, name, addr)
+		return fmt.Errorf("address %q is not a loopback or wildcard bind", addr)
+	}
+	return nil
+}
+
+// validateHubAddr is ValidateHubAddrShape in this package's taxonomy: the
+// refusal wraps ErrHostAddr and names the host the address belongs to.
+func validateHubAddr(name, addr string) error {
+	if err := ValidateHubAddrShape(addr); err != nil {
+		return fmt.Errorf("%w: host %q %w", ErrHostAddr, name, err)
 	}
 	return nil
 }
@@ -791,6 +806,20 @@ const noListenerMarker = "__sshconn_no_listener__"
 // to restart a listener it cannot identify rather than guessing at a PID.
 const listenerPresentMarker = "__sshconn_listener_present__"
 
+// NoListenerMarker is the port probe's proved-empty answer — a probe tool ran
+// and found no listener on the port — exposed for callers outside this package
+// that must tell a proved-empty port from an unprobeable host. The hub's gated
+// live deploy check builds its host cleanup from ListenerProbeRemote and reads
+// this marker; anything else (a pid, listenerPresentMarker, or an empty answer)
+// is NOT absence.
+const NoListenerMarker = noListenerMarker
+
+// ListenerPresentMarker is the port probe's "a fallback tool proved a listener
+// exists but could not name its process" answer, exposed for the same callers as
+// NoListenerMarker: a held-but-unnameable port is not absence, so a caller that
+// only looks for NoListenerMarker must not read this as one.
+const ListenerPresentMarker = listenerPresentMarker
+
 // listenerProbeRemote builds the remote command that reports the listeners on
 // port.
 //
@@ -848,6 +877,15 @@ echo 'sshconn: no listener probe is available on this host (lsof, ss, and /proc/
 exit 1
 `
 }
+
+// ListenerProbeRemote exposes the port probe to callers outside this package.
+// The hub's gated live deploy check builds its host cleanup from it, so the
+// check and the production restart path identify a listener on a host the same
+// way — including the ss and /proc/net/tcp fallbacks a host without lsof needs.
+// Callers must treat a nonzero exit as "cannot say": only a nil error together
+// with NoListenerMarker proves the port is free (see the probe's output
+// contract above).
+func ListenerProbeRemote(port string) string { return listenerProbeRemote(port) }
 
 // listenerProbe is one port probe's answer: the PIDs a probe tool could name,
 // and whether a listener was proved to exist that no tool could name.
@@ -1444,8 +1482,8 @@ func (m *Manager) currentHubExecutableName(ctx context.Context, host hostreg.Hos
 }
 
 // installableEvenerBasename reports whether a basename names the binary a host
-// hub can be run as. Only `evener` does: install.sh ships `evener-dev` too
-// (install.sh:5), but that is the development/test tooling binary
+// hub can be run as. Only `evener` does: release archives carry `evener-dev`
+// too, but that is the development/test tooling binary
 // (cmd/evener-dev/bin) — no `hub` subcommand and no `launch-check` — so a run
 // target naming it would be probed, relaunched, and attached as a hub that can
 // never answer. A deploy cannot preserve a run target the host cannot serve.

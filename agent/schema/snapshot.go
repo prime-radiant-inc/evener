@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -577,13 +578,43 @@ func stableUnion(existing, added []string) []string {
 	return out
 }
 
+// lstatIfPossible does Lstat when the fs implements afero.Lstater (OsFs returns
+// symlink-aware info), and falls back to Stat otherwise. MemMapFs implements
+// Lstater but LstatIfPossible does Stat internally (usedLstat=false) since it has
+// no symlinks; either way the returned FileInfo is correct for IsRegular checks.
+func lstatIfPossible(fs afero.Fs, path string) (os.FileInfo, error) {
+	if lstater, ok := fs.(afero.Lstater); ok {
+		info, _, err := lstater.LstatIfPossible(path)
+		return info, err
+	}
+	return fs.Stat(path)
+}
+
 // loadSessionMetaFS is the filesystem seam beneath LoadSessionMeta.
 func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 	if err := ValidateSessionID(id); err != nil {
 		return SessionMeta{}, err
 	}
 	path := filepath.Join(dir, sessionsSubdir, id+".meta.json")
-	data, err := afero.ReadFile(fs, path)
+	// Finding 3: validate intermediate path components (e.g. sessions/) for
+	// symlinks. A symlinked sessions/ directory pointing outside the state
+	// root would surface metadata from an untrusted location. The leaf
+	// itself is NOT checked here — it is opened with O_NOFOLLOW by
+	// readMetaFile below (finding 6), which atomically refuses a symlink at
+	// the final component and closes the Lstat-then-open TOCTOU window the
+	// previous leaf-only guard left.
+	if err := metaComponentWalk(fs, path, dir); err != nil {
+		return SessionMeta{}, fmt.Errorf("read session meta %s: %w", id, err)
+	}
+	// Finding 6: open through a single no-follow descriptor and read from it,
+	// rather than Lstat-then-ReadFile. O_NOFOLLOW refuses a symlink at the
+	// leaf atomically (ELOOP); the descriptor is then read directly, so
+	// nothing can be swapped between the check and the bytes. Do NOT fstat
+	// for regular or use O_NONBLOCK: a FIFO at this path is a deliberate
+	// synchronization barrier in retirement tests and must be allowed to
+	// block the open. O_NOFOLLOW is harmless for FIFOs and regular files —
+	// it only refuses when the final component is a symlink.
+	data, err := readMetaFile(fs, path)
 	if err != nil {
 		return SessionMeta{}, fmt.Errorf("read session meta %s: %w", id, err)
 	}
@@ -595,6 +626,132 @@ func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 		return SessionMeta{}, fmt.Errorf("session meta ID %q does not match requested session ID %q", meta.ID, id)
 	}
 	return meta, nil
+}
+
+// metaComponentWalk Lstats each existing intermediate component of path between
+// root (exclusive) and the leaf (exclusive), returning an error if any is a
+// symlink. The leaf itself is NOT checked here — it is opened with O_NOFOLLOW
+// by readMetaFile, which atomically refuses a symlink at the final component.
+// Mirrors symlinkErrorDeep from package agent (transcript_lookup.go), scoped
+// to intermediates only and using the injected afero.Fs so it works on both
+// the real filesystem (Lstat detects symlinks) and in-memory test filesystems
+// (Stat, which never reports symlinks).
+func metaComponentWalk(fs afero.Fs, path, root string) error {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	dir := filepath.Dir(path)
+	for dir != root && dir != "" && dir != string(filepath.Separator) && dir != "." {
+		info, _ := lstatIfPossible(fs, dir)
+		if info != nil && info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path %q traverses a symlink (%q): symlinks are not allowed on the meta read path", path, dir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return nil
+}
+
+// readMetaFile reads the meta file through a no-follow descriptor when the
+// underlying filesystem is the real OS filesystem, closing the leaf TOCTOU
+// window (finding 6). The no-follow open must fire for every afero wrapper
+// that ultimately delegates to the OS, not just bare *afero.OsFs: ReadOnlyFs
+// and BasePathFs over OsFs pass reads through to os.Open (which follows leaf
+// symlinks), so matching only *afero.OsFs lets a symlinked .meta.json leaf
+// bypass the O_NOFOLLOW guard via any wrapper.
+//
+// The unwrap is conditional on the wrapped source being OS-backed. Both
+// ReadOnlyFs and BasePathFs keep their backing in an unexported "source" Fs
+// field with no public accessor, so the source is inspected via reflection
+// (type-only: no pointer arithmetic, no unsafe). The pre-fix code unwrapped
+// these wrappers unconditionally and called readFileNoFollowOS — the real OS
+// filesystem — even when the source was an in-memory filesystem. For
+// ReadOnlyFs(MemMapFs) or BasePathFs(MemMapFs) the identity/RealPath path is
+// not a real OS path, so the read silently hit the OS filesystem instead of
+// the in-memory FS, returning unrelated metadata or a spurious ENOENT.
+//
+// Routing:
+//   - *afero.OsFs and afero.OsFs (value receiver): the real OS filesystem —
+//     open the path directly with O_NOFOLLOW.
+//   - *afero.ReadOnlyFs and *afero.BasePathFs: inspect the wrapped source.
+//     OS-backed (an OsFs holds the source field) — the wrapper delegates to
+//     the OS, so the no-follow open must fire to close the leaf-symlink
+//     window (finding 1 of round 13): ReadOnlyFs passes paths through
+//     unchanged, so readFileNoFollowOS(path) is correct; BasePathFs remaps
+//     paths via RealPath, so resolve to the real OS path first. Non-OS-backed
+//     (e.g. MemMapFs) or unknown source — fall back to afero.ReadFile, the
+//     documented portable read, which reads the in-memory filesystem.
+//   - any other afero.Fs (bare MemMapFs, unknown wrappers): afero.ReadFile.
+//
+// RealPath on BasePathFs can fail on paths outside the base (os.ErrNotExist);
+// in that case the OS-backed branch falls back to afero.ReadFile so the caller
+// sees the same error the wrapper would produce.
+func readMetaFile(fs afero.Fs, path string) ([]byte, error) {
+	switch t := fs.(type) {
+	case *afero.OsFs, afero.OsFs:
+		return readFileNoFollowOS(path)
+	case *afero.ReadOnlyFs:
+		// ReadOnlyFs passes paths through unchanged. Only route to the
+		// no-follow OS open when the wrapped source is the real OS
+		// filesystem; otherwise read through the wrapper itself so an
+		// in-memory backing (MemMapFs) is read, not the OS filesystem.
+		if wrapperSourceIsOS(t) {
+			return readFileNoFollowOS(path)
+		}
+		return afero.ReadFile(fs, path)
+	case *afero.BasePathFs:
+		// BasePathFs remaps paths via RealPath. Only resolve to a real OS
+		// path and no-follow open when the wrapped source is the real OS
+		// filesystem; otherwise read through the wrapper itself.
+		if wrapperSourceIsOS(t) {
+			realPath, err := t.RealPath(path)
+			if err != nil {
+				// Path outside the base dir or other RealPath failure:
+				// fall back to the wrapper's own read so the caller sees
+				// the same error it would have gotten.
+				return afero.ReadFile(fs, path)
+			}
+			return readFileNoFollowOS(realPath)
+		}
+		return afero.ReadFile(fs, path)
+	default:
+		return afero.ReadFile(fs, path)
+	}
+}
+
+// wrapperSourceIsOS reports whether the afero wrapper's unexported "source" Fs
+// field holds an OsFs (pointer or value receiver). It is used by readMetaFile
+// to decide whether a wrapper delegates to the real OS filesystem — in which
+// case the no-follow open must fire to close the leaf-symlink window (round 13
+// finding 1) — or to an in-memory filesystem, in which case the read must go
+// through afero.ReadFile so the in-memory content comes back.
+//
+// Both ReadOnlyFs and BasePathFs keep their backing in an unexported "source"
+// field with no public accessor, so reflection is the only way to inspect it.
+// The inspection is type-only (Kind and Type comparisons); it never calls
+// Interface() on the unexported field, which would panic, and uses no unsafe.
+// An unknown source (nil, or a non-struct wrapper without a "source" field)
+// reports false, so the read falls back to the portable afero.ReadFile.
+func wrapperSourceIsOS(w afero.Fs) bool {
+	v := reflect.ValueOf(w)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return false
+	}
+	src := v.FieldByName("source")
+	if !src.IsValid() || src.Kind() != reflect.Interface {
+		return false
+	}
+	concrete := src.Elem()
+	if !concrete.IsValid() {
+		return false
+	}
+	ct := concrete.Type()
+	return ct == reflect.TypeFor[*afero.OsFs]() || ct == reflect.TypeFor[afero.OsFs]()
 }
 
 // listSessionMetasFS is the filesystem seam beneath ListSessionMetas.
@@ -610,7 +767,11 @@ func listSessionMetasFS(fs afero.Fs, dir string) ([]SessionMeta, error) {
 
 	var metas []SessionMeta
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".meta.json") {
+		// Reject non-regular files: a symlinked .meta.json pointing outside the
+		// state root would otherwise be loaded via afero.ReadFile which follows
+		// the link. afero.ReadDir on OsFs returns Lstat-based FileInfo, so
+		// symlinks carry ModeSymlink and IsRegular returns false.
+		if !e.Mode().IsRegular() || !strings.HasSuffix(e.Name(), ".meta.json") {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".meta.json")

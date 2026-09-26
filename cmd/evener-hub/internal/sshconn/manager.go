@@ -2330,12 +2330,12 @@ var ErrRunTargetUnservable = errRunTargetUnservable
 
 // ErrDeployArtifactUnusable is the exported alias for the terminal
 // operator-artifact deploy refusal (errDeployArtifactUnusable, deploy.go): the
-// -deploy-binary artifact an operator supplied cannot serve the host because it
-// targets another platform, so retrying re-reads the same file and can never
-// succeed. It is exported so a caller — the hub's attach handler — can match the
-// refusal with errors.Is and surface it as a typed deploy failure
-// (appwire.HubLaunchError) rather than a generic internal error, the same reason
-// ErrRunTargetUnservable is.
+// -deploy-binary artifact an operator supplied cannot serve the host — it
+// targets another platform, or it is a Go program that is not evener — so
+// retrying re-reads the same file and can never succeed. It is exported so a
+// caller — the hub's attach handler — can match the refusal with errors.Is and
+// surface it as a typed deploy failure (appwire.HubLaunchError) rather than a
+// generic internal error, the same reason ErrRunTargetUnservable is.
 var ErrDeployArtifactUnusable = errDeployArtifactUnusable
 
 // ErrDeployUnstamped is the exported alias for the terminal post-deploy identity

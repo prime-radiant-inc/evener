@@ -1186,3 +1186,59 @@ func TestFind_ChildrenOf_ProjBucket(t *testing.T) {
 		t.Errorf("child ref = %q, want %q", ref, wantRef)
 	}
 }
+
+// --- roborev fix round 3: RED test for finding 4 ---
+
+// TestFind_ChildrenOf_BareIDResolvesCrossBucket asserts that children_of with a
+// bare session ID resolves the parent cross-bucket (mirroring resolveTranscript's
+// bare-ID semantics), not just the current bucket. A parent in a legacy-named
+// sibling bucket and its child in the same legacy bucket must be found when
+// children_of uses the parent's bare ID. Today parentBucketAndID returns
+// currentStateDir for bare IDs, so the search is scoped to the current bucket
+// and silently returns 0 matches — the wrong project.
+func TestFind_ChildrenOf_BareIDResolvesCrossBucket(t *testing.T) {
+	t.Parallel()
+	stateHome := newStateHome(t)
+	currentBucket := newBucketUnder(t, stateHome)
+	legacyBucket := filepath.Join(stateHome, "evener", "projects", "0123456789abcdef")
+	if err := os.MkdirAll(filepath.Join(legacyBucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	parentID := "02wMz5TxvIl3yzzcpdlu4x"
+	childID := "02wMz5TxvKDoXaaLN6ENX1"
+
+	// Parent + one readable child, both in the LEGACY bucket. The parent needs
+	// a transcript file so parentBucketAndID's cross-bucket resolution (which
+	// stats the parent transcript) can locate it in the legacy bucket.
+	writeFindSession(t, legacyBucket, findMetaSpec{id: parentID, name: "legacy parent", updated: now.Add(-time.Hour)}, "legacy parent work")
+	writeFindSession(t, legacyBucket, findMetaSpec{
+		id:              childID,
+		name:            "legacy child",
+		parentSessionID: parentID,
+		updated:         now,
+	}, "legacy child work")
+
+	deps := &toolDeps{stateDir: currentBucket, sessionID: "02wMz5TxvEMoJEDTDGOTil"}
+	b := marshalFind(t, deps, map[string]any{"children_of": parentID})
+	env := decodeEnvelope(t, b)
+
+	// Handle nil matches (the RED state: 0 matches found in the current bucket).
+	var matches []map[string]any
+	if raw, ok := env["matches"]; ok {
+		if ifaces, ok := raw.([]any); ok {
+			for _, v := range ifaces {
+				if m, ok := v.(map[string]any); ok {
+					matches = append(matches, m)
+				}
+			}
+		}
+	}
+
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 child in legacy bucket via bare-ID children_of, got %d", len(matches))
+	}
+	if title, _ := matches[0]["title"].(string); title != "legacy child" {
+		t.Errorf("child title = %q, want %q", title, "legacy child")
+	}
+}

@@ -70,7 +70,7 @@ the same way the ordinary runtime build does.
 | `make build-llmcall` | Build the llmcall standalone CLI binary. |
 | `make build-dev` | Build the evener-dev dev/test infrastructure binary (agent-shards, module-lint, fuzz-harvest, fuzzcov, fuzzregistry, internalcheck, tomlcheck, transcript-v2-upgrade). Not installed for end users; used by make targets and go run ./cmd/evener-dev/bin. |
 | `make build-all` | Build every binary: the evener runtime binary and the evener-dev dev/test infrastructure binary. |
-| `make install` | Install the evener and evener-dev binaries into PREFIX (default ~/.local), building a fresh SPA first so the installed evener never embeds the tracked placeholder. |
+| `make install` | Install the evener binary into PREFIX (default ~/.local), building a fresh SPA first so the installed evener never embeds the tracked placeholder. evener-dev, the dev tooling binary, is not installed: build it with `make build-dev`. |
 | `make install-home` | Install into the user prefix (~/.local). |
 | `make install-system` | Install into the system prefix (/usr/local). |
 | `make test-install` | Integration-test the install path end to end: copy the tracked working tree into a fixture, run the install target with a synthetic HOME, and verify the installed binaries and symlinks. Skipped under -short. |

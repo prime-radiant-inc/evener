@@ -160,7 +160,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 
 	// Read child transcript via readTranscript and verify structure.
-	_, entries, _, err := readTranscript(childTranscriptPath)
+	_, entries, _, err := readTranscript(childTranscriptPath, "")
 	if err != nil {
 		t.Fatalf("readTranscript(child): %v", err)
 	}
