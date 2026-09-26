@@ -442,7 +442,18 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 			return false
 		}
 	}
-	return true
+	return value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)
+}
+
+// navigationTaskProgressValid mirrors the web codec's tasksValue: every count is
+// a safe non-negative integer, no more tasks are done and cancelled than exist,
+// and the current task's description fits the label bound. The projector drops
+// progress this refuses rather than failing the whole resource over it.
+func navigationTaskProgressValid(tasks hubapi.NavigationTaskProgress) bool {
+	return navigationIntCount(tasks.Total) && navigationIntCount(tasks.Done) &&
+		navigationIntCount(tasks.Cancelled) && navigationIntCount(tasks.CurrentID) &&
+		tasks.Done <= tasks.Total && tasks.Cancelled <= tasks.Total-tasks.Done &&
+		utf8.RuneCountInString(tasks.Current) <= maxNavigationLabelRunes
 }
 
 // navigationWatchValueValid mirrors the web codec's watch row validation for one

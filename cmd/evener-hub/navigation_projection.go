@@ -1736,8 +1736,30 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Watches:             watches,
 		OmittedWatches:      omittedWatches,
 		OmittedArmedWatches: omittedArmedWatches,
+		Tasks:               navigationTaskProgress(node.Tasks),
 		Children:            hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
+}
+
+// navigationTaskProgress is the row's task line: a session's task-list progress
+// when its list has at least one task, else nil. The current task's
+// description is cut to the label bound. Progress the schema would refuse (a
+// negative count, or more tasks done and cancelled than exist) is dropped, the
+// way navigationWatches drops a watch row: one invalid summary makes the whole
+// resource, every other row included, unreadable.
+func navigationTaskProgress(tasks *appwire.TaskAggregate) *hubapi.NavigationTaskProgress {
+	if tasks == nil || tasks.Total == 0 {
+		return nil
+	}
+	progress := &hubapi.NavigationTaskProgress{Total: tasks.Total, Done: tasks.Done, Cancelled: tasks.Cancelled}
+	if current := tasks.Current; current != nil {
+		progress.CurrentID = current.ID
+		progress.Current = truncateNavigationRunes(current.Description, maxNavigationLabelRunes)
+	}
+	if !navigationTaskProgressValid(*progress) {
+		return nil
+	}
+	return progress
 }
 
 // offlineSourceIDs indexes the manifest sources whose connection state is
@@ -2017,6 +2039,10 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 		clone.Watches[index].Cadence = append([]hubapi.NavigationWatchCadence(nil), watch.Cadence...)
 		clone.Watches[index].Events = append([]string(nil), watch.Events...)
 		clone.Watches[index].DeliveryTimes = append([]string(nil), watch.DeliveryTimes...)
+	}
+	if summary.Tasks != nil {
+		tasks := *summary.Tasks
+		clone.Tasks = &tasks
 	}
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {
