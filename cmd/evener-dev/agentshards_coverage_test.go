@@ -408,6 +408,28 @@ func TestReplaySurveyFailuresUsesNameFrameForSiblingOwnership(t *testing.T) {
 	}
 }
 
+// TestReplaySurveyFailuresKeepsParentAssertionAheadOfLongSiblingTail covers
+// non-diagnostic sibling output after NAME. A full ordinary tail must not
+// consume the expansion budget before the parent's source diagnostic is
+// selected.
+func TestReplaySurveyFailuresKeepsParentAssertionAheadOfLongSiblingTail(t *testing.T) {
+	const assertion = "    parent_test.go:101: parent assertion before sibling tail"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== CONT  TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("=== NAME  TestSibling\n")
+	for i := range surveyContextBefore {
+		fmt.Fprintf(&log, "    sibling output line %d\n", i+1)
+	}
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, assertion) {
+		t.Fatalf("parent assertion was omitted ahead of a long sibling tail: %q", got)
+	}
+}
+
 // TestReplaySurveyFailuresExpandsPastMismatchedNameBoundary covers a parent
 // failure with no sibling verdict before it: the sibling's NAME frame is the
 // nearest framework boundary, so ordinary framing would omit the parent's
@@ -474,6 +496,29 @@ func TestReplaySurveyFailuresKeepsNestedMultilineContinuationWithParentDiagnosti
 	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
 	if !strings.Contains(got, continuation) {
 		t.Fatalf("nested multiline continuation was replaced by parent diagnostics: %q", got)
+	}
+}
+
+// TestReplaySurveyFailuresKeepsFailingChildDiagnosticAfterParentSetup covers
+// parent setup logs that fill the diagnostic budget before a child fails. The
+// child's source diagnostic must survive because it belongs to the ordinary
+// tail and to the failing test's descendant.
+func TestReplaySurveyFailuresKeepsFailingChildDiagnosticAfterParentSetup(t *testing.T) {
+	const boom = "    child_test.go:5: boom"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== CONT  TestParent\n")
+	for i := range surveyContextBefore + 1 {
+		fmt.Fprintf(&log, "    setup_test.go:%d: parent setup diagnostic\n", i+1)
+	}
+	log.WriteString("=== RUN   TestParent/child\n")
+	log.WriteString(boom + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+	log.WriteString("    --- FAIL: TestParent/child (0.00s)\n")
+
+	got := strings.Join(replayLines(t, writeSurveyLog(t, log.String()), 10), "\n")
+	if !strings.Contains(got, boom) {
+		t.Fatalf("failing child diagnostic was omitted after parent setup logs: %q", got)
 	}
 }
 
