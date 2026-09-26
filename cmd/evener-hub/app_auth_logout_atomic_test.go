@@ -65,21 +65,28 @@ func TestAuth_LogoutWaitsForAnotherCredentialWrite(t *testing.T) {
 	logoutLaunched := false
 	t.Cleanup(func() {
 		releaseOnce.Do(func() { close(release) })
-		waitForCompletion := func(done <-chan struct{}, operation string) {
+		waitForCompletion := func(done <-chan struct{}, operation string) bool {
 			timer := time.NewTimer(time.Second)
 			defer timer.Stop()
 			select {
 			case <-done:
+				return true
 			case <-timer.C:
 				t.Errorf("%s did not complete during test cleanup", operation)
-				<-done
+				return false
 			}
 		}
+		setComplete := true
+		logoutComplete := true
 		if setLaunched {
-			waitForCompletion(setDone, "ApiKeySet")
+			setComplete = waitForCompletion(setDone, "ApiKeySet")
 		}
 		if logoutLaunched {
-			waitForCompletion(logoutDone, "Logout")
+			logoutComplete = waitForCompletion(logoutDone, "Logout")
+		}
+		if !setComplete || !logoutComplete {
+			t.Errorf("leaving endpoint resolver seam installed because an auth operation is still running")
+			return
 		}
 		resolveEndpointFingerprintKey = originalResolve
 	})
