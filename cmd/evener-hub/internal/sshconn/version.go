@@ -1397,7 +1397,7 @@ func parseHubHealthBuild(out []byte, addr string) (hubIdentity, string, bool) {
 	if loopbackAddr(resp.HubAddr) != loopbackAddr(addr) {
 		return hubIdentity{}, "", false
 	}
-	return hubIdentity{version: resp.Version, startedAt: resp.StartedAt}, resp.BackendGitSha, true
+	return hubIdentity{version: resp.Version, gitSHA: resp.BackendGitSha, startedAt: resp.StartedAt}, resp.BackendGitSha, true
 }
 
 // recoverHubArgv recovers the argv of pid. It prefers the host's null-delimited

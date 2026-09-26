@@ -2012,6 +2012,55 @@ func TestPendingStartOnHealthyHostKeepingItsOwnBuildAttaches(t *testing.T) {
 	}
 }
 
+// TestPendingStartNotSettledForWrongSnapshotCommit pins the snapshot pin on the
+// settlement path: a health body reporting the expected version but a different
+// backend_git_sha must not settle a recorded start, or a supervisorless
+// controller would attach to a commit it never installed. The waits enforce the
+// pin (waitStartedHealthy/waitHealthy via hubBuildSHAMatches); settlement must
+// apply the same rule rather than version equality alone.
+func TestPendingStartNotSettledForWrongSnapshotCommit(t *testing.T) {
+	savedChannel, savedSHA := buildinfo.Channel, buildinfo.GitSHA
+	t.Cleanup(func() { buildinfo.Channel, buildinfo.GitSHA = savedChannel, savedSHA })
+	buildinfo.Channel, buildinfo.GitSHA = "snapshot", "expectedsha"
+
+	const relaunch = "nohup /opt/evener/bin/evener hub"
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.HasSuffix(joined, "uname -s"):
+			return []byte("Linux\n"), nil
+		case strings.HasSuffix(joined, "uname -m"):
+			return []byte("x86_64\n"), nil
+		case strings.HasSuffix(joined, "id -u"):
+			return []byte("1000\n"), nil
+		case strings.Contains(joined, "XDG_STATE_HOME"):
+			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+		case strings.Contains(joined, "launch-check"):
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+		case strings.Contains(joined, "list-units"):
+			return nil, nil // no supervisor
+		case strings.Contains(joined, "api/health"):
+			// The expected version, but a commit this controller never installed.
+			return []byte(`{"version":"newsha","backend_git_sha":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}, startFn: goodStartFn(t)}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "newsha",
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+	m.setPendingStart(host.Name, relaunch)
+
+	if _, err := m.Ensure(context.Background(), "alpha"); !errors.Is(err, ErrRestart) {
+		t.Fatalf("Ensure = %v, want ErrRestart (a wrong-commit hub must not settle a recorded start)", err)
+	}
+	if got := m.pendingRestart(host.Name); got == (pendingRestartState{}) {
+		t.Fatal("a recorded start was settled against the expected version but the wrong snapshot commit")
+	}
+}
+
 // TestFirstAttachBootstrapAdHocLaunch proves the bootstrap falls back to the
 // detached ad hoc launch of the resolved executable when no supervisor unit is
 // identified.

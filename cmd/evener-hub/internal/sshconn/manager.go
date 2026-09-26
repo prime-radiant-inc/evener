@@ -388,12 +388,15 @@ type Manager struct {
 }
 
 // hubIdentity identifies a running hub from its /api/health body: the version it
-// reports and, when the body carries one, its process start time. Version alone
-// cannot tell two builds apart when both are "dev" — an unstamped controller and
-// an unstamped host — so the start time is what proves a restart produced a new
-// process rather than leaving the old one serving.
+// reports, the build's backend_git_sha, and, when the body carries one, its
+// process start time. Version alone cannot tell two builds apart when both are
+// "dev" — an unstamped controller and an unstamped host — so the start time is
+// what proves a restart produced a new process rather than leaving the old one
+// serving; on the snapshot channel the version cannot tell two builds apart at
+// all, so the git SHA is what a snapshot pin compares.
 type hubIdentity struct {
 	version   string
+	gitSHA    string
 	startedAt time.Time
 }
 
@@ -1479,26 +1482,31 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	// Settlement judges the build the host will actually serve, exactly as
 	// recoverRestart and the restart waits do: a host that keeps its own build
 	// (hostBuildDiffers, no deploy configured) answers with its own version, not
-	// the controller's. Comparing against the controller's version here would
-	// leave a recorded start on such a host unsettled forever.
-	servedVersion, _ := expectedServedBuild(facts, expected)
+	// the controller's, and a snapshot controller's pin requires the running
+	// hub's backend_git_sha to match. Comparing against the controller's version
+	// alone would leave a recorded start on a keep-its-own-build host unsettled
+	// forever, and dropping the pin would let a wrong-commit hub satisfy the
+	// settlement the waits refuse.
+	servedVersion, servedPin := expectedServedBuild(facts, expected)
 	if pending := m.pendingRestart(host.Name); runningKnown && running.version == servedVersion &&
+		hubBuildSHAMatches(running.gitSHA, servedPin) &&
 		(pending.start || running.differentProcessFrom(pending.replaced)) {
 		// A hub already serving exactly the expected build resolves whatever an
 		// earlier restart or start left outstanding; do not launch a second hub
 		// over it. A recorded START has no predecessor to exclude — bootstrapHub
 		// only ever starts a hub where nothing was serving — so the expected build
-		// alone settles it, exactly as recoverRestart judges a recovered start (a
-		// start's zero `replaced` can never satisfy differentProcessFrom, so the
-		// version match is the only thing that can clear it). A recorded
-		// REPLACEMENT must additionally be provably not the process it meant to
-		// replace: version equality alone is not that proof, because two unstamped
-		// builds both report "dev", so a restart that never took would otherwise be
-		// cleared on the old process's answer and the next Ensure would attach to
-		// it. A start time that is missing on either side is not proof either: an
-		// old hub whose health body carries no started_at would otherwise clear the
-		// pending marker on the same answer, so the identity must be known on BOTH
-		// sides and must differ before the marker is cleared (differentProcessFrom).
+		// (version and, on the snapshot channel, the pinned commit) alone settles
+		// it, exactly as recoverRestart judges a recovered start (a start's zero
+		// `replaced` can never satisfy differentProcessFrom, so the build match is
+		// the only thing that can clear it). A recorded REPLACEMENT must
+		// additionally be provably not the process it meant to replace: the version
+		// is not that proof, because two unstamped builds both report "dev", so a
+		// restart that never took would otherwise be cleared on the old process's
+		// answer and the next Ensure would attach to it. A start time that is
+		// missing on either side is not proof either: an old hub whose health body
+		// carries no started_at would otherwise clear the pending marker on the
+		// same answer, so the identity must be known on BOTH sides and must differ
+		// before the marker is cleared (differentProcessFrom).
 		m.clearPendingRestart(host.Name)
 	}
 
