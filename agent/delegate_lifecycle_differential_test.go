@@ -1263,6 +1263,7 @@ func opArg(code, arg int) byte {
 // the real controller and asserts model agreement plus I1–I5 after every
 // operation.
 func TestDelegateLifecycleDifferentialSeeds(t *testing.T) {
+	t.Parallel()
 	for _, seed := range delegateLifecycleSeedCorpus {
 		t.Run(seed.name, func(t *testing.T) {
 			runDelegateLifecycleProgramChecked(t, seed.program, seed.legacyBinding)
@@ -1275,6 +1276,7 @@ func TestDelegateLifecycleDifferentialSeeds(t *testing.T) {
 // trace (spec: determinism requirements — a failing seed reproduces from the
 // input alone).
 func TestDelegateLifecycleDifferentialDeterminism(t *testing.T) {
+	t.Parallel()
 	for _, seed := range delegateLifecycleSeedCorpus {
 		t.Run(seed.name, func(t *testing.T) {
 			first := runDelegateLifecycleProgram(t, seed.program, seed.legacyBinding)
@@ -1295,6 +1297,7 @@ func TestDelegateLifecycleDifferentialDeterminism(t *testing.T) {
 // binding kinds, pinning that the seed dimension reaches both the evidence
 // path and the legacy nil-evidence tolerance path.
 func TestDelegateLifecycleDifferentialCrossBinding(t *testing.T) {
+	t.Parallel()
 	for _, seed := range delegateLifecycleSeedCorpus {
 		t.Run(seed.name, func(t *testing.T) {
 			runDelegateLifecycleProgramChecked(t, seed.program, !seed.legacyBinding)

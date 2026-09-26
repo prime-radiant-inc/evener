@@ -9,6 +9,7 @@ import (
 // TestAcquireWatchDelivery_NewDelivery covers the new-delivery path
 // (lines 156-164) where a delivery is created from scratch.
 func TestAcquireWatchDelivery_NewDelivery(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_source", "")
 	seedDelegateControllerRunning(t, c, "dlg_recv", "")
@@ -28,6 +29,7 @@ func TestAcquireWatchDelivery_NewDelivery(t *testing.T) {
 // TestAcquireWatchDelivery_Idempotent covers the idempotent return path
 // (lines 145-152) where the same delivery is requested again.
 func TestAcquireWatchDelivery_Idempotent(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_source", "")
 	seedDelegateControllerRunning(t, c, "dlg_recv", "")
@@ -48,6 +50,7 @@ func TestAcquireWatchDelivery_Idempotent(t *testing.T) {
 // TestAcquireWatchDelivery_StaleLeaseMismatch covers the stale-lease path
 // (lines 147-149) where a matching deliveryID/updateSeq has different source.
 func TestAcquireWatchDelivery_StaleLeaseMismatch(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_source", "")
 	seedDelegateControllerRunning(t, c, "dlg_recv", "")
@@ -67,6 +70,7 @@ func TestAcquireWatchDelivery_StaleLeaseMismatch(t *testing.T) {
 // TestAcquireWatchDelivery_StopIntersects covers the stop-intersection path
 // (lines 153-155).
 func TestAcquireWatchDelivery_StopIntersects(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_source", "")
 	seedDelegateControllerRunning(t, c, "dlg_recv", "")
@@ -85,6 +89,7 @@ func TestAcquireWatchDelivery_StopIntersects(t *testing.T) {
 // TestAcquireWatchDelivery_ValidationError covers the validation error path
 // (lines 142-143).
 func TestAcquireWatchDelivery_ValidationError(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	// No delegates seeded — source not found.
 	_, err := c.AcquireWatchDelivery("dlg_nonexistent", 1, "", "delivery-1", 1, false)
@@ -96,6 +101,7 @@ func TestAcquireWatchDelivery_ValidationError(t *testing.T) {
 // TestRepairStableWatchDeliveriesForBootstrap_NoStoreFile covers the
 // not-exist skip path (lines 326-328).
 func TestRepairStableWatchDeliveriesForBootstrap_NoStoreFile(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	// No jobs.jsonl exists for any delegate — all are skipped.
@@ -107,6 +113,7 @@ func TestRepairStableWatchDeliveriesForBootstrap_NoStoreFile(t *testing.T) {
 // TestRepairStableWatchDeliveriesForBootstrap_DirectoryStoreFile covers the
 // not-a-regular-file error path (lines 332-334).
 func TestRepairStableWatchDeliveriesForBootstrap_DirectoryStoreFile(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	storePath := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
@@ -122,6 +129,7 @@ func TestRepairStableWatchDeliveriesForBootstrap_DirectoryStoreFile(t *testing.T
 // TestRepairStableWatchDeliveriesForBootstrap_ValidStoreFile covers the valid
 // empty store path (lines 335-339).
 func TestRepairStableWatchDeliveriesForBootstrap_ValidStoreFile(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	storePath := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
@@ -140,6 +148,7 @@ func TestRepairStableWatchDeliveriesForBootstrap_ValidStoreFile(t *testing.T) {
 // TestStableWatchReceiver_RootReceiver covers the root receiver path
 // (lines 188-193).
 func TestStableWatchReceiver_RootReceiver(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	// Root runtime is not set up in the test harness, so it should fail.
 	_, err := c.stableWatchReceiver("root-session", "")
@@ -151,6 +160,7 @@ func TestStableWatchReceiver_RootReceiver(t *testing.T) {
 // TestStableWatchReceiver_NonRootEmptyID covers the non-root empty-id path
 // (lines 188-191).
 func TestStableWatchReceiver_NonRootEmptyID(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	_, err := c.stableWatchReceiver("other-session", "")
 	if err == nil {
@@ -161,6 +171,7 @@ func TestStableWatchReceiver_NonRootEmptyID(t *testing.T) {
 // TestStableWatchReceiver_DelegateNotFound covers the delegate-not-found path
 // (lines 194-197).
 func TestStableWatchReceiver_DelegateNotFound(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	_, err := c.stableWatchReceiver("any-session", "dlg_nonexistent")
 	if err == nil {
@@ -171,6 +182,7 @@ func TestStableWatchReceiver_DelegateNotFound(t *testing.T) {
 // TestStableWatchReceiver_SessionMismatch covers the session-mismatch path
 // (lines 195-197).
 func TestStableWatchReceiver_SessionMismatch(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	// The child session ID is "child-dlg_target", so a different session ID should fail.
@@ -182,6 +194,7 @@ func TestStableWatchReceiver_SessionMismatch(t *testing.T) {
 
 // TestStableWatchBootstrapSnapshot covers the snapshot function (lines 342-374).
 func TestStableWatchBootstrapSnapshot(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	snapshot := c.stableWatchBootstrapSnapshot()
@@ -203,6 +216,7 @@ func TestStableWatchBootstrapSnapshot(t *testing.T) {
 // TestStableWatchBootstrapSnapshot_NilAggregate covers the nil-aggregate skip
 // (line 352-353).
 func TestStableWatchBootstrapSnapshot_NilAggregate(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	c.mu.Lock()
 	c.durable["dlg_nil"] = nil

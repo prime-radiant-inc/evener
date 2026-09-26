@@ -15,6 +15,7 @@ import (
 // one sequence and land after the cold records, not reuse the sequence it
 // counted at open or write over them.
 func TestColdAttentionAppendWhileSessionWriterOpenKeepsOneSequence(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const sessionID = "shared-writer"
 	path := transcriptPath(stateDir, sessionID)

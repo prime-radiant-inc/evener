@@ -341,6 +341,7 @@ func TestRetainedLineScanner_Next(t *testing.T) {
 // TestNextRetainedSearchLine_PendingAndEOF covers the pending-buffer and EOF
 // paths.
 func TestNextRetainedSearchLine_PendingAndEOF(t *testing.T) {
+	t.Parallel()
 	// Pending lines are returned first.
 	pending := []retainedSearchLine{{content: []byte("pending"), start: 0, end: 7, complete: true}}
 	eof := false
@@ -395,6 +396,7 @@ func TestFinishRetainedSearchLine(t *testing.T) {
 
 // TestApiLogContextReader covers the context-aware reader.
 func TestApiLogContextReader(t *testing.T) {
+	t.Parallel()
 	// Normal read.
 	r := apiLogContextReader{ctx: context.Background(), reader: bytes.NewBufferString("hello")}
 	buf := make([]byte, 5)

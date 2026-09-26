@@ -77,6 +77,7 @@ func rearmFixtureSessionWithConfig(t *testing.T, restoreCfg RestoreSessionConfig
 // the one OnRestoredTranscript hands over — the same final entry list serve
 // will see.
 func TestRootDelegateAttention_RestoreRearmFoldsTheRetainedEntries(t *testing.T) {
+	t.Parallel()
 	var foldedEntries []transcript.Entry
 	var captured restoredTranscriptCapture
 	restoreCfg := RestoreSessionConfig{OnRestoredTranscript: captured.record}
@@ -118,6 +119,7 @@ func TestRootDelegateAttention_RestoreRearmFoldsTheRetainedEntries(t *testing.T)
 // transcript hands over opened=true with a non-nil empty slice: opened means
 // "a transcript was opened and validated," not "entries exist."
 func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
+	t.Parallel()
 	t.Run("no transcript on disk", func(t *testing.T) {
 		stateDir := t.TempDir()
 		rootID := identifier.MustNewSessionID()
@@ -181,6 +183,7 @@ func TestRestoreSession_RestoredTranscriptOKBoundary(t *testing.T) {
 // it would find nothing (the file form treats a missing transcript as an
 // empty fold) and the pending attention would vanish from the wake cache.
 func TestRootDelegateAttention_RearmFromTranscriptDoesNotOpenTheFile(t *testing.T) {
+	t.Parallel()
 	var captured restoredTranscriptCapture
 	restored, pendingID := rearmFixtureSessionWithConfig(t, RestoreSessionConfig{OnRestoredTranscript: captured.record})
 	defer restored.Close()
@@ -204,6 +207,7 @@ func TestRootDelegateAttention_RearmFromTranscriptDoesNotOpenTheFile(t *testing.
 // the same pending ids the file itself folds to, over a fixture with both an
 // open and a resolved attention.
 func TestRootDelegateAttention_RearmYieldsSamePendingIDsAsFileFold(t *testing.T) {
+	t.Parallel()
 	var captured restoredTranscriptCapture
 	restored, pendingID := rearmFixtureSessionWithConfig(t, RestoreSessionConfig{OnRestoredTranscript: captured.record})
 	defer restored.Close()
@@ -226,6 +230,7 @@ func TestRootDelegateAttention_RearmYieldsSamePendingIDsAsFileFold(t *testing.T)
 // validated (non-nil once a transcript existed) and a header whose SessionID
 // matches the session.
 func TestRootDelegateAttention_RestoredTranscriptExposesFinalEntries(t *testing.T) {
+	t.Parallel()
 	var captured restoredTranscriptCapture
 	restored, _ := rearmFixtureSessionWithConfig(t, RestoreSessionConfig{OnRestoredTranscript: captured.record})
 	defer restored.Close()
@@ -256,6 +261,7 @@ func (c *restoredTranscriptCapture) record(header transcript.Header, entries []t
 // child or a one-shot run restores with no receiver at all, and a transcript
 // can run to tens of megabytes decoded.
 func TestRestoredSessionRetainsNoDecodedTranscript(t *testing.T) {
+	t.Parallel()
 	var captured restoredTranscriptCapture
 	restored, _ := rearmFixtureSessionWithConfig(t, RestoreSessionConfig{OnRestoredTranscript: captured.record})
 	defer restored.Close()

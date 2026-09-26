@@ -118,6 +118,7 @@ func TestReadOnlyDelegateSandbox_NoDegradeWhenSecureOpenIsUnavailable(t *testing
 // silently receive a weaker one, so its request keeps ModeReadOnly and the spawn
 // fails closed with the resolver's typed refusal.
 func TestExplicitReadOnlyDelegateSandboxStillFailsClosed(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxNoBackendFacts(home)
 	parent := sbxDelegateSession(t, facts)
@@ -285,6 +286,7 @@ func TestDegradedReadOnlyBoundaryDisclosesUnsandboxedShellCapabilities(t *testin
 // on a host where no backend can enforce read-only. It must launch — the caller
 // asked for an agent type, not for an OS sandbox.
 func TestCreateExplorerDelegateDegradesInsteadOfRefusing(t *testing.T) {
+	t.Parallel()
 	root := newNoBackendDelegateSession(t)
 
 	result := root.createDelegate(context.Background(), delegateArgs{

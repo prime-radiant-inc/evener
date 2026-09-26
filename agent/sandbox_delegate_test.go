@@ -1315,6 +1315,7 @@ func TestWorktreeReentryRestoreFailureDisposesTheReenteredScratch(t *testing.T) 
 // and disposes the scratch it owns, and every tracked process stays with the
 // environment that tracks it.
 func TestDisposeUnadoptedSubagentSessionLeavesTheParentsProcessesAlone(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	parentEnv := execenv.NewLocalExecutionEnvironment(dir)
 	t.Cleanup(parentEnv.Cleanup)

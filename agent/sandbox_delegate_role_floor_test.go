@@ -264,6 +264,7 @@ func TestCreateDelegate_EffectiveMutationToolPreservesWorkspaceWrite(t *testing.
 }
 
 func TestRestoreDelegate_ReadOnlyRoleSandboxFloor(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name             string
 		snapshot         *delegatestore.SandboxSnapshot
@@ -400,6 +401,7 @@ func TestCreateDelegate_WriteBlockedParentCannotBeRelaxed(t *testing.T) {
 }
 
 func TestRestoreDelegate_WriteBlockedParentCannotBeRelaxed(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.ToolNameCeiling = []string{"communicate", "read_file", "shell", "write_file"}
 		descriptor.Sandbox = &delegatestore.SandboxSnapshot{Mode: "restricted", Network: new(true)}

@@ -11,6 +11,7 @@ import (
 
 // TestSteer_EmptyMessage covers the empty-message path (lines 55-56).
 func TestSteer_EmptyMessage(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	_, err := c.Steer(context.Background(), rootDelegateActor("root-session"), "dlg_target", "")
@@ -26,6 +27,7 @@ func TestSteer_EmptyMessage(t *testing.T) {
 
 // TestSteer_CancelledContext covers the ctx.Err path (lines 52-53).
 func TestSteer_CancelledContext(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -39,6 +41,7 @@ func TestSteer_CancelledContext(t *testing.T) {
 // TestSteer_AuthorizeMutationFailure covers the BeginSteerPersistence error
 // path (lines 59-61) when the delegate doesn't exist.
 func TestSteer_AuthorizeMutationFailure(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	_, err := c.Steer(context.Background(), rootDelegateActor("root-session"), "nonexistent", "hello")
@@ -50,6 +53,7 @@ func TestSteer_AuthorizeMutationFailure(t *testing.T) {
 // TestSteerCaller_EmptyMessage covers the empty-message path in SteerCaller
 // (lines 78-79).
 func TestSteerCaller_EmptyMessage(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	_, err := c.SteerCaller(context.Background(), rootDelegateActor("root-session"), "", nil)
@@ -61,6 +65,7 @@ func TestSteerCaller_EmptyMessage(t *testing.T) {
 // TestSteerCaller_CancelledContext covers the ctx.Err path in SteerCaller
 // (lines 75-76).
 func TestSteerCaller_CancelledContext(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,6 +79,7 @@ func TestSteerCaller_CancelledContext(t *testing.T) {
 // TestSteerCaller_NoLease covers the no-lease path in beginCallerSteerPersistence
 // (lines 111-112).
 func TestSteerCaller_NoLease(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	actor := rootDelegateActor("root-session")
@@ -86,6 +92,7 @@ func TestSteerCaller_NoLease(t *testing.T) {
 // TestBeginSteerPersistence_NoLiveBinding covers the no-live-binding path
 // (lines 133-135).
 func TestBeginSteerPersistence_NoLiveBinding(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_idle", "")
 	_, err := c.BeginSteerPersistence(rootDelegateActor("root-session"), "dlg_idle")
@@ -97,6 +104,7 @@ func TestBeginSteerPersistence_NoLiveBinding(t *testing.T) {
 // TestBeginSteerPersistence_AuthorizeFailure covers the authorizeMutation failure
 // path (lines 102-103).
 func TestBeginSteerPersistence_AuthorizeFailure(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	_, err := c.BeginSteerPersistence(rootDelegateActor("root-session"), "nonexistent")
@@ -107,6 +115,7 @@ func TestBeginSteerPersistence_AuthorizeFailure(t *testing.T) {
 
 // TestSteer_Success covers the full Steer happy path (lines 63-68).
 func TestSteer_Success(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -122,6 +131,7 @@ func TestSteer_Success(t *testing.T) {
 // TestSteer_AppendFailure covers the appendDelegateSteeringDurably error path
 // (lines 64-66).
 func TestSteer_AppendFailure(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
@@ -136,6 +146,7 @@ func TestSteer_AppendFailure(t *testing.T) {
 // TestDelegateDepthLocked covers delegateDepthLocked for nested and
 // non-existent delegates.
 func TestDelegateDepthLocked(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	c.mu.Lock()
@@ -153,6 +164,7 @@ func TestDelegateDepthLocked(t *testing.T) {
 // TestAdmitLeaseLocked_NilDurable covers the nil-durable path in
 // admitLeaseLocked.
 func TestAdmitLeaseLocked_NilDurable(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -15,6 +15,7 @@ import (
 )
 
 func TestStableDelegateWorktree_LiveGuardUsesStableDelegateState(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 	aggregate := delegateAggregateSnapshot(t, r.s.delegateController, id)
@@ -31,6 +32,7 @@ func TestStableDelegateWorktree_LiveGuardUsesStableDelegateState(t *testing.T) {
 }
 
 func TestStableDelegateWorktree_RootCloseCleansEligibleScratch(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 
@@ -53,6 +55,7 @@ func TestStableDelegateWorktree_RootCloseCleansEligibleScratch(t *testing.T) {
 // identity (receiverSessionID/receiverDelegateID) names the delegate being
 // disposed.
 func TestStableDelegateWorktree_DisposeGateCatchesReceiverRoutedWatch(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, _, _ := r.seedStableIsolationLane(t)
 
@@ -87,6 +90,7 @@ func TestStableDelegateWorktree_DisposeGateCatchesReceiverRoutedWatch(t *testing
 }
 
 func TestStableDelegateWorktree_ExplicitDisposalPreservesDirtyAndD0Checks(t *testing.T) {
+	t.Parallel()
 	t.Run("dirty", func(t *testing.T) {
 		r := newWorktreeRepo(t)
 		id, lanePath, _ := r.seedStableIsolationLane(t)
@@ -119,6 +123,7 @@ func TestStableDelegateWorktree_ExplicitDisposalPreservesDirtyAndD0Checks(t *tes
 }
 
 func TestStableDelegateWorktree_ForcePreservesLockProvenanceAndEvidence(t *testing.T) {
+	t.Parallel()
 	t.Run("foreign lock still refuses", func(t *testing.T) {
 		r := newWorktreeRepo(t)
 		id, lanePath, _ := r.seedStableIsolationLane(t)
@@ -154,6 +159,7 @@ func TestStableDelegateWorktree_ForcePreservesLockProvenanceAndEvidence(t *testi
 }
 
 func TestStableDelegateWorktree_ResumabilityClosureFsyncPrecedesDestruction(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 	closureVisible := false
@@ -181,6 +187,7 @@ func TestStableDelegateWorktree_ResumabilityClosureFsyncPrecedesDestruction(t *t
 }
 
 func TestStableDelegateWorktree_ClosureAppendFailureDestroysNothing(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 	before := wtGit(t, r.mainRoot, "worktree", "list", "--porcelain")
@@ -201,6 +208,7 @@ func TestStableDelegateWorktree_ClosureAppendFailureDestroysNothing(t *testing.T
 }
 
 func TestStableDelegateWorktree_ClosureRejectsDurableRunningDescendantWithoutRuntimeClaims(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	parentID, lanePath, _ := r.seedStableIsolationLane(t)
 	childID := "dlg_running_descendant"
@@ -231,6 +239,7 @@ func TestStableDelegateWorktree_ClosureRejectsDurableRunningDescendantWithoutRun
 }
 
 func TestStableDelegateWorktree_DisposeAlreadyClosedLanePreservesReason(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 	const originalReason = "turn_budget_exhausted"
@@ -269,6 +278,7 @@ func TestStableDelegateWorktree_DisposeAlreadyClosedLanePreservesReason(t *testi
 }
 
 func TestStableDelegateWorktree_AlreadyClosedHalfRemovedCleanupRejectsDurableRunningDescendant(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	parentID, lanePath, _ := r.seedStableIsolationLane(t)
 	closeStableWorktreeForTest(t, r.s, parentID, stableWorktreeDisposalReason)
@@ -296,6 +306,7 @@ func TestStableDelegateWorktree_AlreadyClosedHalfRemovedCleanupRejectsDurableRun
 }
 
 func TestStableDelegateWorktree_AlreadyClosedLaneRevalidatesLateDurableRunningDescendant(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	parentID, lanePath, _ := r.seedStableIsolationLane(t)
 	closeStableWorktreeForTest(t, r.s, parentID, stableWorktreeDisposalReason)
@@ -328,6 +339,7 @@ func TestStableDelegateWorktree_AlreadyClosedLaneRevalidatesLateDurableRunningDe
 }
 
 func TestStableDelegateWorktree_CleanupFailureReportsRetainedResidueWithoutReopen(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedStableIsolationLane(t)
 	r.s.worktreeDisposeBeforeRemove = func(path string) {
@@ -366,6 +378,7 @@ func TestStableDelegateWorktree_CleanupFailureReportsRetainedResidueWithoutReope
 }
 
 func TestStableDelegateWorktree_DisposalAndRestartAreIdempotent(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, _, _ := r.seedStableIsolationLane(t)
 
@@ -390,6 +403,7 @@ func TestStableDelegateWorktree_DisposalAndRestartAreIdempotent(t *testing.T) {
 }
 
 func TestStableDelegateWorktree_SandboxRestoreUsesDescriptorNotLegacyJob(t *testing.T) {
+	t.Parallel()
 	descriptorDir := t.TempDir()
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.WorkingDir = descriptorDir

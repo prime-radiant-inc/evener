@@ -322,6 +322,7 @@ func TestEnvironmentContextWriteFailureAbortsUserAcceptance(t *testing.T) {
 }
 
 func TestEnvironmentContextFailureRestoresPublicMutationClaimsForRetry(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"direct", "start", "queue"} {
 		t.Run(kind, func(t *testing.T) {
 			s := newTestSessionForEnvctx(t, withSteps(repeatFinalResponse(2, "ok")...))

@@ -15,6 +15,7 @@ import (
 // A root's stop must not repeatedly parse every unrelated root's transcript.
 // The general reconciliation path still validates the full attention set.
 func TestDelegateStopDrainScopesAttentionToMembers(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_target")
@@ -69,6 +70,7 @@ func TestDelegateStopDrainScopesAttentionToMembers(t *testing.T) {
 }
 
 func TestDelegateStopDrainStillCollectsAllShellEvidence(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerIdle(t, c, "dlg_unrelated", "")
@@ -89,6 +91,7 @@ func TestDelegateStopDrainStillCollectsAllShellEvidence(t *testing.T) {
 }
 
 func TestDelegateStopReconcileRejectsScopedEvidence(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		change func(*delegateTreeController, *delegateReconcileEvidence)

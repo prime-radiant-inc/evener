@@ -26,6 +26,7 @@ func (c *delegateTreeController) prepareSettlementForTest(lease delegateLease, p
 }
 
 func TestDelegateControllerNormalSettlementDefersEarlierSteer(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -44,6 +45,7 @@ func TestDelegateControllerNormalSettlementDefersEarlierSteer(t *testing.T) {
 }
 
 func TestDelegateControllerCommunicateSettlementDefersEarlierSteer(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -63,6 +65,7 @@ func TestDelegateControllerCommunicateSettlementDefersEarlierSteer(t *testing.T)
 }
 
 func TestDelegateControllerSettlementClaimFencesNewWorkUntilPreparation(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -97,6 +100,7 @@ func TestDelegateControllerSettlementClaimFencesNewWorkUntilPreparation(t *testi
 }
 
 func TestDelegateControllerNormalSettlementPreparesMissingTerminal(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -115,6 +119,7 @@ func TestDelegateControllerNormalSettlementPreparesMissingTerminal(t *testing.T)
 }
 
 func TestDelegateControllerCrashAfterNormalSettlementFinishesPreparedOnce(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -147,6 +152,7 @@ func TestDelegateControllerCrashAfterNormalSettlementFinishesPreparedOnce(t *tes
 }
 
 func TestDelegateControllerCrashAfterReportedSettlementPreservesPacket(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -176,6 +182,7 @@ func TestDelegateControllerCrashAfterReportedSettlementPreservesPacket(t *testin
 }
 
 func TestDelegateControllerSettlingReportedPacketOverridesLaterRuntimeError(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -208,6 +215,7 @@ func TestDelegateControllerSettlingReportedPacketOverridesLaterRuntimeError(t *t
 }
 
 func TestDelegateControllerSettlingMissingPacketOverridesMisleadingFinish(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -238,6 +246,7 @@ func TestDelegateControllerSettlingMissingPacketOverridesMisleadingFinish(t *tes
 }
 
 func TestDelegateControllerRestartFinishesEachPreparedPacketShape(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		packet          *delegatestore.TerminalPacket
@@ -313,6 +322,7 @@ func TestDelegateControllerRestartFinishesEachPreparedPacketShape(t *testing.T) 
 }
 
 func TestDelegateControllerFatalFinishPreparesAndFinishesAtomically(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	before := bytes.Count(readDelegateControllerFile(t, path), []byte{'\n'})
@@ -335,6 +345,7 @@ func TestDelegateControllerFatalFinishPreparesAndFinishesAtomically(t *testing.T
 }
 
 func TestDelegateControllerTerminalPreparedAppendFailureKeepsRunning(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -416,6 +427,7 @@ func TestDelegateControllerTerminalPreparedAppendFailureKeepsRunning(t *testing.
 }
 
 func TestDelegateControllerStopOverridesPreparedNormalPacket(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -439,6 +451,7 @@ func TestDelegateControllerStopOverridesPreparedNormalPacket(t *testing.T) {
 }
 
 func TestDelegateControllerStoppedFinishRemainsStoppingWithDiagnostic(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -457,6 +470,7 @@ func TestDelegateControllerStoppedFinishRemainsStoppingWithDiagnostic(t *testing
 }
 
 func TestDelegateControllerRestartStoppingFinishUsesCanonicalPacket(t *testing.T) {
+	t.Parallel()
 	live, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, live, "dlg_live", "")
 	liveLease := delegateLease{delegateID: "dlg_live", generation: 1}
@@ -516,6 +530,7 @@ func TestDelegateControllerRestartStoppingFinishUsesCanonicalPacket(t *testing.T
 }
 
 func TestDelegateControllerStopCompletedClearsPreparedDiagnostic(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -546,6 +561,7 @@ func TestDelegateControllerStopCompletedClearsPreparedDiagnostic(t *testing.T) {
 }
 
 func TestDelegateControllerFinishNoActionRequiresExactEligibleClaim(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
 	fallback := stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "bare attention response"})
@@ -577,6 +593,7 @@ func TestDelegateControllerFinishNoActionRequiresExactEligibleClaim(t *testing.T
 }
 
 func TestDelegateControllerFinishNoActionRejectsMissingStaleMismatchedAndUnreadyClaims(t *testing.T) {
+	t.Parallel()
 	t.Run("missing preparation", func(t *testing.T) {
 		c, _ := newDelegateControllerTestHarness(t, 1, 1)
 		claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
@@ -615,6 +632,7 @@ func TestDelegateControllerFinishNoActionRejectsMissingStaleMismatchedAndUnready
 }
 
 func TestDelegateControllerFinishNoActionRejectsReportRequiredTerminalAndPreparedState(t *testing.T) {
+	t.Parallel()
 	t.Run("non-nil run error", func(t *testing.T) {
 		for name, runErr := range map[string]error{
 			"cancellation": context.Canceled,
@@ -688,6 +706,7 @@ func TestDelegateControllerFinishNoActionRejectsReportRequiredTerminalAndPrepare
 }
 
 func TestDelegateControllerFinishNoActionStopUsesRetainedFallback(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
 	startedAt := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
@@ -796,6 +815,7 @@ func TestDelegateControllerFinishNoActionStopUsesRetainedFallback(t *testing.T) 
 }
 
 func TestDelegateControllerFinishNoActionAppendFailureRetainsRecoveryState(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	claim := eligibleDelegateNoActionClaim(t, c, "dlg_target")
 	if prepared, err := c.prepareNoAction(claim, stableDelegateFinishFromRun(delegateTerminalRunInputs{result: "fallback"})); err != nil || !prepared {
@@ -817,6 +837,7 @@ func TestDelegateControllerFinishNoActionAppendFailureRetainsRecoveryState(t *te
 }
 
 func TestDelegateControllerFinishGenerationCannotForgeNoAction(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -855,6 +876,7 @@ func eligibleDelegateNoActionClaimForRun(t *testing.T, c *delegateTreeController
 }
 
 func TestDelegateControllerOwnerInputWithoutCommunicateFailsMissingTerminal(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}

@@ -13,6 +13,7 @@ import (
 // delegateActivityPublishInterval. The recorded activity stays exact for the
 // quiet watchdog and for the next snapshot that is published.
 func TestReportActivityCoalescesActivityOnlyPublications(t *testing.T) {
+	t.Parallel()
 	_, controller, lease, clock := newStableQuietSupervisionHarness(t)
 	var published []time.Time
 	controller.emitUpdate = func(plan delegateUpdatePlan) {

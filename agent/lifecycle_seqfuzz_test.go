@@ -1069,6 +1069,7 @@ var _ clock.Clock = (*agenttest.FakeClock)(nil)
 // locks in that ProcessInput propagates a tool-handler panic to the caller), not
 // a claim about evener production code.
 func TestLifecycleAdapter_PromotesDeterministicFailure(t *testing.T) {
+	t.Parallel()
 	inject := lifecycleInject{panicTool: true}
 	art := lifecycleArtifact{
 		Ops:     []opRecord{{Code: int(opProcessInput), Script: []int{int(kindBoom)}, Text: "go"}},

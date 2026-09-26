@@ -183,6 +183,7 @@ func TestFailedToolCallsSnapshotSurvivesTheSessionEnding(t *testing.T) {
 }
 
 func TestFailedToolCallsSnapshotIgnoresATranscriptItCouldNotOpen(t *testing.T) {
+	t.Parallel()
 	// Belt and braces on the load-bearing rule: a session whose writer was never
 	// installed reports absent rather than a fabricated clean run.
 	dir := t.TempDir()

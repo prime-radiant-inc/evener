@@ -26,6 +26,7 @@ import (
 // holds it. The parent stays live and is never retired here, so the outcome
 // cannot be confused with the parent's own intended release.
 func TestRetirementReleaseOfASharedChildKeepsTheParentScratchLease(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -75,6 +76,7 @@ func TestRetirementReleaseOfASharedChildKeepsTheParentScratchLease(t *testing.T)
 // must still be released by retirement, with the directories kept for the
 // handoff and the manifest left unreleased.
 func TestRetirementReleaseRetainsOwnEnvironmentScratch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	t.Cleanup(func() { root.Close() })
@@ -133,6 +135,7 @@ func TestRetirementReleaseRetainsOwnEnvironmentScratch(t *testing.T) {
 // directory. Only the child's own environment is settled; nothing here is the
 // parent's.
 func TestRetirementReleaseOfAnOwningChildReleasesItsOwnScratch(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())

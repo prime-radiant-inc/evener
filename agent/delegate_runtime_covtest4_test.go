@@ -27,6 +27,7 @@ func (*covStableDelegateResultError) Error() string { return "fail" }
 // restored candidates in reverse, calling prepareDeferredOwedStart for each
 // not-done entry.
 func TestCovAbortOwedDelegateBootstrap(t *testing.T) {
+	t.Parallel()
 	controller, _ := newDelegateControllerTestHarness(t, 3, 1)
 	root := &Session{
 		id:                 "root-session",

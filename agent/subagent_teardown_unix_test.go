@@ -118,6 +118,7 @@ func assertParentScratchUntouched(t *testing.T, what, scratch string) {
 // retains only the sandbox-provisioned kind holds this lease for the rest of
 // the daemon's uptime.
 func TestParentCloseReleasesAnOwnedUnsandboxedChildScratchLease(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -168,6 +169,7 @@ func TestParentCloseReleasesAnOwnedUnsandboxedChildScratchLease(t *testing.T) {
 // must close the child's own resources and nothing else — not the parent's
 // in-flight processes, not the parent's scratch lease.
 func TestEvictedTerminalChildLeavesTheParentEnvironmentAlone(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -223,6 +225,7 @@ func TestEvictedTerminalChildLeavesTheParentEnvironmentAlone(t *testing.T) {
 // and the root is mid-create when this runs, so closing the runtime must not
 // reach that environment.
 func TestReclaimedDelegateRuntimeLeavesTheRootEnvironmentAlone(t *testing.T) {
+	t.Parallel()
 	root, client, profile := newDelegateResourceBootstrapSession(t)
 	shared, ok := root.currentEnv().(*execenv.LocalExecutionEnvironment)
 	if !ok {
@@ -263,6 +266,7 @@ func TestReclaimedDelegateRuntimeLeavesTheRootEnvironmentAlone(t *testing.T) {
 // mid-tool when this runs. The child's own scratch is retained for the
 // handoff like any other child close.
 func TestDisposedLaneChildLeavesTheRootEnvironmentAlone(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	root := r.s
 	id, lanePath, _ := r.seedStableIsolationLane(t)
@@ -322,6 +326,7 @@ func TestDisposedLaneChildLeavesTheRootEnvironmentAlone(t *testing.T) {
 // or on clones sharing its process table, so the policy is a child teardown
 // like every other: it must not reach the root's environment.
 func TestControllerCloseRuntimeTreeLeavesTheRootEnvironmentAlone(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	root := &Session{delegateController: c}
 	c.rootRuntime = root
@@ -367,6 +372,7 @@ func TestControllerCloseRuntimeTreeLeavesTheRootEnvironmentAlone(t *testing.T) {
 // close of the runtime tree is the only teardown it ever gets: it has to
 // release the lease and keep the directory, like every other child teardown.
 func TestRootCloseReleasesAnUntrackedResidentRuntimeScratchLease(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	shared := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	t.Cleanup(shared.Cleanup)
@@ -430,6 +436,7 @@ func TestRootCloseReleasesAnUntrackedResidentRuntimeScratchLease(t *testing.T) {
 // teardown's environment step — a wrong "owned" releases the parent's live
 // scratch lease and retires the file-tool layers its in-flight tools use.
 func TestSpawnedChildOnTheParentEnvironmentRecordsNoOwnership(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -555,6 +562,7 @@ func restoreDelegateRuntimeOnAClone(t *testing.T) restoredCloneRuntime {
 // uptime — and it must record it without reaching the root's environment, which
 // the clone shares a process table with while the root is mid-restore.
 func TestRestoredDelegateRuntimeOwnsItsCloneScratch(t *testing.T) {
+	t.Parallel()
 	r := restoreDelegateRuntimeOnAClone(t)
 	if !r.runtime.ownsEnv {
 		t.Error("a restored delegate on a clone of its own recorded that it does not own it")
@@ -586,6 +594,7 @@ func TestRestoredDelegateRuntimeOwnsItsCloneScratch(t *testing.T) {
 // candidate that believed it shared the root's environment would leak the dir
 // and its lease with no owner left to settle either.
 func TestDiscardedRestoreCandidateDisposesItsCloneScratch(t *testing.T) {
+	t.Parallel()
 	r := restoreDelegateRuntimeOnAClone(t)
 
 	r.runtime.discardRestoredCandidate()
@@ -610,6 +619,7 @@ func TestDiscardedRestoreCandidateDisposesItsCloneScratch(t *testing.T) {
 // reach that lease. It has to release it — while leaving the parent's own
 // environment alone, scratch and process table alike.
 func TestSharedEnvChildTeardownReleasesTheEnteredWorktreeScratch(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	parent := r.s
 	shared := currentLocalEnv(t, parent)
@@ -688,6 +698,7 @@ func TestSharedEnvChildTeardownReleasesTheEnteredWorktreeScratch(t *testing.T) {
 // teardown must leave the live parent's scratch lease alone (the sibling test
 // above pins that half).
 func TestOwnedChildTeardownRetainsTheParkedWorktreeEnvironmentScratch(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())
@@ -757,6 +768,7 @@ func TestOwnedChildTeardownRetainsTheParkedWorktreeEnvironmentScratch(t *testing
 // the child's teardown settles the clone it left behind — the parent's scratch
 // is the parent's throughout.
 func TestSharedEnvChildKeepsItsWorktreeScratchAcrossExit(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	parent := r.s
 	shared := currentLocalEnv(t, parent)
@@ -837,6 +849,7 @@ func TestSharedEnvChildKeepsItsWorktreeScratchAcrossExit(t *testing.T) {
 // whole time: the clone never records itself as owning it, so the child's
 // teardown settles nothing on the box.
 func TestSharedEnvChildInsideTheParentBoxKeepsTheParentScratchLease(t *testing.T) {
+	t.Parallel()
 	_, laneA, laneB, home := sbxMainAndLanes(t)
 	facts := sbxBwrapFacts(home)
 	parent := sbxWorktreeSession(t)
@@ -906,6 +919,7 @@ func TestSharedEnvChildInsideTheParentBoxKeepsTheParentScratchLease(t *testing.T
 // starts — so this drives teardownChildSession directly rather than faking a
 // production path into it.
 func TestChildTeardownSettlesAbandonedEnvironmentsByDisposition(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	parent := newSession(t, withClient(client), withDir(t.TempDir()), withoutGitSnapshot())

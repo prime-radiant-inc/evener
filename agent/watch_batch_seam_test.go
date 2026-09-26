@@ -195,6 +195,7 @@ func TestPersistPendingWatchSendBatchesCapOverflowEvictions(t *testing.T) {
 // and the return carries persisted=true + the completion failure. The
 // evicted key must already be gone from the runtime map.
 func TestPersistPendingWatchSendEvictsBeforeStableVerification(t *testing.T) {
+	t.Parallel()
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	jm := fixture.sourceJM
 	cfg := fixture.onlyWatchConfig(t)

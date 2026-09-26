@@ -511,6 +511,7 @@ func (t *webFetchTrackingTransport) RoundTrip(req *http.Request) (*http.Response
 }
 
 func TestWebFetch_Retries403WithAlternateUserAgentAndClosesBodies(t *testing.T) {
+	t.Parallel()
 	const (
 		firstBodySentinel = "WF403BODY3D80A6"
 		pageSentinel      = "WF403PAGE8B14E7"
@@ -580,6 +581,7 @@ func TestWebFetch_Retries403WithAlternateUserAgentAndClosesBodies(t *testing.T) 
 }
 
 func TestWebFetch_DocWallRetryIsBoundedAndOtherStatusIsNotRetried(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		status int
@@ -629,6 +631,7 @@ func TestWebFetch_DocWallRetryIsBoundedAndOtherStatusIsNotRetried(t *testing.T) 
 }
 
 func TestWebFetch_RawFallbackWhenBothModelsRefuse(t *testing.T) {
+	t.Parallel()
 	const (
 		wantRawLimit     = 20_000
 		sourceSentinel   = "WFRAWSOURCE6C18A4"
@@ -701,6 +704,7 @@ func TestWebFetch_RawFallbackWhenBothModelsRefuse(t *testing.T) {
 }
 
 func TestWebFetch_NonRefusalModelErrorRemainsError(t *testing.T) {
+	t.Parallel()
 	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = fmt.Fprint(w, "WFNONREFUSALPAGE8E41D2")

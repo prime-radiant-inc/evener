@@ -1353,6 +1353,7 @@ func TestSkillDelivery_FallbackSmallerWindow(t *testing.T) {
 // nothing left to reload it, and the model lost the skill's complete
 // instructions for the rest of the session.
 func TestSkillToolRound_CarrierNeverPrecedesItsDurableObligation(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	repair := breakSessionMetaPath(t, s)
@@ -1412,6 +1413,7 @@ func TestSkillToolRound_CarrierNeverPrecedesItsDurableObligation(t *testing.T) {
 // kept them, so a same-process retry saw no pending delivery and skipped the
 // revalidation the obligation exists to force.
 func TestSkillDelivery_CommitSaveFailureKeepsObligationsPending(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 	identity := schema.SkillContentIdentity{
@@ -1482,6 +1484,7 @@ func TestSkillDelivery_CommitSaveFailureKeepsObligationsPending(t *testing.T) {
 // write must fail the round instead of appending the turn to live history and
 // reporting success.
 func TestSkillToolRound_CarrierWriteFailureIsVisible(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 
@@ -1543,6 +1546,7 @@ func TestSkillToolRound_CarrierWriteFailureIsVisible(t *testing.T) {
 // identity — never re-process the same obligation and append the same
 // notification a second time.
 func TestSkillDelivery_SaveFailureNotificationReconciledAtRestore(t *testing.T) {
+	t.Parallel()
 	// reconcileSetup drives the shared path: one pending obligation for a real
 	// fixture, then mutate the source, break the metadata path, run the REAL
 	// prepareSkillDelivery (which durably records its notification and fails to

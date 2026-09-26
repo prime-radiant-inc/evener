@@ -456,6 +456,7 @@ func breakSessionMetaPath(t *testing.T, s *Session) func() {
 // the operation in memory so dispatch cannot treat it as durable, and leave
 // the request retryable.
 func TestSkillCompaction_SaveFailedRequestIsTypedAndRetryable(t *testing.T) {
+	t.Parallel()
 	t.Run("forced", func(t *testing.T) {
 		stateDir := t.TempDir()
 		s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())

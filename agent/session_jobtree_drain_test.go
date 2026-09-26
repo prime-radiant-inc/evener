@@ -1051,6 +1051,7 @@ func TestDrainJobTreeWaitsForForegroundPromotedShell(t *testing.T) {
 // The watch remains armed for later output, but only an unfired condition can
 // tell a one-shot drain that the model explicitly awaits this job.
 func TestDrainDoesNotExcuseFiredReadinessWatch(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("readiness acknowledged") },
 	}}

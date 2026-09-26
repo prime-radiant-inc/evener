@@ -23,6 +23,7 @@ func TestOpenDelegateTreeController_NilStore(t *testing.T) {
 // TestOpenDelegateTreeController_EmptyRootSessionID covers the empty-root
 // validation (lines 192-193).
 func TestOpenDelegateTreeController_EmptyRootSessionID(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store, err := delegatestore.Open(dir + "/delegates.jsonl")
 	if err != nil {
@@ -78,6 +79,7 @@ func TestOpenDelegateTreeController_Defaults(t *testing.T) {
 // TestAuthorizeMutationLocked_NonexistentDelegate covers the error path
 // for a delegate that doesn't exist in durable.
 func TestAuthorizeMutationLocked_NonexistentDelegate(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -90,6 +92,7 @@ func TestAuthorizeMutationLocked_NonexistentDelegate(t *testing.T) {
 // TestAuthorizeMutationLocked_WrongOwner covers the error path for a
 // delegate owned by a different session.
 func TestAuthorizeMutationLocked_WrongOwner(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	c.mu.Lock()
@@ -105,6 +108,7 @@ func TestAuthorizeMutationLocked_WrongOwner(t *testing.T) {
 // has a lease (nested delegate). The actor's lease must be for the parent
 // and the target must be the child.
 func TestAuthorizeMutationLocked_WithLease(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_parent", "")
 	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
@@ -120,6 +124,7 @@ func TestAuthorizeMutationLocked_WithLease(t *testing.T) {
 
 // TestHasSettlementClaimLocked covers the hasSettlementClaimLocked method.
 func TestHasSettlementClaimLocked(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	c.mu.Lock()
@@ -131,6 +136,7 @@ func TestHasSettlementClaimLocked(t *testing.T) {
 
 // TestHasSteeringClaimLocked covers the hasSteeringClaimLocked method.
 func TestHasSteeringClaimLocked(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	c.mu.Lock()
@@ -142,6 +148,7 @@ func TestHasSteeringClaimLocked(t *testing.T) {
 
 // TestSnapshot covers the Snapshot method returns rows.
 func TestSnapshot(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	snap := c.Snapshot()
@@ -152,6 +159,7 @@ func TestSnapshot(t *testing.T) {
 
 // TestStableDelegateOwnerRuntime covers the stableDelegateOwnerRuntime method.
 func TestStableDelegateOwnerRuntime(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	// Root delegate (no parent): should return rootRuntime (nil in test harness).

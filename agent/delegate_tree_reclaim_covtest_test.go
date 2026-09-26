@@ -18,6 +18,7 @@ func TestClaimRuntimeReclamation_NilController(t *testing.T) {
 // TestClaimRuntimeReclamation_ZeroRequired covers the required<=0 path
 // (lines 41-42).
 func TestClaimRuntimeReclamation_ZeroRequired(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	claim, err := c.ClaimRuntimeReclamation(0)
 	if err != nil || claim != nil {
@@ -31,6 +32,7 @@ func TestClaimRuntimeReclamation_ZeroRequired(t *testing.T) {
 
 // TestClaimRuntimeReclamation_Closing covers the closing path (lines 46-47).
 func TestClaimRuntimeReclamation_Closing(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	c.mu.Lock()
@@ -45,6 +47,7 @@ func TestClaimRuntimeReclamation_Closing(t *testing.T) {
 // TestClaimRuntimeReclamation_NoResident covers the needed<=0 path
 // (lines 56-58) where there are no resident terminal runtimes to reclaim.
 func TestClaimRuntimeReclamation_NoResident(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	claim, err := c.ClaimRuntimeReclamation(1)
@@ -58,6 +61,7 @@ func TestClaimRuntimeReclamation_NoResident(t *testing.T) {
 
 // TestIsResidentTerminalRuntimeLocked covers the helper function.
 func TestIsResidentTerminalRuntimeLocked(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	c.mu.Lock()
@@ -75,6 +79,7 @@ func TestIsResidentTerminalRuntimeLocked(t *testing.T) {
 
 // TestResidentDelegateRuntime covers the residentDelegateRuntime method.
 func TestResidentDelegateRuntime(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	// No live runtime attached: returns nil.
@@ -89,6 +94,7 @@ func TestResidentDelegateRuntime(t *testing.T) {
 
 // TestReconcileRequirements covers the ReconcileRequirements method.
 func TestReconcileRequirements(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	// ReconcileRequirements should not panic for a seeded delegate.
@@ -97,6 +103,7 @@ func TestReconcileRequirements(t *testing.T) {
 
 // TestReplayDeliveries covers the ReplayDeliveries method.
 func TestReplayDeliveries(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	deliveries := c.ReplayDeliveries()

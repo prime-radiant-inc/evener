@@ -11,6 +11,7 @@ import (
 )
 
 func TestAcceptDelegateDeliveryPlanWhileProcessing(t *testing.T) {
+	t.Parallel()
 	t.Run("claimed inline waiter resolves immediately", func(t *testing.T) {
 		controller, _ := newDelegateControllerTestHarness(t, 1, 1)
 		root := &Session{id: "root-session", state: SessionProcessing, delegateController: controller}
@@ -75,6 +76,7 @@ func TestAcceptDelegateDeliveryPlanWhileProcessing(t *testing.T) {
 }
 
 func TestCanceledToolResultPersistenceAbortsClaimedInlineDelivery(t *testing.T) {
+	t.Parallel()
 	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
 	root := &Session{id: "root-session", state: SessionProcessing, delegateController: controller}
 	controller.rootRuntime = root
@@ -130,6 +132,7 @@ func TestCanceledToolResultPersistenceAbortsClaimedInlineDelivery(t *testing.T) 
 }
 
 func TestCanceledAfterTakingInlineCommitAbortsBeforeDurableToolResult(t *testing.T) {
+	t.Parallel()
 	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
 	root := &Session{id: "root-session", state: SessionProcessing, delegateController: controller}
 	controller.rootRuntime = root

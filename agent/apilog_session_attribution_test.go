@@ -402,6 +402,7 @@ func sessionAPILogProviderInstances(t *testing.T, stateDir, sessionID string) ma
 // a later restore of the same id) hits ErrAPILogTargetLocked/"unavailable"
 // for that id for the rest of the process's life.
 func TestNewSessionReleasesPreSessionAPILogRouteOnMembershipFailure(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	client := llm.NewClient()
 	// attemptRecordingLiveModels lists only "gpt-5.2" here; requesting a
@@ -674,6 +675,7 @@ func TestSessionSettlesProviderResolutionFailureBeforeTransport(t *testing.T) {
 }
 
 func TestSessionCloseReleasesAPILogRoute(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	client := llm.NewClient()
 	logger, err := llm.NewSessionAPILogger(stateDir)

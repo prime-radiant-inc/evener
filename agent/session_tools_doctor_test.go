@@ -63,6 +63,7 @@ func doctorToolForTest(t *testing.T, stateHome string) tool.RegisteredTool {
 // invocation class that failed with `evener: command not found` when the
 // skill shelled out.
 func TestDoctorEvener_LocateResolvesSelector(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	bucket := newBucketUnder(t, stateHome)
 	sid := writeDoctorFixtureSession(t, bucket)
@@ -90,6 +91,7 @@ func TestDoctorEvener_LocateResolvesSelector(t *testing.T) {
 // TestDoctorEvener_StateDirOverride proves an explicit state_dir beats the
 // session default.
 func TestDoctorEvener_StateDirOverride(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	bucket := newBucketUnder(t, stateHome)
 	sid := writeDoctorFixtureSession(t, bucket)
@@ -124,6 +126,7 @@ func TestDoctorEvener_StateDirOverride(t *testing.T) {
 // TestDoctorEvener_RejectsUnknownCommand proves bad commands are surfaced as
 // errors, not silent defaults.
 func TestDoctorEvener_RejectsUnknownCommand(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	rt := doctorToolForTest(t, stateHome)
 	_, err := rt.Exec(context.Background(), nil, map[string]any{"command": "bogus"})
@@ -139,6 +142,7 @@ func TestDoctorEvener_RejectsUnknownCommand(t *testing.T) {
 // transcript --count delegate_send is the skill's structural-invocation
 // oracle.
 func TestDoctorEvener_TranscriptCount(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	bucket := newBucketUnder(t, stateHome)
 	sid := writeDoctorFixtureSession(t, bucket)
@@ -163,6 +167,7 @@ func TestDoctorEvener_TranscriptCount(t *testing.T) {
 // TestDoctorEvener_SessionsAndAudit prove the batch commands work through the
 // tool with the option mapping (since, runbook).
 func TestDoctorEvener_SessionsAndAudit(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	bucket := newBucketUnder(t, stateHome)
 	sid := writeDoctorFixtureSession(t, bucket)
@@ -204,6 +209,7 @@ func TestDoctorEvener_SessionsAndAudit(t *testing.T) {
 // TestDoctorEvener_ReadOnlyEnforced proves the tool is registered read-only:
 // the registry must reject a write-class mutation attempt structurally.
 func TestDoctorEvener_ReadOnlyEnforced(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	rt := doctorToolForTest(t, stateHome)
 	if !rt.ReadOnly {
@@ -273,6 +279,7 @@ func writeDoctorFixtureSession(t *testing.T, bucket string) string {
 // sweep command believing it scopes to one session would otherwise get a
 // state-root-wide result with no signal.
 func TestDoctorEvener_RejectsStraySelectorOnSelectorlessCommands(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	bucket := newBucketUnder(t, stateHome)
 	writeDoctorFixtureSession(t, bucket)
@@ -301,6 +308,7 @@ func TestDoctorEvener_RejectsStraySelectorOnSelectorlessCommands(t *testing.T) {
 // reads the plugin store, not session state. audit is included via a
 // since-based sweep over the fixture session.)
 func TestDoctorEvener_HandlerDoesNotMutateState(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	bucket := newBucketUnder(t, stateHome)
 	sid := writeDoctorFixtureSession(t, bucket)
@@ -362,6 +370,7 @@ func TestDoctorEvener_HandlerDoesNotMutateState(t *testing.T) {
 // a large enumeration comes back capped with truncated=true and the true
 // total — valid JSON under the char limit, never a silent cut.
 func TestDoctorEvener_SessionsRowCapDisclosed(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	bucket := newBucketUnder(t, stateHome)
 	// more sessions than the cap
@@ -431,6 +440,7 @@ func TestDoctorEvener_EnumSinglesource(t *testing.T) {
 // surfaces in the schema, and then always fails at runtime with "unknown
 // doctor command" — silent drift the schema-enum test above cannot see.
 func TestDoctorEvener_EveryCommandDispatches(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	bucket := newBucketUnder(t, stateHome)
 	sid := writeDoctorFixtureSession(t, bucket)
@@ -462,6 +472,7 @@ func TestDoctorEvener_EveryCommandDispatches(t *testing.T) {
 // struct alongside the error printed an all-empty JSON object to the model:
 // a miss was indistinguishable from a resolver that found nothing to say.
 func TestDoctorEvener_LocateNotFoundIsErrorResultNotEmptyStruct(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	bucket := newBucketUnder(t, stateHome)
 	writeDoctorFixtureSession(t, bucket)
@@ -489,6 +500,7 @@ func TestDoctorEvener_LocateNotFoundIsErrorResultNotEmptyStruct(t *testing.T) {
 // as the result content, so a zero struct would print an all-empty JSON
 // object and hide where the sweep looked.
 func TestDoctorEvener_MissesSurfaceErrorTextNotZeroStruct(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	bucket := newBucketUnder(t, stateHome)
 	writeDoctorFixtureSession(t, bucket)
@@ -530,6 +542,7 @@ func TestDoctorEvener_MissesSurfaceErrorTextNotZeroStruct(t *testing.T) {
 // sibling project bucket — the forensic scenario the doctoring diagnosis
 // hit, where a sibling-bucket session was invisible to every bare-id lookup.
 func TestDoctorEvener_LocateFromBucketStateDirSweepsSiblingBuckets(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	bucketA := newBucketUnder(t, stateHome)
 	bucketB := newBucketUnder(t, stateHome)

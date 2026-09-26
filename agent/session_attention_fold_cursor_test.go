@@ -172,6 +172,7 @@ func requireCursorMatchesFullFold(t *testing.T, cursor *delegateAttentionFoldCur
 }
 
 func TestDelegateAttentionFoldCursorMatchesFullFoldAcrossAppends(t *testing.T) {
+	t.Parallel()
 	path, sessionID, writer := newAttentionFoldTranscript(t)
 	var cursor delegateAttentionFoldCursor
 	requireCursorMatchesFullFold(t, &cursor, path, sessionID, "header only")
@@ -201,6 +202,7 @@ func TestDelegateAttentionFoldCursorMatchesFullFoldAcrossAppends(t *testing.T) {
 // A fold returned earlier stays what it was: extending the cursor must not
 // write through into maps or slices a caller still holds.
 func TestDelegateAttentionFoldCursorNeverMutatesAReturnedFold(t *testing.T) {
+	t.Parallel()
 	path, sessionID, writer := newAttentionFoldTranscript(t)
 	appendAttentionTurns(t, writer, attentionSteeringTurn("delegate:a", "alpha"))
 	var cursor delegateAttentionFoldCursor
@@ -225,6 +227,7 @@ func TestDelegateAttentionFoldCursorNeverMutatesAReturnedFold(t *testing.T) {
 // Here the resolution lands in a different transcript, so the file the cursor
 // reads never records it.
 func TestDelegateAttentionFoldCursorIgnoresChangesToAReturnedFold(t *testing.T) {
+	t.Parallel()
 	path, sessionID, writer := newAttentionFoldTranscript(t)
 	appendAttentionTurns(t, writer, attentionSteeringTurn("delegate:a", "alpha"))
 	_, _, elsewhere := newAttentionFoldTranscript(t)
@@ -243,6 +246,7 @@ func TestDelegateAttentionFoldCursorIgnoresChangesToAReturnedFold(t *testing.T) 
 
 // An ID repeated within one resolution call is appended once.
 func TestAppendDelegateAttentionResolutionsAppendsARepeatedIDOnce(t *testing.T) {
+	t.Parallel()
 	path, sessionID, writer := newAttentionFoldTranscript(t)
 	appendAttentionTurns(t, writer, attentionSteeringTurn("delegate:a", "alpha"))
 	fold, err := readDelegateAttentionFold(path, sessionID)
@@ -265,6 +269,7 @@ func TestAppendDelegateAttentionResolutionsAppendsARepeatedIDOnce(t *testing.T) 
 // A torn trailing line is not consumed: the cursor resumes at its start once
 // it completes, exactly as a full fold picks it up.
 func TestDelegateAttentionFoldCursorResumesAtATornTail(t *testing.T) {
+	t.Parallel()
 	path, sessionID, writer := newAttentionFoldTranscript(t)
 	appendAttentionTurns(t, writer, attentionSteeringTurn("delegate:a", "alpha"))
 	var cursor delegateAttentionFoldCursor
@@ -286,6 +291,7 @@ func TestDelegateAttentionFoldCursorResumesAtATornTail(t *testing.T) {
 // zero. Every case below is built so a cursor that resumed anyway would
 // return a different fold than the full one.
 func TestDelegateAttentionFoldCursorRefoldsWhenTheFileIsNotAnAppend(t *testing.T) {
+	t.Parallel()
 	filler := schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("f", 8*1024)))
 	cases := []struct {
 		name   string
@@ -345,6 +351,7 @@ func TestDelegateAttentionFoldCursorRefoldsWhenTheFileIsNotAnAppend(t *testing.T
 // Errors are the full fold's errors: a foreign session never resumes, and a
 // bad appended entry fails the resumed read just as it fails a full one.
 func TestDelegateAttentionFoldCursorReportsTheFullFoldsErrors(t *testing.T) {
+	t.Parallel()
 	path, sessionID, writer := newAttentionFoldTranscript(t)
 	appendAttentionTurns(t, writer, attentionSteeringTurn("delegate:a", "alpha"))
 	var cursor delegateAttentionFoldCursor

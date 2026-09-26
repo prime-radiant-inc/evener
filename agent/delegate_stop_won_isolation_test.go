@@ -17,6 +17,7 @@ import (
 // failure exit, or a stop that lands mid-construct leaves a directory, a held
 // lease, and a registered lane behind.
 func TestDelegateResourceCreate_StopWinningConstructFailureCleansIsolation(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	root := r.s
 	ctx := context.Background()

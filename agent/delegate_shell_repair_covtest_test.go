@@ -229,6 +229,7 @@ func TestRepairStableShellAttentionForBootstrap_NilController(t *testing.T) {
 }
 
 func TestRepairStableShellAttentionForBootstrap_NoTargets(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	// No durable delegates, so no targets to repair.
 	if err := repairStableShellAttentionForBootstrap(c); err != nil {
@@ -237,6 +238,7 @@ func TestRepairStableShellAttentionForBootstrap_NoTargets(t *testing.T) {
 }
 
 func TestRepairStableShellAttentionForBootstrap_NoStoreFile(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	// The jobs.jsonl for this delegate does not exist yet, so the target is skipped.
@@ -246,6 +248,7 @@ func TestRepairStableShellAttentionForBootstrap_NoStoreFile(t *testing.T) {
 }
 
 func TestRepairStableShellAttentionForBootstrap_DirectoryStoreFile(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	// Create a directory where jobs.jsonl should be — os.Stat succeeds but it's not a regular file.
@@ -332,6 +335,7 @@ func TestExecuteDelegateShellRepair_NonexistentStorePath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCollectDelegateReconcileEvidence_Empty(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	req := c.ReconcileRequirements()
 	got, err := collectDelegateReconcileEvidence(c.stateDir, req)
@@ -344,6 +348,7 @@ func TestCollectDelegateReconcileEvidence_Empty(t *testing.T) {
 }
 
 func TestCollectDelegateReconcileEvidence_ShellStoreOnly(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	path := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")

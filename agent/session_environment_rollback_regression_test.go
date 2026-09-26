@@ -1257,6 +1257,7 @@ func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
 // turn no user ever spent and charges it against MaxTurns for the life of the
 // session.
 func TestRejectedInputDoesNotPersistItsProvisionalTurn(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
 	seekFailure := errors.New("environment transcript rollback seek failure")

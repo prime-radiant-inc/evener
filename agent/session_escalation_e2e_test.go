@@ -110,6 +110,7 @@ func readFileTurn(t *testing.T, outside string) []func(llm.Request) llm.Response
 }
 
 func TestE2E_FileToolEscalation_ApproveReadSucceeds(t *testing.T) {
+	t.Parallel()
 	outside := filepath.Join(t.TempDir(), "secret.txt")
 	const secret = "TOP-SECRET-PAYLOAD-42"
 	if err := os.WriteFile(outside, []byte(secret), 0o644); err != nil {
@@ -138,6 +139,7 @@ func TestE2E_FileToolEscalation_ApproveReadSucceeds(t *testing.T) {
 }
 
 func TestE2E_FileToolEscalation_DenyReturnsTypedError(t *testing.T) {
+	t.Parallel()
 	outside := filepath.Join(t.TempDir(), "secret.txt")
 	const secret = "TOP-SECRET-PAYLOAD-42"
 	if err := os.WriteFile(outside, []byte(secret), 0o644); err != nil {

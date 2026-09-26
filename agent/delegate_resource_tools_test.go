@@ -284,6 +284,7 @@ func TestStableDelegateTools_WaitIgnoredReasonIsOwnField(t *testing.T) {
 }
 
 func TestStableDelegateTools_LiveSteerRejectsIgnoredWait(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withoutGitSnapshot())
 	delegateID := "dlg_live_wait"
 	seedStableToolRunningDelegate(t, s, delegateID, "", time.Unix(10, 0).UTC())
@@ -353,6 +354,7 @@ func TestStableDelegateTools_ListPreservesTypeStatusAndVisibilityFilters(t *test
 }
 
 func TestStableDelegateTools_ListOwnerWinsDedupeAndSortsBeforePaging(t *testing.T) {
+	t.Parallel()
 	tree := newStableDelegateShellTree(t)
 	rec := createStableDelegateShell(t, tree.childJM, "owner copy wins")
 	result := stableToolListResult(t, tree.root, map[string]any{

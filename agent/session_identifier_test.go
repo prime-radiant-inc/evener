@@ -137,6 +137,7 @@ func TestRestoreSessionReloadsMetadataAfterOwnershipAcquisition(t *testing.T) {
 }
 
 func TestRestoreSessionFailureRetainsPreAcquiredOwnership(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	meta := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeC"}
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {

@@ -51,6 +51,7 @@ func TestStableDelegateWatch_TypedSessionShellAndDelegateSources(t *testing.T) {
 }
 
 func TestStableDelegateWatch_DelegateReceiverIsImplicit(t *testing.T) {
+	t.Parallel()
 	a := requireStableDelegateWatchArgs(t)
 	if a.ReceiverSessionID != "" || a.ReceiverDelegateID != "" || a.Send != nil {
 		t.Fatalf("public stable watch decoded receiver routing: %#v", a)
@@ -122,6 +123,7 @@ func TestStableDelegateWatch_ParentRequiresLeaseEdgeAndPersistedGrant(t *testing
 }
 
 func TestStableDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	runtime := delegateRuntime{owner: root}
 	describe := func(watchParent bool) map[string]any {
@@ -176,6 +178,7 @@ func TestStableDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {
 }
 
 func TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing.T) {
+	t.Parallel()
 	_ = requireStableDelegateWatchArgs(t)
 	jm := newStableWatchTestJobManager(t)
 	installWatchBelowValidation(t, jm, watchArgs{
@@ -211,6 +214,7 @@ func TestStableDelegateWatch_PreservesFiltersEveryCoalescingAndBudget(t *testing
 }
 
 func TestStableDelegateWatch_PreservesListInspectAndClear(t *testing.T) {
+	t.Parallel()
 	_ = requireStableDelegateWatchArgs(t)
 	jm := newStableWatchTestJobManager(t)
 	result, err := jm.configureWatch(watchArgs{
@@ -269,6 +273,7 @@ func TestStableDelegateWatch_PreservesListInspectAndClear(t *testing.T) {
 }
 
 func TestStableDelegateWatch_EnqueueFsyncPrecedesCursorAdvance(t *testing.T) {
+	t.Parallel()
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -321,6 +326,7 @@ func TestStableDelegateWatch_EnqueueFsyncPrecedesCursorAdvance(t *testing.T) {
 }
 
 func TestStableDelegateWatch_ControllerReceiptRunsAfterJobManagerUnlock(t *testing.T) {
+	t.Parallel()
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	boundaries := 0
 	fixture.sourceJM.watchReceiptBoundary = func() {
@@ -379,6 +385,7 @@ func TestStableDelegateWatch_ReceiverFsyncPrecedesDeliveredAck(t *testing.T) {
 }
 
 func TestStableDelegateWatch_SourceAcknowledgementWaitsForRootWakeArm(t *testing.T) {
+	t.Parallel()
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "ordered receiver wake"})
 	ackEntered := make(chan struct{}, 1)
@@ -448,6 +455,7 @@ func TestStableDelegateWatch_LaterCoalescedUpdateSurvivesEarlierAck(t *testing.T
 }
 
 func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing.T) {
+	t.Parallel()
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "old frame"})
@@ -522,6 +530,7 @@ func TestStableDelegateWatch_CoalescingRetainsInflightReceiverReceipt(t *testing
 }
 
 func TestStableDelegateWatch_SupersededAckFailureRetainsArmedAttentionBeforeCurrentCursor(t *testing.T) {
+	t.Parallel()
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	wakes := make(chan struct{}, 2)
@@ -601,6 +610,7 @@ func TestStableDelegateWatch_SupersededAckFailureRetainsArmedAttentionBeforeCurr
 }
 
 func TestStableDelegateWatch_ConcurrentRedrainsClaimSupersededAckOnce(t *testing.T) {
+	t.Parallel()
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	old, newer, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
@@ -680,6 +690,7 @@ func TestStableDelegateWatch_ConcurrentRedrainsClaimSupersededAckOnce(t *testing
 }
 
 func TestStableDelegateWatch_RetryAddedDuringClaimSettlesBeforeCurrentCursor(t *testing.T) {
+	t.Parallel()
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	retryA, staleB, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)
@@ -763,6 +774,7 @@ func TestStableDelegateWatch_RetryAddedDuringClaimSettlesBeforeCurrentCursor(t *
 }
 
 func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testing.T) {
+	t.Parallel()
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "crash repair"})
 	pending := fixture.requireOnePending(t)
@@ -899,6 +911,7 @@ func TestStableDelegateWatch_RestartRepairsReceiverDurableSourceUnacked(t *testi
 }
 
 func TestStableDelegateWatch_RestartRepairsSupersededReceiverDurableSourceUnacked(t *testing.T) {
+	t.Parallel()
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	old, newer, _ := seedSupersededStableWatchAckFailure(t, fixture, fs)
@@ -957,6 +970,7 @@ func TestStableDelegateWatch_RestartRepairsSupersededReceiverDurableSourceUnacke
 }
 
 func TestStableDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T) {
+	t.Parallel()
 	t.Run("live receipts", func(t *testing.T) {
 		c, _ := newDelegateControllerTestHarness(t, 1, 1)
 		seedDelegateControllerRunning(t, c, "dlg_source", "")
@@ -1105,6 +1119,7 @@ func TestStableDelegateWatch_StopFencesAndDrainsBothReceiptClasses(t *testing.T)
 }
 
 func TestStableDelegateWatch_TerminalFramePrecedesEndNotice(t *testing.T) {
+	t.Parallel()
 	_ = requireStableDelegateWatchArgs(t)
 	jm := newStableWatchTestJobManager(t)
 	installWatchBelowValidation(t, jm, watchArgs{
@@ -1128,6 +1143,7 @@ func TestStableDelegateWatch_TerminalFramePrecedesEndNotice(t *testing.T) {
 }
 
 func TestStableDelegateWatch_RestartCancellationEmitsEndNotice(t *testing.T) {
+	t.Parallel()
 	_ = requireStableDelegateWatchArgs(t)
 	stateDir := t.TempDir()
 	jm, err := newJobManagerNoSync(stateDir, "source-session", func(jobNotification) {})
@@ -1460,6 +1476,7 @@ func countAttentionEntries(t *testing.T, path, attentionID string) int {
 // the boundary drain directly and requires both halves of that pairing: the
 // delivery counter moves AND the owner is left with pending attention.
 func TestStableWatchBoundarySettleWakesOwnerForEnvelopeRefresh(t *testing.T) {
+	t.Parallel()
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "boundary frame"})
 	cfg := fixture.onlyWatchConfig(t)

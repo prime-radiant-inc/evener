@@ -39,6 +39,7 @@ func TestDetailedStatusUsesNamespacedSkillCatalogKey(t *testing.T) {
 }
 
 func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Description = "stable status description"
 		descriptor.ParentWatchGranted = true
@@ -70,6 +71,7 @@ func TestSession_DetailedStatus_DelegatesMatchControllerFoldAfterReopen(t *testi
 }
 
 func TestStableDelegateAttention_RestoreAndColdRead(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name              string
 		pending           bool

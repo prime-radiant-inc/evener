@@ -9,6 +9,7 @@ import (
 )
 
 func TestDelegateGenerationEvidenceInitialRequirement(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_attention", "")
 	attentionLease := startDelegateAttentionEvidenceGeneration(t, c, "dlg_attention")
@@ -53,6 +54,7 @@ func TestDelegateEntryRequiresReport(t *testing.T) {
 }
 
 func TestDelegateGenerationEvidenceRejectsStaleLease(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	first, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
@@ -86,6 +88,7 @@ func TestDelegateGenerationEvidenceRejectsStaleLease(t *testing.T) {
 }
 
 func TestDelegateGenerationEvidenceEscalationIsMonotonic(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease := startDelegateAttentionEvidenceGeneration(t, c, "dlg_target")
@@ -109,6 +112,7 @@ func TestDelegateGenerationEvidenceEscalationIsMonotonic(t *testing.T) {
 }
 
 func TestDelegateGenerationEvidenceClearsOnRelease(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
@@ -129,6 +133,7 @@ func TestDelegateGenerationEvidenceClearsOnRelease(t *testing.T) {
 }
 
 func TestDelegateGenerationEvidenceSnapshotDeepClonesFallback(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)

@@ -24,6 +24,7 @@ import (
 )
 
 func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("EVENER_OPENAI_RESPONSES_PHASE12_E2E") != "1" {
 		t.Skip("set EVENER_OPENAI_RESPONSES_PHASE12_E2E=1 to run live public OpenAI Responses continuation proof")
 	}

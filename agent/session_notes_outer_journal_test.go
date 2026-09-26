@@ -91,6 +91,7 @@ func TestSetHumanNoteReusedIDWithDifferentInputConflicts(t *testing.T) {
 // with the same outer ID and entry id returns success (replay) instead of an
 // unknown-ID error, even though the entry is gone.
 func TestRemoveSessionURLRetryReplaysSuccess(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	entry, err := s.addSessionURL("https://x.test/y", "")
@@ -116,6 +117,7 @@ func TestRemoveSessionURLRetryReplaysSuccess(t *testing.T) {
 // TestRemoveSessionURLReusedIDWithDifferentInputConflicts verifies a reused
 // outer ID naming a different entry id conflicts without removing anything.
 func TestRemoveSessionURLReusedIDWithDifferentInputConflicts(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	a, err := s.addSessionURL("https://x.test/a", "")

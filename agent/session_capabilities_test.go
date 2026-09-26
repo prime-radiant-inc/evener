@@ -70,6 +70,7 @@ func scratchLineForTest(t *testing.T, path string) string {
 // TestCapabilityPreambleWorkspaceWrite pins the rendered preamble for a
 // workspace-write session on an overlay-capable host.
 func TestCapabilityPreambleWorkspaceWrite(t *testing.T) {
+	t.Parallel()
 	policy, root, home := resolvePolicyForTest(t, sandbox.ModeWorkspaceWrite)
 	got := strings.Join(capabilityPreambleLines(capabilityFacts{
 		policy:     policy,
@@ -97,6 +98,7 @@ func TestCapabilityPreambleWorkspaceWrite(t *testing.T) {
 // TestCapabilityPreambleRestricted pins the rendered preamble for a restricted
 // session (session-private cache, no overlay).
 func TestCapabilityPreambleRestricted(t *testing.T) {
+	t.Parallel()
 	policy, root, home := resolvePolicyForTest(t, sandbox.ModeRestricted)
 	got := strings.Join(capabilityPreambleLines(capabilityFacts{
 		policy:     policy,
@@ -129,6 +131,7 @@ func TestCapabilityPreambleRestricted(t *testing.T) {
 // overstate the cost. This snapshot pins its absence, because a banner that
 // never overstates is wrong in the pessimistic direction too.
 func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	home := t.TempDir()
 	initGitRepo(t, root)
@@ -164,6 +167,7 @@ func TestCapabilityPreambleRestrictedSeatbelt(t *testing.T) {
 // TestCapabilityPreambleResidualsAreRestrictedOnly: the recorded git residuals
 // belong to restricted mode, so no other mode may state them.
 func TestCapabilityPreambleResidualsAreRestrictedOnly(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []sandbox.Mode{sandbox.ModeWorkspaceWrite, sandbox.ModeReadOnly} {
 		policy, _, _ := resolvePolicyForTest(t, mode)
 		got := strings.Join(capabilityPreambleLines(capabilityFacts{policy: policy, probe: probedFacts()}), "\n")
@@ -204,6 +208,7 @@ func TestCapabilityPreambleUnknownEnvMakesNoPathClaim(t *testing.T) {
 // section minus every sandbox-derived line (writable roots, masked count, cache
 // strategy, and the sandbox-only go telemetry note).
 func TestCapabilityPreambleUnsandboxed(t *testing.T) {
+	t.Parallel()
 	got := strings.Join(capabilityPreambleLines(capabilityFacts{
 		scratchDir: "/scratch/s1",
 		loginPATH:  false,
@@ -244,6 +249,7 @@ func TestCapabilityPreambleWriteBlockedKeepsTmpDir(t *testing.T) {
 // for every measured line and never a guess. The sandbox-only telemetry note is
 // withheld too — it is only stated when go was actually measured on PATH.
 func TestCapabilityPreambleUnprobed(t *testing.T) {
+	t.Parallel()
 	policy, root, home := resolvePolicyForTest(t, sandbox.ModeRestricted)
 	got := strings.Join(capabilityPreambleLines(capabilityFacts{
 		policy:     policy,
@@ -270,6 +276,7 @@ func TestCapabilityPreambleUnprobed(t *testing.T) {
 // TestCapabilityPreambleGoAbsent: with go measured absent, no Go cache line is
 // rendered at all (there is no resolved cache to state) and no telemetry note.
 func TestCapabilityPreambleGoAbsent(t *testing.T) {
+	t.Parallel()
 	probe := probedFacts()
 	probe.onPath["go"] = false
 	probe.goCache, probe.goModCache = "", ""
@@ -336,6 +343,7 @@ func TestParseCapabilityProbe(t *testing.T) {
 // measurements standing rather than collapsing the whole preamble to
 // "unprobed". Only the git line degrades.
 func TestCapabilityPreambleGitProbeFailsAloneKeepsToolFacts(t *testing.T) {
+	t.Parallel()
 	probe := probedFacts()
 	probe.gitProbed, probe.gitConfigReads = false, false
 	got := strings.Join(capabilityPreambleLines(capabilityFacts{scratchDir: "/scratch/s1", probe: probe}), "\n")
@@ -377,6 +385,7 @@ func TestProbeCapabilitiesGitTimeoutIsIndependent(t *testing.T) {
 // TestCapabilityPreambleRendersInEnvironmentSection: the preamble lines reach
 // the rendered prompt's <environment> block, each on its own line.
 func TestCapabilityPreambleRendersInEnvironmentSection(t *testing.T) {
+	t.Parallel()
 	resolver := &sectionResolver{
 		surface: "anthropic",
 		agent:   defaultAgentName,

@@ -154,6 +154,7 @@ func TestFallbackChain_ContinuationRecoveryFailureThenModelFallback(t *testing.T
 }
 
 func TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 

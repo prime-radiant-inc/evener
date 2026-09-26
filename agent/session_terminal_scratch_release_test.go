@@ -24,6 +24,7 @@ import (
 // frees the lease so the pin can be removed. This test observes the pin's
 // absence, not a call count.
 func TestTerminalCloseReleasesRetainedScratchPoolBeforeRetentionRelease(t *testing.T) {
+	t.Parallel()
 	// The pin file name is sandbox's unexported scratchPinName; it is the
 	// on-disk retention contract (see agent/session_scratch_retention_test.go,
 	// which hardcodes the same name for the same reason).

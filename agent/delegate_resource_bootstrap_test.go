@@ -186,6 +186,7 @@ func TestDelegateResourceBootstrap_UnknownStoreVersionFailsClosed(t *testing.T) 
 }
 
 func TestDelegateResourceBootstrap_RestartIsProviderFreeAndLazy(t *testing.T) {
+	t.Parallel()
 	meta, client, profile, stateDir, workspace, adapter := closedDelegateResourceBootstrapFixture(t)
 	path := delegateResourceStorePath(stateDir, meta.ID)
 	store, err := delegatestore.Open(path)

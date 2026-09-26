@@ -32,6 +32,7 @@ import (
 )
 
 func TestDelegateAttention_ResolutionFsyncPrecedesSourceAck(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID = "child-dlg_target"
 		firstID   = "delegate:delivery-attention-1"
@@ -424,6 +425,7 @@ func TestReadExistingDelegateAttentionFoldRepairRacingTheFoldSucceeds(t *testing
 }
 
 func TestDelegateAttention_StopLeavesBoundAttentionForDiscard(t *testing.T) {
+	t.Parallel()
 	t.Run("stop wins before acceptance", func(t *testing.T) {
 		const (
 			sessionID   = "child-dlg_target"
@@ -583,6 +585,7 @@ func attachDelegateAttentionTranscriptForTest(t *testing.T, c *delegateTreeContr
 }
 
 func TestDelegateAttention_ResolutionFailureLeavesGenerationStoppable(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID   = "child-dlg_target"
 		attentionID = "attention-resolution-failure"
@@ -629,6 +632,7 @@ func TestDelegateAttention_ResolutionFailureLeavesGenerationStoppable(t *testing
 }
 
 func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID   = "child-dlg_target"
 		attentionID = "interleaved-attention"
@@ -719,6 +723,7 @@ func TestDelegateAttention_ArmClaimSpansFoldAndOpen(t *testing.T) {
 }
 
 func TestDelegateAttention_RecoveryStopWaitsForOldRunnerBeforeReuse(t *testing.T) {
+	t.Parallel()
 	providerEntered := make(chan struct{})
 	releaseProvider := make(chan struct{})
 	successorEntered := make(chan struct{})
@@ -891,6 +896,7 @@ progressDrained:
 }
 
 func TestDelegateAttention_StabilizationRetryPreservesFailedBarrier(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		sessionID   = "stabilization-retry"
@@ -937,6 +943,7 @@ func TestDelegateAttention_StabilizationRetryPreservesFailedBarrier(t *testing.T
 }
 
 func TestDelegateAttention_RecoveryRetainedRuntimePreservesFailedToolCount(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		sessionID   = "stabilization-failure-count"
@@ -1106,6 +1113,7 @@ func TestDelegateAttention_ColdResolutionRetryReestablishesDurabilityBeforeStopA
 }
 
 func TestDelegateAttention_ColdCallerCommitRequiresRenewedDurabilityBeforeSourceAck(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -1159,6 +1167,7 @@ func TestDelegateAttention_ColdCallerCommitRequiresRenewedDurabilityBeforeSource
 }
 
 func TestDelegateAttention_LiveNotificationRetryReestablishesDurabilityBeforeSourceAck(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -1222,6 +1231,7 @@ func TestDelegateAttention_LiveNotificationRetryReestablishesDurabilityBeforeSou
 }
 
 func TestDelegateAttention_LiveResolutionRetryReestablishesDurabilityBeforeSettlement(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		sessionID   = "live-resolution-durability"
@@ -1312,6 +1322,7 @@ func TestDelegateAttention_ResolutionMarkerDoesNotSplitToolCallAndResult(t *test
 }
 
 func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		sessionID   = "public-attention-read"
@@ -1499,6 +1510,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 }
 
 func TestDelegateAttention_PublicJSONLPreservesExactToolResultNumbers(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		sessionID = "public-exact-number"
@@ -1657,6 +1669,7 @@ func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T) {
 }
 
 func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToolResult(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		rootSessionID   = "root-session"
@@ -1822,6 +1835,7 @@ func TestDelegateAttention_RestartReplaysCallerDeliveryCommitWithoutDuplicateToo
 }
 
 func TestDelegateAttention_BootstrapDrainsRestoredStopAttention(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		rootSessionID  = "root-session"
@@ -1893,6 +1907,7 @@ func TestDelegateAttention_BootstrapDrainsRestoredStopAttention(t *testing.T) {
 }
 
 func TestDelegateAttention_RestoreReconcilesColdCommitBeforeProviderMetadata(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootSessionID := identifier.MustNewSessionID()
 	storePath := filepath.Join(jobsDir(stateDir, rootSessionID), "delegates.jsonl")
@@ -1980,6 +1995,7 @@ func TestDelegateAttention_RestoreReconcilesColdCommitBeforeProviderMetadata(t *
 }
 
 func TestDelegateAttention_RestartReplayRequiresDeliveryIDFromExactPair(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -2022,6 +2038,7 @@ func TestDelegateAttention_RestartReplayRequiresDeliveryIDFromExactPair(t *testi
 }
 
 func TestDelegateAttention_ColdReplayRefoldsNextSameOwnerCommit(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 3, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child_a", "dlg_parent")
@@ -2082,6 +2099,7 @@ func TestDelegateAttention_ColdReplayRefoldsNextSameOwnerCommit(t *testing.T) {
 }
 
 func TestDelegateAttention_ColdReplayRefoldsMixedSameOwnerCommits(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 3, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child_a", "dlg_parent")
@@ -2147,6 +2165,7 @@ func TestDelegateAttention_ColdReplayRefoldsMixedSameOwnerCommits(t *testing.T) 
 }
 
 func TestDelegateAttention_LiveReplayHonorsDurableCallerCommit(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -2276,6 +2295,7 @@ func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
 }
 
 func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	const attentionID = "watch:cold-post-ack:1"
@@ -2332,6 +2352,7 @@ func TestDelegateAttention_ColdPostAckReadFailureRetriesExactID(t *testing.T) {
 }
 
 func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	attentionEntered := make(chan struct{})
 	releaseAttention := make(chan struct{})
@@ -2413,6 +2434,7 @@ func TestDelegateAttention_SettledResidentChildStartsExactAttentionGeneration(t 
 }
 
 func TestDelegateAttention_RestoreSessionStartCountsColdReplayAppend(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const sessionID = "01ATTENTIONREPLAYCOUNT01"
 	store, err := delegatestore.Open(filepath.Join(jobsDir(stateDir, sessionID), "delegates.jsonl"))
@@ -2487,6 +2509,7 @@ func TestDelegateAttention_RestoreSessionStartCountsColdReplayAppend(t *testing.
 }
 
 func TestDelegateAttention_StopDrainDoesNotResolveAttentionTwice(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	const (
@@ -2514,6 +2537,7 @@ func TestDelegateAttention_StopDrainDoesNotResolveAttentionTwice(t *testing.T) {
 }
 
 func TestDelegateAttention_BootstrapFlushRoutesNestedDeliveryToOwner(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -2568,6 +2592,7 @@ func TestDelegateAttention_BootstrapFlushRoutesNestedDeliveryToOwner(t *testing.
 }
 
 func TestDelegateAttention_ColdDeliveryClaimFencesOwnerRestore(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -2594,6 +2619,7 @@ func TestDelegateAttention_ColdDeliveryClaimFencesOwnerRestore(t *testing.T) {
 }
 
 func TestDelegateAttention_RestoringOwnerDefersColdDeliveryUntilRuntimeAttach(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -2636,6 +2662,7 @@ func TestDelegateAttention_RestoringOwnerDefersColdDeliveryUntilRuntimeAttach(t 
 }
 
 func TestDelegateAttention_ColdOwnerSerializesTranscriptDeliveries(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 3, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child_a", "dlg_parent")
@@ -2676,6 +2703,7 @@ func TestDelegateAttention_ColdOwnerSerializesTranscriptDeliveries(t *testing.T)
 }
 
 func TestDelegateAttention_FailedFlushRetainsDeliveryForLiveRetry(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -2714,6 +2742,7 @@ func TestDelegateAttention_FailedFlushRetainsDeliveryForLiveRetry(t *testing.T) 
 }
 
 func TestDelegateAttention_FailedMutationQueueRetainsOtherOwners(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 3, 1)
 	seedDelegateControllerIdle(t, c, "dlg_a_root", "")
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
@@ -2756,6 +2785,7 @@ func TestDelegateAttention_FailedMutationQueueRetainsOtherOwners(t *testing.T) {
 }
 
 func TestDelegateAttention_FailedTerminalDeliveryRetriesFromRootPump(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 
@@ -2846,6 +2876,7 @@ func TestDelegateAttention_FailedTerminalDeliveryRetriesFromRootPump(t *testing.
 }
 
 func TestDelegateAttention_DeliveryDeferredDuringProcessingArmsWake(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -3043,6 +3074,7 @@ func TestRootDelegateAttention_MidTurnArmedAttentionConsumedWithoutRedundantWake
 // presented it. Finishing the turn must NOT consume it — its armed wake fires
 // and a real notification turn presents it before resolution.
 func TestRootDelegateAttention_PostBuildArmedAttentionStaysPendingForWake(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		firstID      = "delegate:dlg_unseen/delivery/1"
@@ -3130,6 +3162,7 @@ func TestRootDelegateAttention_PostBuildArmedAttentionStaysPendingForWake(t *tes
 // case, so the turn must consume it at finish; a guard that skips finish when
 // the snapshot is empty leaves it for a redundant wake with nothing new to say.
 func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDelivery(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_emptysnap/delivery/1"
@@ -3197,6 +3230,7 @@ func TestRootDelegateAttention_EmptySnapshotNotificationTurnConsumesCoveredDeliv
 // exactly like a notification turn: the delivery's content rode the turn's
 // later requests, and its armed wake would carry nothing new.
 func TestRootDelegateAttention_UserTurnConsumesCoveredMidTurnDelivery(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	const (
 		attentionID = "delegate:dlg_userturn/delivery/1"
@@ -3856,6 +3890,7 @@ func TestRootDelegateAttention_FailedConsumptionRemainsPendingAndRearms(t *testi
 }
 
 func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := identifier.MustNewSessionID()
 	if err := os.MkdirAll(filepath.Join(stateDir, sessionsSubdir), 0o755); err != nil {
@@ -3901,6 +3936,7 @@ func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *tes
 }
 
 func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	const (
 		owedID            = "watch:restart-attention:owed"
@@ -4095,6 +4131,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 }
 
 func TestDelegateAttention_PrelaunchRecoveryDoesNotWaitForUnlaunchedRunner(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
@@ -4528,6 +4565,7 @@ func (file *attentionFailNextSyncFile) Sync() error {
 }
 
 func TestStableDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreFailure(t *testing.T) {
+	t.Parallel()
 	c, journalPath := newDelegateControllerTestHarness(t, 2, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_owner", "", true)
 	const attentionID = "delegate:reachable-owner"
@@ -4564,6 +4602,7 @@ func TestStableDelegateAttention_ReachableColdOwnerRetainsAttentionAfterRestoreF
 }
 
 func TestStableDelegateAttention_UnreachableOwnerTransfersToNearestReachableAncestor(t *testing.T) {
+	t.Parallel()
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4604,6 +4643,7 @@ func TestStableDelegateAttention_UnreachableOwnerTransfersToNearestReachableAnce
 }
 
 func TestStableDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T) {
+	t.Parallel()
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4632,6 +4672,7 @@ func TestStableDelegateAttention_AncestorFsyncPrecedesChildDiscard(t *testing.T)
 }
 
 func TestStableDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
+	t.Parallel()
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", false)
@@ -4668,6 +4709,7 @@ func TestStableDelegateAttention_ConsumedEntryIsNeverEscalated(t *testing.T) {
 }
 
 func TestStableDelegateAttention_StartupRepairUsesNoProvider(t *testing.T) {
+	t.Parallel()
 	c, journalPath := newDelegateControllerTestHarness(t, 2, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "", false)
 	const attentionID = "delegate:provider-free-transfer"

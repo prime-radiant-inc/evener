@@ -3621,6 +3621,7 @@ func TestAskUser_SteeringInjectedNeverObservesAskPendingStillTrue(t *testing.T) 
 // with breakSessionMetaPath active) and pins that EventSteeringInjected still
 // publishes strictly before the admission failure's EventWarning.
 func TestAskUser_ConsumeSteeringMessageEmitsInjectedBeforeAdmissionWarning(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_order_pin")
 	stateDir := t.TempDir()

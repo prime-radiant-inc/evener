@@ -15,6 +15,7 @@ import (
 // fails because no jobs.jsonl exists at that path — not because the bucket
 // name was rejected.
 func TestLocateLocalJob_NonProjectDirError(t *testing.T) {
+	t.Parallel()
 	sid, err := identifier.NewSessionID()
 	if err != nil {
 		t.Fatal(err)

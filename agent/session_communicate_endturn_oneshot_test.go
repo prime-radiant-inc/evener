@@ -119,6 +119,7 @@ func TestCommunicate_EndTurnWarningKeepsTheServeContract(t *testing.T) {
 // still owned by this session until it exits, so ending a one-shot turn must
 // surface the same warning as a managed background job.
 func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,

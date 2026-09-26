@@ -50,6 +50,7 @@ func TestDelegateShellRepairPreservesNotificationOutsideStop(t *testing.T) {
 }
 
 func TestDelegateControllerReconcileRepairsShellOutsideStop(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	path := filepath.Join(jobsDir(c.stateDir, "child-dlg_target"), "jobs.jsonl")
@@ -75,6 +76,7 @@ func TestDelegateControllerReconcileRepairsShellOutsideStop(t *testing.T) {
 }
 
 func TestDelegateControllerReconcileExcludesLiveShellEvidence(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(10, 0).UTC()
 	ended := time.Unix(20, 0).UTC()
 	tests := []struct {
@@ -154,6 +156,7 @@ func TestDelegateControllerReconcileExcludesLiveShellEvidence(t *testing.T) {
 }
 
 func TestDelegateControllerCloseDoesNotRepairLiveShellBeforeFinalizer(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -208,6 +211,7 @@ func TestDelegateControllerCloseDoesNotRepairLiveShellBeforeFinalizer(t *testing
 }
 
 func TestDelegateShellRepairAppendFailureKeepsStopPending(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")

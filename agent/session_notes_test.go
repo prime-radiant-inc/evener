@@ -39,6 +39,7 @@ func TestNormalizeNoteCollapsesWhitespaceAndClamps(t *testing.T) {
 }
 
 func TestAddSessionURLDedupsCanonically(t *testing.T) {
+	t.Parallel()
 	s := newTestNotesSession(t, "/tmp/proj")
 	a, err := s.addSessionURL("docs/x.md", "first")
 	if err != nil {
@@ -230,6 +231,7 @@ func TestSetAgentNoteStoresSeparately(t *testing.T) {
 }
 
 func TestRemoveSessionURLByID(t *testing.T) {
+	t.Parallel()
 	s := newTestNotesSession(t, "/tmp/proj")
 	a, err := s.addSessionURL("https://x.test/y", "")
 	if err != nil {
@@ -479,6 +481,7 @@ func TestSetHumanNoteClearUsesClearedMarker(t *testing.T) {
 // TestRemoveSessionURLDaemonPath verifies the daemon URL-remove path removes
 // by id and emits EventUrlsUpdated with the same shape the agent tools emit.
 func TestRemoveSessionURLDaemonPath(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	a, err := s.addSessionURL("https://x.test/y", "")

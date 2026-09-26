@@ -234,6 +234,7 @@ func task7DecodeRetainedPage(t *testing.T, res tool.ExecResult) retainedPageEnve
 }
 
 func TestRecoverableRunningJobEndToEnd(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("scripted running-job fixture uses POSIX shell syntax")
 	}

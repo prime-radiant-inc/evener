@@ -119,6 +119,7 @@ func TestExecTool_RepairableMalformedArgsPreserveOriginalInEvents(t *testing.T) 
 // json.Valid gate the fix adds preserves this: it skips the unmarshal of
 // known-invalid bytes entirely, keeping the two paths semantically identical.
 func TestExecTool_InvalidJSONWithValidLeadingMemberDivergesIntent(t *testing.T) {
+	t.Parallel()
 	// Missing comma between members: {"intent":"foo" "bar":"baz"}.
 	// json.Unmarshal stores "intent" then errors at the missing separator.
 	const originalArgs = `{"intent":"foo" "bar":"baz"}`
@@ -279,6 +280,7 @@ func TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript(t *testing.T) 
 // before dispatch (so the executor sees "file_path", not "path") and must
 // emit EventToolCallRepaired recording the change.
 func TestSession_RepairsAliasedArgAndEmitsEvent(t *testing.T) {
+	t.Parallel()
 	aliasedCall := llm.ToolCallData{ID: "call1", Name: "widget", Arguments: json.RawMessage(`{"path":"/x"}`)}
 	comm := communicateCall("c1", "done")
 	f := &fakeAdapter{

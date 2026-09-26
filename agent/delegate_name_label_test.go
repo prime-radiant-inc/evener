@@ -107,6 +107,7 @@ func TestDelegateName_AbsentLabelRendersAsAbsent(t *testing.T) {
 // the delegate id, so the parent reads which named unit finished; an unnamed
 // delegate's frame carries no name attribute.
 func TestDelegateName_DeliveryPlanAndNotificationFrameCarryLabel(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	created := delegateControllerCreatedEvent("dlg_target", "")
 	created.Created.Descriptor.Name = "notify-label"
@@ -303,6 +304,7 @@ func TestDelegateName_FullChainSendReplyCarriesLabel(t *testing.T) {
 // name in the reply. The steered return at the send path built a sendMessageResult
 // without Name, so a delegate_send to a running named delegate omitted the label.
 func TestDelegateName_SteeredReplyCarriesLabel(t *testing.T) {
+	t.Parallel()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)

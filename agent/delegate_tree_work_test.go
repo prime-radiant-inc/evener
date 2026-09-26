@@ -7,6 +7,7 @@ import (
 )
 
 func TestDelegateControllerShellReceiptHoldsStopOpen(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -32,6 +33,7 @@ func TestDelegateControllerShellReceiptHoldsStopOpen(t *testing.T) {
 }
 
 func TestDelegateControllerCommitShellWorkAfterStopCancelsImmediately(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	token, err := c.BeginShellWork(delegateLease{delegateID: "dlg_target", generation: 1})
@@ -81,6 +83,7 @@ func TestDelegateControllerCommitShellWorkAfterStopCancelsImmediately(t *testing
 }
 
 func TestDelegateControllerShellFinishRequiresTokenAndJobID(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	token, err := c.BeginShellWork(delegateLease{delegateID: "dlg_target", generation: 1})
@@ -109,6 +112,7 @@ func TestDelegateControllerShellFinishRequiresTokenAndJobID(t *testing.T) {
 }
 
 func TestDelegateControllerUnrelatedShellCommitDoesNotJoinStop(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_stopping", "")
 	seedDelegateControllerRunning(t, c, "dlg_running", "")
@@ -134,6 +138,7 @@ func TestDelegateControllerUnrelatedShellCommitDoesNotJoinStop(t *testing.T) {
 }
 
 func TestDelegateControllerClosingShellOutsideCurrentStopJoinsLaterRoot(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_stopping", "")
 	seedDelegateControllerRunning(t, c, "dlg_running", "")
@@ -196,6 +201,7 @@ func TestDelegateControllerClosingShellOutsideCurrentStopJoinsLaterRoot(t *testi
 }
 
 func TestDelegateControllerAbortShellReceiptReleasesOnce(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	token, err := c.BeginShellWork(delegateLease{delegateID: "dlg_target", generation: 1})

@@ -606,6 +606,7 @@ func TestUnservedSessionNamesNoTurn(t *testing.T) {
 // authoritative consumer, so the test rides the descendant hook — the same
 // path a real child's events take into its root daemon's AppWire projection.
 func TestUnservedSessionAnnouncesBoundary(t *testing.T) {
+	t.Parallel()
 	parent := newTestSessionForEnvctx(t)
 
 	var mu sync.Mutex

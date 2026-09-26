@@ -105,6 +105,7 @@ func attentionRailState(s *Session) (wake, retryActive bool, pending int) {
 // steals focus and burns quota, and nothing ever gives up. The pending IDs
 // stay cached for the next genuine wake.
 func TestRootAttentionPermanentFailureDoesNotReArmThePacedRetry(t *testing.T) {
+	t.Parallel()
 	s, clk, notifies, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 401, "unauthorized", nil, nil))
 	serveSession(t, s)
 
@@ -151,6 +152,7 @@ func TestRootAttentionPermanentFailureDoesNotReArmThePacedRetry(t *testing.T) {
 // delivery guarantee for attention — the item stays pending and the rail asks
 // for another wake. This pins the blast radius of the permanent-failure rule.
 func TestRootAttentionTransientFailureKeepsThePacedRetry(t *testing.T) {
+	t.Parallel()
 	s, clk, notifies, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
 	serveSession(t, s)
 
@@ -193,6 +195,7 @@ func TestRootAttentionTransientFailureKeepsThePacedRetry(t *testing.T) {
 // notification caches its ID without waking the session, and the deferred
 // IDs re-arm only when the user re-engages.
 func TestStopParksRootDelegateAttentionUntilReEngagement(t *testing.T) {
+	t.Parallel()
 	s, clk, notifies, adapter := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
 	// Not serveSession: this test keeps the session unserved so its turns
 	// run unnamed and nothing claims the parked queue behind the test's
@@ -305,6 +308,7 @@ func TestStopParksRootDelegateAttentionUntilReEngagement(t *testing.T) {
 // with no Canceled cause must not fall into the permanent branch — the
 // isAbortError half of roundWasCancelled is what keeps it out.
 func TestRootAttentionAbortedTurnKeepsThePacedRetry(t *testing.T) {
+	t.Parallel()
 	s, clk, _, _ := newAttentionLivelockSession(t, llm.NewAbortError("user aborted the request", nil))
 	serveSession(t, s)
 
@@ -333,6 +337,7 @@ func TestRootAttentionAbortedTurnKeepsThePacedRetry(t *testing.T) {
 // mirrors is already released, and the deferred attention the re-engagement
 // just re-armed stays armed.
 func TestStopReplayAfterReEngagementDoesNotReparkAttention(t *testing.T) {
+	t.Parallel()
 	s, _, notifies, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
 	// Not serveSession, for the same reason as the park test above.
 	go func() {
@@ -390,6 +395,7 @@ func TestStopReplayAfterReEngagementDoesNotReparkAttention(t *testing.T) {
 // original application must keep the session silent. A client retrying a
 // turn/queue whose response was lost wakes nothing.
 func TestReplayedAcceptAfterStopDoesNotWakeTheSession(t *testing.T) {
+	t.Parallel()
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
 	go func() {
 		for range s.Events() {
@@ -458,6 +464,7 @@ func TestReplayedAcceptAfterStopDoesNotWakeTheSession(t *testing.T) {
 // both precisely so a future asymmetric release cannot leave a stopped rail
 // live.
 func TestReplayedStopParksWhileASteeringHoldStands(t *testing.T) {
+	t.Parallel()
 	s, _, notifies, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
 	go func() {
 		for range s.Events() {
@@ -521,6 +528,7 @@ func TestReplayedStopParksWhileASteeringHoldStands(t *testing.T) {
 // not phantom-open the gate and run a model turn the user stopped; the
 // in-turn stand-down catches what the raw-depth carve-out let through.
 func TestStaleWatchTickDoesNotPhantomOpenTheParkedGate(t *testing.T) {
+	t.Parallel()
 	s, _, _, adapter := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
 	go func() {
 		for range s.Events() {
@@ -567,6 +575,7 @@ func TestStaleWatchTickDoesNotPhantomOpenTheParkedGate(t *testing.T) {
 // snapshot, so the attention is delivered, not stranded. The rail itself
 // stays parked; only re-engagement unparks.
 func TestParkedRailRunsAJobCarryingWakeAndDeliversItsAttention(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: repeatFinalResponse(4, "ok")})
@@ -633,6 +642,7 @@ func TestParkedRailRunsAJobCarryingWakeAndDeliversItsAttention(t *testing.T) {
 // A Stop's parked attention is not live work for a drain: it is deferred to
 // re-engagement and must not hold the drain open or keep its rung spinning.
 func TestParkedRootAttentionIsNotDrainLive(t *testing.T) {
+	t.Parallel()
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
 	go func() {
 		for range s.Events() {
@@ -674,6 +684,7 @@ func TestParkedRootAttentionIsNotDrainLive(t *testing.T) {
 // recovery finalizes the fence but leaves the holds standing, so seeding
 // from them covers that path too.
 func TestRestartSeedsTheAttentionParkFromTheDurableHolds(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	clk := agenttest.NewFakeClock()
 	transient := llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil)
@@ -791,6 +802,7 @@ func TestRestartSeedsTheAttentionParkFromTheDurableHolds(t *testing.T) {
 // moments a Stop and a re-engagement race, and the stale copy is what could
 // re-open the livelock over a queue the user parked.
 func TestAttentionRailParkedIsAProjectionOfTheDurableHolds(t *testing.T) {
+	t.Parallel()
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
 	go func() {
 		for range s.Events() {
@@ -826,6 +838,7 @@ func TestAttentionRailParkedIsAProjectionOfTheDurableHolds(t *testing.T) {
 // idle after the Stop — exactly as a parked queue reads zero for
 // pendingQueueDepth — and the busy projection returns with re-engagement.
 func TestParkedRootAttentionIsNotAutonomousWork(t *testing.T) {
+	t.Parallel()
 	s, _, _, _ := newAttentionLivelockSession(t, llm.ErrorFromHTTPStatus("openai", 503, "upstream unavailable", nil, nil))
 	go func() {
 		for range s.Events() {

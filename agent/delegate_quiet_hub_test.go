@@ -123,6 +123,7 @@ func ageHubLeasesPastQuietWindow(clk *agenttest.FakeClock) {
 }
 
 func TestDelegateQuietHub_SharedTicksReachAllLeases(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
 	root, controller := quietHubTestSession(t, clk)
 	leaseA := seedQuietHubLease(t, controller, clk, "dlg_hub_a")
@@ -150,6 +151,7 @@ func TestDelegateQuietHub_SharedTicksReachAllLeases(t *testing.T) {
 }
 
 func TestDelegateQuietHub_DetachedLeaseStopsReceiving(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
 	root, controller := quietHubTestSession(t, clk)
 	leaseA := seedQuietHubLease(t, controller, clk, "dlg_hub_a")
@@ -184,6 +186,7 @@ func TestDelegateQuietHub_DetachedLeaseStopsReceiving(t *testing.T) {
 }
 
 func TestDelegateQuietHub_StopsAfterLastDetach(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
 	root, controller := quietHubTestSession(t, clk)
 	lease := seedQuietHubLease(t, controller, clk, "dlg_hub_last")
@@ -208,6 +211,7 @@ func TestDelegateQuietHub_StopsAfterLastDetach(t *testing.T) {
 }
 
 func TestDelegateQuietHub_ParentCancelCleansRegistryAndTicker(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
 	root, controller := quietHubTestSession(t, clk)
 	lease := seedQuietHubLease(t, controller, clk, "dlg_hub_parent")
@@ -244,6 +248,7 @@ func TestDelegateQuietHub_ParentCancelCleansRegistryAndTicker(t *testing.T) {
 }
 
 func TestDelegateQuietHub_RearmAfterLastDetachFiresNewTicker(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
 	root, controller := quietHubTestSession(t, clk)
 	leaseFirst := seedQuietHubLease(t, controller, clk, "dlg_hub_rearm_first")
@@ -288,6 +293,7 @@ func TestDelegateQuietHub_RearmAfterLastDetachFiresNewTicker(t *testing.T) {
 }
 
 func TestDelegateQuietHub_BlockedLeaseDelaysNeitherOthersNorShutdown(t *testing.T) {
+	t.Parallel()
 	clk := agenttest.NewFakeClockAt(time.Date(2026, 8, 14, 9, 0, 0, 0, time.UTC))
 	root, controller := quietHubTestSession(t, clk)
 	leaseSlow := seedQuietHubLease(t, controller, clk, "dlg_hub_slow")

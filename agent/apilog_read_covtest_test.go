@@ -275,6 +275,7 @@ func TestBoundedAPILogMetadata(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSelectAPILogRange(t *testing.T) {
+	t.Parallel()
 	t.Run("empty defaults to last:20", func(t *testing.T) {
 		start, end, normalized, warning := selectAPILogRange("", 100)
 		if warning != "" {
@@ -368,6 +369,7 @@ func TestAPILogAttemptSettlementLookup(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAPILogSummaryRetention(t *testing.T) {
+	t.Parallel()
 	t.Run("tail mode retains last N", func(t *testing.T) {
 		r := newAPILogSummaryRetention("last:5")
 		for i := range 10 {
@@ -422,6 +424,7 @@ func TestAPILogSummaryRetention(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSummarizeAPILogRecord(t *testing.T) {
+	t.Parallel()
 	t.Run("attempt record with response", func(t *testing.T) {
 		rec := apilog.APIAttemptRecord{
 			AttemptID:        "att-1",

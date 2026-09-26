@@ -39,6 +39,7 @@ func (c *delegateTreeController) AdmitStartInput(lease delegateLease, admitInput
 }
 
 func TestDelegateControllerCreatedAppendFailurePublishesNothing(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	reservation, err := c.ReserveCreate(rootDelegateActor("root-session"), delegateControllerCreateDescriptor())
 	if err != nil {
@@ -67,6 +68,7 @@ func TestDelegateControllerCreatedAppendFailurePublishesNothing(t *testing.T) {
 }
 
 func TestDelegateControllerRunStartedAppendFailureDoesNotInstallBinding(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
@@ -100,6 +102,7 @@ func TestDelegateControllerRunStartedAppendFailureDoesNotInstallBinding(t *testi
 }
 
 func TestDelegateControllerCreateCommitIsOneAtomicBatch(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	reservation, err := c.ReserveCreate(rootDelegateActor("root-session"), delegateControllerCreateDescriptor())
 	if err != nil {
@@ -138,6 +141,7 @@ func TestDelegateControllerCreateCommitIsOneAtomicBatch(t *testing.T) {
 }
 
 func TestDelegateControllerCrashBeforeCreateCommitLeavesNoChildArtifacts(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	reservation, err := c.ReserveCreate(rootDelegateActor("root-session"), delegateControllerCreateDescriptor())
 	if err != nil {
@@ -174,6 +178,7 @@ func TestDelegateControllerCrashBeforeCreateCommitLeavesNoChildArtifacts(t *test
 }
 
 func TestDelegateControllerCrashAfterCreateCommitReconcilesOwnedPartialArtifacts(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	reservation, err := c.ReserveCreate(rootDelegateActor("root-session"), delegateControllerCreateDescriptor())
 	if err != nil {
@@ -236,6 +241,7 @@ func TestDelegateControllerCrashAfterCreateCommitReconcilesOwnedPartialArtifacts
 }
 
 func TestDelegateControllerCommittedUnreadyStartAdmitsOnlyStopOrFinish(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
@@ -269,6 +275,7 @@ func TestDelegateControllerCommittedUnreadyStartAdmitsOnlyStopOrFinish(t *testin
 }
 
 func TestDelegateControllerExactFinishSettlesStoppingGeneration(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
@@ -308,6 +315,7 @@ func TestDelegateControllerExactFinishSettlesStoppingGeneration(t *testing.T) {
 }
 
 func TestDelegateControllerInputAndCompensatingFinishFailureKeepsExactBinding(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -342,6 +350,7 @@ func TestDelegateControllerInputAndCompensatingFinishFailureKeepsExactBinding(t 
 }
 
 func TestDelegateControllerStopCanSettleRecoveryRequiredStart(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -377,6 +386,7 @@ func TestDelegateControllerStopCanSettleRecoveryRequiredStart(t *testing.T) {
 }
 
 func TestDelegateControllerInputPersistFailureUsesCanonicalAtomicFinish(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -406,6 +416,7 @@ func TestDelegateControllerInputPersistFailureUsesCanonicalAtomicFinish(t *testi
 }
 
 func TestDelegateControllerInputPersistFailureClaimsWaiterAndReturnsDelivery(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
@@ -450,6 +461,7 @@ func TestDelegateControllerInputPersistFailureClaimsWaiterAndReturnsDelivery(t *
 }
 
 func TestDelegateControllerInputPersistFinishAppendFailureDoesNotClaimWaiter(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
@@ -498,6 +510,7 @@ func TestDelegateControllerInputPersistFinishAppendFailureDoesNotClaimWaiter(t *
 }
 
 func TestDelegateControllerFinishGenerationUsesCanonicalAtomicTerminalBatch(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
@@ -519,6 +532,7 @@ func TestDelegateControllerFinishGenerationUsesCanonicalAtomicTerminalBatch(t *t
 }
 
 func TestDelegateControllerFinishGenerationEscapesArbitraryReasonAsJSON(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
@@ -540,6 +554,7 @@ func TestDelegateControllerFinishGenerationEscapesArbitraryReasonAsJSON(t *testi
 }
 
 func TestDelegateControllerAdmitStartInputSuccessMarksReady(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -566,6 +581,7 @@ func TestDelegateControllerAdmitStartInputSuccessMarksReady(t *testing.T) {
 }
 
 func TestDelegateControllerStartInputClaimStopWinsBeforeCompletion(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -599,6 +615,7 @@ func TestDelegateControllerStartInputClaimStopWinsBeforeCompletion(t *testing.T)
 }
 
 func TestDelegateControllerCommittedStartFailureStopWins(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -631,6 +648,7 @@ func TestDelegateControllerCommittedStartFailureStopWins(t *testing.T) {
 }
 
 func TestDelegateControllerRuntimeAttachmentIsOneToOne(t *testing.T) {
+	t.Parallel()
 	t.Run("retained runtime is not replaced", func(t *testing.T) {
 		c, _ := newDelegateControllerTestHarness(t, 1, 1)
 		seedDelegateControllerIdle(t, c, "dlg_target", "")
@@ -716,6 +734,7 @@ func TestDelegateControllerRuntimeAttachmentIsOneToOne(t *testing.T) {
 }
 
 func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -770,6 +789,7 @@ func TestDelegateControllerReserveAttentionRequiresResidentRuntimeAndPendingID(t
 }
 
 func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID   = "child-dlg_target"
 		attentionID = "attention-exact"
@@ -838,6 +858,7 @@ func TestDelegateControllerAttentionCommitBindsSelectedPendingTranscriptEntry(t 
 }
 
 func TestDelegateControllerReservationReceiptCannotRedirectCommit(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	descriptor := delegateControllerCreateDescriptor()
 	loopDetection := false
@@ -970,6 +991,7 @@ func assertDelegateControllerPathAbsent(t *testing.T, path string) {
 // classifying them with errors.Is matches the joined error too and reports a
 // failed durable write as a won race.
 func TestDelegateControllerCommittedStartFailureAppendFailureIsNotAStopWin(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")

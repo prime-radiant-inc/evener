@@ -23,6 +23,7 @@ import (
 )
 
 func TestDelegateRuntimeReclaim_UsesPublicMaxRetainedTerminalDefault2048(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	if got := c.maxRetainedTerminal; got != defaultMaxRetainedTerminal {
 		t.Fatalf("controller max_retained_terminal = %d, want public default %d", got, defaultMaxRetainedTerminal)
@@ -30,6 +31,7 @@ func TestDelegateRuntimeReclaim_UsesPublicMaxRetainedTerminalDefault2048(t *test
 }
 
 func TestDelegateRuntimeReclaim_ClaimsOnlyQuiescentTerminalSubtrees(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	c.maxRetainedTerminal = 2
 	eligible := seedDelegateReclaimRuntime(t, c, "dlg_eligible", "", time.Unix(10, 0).UTC(), false, false)
@@ -52,6 +54,7 @@ func TestDelegateRuntimeReclaim_ClaimsOnlyQuiescentTerminalSubtrees(t *testing.T
 }
 
 func TestDelegateRuntimeReclaim_ClosesPostorderAfterUnlock(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	c.maxRetainedTerminal = 2
 	parent := seedDelegateReclaimRuntime(t, c, "dlg_parent", "", time.Unix(10, 0).UTC(), false, false)
@@ -77,6 +80,7 @@ func TestDelegateRuntimeReclaim_ClosesPostorderAfterUnlock(t *testing.T) {
 }
 
 func TestDelegateRuntimeReclaim_ClearsOnlyExactResidentPointers(t *testing.T) {
+	t.Parallel()
 	t.Run("exact pointer clears", func(t *testing.T) {
 		c, _ := newDelegateControllerTestHarness(t, 4, 2)
 		c.maxRetainedTerminal = 1
@@ -121,6 +125,7 @@ func TestDelegateRuntimeReclaim_ClearsOnlyExactResidentPointers(t *testing.T) {
 }
 
 func TestDelegateRuntimeReclaim_PrefersClosedThenAcknowledgedThenOldestThenID(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 16, 4)
 	c.maxRetainedTerminal = 5
 	seedDelegateReclaimRuntime(t, c, "dlg_unacked_c", "", time.Unix(30, 0).UTC(), false, false)
@@ -140,6 +145,7 @@ func TestDelegateRuntimeReclaim_PrefersClosedThenAcknowledgedThenOldestThenID(t 
 }
 
 func TestDelegateRuntimeReclaim_InsufficientCapacityFailsBeforeIDMintOrConstruction(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	c.maxRetainedTerminal = 1
 	seedDelegateReclaimRuntime(t, c, "dlg_blocked", "", time.Unix(5, 0).UTC(), false, false)
@@ -219,6 +225,7 @@ func TestDelegateRuntimeReclaim_CreateAndColdRestoreTriggerReclamation(t *testin
 }
 
 func TestDelegateRuntimeReclaim_NoTimerUnloadEventOrStableDataDeletion(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 4, 2)
 	c.maxRetainedTerminal = 1
 	runtime := seedDelegateReclaimRuntime(t, c, "dlg_target", "", time.Unix(10, 0).UTC(), false, false)
@@ -356,6 +363,7 @@ func reclamationRootIDs(claim *delegateRuntimeReclamationClaim) []string {
 // two-member claim deterministically instead of racing a grace timer; the
 // scheduled path end to end is TestIntg_DelegateIdleReleasesStdioMCPServer.
 func TestDelegateIdleRelease_ReleasesWholeSubtreeLeafFirst(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
 		// The parent delegate's turn: spawn its own child delegate.
@@ -815,6 +823,7 @@ func assertWideSubtreeReleaseSettled(t *testing.T, probe *wideSubtreeReleaseProb
 // itself never starts before every descendant settled: the leaf-first
 // ordering the depth-2 contract test pins, held across the wave boundary.
 func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T) {
+	t.Parallel()
 	const (
 		wideChildren = 4
 		limit        = wideChildren
@@ -837,6 +846,7 @@ func TestDelegateIdleRelease_TeardownsSameDepthMembersConcurrently(t *testing.T)
 // and never holds more than two. Leaf-first still holds across the batches:
 // the claim root waits for the last batch to drain.
 func TestDelegateIdleRelease_CapsConcurrentMemberTeardown(t *testing.T) {
+	t.Parallel()
 	const (
 		wideChildren = 3
 		limit        = 2
@@ -853,6 +863,7 @@ func TestDelegateIdleRelease_CapsConcurrentMemberTeardown(t *testing.T) {
 // so an earlier generation's pending fire can never cut the newer
 // generation's grace short.
 func TestDelegateIdleReleaseGenerationGuard(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateReclaimRuntime(t, c, "dlg_target", "", time.Unix(10, 0).UTC(), false, false)
 	if !c.idleReleaseGenerationCurrent("dlg_target", 1) {
@@ -871,6 +882,7 @@ func TestDelegateIdleReleaseGenerationGuard(t *testing.T) {
 // restore on the owner-residency check, so the claim must refuse —
 // terminally, with no retry.
 func TestDelegateIdleRelease_RefusesSharedTaskStoreOwner(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	seedDelegateReclaimRuntime(t, c, "dlg_owner", "", time.Unix(10, 0).UTC(), false, false)
 	seedDelegateReclaimRuntime(t, c, "dlg_resolver", "", time.Unix(5, 0).UTC(), false, false)
@@ -1199,6 +1211,7 @@ func TestDelegateIdleRelease_RefusalsKeepSingleGraceTimer(t *testing.T) {
 // merely superseded at fire time — where a session-keyed map would leave both
 // armed.
 func TestDelegateIdleRelease_CrossSessionArmReplacesPriorWindow(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	fake := agenttest.NewFakeClock()
 	session := func() *Session {
@@ -1223,6 +1236,7 @@ func TestDelegateIdleRelease_CrossSessionArmReplacesPriorWindow(t *testing.T) {
 // leave the newer generation with no grace timer at all — and the stale timer
 // is the one stopped.
 func TestDelegateIdleRelease_StaleArmDoesNotDisplaceNewerGeneration(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	fake := agenttest.NewFakeClock()
 	s := &Session{delegateController: c, owningDelegateID: "dlg_x", clock: fake}
@@ -1258,6 +1272,7 @@ func TestDelegateIdleRelease_StaleArmDoesNotDisplaceNewerGeneration(t *testing.T
 // accumulates spent timer objects — each pinning its callback closure and the
 // *Session it captures — for the life of the process.
 func TestDelegateIdleRelease_FiredTimerLeavesNoHandle(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	fake := agenttest.NewFakeClock()
 	s := &Session{delegateController: c, owningDelegateID: "dlg_x", clock: fake}
@@ -1276,6 +1291,7 @@ func TestDelegateIdleRelease_FiredTimerLeavesNoHandle(t *testing.T) {
 // closing controller stops and drops every installed grace-timer handle, so
 // the tree's teardown leaves no armed waiter and no retained closure behind.
 func TestDelegateIdleRelease_CloseSweepsGraceTimers(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	fake := agenttest.NewFakeClock()
 	s := &Session{delegateController: c, owningDelegateID: "dlg_x", clock: fake}
@@ -1305,6 +1321,7 @@ func TestDelegateIdleRelease_CloseSweepsGraceTimers(t *testing.T) {
 // stop the live retry and install a spent handle, leaving the delegate with no
 // grace window at all.
 func TestDelegateIdleRelease_OlderSameGenerationArmDoesNotDisplaceRetry(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	fake := agenttest.NewFakeClock()
 	timersBefore := fake.BlockedCount()
@@ -1336,6 +1353,7 @@ func TestDelegateIdleRelease_OlderSameGenerationArmDoesNotDisplaceRetry(t *testi
 // reaches the swap after the sweep must be rejected — installing would arm a
 // callback (and pin the *Session it captures) that no later close stops.
 func TestDelegateIdleRelease_ArmAfterCloseIsRejected(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	fake := agenttest.NewFakeClock()
 	c.mu.Lock()
@@ -1364,6 +1382,7 @@ func TestDelegateIdleRelease_ArmAfterCloseIsRejected(t *testing.T) {
 // retire found no entry to drop — installing would pin the spent closure for
 // the life of the process, the exact leak the retirement exists to remove.
 func TestDelegateIdleRelease_FiredArmIsNeverInstalled(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	fake := agenttest.NewFakeClock()
 	timersBefore := fake.BlockedCount()
@@ -1772,6 +1791,7 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 // containing it, so the restored parent a chain restore is still using
 // cannot be swept by a grace timer while the child install is in flight.
 func TestDelegateAttentionRestoreHold_RefusesSubtreeBeforeLiveEntry(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -1840,6 +1860,7 @@ func TestDelegateAttentionRestoreHold_RefusesSubtreeBeforeLiveEntry(t *testing.T
 // with a capacity refusal produced solely by the held entry — spurious,
 // because the one free candidate satisfies the truthful requirement exactly.
 func TestDelegateAttentionRestoreHold_ExcludedFromReclamationCapacity(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	c.maxRetainedTerminal = 2
 	held := seedDelegateReclaimRuntime(t, c, "dlg_held", "", time.Unix(5, 0).UTC(), false, false)
@@ -1911,6 +1932,7 @@ func finishHarnessDelegateGeneration(t *testing.T, c *delegateTreeController, ac
 // member, it pins every sibling too. Each stopped-and-forgotten delegate would
 // then burn a maxRetainedTerminal slot for the life of the process.
 func TestDelegateRuntimeReclaim_CarriedSteerDoesNotPinASettledSubtree(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	c.maxRetainedTerminal = 1
 	settled := seedDelegateReclaimRuntime(t, c, "dlg_settled", "", time.Unix(10, 0).UTC(), false, false)
@@ -1938,6 +1960,7 @@ func TestDelegateRuntimeReclaim_CarriedSteerDoesNotPinASettledSubtree(t *testing
 // An ORDINARY pending admission still pins its subtree: that one is a live
 // generation's unfinished work, and reclaiming its runtime would drop it.
 func TestDelegateRuntimeReclaim_OrdinaryPendingSteerStillPinsTheSubtree(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	c.maxRetainedTerminal = 1
 	seedDelegateReclaimRuntime(t, c, "dlg_busy", "", time.Unix(10, 0).UTC(), false, false)

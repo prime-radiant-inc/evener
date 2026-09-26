@@ -19,6 +19,7 @@ import (
 // durable pending head" hard error, which the drain path escalates to exit 1.
 // With the claim, B stands down before it touches the store.
 func TestWatchSendDeliveryConcurrentExecutorsClaimOnce(t *testing.T) {
+	t.Parallel()
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "concurrent delivery"})
 	cfg := fixture.onlyWatchConfig(t)
@@ -99,6 +100,7 @@ func TestWatchSendDeliveryConcurrentExecutorsClaimOnce(t *testing.T) {
 // the in-memory pending must consult the delivered set and stand down instead of
 // raising the hard "not the durable pending head" error.
 func TestWatchSendDeliverySettledRerunStandsDown(t *testing.T) {
+	t.Parallel()
 	fixture := newStableWatchRuntimeFixture(t, nil)
 	onSessionEventKD(fixture.sourceJM, events.EventCommunicate, events.CommunicateData{Message: "settled rerun"})
 	cfg := fixture.onlyWatchConfig(t)

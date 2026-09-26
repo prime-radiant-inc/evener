@@ -33,6 +33,7 @@ func closeDelegateControllerResumability(t *testing.T, c *delegateTreeController
 // target's own aggregate only and committed a generation whose every model
 // request would fail target_busy forever.
 func TestDelegateAttentionWake_ClosedAncestorRefusesReserveAndNextIdle(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -76,6 +77,7 @@ func TestDelegateAttentionWake_ClosedAncestorRefusesReserveAndNextIdle(t *testin
 // accept/closure race: once transcript consumption is admitted, permanent
 // ancestor closure waits for the exact attention start batch.
 func TestDelegateAttentionWake_CommitStartRechecksAncestorFence(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -145,6 +147,7 @@ func TestDelegateAttentionWake_CommitStartRechecksAncestorFence(t *testing.T) {
 // completes with the ancestor still resumable the exact same attention is
 // deliverable again.
 func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -227,6 +230,7 @@ func TestDelegateAttentionWake_StoppingAncestorParksAttentionForLaterDelivery(t 
 // under its original attention ID, with the source durably resolved -- replays
 // append nothing new.
 func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	grandchildDelegateID := identifier.MustNewDelegateID()
 	grandchildSessionID := identifier.MustNewSessionID()
@@ -398,6 +402,7 @@ func TestDelegateAttentionWake_PermanentClosedAncestorEscalatesToRootOnce(t *tes
 // source, arm no wake (no retry loop), and a second bootstrap over the same
 // durable state must not duplicate anything.
 func TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *testing.T) {
+	t.Parallel()
 	c, journalPath := newDelegateControllerTestHarness(t, 3, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_child", "dlg_parent", true)
@@ -478,6 +483,7 @@ func TestStableDelegateAttention_ColdRestoreEscalatesFencedDescendantOnce(t *tes
 // own transfer -- with exactly one root copy of each and both sources
 // resolved. The batch-hash design failed this permanently.
 func TestStableDelegateAttention_EscalationCrashWindowSurvivesCascadeAndGrowth(t *testing.T) {
+	t.Parallel()
 	c, journalPath := newDelegateControllerTestHarness(t, 4, 1)
 	seedStableAttentionRepairDelegate(t, c, "dlg_grand", "", true)
 	seedStableAttentionRepairDelegate(t, c, "dlg_parent", "dlg_grand", true)
@@ -547,6 +553,7 @@ func TestStableDelegateAttention_EscalationCrashWindowSurvivesCascadeAndGrowth(t
 // stop as permanent, so no escalation fires -- and the attention delivers
 // normally once the stop completes.
 func TestDelegateAttentionWake_AncestorStopFenceParksUncoveredChild(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	c.mu.Lock()

@@ -55,6 +55,7 @@ func scratchFollowsReentryFixture(t *testing.T, id string) (*scriptedLaneRepo, s
 // reaches only the clone, and otherwise the original's lease is held for the
 // rest of the daemon's uptime.
 func TestResumeWorktreeReentry_LaunchEnvironmentScratchFollowsTheSession(t *testing.T) {
+	t.Parallel()
 	sr, meta, env, scratch := scratchFollowsReentryFixture(t, "01RESUMESCRATCHFOLLOWS0001")
 	sess, err := sr.restoreSessionOn(env, meta, sr.restoreConfig())
 	if err != nil {
@@ -87,6 +88,7 @@ func TestResumeWorktreeReentry_LaunchEnvironmentScratchFollowsTheSession(t *test
 // a directory and a held lease that neither the caller's disposal of the
 // environment it handed in nor anything else will ever reach.
 func TestResumeWorktreeReentry_RejectedRestoreDropsTheLaunchEnvironmentScratch(t *testing.T) {
+	t.Parallel()
 	sr, meta, env, scratch := scratchFollowsReentryFixture(t, "01RESUMESCRATCHREJECTED001")
 	boom := errors.New("restore failed after re-entry")
 	cfg := sr.restoreConfig()
@@ -119,6 +121,7 @@ func TestResumeWorktreeReentry_RejectedRestoreDropsTheLaunchEnvironmentScratch(t
 // would take the parent's scratch out from under the parent. The restore has
 // to refuse loudly and leave the handed-in environment owning what it owned.
 func TestResumeWorktreeReentry_ChildSessionRefusesToReenter(t *testing.T) {
+	t.Parallel()
 	sr, meta, env, scratch := scratchFollowsReentryFixture(t, "01RESUMESCRATCHCHILD000001")
 	cfg := sr.restoreConfig()
 	cfg.spawn.parentSessionID = "01PARENTSESSION00000000001"
@@ -147,6 +150,7 @@ func TestResumeWorktreeReentry_ChildSessionRefusesToReenter(t *testing.T) {
 // has to read that flag too, or a resumed child re-enters a parent-owned
 // worktree and adopts the scratch of the environment it was handed.
 func TestResumeWorktreeReentry_BareResumeOfAPersistedChildRefusesToReenter(t *testing.T) {
+	t.Parallel()
 	sr, meta, env, scratch := scratchFollowsReentryFixture(t, "01RESUMESCRATCHBARECHILD01")
 	meta.IsSubagent = true
 	meta.ParentSessionID = "01PARENTSESSION00000000002"

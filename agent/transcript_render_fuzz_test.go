@@ -205,6 +205,7 @@ func trender_assertDerivedSeq(t *testing.T, renderedEntries []string, startSeq i
 // that projection and nothing looser - reordering, extra copies, invented
 // entries, and a retained private key all have to stay rejected.
 func TestTrenderEntryLinesAreProjection(t *testing.T) {
+	t.Parallel()
 	const trenderHeader = `{"kind":"header","format_version":2,"session_id":"p"}`
 	entryA := `{"kind":"entry","seq":%d,"turn":{"kind":"USER_INPUT","message":{"role":"user"}}}`
 	entryB := `{"kind":"entry","seq":%d,"turn":{"kind":"ASSISTANT","message":{"role":"assistant"}}}`
@@ -299,6 +300,7 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 // ok=false (rather than silently returning a truncated line list) when a
 // single line exceeds transcriptJSONLMaxLineBytes.
 func TestTrenderScanLines_ScanError(t *testing.T) {
+	t.Parallel()
 	tooLong := bytes.Repeat([]byte("x"), transcriptJSONLMaxLineBytes+10)
 	content := append([]byte("short line\n"), tooLong...)
 	lines, ok := trender_scanLines(content)
@@ -522,6 +524,7 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 }
 
 func TestTrenderExpansionOracleDistinguishesNeighboringRecords(t *testing.T) {
+	t.Parallel()
 	header, entries, _, opt := trender_program([]byte{8}, "oracle")
 	path := filepath.Join(t.TempDir(), "oracle.transcript.jsonl")
 	header.SessionID = "oracle"

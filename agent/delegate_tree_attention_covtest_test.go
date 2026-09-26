@@ -18,6 +18,7 @@ func TestReconcileDelegateAttentionFromTranscripts_NilController(t *testing.T) {
 // TestReconcileDelegateAttentionFromTranscripts_Empty covers the happy path
 // with no eligible delegates (lines 70-76, 96-100).
 func TestReconcileDelegateAttentionFromTranscripts_Empty(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	if err := c.reconcileDelegateAttentionFromTranscripts(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -26,6 +27,7 @@ func TestReconcileDelegateAttentionFromTranscripts_Empty(t *testing.T) {
 
 // TestDelegateAttentionProjectionEligible covers the pure helper function.
 func TestDelegateAttentionProjectionEligible(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_idle", "")
 	c.mu.Lock()
@@ -44,6 +46,7 @@ func TestDelegateAttentionProjectionEligible(t *testing.T) {
 // TestNextIdleDelegateAttention_NoPending covers the path where there are
 // no pending attention IDs.
 func TestNextIdleDelegateAttention_NoPending(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_idle", "")
 	_, _, pending := c.nextIdleDelegateAttention()
@@ -55,6 +58,7 @@ func TestNextIdleDelegateAttention_NoPending(t *testing.T) {
 // TestHasPendingDelegateAttention_NoPending covers the path where there are
 // no pending attention IDs.
 func TestHasPendingDelegateAttention_NoPending(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_idle", "")
 	if c.hasPendingDelegateAttention() {
@@ -64,6 +68,7 @@ func TestHasPendingDelegateAttention_NoPending(t *testing.T) {
 
 // TestRetryDelegateAttentionLater covers the no-op retry path.
 func TestRetryDelegateAttentionLater(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	c.retryDelegateAttentionLater()
 	// Should not panic.
@@ -72,6 +77,7 @@ func TestRetryDelegateAttentionLater(t *testing.T) {
 // TestPermanentlyFencedDelegateAttention covers the method with no fenced
 // delegates.
 func TestPermanentlyFencedDelegateAttention(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_idle", "")
 	plans := c.permanentlyFencedDelegateAttention()
@@ -83,6 +89,7 @@ func TestPermanentlyFencedDelegateAttention(t *testing.T) {
 // TestReservedAttentionID covers the reservedAttentionID method with no
 // reserved attention.
 func TestReservedAttentionID(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	s := &Session{}

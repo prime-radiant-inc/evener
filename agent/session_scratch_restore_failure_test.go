@@ -47,6 +47,7 @@ func crashLiveRoot(t *testing.T, root *Session) {
 // its destructive teardown from ownsFresh ("this restore created the
 // environment") and deleted the directory.
 func TestDelegateRestoreFailurePreservesAdoptedRetainedScratch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root1 := newQueuePersistTestSession(t, dir)
 	owner, ok := root1.scratchRetentionOwner()
@@ -198,6 +199,7 @@ func TestDelegateRestoreFailurePreservesAdoptedRetainedScratch(t *testing.T) {
 // be released, or its lease stays held by a session that was never returned and
 // never closed.
 func TestRootRestoreFailureReleasesUnadoptedRetainedScratch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root1 := newQueuePersistTestSession(t, dir)
 	owner, ok := root1.scratchRetentionOwner()
@@ -412,6 +414,7 @@ func newRestorableSandboxedDelegate(t *testing.T, kind string) restorableSandbox
 // persisted sandbox slot, leaving the delegate in the empty fresh directory with
 // its retained handle orphaned and its kernel wrapper pointing at the mint.
 func TestDelegateSandboxedRestoreAdoptsRetainedSandboxScratch(t *testing.T) {
+	t.Parallel()
 	fixture := newRestorableSandboxedDelegate(t, sandbox.ScratchKindSandbox)
 	artifact := filepath.Join(fixture.ref.Dir, "durable.bin")
 	if err := os.WriteFile(artifact, []byte("durable"), 0o600); err != nil {
@@ -450,6 +453,7 @@ func TestDelegateSandboxedRestoreAdoptsRetainedSandboxScratch(t *testing.T) {
 // adoptedScratch false and the failure path disposed the durable directory. The
 // adopted flag must come from adoption itself.
 func TestDelegateSandboxedRestoreFailurePreservesAdoptedUnsandboxedScratch(t *testing.T) {
+	t.Parallel()
 	fixture := newRestorableSandboxedDelegate(t, sandbox.ScratchKindUnsandboxed)
 	artifact := filepath.Join(fixture.ref.Dir, "durable.bin")
 	if err := os.WriteFile(artifact, []byte("durable"), 0o600); err != nil {
@@ -498,6 +502,7 @@ func TestDelegateSandboxedRestoreFailurePreservesAdoptedUnsandboxedScratch(t *te
 // directory, not os.RemoveAll it out from under the manifest a later resume
 // reacquires.
 func TestDiscardRestoredCandidateRetainsAdoptedRetainedScratch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	candidate := newSession(t, withDir(dir), withConfig(SessionConfig{
 		StateDir: dir,
@@ -626,6 +631,7 @@ func pinRetainedScratchPair(t *testing.T, owner sandbox.ScratchOwner, childID, b
 // failing order is exercised. Every run has to leave the referenced allocations
 // intact and the pool still able to hand the sandbox slot out.
 func TestDelegatePartialAdoptionFailurePreservesRetainedScratch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root1 := newQueuePersistTestSession(t, dir)
 	owner, ok := root1.scratchRetentionOwner()

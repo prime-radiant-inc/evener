@@ -777,6 +777,7 @@ func TestClientMutation_PromoteRejectsShiftedEntryDurably(t *testing.T) {
 }
 
 func TestClientMutation_QueueReplayReportsRemovedAfterTransform(t *testing.T) {
+	t.Parallel()
 	for _, transform := range []string{"cancel", "promote", "drain"} {
 		t.Run(transform, func(t *testing.T) {
 			sess := newTestSession(t)
@@ -2314,6 +2315,7 @@ func skillSteerMidTurnSession(t *testing.T, steer func() error) (*Session, *agen
 }
 
 func TestClientMutation_SkillSelectionSteerDeliveredIntoRunningTurn(t *testing.T) {
+	t.Parallel()
 	const mutationID = "skill-steer-delivered"
 	var steerErr error
 	var steerTurnID string
@@ -2371,6 +2373,7 @@ func TestClientMutation_SkillSelectionSteerDeliveredIntoRunningTurn(t *testing.T
 }
 
 func TestClientMutation_SkillSelectionSteerFailedPreparationKeepsTurnRunning(t *testing.T) {
+	t.Parallel()
 	const mutationID = "skill-steer-failed"
 	var steerErr error
 	var steerTurnID string

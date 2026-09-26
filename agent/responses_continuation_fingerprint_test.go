@@ -10,6 +10,7 @@ import (
 )
 
 func TestOpenAIResponsesContinuationFingerprint_ProductionPromptStableWithFixedEnvironment(t *testing.T) {
+	t.Parallel()
 	client := openAIResponsesContinuationClientForTest(t)
 	first := openAIResponsesContinuationFingerprintForPromptTest(t, client, openAIContinuationPromptDataForTest("2026-06-24"))
 	second := openAIResponsesContinuationFingerprintForPromptTest(t, client, openAIContinuationPromptDataForTest("2026-06-24"))
@@ -23,6 +24,7 @@ func TestOpenAIResponsesContinuationFingerprint_ProductionPromptStableWithFixedE
 }
 
 func TestOpenAIResponsesContinuationFingerprint_ProductionPromptChangesWithToday(t *testing.T) {
+	t.Parallel()
 	client := openAIResponsesContinuationClientForTest(t)
 	first := openAIResponsesContinuationFingerprintForPromptTest(t, client, openAIContinuationPromptDataForTest("2026-06-24"))
 	second := openAIResponsesContinuationFingerprintForPromptTest(t, client, openAIContinuationPromptDataForTest("2026-06-25"))

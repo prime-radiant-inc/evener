@@ -14,6 +14,7 @@ import (
 
 // Removing the active-operation barrier would let a claim overtake admitted input.
 func TestRetirementAdmissionWinsWithoutWaiting(t *testing.T) {
+	t.Parallel()
 	c, err := NewRetirementController(0, clock.Real())
 	if err != nil {
 		t.Fatal(err)

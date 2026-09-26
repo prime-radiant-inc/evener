@@ -40,6 +40,7 @@ import (
 // fixed at this commit and this test pins that; if not, it fails and names
 // the gap precisely.
 func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing.T) {
+	t.Parallel()
 	var sess *Session
 	calls := 0
 	var steerOnce sync.Once

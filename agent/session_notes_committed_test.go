@@ -205,6 +205,7 @@ func assertNotesSaveRejected(t *testing.T, s *Session, mutationErr error, want n
 // after that save fails and the live store rolls back, every reader surface
 // must report the last committed values and never the staged tentative value.
 func TestReadersSeeOnlyCommittedNotesWhileSaveIsParked(t *testing.T) {
+	t.Parallel()
 	t.Run("agent-note", func(t *testing.T) {
 		s := newNotesToolSession(t)
 		s.stateDir = t.TempDir()

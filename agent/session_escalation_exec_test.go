@@ -45,6 +45,7 @@ func sbxReadOnlySession(t *testing.T) (*Session, string) {
 }
 
 func TestExecTool_SandboxWriteEscalatesApproveReruns(t *testing.T) {
+	t.Parallel()
 	sess, worktree := sbxReadOnlySession(t)
 	target := filepath.Join(worktree, "escalated.txt")
 	call := writeFileCall("c1", target, "approved via escalation")

@@ -26,6 +26,7 @@ import (
 // steering-route invocation, its carrier, and no duplication on a second
 // restore.
 func TestSkillActivation_SteeringSelectionReconciledAfterAdmissionSaveFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_steering_reconcile")
 	stateDir := t.TempDir()
@@ -237,6 +238,7 @@ func TestSkillActivation_FailedPreparationIsNotReDeliveredAtRestore(t *testing.T
 // exists elsewhere, the re-drive fails visibly and the replacement is never
 // activated.
 func TestSkillActivation_PreparedSelectionPinsRecordedSource(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_pinned_source")
@@ -303,6 +305,7 @@ func TestSkillActivation_PreparedSelectionPinsRecordedSource(t *testing.T) {
 // model request either carries its complete instructions or fails visibly. It
 // is never dispatched without them.
 func TestSkillActivation_LostSteeringAdmissionGatesNextDispatch(t *testing.T) {
+	t.Parallel()
 	t.Run("a repaired metadata path admits the selection before the next request", func(t *testing.T) {
 		root := t.TempDir()
 		stateDir := t.TempDir()
@@ -387,6 +390,7 @@ func TestSkillActivation_LostSteeringAdmissionGatesNextDispatch(t *testing.T) {
 // building requests with the steering prose in history, no skill instructions
 // and no error — the silent omission this contract exists to prevent.
 func TestSkillActivation_RestoredSelectionAdmissionGatesNextDispatch(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	stateDir := t.TempDir()
 	body := "BODY_restored_gate"

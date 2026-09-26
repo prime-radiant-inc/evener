@@ -1753,6 +1753,7 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 }
 
 func TestTaskListTool_UpdateNamesBlockingDelegateDependency(t *testing.T) {
+	t.Parallel()
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 
 	outcomes := make(chan stableDelegateSendOutcome, 1)
@@ -1798,6 +1799,7 @@ func TestTaskListTool_UpdateNamesBlockingDelegateDependency(t *testing.T) {
 }
 
 func TestTaskListTool_UpdateLeavesBackgroundDelegateOutOfDependencyReminder(t *testing.T) {
+	t.Parallel()
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 
 	outcomes := make(chan stableDelegateSendOutcome, 1)
@@ -1839,6 +1841,7 @@ func TestTaskListTool_UpdateLeavesBackgroundDelegateOutOfDependencyReminder(t *t
 }
 
 func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		failed bool

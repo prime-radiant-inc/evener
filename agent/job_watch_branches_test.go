@@ -498,6 +498,7 @@ func TestIsSupportedWatchEventKind(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCanonicalWatchEvents(t *testing.T) {
+	t.Parallel()
 	t.Run("empty", func(t *testing.T) {
 		if canonicalWatchEvents(nil) != nil {
 			t.Fatalf("expected nil for empty input")
@@ -762,6 +763,7 @@ func TestWatchKeyMatchesClearRequest(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAvailableEventKindNames(t *testing.T) {
+	t.Parallel()
 	names := availableEventKindNames()
 	if len(names) == 0 {
 		t.Fatalf("expected non-empty event kind names")

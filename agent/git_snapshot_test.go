@@ -141,6 +141,7 @@ func TestGitOriginURL_NoOrigin(t *testing.T) {
 }
 
 func TestGitOriginURL_NotGitRepo(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dir, _ = filepath.EvalSymlinks(dir)
 	env := execenv.NewLocalExecutionEnvironment(dir)

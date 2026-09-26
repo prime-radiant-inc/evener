@@ -56,6 +56,7 @@ func childCurrentWorkEvents(all []events.SessionEvent, childID string) []events.
 }
 
 func TestRootSessionStartSeedsPostTemplateCurrentTask(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	session := newSession(t,
 		withDir(dir),

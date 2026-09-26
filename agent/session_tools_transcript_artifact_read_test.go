@@ -95,6 +95,7 @@ func stringsToAny(values []string) []any {
 }
 
 func TestReadTranscriptArtifactPageAndSearch(t *testing.T) {
+	t.Parallel()
 	deps, ref := artifactTranscriptFixture(t, "zero\nneedle\nend\n")
 	page := execRead(t, deps, map[string]any{"transcript_ref": ref})
 	requireExactKeys(t, page, "transcript_ref", "representation", "content_type", "page", "retained_start_bytes")
@@ -124,6 +125,7 @@ func TestReadTranscriptArtifactPageAndSearch(t *testing.T) {
 }
 
 func TestReadTranscriptArtifactPageContinuationAndFixedEncoding(t *testing.T) {
+	t.Parallel()
 	output := strings.Repeat("a", retainedOutputPageBytes) + "tail"
 	deps, ref := artifactTranscriptFixture(t, output)
 	first := execRead(t, deps, map[string]any{"transcript_ref": ref})
@@ -139,6 +141,7 @@ func TestReadTranscriptArtifactPageContinuationAndFixedEncoding(t *testing.T) {
 }
 
 func TestReadTranscriptRetainedValidation(t *testing.T) {
+	t.Parallel()
 	deps, ref := artifactTranscriptFixture(t, "line\n")
 	unknownRef := "artifact:" + strings.Repeat("0", 32)
 	tests := []struct {
@@ -261,6 +264,7 @@ func TestReadTranscriptSearchEnvelopeStaysBelowRegistryBackstop(t *testing.T) {
 }
 
 func TestReadTranscriptRejectsOutputMatchOverEnvelopeBound(t *testing.T) {
+	t.Parallel()
 	deps, ref := artifactTranscriptFixture(t, "line\n")
 	_, err := execReadTranscript(deps, map[string]any{
 		"transcript_ref": ref,

@@ -276,6 +276,7 @@ func TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentity
 }
 
 func TestDelegateResourceCreate_RegisteredResultPreservesWorktreeAndModelFallbackWarning(t *testing.T) {
+	t.Parallel()
 	cfg := worktreeTestSessionConfig()
 	cfg.testOnly.minimalWorktreeToolRegistry = false
 	r := newWorktreeRepoWithConfig(t, cfg)

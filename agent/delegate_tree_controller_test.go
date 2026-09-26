@@ -24,6 +24,7 @@ import (
 )
 
 func TestDelegateControllerDirectOwnerAuthorization(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_direct", "")
 
@@ -40,6 +41,7 @@ func TestDelegateControllerDirectOwnerAuthorization(t *testing.T) {
 }
 
 func TestDelegateControllerRejectsSiblingAndVisibleDescendantMutation(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 2)
 	seedDelegateControllerRunning(t, c, "dlg_left", "")
 	seedDelegateControllerRunning(t, c, "dlg_right", "")
@@ -56,6 +58,7 @@ func TestDelegateControllerRejectsSiblingAndVisibleDescendantMutation(t *testing
 }
 
 func TestDelegateControllerRejectsStaleActorLease(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerRunning(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -67,6 +70,7 @@ func TestDelegateControllerRejectsStaleActorLease(t *testing.T) {
 }
 
 func TestDelegateControllerReservationHoldsCapacity(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_first", "")
 	seedDelegateControllerIdle(t, c, "dlg_second", "")
@@ -93,6 +97,7 @@ func TestDelegateControllerReservationHoldsCapacity(t *testing.T) {
 }
 
 func TestDelegateControllerConcurrentIdleReservationsChooseOne(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 
@@ -130,6 +135,7 @@ func TestDelegateControllerConcurrentIdleReservationsChooseOne(t *testing.T) {
 }
 
 func TestDelegateControllerAppendFailureLeavesDurableAndLiveStateUnchanged(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	beforeBytes := readDelegateControllerFile(t, path)
@@ -157,6 +163,7 @@ func TestDelegateControllerAppendFailureLeavesDurableAndLiveStateUnchanged(t *te
 }
 
 func TestDelegateControllerRejectedBatchLeavesBytesSequenceAndFoldUnchanged(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	beforeBytes := readDelegateControllerFile(t, path)
@@ -186,6 +193,7 @@ func TestDelegateControllerRejectedBatchLeavesBytesSequenceAndFoldUnchanged(t *t
 }
 
 func TestDelegateControllerSnapshotReturnsOneStableRow(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_only", "")
 
@@ -199,6 +207,7 @@ func TestDelegateControllerSnapshotReturnsOneStableRow(t *testing.T) {
 }
 
 func TestDelegateControllerMutationReturnsCapturedSnapshot(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
@@ -223,6 +232,7 @@ func TestDelegateControllerMutationReturnsCapturedSnapshot(t *testing.T) {
 }
 
 func TestDelegateControllerCapturedSnapshotsCarryMonotonicRevision(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 4, 2)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")

@@ -380,6 +380,7 @@ func TestRetirementRootWorktreeExitKeepsParkedIdentityAndMintedSlot(t *testing.T
 // parked environment's identity (E0), and a post-resume backswap must persist
 // the ownership transition before the move, leaving no stale owning slot on E1.
 func TestRetirementResumedWorktreeKeepsBindingIdentityAcrossBackswap(t *testing.T) {
+	t.Parallel()
 	sr, root := newResumeScratchLane(t)
 	owner, ok := root.scratchRetentionOwner()
 	if !ok {
@@ -948,6 +949,7 @@ func TestRetirementConsumerRolesRecordEachBinding(t *testing.T) {
 // replacement scratch directory, silently losing the original durable
 // artifacts.
 func TestRetirementRestoreFailsClosedOnReferenceWithoutBinding(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	base := t.TempDir()
 	workDir := t.TempDir()
@@ -997,6 +999,7 @@ func TestRetirementRestoreFailsClosedOnReferenceWithoutBinding(t *testing.T) {
 // never adopted. Restore must refuse this manifest instead of silently losing
 // the session's scratch.
 func TestRetirementRestoreFailsClosedOnOwningBindingWithoutConsumer(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	base := t.TempDir()
 	workDir := t.TempDir()
@@ -1064,6 +1067,7 @@ func TestRetirementRestoreFailsClosedOnOwningBindingWithoutConsumer(t *testing.T
 // by keeping it; restore must still succeed and adopt the real allocation
 // through the owning binding.
 func TestRetirementRestorePreservesHistoricalEmptyBinding(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	base := t.TempDir()
 	workDir := t.TempDir()
@@ -1135,6 +1139,7 @@ func TestRetirementRestorePreservesHistoricalEmptyBinding(t *testing.T) {
 // fresh mint, the same-kind guard leaves the session in a new directory, orphans
 // the retained sandbox slot, and the wrapper grants the wrong TMPDIR.
 func TestRetirementResumedRootSandboxScratchRestoresAtOriginalPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root1 := newQueuePersistTestSession(t, dir)
 	owner, ok := root1.scratchRetentionOwner()
@@ -1232,6 +1237,7 @@ func TestRetirementResumedRootSandboxScratchRestoresAtOriginalPath(t *testing.T)
 // environment would publish an empty binding and leave the clone's allocation
 // unpinned.
 func TestRetirementResumedWorktreePinsTheActiveClone(t *testing.T) {
+	t.Parallel()
 	sr, root := newResumeScratchLane(t)
 	owner, ok := root.scratchRetentionOwner()
 	if !ok {
@@ -1332,6 +1338,7 @@ func TestRetirementSwapPublicationFailureIsSticky(t *testing.T) {
 // those kinds from the aliased source map (and so from the moved set), so the
 // eventual successful write left the target binding with no owning slots.
 func TestRetirementStaleSwapRetryKeepsMovedSlots(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	defer root.Close()
@@ -1430,6 +1437,7 @@ func TestRetirementStaleSwapRetryKeepsMovedSlots(t *testing.T) {
 // race. The holder is released deterministically between the first failed
 // attempt and the retry.
 func TestScratchSwapRetriesLockContention(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	defer root.Close()
@@ -1522,6 +1530,7 @@ func TestScratchSwapRetriesLockContention(t *testing.T) {
 // directory and manifest path exist. A foreign pin means the next restore would
 // reject the allocation, so retirement readiness must fail closed.
 func TestRetirementRejectsForeignRetainedScratchPin(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	workDir := t.TempDir()
 	base := t.TempDir()
@@ -1590,6 +1599,7 @@ func TestRetirementRejectsForeignRetainedScratchPin(t *testing.T) {
 // must re-provision one rather than leave the environment with no sandbox
 // scratch at all.
 func TestRetirementResumedRootScratchAdoptionFailureLeavesUsableScratch(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	workDir := t.TempDir()
 	const sessionID = "01RESUMEDROOTADOPTFAIL1"
@@ -1658,6 +1668,7 @@ func TestRetirementResumedRootScratchAdoptionFailureLeavesUsableScratch(t *testi
 // environment's owned references instead and re-provisions one that owns
 // nothing.
 func TestRetirementResumedRootFailedAdoptionReprovisionsThroughTheRebuiltWrapper(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	workDir := t.TempDir()
 	root := t.TempDir()
@@ -1728,6 +1739,7 @@ func TestRetirementResumedRootFailedAdoptionReprovisionsThroughTheRebuiltWrapper
 // after the disposal would leave the wrapper's TMPDIR pointing at a removed
 // directory.
 func TestRetirementResumedRootScratchWrapperFailureRefusesBeforeDisposal(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	workDir := t.TempDir()
 	root := t.TempDir()
@@ -1799,6 +1811,7 @@ func TestRetirementResumedRootScratchWrapperFailureRefusesBeforeDisposal(t *test
 // resumed root's wrapper pointing at a retained directory it owns no lease
 // on. The resume must re-provision the environment's own scratch instead.
 func TestResumedRootAdoptionSurvivesPoolDetachAfterDisposal(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	workDir := t.TempDir()
 	root := t.TempDir()
@@ -1884,6 +1897,7 @@ func TestResumedRootAdoptionSurvivesPoolDetachAfterDisposal(t *testing.T) {
 // pending-mark-installed-report lie, and the same requirement that the heal
 // key on the transfer the environment actually owns.
 func TestResumedRootAdoptionReprovisionsWhenTheClaimTurnsContended(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	owner, ok := s.scratchRetentionOwner()
 	if !ok {
@@ -2039,6 +2053,7 @@ func TestRetirementResumedUnsandboxedRootKeepsRetainedScratch(t *testing.T) {
 // pending marker, claimed the binding's unsandboxed slot and permanently
 // displaced the retained allocation.
 func TestResumedRootUnsandboxedAdoptionSurvivesPoolDetach(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	const sessionID = "01RESUMEROOTDETACHU1"
 	const bindingID = "b-resume-detach-unsandboxed"
@@ -2116,6 +2131,7 @@ func TestResumedRootUnsandboxedAdoptionSurvivesPoolDetach(t *testing.T) {
 // unsandboxed slot onto its own fresh directory and permanently displaced the
 // retained allocation, ending the re-probe.
 func TestResumedRootUnsandboxedContendedSlotKeepsTheBindingRow(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	const sessionID = "01RESUMEROOTCONTENDED"
 	const bindingID = "b-resume-contended-unsandboxed"
@@ -2196,6 +2212,7 @@ func TestResumedRootUnsandboxedContendedSlotKeepsTheBindingRow(t *testing.T) {
 // unpinned, unreferenced, and sweeper-collectible, taking the one-cycle
 // fallback the pending marker exists to protect with it.
 func TestResumedRootContendedTailPinsTheFallbackScratch(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	const sessionID = "01RESUMEROOTCONTENDEDPIN"
 	const bindingID = "b-resume-contended-pin"

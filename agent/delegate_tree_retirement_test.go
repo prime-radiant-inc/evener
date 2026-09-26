@@ -288,6 +288,7 @@ func TestRetirementDelegateRealIdleSource(t *testing.T) {
 // the claim, must keep its durable identity, and must not be torn down a
 // second time.
 func TestRetirementAfterIdleReleaseCoversReleasedMember(t *testing.T) {
+	t.Parallel()
 	root, tree, c := newRetirementDelegateController(t)
 	defer root.Close()
 	result := retirementIdleDelegate(t, root)

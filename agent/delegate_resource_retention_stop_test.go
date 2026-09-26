@@ -16,6 +16,7 @@ import (
 )
 
 func TestDelegateResourceStop_StableStopIsAlwaysRecursive(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 3, 1)
 	seedDelegateControllerRunning(t, c, "dlg_parent", "")
 	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
@@ -43,6 +44,7 @@ func TestDelegateResourceStop_StableStopIsAlwaysRecursive(t *testing.T) {
 }
 
 func TestDelegateResourceStop_IncludeChildrenFalseIsIgnoredForDelegate(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	root := &Session{id: "root-session", delegateRootSessionID: "root-session", delegateController: c}
 	c.rootRuntime = root
@@ -74,6 +76,7 @@ func TestDelegateResourceStop_IncludeChildrenFalseIsIgnoredForDelegate(t *testin
 }
 
 func TestDelegateResourceStop_RequestFsyncPrecedesExternalCancellation(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	fsyncedBeforeCancel := false
@@ -101,6 +104,7 @@ func TestDelegateResourceStop_RequestFsyncPrecedesExternalCancellation(t *testin
 // all. An externally cancelled delegate must retain that partial evidence so a
 // later job_status/delegate_send read can show it, instead of only "cancelled".
 func TestDelegateResourceStop_ExternalCancellationPreservesRunEvidence(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	cancelDelegateWithRunEvidence(t, c, "dlg_target")
@@ -180,6 +184,7 @@ func completedDelegateStopResult(delegateID string, actor delegateActor) jobStop
 // result carries that evidence and its footer renders it, so this drives the
 // exact projection and renderer the tool uses over real controller state.
 func TestDelegateResourceStop_JobStopProjectsPreservedEvidence(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	root := &Session{id: "root-session", delegateRootSessionID: "root-session", delegateController: c}
 	c.rootRuntime = root
@@ -218,6 +223,7 @@ func TestDelegateResourceStop_JobStopProjectsPreservedEvidence(t *testing.T) {
 // already closed must say so, with the recorded reason, rather than leaving the
 // parent to guess whether retrying is even possible.
 func TestDelegateResourceStop_JobStopReportsClosedResumability(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	root := &Session{id: "root-session", delegateRootSessionID: "root-session", delegateController: c}
 	c.rootRuntime = root
@@ -286,6 +292,7 @@ func TestDelegateResourceStop_CancellingActorIsNamed(t *testing.T) {
 }
 
 func TestDelegateResourceStop_DrainsRuntimeShellWatchAttentionAndDeliveryReceipts(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 3, 1)
 	rootRuntime := &Session{}
 	c.rootRuntime = rootRuntime
@@ -358,6 +365,7 @@ func TestDelegateResourceStop_DrainsRuntimeShellWatchAttentionAndDeliveryReceipt
 }
 
 func TestDelegateResourceStop_SameTargetRetryJoinsDifferentTargetIsBusy(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerRunning(t, c, "dlg_first", "")
 	seedDelegateControllerIdle(t, c, "dlg_second", "")
@@ -375,6 +383,7 @@ func TestDelegateResourceStop_SameTargetRetryJoinsDifferentTargetIsBusy(t *testi
 }
 
 func TestDelegateResourceStop_PositiveWaitCannotOwnOrCancelDriver(t *testing.T) {
+	t.Parallel()
 	harness := newStableStopRuntimeHarness(t)
 	waitCtx := newDelegateStopWaitBarrierContext()
 	result := make(chan stableJobStopInvocation, 1)
@@ -409,6 +418,7 @@ func TestDelegateResourceStop_PositiveWaitCannotOwnOrCancelDriver(t *testing.T) 
 }
 
 func TestDelegateResourceStop_RestartCompletesPendingStopProviderFree(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
@@ -448,6 +458,7 @@ func TestDelegateResourceStop_RestartCompletesPendingStopProviderFree(t *testing
 }
 
 func TestDelegateResourceStop_CompletionAppendFailureKeepsAdmissionClosed(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
@@ -471,6 +482,7 @@ func TestDelegateResourceStop_CompletionAppendFailureKeepsAdmissionClosed(t *tes
 }
 
 func TestDelegateResourceStop_RootCloseJoinsStopAndTeardownPostorder(t *testing.T) {
+	t.Parallel()
 	harness := newStableStopRuntimeHarness(t)
 	root := harness.root
 	fixture := harness.fixture
@@ -528,6 +540,7 @@ func TestDelegateResourceStop_RootCloseJoinsStopAndTeardownPostorder(t *testing.
 }
 
 func TestDelegateResourceStop_RootCloseAbortsUnpersistedInlineDeliveryCommit(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.MaxToolRoundsPerInput = 1
 	})
@@ -556,6 +569,7 @@ func TestDelegateResourceStop_RootCloseAbortsUnpersistedInlineDeliveryCommit(t *
 }
 
 func TestDelegateResourceStop_ForegroundShellTimeoutAbortsUncommittedReceipt(t *testing.T) {
+	t.Parallel()
 	c, jm, lease, clock := newStableShellReceiptHarness(t)
 	failAppendN(jm, jobstore.EventJobStarted, 1)
 	executor := newDelayedSuccessStreamingExecutor()
@@ -590,6 +604,7 @@ func TestDelegateResourceStop_ForegroundShellTimeoutAbortsUncommittedReceipt(t *
 }
 
 func TestDelegateResourceStop_ForegroundShellTimeoutReportsCommittedShellOnce(t *testing.T) {
+	t.Parallel()
 	c, jm, _, clock := newStableShellReceiptHarness(t)
 	executor := newDelayedSuccessStreamingExecutor()
 	result := make(chan shellResult, 1)
@@ -662,6 +677,7 @@ func TestDelegateResourceStop_FinishedShellWaitOutlivesRunningMapRemoval(t *test
 }
 
 func TestDelegateResourceStop_TimeoutRaceCannotLeakStopMembership(t *testing.T) {
+	t.Parallel()
 	c, jm, lease, clock := newStableShellReceiptHarness(t)
 	executor := newSignalCompletesStreamingExecutor()
 	result := make(chan shellResult, 1)

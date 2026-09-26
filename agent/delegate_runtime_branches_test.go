@@ -587,6 +587,7 @@ func TestPopulateStableDelegateSendResult_StructuredResultOnly(t *testing.T) {
 // silently without the preloads its role configured, which is a different fact
 // from "that skill is not available".
 func TestRolePreload_OperationIdentitySaveFailureFailsSpawn(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_role_preload")
 	stateDir := t.TempDir()
@@ -609,6 +610,7 @@ func TestRolePreload_OperationIdentitySaveFailureFailsSpawn(t *testing.T) {
 // TestRolePreload_OperationIdentitySaveFailureFailsDescribe pins the same
 // boundary on the committed-descriptor path.
 func TestRolePreload_OperationIdentitySaveFailureFailsDescribe(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_role_describe")
 	stateDir := t.TempDir()

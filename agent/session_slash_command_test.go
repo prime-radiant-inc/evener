@@ -37,6 +37,7 @@ func drainSlashEvents(s *Session) []events.SessionEvent {
 }
 
 func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		input      string
@@ -119,6 +120,7 @@ func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
 }
 
 func TestExpandSlashCommandStandalonePreservesCommandPrecedence(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{
 		"review": {CatalogName: "review", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "review", SkillFile: writeSkillBodyFile(t, "skill body")}},
@@ -143,6 +145,7 @@ func TestExpandSlashCommandStandalonePreservesCommandPrecedence(t *testing.T) {
 }
 
 func TestExpandSlashCommandStandaloneUnknownAndAmbiguousFallThrough(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		skills    skill.Catalog
@@ -185,6 +188,7 @@ func TestExpandSlashCommandStandaloneUnknownAndAmbiguousFallThrough(t *testing.T
 }
 
 func TestExpandSlashCommandStandaloneBodyLoadFailureWarnsWithoutActivation(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{
 		"simplify": {CatalogName: "simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", SkillFile: filepath.Join(t.TempDir(), "missing", "SKILL.md")}},

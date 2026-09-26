@@ -128,6 +128,7 @@ func requireActivationError(t *testing.T, err error, code string) {
 }
 
 func TestSkillActivation_PrepareCurrentControlsAndExactSource(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	dir := t.TempDir()
 	original := activationSource(t, dir, "", "opaque-initial-body")
@@ -1426,6 +1427,7 @@ func TestPrepareSelectedInput_DuplicateNamesInvokeOnce(t *testing.T) {
 // transcript write and the metadata save. After the repair, a retry admits
 // cleanly and the restored session sees the obligation.
 func TestSkillActivation_AdmissionSaveFailureAdmitsNothing(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_admit_save")
 	stateDir := t.TempDir()

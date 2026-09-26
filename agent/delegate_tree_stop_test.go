@@ -48,6 +48,7 @@ func (c *delegateStopWaitBarrierContext) cancel() {
 }
 
 func TestDelegateControllerCloseDrainProgressCoversBothWaitOrders(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		setup func(*testing.T) (*delegateTreeController, *delegateStopState, func(), func())
@@ -221,6 +222,7 @@ func TestDelegateControllerCloseDrainProgressCoversBothWaitOrders(t *testing.T) 
 }
 
 func TestDelegateControllerStopPersistsBeforeCancellationPlan(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	cancelled := false
@@ -246,6 +248,7 @@ func TestDelegateControllerStopPersistsBeforeCancellationPlan(t *testing.T) {
 }
 
 func TestDelegateControllerStopDrainsSteeringAndModelClaims(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -324,6 +327,7 @@ func TestDelegateControllerStopDrainsSteeringAndModelClaims(t *testing.T) {
 }
 
 func TestDelegateControllerStopCancellationPlanIsLeafFirst(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 3, 1)
 	seedDelegateControllerRunning(t, c, "dlg_parent", "")
 	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
@@ -345,6 +349,7 @@ func TestDelegateControllerStopCancellationPlanIsLeafFirst(t *testing.T) {
 }
 
 func TestDelegateControllerSameTargetStopRetryJoins(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	first, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
@@ -361,6 +366,7 @@ func TestDelegateControllerSameTargetStopRetryJoins(t *testing.T) {
 }
 
 func TestDelegateControllerDifferentTargetStopIsBusy(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_first", "")
 	seedDelegateControllerIdle(t, c, "dlg_second", "")
@@ -373,6 +379,7 @@ func TestDelegateControllerDifferentTargetStopIsBusy(t *testing.T) {
 }
 
 func TestDelegateControllerCoveringAndIntersectingStopAreBusy(t *testing.T) {
+	t.Parallel()
 	for _, targetFirst := range []string{"dlg_parent", "dlg_child"} {
 		t.Run(targetFirst, func(t *testing.T) {
 			c, _ := newDelegateControllerTestHarness(t, 2, 1)
@@ -402,6 +409,7 @@ func TestDelegateControllerCoveringAndIntersectingStopAreBusy(t *testing.T) {
 }
 
 func TestDelegateControllerSuccessorWaitsForStopCompletion(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
@@ -419,6 +427,7 @@ func TestDelegateControllerSuccessorWaitsForStopCompletion(t *testing.T) {
 }
 
 func TestDelegateControllerRestartThenStopUsesNewRequestSequence(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	first, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
@@ -439,6 +448,7 @@ func TestDelegateControllerRestartThenStopUsesNewRequestSequence(t *testing.T) {
 }
 
 func TestDelegateControllerStopRescansCancellationAttentionBeforeCompletion(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
@@ -476,6 +486,7 @@ func TestDelegateControllerStopRescansCancellationAttentionBeforeCompletion(t *t
 }
 
 func TestDelegateControllerStopPreservesOwnerDeliveryOutsideSubtree(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerRunning(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -499,6 +510,7 @@ func TestDelegateControllerStopPreservesOwnerDeliveryOutsideSubtree(t *testing.T
 }
 
 func TestDelegateControllerStopSuppressesCoveredOwnerDelivery(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -516,6 +528,7 @@ func TestDelegateControllerStopSuppressesCoveredOwnerDelivery(t *testing.T) {
 }
 
 func TestDelegateControllerStopDefersExternalOwnerDeliveryUntilCompletion(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -535,6 +548,7 @@ func TestDelegateControllerStopDefersExternalOwnerDeliveryUntilCompletion(t *tes
 }
 
 func TestDelegateControllerIdleStopWithPendingDeliveryPersistsAndSuppresses(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -548,6 +562,7 @@ func TestDelegateControllerIdleStopWithPendingDeliveryPersistsAndSuppresses(t *t
 }
 
 func TestDelegateControllerStopRequestAppendFailureDispatchesNothing(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	cancelled := false
@@ -565,6 +580,7 @@ func TestDelegateControllerStopRequestAppendFailureDispatchesNothing(t *testing.
 }
 
 func TestDelegateControllerStopCompletionAppendFailureKeepsFence(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
@@ -588,6 +604,7 @@ func TestDelegateControllerStopCompletionAppendFailureKeepsFence(t *testing.T) {
 }
 
 func TestDelegateControllerStopReconcilesRecoveryRequiredInputFailure(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -633,6 +650,7 @@ func TestDelegateControllerStopReconcilesRecoveryRequiredInputFailure(t *testing
 }
 
 func TestDelegateControllerStopReconcilesRecoveryRequiredSettlementFailure(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -697,6 +715,7 @@ func TestDelegateControllerStopReconcilesRecoveryRequiredSettlementFailure(t *te
 }
 
 func TestDelegateControllerRecoveryStabilizationWaitsForAdmittedSteer(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -743,6 +762,7 @@ func TestDelegateControllerRecoveryStabilizationWaitsForAdmittedSteer(t *testing
 }
 
 func TestDelegateControllerRecoveryStopAppendFailureReturnsAndRetries(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -804,6 +824,7 @@ func TestDelegateControllerRecoveryStopAppendFailureReturnsAndRetries(t *testing
 }
 
 func TestDelegateControllerCloseRetriesFailedStopDriver(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	started, _ := commitAttachedDelegateControllerStart(t, c, "dlg_target")
@@ -857,6 +878,7 @@ func TestDelegateControllerCloseRetriesFailedStopDriver(t *testing.T) {
 }
 
 func TestDelegateControllerResumabilityAppendFailureMutatesNothing(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	before := cloneDelegateControllerState(t, c.durable)
@@ -873,6 +895,7 @@ func TestDelegateControllerResumabilityAppendFailureMutatesNothing(t *testing.T)
 }
 
 func TestDelegateControllerRootCloseJoinsPendingStopWithoutSecondIdentity(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	result, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
@@ -960,6 +983,7 @@ func TestDelegateControllerCloseWakesParkedStopReconcileDriver(t *testing.T) {
 // evidence as busy every pass -- an abandoned driver (driver.ctx cancelled by a
 // close join timeout) must still exit rather than spin forever.
 func TestDelegateStopDrainObservesCancellationAtBusyBoundaries(t *testing.T) {
+	t.Parallel()
 	t.Run("reconcile-busy", func(t *testing.T) {
 		c, _ := newDelegateControllerTestHarness(t, 1, 1)
 		seedDelegateControllerIdle(t, c, "dlg_target", "")
@@ -1017,6 +1041,7 @@ func requireDrainStopsUnderCancellation(t *testing.T, c *delegateTreeController,
 }
 
 func TestDelegateControllerRootCloseFencesAdmissionWhileReceiptDrains(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -1039,6 +1064,7 @@ func TestDelegateControllerRootCloseFencesAdmissionWhileReceiptDrains(t *testing
 }
 
 func TestDelegateControllerRootCloseDoesNotClaimRetainedDelivery(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -1051,6 +1077,7 @@ func TestDelegateControllerRootCloseDoesNotClaimRetainedDelivery(t *testing.T) {
 }
 
 func TestDelegateControllerRootCloseInvalidatesCollectedEvidence(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	evidence := emptyDelegateReconcileEvidence(c)
 	if err := c.Close(context.Background()); err != nil {
@@ -1062,6 +1089,7 @@ func TestDelegateControllerRootCloseInvalidatesCollectedEvidence(t *testing.T) {
 }
 
 func TestDelegateControllerRootCloseReconcilesClosedRootDescendantWork(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 3, 1)
 	seedDelegateControllerIdle(t, c, "dlg_root", "")
 	seedDelegateControllerRunning(t, c, "dlg_running", "dlg_root")
@@ -1174,6 +1202,7 @@ func seedDelegateControllerDelivery(t *testing.T, c *delegateTreeController, del
 // survives (the transcript is the replay authority) but its causal origin does
 // not, and the loss is silent: the steer looks delivered.
 func TestDelegateControllerStopFencedSteerKeepsItsCausalProvenance(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -1257,6 +1286,7 @@ func startDelegateSuccessorGeneration(t *testing.T, c *delegateTreeController, d
 // survive both. This is the before case: releaseGenerationLocked drops the
 // generation's own admissions, and only the carry marking keeps this one.
 func TestDelegateControllerStopFencedSteerKeepsProvenanceWhenItLandsBeforeFinish(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())

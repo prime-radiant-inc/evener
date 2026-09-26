@@ -16,6 +16,7 @@ import (
 )
 
 func TestDelegateControllerTwoGenerationsCanFinishBeforeFirstAck(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	first, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
@@ -33,6 +34,7 @@ func TestDelegateControllerTwoGenerationsCanFinishBeforeFirstAck(t *testing.T) {
 }
 
 func TestDelegateControllerSecondDeliveryWaitsForFirstLiveAck(t *testing.T) {
+	t.Parallel()
 	c, firstPlan, _, secondPlan, _ := controllerWithTwoDelegateDeliveries(t, false, false)
 	if secondPlan != nil {
 		t.Fatalf("second finish dispatched behind first: %#v", secondPlan)
@@ -51,6 +53,7 @@ func TestDelegateControllerSecondDeliveryWaitsForFirstLiveAck(t *testing.T) {
 }
 
 func TestDelegateControllerBlockedFirstDeliveryPreservesSecondInlineWaiter(t *testing.T) {
+	t.Parallel()
 	c, firstPlan, _, secondPlan, secondWaiter := controllerWithTwoDelegateDeliveries(t, true, true)
 	if firstPlan.waiter == nil || secondPlan != nil {
 		t.Fatalf("ordered plans = first:%#v second:%#v", firstPlan, secondPlan)
@@ -64,6 +67,7 @@ func TestDelegateControllerBlockedFirstDeliveryPreservesSecondInlineWaiter(t *te
 }
 
 func TestDelegateControllerInlineTimeoutWithdrawsBeforeHeadClaim(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
@@ -80,6 +84,7 @@ func TestDelegateControllerInlineTimeoutWithdrawsBeforeHeadClaim(t *testing.T) {
 }
 
 func TestDelegateControllerHeadClaimWinsInlineTimeout(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
@@ -89,6 +94,7 @@ func TestDelegateControllerHeadClaimWinsInlineTimeout(t *testing.T) {
 }
 
 func TestDelegateControllerNextHeadClaimWinsInlineTimeout(t *testing.T) {
+	t.Parallel()
 	c, firstPlan, _, _, secondWaiter := controllerWithTwoDelegateDeliveries(t, false, true)
 	token, admitted, err := c.BeginDelivery(firstPlan)
 	if err != nil || !admitted {
@@ -105,6 +111,7 @@ func TestDelegateControllerNextHeadClaimWinsInlineTimeout(t *testing.T) {
 }
 
 func TestDelegateControllerInlineClaimFailureFallsBackAndResolvesWaiter(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
@@ -124,6 +131,7 @@ func TestDelegateControllerInlineClaimFailureFallsBackAndResolvesWaiter(t *testi
 }
 
 func TestDelegateControllerInlineHandoffDoesNotAcknowledgeBeforeReceiverCommit(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
@@ -141,6 +149,7 @@ func TestDelegateControllerInlineHandoffDoesNotAcknowledgeBeforeReceiverCommit(t
 }
 
 func TestDelegateControllerInlineCommitFailureLeavesNAndNPlusOneQueued(t *testing.T) {
+	t.Parallel()
 	c, firstPlan, firstWaiter, _, _ := controllerWithTwoDelegateDeliveries(t, true, true)
 	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
 		t.Fatalf("deliverDelegatePacket: %v", err)
@@ -156,6 +165,7 @@ func TestDelegateControllerInlineCommitFailureLeavesNAndNPlusOneQueued(t *testin
 }
 
 func TestDelegateControllerInlineCommitReleasesNPlusOneOnlyAfterN(t *testing.T) {
+	t.Parallel()
 	c, firstPlan, firstWaiter, _, secondWaiter := controllerWithTwoDelegateDeliveries(t, true, true)
 	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
 		t.Fatalf("deliverDelegatePacket: %v", err)
@@ -197,6 +207,7 @@ func TestDelegateControllerInlineCommitReleasesNPlusOneOnlyAfterN(t *testing.T) 
 }
 
 func TestDelegateControllerInlineReplayAfterReceiverCommitIsIdempotent(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
@@ -263,6 +274,7 @@ func TestDelegateControllerInlineReplayAfterReceiverCommitIsIdempotent(t *testin
 }
 
 func TestDelegateControllerBeginDeliveryCreatesOneExactReceipt(t *testing.T) {
+	t.Parallel()
 	c, firstPlan, _, _, _ := controllerWithTwoDelegateDeliveries(t, false, false)
 	forged := firstPlan
 	forged.packet.Message = []byte(`"forged"`)
@@ -286,6 +298,7 @@ func TestDelegateControllerBeginDeliveryCreatesOneExactReceipt(t *testing.T) {
 }
 
 func TestDelegateControllerStopReleasesClaimedInlineWaiterAcrossCompletionOrders(t *testing.T) {
+	t.Parallel()
 	for _, completeBeforeFallback := range []bool{false, true} {
 		name := "fallback-before-completion"
 		if completeBeforeFallback {
@@ -344,6 +357,7 @@ func TestDelegateControllerStopReleasesClaimedInlineWaiterAcrossCompletionOrders
 }
 
 func TestDelegateControllerBackgroundReplayAfterReceiverCommitRetriesAck(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
@@ -376,6 +390,7 @@ func TestDelegateControllerBackgroundReplayAfterReceiverCommitRetriesAck(t *test
 }
 
 func TestDelegateControllerBackgroundAppendFailureLeavesHeadPending(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
@@ -393,6 +408,7 @@ func TestDelegateControllerBackgroundAppendFailureLeavesHeadPending(t *testing.T
 }
 
 func TestDelegateControllerFailedDeliveryCompletionLeavesHeadPending(t *testing.T) {
+	t.Parallel()
 	c, firstPlan, _, _, _ := controllerWithTwoDelegateDeliveries(t, false, false)
 	token, admitted, err := c.BeginDelivery(firstPlan)
 	if err != nil || !admitted {
@@ -408,6 +424,7 @@ func TestDelegateControllerFailedDeliveryCompletionLeavesHeadPending(t *testing.
 }
 
 func TestDelegateControllerCommittedDeliveryCompletionAcknowledgesExactHead(t *testing.T) {
+	t.Parallel()
 	c, path, firstPlan := controllerWithNestedDelegateDeliveries(t)
 	before := readDelegateControllerFile(t, path)
 	beforeRevision := c.durable["dlg_owner"].ProjectionRevision
@@ -448,6 +465,7 @@ func TestDelegateControllerCommittedDeliveryCompletionAcknowledgesExactHead(t *t
 }
 
 func TestDelegateControllerDeliveryAckRemovesOnlyExactID(t *testing.T) {
+	t.Parallel()
 	c, _, firstPlan := controllerWithNestedDelegateDeliveries(t)
 	beforeSecond := cloneDelegateTerminalPacket(c.durable["dlg_target"].PendingDeliveries[1].Packet)
 	token, _, _ := c.BeginDelivery(firstPlan)
@@ -485,6 +503,7 @@ func TestDelegateControllerDeliveryAckRemovesOnlyExactID(t *testing.T) {
 }
 
 func TestDelegateControllerRestartReplaysTwoDeliveriesInOrder(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	first, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
@@ -514,6 +533,7 @@ func TestDelegateControllerRestartReplaysTwoDeliveriesInOrder(t *testing.T) {
 }
 
 func TestDelegateControllerRestartThenFinishUsesNewDeliveryID(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	first, _ := startDelegateDeliveryGeneration(t, c, "dlg_target", false)
@@ -531,6 +551,7 @@ func TestDelegateControllerRestartThenFinishUsesNewDeliveryID(t *testing.T) {
 }
 
 func TestDelegateControllerFatalFinishAppendFailurePublishesNoDelivery(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
@@ -551,6 +572,7 @@ func TestDelegateControllerFatalFinishAppendFailurePublishesNoDelivery(t *testin
 }
 
 func TestDelegateControllerRunFinishedAppendFailureKeepsPreparedAndWaiter(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
@@ -581,6 +603,7 @@ func TestDelegateControllerRunFinishedAppendFailureKeepsPreparedAndWaiter(t *tes
 }
 
 func TestDelegateControllerDeliveryAcknowledgedAppendFailureKeepsReceiptAndHead(t *testing.T) {
+	t.Parallel()
 	c, path, firstPlan := controllerWithNestedDelegateDeliveries(t)
 	writeEmptyAttentionTranscript(t, transcriptPath(c.stateDir, "child-dlg_owner"), "child-dlg_owner")
 	before := readDelegateControllerFile(t, path)
@@ -882,6 +905,7 @@ func (r *fakeDelegateDeliveryReceiver) appendDelegateNotificationDurably(attenti
 }
 
 func TestDelegateControllerDeliveryReceiptBeforeStopDrainsAndCleans(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -911,6 +935,7 @@ func TestDelegateControllerDeliveryReceiptBeforeStopDrainsAndCleans(t *testing.T
 }
 
 func TestDelegateControllerStopBeforeDeliveryReceiptDefersAdmission(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")

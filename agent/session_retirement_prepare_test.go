@@ -116,6 +116,7 @@ func TestRetirementPreparationMetadataWriteFailureStaysResident(t *testing.T) {
 // client-mutation snapshot with malformed JSON; readiness reads the primary
 // file, so preparation must refuse it.
 func TestRetirementPreparationCorruptMutationStaysResident(t *testing.T) {
+	t.Parallel()
 	root, c, claim := retirementPrepareFixture(t)
 	path := clientMutationFilePath(root.stateDir, root.id)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -196,6 +197,7 @@ func TestRetirementPreparationStaleClaimRefused(t *testing.T) {
 // required scratch directory that has vanished blocks preparation instead of
 // being silently minted or ignored.
 func TestRetirementPreparationMissingScratchArtifactStaysResident(t *testing.T) {
+	t.Parallel()
 	root, c, claim := retirementPrepareFixture(t)
 	owner, ok := root.scratchRetentionOwner()
 	if !ok {
@@ -225,6 +227,7 @@ func TestRetirementPreparationMissingScratchArtifactStaysResident(t *testing.T) 
 // finishes/flushes the session's durable task store and surfaces a corrupt
 // primary task file as a persistence failure rather than a warning.
 func TestRetirementPreparationCorruptTaskStoreStaysResident(t *testing.T) {
+	t.Parallel()
 	root, c, claim := retirementPrepareFixture(t)
 	path := filepath.Join(root.stateDir, "tasks", root.id+".json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

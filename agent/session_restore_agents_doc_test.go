@@ -58,6 +58,7 @@ func TestFrozenDescriptorTakesTheAgentsDocPathFromTheLiveParent(t *testing.T) {
 // whose config root moved between runs would otherwise leave a resumed root
 // session and the delegates it restores on different personal instructions.
 func TestRestoredStableDelegateTakesTheAgentsDocPathFromTheLiveParent(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.AgentsDocPath = "/old/AGENTS.md"
 	})

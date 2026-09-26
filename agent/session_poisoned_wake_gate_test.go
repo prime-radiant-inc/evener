@@ -657,6 +657,7 @@ func TestPoisonedTranscriptRefusesTheQueueHeadClaim(t *testing.T) {
 // Session.mu before it enters the serializer and reads the refusal with only the
 // writer's own lock inside (issue #1165 review).
 func TestClaimSamplesSessionMuOutsideTheStoreSerializer(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	queueOneMutation(t, sess, "queued-for-the-lock-order-check", "runs")

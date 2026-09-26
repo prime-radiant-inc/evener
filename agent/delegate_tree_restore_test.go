@@ -39,6 +39,7 @@ func TestDelegateAttentionSchemaStrictRoundTrip(t *testing.T) {
 }
 
 func TestDelegateControllerCloseExecutesColdAttentionCleanup(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
@@ -59,6 +60,7 @@ func TestDelegateControllerCloseExecutesColdAttentionCleanup(t *testing.T) {
 }
 
 func TestDelegateColdAttentionResolutionIsDurableAndIdempotent(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "attention.transcript.jsonl")
 	writeDelegateAttentionTranscript(t, path, "child-attention", "attention-idempotent")
 	for i := range 2 {
@@ -85,6 +87,7 @@ func TestDelegateColdAttentionResolutionIsDurableAndIdempotent(t *testing.T) {
 }
 
 func TestDelegateAttentionAppendFailureLeavesStopPending(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
@@ -115,6 +118,7 @@ func TestDelegateAttentionAppendFailureLeavesStopPending(t *testing.T) {
 }
 
 func TestDelegateAttentionCleanupRejectsReplacedRuntime(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
@@ -150,6 +154,7 @@ func TestDelegateAttentionCleanupRejectsReplacedRuntime(t *testing.T) {
 }
 
 func TestDelegateAttentionCleanupRejectsNilRuntimeReplacementAndStaleEvidence(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		mutate func(*delegateTreeController)
@@ -202,6 +207,7 @@ func TestDelegateAttentionCleanupRejectsNilRuntimeReplacementAndStaleEvidence(t 
 }
 
 func TestDelegateControllerLiveAttentionCleanupKeepsOneWriterSequence(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	sessionID := "child-dlg_target"
@@ -275,6 +281,7 @@ func TestDelegateControllerLiveAttentionCleanupKeepsOneWriterSequence(t *testing
 }
 
 func TestDelegateControllerLiveAttentionCleanupRequiresUsableAttachedWriter(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name   string
 		attach func(*testing.T, *Session, *transcript.Writer)
@@ -342,6 +349,7 @@ func TestDelegateControllerLiveAttentionCleanupRequiresUsableAttachedWriter(t *t
 }
 
 func TestDelegateControllerStopRescansAttentionCreatedByCancellation(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	path := filepath.Join(c.stateDir, sessionsSubdir, "child-dlg_target.transcript.jsonl")
@@ -373,6 +381,7 @@ func TestDelegateControllerStopRescansAttentionCreatedByCancellation(t *testing.
 }
 
 func TestDelegateControllerRestartThreeLevelTreeIsProviderFree(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 3, 1)
 	seedDelegateControllerRunning(t, c, "dlg_parent", "")
 	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
@@ -402,6 +411,7 @@ func TestDelegateControllerRestartThreeLevelTreeIsProviderFree(t *testing.T) {
 }
 
 func TestDelegateControllerRestartRepairsPreparedTerminalOnce(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	packet := delegateControllerReportedPacket("prepared")
@@ -428,6 +438,7 @@ func TestDelegateControllerRestartRepairsPreparedTerminalOnce(t *testing.T) {
 }
 
 func TestDelegateControllerRestartCompletesStopBeforeAdmission(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	requestSeq := appendDelegateControllerStopRequest(t, c, "dlg_target")
@@ -460,6 +471,7 @@ func TestDelegateControllerRestartCompletesStopBeforeAdmission(t *testing.T) {
 }
 
 func TestDelegateControllerReconcileRequiresExactEvidenceSnapshot(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	complete := emptyDelegateReconcileEvidence(c)
@@ -496,6 +508,7 @@ func TestDelegateControllerReconcileRequiresExactEvidenceSnapshot(t *testing.T) 
 }
 
 func TestDelegateControllerRestartAfterStoppedFinishDoesNotFinishTwice(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	if _, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target"); err != nil {
@@ -515,6 +528,7 @@ func TestDelegateControllerRestartAfterStoppedFinishDoesNotFinishTwice(t *testin
 }
 
 func TestDelegateControllerRestartPreservesStopAdmissionClassificationAfterRunClosure(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	first, _, _, err := c.StopSubtree(rootDelegateActor("root-session"), "dlg_target")
@@ -535,6 +549,7 @@ func TestDelegateControllerRestartPreservesStopAdmissionClassificationAfterRunCl
 }
 
 func TestDelegateControllerRestartPreservesSubtreeStopAdmissionClassification(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
@@ -558,6 +573,7 @@ func TestDelegateControllerRestartPreservesSubtreeStopAdmissionClassification(t 
 }
 
 func TestDelegateControllerRestartCleansAttentionWithoutRuntime(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	requestSeq := appendDelegateControllerStopRequest(t, c, "dlg_target")
@@ -593,6 +609,7 @@ func TestDelegateControllerRestartCleansAttentionWithoutRuntime(t *testing.T) {
 }
 
 func TestDelegateControllerRestartRepairsDescendantShellBeforeStopCompletion(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -627,6 +644,7 @@ func TestDelegateControllerRestartRepairsDescendantShellBeforeStopCompletion(t *
 }
 
 func TestDelegateControllerReconcileRejectsStaleExternalEvidence(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -645,6 +663,7 @@ func TestDelegateControllerReconcileRejectsStaleExternalEvidence(t *testing.T) {
 }
 
 func TestDelegateControllerRestartPreservesOrderedDeliveries(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -665,6 +684,7 @@ func TestDelegateControllerRestartPreservesOrderedDeliveries(t *testing.T) {
 }
 
 func TestDelegateControllerRestartDefersExternalStopDeliveryUntilCompletion(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")
@@ -680,6 +700,7 @@ func TestDelegateControllerRestartDefersExternalStopDeliveryUntilCompletion(t *t
 }
 
 func TestDelegateControllerRestartIdleStopFencesQueuedCoveredDelivery(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_child", "dlg_parent")
@@ -696,6 +717,7 @@ func TestDelegateControllerRestartIdleStopFencesQueuedCoveredDelivery(t *testing
 }
 
 func TestDelegateControllerRestartCannotCollideStopOrDeliveryIdentity(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerDelivery(t, c, "dlg_target")

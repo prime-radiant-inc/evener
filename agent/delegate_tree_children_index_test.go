@@ -26,6 +26,7 @@ func assertChildrenIndexMatchesDurable(t *testing.T, c *delegateTreeController) 
 // durable state: creation inserts edges, and no other event kind may
 // disturb them.
 func TestDelegateChildrenIndex_TracksDurableMutations(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	assertChildrenIndexMatchesDurable(t, c)
 
@@ -87,6 +88,7 @@ func assertSubtreeMembersMatchReference(t *testing.T, c *delegateTreeController,
 // index-driven membership walk against the scan-based reference across the
 // seeded tree shapes: fan-out, chains, and a running delegate mid-tree.
 func TestDelegateChildrenIndex_SubtreeMembersAgreeWithFixedPoint(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	seedDelegateControllerRunning(t, c, "dlg_root", "")
 	endedAt := time.Unix(10, 0).UTC()
@@ -108,6 +110,7 @@ func TestDelegateChildrenIndex_SubtreeMembersAgreeWithFixedPoint(t *testing.T) {
 // such a durable state, and membership must stay cycle-safe and agree with
 // the reference on it.
 func TestDelegateChildrenIndex_HandlesCorruptJournals(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	c.mu.Lock()
 	c.durable = delegatestore.State{

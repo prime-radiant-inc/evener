@@ -37,6 +37,7 @@ func newTestJM(t *testing.T) *jobManager {
 }
 
 func TestCreateJobOutputRetriesWithoutOverwritingCollision(t *testing.T) {
+	t.Parallel()
 	const owner = "02wMz5TxvEMoJEDTDGOTil"
 	jm, err := newJobManagerNoSync(t.TempDir(), owner, nil)
 	if err != nil {

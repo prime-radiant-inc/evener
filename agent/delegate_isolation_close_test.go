@@ -70,6 +70,7 @@ func assertNoDelegateLane(t *testing.T, r *wtRepo, delegateID, lanePath string) 
 // straight past it and cleans the environment underneath, leaving a
 // half-created lane nobody owns.
 func TestDelegateIsolation_CloseWaitsForTheLaneCreateItRaces(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	root := r.s
 	runtime, reservation, project := reserveWorktreeIsolatedDelegate(t, root, "close under the lane create")
@@ -128,6 +129,7 @@ func TestDelegateIsolation_CloseWaitsForTheLaneCreateItRaces(t *testing.T) {
 // reaped and stores being closed. The refusal has to reach the caller with no
 // git run at all.
 func TestDelegateIsolation_LaneCreateAfterCloseBeganIsRefused(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	root := r.s
 	runtime, reservation, project := reserveWorktreeIsolatedDelegate(t, root, "spawn after close began")
@@ -267,6 +269,7 @@ func TestDelegateIsolation_LaneRollbackReleasesItsAdmission(t *testing.T) {
 // down by the real spawn, not only one this file built by hand for
 // prepareIsolation's other tests.
 func TestDelegateIsolation_CloseWaitsForTheRollbackOfAFailedConstruct(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	root := r.s
 
@@ -336,6 +339,7 @@ func TestDelegateIsolation_CloseWaitsForTheRollbackOfAFailedConstruct(t *testing
 // this; only one taken before prepareIsolation and held for the whole spawn
 // can.
 func TestDelegateIsolation_CloseBegunBeforeTheRollbackStillFencesIt(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	root := r.s
 
@@ -428,6 +432,7 @@ func TestDelegateIsolation_CloseBegunBeforeTheRollbackStillFencesIt(t *testing.T
 // also the failure this test means to pin: the rollback of a lane whose
 // construction never got that far.
 func TestDelegateIsolation_CloseDuringTheLaneCreateStillFencesTheRollback(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	root := r.s
 

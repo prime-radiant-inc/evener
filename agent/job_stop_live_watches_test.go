@@ -94,6 +94,7 @@ func stopObserverDelegateOutput(t *testing.T, invocation stableJobStopInvocation
 // delivering to the stopped delegate, and the rendered output carries the
 // inventory header and clear guidance.
 func TestJobStopReportsLiveWatchesAdmission(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installParentWatchOnObserver(t, f)
@@ -125,6 +126,7 @@ func TestJobStopReportsLiveWatchesAdmission(t *testing.T) {
 // TestJobStopReportsLiveWatchesSettled pins the completed stop: after the
 // delegate settles, the result still carries the live-watch inventory.
 func TestJobStopReportsLiveWatchesSettled(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installParentWatchOnObserver(t, f)
@@ -153,6 +155,7 @@ func TestJobStopReportsLiveWatchesSettled(t *testing.T) {
 // no watches when none target it — with a watch delivering to a DIFFERENT
 // delegate present, so "correctly empty" is distinguished from "always empty".
 func TestJobStopNoLiveWatches(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	// A watch delivering to another delegate must not leak into the inventory.
@@ -180,6 +183,7 @@ func TestJobStopNoLiveWatches(t *testing.T) {
 // TestJobStopLiveWatchesSettleRefresh pins the settle-time read: a watch
 // cleared while the stop played out is absent from the settled result.
 func TestJobStopLiveWatchesSettleRefresh(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	installParentWatchOnObserver(t, f)
@@ -211,6 +215,7 @@ func TestJobStopLiveWatchesSettleRefresh(t *testing.T) {
 // max_wait_ms > 0 that does not settle still reports the armed inventory —
 // the watches keep delivering while the delegate settles.
 func TestJobStopLiveWatchesTimeout(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installParentWatchOnObserver(t, f)
@@ -232,6 +237,7 @@ func TestJobStopLiveWatchesTimeout(t *testing.T) {
 // (non-ancestor, non-receiver) clear is refused with an explicit error, not a
 // success-shaped silent no-op.
 func TestJobWatchClearSiblingRefused(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installParentWatchOnObserver(t, f)
@@ -261,6 +267,7 @@ func TestJobWatchClearSiblingRefused(t *testing.T) {
 // nested parent: a delegate whose own child holds the watch may clear it,
 // because the receiver is its descendant.
 func TestJobWatchClearNestedParent(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installParentWatchOnObserver(t, f)
@@ -321,6 +328,7 @@ func TestFormatJobStopLiveWatchesCap(t *testing.T) {
 // job_watch clear actually clears a receiver-keyed watch installed in its own
 // job manager (previously a success-shaped silent no-op).
 func TestJobWatchClearParentSideReceiverWatch(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installParentWatchOnObserver(t, f)
@@ -376,6 +384,7 @@ func runtimeSessionFor(f *stableWatchRuntimeFixture, sessionID, delegateID strin
 // inventory seam: a watch keyed to the stop target's child session with an empty
 // delegate id is armed and delivering and must be listed.
 func TestLiveWatchesDeliveringToDelegateIncludesSessionKeyed(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installSessionKeyedWatch(t, f.rootJM, "child-dlg_observer")
@@ -390,6 +399,7 @@ func TestLiveWatchesDeliveringToDelegateIncludesSessionKeyed(t *testing.T) {
 // reports the session-keyed watch that survives the stop of the delegate whose
 // session is its receiver.
 func TestJobStopReportsSessionKeyedLiveWatches(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installSessionKeyedWatch(t, f.rootJM, "child-dlg_observer")
@@ -407,6 +417,7 @@ func TestJobStopReportsSessionKeyedLiveWatches(t *testing.T) {
 // Symptom 2: the session that is the watch's receiver may clear its own
 // session-keyed watch even when it is held in another session's manager.
 func TestJobWatchClearSessionKeyedReceiverSession(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installSessionKeyedWatch(t, f.rootJM, "child-dlg_observer")
@@ -426,6 +437,7 @@ func TestJobWatchClearSessionKeyedReceiverSession(t *testing.T) {
 // TestJobWatchClearSessionKeyedRoot pins the root half of Symptom 2: the root
 // session may clear a session-keyed watch installed by a descendant.
 func TestJobWatchClearSessionKeyedRoot(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installSessionKeyedWatch(t, f.rootJM, "child-dlg_observer")
@@ -445,6 +457,7 @@ func TestJobWatchClearSessionKeyedRoot(t *testing.T) {
 // session-keyed watches: a sibling may not clear another delegate's session
 // watch.
 func TestJobWatchClearSessionKeyedSiblingRefused(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installSessionKeyedWatch(t, f.rootJM, "child-dlg_observer")
@@ -567,6 +580,7 @@ func attachNestedWatchHolder(t *testing.T, f *stableWatchRuntimeFixture, parent 
 // manager (a real configureDescendantReceiverWatch destination) was missing from
 // the stop inventory.
 func TestLiveWatchesDeliveringToDelegateIncludesNestedHolder(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	observer := seedObserverDelegate(t, f)
 	nested := attachNestedWatchHolder(t, f, observer, "nested-observer")
@@ -582,6 +596,7 @@ func TestLiveWatchesDeliveringToDelegateIncludesNestedHolder(t *testing.T) {
 // finding: the receiver session's clear must route to the ordinary nested
 // subagent manager that holds the watch.
 func TestJobWatchClearSessionKeyedNestedHolder(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	observer := seedObserverDelegate(t, f)
 	nested := attachNestedWatchHolder(t, f, observer, "nested-observer")
@@ -603,6 +618,7 @@ func TestJobWatchClearSessionKeyedNestedHolder(t *testing.T) {
 // list and inspect queried only the delegate-keyed receiver shape and so could
 // not discover a session-keyed watch for the receiver session.
 func TestJobWatchListInspectSessionKeyedReceiverShape(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	watchID := installSessionKeyedWatch(t, f.rootJM, "child-dlg_observer")
@@ -661,6 +677,7 @@ func TestWatchListToolResultForReceiverShapesKeepsHistoryLatestFirst(t *testing.
 // session-keyed watch whose receiver is an ordinary nested subagent inside the
 // stopped subtree never appeared in the stop inventory.
 func TestLiveWatchesDeliveringToDelegateIncludesNestedReceiver(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	observer := seedObserverDelegate(t, f)
 	attachNestedWatchHolder(t, f, observer, "nested-observer")
@@ -676,6 +693,7 @@ func TestLiveWatchesDeliveringToDelegateIncludesNestedReceiver(t *testing.T) {
 // same finding: the delegate whose runtime subtree contains the nested receiver
 // session must be able to clear its watch.
 func TestJobWatchClearSessionKeyedNestedReceiver(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	observer := seedObserverDelegate(t, f)
 	attachNestedWatchHolder(t, f, observer, "nested-observer")
@@ -697,6 +715,7 @@ func TestJobWatchClearSessionKeyedNestedReceiver(t *testing.T) {
 // roborev finding that recent-watch rows from several managers were concatenated
 // unsorted and beyond the ring cap.
 func TestWatchListToolResultWithDescendantReceiversOrdersAndCapsHistory(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	observer := seedObserverDelegate(t, f)
 	nested := attachNestedWatchHolder(t, f, observer, "nested-observer")
@@ -748,6 +767,7 @@ func bindDelegateRuntime(t *testing.T, controller *delegateTreeController, deleg
 // every ancestor delegate's runtime subtree and map iteration decided the
 // anchor.
 func TestDelegateAnchoringSessionPicksNearestDelegate(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedDelegateControllerRunning(t, f.controller, "dlg_a", "")
 	a := attachNestedWatchHolder(t, f, f.root, "child-dlg_a")
@@ -767,6 +787,7 @@ func TestDelegateAnchoringSessionPicksNearestDelegate(t *testing.T) {
 // TestJobWatchClearSessionKeyedNearestDelegate pins the user-visible effect:
 // the intermediate delegate B clears its own subagent's session-keyed watch.
 func TestJobWatchClearSessionKeyedNearestDelegate(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedDelegateControllerRunning(t, f.controller, "dlg_a", "")
 	a := attachNestedWatchHolder(t, f, f.root, "child-dlg_a")
@@ -793,6 +814,7 @@ func TestJobWatchClearSessionKeyedNearestDelegate(t *testing.T) {
 // roborev finding that the local manager's rows were merged twice: the holder
 // whose manager produced `local` must be skipped.
 func TestWatchListToolResultWithDescendantReceiversDoesNotDuplicateLocal(t *testing.T) {
+	t.Parallel()
 	f := newStableWatchRuntimeBase(t, nil)
 	seedObserverDelegate(t, f)
 	observer := runtimeSessionFor(f, "child-dlg_observer", "dlg_observer")

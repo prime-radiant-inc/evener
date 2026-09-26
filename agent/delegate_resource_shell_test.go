@@ -43,6 +43,7 @@ func TestStableDelegateShell_ParentDelegateIDReplacesSyntheticParentJob(t *testi
 }
 
 func TestStableDelegateShell_CompletionAttentionReachesDirectOwner(t *testing.T) {
+	t.Parallel()
 	tree := newStableDelegateShellTree(t)
 	rec := createStableDelegateShell(t, tree.childJM, "notify direct owner")
 	finishStableDelegateShell(t, tree.childJM, rec.JobID)
@@ -112,6 +113,7 @@ func TestStableDelegateShell_CompletionAttentionReachesDirectOwner(t *testing.T)
 }
 
 func TestStableDelegateShell_CompletionUsesExactDurableAttention(t *testing.T) {
+	t.Parallel()
 	tree := newStableDelegateShellTree(t)
 	path := transcriptPath(tree.controller.stateDir, tree.child.ID())
 	rec := createStableDelegateShell(t, tree.childJM, "exact durable attention")
@@ -146,6 +148,7 @@ func TestStableDelegateShell_CompletionUsesExactDurableAttention(t *testing.T) {
 }
 
 func TestStableDelegateShell_AncestorCanSeeDescendantShell(t *testing.T) {
+	t.Parallel()
 	tree := newStableDelegateShellTree(t)
 	rec := createStableDelegateShell(t, tree.grandJM, "visible descendant")
 
@@ -172,6 +175,7 @@ func TestStableDelegateShell_AncestorCanSeeDescendantShell(t *testing.T) {
 }
 
 func TestStableDelegateShell_AncestorCannotControlWithoutDirectDelegateHandle(t *testing.T) {
+	t.Parallel()
 	tree := newStableDelegateShellTree(t)
 	rec := createStableDelegateShell(t, tree.grandJM, "direct edge only")
 	var signals atomic.Int32
@@ -244,6 +248,7 @@ func TestStableDelegateShell_OutputStatusWatchAndStopRemainJobAddressed(t *testi
 }
 
 func TestStableDelegateShell_RestartRepairsCompletionAttentionOnce(t *testing.T) {
+	t.Parallel()
 	tree := newStableDelegateShellTree(t)
 	rec := createStableDelegateShell(t, tree.childJM, "repair after restart")
 	run := tree.childJM.running[rec.JobID]
@@ -321,6 +326,7 @@ func TestStableDelegateShell_RestartRepairsCompletionAttentionOnce(t *testing.T)
 }
 
 func TestStableDelegateShell_ColdRestartRearmsExactCompletionAttention(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	childJM, err := newJobManagerNoSync(fixture.stateDir, fixture.childID, nil)
 	if err != nil {

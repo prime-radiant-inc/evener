@@ -23,6 +23,7 @@ import (
 // observed in 034HvTCI5LrwbM2ZZpBMqN. The semantically empty options must select
 // the same retained-read mode and return the same result as their omission.
 func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
+	t.Parallel()
 	t.Run("job default markdown", func(t *testing.T) {
 		stateDir := t.TempDir()
 		owner := identifier.MustNewSessionID()
@@ -78,6 +79,7 @@ func TestReadTranscriptNeutralMaterializedRetainedOptions(t *testing.T) {
 }
 
 func TestRegistryExecuteCallNormalizesMaterializedRetainedDefaults(t *testing.T) {
+	t.Parallel()
 	t.Run("job", func(t *testing.T) {
 		stateDir := t.TempDir()
 		owner := identifier.MustNewSessionID()

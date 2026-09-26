@@ -1370,6 +1370,7 @@ func TestSkillReloadReminder_CarriesDiscoveryDiagnostics(t *testing.T) {
 // recorded would lose the only post-compaction reminder forever, with no retry
 // on the next attempt or after a restart.
 func TestSkillReloadReminder_ConsumesReceiptOnlyAfterDurableAdmission(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.skillLifecycle.Inventory["opaque"] = schema.SkillInventoryEntry{Ordinary: &schema.OrdinarySkillActivation{
 		Identity: schema.SkillContentIdentity{
@@ -1587,6 +1588,7 @@ func TestSkillReloadReminder_FitFailureConsumesEarlierReminders(t *testing.T) {
 // no carrier at all — the code recorded it first and then claimed, in a
 // comment, that the carriers were durable "in the same save".
 func TestSkillReload_AdmittedCarrierWaitsForItsDurableObligation(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reload_carrier")
@@ -1661,6 +1663,7 @@ func failSessionTranscript(t *testing.T, s *Session) {
 // lost the only copy of the body while the lifecycle advanced as if it were
 // delivered. The already-persisted obligation keeps the body recoverable.
 func TestSkillReload_CarrierWriteFailureIsVisible(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reload_write_fail")
@@ -1704,6 +1707,7 @@ func TestSkillReload_CarrierWriteFailureIsVisible(t *testing.T) {
 // failed write must fail the preparation instead of consuming the receipt
 // without ever telling the model why the reload did not happen.
 func TestSkillReload_FailedReloadNotificationWriteFailureIsVisible(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	source := writeSkillMDRel(t, root, "skills", "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reload_notify_fail")
@@ -1914,6 +1918,7 @@ var opaqueReloadSelection = schema.SkillReloadSelection{State: "valid", Names: [
 // failure adds another duplicate notification turn and the count grows with
 // each retry.
 func TestSkillReload_FailedNoticeNotReappendedAfterSaveFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	source := writeSkillMDRel(t, root, "skills", "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_notice_retry\n")
@@ -1965,6 +1970,7 @@ func TestSkillReload_FailedNoticeNotReappendedAfterSaveFailure(t *testing.T) {
 // re-runs the reuse decision. It must recognize the already-durable notice for
 // the deterministic invocation instead of appending it again.
 func TestSkillReload_ReuseNoticeNotReappendedAfterSaveFailure(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_reuse_retry\n")

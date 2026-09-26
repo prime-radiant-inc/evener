@@ -48,6 +48,7 @@ func liveDelegateToolResult(req llm.Request, id string) (llm.ToolResultData, boo
 }
 
 func TestReadOnlyRoleDelegateUsesRealWriteBlockedBoundary(t *testing.T) {
+	t.Parallel()
 	facts := requireLiveDelegateSandbox(t)
 	lane, _ := sbxLane(t)
 	readPath := filepath.Join(lane, "readable.txt")

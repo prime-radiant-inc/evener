@@ -8,6 +8,7 @@ import (
 
 // TestBeginShellWork_Closing covers the closing=true path (lines 22-23).
 func TestBeginShellWork_Closing(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	c.mu.Lock()
@@ -22,6 +23,7 @@ func TestBeginShellWork_Closing(t *testing.T) {
 // TestBeginShellWork_StaleLease covers the admitLeaseLocked error path
 // (lines 25-26) when the lease doesn't match a running delegate.
 func TestBeginShellWork_StaleLease(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	// Use wrong generation.
@@ -34,6 +36,7 @@ func TestBeginShellWork_StaleLease(t *testing.T) {
 // TestCommitShellWork_StaleLease_NilWork covers the stale-lease path when
 // the work token doesn't exist (lines 38-40).
 func TestCommitShellWork_StaleLease_NilWork(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	// Token doesn't exist.
@@ -46,6 +49,7 @@ func TestCommitShellWork_StaleLease_NilWork(t *testing.T) {
 // TestCommitShellWork_StaleLease_EmptyJobID covers the stale-lease path when
 // the shellJobID is empty (lines 38-40).
 func TestCommitShellWork_StaleLease_EmptyJobID(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	token, err := c.BeginShellWork(delegateLease{delegateID: "dlg_target", generation: 1})
@@ -61,6 +65,7 @@ func TestCommitShellWork_StaleLease_EmptyJobID(t *testing.T) {
 // TestCommitShellWork_StaleLease_NilCancel covers the stale-lease path when
 // cancel is nil (lines 38-40).
 func TestCommitShellWork_StaleLease_NilCancel(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	token, err := c.BeginShellWork(delegateLease{delegateID: "dlg_target", generation: 1})
@@ -76,6 +81,7 @@ func TestCommitShellWork_StaleLease_NilCancel(t *testing.T) {
 // TestCommitShellWork_ClosingNotStopCovered covers the closing path where
 // closing=true but the delegate is not covered by any stop (lines 42-49).
 func TestCommitShellWork_ClosingNotStopCovered(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	token, err := c.BeginShellWork(delegateLease{delegateID: "dlg_target", generation: 1})
@@ -97,6 +103,7 @@ func TestCommitShellWork_ClosingNotStopCovered(t *testing.T) {
 // TestAbortShellWork_NotFound covers the stale-lease path in AbortShellWork
 // (lines 65-67) when the work token doesn't exist.
 func TestAbortShellWork_NotFound(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	err := c.AbortShellWork(delegateWorkToken{processID: 999})
@@ -108,6 +115,7 @@ func TestAbortShellWork_NotFound(t *testing.T) {
 // TestAbortShellWork_AlreadyCommitted covers the committed path in
 // AbortShellWork (lines 65-67).
 func TestAbortShellWork_AlreadyCommitted(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	token, err := c.BeginShellWork(delegateLease{delegateID: "dlg_target", generation: 1})
@@ -126,6 +134,7 @@ func TestAbortShellWork_AlreadyCommitted(t *testing.T) {
 // TestCommitShellWork_AlreadyCommitted covers the double-commit path
 // (lines 38-40).
 func TestCommitShellWork_AlreadyCommitted(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	token, err := c.BeginShellWork(delegateLease{delegateID: "dlg_target", generation: 1})

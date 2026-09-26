@@ -348,6 +348,7 @@ func TestRetirementDeferredCloseAfterReleaseIsNoOp(t *testing.T) {
 // root/delegate/worktree end-to-end checkpoint lives in
 // TestRetirementSharedChildScratchBindingsRestore.
 func TestRetirementSharedConsumerBorrowUnit(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	owner, ok := root.scratchRetentionOwner()
@@ -1136,6 +1137,7 @@ func (a *nestedSendAdapter) Complete(_ context.Context, req llm.Request) (llm.Re
 // marker intact, and a fresh root cold-sends to BOTH delegates which resolve
 // their original lanes and artifacts.
 func TestRetirementPreservationNestedColdRestore(t *testing.T) {
+	t.Parallel()
 	f := newRetirementPreservationFixture(t)
 	if len(f.delegateIDs) != 2 || len(f.lanePaths) != 2 || len(f.artifactPaths) != 2 {
 		t.Fatalf("fixture depth = %d delegates / %d lanes, want a two-level chain", len(f.delegateIDs), len(f.lanePaths))
@@ -1224,6 +1226,7 @@ func TestRetirementPreservationNestedColdRestore(t *testing.T) {
 // settle step to drain it and leave retirement claimable. It fails if the
 // settle step is absent or a no-op.
 func TestRetirementTreeSettleDrainsPendingRootAttention(t *testing.T) {
+	t.Parallel()
 	repo := newRetirementWorktreeRepo(t)
 	root := repo.s
 	t.Cleanup(func() { root.Close() })
@@ -1299,6 +1302,7 @@ func toleratedRetirementPrimaryAddition(name string) bool {
 // preserves the retired root's occupied clean and dirty lanes while still
 // collecting an independently seeded collectible foreign lane.
 func TestRetirementForeignSweepPreservesOccupiedLanes(t *testing.T) {
+	t.Parallel()
 	f := newRetirementPreservationFixture(t)
 	if f.laneStatuses[1] == "" {
 		t.Fatal("second occupied lane must be tracked-dirty")
@@ -1933,6 +1937,7 @@ func TestRetirementConcurrentReleaseOnlyOneProceeds(t *testing.T) {
 // already loaded: a scratch directory removed after preparation must fail
 // validation rather than being treated as present because the pool is non-nil.
 func TestRetirementValidationRejectsRemovedRetainedScratchAfterPrepare(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	defer root.Close()

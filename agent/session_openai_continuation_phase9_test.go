@@ -90,6 +90,7 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 // call frame — no sidecar on the request — sanitizing the malformed tool call
 // it replays.
 func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalformedToolCall(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const malformedArgs = `{"value": broken`
 

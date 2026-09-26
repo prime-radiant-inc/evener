@@ -31,6 +31,7 @@ func readLocalJobTranscriptForTest(t *testing.T, stateDir, sessionID, jobID stri
 }
 
 func TestReadTranscriptLocalJobOwnerAndForeignSnapshots(t *testing.T) {
+	t.Parallel()
 	stateHome := t.TempDir()
 	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
 	foreign := localJobProjectBucket(t, stateHome, localJobSiblingProject)
@@ -86,6 +87,7 @@ func TestReadTranscriptLocalJobOwnerAndForeignSnapshots(t *testing.T) {
 }
 
 func TestReadTranscriptLocalJobUsesDerivedOutputAfterStoreClose(t *testing.T) {
+	t.Parallel()
 	stateHome := t.TempDir()
 	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
 	owner := identifier.MustNewSessionID()
@@ -162,6 +164,7 @@ func TestForeignTranscriptReadDoesNotBroadenJobTools(t *testing.T) {
 }
 
 func TestReadTranscriptLocalJobOwnerAndForeignRetainedMetadata(t *testing.T) {
+	t.Parallel()
 	stateHome := t.TempDir()
 	current := localJobProjectBucket(t, stateHome, localJobCurrentProject)
 	foreign := localJobProjectBucket(t, stateHome, localJobSiblingProject)
@@ -214,6 +217,7 @@ func TestReadTranscriptLocalJobRejectsOldIDBeforeIO(t *testing.T) {
 }
 
 func TestReadTranscriptLocalJobRejectsMiddleCorruption(t *testing.T) {
+	t.Parallel()
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -239,6 +243,7 @@ func TestReadTranscriptLocalJobRejectsMiddleCorruption(t *testing.T) {
 }
 
 func TestReadTranscriptLocalJobToleratesTrailingPartialEvent(t *testing.T) {
+	t.Parallel()
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -266,6 +271,7 @@ func TestReadTranscriptLocalJobToleratesTrailingPartialEvent(t *testing.T) {
 }
 
 func TestReadTranscriptLocalJobRejectsNewlineTerminatedTrailingCorruption(t *testing.T) {
+	t.Parallel()
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -290,6 +296,7 @@ func TestReadTranscriptLocalJobRejectsNewlineTerminatedTrailingCorruption(t *tes
 }
 
 func TestReadTranscriptLocalJobReportsMissingOutput(t *testing.T) {
+	t.Parallel()
 	flat := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)
@@ -321,6 +328,7 @@ func appendLocalJobOutputForTranscriptTest(t *testing.T, stateDir, owner, jobID 
 }
 
 func TestReadTranscriptJobRawPageRunningAppendContinuation(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	owner := identifier.MustNewSessionID()
 	jobID := identifier.MustNewJobID(owner)

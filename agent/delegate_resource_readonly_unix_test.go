@@ -20,6 +20,7 @@ import (
 )
 
 func TestStableDelegateReadOnly_TornTailIsReportedButNotRepaired(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	path := seedStableReadonlyTornJournal(t, stateDir, sessionID)
@@ -39,6 +40,7 @@ func TestStableDelegateReadOnly_TornTailIsReportedButNotRepaired(t *testing.T) {
 }
 
 func TestStableDelegateReadOnly_FileBytesAndMetadataRemainUnchanged(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	path := seedStableReadonlyTornJournal(t, stateDir, sessionID)
@@ -60,6 +62,7 @@ func TestStableDelegateReadOnly_FileBytesAndMetadataRemainUnchanged(t *testing.T
 }
 
 func TestStableDelegateReadOnly_NoSessionProviderOrWritableOpen(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	path := filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl")

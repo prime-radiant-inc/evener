@@ -12,6 +12,7 @@ import (
 )
 
 func TestDelegateControllerCloseDrainRetriesStaleEvidence(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	seedDelegateControllerRunning(t, c, "dlg_unrelated", "")

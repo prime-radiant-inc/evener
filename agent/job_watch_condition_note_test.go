@@ -120,6 +120,7 @@ func TestSessionConditionWatchNote_RidesTheFiredNotification(t *testing.T) {
 // frame rather than a rendered notification body. The note has to travel in the
 // frame itself, because the frame is the whole payload the receiver reads.
 func TestStableReceiverWatchNote_RidesTheDurableFrame(t *testing.T) {
+	t.Parallel()
 	fixture := newStableWatchRuntimeBase(t, nil)
 	if _, err := jobWatchToolWithContext(context.Background(), fixture.root, map[string]any{
 		"operation": "create",

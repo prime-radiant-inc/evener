@@ -112,6 +112,7 @@ func TestInjectPostToolSteering_LoopDetectionKeepsVisionCleanupOwnedUntilDrainCo
 }
 
 func TestDelegateAttention_DeliveryCommitUsesCallerToolResultFsync(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, firstWaiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
@@ -147,6 +148,7 @@ func TestDelegateAttention_DeliveryCommitUsesCallerToolResultFsync(t *testing.T)
 }
 
 func TestDelegateAttention_DeliveryCommitAppendFailureLeavesNAndNPlusOnePending(t *testing.T) {
+	t.Parallel()
 	c, firstPlan, firstWaiter, _, secondWaiter := controllerWithTwoDelegateDeliveries(t, true, true)
 	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
 		t.Fatalf("handoff inline delivery: %v", err)
@@ -172,6 +174,7 @@ func TestDelegateAttention_DeliveryCommitAppendFailureLeavesNAndNPlusOnePending(
 }
 
 func TestDelegateAttention_DeliveryCommitReleasesNPlusOneOnlyAfterNFsync(t *testing.T) {
+	t.Parallel()
 	c, firstPlan, firstWaiter, _, secondWaiter := controllerWithTwoDelegateDeliveries(t, true, true)
 	if _, err := deliverDelegatePacket(firstPlan, nil); err != nil {
 		t.Fatalf("handoff inline delivery: %v", err)
@@ -209,6 +212,7 @@ func TestDelegateAttention_DeliveryCommitReleasesNPlusOneOnlyAfterNFsync(t *test
 }
 
 func TestDelegateAttention_DeliveryCommitsPreserveExactToolCallPairsAndStayProviderPrivate(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 2)
 	seedDelegateControllerIdle(t, c, "dlg_first", "")
 	seedDelegateControllerIdle(t, c, "dlg_second", "")

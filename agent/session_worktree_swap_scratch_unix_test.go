@@ -31,6 +31,7 @@ func currentLocalEnv(t *testing.T, s *Session) *execenv.LocalExecutionEnvironmen
 // across the exit too — otherwise the lease sits on a clone the exit discarded
 // and is held for the rest of the daemon's uptime.
 func TestWorktreeSwap_ScratchFollowsTheSessionThroughExitAfterReentry(t *testing.T) {
+	t.Parallel()
 	sr, meta, env, scratch := scratchFollowsReentryFixture(t, "01RESUMESCRATCHEXIT0000001")
 	sess, err := sr.restoreSessionOn(env, meta, sr.restoreConfig())
 	if err != nil {
@@ -69,6 +70,7 @@ func TestWorktreeSwap_ScratchFollowsTheSessionThroughExitAfterReentry(t *testing
 // second clone when it closes, and that clone must own the scratch by then:
 // every swap moves ownership onto the environment the session now holds.
 func TestWorktreeSwap_ScratchFollowsTheSessionThroughEnterExitEnter(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	launch := currentLocalEnv(t, r.s)
@@ -123,6 +125,7 @@ func TestWorktreeSwap_ScratchFollowsTheSessionThroughEnterExitEnter(t *testing.T
 // changes a second time mid-session. The environment keeps what it owns; the
 // incoming scratch is retained instead.
 func TestWorktreeSwap_ExitKeepsTheScratchAChildMintedOnTheSharedEnvironment(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	launch := currentLocalEnv(t, r.s)
@@ -182,6 +185,7 @@ func TestWorktreeSwap_ExitKeepsTheScratchAChildMintedOnTheSharedEnvironment(t *t
 // at the parent's close — without a second process-table cleanup, since the
 // parked environment shares the table the current clone's Cleanup just reaped.
 func TestParentCloseWhileEnteredRetainsTheParkedEnvironmentScratch(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	parent := r.s
@@ -313,6 +317,7 @@ func TestWorktreeSwap_SnapshotOnTheEnteredCloneUsesTheSessionScratch(t *testing.
 // must not then install next with a lease nothing will ever release: it
 // refuses, surfaces the refusal, and retains what next adopted.
 func TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	launch := currentLocalEnv(t, r.s)
@@ -373,6 +378,7 @@ func TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease(t *testing.T) {
 // thirty seconds later and with a fence warning that means the opposite of what
 // it says here. The assertions below pin both.
 func TestWorktreeSwap_CloseAfterTheEnterRetainsTheParkedEnvironmentScratch(t *testing.T) {
+	t.Parallel()
 	started := time.Now()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
@@ -732,6 +738,7 @@ func enterLaneWithSharedChild(t *testing.T, r *wtRepo, name string) *execenv.Loc
 // current clone's Cleanup never reaches. Nothing but the parent's close can
 // release it, so the parent's close has to.
 func TestParentCloseRetainsScratchOnAnEnvironmentASecondEnterAbandoned(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	launch := currentLocalEnv(t, r.s)
@@ -778,6 +785,7 @@ func TestParentCloseRetainsScratchOnAnEnvironmentASecondEnterAbandoned(t *testin
 // it, and recording it as abandoned would have close retain the very
 // environment it is about to tear down.
 func TestParentCloseAfterExitRetainsEachAbandonedEnvironmentAndNotTheLaunchOne(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	launch := currentLocalEnv(t, r.s)
@@ -846,6 +854,7 @@ func TestParentCloseAfterExitRetainsEachAbandonedEnvironmentAndNotTheLaunchOne(t
 // — the same deadlock TestWorktreeSwap_CloseDuringTheSwapLeavesNoOwnerlessLease
 // avoids, here between a child and its own close instead of a root and its own.
 func TestWorktreeSwap_CloseDuringASharedChildExitKeepsTheParentScratchLease(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	parent := r.s
 	shared := currentLocalEnv(t, parent)

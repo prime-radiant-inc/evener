@@ -17,6 +17,7 @@ import (
 )
 
 func TestDelegateControllerSteerPersistsBeforeAcknowledgement(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	fs := &delegateSteerBarrierFS{Fs: afero.NewMemMapFs()}
@@ -56,6 +57,7 @@ func TestDelegateControllerSteerPersistsBeforeAcknowledgement(t *testing.T) {
 }
 
 func TestDelegateControllerSteerAppendFailureIsNotAccepted(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
@@ -83,6 +85,7 @@ func TestDelegateControllerSteerAppendFailureIsNotAccepted(t *testing.T) {
 }
 
 func TestDelegateControllerSteerUpdatesActivityWithoutStateRevision(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -108,6 +111,7 @@ func TestDelegateControllerSteerUpdatesActivityWithoutStateRevision(t *testing.T
 }
 
 func TestDelegateControllerBeginModelRequestBindsPendingEntriesOnce(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -142,6 +146,7 @@ func TestDelegateControllerBeginModelRequestBindsPendingEntriesOnce(t *testing.T
 }
 
 func TestDelegateControllerBoundSteeringRequiresReport(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease := startDelegateAttentionEvidenceGeneration(t, c, "dlg_target")
@@ -175,6 +180,7 @@ func TestDelegateControllerBoundSteeringRequiresReport(t *testing.T) {
 }
 
 func TestDelegateControllerBoundSteeringLegacyBindingWithoutEvidenceDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -201,6 +207,7 @@ func TestDelegateControllerBoundSteeringLegacyBindingWithoutEvidenceDoesNotPanic
 }
 
 func TestDelegateControllerBeginModelRequestProjectsInFlightSteersAfterResponseOnce(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -281,6 +288,7 @@ func TestDelegateControllerBeginModelRequestProjectsInFlightSteersAfterResponseO
 }
 
 func TestDelegateControllerSteerAfterRequestBindWaitsForNextRequest(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -311,6 +319,7 @@ func TestDelegateControllerSteerAfterRequestBindWaitsForNextRequest(t *testing.T
 }
 
 func TestDelegateControllerLateSteeringEscalatesOnNextRequest(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease := startDelegateAttentionEvidenceGeneration(t, c, "dlg_target")
@@ -347,6 +356,7 @@ func TestDelegateControllerLateSteeringEscalatesOnNextRequest(t *testing.T) {
 }
 
 func TestDelegateControllerModelSnapshotDefersUncompletedSteerUntilNextRequest(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -380,6 +390,7 @@ func TestDelegateControllerModelSnapshotDefersUncompletedSteerUntilNextRequest(t
 }
 
 func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -408,6 +419,7 @@ func TestDelegateControllerModelSnapshotDefersSteerAcceptedAfterRequestBind(t *t
 }
 
 func TestDelegateControllerModelRequestUsesOutgoingReplayScope(t *testing.T) {
+	t.Parallel()
 	profile := namedInstanceProfile("ant", "anthropic", "claude-sonnet-4-5")
 	runtime := newSession(t, withAdapter(&fakeAdapter{name: "ant"}), withProfile(profile), withoutGitSnapshot())
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
@@ -455,6 +467,7 @@ func (s *delegateBlockingContextStrategy) ManageContext(ctx context.Context, _ *
 }
 
 func TestDelegateControllerSteerDuringContextManagementEntersNextRequestOnce(t *testing.T) {
+	t.Parallel()
 	strategy := &delegateBlockingContextStrategy{
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
@@ -519,6 +532,7 @@ func completeDelegateModelRequest(c *delegateTreeController, lease delegateLease
 }
 
 func TestDelegateControllerBeginToolRejectsStoppingOrStaleLease(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}

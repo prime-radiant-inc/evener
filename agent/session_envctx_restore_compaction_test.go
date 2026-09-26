@@ -13,6 +13,7 @@ import (
 )
 
 func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
+	t.Parallel()
 	for _, retained := range []string{"none", "full", "diff"} {
 		t.Run(retained, func(t *testing.T) {
 			now := envctxFixedTime

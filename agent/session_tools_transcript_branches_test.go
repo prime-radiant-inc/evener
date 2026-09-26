@@ -1150,6 +1150,7 @@ func TestResolvedSessionMetaNilDeps(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestProjectToolResultsForTranscriptNoProjection(t *testing.T) {
+	t.Parallel()
 	calls := []llm.ToolCallData{{Name: "read_file", Arguments: json.RawMessage(`{}`)}}
 	results := []tool.ExecResult{{ToolName: "read_file", Output: `{"content":"hello"}`}}
 	parts := []llm.ContentPart{{ToolResult: &llm.ToolResultData{Content: "original"}}}
@@ -1748,6 +1749,7 @@ func TestBoundReadMarkdownEnvelope(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReadTranscriptToolRegistration(t *testing.T) {
+	t.Parallel()
 	tl := readTranscriptTool(nil)
 	if !tl.ReadOnly {
 		t.Fatalf("expected read_transcript to be read-only")
@@ -1832,6 +1834,7 @@ func TestReadRawEnvelopeStructure(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestOpenArtifactTranscriptExpired(t *testing.T) {
+	t.Parallel()
 	store, err := artifactstore.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -1851,6 +1854,7 @@ func TestOpenArtifactTranscriptExpired(t *testing.T) {
 }
 
 func TestOpenArtifactTranscriptValid(t *testing.T) {
+	t.Parallel()
 	store, err := artifactstore.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -1878,6 +1882,7 @@ func TestOpenArtifactTranscriptValid(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPageArtifactTranscriptValid(t *testing.T) {
+	t.Parallel()
 	store, err := artifactstore.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -1904,6 +1909,7 @@ func TestPageArtifactTranscriptValid(t *testing.T) {
 }
 
 func TestPageArtifactTranscriptOffsetOutOfRange(t *testing.T) {
+	t.Parallel()
 	store, err := artifactstore.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -1927,6 +1933,7 @@ func TestPageArtifactTranscriptOffsetOutOfRange(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSearchArtifactTranscriptValid(t *testing.T) {
+	t.Parallel()
 	store, err := artifactstore.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -1969,6 +1976,7 @@ func TestSearchArtifactTranscriptInvalidRegex(t *testing.T) {
 }
 
 func TestSearchArtifactTranscriptOffsetBeyondEOF(t *testing.T) {
+	t.Parallel()
 	store, err := artifactstore.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -1992,6 +2000,7 @@ func TestSearchArtifactTranscriptOffsetBeyondEOF(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExecReadTranscriptArtifactSearch(t *testing.T) {
+	t.Parallel()
 	store, err := artifactstore.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -2011,6 +2020,7 @@ func TestExecReadTranscriptArtifactSearch(t *testing.T) {
 }
 
 func TestExecReadTranscriptArtifactPage(t *testing.T) {
+	t.Parallel()
 	store, err := artifactstore.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -2765,6 +2775,7 @@ func TestParseRetainedReadArgsOffsetZero(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseReadSessionTranscriptArgsExpandTurnValid(t *testing.T) {
+	t.Parallel()
 	expand := 2
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{"expand_turn": float64(2)})
 	if err != nil {
@@ -2866,6 +2877,7 @@ func TestRetainedSearchEnvelope(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPageArtifactTranscriptOffsetExactEOF(t *testing.T) {
+	t.Parallel()
 	store, err := artifactstore.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("new store: %v", err)

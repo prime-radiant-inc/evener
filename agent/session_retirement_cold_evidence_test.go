@@ -109,6 +109,7 @@ func hasColdEvidenceCategory(blockers []RetirementBlocker, category, sessionID, 
 // journal (a stat failure that is not absence) is still unsupported rather than
 // silently empty.
 func TestRetirementColdEvidenceMissingJobJournalIsEligible(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID  = "cold-missing-journal"
 		delegateID = "dlg_cold_missing_journal"

@@ -227,6 +227,7 @@ func TestUseSkill_InlineMentionPreservesUserInput(t *testing.T) {
 }
 
 func TestStandaloneSkillActivationUsesCanonicalPluginName(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.skills = skill.Catalog{Entries: map[string]skill.Descriptor{
 		"plugin:simplify": {CatalogName: "plugin:simplify", Controls: skill.InvocationControls{UserInvocable: true}, Meta: skill.SkillMeta{Name: "simplify", SkillFile: writeSkillBodyFile(t, "plugin steps")}},

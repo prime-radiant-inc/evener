@@ -9,6 +9,7 @@ import (
 // TestSupervisionBoundary_StaleLease covers the exactLease error path
 // (lines 44-46).
 func TestSupervisionBoundary_StaleLease(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	lease := delegateLease{delegateID: "nonexistent", generation: 1}
 	_, err := c.SupervisionBoundary(lease, delegateSettlementOrdinary)
@@ -20,6 +21,7 @@ func TestSupervisionBoundary_StaleLease(t *testing.T) {
 // TestSupervisionBoundary_Closing covers the closing/stopping path
 // (lines 48-50).
 func TestSupervisionBoundary_Closing(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	c.mu.Lock()
@@ -37,6 +39,7 @@ func TestSupervisionBoundary_Closing(t *testing.T) {
 // TestSupervisionBoundary_NotRunning covers the not-running path
 // (lines 51-52).
 func TestSupervisionBoundary_NotRunning(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_idle", "")
 	_, err := c.SupervisionBoundary(delegateLease{delegateID: "dlg_idle", generation: 1}, delegateSettlementOrdinary)
@@ -48,6 +51,7 @@ func TestSupervisionBoundary_NotRunning(t *testing.T) {
 // TestBeginFinalization_InvalidMode covers the default switch case
 // (lines 109-110).
 func TestBeginFinalization_InvalidMode(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	_, _, err := c.BeginFinalization(delegateLease{delegateID: "dlg_target", generation: 1}, delegateSettlementMode(99))
@@ -59,6 +63,7 @@ func TestBeginFinalization_InvalidMode(t *testing.T) {
 // TestBeginFinalization_StaleLease_Terminal covers the exactLease error path
 // for terminal mode (lines 98-100).
 func TestBeginFinalization_StaleLease_Terminal(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	_, _, err := c.BeginFinalization(delegateLease{delegateID: "nonexistent", generation: 1}, delegateSettlementTerminal)
 	if err == nil {
@@ -69,6 +74,7 @@ func TestBeginFinalization_StaleLease_Terminal(t *testing.T) {
 // TestBeginFinalization_StaleLease_Ordinary covers the admitLease error path
 // for ordinary mode with no stop (lines 75-82).
 func TestBeginFinalization_StaleLease_Ordinary(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	_, _, err := c.BeginFinalization(delegateLease{delegateID: "nonexistent", generation: 1}, delegateSettlementOrdinary)
 	if err == nil {
@@ -79,6 +85,7 @@ func TestBeginFinalization_StaleLease_Ordinary(t *testing.T) {
 // TestBeginFinalization_TerminalNotRunningOrStopping covers the phase check
 // (lines 102-103).
 func TestBeginFinalization_TerminalNotRunningOrStopping(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_idle", "")
 	_, _, err := c.BeginFinalization(delegateLease{delegateID: "dlg_idle", generation: 1}, delegateSettlementTerminal)
@@ -89,6 +96,7 @@ func TestBeginFinalization_TerminalNotRunningOrStopping(t *testing.T) {
 
 // TestCompleteSettlement_NilClaim covers the nil-claim path.
 func TestCompleteSettlement_NilClaim(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	_, err := c.CompleteSettlement(nil, nil)
 	if err == nil {
@@ -98,6 +106,7 @@ func TestCompleteSettlement_NilClaim(t *testing.T) {
 
 // TestCompleteSettlement_StaleClaim covers the stale-claim path.
 func TestCompleteSettlement_StaleClaim(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	claim := &delegateSettlementClaim{token: 99999, lease: delegateLease{delegateID: "dlg_target", generation: 1}}
@@ -120,6 +129,7 @@ func TestReportActivity_NilController(t *testing.T) {
 
 // TestReportActivity_ZeroAt covers the at.IsZero() path (lines 88-90).
 func TestReportActivity_ZeroAt(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	// Call with zero time — should use c.now() instead.

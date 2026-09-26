@@ -23,6 +23,7 @@ var errInjectedTranscriptWrite = errors.New("injected transcript write failure")
 var errInjectedAttentionReadback = errors.New("injected attention readback failure")
 
 func TestDelegateAttention_AppendIsIdempotentByIdentityAndContent(t *testing.T) {
+	t.Parallel()
 	sess := newDelegateAttentionTestSession(t)
 	if appended, err := sess.appendDelegateNotificationDurably("attention-1", "first"); err != nil || !appended {
 		t.Fatalf("first append = %t, %v", appended, err)
@@ -40,6 +41,7 @@ func TestDelegateAttention_AppendIsIdempotentByIdentityAndContent(t *testing.T) 
 }
 
 func TestDelegateAttention_ConflictingIdentityIsCorruption(t *testing.T) {
+	t.Parallel()
 	sess := newDelegateAttentionTestSession(t)
 	if _, err := sess.appendDelegateNotificationDurably("attention-1", "first"); err != nil {
 		t.Fatalf("first append: %v", err)
@@ -50,6 +52,7 @@ func TestDelegateAttention_ConflictingIdentityIsCorruption(t *testing.T) {
 }
 
 func TestDelegateAttention_FsyncReadbackAmbiguityRetainsAndRepairsExactResidentTurn(t *testing.T) {
+	t.Parallel()
 	sess := newDelegateAttentionTestSession(t)
 	reads := 0
 	sess.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
@@ -93,6 +96,7 @@ func TestDelegateAttention_FsyncReadbackAmbiguityRetainsAndRepairsExactResidentT
 }
 
 func TestDelegateAttention_ClosedWriterNoOpDoesNotPublishResidentTurn(t *testing.T) {
+	t.Parallel()
 	sess := newDelegateAttentionTestSession(t)
 	sess.mu.Lock()
 	writer := sess.transcript
@@ -163,6 +167,7 @@ func (file *transcriptWriteFailFile) Write(p []byte) (int, error) {
 }
 
 func TestSession_AssistantTranscriptFailureStopsBeforeToolDispatch(t *testing.T) {
+	t.Parallel()
 	fs := &transcriptWriteFailFS{Fs: afero.NewMemMapFs()}
 	const transcriptPath = "/session.jsonl"
 	writer, err := transcript.NewWriterWithFS(fs, transcriptPath, transcript.Header{SessionID: "persist-failure"})

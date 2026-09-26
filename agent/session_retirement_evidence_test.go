@@ -50,6 +50,7 @@ func (e *retirementDetachedEnvironment) DetachCommand(ctx context.Context, comma
 }
 
 func TestRetirementSafetyDetachedLifetime(t *testing.T) {
+	t.Parallel()
 	for _, claimFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("claim-first=%t", claimFirst), func(t *testing.T) {
 			dir := t.TempDir()
@@ -835,6 +836,7 @@ func TestRetirementSafetyDirectSetterClaimFirst(t *testing.T) {
 // retain ownership through its real control-environment cleanup. The runner
 // barrier delegates to the actual Git implementation; no owner state is forged.
 func TestRetirementAutonomousSweep(t *testing.T) {
+	t.Parallel()
 	for _, order := range []string{"claim-first", "callback-first"} {
 		t.Run(order, func(t *testing.T) {
 			cfg := worktreeTestSessionConfig()
@@ -909,6 +911,7 @@ func TestRetirementAutonomousSweep(t *testing.T) {
 // case requires the refusal to synchronously re-arm the existing sweep timer so
 // a later firing runs the real pass.
 func TestRetirementAutonomousSweepRefusedRearms(t *testing.T) {
+	t.Parallel()
 	cfg := worktreeTestSessionConfig()
 	clk := agenttest.NewFakeClock()
 	cfg.clock = clk
@@ -963,6 +966,7 @@ func TestRetirementAutonomousSweepRefusedRearms(t *testing.T) {
 // retry. This case requires the refusal to synchronously re-arm the existing
 // retry timer so a later firing reclaims the original lane.
 func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
+	t.Parallel()
 	cfg := worktreeTestSessionConfig()
 	clk := agenttest.NewFakeClock()
 	cfg.clock = clk
@@ -1080,6 +1084,7 @@ func TestRetirementAutonomousReLockRetryRefusedRearms(t *testing.T) {
 }
 
 func TestRetirementAutonomousReLock(t *testing.T) {
+	t.Parallel()
 	for _, order := range []string{"claim-first", "resume-first", "pending-retry", "retry-first"} {
 		t.Run(order, func(t *testing.T) {
 			cfg := worktreeTestSessionConfig()
@@ -1630,6 +1635,7 @@ func TestRetirementSafetyShellRecordLifecycle(t *testing.T) {
 }
 
 func TestRetirementSafetyShellClaimFirst(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	c := retirementEvidenceController(t, root)
@@ -1660,6 +1666,7 @@ func TestRetirementSafetyShellClaimFirst(t *testing.T) {
 }
 
 func TestRetirementWatchActiveRegistration(t *testing.T) {
+	t.Parallel()
 	for _, trigger := range []string{"event", "one-shot", "repeating"} {
 		for _, claimFirst := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/claim-first-%t", trigger, claimFirst), func(t *testing.T) {
@@ -2821,6 +2828,7 @@ func TestRetirementSafetyColdJobEvidence(t *testing.T) {
 // collector already had: the live config, its pending sends, and the terminal
 // flush are then cleared for real while the receipt and retry remain.
 func TestRetirementEvidenceStableWatchSettlementPending(t *testing.T) {
+	t.Parallel()
 	fs := newAttentionSyncBarrierFS()
 	fixture := newStableWatchRuntimeFixture(t, fs)
 	old, _, originalAppend := seedSupersededStableWatchAckFailure(t, fixture, fs)

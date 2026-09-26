@@ -60,6 +60,7 @@ func TestReadTranscriptReadsShellJobRef(t *testing.T) {
 }
 
 func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	path := transcriptPath(dir, sessionID)

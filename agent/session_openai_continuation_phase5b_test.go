@@ -26,6 +26,7 @@ import (
 // none of the wire evidence or the credential, while the canonical API log
 // keeps both attempts joined to the assistant turn's group.
 func TestSession_TranscriptAPILogSeparationAndAttemptGroupJoin(t *testing.T) {
+	t.Parallel()
 	const credentialSentinel = "credential_phase5b_must_not_persist"
 	dir := t.TempDir()
 	var mu sync.Mutex

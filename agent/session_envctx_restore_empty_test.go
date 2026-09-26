@@ -16,6 +16,7 @@ import (
 )
 
 func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
+	t.Parallel()
 	for _, transcriptState := range []string{"missing", "header-only"} {
 		t.Run(transcriptState, func(t *testing.T) {
 			dir := t.TempDir()

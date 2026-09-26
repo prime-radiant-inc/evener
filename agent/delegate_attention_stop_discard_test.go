@@ -23,6 +23,7 @@ import (
 // and Reconcile's completion append. The transcript open is durable before
 // the wake is noted, mirroring the arm path's append-then-note order.
 func TestDelegateAttention_LiveStopCompletionDiscardsLateBoundWake(t *testing.T) {
+	t.Parallel()
 	const (
 		delegateID     = "dlg_target"
 		childSessionID = "child-dlg_target"
@@ -104,6 +105,7 @@ func TestDelegateAttention_LiveStopCompletionDiscardsLateBoundWake(t *testing.T)
 // the drain's evidence collection, the live stop drain discards it before
 // completing the stop.
 func TestDelegateAttention_LiveStopSettlementDiscardsBoundAttention(t *testing.T) {
+	t.Parallel()
 	const (
 		delegateID     = "dlg_target"
 		childSessionID = "child-dlg_target"

@@ -956,6 +956,7 @@ func TestClientMutation_StartTranscriptIOFailureRemainsRunnable(t *testing.T) {
 }
 
 func TestClientMutation_StartTranscriptIOFailureProcessPathRemainsRunnable(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{

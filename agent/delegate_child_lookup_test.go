@@ -9,6 +9,7 @@ import "testing"
 // a round cost O(children^2) deep copies. The lookup captures only the rows
 // that name the child session.
 func TestSnapshotsForChildSessionCapturesOnlyThatChild(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	for _, id := range []string{"dlg_a", "dlg_b", "dlg_c"} {
 		seedDelegateControllerIdle(t, c, id, "")
@@ -26,6 +27,7 @@ func TestSnapshotsForChildSessionCapturesOnlyThatChild(t *testing.T) {
 // TestDirectStableDelegateForChildSessionHonorsVisibility keeps the lookup's
 // contract: only a direct child of the asking session is found.
 func TestDirectStableDelegateForChildSessionHonorsVisibility(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_parent", "")
 	seedDelegateControllerIdle(t, c, "dlg_nested", "dlg_parent")

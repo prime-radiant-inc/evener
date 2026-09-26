@@ -37,6 +37,7 @@ func TestProviderIdleCompactionFallbackUsesSessionPolicy(t *testing.T) {
 }
 
 func TestProviderIdleAuxiliarySessionRequests(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{"", "45s"} {
 		for _, path := range []string{"web search", "compaction", "cheap caller", "naming", "prompt hook"} {
 			t.Run(value+"/"+path, func(t *testing.T) {

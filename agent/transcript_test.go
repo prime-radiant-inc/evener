@@ -2092,6 +2092,7 @@ func executeReadSessionTranscript(t *testing.T, deps *toolDeps, args map[string]
 }
 
 func TestReadSessionTranscriptAPILogSourceSummarizesWithoutBodyData(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	const sessionID = "02wMz5Txv2enqVTitaig6F"
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -2149,6 +2150,7 @@ func TestReadSessionTranscriptAPILogSourceSummarizesWithoutBodyData(t *testing.T
 }
 
 func TestReadSessionTranscriptAPILogPreservesNumericEvidencePresence(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -2190,6 +2192,7 @@ func TestReadSessionTranscriptAPILogPreservesNumericEvidencePresence(t *testing.
 }
 
 func TestReadSessionTranscriptAPILogProjectsStoredBodyTruth(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -2289,6 +2292,7 @@ func TestReadSessionTranscriptAPILogProjectsStoredBodyTruth(t *testing.T) {
 }
 
 func TestReadSessionTranscriptAPILogSourceErrorsAreClear(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -2440,6 +2444,7 @@ func TestReadSessionTranscriptAttemptRequiresExplicitAPILogSource(t *testing.T) 
 }
 
 func TestReadSessionTranscriptAPILogSourceBoundsRecordsAndSerializedBytes(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	const sessionID = "02wMz5Txv5aIxgf9yVdd0N"
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -2492,6 +2497,7 @@ func TestReadSessionTranscriptAPILogSourceBoundsRecordsAndSerializedBytes(t *tes
 }
 
 func TestReadSessionTranscriptAPILogSourceBoundsFinalToolOutput(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -2528,6 +2534,7 @@ func TestReadSessionTranscriptAPILogSourceBoundsFinalToolOutput(t *testing.T) {
 }
 
 func TestDecodeAPILogSummariesRetainsAtMostHardLimit(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	records := make([]apilog.APILogRecord, 0, 250)
@@ -2638,6 +2645,7 @@ func readExpandedAPIBody(t *testing.T, deps *toolDeps, attemptID, body string, m
 }
 
 func TestReadSessionTranscriptAttemptExpansionPagesExactBodies(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	const sessionID = "02wMz5Txv733WHFsVy66SR"
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -2670,6 +2678,7 @@ func TestReadSessionTranscriptAttemptExpansionPagesExactBodies(t *testing.T) {
 }
 
 func TestReadSessionTranscriptAttemptExpansionIncludesExactHeadersAndSettlement(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -2789,6 +2798,7 @@ func TestAPILogAttemptSettlementLookupLongLogRetainsOnlyMatchingSettlement(t *te
 }
 
 func TestReadSessionTranscriptAttemptExpansionBoundsHeaderAndBodyEnvelope(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -2905,6 +2915,7 @@ func TestReadAPILogAttemptBodyPageMakesProgressWhenInlineHeadersConsumePage(t *t
 }
 
 func TestReadSessionTranscriptAttemptExpansionResponseAndOffsetEdges(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -2959,6 +2970,7 @@ func TestReadSessionTranscriptAttemptExpansionResponseAndOffsetEdges(t *testing.
 }
 
 func TestReadSessionTranscriptUnsettledGroupStateIsRangeHonest(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	const sessionID = "02wMz5Txv8Vo4rqb3QYZuV"
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -3015,6 +3027,7 @@ func TestReadSessionTranscriptUnsettledGroupStateIsRangeHonest(t *testing.T) {
 }
 
 func TestReadSessionTranscriptAPILogSizeTrimRemovingSettlementMakesAttemptUnknown(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
@@ -3146,6 +3159,7 @@ func TestReadSessionTranscriptOversizedExpansionIsBytePaged(t *testing.T) {
 }
 
 func TestReadSessionTranscriptOversizedAssistantSpansUseHeadTailWithinFinalOutputBound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		message func(*testing.T, string) llm.Message
@@ -3231,6 +3245,7 @@ func TestReadSessionTranscriptOversizedAssistantSpansUseHeadTailWithinFinalOutpu
 }
 
 func TestReadSessionTranscriptOversizedEscapeHeavyExpansionBudgetsFinalOutput(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	path := transcriptPath(dir, sessionID)
@@ -3284,6 +3299,7 @@ func TestReadSessionTranscriptOversizedEscapeHeavyExpansionBudgetsFinalOutput(t 
 }
 
 func TestReadSessionTranscriptEscapeHeavyMarkdownStaysValidWithinSerializedBackstop(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	path := transcriptPath(dir, sessionID)
@@ -3330,6 +3346,7 @@ func TestReadSessionTranscriptEscapeHeavyMarkdownStaysValidWithinSerializedBacks
 }
 
 func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	path := transcriptPath(dir, sessionID)
@@ -3517,6 +3534,7 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 }
 
 func TestReadSessionTranscriptExpansionPagesRawBytesNotEnvelopeEscapes(t *testing.T) {
+	t.Parallel()
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	path := transcriptPath(dir, sessionID)
@@ -3557,6 +3575,7 @@ func TestReadSessionTranscriptExpansionPagesRawBytesNotEnvelopeEscapes(t *testin
 }
 
 func TestReadJobTranscriptBoundMarkerIsNonActionable(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	ownerSessionID := identifier.MustNewSessionID()
 	jm, err := newJobManagerNoSync(stateDir, ownerSessionID, nil)

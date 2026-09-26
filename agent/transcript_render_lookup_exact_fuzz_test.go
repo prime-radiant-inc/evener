@@ -30,6 +30,7 @@ func FuzzTranscriptRenderLookupExact(f *testing.F) {
 }
 
 func TestRLETranscriptRenderScenariosAssertSemantics(t *testing.T) {
+	t.Parallel()
 	rleAssertRenderScenarios(t, "review")
 }
 

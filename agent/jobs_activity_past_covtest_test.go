@@ -97,6 +97,7 @@ func TestLoadHistoricalActivityBase_RequiredChildMissing(t *testing.T) {
 // path (line 75-76) by making the jobs directory a regular file so the stat
 // fails with a non-IsNotExist error.
 func TestLoadHistoricalActivityBase_StatError(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessionID := "staterrchild"
 	savePastActivityMeta(t, stateDir, sessionID, "StatErr")
@@ -498,6 +499,7 @@ func TestLoadHistoricalStableActivity_NilAggregateSkipped(t *testing.T) {
 // covers the delegateTranscriptPathFromRef error in the WithAttention variant
 // (line 158-160).
 func TestLoadHistoricalStableActivityWithAttention_AttentionTranscriptError(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "attnreferr"
 	childID := "childattnref"

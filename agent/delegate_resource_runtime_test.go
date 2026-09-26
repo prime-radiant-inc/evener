@@ -33,6 +33,7 @@ import (
 )
 
 func TestDelegateResourceRuntime_RunningSendPersistsBeforeAck(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	fs := &delegateSteerBarrierFS{Fs: afero.NewMemMapFs()}
@@ -63,6 +64,7 @@ func TestDelegateResourceRuntime_RunningSendPersistsBeforeAck(t *testing.T) {
 }
 
 func TestDelegateResourceRuntime_RestoresDescriptorPluginDirs(t *testing.T) {
+	t.Parallel()
 	pluginDir := makePluginDir(t, "delegate-selected")
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
@@ -80,6 +82,7 @@ func TestDelegateResourceRuntime_RestoresDescriptorPluginDirs(t *testing.T) {
 }
 
 func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.TaskTemplates = []taskpkg.TaskTemplate{{
 			Title:  "Restored committed workflow",
@@ -135,6 +138,7 @@ func TestRestoredDelegatePostStartPopulationEmitsTaskCorrection(t *testing.T) {
 }
 
 func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -149,6 +153,7 @@ func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) 
 }
 
 func TestDelegateResourceRuntime_PositiveWaitCannotSteerAfterIdleToRunningTransition(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	delegateID := "dlg_target"
 	seedDelegateControllerIdle(t, c, delegateID, "")
@@ -200,6 +205,7 @@ func TestDelegateResourceRuntime_PositiveWaitCannotSteerAfterIdleToRunningTransi
 }
 
 func TestDelegateResourceRuntime_IdleSendReservesOneSuccessor(t *testing.T) {
+	t.Parallel()
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "continue once", 0)
 	if outcome.result.Err != nil || outcome.result.Action != "started" {
@@ -220,6 +226,7 @@ func TestDelegateResourceRuntime_IdleSendReservesOneSuccessor(t *testing.T) {
 }
 
 func TestDelegateResourceRuntime_IdleRestoreFailureCommitsBeforeConstruction(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
@@ -259,6 +266,7 @@ func TestDelegateResourceRuntime_IdleRestoreFailureCommitsBeforeConstruction(t *
 }
 
 func TestDelegateResourceRuntime_RegisteredIdleRestoreFailureReturnsStableResult(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
@@ -298,6 +306,7 @@ func TestDelegateResourceRuntime_RegisteredIdleRestoreFailureReturnsStableResult
 }
 
 func TestDelegateResourceRuntime_RegisteredIdleSendClampsInlineWaitOnSuccessAndFailure(t *testing.T) {
+	t.Parallel()
 	for _, failure := range []bool{false, true} {
 		path := "success"
 		if failure {
@@ -367,6 +376,7 @@ func TestDelegateResourceRuntime_RegisteredIdleSendClampsInlineWaitOnSuccessAndF
 }
 
 func TestDelegateResourceRuntime_PostCommitFailureWaitsForPriorDelivery(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "missing-owner")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
@@ -423,6 +433,7 @@ func TestDelegateResourceRuntime_PostCommitFailureWaitsForPriorDelivery(t *testi
 }
 
 func TestDelegateResourceRuntime_InputCompensationFailureLatchesBeforeRunReset(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
@@ -483,6 +494,7 @@ func TestDelegateResourceRuntime_InputCompensationFailureLatchesBeforeRunReset(t
 }
 
 func TestDelegateResourceRuntime_StopOwnsColdRestoreBeforeSideEffects(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
@@ -641,6 +653,7 @@ func TestDelegateResourceRuntime_ParentCloseWaitsForColdRestoreSideEffects(t *te
 }
 
 func TestDelegateResourceRuntime_ParentCloseDoesNotWaitForFailedInlineResult(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
@@ -711,6 +724,7 @@ func TestDelegateResourceRuntime_ParentCloseDoesNotWaitForFailedInlineResult(t *
 }
 
 func TestDelegateResourceRuntime_ConcurrentIdleSendsStartOneGeneration(t *testing.T) {
+	t.Parallel()
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 	start := make(chan struct{})
 	outcomes := make(chan stableDelegateSendOutcome, 2)
@@ -741,6 +755,7 @@ func TestDelegateResourceRuntime_ConcurrentIdleSendsStartOneGeneration(t *testin
 }
 
 func TestDelegateResourceRuntime_CallerCannotWriteIntoUnfinishedRootToolRound(t *testing.T) {
+	t.Parallel()
 	receiver := newDelegateAttentionTestSession(t)
 	receiver.mu.Lock()
 	receiver.state = SessionProcessing
@@ -768,6 +783,7 @@ func TestDelegateResourceRuntime_CallerCannotWriteIntoUnfinishedRootToolRound(t 
 }
 
 func TestDelegateResourceRuntime_CallerNestedPersistsAtNextModelBoundary(t *testing.T) {
+	t.Parallel()
 	receiver := newDelegateAttentionTestSession(t)
 	receiver.mu.Lock()
 	receiver.state = SessionProcessing
@@ -791,6 +807,7 @@ func TestDelegateResourceRuntime_CallerNestedPersistsAtNextModelBoundary(t *test
 }
 
 func TestDelegateResourceRuntime_CallerRootWaitsForToolRoundPersistence(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")
 	lease, waiter := startDelegateDeliveryGeneration(t, c, "dlg_target", true)
@@ -823,6 +840,7 @@ func TestDelegateResourceRuntime_CallerRootWaitsForToolRoundPersistence(t *testi
 }
 
 func TestDelegateResourceRuntime_ModelHistorySnapshotRunsAfterControllerUnlock(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	runtime := attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -851,6 +869,7 @@ func TestDelegateResourceRuntime_ModelHistorySnapshotRunsAfterControllerUnlock(t
 }
 
 func TestDelegateResourceRuntime_PendingSteerWinsAtTerminalBoundary(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	attachDelegateSteerRuntime(t, c, "dlg_target", afero.NewMemMapFs())
@@ -868,6 +887,7 @@ func TestDelegateResourceRuntime_PendingSteerWinsAtTerminalBoundary(t *testing.T
 }
 
 func TestDelegateResourceRuntime_CommunicateSettlesExactlyOnce(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -889,6 +909,7 @@ func TestDelegateResourceRuntime_CommunicateSettlesExactlyOnce(t *testing.T) {
 }
 
 func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDelivery(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	sess := &Session{comm: communicateResult{called: true, structured: map[string]any{"answer": "stable"}}}
@@ -1032,6 +1053,7 @@ func TestDelegateResourceRuntime_CanonicalPacketReusedAcrossFinishReplayAndDeliv
 }
 
 func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics(t *testing.T) {
+	t.Parallel()
 	t.Run("typed exhaustion", func(t *testing.T) {
 		finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
 			runErr: &budgetExhaustionError{Budget: exhaustedBudgetToolRounds, Limit: 17, Resumable: true},
@@ -1158,6 +1180,7 @@ func TestDelegateResourceRuntime_CanonicalInlineDeliveryPreservesPacketSemantics
 }
 
 func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
+	t.Parallel()
 	marker := filepath.Join(t.TempDir(), "stop-hook-ran")
 	pluginDir := writeStableOnceBlockingStopPlugin(t, marker)
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
@@ -1200,6 +1223,7 @@ func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
 }
 
 func TestDelegateResourceRuntime_PositiveStopWaitKeepsReconciliationDriverAlive(t *testing.T) {
+	t.Parallel()
 	harness := newStableStopRuntimeHarness(t)
 	waitCtx := newDelegateStopWaitBarrierContext()
 	result := make(chan stableJobStopInvocation, 1)
@@ -1242,6 +1266,7 @@ func TestDelegateResourceRuntime_PositiveStopWaitKeepsReconciliationDriverAlive(
 }
 
 func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByRequest(t *testing.T) {
+	t.Parallel()
 	harness := newStableStopRuntimeHarness(t)
 	finalStatePublished := make(chan struct{})
 	releaseFinalization := make(chan struct{})
@@ -1300,6 +1325,7 @@ func TestDelegateResourceRuntime_StableStopActiveCompletionReportsCancelledByReq
 // structured State and in the human-readable Output text a caller actually
 // reads.
 func TestDelegateResourceRuntime_StableStopReportsActorAndResumability(t *testing.T) {
+	t.Parallel()
 	harness := newStableStopRuntimeHarness(t)
 	waitCtx := newDelegateStopWaitBarrierContext()
 	result := make(chan stableJobStopInvocation, 1)
@@ -1343,6 +1369,7 @@ func TestDelegateResourceRuntime_StableStopReportsActorAndResumability(t *testin
 }
 
 func TestDelegateResourceRuntime_StableStopIdleCompletionReportsAlreadyIdle(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	root := restoreSupervisionRoot(t, fixture, nil)
 	value, err := jobStopTool(context.Background(), root, map[string]any{
@@ -1355,6 +1382,7 @@ func TestDelegateResourceRuntime_StableStopIdleCompletionReportsAlreadyIdle(t *t
 }
 
 func TestDelegateResourceRuntime_StableStopTimeoutReportsStopRequested(t *testing.T) {
+	t.Parallel()
 	clock := agenttest.NewFakeClock()
 	harness := newStableStopRuntimeHarnessWithClock(t, clock)
 	waitCtx := newDelegateStopWaitBarrierContext()
@@ -1383,6 +1411,7 @@ func TestDelegateResourceRuntime_StableStopTimeoutReportsStopRequested(t *testin
 }
 
 func TestDelegateResourceRuntime_StableStopRetryPreservesAdmissionClassification(t *testing.T) {
+	t.Parallel()
 	harness := newStableStopRuntimeHarness(t)
 	finalStatePublished := make(chan struct{})
 	releaseFinalization := make(chan struct{})
@@ -1434,6 +1463,7 @@ func TestDelegateResourceRuntime_StableStopRetryPreservesAdmissionClassification
 }
 
 func TestDelegateResourceRuntime_TransientDriverFailureCanBeRetried(t *testing.T) {
+	t.Parallel()
 	harness := newStableStopRuntimeHarness(t)
 	transcriptPath := transcriptPath(harness.fixture.stateDir, harness.fixture.childID)
 	backupPath := transcriptPath + ".driver-retry"
@@ -1500,6 +1530,7 @@ func TestDelegateResourceRuntime_TransientDriverFailureCanBeRetried(t *testing.T
 }
 
 func TestDelegateResourceRuntime_RootStoreCloseJoinsReconciliationDriver(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	root := restoreSupervisionRoot(t, fixture, nil)
 	result, _, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.delegateRootSessionID), fixture.delegateID)
@@ -1528,6 +1559,7 @@ func TestDelegateResourceRuntime_RootStoreCloseJoinsReconciliationDriver(t *test
 }
 
 func TestDelegateResourceRuntime_ZeroWaitReturnsAfterRequestFsync(t *testing.T) {
+	t.Parallel()
 	harness := newStableStopRuntimeHarness(t)
 	value, err := jobStopTool(context.Background(), harness.root, map[string]any{
 		"target":      harness.fixture.delegateID,
@@ -1792,6 +1824,7 @@ func TestDelegateResourceRuntime_TerminalOutcomeSnapshotDoesNotAliasResumability
 }
 
 func TestDelegateResourceRuntime_TerminalPacketUsesProductionActivityBoundary(t *testing.T) {
+	t.Parallel()
 	endedAt := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	activityAt := endedAt.Add(-45 * time.Second)
 	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
@@ -1908,6 +1941,7 @@ func TestDelegateResourceRuntime_InvalidStructuredResultIsBoundedAndExplained(t 
 }
 
 func TestDelegateResourceRuntime_ToolRoundExhaustionIsTypedAndResumable(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
@@ -1923,6 +1957,7 @@ func TestDelegateResourceRuntime_ToolRoundExhaustionIsTypedAndResumable(t *testi
 }
 
 func TestDelegateResourceRuntime_TurnExhaustionClosesResumabilityAtomically(t *testing.T) {
+	t.Parallel()
 	c, path := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	finish := stableDelegateFinishFromRun(delegateTerminalRunInputs{
@@ -2112,6 +2147,7 @@ func TestDelegateResourceRuntime_StoppedSendSurvivesPacketClobber(t *testing.T) 
 // Status/Reason, so the durable "stopped" status must survive that overwrite
 // too.
 func TestDelegateResourceRuntime_StoppedSendSurvivesInlineResolutionClobber(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	owner := &Session{delegateController: c, delegateRootSessionID: "root-session"}
 	started := stoppedDelegateStartCommit("dlg_target")
@@ -2133,6 +2169,7 @@ func TestDelegateResourceRuntime_StoppedSendSurvivesInlineResolutionClobber(t *t
 }
 
 func TestDelegateResourceRuntime_StaleGenerationCannotPublishPacket(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	packet := delegateControllerReportedPacket("stale result")
@@ -2233,6 +2270,7 @@ func assertLastDelegateBatchKinds(t *testing.T, path string, want ...delegatesto
 }
 
 func TestDelegateResourceRuntime_ColdIdleUsesCommittedConfigTemplatesAndToolCeiling(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
@@ -2274,6 +2312,7 @@ func TestDelegateResourceRuntime_ColdIdleUsesCommittedConfigTemplatesAndToolCeil
 }
 
 func TestDelegateResourceRuntime_ColdIdleInheritsLiveLifetimeContext(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
@@ -2311,6 +2350,7 @@ func TestDelegateResourceRuntime_ColdIdleInheritsLiveLifetimeContext(t *testing.
 }
 
 func TestDelegateResourceRuntime_ColdIdleReusesExactSharedRootTaskStore(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "root")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {
@@ -2343,6 +2383,7 @@ func TestDelegateResourceRuntime_ColdIdleReusesExactSharedRootTaskStore(t *testi
 }
 
 func TestDelegateResourceRuntime_ColdIdleUnavailableAncestorStoreFailsClosedProviderFree(t *testing.T) {
+	t.Parallel()
 	fixture := newColdStableDelegateFixture(t, "missing-owner")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
 	if err != nil {

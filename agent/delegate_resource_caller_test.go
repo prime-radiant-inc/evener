@@ -20,6 +20,7 @@ import (
 )
 
 func TestDelegateResourceCaller_RegisteredNestedParentUsesStableController(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 2)
 	seedDelegateControllerRunning(t, c, "dlg_parent", "")
 	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
@@ -51,6 +52,7 @@ func TestDelegateResourceCaller_RegisteredNestedParentUsesStableController(t *te
 }
 
 func TestDelegateResourceCaller_RegisteredNestedParentPreservesWatchProvenance(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 2)
 	seedDelegateControllerRunning(t, c, "dlg_parent", "")
 	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
@@ -74,6 +76,7 @@ func TestDelegateResourceCaller_RegisteredNestedParentPreservesWatchProvenance(t
 }
 
 func TestDelegateResourceCaller_RegisteredNestedParentProvenanceBindingBlocksStop(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 2, 2)
 	seedDelegateControllerRunning(t, c, "dlg_parent", "")
 	seedDelegateControllerRunning(t, c, "dlg_child", "dlg_parent")
@@ -145,6 +148,7 @@ func TestDelegateResourceCaller_RegisteredNestedParentProvenanceBindingBlocksSto
 }
 
 func TestDelegateResourceCaller_RegisteredRootParentUsesSafeSteeringAdmission(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	root := newRegisteredCallerRoot(t, c, afero.NewMemMapFs())
 	seedDelegateControllerRunning(t, c, "dlg_child", "")
@@ -172,6 +176,7 @@ func TestDelegateResourceCaller_RegisteredRootParentUsesSafeSteeringAdmission(t 
 }
 
 func TestDelegateResourceCaller_RegisteredRootParentRejectsQueuePersistenceFailure(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	root := newRegisteredCallerRoot(t, c, afero.NewMemMapFs())
 	seedDelegateControllerRunning(t, c, "dlg_child", "")
@@ -190,6 +195,7 @@ func TestDelegateResourceCaller_RegisteredRootParentRejectsQueuePersistenceFailu
 }
 
 func TestDelegateResourceCaller_RegisteredRejectsInvalidLifecycleAndAuthorization(t *testing.T) {
+	t.Parallel()
 	t.Run("root has no controlling caller", func(t *testing.T) {
 		c, _ := newDelegateControllerTestHarness(t, 1, 1)
 		root := newRegisteredCallerRoot(t, c, afero.NewMemMapFs())
@@ -223,6 +229,7 @@ func TestDelegateResourceCaller_RegisteredRejectsInvalidLifecycleAndAuthorizatio
 }
 
 func TestDelegateResourceCaller_RegisteredDoesNotAppendIntoUnfinishedRootToolRound(t *testing.T) {
+	t.Parallel()
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	fs := newDelegateToolResultBarrierFS()
 	root := newRegisteredCallerRoot(t, c, fs)

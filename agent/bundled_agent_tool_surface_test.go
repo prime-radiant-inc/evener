@@ -36,6 +36,7 @@ func bundledTypedAgentsForTest(t *testing.T) map[string]plugin.Agent {
 // and nothing reports it. Kata eb5m found the coordinator naming
 // job_read_output, unregistered since cf84923c6 (2026-06-23).
 func TestBundledAgentToolListsNameRegisteredTools(t *testing.T) {
+	t.Parallel()
 	registered := newTestSession(t).reg.RegisteredNames()
 	var findings []string
 	for source, agent := range bundledTypedAgentsForTest(t) {
@@ -71,6 +72,7 @@ func TestCoordinatorWorkflowCoordinatorCanReadAJob(t *testing.T) {
 }
 
 func TestBundledExplicitToolSurfaceIncludesRecoveryReader(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	var findings []string
 	for source, agentDef := range bundledTypedAgentsForTest(t) {

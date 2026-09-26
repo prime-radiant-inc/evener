@@ -562,6 +562,7 @@ func (g *transcriptGen) bytesField(label string) []byte {
 // Gate B — the strict-reader comparison, which already bails out whenever
 // Skipped != 0 — keeps seeing a live population to compare against).
 func TestTranscriptGenReachesDeeper(t *testing.T) {
+	t.Parallel()
 	// The rates below are near-deterministic generator properties, not
 	// statistical flukes, so a reduced sample count under -short (the gate's
 	// mode) clears the same thresholds while keeping gate latency sane.
