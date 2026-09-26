@@ -1,0 +1,58 @@
+[
+ {
+  "id": "T1",
+  "preset": "default",
+  "prompt": "You just picked up your phone between meetings. Figure out what needs your attention right now. One of your sessions is waiting for an answer from you: give it one."
+ },
+ {
+  "id": "T2b",
+  "preset": "default",
+  "prompt": "An agent finished a plan about showing hosts and projects together and wants your review. Read it. You like it. It ends with open questions; answer the one about archived sessions: yes, archived sessions keep their host badge. Send the agent your review."
+ },
+ {
+  "id": "T4",
+  "preset": "default",
+  "prompt": "Start a new session on the paradise-park machine, in the evener project. Use GLM 5.3 Vision at maximum effort, and turn on only the superpowers and go plugins. Ask it to profile why the hub's roster takes so long to load."
+ },
+ {
+  "id": "T5",
+  "preset": "default",
+  "prompt": "Your big job 'Get PR 2138 Test Clean' has a subagent that keeps failing while trying to fix a race. Find that subagent and get it stopped."
+ },
+ {
+  "id": "T6",
+  "preset": "in-tasklist",
+  "prompt": "You're watching 'Rework Inline Task List Display' while it works. You want it to also handle the empty state, but only after it finishes what it's doing right now. Tell it."
+ },
+ {
+  "id": "T10",
+  "preset": "reading",
+  "events": [
+   {
+    "name": "question",
+    "afterActions": 3
+   }
+  ],
+  "prompt": "You're in the middle of reading a plan. Find what it says about risks. If anything else comes up while you're reading, deal with it the way you'd normally want to, then come back and finish reading."
+ },
+ {
+  "id": "T11",
+  "preset": "default",
+  "prompt": "One session is stuck waiting for your permission to write some files. Let it continue."
+ },
+ {
+  "id": "T12",
+  "preset": "in-pr2138",
+  "prompt": "In this session you want to see exactly which commands the agent ran and what they printed, not summaries. Make the conversation show that."
+ },
+ {
+  "id": "T15",
+  "preset": "default",
+  "prompt": "Your big job 'Get PR 2138 Test Clean' keeps track of useful links. Open its pull request. Then leave the agent a note it will keep seeing: the fix must also pass on Linux."
+ },
+ {
+  "id": "T16",
+  "preset": "default",
+  "prompt": "Without opening it, find out what 'Rework Inline Task List Display' is doing right now and how far along it is. Report both."
+ }
+]

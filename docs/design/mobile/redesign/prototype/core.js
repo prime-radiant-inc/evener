@@ -40,6 +40,7 @@
       menu: null,
       banner: null,
       held: [],
+      recent: [],
       toast: null,
       board: { collapsed: { idle: true, testruns: true, archived: true }, open: { "proj:evener": true, "host:evener:magic-kingdom": true }, organize: "project", selecting: false, selected: {}, searching: false, query: "", scope: "all", flash: {} },
       prefs: { detail: {}, defaultDetail: "Intent", readFont: "Serif", showModel: false, theme: "System",
@@ -245,6 +246,8 @@
     if ((a.kind === "question" || a.kind === "approval") && !pref.questions) return;
     const t = EV.top();
     if (t && t.name === "session" && t.id === a.sessionId) return;
+    // Whatever alerted you last is what Next goes to first, shown or held.
+    if (a.sessionId) S.recent = [a.sessionId].concat(S.recent.filter((id) => id !== a.sessionId));
     if (S.reading && pref.hold || S.typing && pref.hold) {
       S.held.push(a);
       EV.log("banner_held", { kind: a.kind, sessionId: a.sessionId });
@@ -284,6 +287,7 @@
   EV.openSession = function (id, opts) {
     const s = EV.sess(id);
     if (!s) return;
+    EV.S.recent = EV.S.recent.filter((x) => x !== id);
     const t = EV.top();
     if (opts && opts.lateral && t && t.name === "session") EV.replaceTop("session", { id, from: opts.from || "next" });
     else EV.push("session", { id, from: (opts && opts.from) || "board" });

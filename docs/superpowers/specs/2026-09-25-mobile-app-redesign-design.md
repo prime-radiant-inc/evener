@@ -179,7 +179,7 @@ Select                                                      ✎
   - Working: stable order by start time, newest first. Sessions that "may be stuck" float to the top of this band.
   - Idle: finished sessions you have already seen, collapsed by default, most recent first.
   Band headers show counts. Empty bands are omitted.
-- **Pinned categories.** Pinned sessions live in the user's named categories, and each category is its own section (as on the web's rail), in the order the hub returns them; there is no generic "Pinned" section. Each section header has a pin glyph, the name, a count, a collapse toggle and a ⋯ menu (Rename, Delete). An empty category says how to pin to it. Deleting a category unpins its sessions; it never deletes sessions. A pinned session also appears in Live while it is live, so pinning never hides attention.
+- **Pinned categories.** Pinned sessions live in the user's named categories, and each category is its own section (as on the web's rail), in the order the hub returns them; there is no generic "Pinned" section. Each section header has a pin glyph, the name, a count, a collapse toggle and a ⋯ menu (Rename, Delete). Its rows are quiet one-line rows with a still mark: a pinned category is a place, and a live session's full row is already in Live (a round-4 participant read the repeated full row as a second job). An empty category says how to pin to it. Deleting a category unpins its sessions; it never deletes sessions. A pinned session also appears in Live while it is live, so pinning never hides attention.
 - **Projects / Hosts** mirrors the web's "Organize by" control: "Project, then host" (default) or "Host, then project". The toggle sits in the section header, flips the section title between Projects and Hosts, and appears only when more than one host exists. Pinned projects float to the top with a pin mark. Inside a project, sessions split like the web: today, recent, and a folded archived group. Each project and host row shows its live count. A host shows its state only when it isn't connected (an amber "Offline"); connected hosts carry no dot, so green means working and nothing else.
 - **Test runs** (collapsed): projects whose sessions all came from test runs, as on the web.
 - **Archived** (collapsed): archived sessions and projects, newest first. Unarchive from the row's swipe or menu.
@@ -246,9 +246,9 @@ splitting the fix into two subagents…
 ▎Fix race in tree settle                failed · 6m
 ▎Failed: go test exited 1 (3 times)
 [Plan] Fix the settle/drain race
-                    ╭───────────────────────────╮
-                    │ 4 others need you  Next › │
-                    ╰───────────────────────────╯
+              ╭─────────────────────────────────────╮
+              │ Next  Fix Endless Provider Retry… › │
+              ╰─────────────────────────────────────╯
 ────────────────────────────────────────────
 ▂▅▇ Running go test ./agent/... · 42s
 ┌──────────────────────────────────────────┐
@@ -306,11 +306,13 @@ Scrolling:
 
 **Tray.** A single 36pt line above the composer, only while the agent works: the pulse meter and the current activity with elapsed time ("Running go test ./agent/... · 42s", "Thinking… · 1.2K tokens", "Waiting on 12 subagents", "Quiet 40s", "May be stuck · no updates for 12m" in amber ink). Tapping it jumps to the live end of the transcript. Other states have no tray: the title's subtitle already says "Finished · 1h ago", "Failed" or "Shut down", and the transcript and composer say the rest ("Message to resume").
 
-**Next capsule.** When other sessions need you, a small capsule floats at the trailing edge, 10pt above the tray or composer, on the raised surface with a strong edge so it floats in both themes: "4 others need you  Next ›", the count in amber ink and "Next ›" in accent. Tapping it moves to the next session that needs you (alerts held while you read first, then Needs you order), opening it at its question or failure. Touch and hold opens the list of sessions that need you. The transcript keeps 60pt of room at its end so the capsule never sits on the last line.
+**Next capsule.** When other sessions need you, a small capsule floats at the trailing edge, 10pt above the tray or composer, on the raised surface with a strong edge so it floats in both themes: "Next" in accent, then the title of the session it goes to (truncated), then a chevron. Back already carries the count. Tapping it opens that session at its question or failure. The order: whichever session alerted you most recently (shown or held), then Needs you order; a round-4 participant expected Next to go to what had just pinged, and it didn't. Touch and hold opens the list of sessions that need you. The transcript keeps 60pt of room at its end so the capsule never sits on the last line.
+
+Next pushes the session, so Back returns to the one you were in; from a session Next itself opened, it replaces instead, so working through the queue stays one step deep and Back still lands where you started. (With a replace from the start, a round-4 participant handling an interruption found Back went to the Board, not to the plan they had been reading.)
 
 - It shows only when you're free to move on: never while this session's own question or approval is open.
 - It never shows in the Reader or the artifact viewer, which stay quiet (section 13.3).
-- It replaced a full-width amber bar that sat on almost every session screen, repeated Back's count, and was the largest amber shape in the app. A first try at a bare "Next" with the next session's mark failed first-glance testing: all three participants were unsure what "Next" moves through, and all three guessed "the next failure" from the red ✕, so the capsule keeps the words.
+- It replaced a full-width amber bar that sat on almost every session screen, repeated Back's count, and was the largest amber shape in the app. A first try at a bare "Next" with the next session's mark failed first-glance testing: all three participants were unsure what "Next" moves through, and all three guessed "the next failure" from the red ✕. Then "4 others need you  Next" said what it moves through but not where it goes. Naming the destination does both.
 
 ### 8.4 Ask dock
 
@@ -408,7 +410,7 @@ Opened by tapping the title. A large-detent sheet:
 
 ### 8.7 ⋯ menu
 
-Detail level (with the current level and its description as a second line, "Intent · Plus one line for each step the agent took") ▸, Find in session, Files & artifacts, Subagents, Tasks, Notes & links (always present, so a session with neither can still get your note), Session info, Aside, Pin to category…, Archive, Shut down.
+Detail level (with the current level and its description as a second line, "Intent · Plus one line for each step the agent took") ▸, Find in session, Files & artifacts, Subagents, Tasks, Notes & links (always present, so a session with neither can still get your note), Session info, Ask aside… ("A side question in its own session; this one keeps working"), Pin to category…, Archive, Shut down. Choosing a detail level confirms with a toast naming the level and what it shows ("Full: everything, with command output shown"): the change often happens above the visible part of the transcript, and two round-4 participants weren't sure it had taken.
 
 ### 8.8 Notes & links
 
@@ -416,11 +418,11 @@ The same shared notes the web shows in its Notes panel: your note, the agent's n
 
 - **Notes bar.** Under the context chips, one line, shown only when there is something in it. It previews, in the web's order, your note ("Your note: …" with a person glyph), else the agent's note ("Agent's note: …" with a sparkle glyph), else the links: a lone link by its label, several as "3 links". When a note is showing and links exist, a trailing "3 links" says so in words; a bare glyph and count read as attachments to all three first-glance participants. The whole bar opens the sheet. The web also shows an empty "Add a note…" bar; the phone leaves it out to keep 32pt of transcript, and "Notes & links" in the ⋯ menu and the Session sheet is always there instead.
 - **Sheet** ("Notes & links", large detent, Done). Three groups, as on the web:
-  - **Your note.** A serif editor with the placeholder "Make a note…". Below it one status line: "Saving will wake the agent." when it isn't in a turn, "The agent gets your note at its next step." while it works, "Saves in 10 seconds. Tap the note to keep editing." once you leave it, then "Saved".
+  - **Your note.** A serif editor that looks like one: a visible field border, a focus ring in the accent color, and the placeholder "Make a note…" when empty. Below it one status line: "Your note stays on this session. Saving it will wake the agent." when the agent isn't in a turn, "Your note stays on this session. The agent is told when it changes." otherwise, "Saves in 10 seconds, or when you close this." once you leave the field, then "Saved". (The earlier "The agent gets your note at its next step" echoed Steer's own wording, and a round-4 participant sent a steer instead of a note.) Opening the sheet from the notes bar while it shows your note puts the cursor at the end of your note, ready to add to it: in round 4, without a visible field and focus, one participant twice typed into the middle of the note and another concluded the note couldn't be edited at all.
   - **Agent.** The agent's note in the serif, or "No agent note yet".
   - **Links.** Each row shows the label and, beneath it, the full URL in SF Mono, wrapping only after a slash. The URL is never hidden, so a trusted-looking label can't disguise where a link goes. Web links show a globe, file links a document. A web link opens in an in-app browser (SFSafariViewController) over the sheet, with Done coming back. A `file://` link opens in the Reader when it names a document the phone can show; any other file keeps its text and isn't tappable, as on the web. Swipe left for Remove; long-press for Open, Copy link and Remove link. Removal can't be undone from the phone, because only the agent adds links (`urls/add` is agent-only), and the toast says so. Footer: "The agent adds links as it works. Swipe left on one to remove it." Empty: "No links yet".
   - Ended sessions show what was saved, read-only, with no editor and no Remove; with nothing saved, "No shared notes".
-- **Saving.** Saving your note is a steer: the daemon hands it to the agent at its next step and wakes an agent that isn't in a turn (`SetHumanNote` in agent/session_notes_rpc.go). So the phone saves the way the web does: leaving the note schedules the save 10 seconds later and returning to it cancels that, so a burst of edits reaches the agent once. On the phone, closing the sheet counts as leaving the note; the web instead keeps an unsaved draft when a panel closes without the field losing focus, which has no equivalent on a phone.
+- **Saving.** Saving your note is a steer: the daemon hands it to the agent at its next step and wakes an agent that isn't in a turn (`SetHumanNote` in agent/session_notes_rpc.go). Closing the sheet (Done or a swipe down) saves at once and confirms with a toast ("Note saved", or "Note saved. The agent is reading it." when it woke the agent): closing is a clear "done", and round 4 showed a delayed, unconfirmed save left people unsure anything was saved. Leaving the field while the sheet stays open schedules the save 10 seconds later, as the web does, and returning to it cancels that, so a burst of edits reaches the agent once.
 - **Transcript.** A saved note shows where it reached the agent: "You updated your note" over the text in the serif, with a left rule, at every detail level (the web shows the same moment as a divider labeled "Human note").
 
 ## 9. Subagents
@@ -450,7 +452,7 @@ Done · 21                                          ›
 - Rows: a still mark (a green dot for running, ✕ failed, ✓ done; one pulse meter per view, and on this screen that's none), the mandate as title, the latest activity or outcome as the why line, and a last line with the model's display name (only when it differs from the coordinator's), a branch glyph and the branch name when the subagent works in its own worktree, and tokens. The trailing time is bare time in the current state, as the Board's ages are: how long a running subagent has run, how long since one failed or finished.
 - The list virtualizes; trees of 500 must scroll smoothly. A search field filters by title.
 - **Subagent transcript** opens read-only with the same renderer. A banner at the top: "Subagent of Get PR 2138 Test Clean. Talk to it through its coordinator." The composer is replaced by an action bar: **Ask coordinator to stop it** and **Open coordinator**.
-- **Ask coordinator to stop it** opens a sheet with a prefilled, editable steer to the parent ("Stop subagent 'Fix race in tree settle': it has failed three times.") and Steer / Queue buttons. When the hub gains a direct stop call (server addition S6), this becomes **Stop subagent** with a confirmation and no message.
+- **Ask coordinator to stop it** opens a sheet with a prefilled, editable steer to the parent ("Stop subagent 'Fix race in tree settle': it has failed three times.") and Steer / Queue buttons. The row then says "Stop requested from the coordinator" until the subagent's state changes, and when it stops the row reads "Stopped at your request" with a toast naming it; a round-4 participant didn't trust a request that never visibly completed. When the hub gains a direct stop call (server addition S6), this becomes **Stop subagent** with a confirmation and no message.
 
 ## 10. Review: plans, documents and artifacts
 
@@ -478,7 +480,7 @@ both take the tree lock, but…              💬 1
 - Full-screen reading surface: Source Serif 4 18/28 in the `prose` color on page, 16pt margins. Headings in serif semibold, ink-hi. Code blocks in SF Mono 13 insets that scroll horizontally. Task lists render as checkboxes (read-only). Tables scroll horizontally.
 - Header: an empty nav bar until the document's own first heading scrolls away; then its title takes the nav bar, with the kind and age beneath. Above the heading, one caption line in ink-low: "Plan · updated 3m ago", then "3 changes since you read it yesterday" in accent when there are changes. The outline button (headings list for jumping) and ⋯ (Open session, Copy path, Copy text). Back carries a small amber dot while alerts are held (section 13.3).
 - **Changes since you last read:** changed paragraphs get a blue left rule, and nothing else (no "Changed" label); the caption says how many ("3 changes since you read it yesterday"), and the bottom bar steps through them ("‹ Change 1 of 3 ›"), within thumb reach. The caption says when you read it, so it can't be mistaken for a first read.
-- **Comment:** long-press a paragraph (or select text) for Comment, Quote in reply, Copy. In a list, the comment attaches to the item under your finger, which is highlighted while the menu is open. A comment attaches to its paragraph or item; the paragraph shows a comment marker with a count. Comments are drafts until sent and persist per document. Until you comment, a one-line caption above the bottom bar says "Touch and hold a paragraph to comment on it"; there is no tip card over the text.
+- **Comment:** long-press a paragraph (or select text) for Comment, Quote in reply, Copy. In a list, the comment attaches to the item under your finger, which is highlighted while the menu is open. A comment attaches to its paragraph or item, and its marker (with a count) sits on that paragraph or on that list item, never on the list's first line. Comments are drafts until sent and persist per document. Until you comment, a one-line caption above the bottom bar says "Touch and hold a paragraph to comment on it"; there is no tip card over the text.
 - **Review bar (bottom):** Comments (a count, once there are any; opens the list), the change stepper when there are changes, and Send review. No Next capsule here: the Reader stays quiet.
 - **Review** sheet (titled "Review" so its title never repeats the "Send review" button): choose Approve, Request changes, or Comment only (nothing is chosen for you, and Send stays disabled until you choose); an optional overall note; the comments listed with their quoted paragraphs. The primary button matches the session state: Send (idle), Steer and Queue (working). The message format:
 
@@ -566,7 +568,7 @@ Not on the phone, with a footer line "More settings are in the web app": keyboar
 | `awaiting` + `askPending` | Question | ? amber (`questionmark.circle.fill`) | Needs you | "Asks: <first question>" |
 | pending sandbox escalation | Approval | ✋ in a filled amber disc (`hand.raised.circle.fill`), the same family as the other needs-you marks | Needs you | "Wants to <action> <target>" |
 | `warning` | Warning | ⚠ amber (`exclamationmark.triangle.fill`) | Needs you | the warning text |
-| `restartRequired` | Restart needed | two-arrow cycle, amber (`arrow.triangle.2.circlepath.circle.fill`; a single arc read as a "C" or a spinner) | Needs you | "Restart needed · to pick up the hub's update" |
+| `restartRequired` | Restart needed | two-arrow cycle, amber (`arrow.triangle.2.circlepath.circle.fill`; a single arc read as a "C" or a spinner) | Needs you | "Restart needed · restart this session to pick up the hub's update" (says what to restart) |
 | `active` | Working | pulse meter, green | Working | current activity |
 | `active`, no activity 3 to 10 min | Quiet | flat pulse meter | Working | "Quiet 4m" |
 | `active`, no activity 10 min or more | May be stuck | the pulse meter gone flat and amber (a ring read like the restart mark at row size) | top of Working | "May be stuck · no updates for 12m" (amber ink) |
@@ -587,7 +589,7 @@ Marks always pair shape with color so they read without color.
 - **When:** a session you are not looking at becomes Failed, Question, Approval, Warning or Restart needed; or a hub notice appears.
 - **Alert card:** drops in just below the nav bar (never over it, so Back, the title and the ask dock stay reachable), with an amber edge, the mark, session title and why line. It stays 8 seconds and never goes away while a finger is on it; swipe up to dismiss. Tap opens the session at the relevant spot, pushed onto the stack so Back returns to where you were.
 - **Coalescing:** events within 5 seconds combine: "3 sessions need you". Tapping opens the Board scrolled to Needs you.
-- **Quiet while reading:** in the Reader, the Artifact viewer, or while typing in the composer, banners are held; the Back button's count updates and a small amber dot appears on it. Neither screen shows the Next capsule. Held banners show when you leave, combined, and Next serves the held sessions first.
+- **Quiet while reading:** in the Reader, the Artifact viewer, or while typing in the composer, banners are held; the Back button shows how many are waiting as an amber count (a bare dot meant nothing to a round-4 participant). Neither screen shows the Next capsule. Held banners show when you leave, combined, and Next serves the held sessions first.
 - **Haptics:** warning for failures, light notification for needs you, none for finished results.
 
 ### 13.4 Phase 2: OS notifications, Live Activity, widget (designed, not built)

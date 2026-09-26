@@ -46,7 +46,7 @@
     if (st === "failed") return { label: "Failed", text: rest, cls: "danger", two: true };
     if (st === "question") return { label: "Question", text: rest, cls: "attention", two: true };
     if (st === "approval") return { label: "Approval", text: rest.replace(/^Wants to /, "wants to "), cls: "attention", two: true };
-    if (st === "restart") return { label: "Restart needed", text: "to pick up the hub's update", cls: "attention" };
+    if (st === "restart") return { label: "Restart needed", text: "restart this session to pick up the hub's update", cls: "attention" };
     if (st === "warning") return { label: "Warning", text: rest, cls: "attention", two: true };
     if (st === "stuck") return { label: "May be stuck", text: "no updates for " + EV.fmtAgo(Date.now() - s.updatedAt), cls: "attention" };
     if (st === "working") return EV.activityLine(s);
@@ -280,7 +280,7 @@
           </button>
           <button class="h-act" aria-label=${"Category actions for " + c.name} onClick=${() => EV.categoryMenu(c)}>${I.dots({ s: 18 })}</button>
         </div>
-        ${open ? (list.length ? list.map((x) => html`<${EV.BoardRow} key=${x.id} s=${x} quiet=${!x.live || EV.band(x) === "idle"} context=${"category:" + c.name} />`) : html`<div class="fold" style="cursor:default;font-size:14px;color:var(--ink-low)">No sessions pinned here yet. Touch and hold a session and choose Pin to category.</div>`) : null}
+        ${open ? (list.length ? list.map((x) => html`<${EV.BoardRow} key=${x.id} s=${x} quiet=${true} context=${"category:" + c.name} />`) : html`<div class="fold" style="cursor:default;font-size:14px;color:var(--ink-low)">No sessions pinned here yet. Touch and hold a session and choose Pin to category.</div>`) : null}
       </section>`;
     });
   }

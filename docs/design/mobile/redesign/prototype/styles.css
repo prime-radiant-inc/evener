@@ -912,3 +912,13 @@ mark.hit { background: var(--accent-bg); color: inherit; font-weight: 600; borde
 .meta > span { flex: none; }
 .meta > .task { flex: 0 1 auto; }
 .row .meta { flex-wrap: nowrap; }
+
+/* Round 4. */
+.bottom .next-cap { max-width: 78%; gap: 6px; padding: 0 10px 0 14px; }
+.bottom .next-cap .nc-go { font-weight: 600; font-size: 15px; color: var(--accent-ink); flex: none; }
+.bottom .next-cap .nc-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; color: var(--ink-hi); }
+.bottom .next-cap > svg { flex: none; color: var(--ink-low); }
+.back-btn .badge { margin-left: 2px; }
+.field textarea.note-editor { border: 1px solid var(--edge-strong); background: var(--surface); }
+.field textarea.note-editor:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.cmark.li { right: -8px; top: 2px; }

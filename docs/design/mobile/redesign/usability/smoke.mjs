@@ -154,7 +154,8 @@ async function runChecks(page, scheme) {
   }
   await check(S('event-held-while-reading'), page, async () => {
     await reset(page, 'reading'); await ev(page, `window.__proto.trigger('question')`); await sleep(300); await logHas(page, 'banner_held');
-    if (!(await page.locator('[data-screen="reader"] .held-dot').count())) throw new Error('the Reader\'s Back shows no sign of the held alert');
+    const badge = await page.locator('[data-screen="reader"] .back-btn .badge').textContent().catch(() => null);
+    if (badge !== '1') throw new Error('the Reader\'s Back should count the held alert, got ' + JSON.stringify(badge));
   });
 
   // Real UI flows, by tapping, asserted against the action log.
@@ -280,14 +281,36 @@ async function runChecks(page, scheme) {
     const top = await ev(page, 'EV.S.nav[EV.S.nav.length - 1]');
     if (top.name !== 'reader' || !top.path.endsWith('settle-race.md')) throw new Error('the file link did not open the plan in the Reader: ' + JSON.stringify(top));
   });
-  await check(S('flow-note-saves-after-leaving'), page, async () => {
+  await check(S('flow-note-saves-on-close'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-hier'); EV.openSheet('notes',{sessionId:'s-hier'})`); await sleep(400);
     await page.locator('textarea[aria-label="Your note"]').tap(); await page.keyboard.type('Prefer layout B');
     await tapInSheet('button', 'Done', true); await sleep(300);
-    const early = await ev(page, 'window.__proto.log.filter((e) => e.type === "note_set").length');
-    if (early) throw new Error('the note saved before the 10-second grace period');
-    await page.waitForFunction(() => window.__proto.log.some((e) => e.type === 'note_set'), null, { timeout: 12000 });
     await logHas(page, 'note_set', (e) => e.text === 'Prefer layout B' && e.woke === true);
+    const toast = await ev(page, 'EV.S.toast && EV.S.toast.text');
+    if (!/Note saved/.test(toast || '')) throw new Error('closing the sheet saved silently; toast was ' + JSON.stringify(toast));
+  });
+  await check(S('flow-note-blur-waits'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-hier'); EV.openSheet('notes',{sessionId:'s-hier'})`); await sleep(400);
+    await page.locator('textarea[aria-label="Your note"]').tap(); await page.keyboard.type('Prefer layout B');
+    await ev(page, 'document.activeElement.blur()'); await sleep(300);
+    await logHas(page, 'note_leave', (e) => e.how === 'blur');
+    if (await ev(page, 'window.__proto.log.some((e) => e.type === "note_set")')) throw new Error('leaving the field inside the sheet saved at once');
+    await page.waitForFunction(() => window.__proto.log.some((e) => e.type === 'note_set'), null, { timeout: 12000 });
+  });
+  await check(S('flow-notes-bar-edits-your-note'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-pr2138')`); await sleep(400);
+    await tapRole('button', 'Notes and links'); await sleep(300);
+    const at = await ev(page, '(() => { const t = document.activeElement; return t && t.getAttribute("aria-label") === "Your note" ? [t.selectionStart, t.value.length] : null; })()');
+    if (!at || at[0] !== at[1]) throw new Error('the notes bar should open your note ready to add to, cursor at the end; got ' + JSON.stringify(at));
+  });
+  await check(S('flow-next-goes-to-the-alert'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-hier')`); await sleep(400);
+    await ev(page, `window.__proto.trigger('question')`); await sleep(400);
+    const alerted = await ev(page, 'EV.S.recent[0]');
+    await page.getByRole('button', { name: 'Go to the next session that needs you' }).tap(); await sleep(400);
+    await logHas(page, 'next', (e) => e.from === 's-hier' && e.to === alerted);
+    const stack = await ev(page, 'EV.S.nav.map((n) => n.name + (n.id ? ":" + n.id : "")).join(">")');
+    if (stack !== 'board>session:s-hier>session:' + alerted) throw new Error('Next should push, so Back returns to s-hier; stack is ' + stack);
   });
   await check(S('flow-remove-link'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-pr2138'); EV.openSheet('notes',{sessionId:'s-pr2138'})`); await sleep(400);
@@ -300,6 +323,15 @@ async function runChecks(page, scheme) {
     await page.locator('[data-session="s-hier"] .att').first().tap(); await sleep(500);
     const stack = await ev(page, 'EV.S.nav.map((n) => n.name).join(">")');
     if (stack !== 'board>session>reader') throw new Error('a plan opened from the Board should sit on its session; the stack is ' + stack);
+  });
+  await check(S('flow-comment-marker-on-its-item'), page, async () => {
+    await reset(page, 'reading'); await sleep(300);
+    // Find a list block, and comment on its second item the way the comment sheet records it.
+    const where = await ev(page, `(() => { const b = [...document.querySelectorAll('[data-screen="reader"] .rblock')].find((x) => x.querySelectorAll('li').length > 1); return b ? +b.dataset.block : null; })()`);
+    if (where == null) throw new Error('no list in the reading preset');
+    await ev(page, `EV.S.comments['docs/superpowers/plans/2026-09-25-host-project-hierarchy.md'] = [{ block: ${where}, item: 1, quote: 'x', text: 'y' }]; EV.update()`); await sleep(300);
+    const marked = await ev(page, `[...document.querySelectorAll('[data-screen="reader"] .rblock[data-block="${where}"] li')].map((li) => !!li.querySelector('.cmark'))`);
+    if (!(marked[1] && !marked[0])) throw new Error('the marker should sit on the second item only; got ' + JSON.stringify(marked));
   });
   await check(S('flow-launch'), page, async () => {
     await reset(page); await page.locator('button[aria-label="New session"]').tap(); await sleep(400);

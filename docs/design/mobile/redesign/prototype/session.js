@@ -338,14 +338,18 @@
     EV.update();
   };
 
+  EV.nextQueue = function (exceptId) {
+    const recent = EV.S.recent;
+    const rank = (x) => (recent.includes(x.id) ? recent.indexOf(x.id) : recent.length);
+    return EV.needsOrder().filter((x) => x.id !== exceptId).map((x, i) => ({ x, i })).sort((a, b) => rank(a.x) - rank(b.x) || a.i - b.i).map((e) => e.x);
+  };
   EV.goNext = function (fromId) {
-    // Alerts that arrived while you were reading come first: that's what "new" promised.
-    const heldIds = EV.S.held.map((a) => a.sessionId);
-    const list = EV.needsOrder().filter((x) => x.id !== fromId).sort((a, b) => heldIds.includes(b.id) - heldIds.includes(a.id));
+    const list = EV.nextQueue(fromId);
     EV.log("next", { from: fromId, to: list[0] ? list[0].id : null });
     if (!list.length) { EV.toast("Nothing else needs you"); return; }
     EV.S.held = [];
-    EV.openSession(list[0].id, { lateral: true, from: "next" });
+    const t = EV.top();
+    EV.openSession(list[0].id, { lateral: !!(t && t.name === "session" && t.from === "next"), from: "next" });
   };
   EV.goAdjacent = function (fromId, dir) {
     const order = EV.liveOrder().map((x) => x.id);
@@ -442,21 +446,18 @@
   // says in words what it moves through. Touch and hold for the list.
   EV.NextCapsule = function NextCapsule({ exceptId }) {
     const S = EV.S;
-    const heldIds = S.held.map((a) => a.sessionId);
-    const waiting = EV.needsOrder().filter((x) => x.id !== exceptId).sort((a, b) => heldIds.includes(b.id) - heldIds.includes(a.id));
-    const next = waiting[0];
-    const others = waiting.length;
+    const next = EV.nextQueue(exceptId)[0];
     const lp = EV.useLongPress(() => { EV.log("needs_list_open", { from: exceptId, how: "hold" }); EV.openSheet("needsList", { exceptId }); }, () => EV.goNext(exceptId));
     if (!next) return null;
     return html`<button class="next-cap" ...${lp} onKeyDown=${(e) => { if (e.key === "Enter") EV.goNext(exceptId); }}
-      aria-label=${"Go to the next session that needs you: " + next.title}><span class="nc-n">${others} other${others === 1 ? "" : "s"} need${others === 1 ? "s" : ""} you</span><span class="nc-go">Next ${I.chevR({ s: 12 })}</span></button>`;
+      aria-label=${"Go to the next session that needs you: " + next.title}><span class="nc-go">Next</span><span class="nc-t">${next.title}</span>${I.chevR({ s: 12 })}</button>`;
   };
 
   // What needs you, as a short list to choose from, newest alerts first.
   EV.sheets.needsList = function ({ exceptId }) {
     const S = EV.S;
-    const heldIds = S.held.map((a) => a.sessionId);
-    const list = EV.needsOrder().filter((x) => x.id !== exceptId).sort((a, b) => heldIds.includes(b.id) - heldIds.includes(a.id));
+    const heldIds = S.recent;
+    const list = EV.nextQueue(exceptId);
     return html`<${EV.Sheet} title="Needs you" right=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="medium">
       ${list.map((x) => html`<button class="row" key=${x.id} style="text-align:left" onClick=${() => { EV.log("needs_list_pick", { sessionId: x.id }); S.held = S.held.filter((a) => a.sessionId !== x.id); EV.closeAllSheets(); EV.openSession(x.id, { from: "needs_list" }); }}>
         <div class="mark">${h(EV.Mark, { s: x })}</div>
@@ -586,7 +587,7 @@
       tot ? { label: "Subagents", icon: I.people({ s: 18 }), run: () => EV.push("subagents", { sessionId: s.id }) } : null,
       { label: "Notes & links", icon: I.note({ s: 18 }), run: () => { EV.log("notes_open", { sessionId: s.id, from: "menu" }); EV.openSheet("notes", { sessionId: s.id }); } },
       { label: "Session info", icon: I.gauge({ s: 18 }), run: () => EV.openSheet("session", { sessionId: s.id }) },
-      { label: "Ask aside…", icon: I.bubble({ s: 18 }), sep: true, run: () => EV.openSheet("aside", { sessionId: s.id }) },
+      { label: "Ask aside…", sub: "A side question in its own session; this one keeps working", icon: I.bubble({ s: 18 }), sep: true, run: () => EV.openSheet("aside", { sessionId: s.id }) },
       { label: s.category ? "Change category…" : "Pin to category…", icon: I.pin({ s: 18 }), run: () => setTimeout(() => EV.pinMenu(s), 30) },
       { label: "New session like this", icon: I.compose({ s: 18 }), run: () => EV.openNew("like", { like: s.id }) },
       { label: s.archived ? "Unarchive" : "Archive", icon: I.archive({ s: 18 }), run: () => { EV.setArchived(s, !s.archived); } },
@@ -644,7 +645,7 @@
   EV.detailMenu = function (s) {
     EV.openMenu({ kind: "list", top: 110, right: true, title: "Detail level",
       header: "How much of the agent's work this session shows",
-      items: LEVELS.map((l) => ({ label: l, sub: LEVEL_HELP[l], checked: EV.level(s.id) === l, run: () => { EV.S.prefs.detail[s.id] = l; EV.log("detail_level", { sessionId: s.id, level: l }); EV.update(); } })) });
+      items: LEVELS.map((l) => ({ label: l, sub: LEVEL_HELP[l], checked: EV.level(s.id) === l, run: () => { EV.S.prefs.detail[s.id] = l; EV.log("detail_level", { sessionId: s.id, level: l }); EV.toast(l + ": " + LEVEL_HELP[l].charAt(0).toLowerCase() + LEVEL_HELP[l].slice(1)); EV.update(); } })) });
   };
 
   EV.screens.session = Session;
@@ -830,40 +831,50 @@
   };
 
   // Saving your note is a steer: the daemon hands it to the agent at its next
-  // step, and wakes an agent that isn't in a turn. So, like the web, leaving
-  // the note schedules the save 10 seconds later and coming back to it
-  // cancels that, and a burst of edits reaches the agent once. On the phone,
-  // closing the sheet is leaving the note.
+  // step, and wakes an agent that isn't in a turn. That's why saves are
+  // batched (see EV.leaveNote below).
   const noteTimers = {};
   const NOTE_DELAY = 10000;
   const agentIdle = (s) => s.state === "idle" || s.state === "yourmove";
-  EV.leaveNote = function (s) {
+  function saveNote(s, S) {
+    if (EV.S !== S) return;
+    const text = S.noteDrafts[s.id];
+    if (text == null) return;
+    const woke = agentIdle(s);
+    s.notes = Object.assign({}, s.notes || {}, { human: text.trim() });
+    delete S.noteDrafts[s.id];
+    S.noteState[s.id] = "saved";
+    EV.addItem(s.id, { t: "noteSet", text: text.trim() });
+    if (woke) {
+      s.state = "working"; s.unseen = false; s.activity = "Reading your note";
+      s.startedAt = s.updatedAt = Date.now();
+      s.pulse = [0, 0, 0, 0, 0, 0.4, 0.8];
+      EV.addItem(s.id, { t: "think", live: true });
+    }
+    EV.log("note_set", { sessionId: s.id, text: text.trim(), woke });
+    EV.toast(woke ? "Note saved. The agent is reading it." : "Note saved");
+    EV.update();
+  }
+  // Closing the sheet ({ now: true }) is a clear "done", so the note saves
+  // at once. Leaving the field inside the sheet waits 10 seconds, as the
+  // web does, and coming back to it cancels that, so a burst of edits
+  // reaches the agent once.
+  EV.leaveNote = function (s, opts) {
     const S = EV.S;
     const draft = S.noteDrafts[s.id];
     if (draft == null) return;
     if (draft === ((s.notes && s.notes.human) || "")) { delete S.noteDrafts[s.id]; S.noteState[s.id] = null; EV.update(); return; }
-    // Leaving twice (the field blurs, then the sheet closes) is one leave.
+    if (opts && opts.now) {
+      clearTimeout(noteTimers[s.id]);
+      EV.log("note_leave", { sessionId: s.id, text: draft, how: "close" });
+      saveNote(s, S);
+      return;
+    }
+    // The field can blur more than once before the save lands; one leave.
     if (S.noteState[s.id] === "pending") return;
     S.noteState[s.id] = "pending";
-    EV.log("note_leave", { sessionId: s.id, text: draft });
-    noteTimers[s.id] = setTimeout(() => {
-      if (EV.S !== S) return;
-      const text = S.noteDrafts[s.id];
-      if (text == null) return;
-      const woke = agentIdle(s);
-      s.notes = Object.assign({}, s.notes || {}, { human: text.trim() });
-      delete S.noteDrafts[s.id];
-      S.noteState[s.id] = "saved";
-      EV.addItem(s.id, { t: "noteSet", text: text.trim() });
-      if (woke) {
-        s.state = "working"; s.unseen = false; s.activity = "Reading your note";
-        s.startedAt = s.updatedAt = Date.now();
-        s.pulse = [0, 0, 0, 0, 0, 0.4, 0.8];
-        EV.addItem(s.id, { t: "think", live: true });
-      }
-      EV.log("note_set", { sessionId: s.id, text: text.trim(), woke });
-      EV.update();
-    }, NOTE_DELAY);
+    EV.log("note_leave", { sessionId: s.id, text: draft, how: "blur" });
+    noteTimers[s.id] = setTimeout(() => saveNote(s, S), NOTE_DELAY);
     EV.update();
   };
   EV.focusNote = function (s) {
@@ -918,7 +929,7 @@
     if (!hasText(n.human) && !hasText(n.agent) && !links) return null;
     const [icon, who, text] = hasText(n.human) ? [I.person({ s: 14 }), "Your note", n.human] : hasText(n.agent) ? [I.sparkle({ s: 14 }), "Agent's note", n.agent] : [I.link({ s: 14 }), null, links === 1 ? n.urls[0].label || n.urls[0].url : plural(links, "link")];
     const count = links && who ? links : 0;
-    const open = () => { EV.log("notes_open", { sessionId: s.id, from: "bar" }); EV.openSheet("notes", { sessionId: s.id }); };
+    const open = () => { EV.log("notes_open", { sessionId: s.id, from: "bar" }); EV.openSheet("notes", { sessionId: s.id, focus: who === "Your note" && s.live }); };
     return html`<button class="notes-bar" onClick=${open} aria-label=${"Notes and links. " + (who ? who + ": " : "") + text.trim() + (count ? ". " + plural(count, "link") : "")}>
       <span class="nb-ic">${icon}</span><span class="nb-t">${who ? html`<span class="nb-who">${who}:</span> ` : null}${text.trim()}</span>
       ${count ? html`<span class="nb-n">${plural(count, "link")}</span>` : null}
@@ -938,21 +949,28 @@
     return h(EV.SwipeRow, { trail, onTap: () => EV.openLink(s, u, "notes"), onLong: (e) => EV.linkMenu(s, u, e) }, body);
   }
 
-  EV.sheets.notes = function ({ sessionId }) {
+  EV.sheets.notes = function ({ sessionId, focus }) {
     const S = EV.S;
     const s = EV.sess(sessionId);
     const n = EV.notesOf(s);
     const state = S.noteState[s.id];
-    useEffect(() => () => EV.leaveNote(s), []);
-    const status = state === "pending" ? "Saves in 10 seconds. Tap the note to keep editing."
+    const editor = useRef(null);
+    useEffect(() => () => EV.leaveNote(s, { now: true }), []);
+    // Opened from the notes bar to add to your note: the cursor waits at its end.
+    useEffect(() => {
+      const el = editor.current;
+      if (!focus || !el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    }, []);
+    const status = state === "pending" ? "Saves in 10 seconds, or when you close this."
       : state === "saved" && n.human === n.saved ? "Saved"
-      : agentIdle(s) ? "Saving will wake the agent."
-      : s.state === "working" ? "The agent gets your note at its next step."
-      : "Saving sends your note to the agent.";
+      : agentIdle(s) ? "Your note stays on this session. Saving it will wake the agent."
+      : "Your note stays on this session. The agent is told when it changes.";
     const hasAny = hasText(n.human) || hasText(n.agent) || n.urls.length;
     return html`<${EV.Sheet} title="Notes & links" right=${html`<button class="text-btn strong" onClick=${EV.closeSheet}>Done</button>`} size="large">
       ${s.live ? html`<div class="glabel">Your note</div>
-        <div class="field"><textarea class="note-editor" rows="4" placeholder="Make a note…" value=${n.human} aria-label="Your note"
+        <div class="field"><textarea ref=${editor} class="note-editor" rows="4" placeholder="Make a note…" value=${n.human} aria-label="Your note"
           onFocus=${() => EV.focusNote(s)} onBlur=${() => EV.leaveNote(s)}
           onInput=${(e) => { S.noteDrafts[s.id] = e.currentTarget.value; S.noteState[s.id] = null; EV.update(); }}></textarea></div>
         <div class="gfoot" role="status">${status}</div>`

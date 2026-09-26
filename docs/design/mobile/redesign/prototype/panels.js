@@ -9,7 +9,7 @@
   // arrive while you read are held, and a small amber dot on Back says so.
   EV.HeldBack = function () {
     const held = EV.S.held.length;
-    return html`<button class="icon-btn back-btn" onClick=${EV.pop} aria-label=${held ? "Back. " + held + " new while you read" : "Back"}>${I.chevL({ s: 22 })}${held ? html`<span class="held-dot"></span>` : null}</button>`;
+    return html`<button class="icon-btn back-btn" onClick=${EV.pop} aria-label=${held ? "Back. " + held + " new while you read" : "Back"}>${I.chevL({ s: 22 })}${held ? html`<span class="badge">${held}</span>` : null}</button>`;
   };
 
   // ---------- subagents ----------
@@ -138,7 +138,7 @@
       EV.log("subagent_stop_request", { sessionId, subagentId: subId, mode, text: txt });
       EV.closeSheet();
       EV.toast("Asked the coordinator to stop it");
-      setTimeout(() => { g.state = "stopped"; g.line = "Stopped by the coordinator"; EV.update(); }, 5200);
+      setTimeout(() => { if (EV.S !== S) return; g.state = "stopped"; g.line = "Stopped at your request"; EV.log("subagent_stopped", { sessionId, subagentId: subId }); EV.toast("“" + g.title + "” stopped"); EV.update(); }, 3000);
     };
     return html`<${EV.Sheet} title="Stop subagent" left=${html`<button class="text-btn" onClick=${EV.closeSheet}>Cancel</button>`} size="medium">
       <div class="gfoot" style="padding:4px 32px 10px">Subagents take direction from their coordinator. This sends the coordinator a message asking it to stop “${g.title}”.</div>
@@ -193,7 +193,30 @@
     return out;
   }
 
-  function RBlock({ b, i, path, sessionId, changed, count, onComment }) {
+  function RBlock({ b, i, path, sessionId, changed, comments, onComment }) {
+    const count = comments.filter((c) => c.item == null).length;
+    const perItem = comments.filter((c) => c.item != null).map((c) => c.item);
+    const box = useRef(null);
+    // A comment on a list item marks that item, not the list's first line.
+    useLayoutEffect(() => {
+      const el = box.current;
+      if (!el) return;
+      el.querySelectorAll(".cmark.li").forEach((m) => m.remove());
+      const items = el.querySelectorAll("li");
+      [...new Set(perItem)].forEach((k) => {
+        const li = items[k];
+        if (!li) return;
+        const m = document.createElement("button");
+        m.className = "cmark li";
+        m.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.5 4v-4A2.5 2.5 0 0 1 4 13.5z" /></svg> ' + perItem.filter((x) => x === k).length;
+        m.setAttribute("aria-label", "Comments on this item");
+        m.addEventListener("pointerdown", (e) => e.stopPropagation());
+        m.addEventListener("pointerup", (e) => e.stopPropagation());
+        m.addEventListener("click", (e) => { e.stopPropagation(); EV.openSheet("comments", { path, sessionId }); });
+        li.style.position = "relative";
+        li.appendChild(m);
+      });
+    });
     const lp = EV.useLongPress((e) => {
       // In a list, comments attach to the bullet under the finger, not the whole list.
       const t = e && e.target && e.target.closest ? e.target : null;
@@ -211,7 +234,7 @@
     });
     const pressed = EV.S.menu && EV.S.menu.path === path && EV.S.menu.block === i && !EV.S.menu.liEl;
     return html`<div class=${"rblock" + (changed ? " changed" : "") + (pressed ? " sel" : "")} data-block=${i} ...${lp}>
-      <div dangerouslySetInnerHTML=${{ __html: b.html }}></div>
+      <div ref=${box} dangerouslySetInnerHTML=${{ __html: b.html }}></div>
       ${count ? html`<button class="cmark" onPointerDown=${(e) => e.stopPropagation()} onPointerUp=${(e) => e.stopPropagation()} onClick=${(e) => { e.stopPropagation(); EV.openSheet("comments", { path, sessionId }); }}>${I.bubble({ s: 12 })} ${count}</button>` : null}
     </div>`;
   }
@@ -274,7 +297,7 @@
       <div class="scroll" ref=${scrollRef} onScroll=${(e) => { const past = e.currentTarget.scrollTop > 64; if (past !== pastTitle) setPastTitle(past); }}>
         <div class="doc-cap">${doc.kind} · updated ${EV.fmtAgo(doc.ago * 1000)} ago${changed.length ? html` · <span class="chg">${changed.length} change${changed.length > 1 ? "s" : ""} since you read it yesterday</span>` : null}</div>
         <article class="reader" aria-label=${path}>
-          ${blocks.map((b, i) => h(RBlock, { key: i, b, i, path, sessionId, changed: changed.includes(i), count: comments.filter((c) => c.block === i).length, onComment }))}
+          ${blocks.map((b, i) => h(RBlock, { key: i, b, i, path, sessionId, changed: changed.includes(i), comments: comments.filter((c) => c.block === i), onComment }))}
         </article>
       </div>
       <div class="bottom">${comments.length ? null : html`<div class="rb-tip">${I.bubble({ s: 14 })} Touch and hold a paragraph to comment on it</div>`}<div class="review-bar">

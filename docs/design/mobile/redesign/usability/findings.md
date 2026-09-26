@@ -143,3 +143,23 @@ What the first-glance retest caught, and what changed after it:
 - All three guessed the blue dot right (finished, not yet seen) but with low confidence; unchanged.
 
 Where the critics disagreed with the evidence, the evidence won. Two critics wanted the Live summary line gone and one wanted it kept; participants relied on it for "how many are working", so it stayed. One critic wanted the folder-wide approval back as a link under the buttons; round 2 showed people miss it there. One critic wanted your messages in SF Pro; the web sets them in the serif (`usermessageitem.module.css`), so the phone matches the web.
+
+## Round 4 (2026-09-25, prototype at 32225b853)
+
+Four fresh participants (Orchestrator, Newcomer, Commuter, Editor) on the tasks phase 2 touched most (answering, approving, reading through an interruption, finding commands with Detail moved into the menu, stopping a subagent, queueing, reviewing, launching) and two new ones: reading a session's progress off the Board without opening it (T16), and opening a session's PR from its links and leaving it a note (T15). Materials: `round4/tasks.json`, `round4/scores.txt`.
+
+**Result: 11 of 12 succeeded, 1 partial.** Reading progress off the Board took 2 actions and no taps into the session: the task line and the activity line carried it. Both participants who looked for commands found Detail level in the ⋯ menu (9 and 7 actions), so moving it out of the chip row cost nothing. The approval (2 and 4 actions) and queueing (5) were rated 7 of 7 easy. The note was the failure: 32 actions each, one partial.
+
+| # | Severity | Problem | Evidence | Change |
+|---|---|---|---|---|
+| 1 | 4 | The note editor didn't look or act like an editor: no visible field or focus, taps landed mid-word, and the save was delayed and silent. | Editor T15 concluded the note couldn't be edited and sent a steer instead (partial); Newcomer T15 corrupted the note twice before finding the end of it, and couldn't tell whether it saved. | A visible field with a focus ring; opening from the notes bar puts the cursor at the end of your note; closing the sheet saves at once with a "Note saved" toast; the status line no longer echoes Steer's wording. |
+| 2 | 3 | Next went somewhere other than what had just alerted you. | Commuter T10: the alert for a question vanished, and Next went to a failed session instead. | Next goes to whichever session alerted you most recently, then Needs you order, and names it: "Next  <title> ›". |
+| 3 | 3 | Back lost your place after Next. | Commuter T10: after handling an interruption via Next, Back went to the Board, not to the plan being read. | Next pushes from a session you chose, and replaces only within a run of Nexts, so Back returns to where you started. |
+| 4 | 3 | A comment on the second open question showed its marker on the first. | Editor T2b. | Markers sit on the list item they belong to. |
+| 5 | 3 | "Stop requested" never visibly completed. | Orchestrator T5. | When the subagent stops, its row reads "Stopped at your request" and a toast names it. |
+| 6 | 2 | The Reader's bare amber dot on Back meant nothing. | Commuter T10. | Back shows a count. |
+| 7 | 2 | Changing detail level gave no feedback when the change was above the visible text. | Orchestrator and Newcomer, T12. | A toast names the level and what it shows. |
+| 8 | 2 | A pinned live session repeated its full row in its category, read as a second job. | Orchestrator T5. | Rows in pinned categories are quiet one-line rows. |
+| 9 | 1 | "Ask aside…" had no explanation; "Restart needed" didn't say what to restart. | Newcomer; Commuter. | "A side question in its own session; this one keeps working"; "restart this session to pick up the hub's update". |
+
+Also noted, not changed: the model picker lists a recent model twice (Recent and its provider group), the usual iOS pattern; "XHigh" read like a typo to one participant, but effort labels come from the shared `effortLabel` vocabulary the web also uses, so a rename belongs there.
