@@ -920,8 +920,8 @@ func surveyFailureHasMismatchedOwner(lines []string, marker int) bool {
 // line when that owner has a later top-level failure marker within the remaining
 // block budget. The caller defers only those lines, so maxBlocks exhaustion
 // cannot silently discard context. Ownership follows RUN/CONT/NAME frames and
-// verdicts, matching expandSurveyFailure; a parent marker can claim a failed
-// descendant. A later RUN of the owner or its later failing parent ends the
+// verdicts, matching expandSurveyFailure; a parent marker can claim descendant
+// output. A later RUN of the owner or its later failing parent ends the
 // earlier output's claim.
 func surveyFallbackLineLaterFailureOwner(lines []string, index, marker, maxBlocks int) string {
 	if surveyFrameworkLine(lines[index]) {
@@ -1142,7 +1142,7 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	selectNewest(ownedDiagnosticCandidates, maxExpandedLines)
 	selectNewest(ownedOutputCandidates, maxExpandedLines)
 	selectNewest(ordinaryContextCandidates, maxExpandedLines)
-	if selectedCount == 0 && len(keep) == 0 {
+	if len(keep) == 0 {
 		return nil, false
 	}
 	result := make([]string, 0, len(keep)+1)
