@@ -754,14 +754,15 @@ func (c *Connection) takeAllHydrations() []*hydrationResponseFinalizer {
 // receiveInbound): the flag has to survive the enqueue itself, and beforeSend
 // clears it only once the send loop dequeues this exact response, right
 // before it reaches the transport.
-func (c *Connection) markRecoveryClear(resp appwire.Message) {
+func (c *Connection) markRecoveryClear(resp appwire.Message) string {
 	id, _ := responseHydrationOutcome(resp)
 	if id == "" {
-		return
+		return ""
 	}
 	c.mu.Lock()
 	c.recoveryClearID = id
 	c.mu.Unlock()
+	return id
 }
 
 // clearRecoveryOnPanic runs fn, and if fn panics, rolls back the force-stop
@@ -776,12 +777,20 @@ func (c *Connection) markRecoveryClear(resp appwire.Message) {
 // runs from inside its onResponse continuation) still logs it and answers
 // the request — this only repairs the connection-local state a panic mid
 // enqueue would otherwise strand.
-func (c *Connection) clearRecoveryOnPanic(fn func()) {
+//
+// The rollback only clears state still keyed to id (the response this call
+// marked via markRecoveryClear), comparing exactly like beforeSend/afterSend
+// do: fn can panic after the send loop already transmitted this response and
+// admitted a newer force stop, and an unconditional clear would wipe that
+// newer force stop's state instead of just this one's.
+func (c *Connection) clearRecoveryOnPanic(id string, fn func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			c.mu.Lock()
-			c.recoveryClearID = ""
-			c.recoveryRunning = false
+			if c.recoveryClearID == id {
+				c.recoveryClearID = ""
+				c.recoveryRunning = false
+			}
 			c.mu.Unlock()
 			panic(r)
 		}
@@ -1575,8 +1584,8 @@ func (c *Connection) receiveInbound(ctx context.Context, msg appwire.Message) bo
 		// rolls the flag back first.
 		go func() {
 			c.handleRecovered(ctx, msg, func(resp appwire.Message) {
-				c.markRecoveryClear(resp)
-				c.clearRecoveryOnPanic(func() { c.enqueueDispatched(ctx, resp) })
+				id := c.markRecoveryClear(resp)
+				c.clearRecoveryOnPanic(id, func() { c.enqueueDispatched(ctx, resp) })
 			})
 		}()
 		return true
