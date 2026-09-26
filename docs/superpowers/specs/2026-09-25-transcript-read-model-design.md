@@ -3,6 +3,12 @@
 Status: accepted for implementation, revision 8 (2026-09-26). Supersedes the eviction approach in
 the closed PR #2251.
 
+> **Design record.** This spec records the design as accepted and built.
+> Where the implementation's exact contracts differ in detail, the code and
+> its boundary tests (`server/history_boundary_test.go`,
+> `server/transcript_parity_test.go`, `internal/transcriptindex`) are
+> authoritative. Open spec-review follow-ups are listed at the end.
+
 Revision history:
 - **Revision 8** matches the contract to the phase 3 implementation
   (`wip/trm-phase3`), settling points the last review round raised: the three
@@ -1201,3 +1207,20 @@ previous phase has landed.
   harness and the acceptance criteria gate it.
 - **Delivery turns** display attention deliveries as their own turns, which
   changes how delegate-attention sessions look.
+
+## Follow-ups from the final spec review (phase 4)
+
+The last roborev round on this spec raised these. They are tracked for phase 4
+rather than resolved in prose here:
+
+- **COMMUNICATE and completion durability when fsync fails.** A
+  recorded-but-unsynced entry is adopted and announced. Decide whether to
+  retry the fsync or fail closed, and pin the decision with a test.
+- **Below-floor update-log requests.** Give the client an explicit
+  whole-history replacement signal, or answer with `TranscriptItemCursorStale`.
+- **Backfill accumulation.** Require the same snapshot identity for pages that
+  accumulate, and define how the held length advances on backfill.
+- **`RetainedUnsyncedError` boundary tests.** Test adoption, later durability,
+  and a crash between adoption and fsync.
+- **Minting delivery turn IDs.** Name which component mints them: the registry
+  entry, under the append lock.
