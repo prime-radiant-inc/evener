@@ -608,17 +608,15 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 	// Mirrors cmd/evener-hub/app_navigation.go's navigationReadPage: offset and
 	// limit are validated, never clamped -- a negative offset (the wire's own
 	// uint32 field can't even decode one), a zero or negative limit, or a
-	// limit over the resource's own maximum (defaultLimit, which callers pass
-	// as that resource's maxNavigationSectionRows/maxNavigationCatalogRows
-	// equivalent) are all hard errors, the same as an unrecognized resource
-	// elsewhere in this file.
-	function page<T>(items: T[], params: NavigationReadParams, defaultLimit: number): { page: T[]; remaining: number } {
+	// limit over the resource's own maximum are all hard errors, the same as
+	// an unrecognized resource elsewhere in this file.
+	function page<T>(items: T[], params: NavigationReadParams, maximum: number): { page: T[]; remaining: number } {
 		const offset = params.offset ?? 0;
 		if (offset < 0) throw new Error(`offset must not be negative: ${offset}`);
-		let limit = defaultLimit;
+		let limit = maximum;
 		if (params.limit !== undefined) {
 			if (params.limit <= 0) throw new Error("limit must be greater than zero");
-			if (params.limit > defaultLimit) throw new Error(`limit exceeds maximum of ${defaultLimit}`);
+			if (params.limit > maximum) throw new Error(`limit exceeds maximum of ${maximum}`);
 			limit = params.limit;
 		}
 		return { page: items.slice(offset, offset + limit), remaining: Math.max(0, items.length - (offset + limit)) };
