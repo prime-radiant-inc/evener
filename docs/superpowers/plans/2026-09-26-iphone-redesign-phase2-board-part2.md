@@ -43,12 +43,12 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
 - **"Organize by."**
   - It appears only when the manifest has more than one source. The toggle in the section header flips between "Project, then host" (default) and "Host, then project", and the section title between "Projects" and "Hosts".
   - Its choice persists in `foldedSections` under the key `organize-by-host`.
-  - Hosts group projects by `NavigationProjectSummary.sources`, labelled with the manifest's source label. A host whose source is offline shows an amber "Offline" and nothing when connected.
+  - Hosts group projects by `NavigationProjectSummary.sources`, defaulting an omitted or empty list to `["local"]` (the field's own doc comment: omitted means local-only), labelled with the manifest's source label. A host group's header shows an amber "Offline" when its source is offline, and no status text when connected.
 - **Test runs** (folded by default) reads the `test_runs` catalog; **Archived** (folded by default) reads `archived_projects`, with each project's archived tier inside.
 - Rows in Projects, Test runs and Archived are quiet `BoardRow`s. A session on an offline host is `ended`, so it shows as shut down.
 - The Projects and Archived link rows from PR 2 are removed.
 
-- [ ] Steps: failing tests (the catalog parameter reads each catalog; a project group's `archived` page loads and folds by default alongside `current` and `recent`; the host grouping and offline label; fold defaults), implement, `make test-native`, then commit (`feat(native): projects, hosts, test runs and archive on the Board`). Open PR 3: "feat(native): the Board's own sections (phase 2, PR 3)".
+- [ ] Steps: failing tests (the catalog parameter reads each catalog; a project group's `archived` page loads and folds by default alongside `current` and `recent`; the host grouping including a project whose `sources` is omitted or `[]`; the offline label; fold defaults), implement, `make test-native`, then commit (`feat(native): projects, hosts, test runs and archive on the Board`). Open PR 3: "feat(native): the Board's own sections (phase 2, PR 3)".
 
 ---
 
@@ -67,6 +67,7 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
 **Requirements (spec 7.1, ruling 8):**
 - **Sign-in:** one notice per provider with `needsLogin`: "<provider> sign-in expired". Its action "Sign in" opens today's provider sign-in flow for that provider. #2483 is fixing `needsLogin` to mean "access token expired and no refresh token", so a sign-in that refreshes silently stops tripping the notice. A rejected refresh isn't recorded anywhere yet (#2479), so the notice can't fire for that case until #2479 lands.
 - **Host:** one notice per offline source: "<label> is offline · 3 sessions", where the count is the number of distinct `loadedRows` (deduped by `ref`, since a pinned live session appears in both Live and its category) whose `host_id` is that source. The action "Details" opens `HubSettings` until phase 5.
+  - `Source` carries no session count (`appwire-client/typescript/types.gen.ts`), so this count is a fallback over whatever pages the Board has already loaded: a session on a page not yet loaded (Live past 50, a folded pinned category, project group, test run or archived page) isn't counted. It can undercount but never overcounts. A server rollup would replace this in a later phase; note it as a known fallback limit, not a bug to fix here.
 - **Plugin:** one notice per broken plugin: "<plugin> is broken". Its action "Plugins" opens today's `Plugins` screen. That route takes only `{ hubId }`, so opening at that plugin's row (spec 7.1) waits for phase 5's Hub; the notice already names the plugin.
 - **Placement and style:** notices sit under the chips as rows: `exclamationmark.triangle.fill` in amber, the sentence in `inkHi`, the action in `accentInk`. No tinted box. They disappear when resolved.
 - **Reads:**
@@ -120,6 +121,7 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
 **Files:**
 - Create: `mobile-native/src/board/SwipeRow.tsx`, `mobile-native/src/board/rowActions.ts` and `mobile-native/src/board/RowMenu.tsx`
 - Modify: `mobile-native/src/board/BoardRow.tsx` and `mobile-native/src/board/BoardScreen.tsx`
+- Modify (only for whichever menu library the spike keeps): `mobile-native/package.json`, `package-lock.json` and `Podfile.lock` (`npx expo install @expo/ui` or `npx expo install @react-native-menu/menu`, then regenerate the lock as in Task 4, Step 6). If the spike settles on the sheet fallback, install neither.
 - Test: `mobile-native/src/board/rowActions.test.ts` and `mobile-native/src/board/RowMenu.test.tsx`
 
 **Interfaces:**
@@ -132,7 +134,7 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
 
 **Requirements (spec 7.3):**
 - **Swipe right** (leading) is Archive, in blue-gray (`inkMid` fill, white label). A full swipe archives, and the toast "Archived · Undo" shows for 8 seconds; Undo unarchives.
-- **Swipes that begin within 24pt of the screen's left edge never act on a row.** Use `ReanimatedSwipeable` with a `hitSlop` of `{ left: -24 }`, or check the gesture's start x. Test the start-x rule as a pure function.
+- **Swipes that begin within 24pt of the screen's left edge never act on a row.** The rule is enforced by a pure start-x check, tested as a pure function, applied in the swipe gesture's start handler; this is the mechanism of record regardless of what else is tried. A `ReanimatedSwipeable` `hitSlop` of `{ left: -24 }` may also be worth trying, since it's unverified whether it alone satisfies the rule, but it never replaces the start-x check. Cover the iOS edge-swipe-back gesture in the same test: a swipe starting in that 24pt band must reach the OS, not this row.
 - **Swipe left** (trailing) shows Stop (only when the row is working), Pin and More (which opens the long-press menu).
 - **Long-press:**
   - Spike `@expo/ui`'s SwiftUI `ContextMenu` with a preview first, then `@react-native-menu/menu`, and if neither gives a preview card, a sheet that shows the preview card on top with the actions below.
@@ -154,12 +156,12 @@ This is part 2 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-boar
 **Requirements (spec 7.1, 7.3):**
 - **Select** leads the toolbar. It puts rows into multi-select, with a checkbox in the mark column and a bottom bar: Archive, Pin, and Mark as read. Done leaves.
 - **The list never reorders while a finger is on it or it is scrolling.**
-  - Hold the band ordering: `listStability.ts` exports `class HeldOrder` with `hold()`, `release()` and `order(next: LiveBands): LiveBands`. While held, `order` returns the previous order with row contents updated, and rows that left are removed.
+  - Hold the band ordering: `listStability.ts` exports `class HeldOrder` with `hold()`, `release()` and `order(next: LiveBands): LiveBands`. While held, `order` returns the previous order with row contents updated in place; a row missing from `next` keeps its last known content rather than disappearing, so no row's position shifts while held. `release()` itself takes no snapshot: it only clears the held flag. `BoardScreen` calls `release()` and then immediately calls `order(next)` again with the latest bands; that call is what drops any row still missing from `next` and applies the settled order.
   - Changes apply when the list settles (`onScrollEndDrag`, `onMomentumScrollEnd`, touch end).
   - Rows move with a 250ms spring (Reanimated layout transitions).
   - A row entering Needs you gets a brief amber wash: `attentionBg` fading out over 1.2s.
   - With Reduce Motion on, rows change places without animation and the wash is skipped.
 
-- [ ] Steps: failing tests (`HeldOrder` keeps order while held, updates contents, drops departed rows and applies on release), implement, `make test-native`, look in the simulator, then commit (`feat(native): select mode and a Board that holds still under your finger`). Open PR 4: "feat(native): Board row actions and select mode (phase 2, PR 4)".
+- [ ] Steps: failing tests (`HeldOrder` keeps order and content-only updates while held, keeps a departed row's last content until release, and drops it and applies the new order only once `release()` is followed by `order(next)`), implement, `make test-native`, look in the simulator, then commit (`feat(native): select mode and a Board that holds still under your finger`). Open PR 4: "feat(native): Board row actions and select mode (phase 2, PR 4)".
 
 ---
