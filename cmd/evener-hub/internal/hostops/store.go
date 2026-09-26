@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -183,35 +184,49 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 
 // canonicalStorePath is the key two handles for one store file collide on: two
 // spellings of one store path — a relative and an absolute one, a state root
-// reached through a symlink — must meet on one key, or the two handles would
-// each hold their own store mutex and overwrite each other's records.
+// reached through a symlink — must meet on one key, or the two handles would each
+// hold their own store mutex and overwrite each other's records.
 //
-// The store file itself may not exist yet, so a path that does not resolve as a
-// file has the directory that carries it resolved instead, and a path whose
-// directory does not exist yet keeps its lexical absolute form (the only thing
-// two spellings of a to-be-created directory can agree on).
+// Every path component that exists is resolved as it is walked, so a link is
+// followed wherever it sits in the chain. A component that does not exist ends the
+// walk and the tail is kept verbatim (a store whose file, or directory, has not
+// been created yet has no second spelling to meet). A link whose target does not
+// exist is refused rather than kept as a spelling of its own: the file it points
+// at would otherwise be reachable two ways and hold two store mutexes.
 func canonicalStorePath(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("hostops: resolve store path %s: %w", path, err)
 	}
 	absolute = filepath.Clean(absolute)
-	// Resolve the longest existing prefix and re-append what does not exist yet,
-	// so a path whose store file (or its directory) has not been created still
-	// meets the spelling that resolves.
-	suffix := ""
-	current := absolute
-	for {
-		if resolved, err := filepath.EvalSymlinks(current); err == nil {
-			return filepath.Join(resolved, suffix), nil
+
+	volume := filepath.VolumeName(absolute)
+	current := volume + string(filepath.Separator)
+	tail := strings.Split(strings.TrimPrefix(absolute, current), string(filepath.Separator))
+	for i, name := range tail {
+		if name == "" {
+			continue
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return absolute, nil
+		next := filepath.Join(current, name)
+		info, err := os.Lstat(next)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				// Nothing below this component exists, so the rest of the path is
+				// kept exactly as written.
+				return filepath.Join(append([]string{current, name}, tail[i+1:]...)...), nil
+			}
+			return "", fmt.Errorf("hostops: resolve store path %s: %w", path, err)
 		}
-		suffix = filepath.Join(filepath.Base(current), suffix)
-		current = parent
+		if info.Mode()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(next)
+			if err != nil {
+				return "", fmt.Errorf("hostops: store path %s runs through the link %s, which does not resolve", path, next)
+			}
+			next = resolved
+		}
+		current = next
 	}
+	return current, nil
 }
 
 // forgetStore forgets a path's shared cell, so the next Open loads the file from
@@ -556,6 +571,9 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 	if !utf8.Valid(raw) {
 		return snapshot{}, fmt.Errorf("%w: %s is not valid UTF-8", ErrStoreCorrupt, path)
 	}
+	if err := rejectLoneSurrogateEscapes(raw); err != nil {
+		return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
+	}
 	if err := validateStoreKeys(raw); err != nil {
 		return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
 	}
@@ -653,6 +671,16 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 	if _, err := temp.Write(data); err != nil {
 		return false, fmt.Errorf("hostops: write temp store: %w", err)
 	}
+	// Spec §4: "Replacements preserve the mode." The temp file is created 0600;
+	// when the store it replaces already carried a stricter owner-only,
+	// owner-readable mode, that mode is what the replacement lands with — applied
+	// before the sync below, so the mode the replacement carries is covered by the
+	// fsync the write already pays for.
+	if perm, ok := preservedMode(fs, path); ok {
+		if err := fs.Chmod(tempPath, perm); err != nil {
+			return false, fmt.Errorf("hostops: preserve store mode: %w", err)
+		}
+	}
 	if err := temp.Sync(); err != nil && !fsdurability.SyncUnsupported(err) {
 		return false, fmt.Errorf("hostops: sync temp store: %w", err)
 	}
@@ -660,14 +688,6 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 		return false, fmt.Errorf("hostops: close temp store: %w", err)
 	}
 	temp = nil
-	// Spec §4: "Replacements preserve the mode." The temp file is created 0600;
-	// when the store it replaces already carried a stricter owner-only,
-	// owner-readable mode, that mode is what the replacement lands with.
-	if perm, ok := preservedMode(fs, path); ok {
-		if err := fs.Chmod(tempPath, perm); err != nil {
-			return false, fmt.Errorf("hostops: preserve store mode: %w", err)
-		}
-	}
 	if faults.beforeRename != nil {
 		if err := faults.beforeRename(); err != nil {
 			return false, err
@@ -834,6 +854,76 @@ func keysOf(names ...string) map[string]struct{} {
 		set[name] = struct{}{}
 	}
 	return set
+}
+
+// rejectLoneSurrogateEscapes refuses a JSON document carrying a \u escape for an
+// unpaired UTF-16 surrogate. The decoder replaces such an escape with U+FFFD, so
+// the value the file denotes would come back changed on the next write — and the
+// raw-byte UTF-8 check cannot see it, because the escape's own bytes are ASCII.
+// A valid surrogate pair (an astral character) is fine: it decodes to the value
+// the file denotes.
+func rejectLoneSurrogateEscapes(raw []byte) error {
+	backslashes := 0
+	for i := 0; i < len(raw); i++ {
+		if raw[i] == '\\' {
+			backslashes++
+			continue
+		}
+		escaped := backslashes%2 == 1
+		backslashes = 0
+		if !escaped || raw[i] != 'u' || i+5 > len(raw) {
+			continue
+		}
+		code, ok := hex4(raw[i+1 : i+5])
+		if !ok {
+			continue
+		}
+		switch {
+		case code >= 0xD800 && code <= 0xDBFF:
+			low, ok := lowSurrogateAfter(raw, i+5)
+			if !ok {
+				return fmt.Errorf("the document carries an unpaired surrogate escape \\u%04X", code)
+			}
+			_ = low
+			i += 11
+		case code >= 0xDC00 && code <= 0xDFFF:
+			return fmt.Errorf("the document carries an unpaired surrogate escape \\u%04X", code)
+		}
+	}
+	return nil
+}
+
+// lowSurrogateAfter reports whether the escape for a low surrogate follows at
+// index, which is what makes a high surrogate a valid pair.
+func lowSurrogateAfter(raw []byte, index int) (uint32, bool) {
+	if index+6 > len(raw) || raw[index] != '\\' || raw[index+1] != 'u' {
+		return 0, false
+	}
+	code, ok := hex4(raw[index+2 : index+6])
+	if !ok || code < 0xDC00 || code > 0xDFFF {
+		return 0, false
+	}
+	return code, true
+}
+
+// hex4 reads four hexadecimal digits.
+func hex4(raw []byte) (uint32, bool) {
+	var value uint32
+	for _, digit := range raw {
+		var nibble uint32
+		switch {
+		case digit >= '0' && digit <= '9':
+			nibble = uint32(digit - '0')
+		case digit >= 'a' && digit <= 'f':
+			nibble = uint32(digit-'a') + 10
+		case digit >= 'A' && digit <= 'F':
+			nibble = uint32(digit-'A') + 10
+		default:
+			return 0, false
+		}
+		value = value<<4 | nibble
+	}
+	return value, true
 }
 
 // validateStoreKeys is the file-level walk: the objects this store decodes must

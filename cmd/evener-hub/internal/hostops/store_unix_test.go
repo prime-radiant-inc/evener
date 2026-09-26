@@ -188,3 +188,27 @@ func TestAStoreBehindASymlinkedDirectoryIsWritable(t *testing.T) {
 		t.Fatalf("the write replaced the directory link")
 	}
 }
+
+// TestOpenRefusesAStorePathThroughADanglingLink pins the identity rule for a link
+// whose target does not exist yet: the file it names would be reachable two ways
+// (the link's spelling and the target's), and two spellings would hold two store
+// mutexes and overwrite each other's records, so the link path is refused rather
+// than keyed as a spelling of its own.
+func TestOpenRefusesAStorePathThroughADanglingLink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Symlink(filepath.Join(root, "missing-target"), filepath.Join(root, "link")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	throughLink := filepath.Join(root, "link", "hostops", "operations.json")
+	if _, err := Open(throughLink); err == nil {
+		t.Fatalf("Open through a link whose target does not exist succeeded, want an error")
+	}
+
+	// The spelling that resolves — the target itself — still works, and no alias
+	// of it can be opened.
+	direct, err := Open(filepath.Join(root, "missing-target", "hostops", "operations.json"))
+	if err != nil {
+		t.Fatalf("Open on the direct spelling: %v", err)
+	}
+	createTestRecord(t, direct, "h1")
+}

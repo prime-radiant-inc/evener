@@ -259,6 +259,13 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 		// present null is not a shape it produced.
 		"null progress list": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"progress":null`, 1) + `]}`,
+		// A \u escape for an unpaired surrogate is ASCII in the raw bytes, so the
+		// UTF-8 check cannot see it, and the decoder replaces it with U+FFFD: the
+		// value the file denotes would come back changed.
+		"lone high surrogate": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"host":"h1"`, `"host":"a\ud800b"`, 1) + `]}`,
+		"lone low surrogate": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"host":"h1"`, `"host":"a\udc00b"`, 1) + `]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1352,5 +1359,38 @@ func TestTheChainSyncsConvergeAfterAFailedAttempt(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("the retry did not land the store file: %v", err)
+	}
+}
+
+// TestOpenAcceptsAValidSurrogatePairAndRefusesALoneOne pins the surrogate rule from
+// both sides: a paired escape is an astral character and loads as the value the file
+// denotes, while an unpaired one is refused because the decoder would silently
+// replace it with U+FFFD and the next write would persist that replacement.
+func TestOpenAcceptsAValidSurrogatePairAndRefusesALoneOne(t *testing.T) {
+	pair := `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"a` + `\ud83d\ude00` + `b","kind":"deploy","state":"pending",` +
+		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`
+	path := StorePath(t.TempDir())
+	writeRawStore(t, path, 0o600, pair)
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open on a store carrying a surrogate pair: %v", err)
+	}
+	stored, ok := store.Record("00000000000000000001")
+	if !ok {
+		t.Fatalf("record not loaded")
+	}
+	if want := "a\U0001F600b"; stored.Host != want {
+		t.Fatalf("host = %q, want the astral character %q", stored.Host, want)
+	}
+
+	// A backslash escaping a backslash is text, not an escape: \\ud800 is fine.
+	literal := `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+		`{"id":"00000000000000000001","clientOperationId":"client-h1","host":"a` + `\\ud800` + `b","kind":"deploy","state":"pending",` +
+		`"generation":7,"incarnationId":"inc-1","createdAt":"2026-09-26T00:00:00Z","updatedAt":"2026-09-26T00:00:00Z","hostRemoved":false}]}`
+	literalPath := StorePath(t.TempDir())
+	writeRawStore(t, literalPath, 0o600, literal)
+	if _, err := Open(literalPath); err != nil {
+		t.Fatalf("Open on a store carrying an escaped backslash before ud800: %v", err)
 	}
 }
