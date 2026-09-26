@@ -55,6 +55,12 @@ paths = [
   # This tracked frontend test uses a deterministic project identifier as a
   # fixture, not a credential; the generic API-key rule cannot distinguish it.
   '''cmd/evener-hub/frontend/src/shell/rail/Rail\.test\.tsx''',
+  # Same class as the Rail test above: this fixture's project and location
+  # records reuse one deterministic project identifier in their "key" and
+  # "project_key" fields, so the hub's and the codec's tests can prove they
+  # agree on it. Not a credential; the generic API-key rule cannot tell a
+  # schema fixture's identifier from a secret.
+  '''cmd/evener-hub/testdata/navigation/value-records\.json''',
   # inspo/ holds untracked vendored reference source (Pi, codex) whose test
   # fixtures carry deliberately-planted fake keys; it is gitignored and never
   # committed, but `make secret-scan` walks the whole working tree.

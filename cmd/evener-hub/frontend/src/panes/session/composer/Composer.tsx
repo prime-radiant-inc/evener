@@ -40,6 +40,7 @@ import {
 } from "@evener/appwire-client";
 import {
   type FormEvent,
+  memo,
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
@@ -76,7 +77,7 @@ import {
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { SessionChrome } from "../chrome/SessionChrome";
+import { SessionChrome, type SessionChromeProps } from "../chrome/SessionChrome";
 import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
 import { useAskDockPending } from "./askDockPending";
@@ -143,6 +144,15 @@ const CLASS = {
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
 };
+
+// The composer re-renders on every draft keystroke and nothing in the chrome
+// reads the draft, so its mounts go through this memo. It renders the imported
+// SessionChrome binding at render time instead of wrapping the function itself
+// (memo(SessionChrome)), so a replacement of the module export still reaches
+// these mounts.
+const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: SessionChromeProps) {
+  return <SessionChrome {...props} />;
+});
 
 // Shared by restoreTextToComposer (QueueStrip's "edit a queued entry" path)
 // and the quote-insert effect below (SelectionQuote's "Quote in reply" path,
@@ -560,10 +570,12 @@ export function Composer({ ref, focused }: ComposerProps) {
     else workspaceStore.getState().openPane("sessionTasks", { ref }, { slot: "secondary" });
   };
 
-  const toggleTasks = (): void => {
+  // Stable so the memoized chrome below skips re-rendering on every keystroke
+  // of the draft.
+  const toggleTasks = useCallback((): void => {
     if (isMobile) tasksPanelRef.current?.open();
     else workspaceStore.getState().togglePane("sessionTasks", { ref });
-  };
+  }, [isMobile, ref]);
 
   // A shared projection can outlive a Composer remount while its durable
   // discard is still being projected. Only auto-activate after this mount
@@ -1705,7 +1717,12 @@ export function Composer({ ref, focused }: ComposerProps) {
                           onClick={() => fileInputRef.current?.click()}
                         />
                       </Tooltip>
-                      <SessionChrome ref={ref} placement="composer" onOpenTasks={toggleTasks} discoverActivity />
+                      <MemoizedSessionChrome
+                        ref={ref}
+                        placement="composer"
+                        onOpenTasks={toggleTasks}
+                        discoverActivity
+                      />
                     </div>
                   )
                 }
@@ -1811,7 +1828,7 @@ export function Composer({ ref, focused }: ComposerProps) {
           transcript's entity ids stay plain text until the card is engaged.
           Renders nothing visible (the panel's only control is hidden and its
           sheet is closed). */}
-      {discoveryOnlyChrome && <SessionChrome ref={ref} discoveryOnly />}
+      {discoveryOnlyChrome && <MemoizedSessionChrome ref={ref} discoveryOnly />}
       {/* The session's working dir and git branch, in one quiet line under the
           card. Reference material, not a control: it stays put across every
           composer state (including an ended session's collapsed card and the

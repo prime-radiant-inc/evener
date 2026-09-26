@@ -574,6 +574,7 @@ func TestCovLimitWatchText(t *testing.T) {
 
 // TestCovWatchFrameJob covers watchFrameJob (job_watch.go lines 3247-3259).
 func TestCovWatchFrameJob(t *testing.T) {
+	t.Parallel()
 	// JobFinishedData value.
 	jobID, delegateID, ok := watchFrameJob(events.JobFinishedData{JobID: "job_1", DelegateID: "dlg_1"})
 	if !ok || jobID != "job_1" || delegateID != "dlg_1" {
@@ -608,6 +609,7 @@ func TestCovWatchFrameJob(t *testing.T) {
 
 // TestCovJobFinishedEventData covers jobFinishedEventData (job_watch.go lines 3263-3273).
 func TestCovJobFinishedEventData(t *testing.T) {
+	t.Parallel()
 	// Value.
 	data, ok := jobFinishedEventData(events.JobFinishedData{JobID: "job_1"})
 	if !ok || data.JobID != "job_1" {
@@ -908,6 +910,7 @@ func TestCovChildFatalRunGated(t *testing.T) {
 // TestCovDelegateTranscriptPathFromRef covers delegateTranscriptPathFromRef
 // (session_attention.go lines 22-31).
 func TestCovDelegateTranscriptPathFromRef(t *testing.T) {
+	t.Parallel()
 	// Valid ref with empty projectID.
 	stateDir := t.TempDir()
 	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, "local:SESS123")

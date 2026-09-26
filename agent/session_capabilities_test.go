@@ -204,6 +204,7 @@ func TestCapabilityPreambleUnknownEnvMakesNoPathClaim(t *testing.T) {
 // section minus every sandbox-derived line (writable roots, masked count, cache
 // strategy, and the sandbox-only go telemetry note).
 func TestCapabilityPreambleUnsandboxed(t *testing.T) {
+	t.Parallel()
 	got := strings.Join(capabilityPreambleLines(capabilityFacts{
 		scratchDir: "/scratch/s1",
 		loginPATH:  false,
@@ -270,6 +271,7 @@ func TestCapabilityPreambleUnprobed(t *testing.T) {
 // TestCapabilityPreambleGoAbsent: with go measured absent, no Go cache line is
 // rendered at all (there is no resolved cache to state) and no telemetry note.
 func TestCapabilityPreambleGoAbsent(t *testing.T) {
+	t.Parallel()
 	probe := probedFacts()
 	probe.onPath["go"] = false
 	probe.goCache, probe.goModCache = "", ""
@@ -336,6 +338,7 @@ func TestParseCapabilityProbe(t *testing.T) {
 // measurements standing rather than collapsing the whole preamble to
 // "unprobed". Only the git line degrades.
 func TestCapabilityPreambleGitProbeFailsAloneKeepsToolFacts(t *testing.T) {
+	t.Parallel()
 	probe := probedFacts()
 	probe.gitProbed, probe.gitConfigReads = false, false
 	got := strings.Join(capabilityPreambleLines(capabilityFacts{scratchDir: "/scratch/s1", probe: probe}), "\n")

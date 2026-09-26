@@ -95,6 +95,7 @@ func TestPrepareToolCall_UnknownTool(t *testing.T) {
 }
 
 func TestPrepareToolCall_EmptyArgsValidForNoRequiredTool(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	def := tool.DefListDir()
 	_ = reg.Register(regTool(def)) // regTool: helper building a RegisteredTool with a no-op Exec (see below)
@@ -152,6 +153,7 @@ func TestPrepareToolCall_TruncatedBeforeAnyArgs(t *testing.T) {
 // Empty args on a length-stopped turn still execute when the tool requires
 // nothing — an intentionally argument-free call is not evidence of truncation.
 func TestPrepareToolCall_LengthStopEmptyArgsNoRequired(t *testing.T) {
+	t.Parallel()
 	reg := tool.NewRegistry()
 	_ = reg.Register(regTool(tool.DefListDir()))
 	res := prepareToolCall(

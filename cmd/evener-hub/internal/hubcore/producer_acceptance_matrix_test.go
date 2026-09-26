@@ -97,11 +97,11 @@ func TestProducerAcceptancePinOneCallbackPerChangedPath(t *testing.T) {
 		_, _ = store.Sections() // callback must be outside the transaction/DB lock.
 	})
 	now := time.Unix(100, 0)
-	section, changed, err := store.CreateOrReuseAndAssign("Research", "session-a", now)
+	section, changed, err := store.CreateOrReuseAndAssign("Research", "", "session-a", now)
 	if err != nil || !changed || calls.Load() != 1 {
 		t.Fatalf("create changed=%v callbacks=%d err=%v", changed, calls.Load(), err)
 	}
-	if _, changed, err = store.CreateOrReuseAndAssign("research", "session-a", now.Add(time.Second)); err != nil || changed || calls.Load() != 1 {
+	if _, changed, err = store.CreateOrReuseAndAssign("research", "", "session-a", now.Add(time.Second)); err != nil || changed || calls.Load() != 1 {
 		t.Fatalf("create/reuse no-op changed=%v callbacks=%d err=%v", changed, calls.Load(), err)
 	}
 	if _, changed, err = store.Rename(section.ID, "Research", now.Add(2*time.Second)); err != nil || changed || calls.Load() != 1 {
@@ -110,16 +110,16 @@ func TestProducerAcceptancePinOneCallbackPerChangedPath(t *testing.T) {
 	if _, changed, err = store.Rename(section.ID, "Renamed", now.Add(3*time.Second)); err != nil || !changed || calls.Load() != 2 {
 		t.Fatalf("rename changed=%v callbacks=%d err=%v", changed, calls.Load(), err)
 	}
-	if _, changed, err = store.Assign(section.ID, "session-a", now.Add(4*time.Second)); err != nil || changed || calls.Load() != 2 {
+	if _, changed, err = store.Assign(section.ID, "", "session-a", now.Add(4*time.Second)); err != nil || changed || calls.Load() != 2 {
 		t.Fatalf("assign no-op changed=%v callbacks=%d err=%v", changed, calls.Load(), err)
 	}
-	if _, changed, err = store.Assign(section.ID, "session-b", now.Add(5*time.Second)); err != nil || !changed || calls.Load() != 3 {
+	if _, changed, err = store.Assign(section.ID, "", "session-b", now.Add(5*time.Second)); err != nil || !changed || calls.Load() != 3 {
 		t.Fatalf("assign changed=%v callbacks=%d err=%v", changed, calls.Load(), err)
 	}
-	if changed, err = store.Unpin("missing"); err != nil || changed || calls.Load() != 3 {
+	if changed, err = store.Unpin("", "missing"); err != nil || changed || calls.Load() != 3 {
 		t.Fatalf("unpin absent changed=%v callbacks=%d err=%v", changed, calls.Load(), err)
 	}
-	if changed, err = store.Unpin("session-b"); err != nil || !changed || calls.Load() != 4 {
+	if changed, err = store.Unpin("", "session-b"); err != nil || !changed || calls.Load() != 4 {
 		t.Fatalf("unpin changed=%v callbacks=%d err=%v", changed, calls.Load(), err)
 	}
 	if _, changed, err = store.DeleteSection(section.ID); err != nil || !changed || calls.Load() != 5 {

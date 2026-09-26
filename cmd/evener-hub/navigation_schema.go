@@ -289,6 +289,13 @@ func validateNavigationEntity(key navigationResourceKey, metadata any, entity hu
 	return value.Ref, false, nil
 }
 
+// strictNavigationDecode refuses unknown fields. The hub validates what it
+// produces, so an unknown field here is a hub bug: a map built by hand, or a
+// field added to a navigation type without its bound below. The client codec
+// deliberately accepts and drops unknown value-record fields
+// (appwire-client/typescript/state/navigation/codec.ts), so an older app keeps
+// reading pages that carry a field added after it was built; the two agree on
+// every known field's bounds.
 func strictNavigationDecode(raw json.RawMessage, required []string, destination any) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {

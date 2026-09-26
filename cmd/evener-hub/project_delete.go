@@ -502,7 +502,7 @@ func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []str
 		}
 	}
 	if s.cfg.PinSections != nil {
-		if _, err := s.cfg.PinSections.DeleteSession(threadID); err != nil {
+		if _, err := s.cfg.PinSections.DeleteSession("", threadID); err != nil {
 			decisionErrors = append(decisionErrors, fmt.Sprintf("pin section store error: %v", err))
 		}
 	}
