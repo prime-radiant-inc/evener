@@ -533,6 +533,29 @@ func TestLegacyHostSidecarSchemaRequiresHostsArray(t *testing.T) {
 	}
 }
 
+// TestLegacyHostSidecarWithUnknownRecordsIsRefused pins the migration's
+// record-safety rule: the retired sidecar's only recognized record is the
+// `hosts` array; a document carrying any other machine-managed record — the
+// pre-decision revision's sketches (tombstones, generations, receipts,
+// remnants, markers) — is refused with the keys named, so the migration can
+// never fold the hosts and silently strip the rest.
+func TestLegacyHostSidecarWithUnknownRecordsIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub.hosts.json")
+	doc := `{"hosts":[{"name":"beta","ssh":"beta.example"}],"tombstones":{"gone":{}},"generations":{"alpha":3}}`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	_, err := loadLegacyHostSidecar(path)
+	if err == nil {
+		t.Fatal("records-bearing sidecar loaded without error; the migration would strip the records")
+	}
+	for _, want := range []string{"generations", "tombstones"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q does not name %q", err, want)
+		}
+	}
+}
+
 // TestHubTOMLRewriteIsDeterministic pins that the store's encoder is stable:
 // rewriting the same entries twice produces byte-identical files, so an
 // untouched hub never churns its bytes under a harmless write.

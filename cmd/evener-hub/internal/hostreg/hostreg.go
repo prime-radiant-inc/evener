@@ -10,6 +10,7 @@ package hostreg
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -40,6 +41,10 @@ var (
 	ErrMissingSSH = errors.New("missing ssh destination")
 	// ErrEmptyRoot marks an entry with a root that is empty after trim.
 	ErrEmptyRoot = errors.New("empty root")
+	// ErrInvalidKeyPath marks a key_path that is not an absolute path: the
+	// value goes to ssh verbatim, and a relative path would resolve against
+	// whatever working directory the hub happened to launch with.
+	ErrInvalidKeyPath = errors.New("invalid key_path")
 	// ErrUnknownHost marks an operation naming a host the registry does not hold.
 	ErrUnknownHost = errors.New("unknown host")
 )
@@ -162,6 +167,9 @@ func validateEntry(entry Host) error {
 	}
 	if slices.Contains(entry.Roots, "") {
 		return fmt.Errorf("%w: host %q", ErrEmptyRoot, entry.Name)
+	}
+	if entry.KeyPath != "" && !filepath.IsAbs(entry.KeyPath) {
+		return fmt.Errorf("%w: host %q key_path %q must be an absolute path (the hub performs no ~ or environment expansion)", ErrInvalidKeyPath, entry.Name, entry.KeyPath)
 	}
 	return nil
 }

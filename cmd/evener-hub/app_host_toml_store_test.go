@@ -128,7 +128,7 @@ func TestHubTOMLRewritePreservesEveryEntry(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
 	existing := `addr = "127.0.0.1:9199"
-plugin_auto_upgrade = false
+plugin_auto_upgrade = true
 
 [[hosts]]
 name = "alpha"
@@ -164,8 +164,8 @@ ssh = "beta.example"
 	if probe.Addr != "127.0.0.1:9199" {
 		t.Fatalf("rewrite lost addr: %q", probe.Addr)
 	}
-	if probe.PluginAutoUpgrade {
-		t.Fatalf("rewrite lost plugin_auto_upgrade = false")
+	if !probe.PluginAutoUpgrade {
+		t.Fatalf("rewrite lost plugin_auto_upgrade = true")
 	}
 	byName := map[string]hostConfigProbe{}
 	for _, h := range probe.Hosts {
@@ -364,6 +364,9 @@ func TestHubTOMLRollbackPreservesAHandAddedEntry(t *testing.T) {
 		}
 		return saved(d)
 	}
+	// The swap must not outlive this test even when a Fatalf fires before the
+	// explicit restore below.
+	t.Cleanup(func() { hubTOMLSyncDir = saved })
 	_, err = m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "staged", Address: "staged.example"}})
 	hubTOMLSyncDir = saved
 	if err == nil {
@@ -543,6 +546,28 @@ func TestHubTOMLRewritePreservesAHandAddedEntryWithAnEmptyStore(t *testing.T) {
 	}
 }
 
+// TestHubTOMLRewriteWithNoHostsOmitsTheHostsKey pins the empty-set shape: a
+// rewrite with zero entries leaves no `hosts` key at all, so a later operator
+// hand-add can append a `[[hosts]]` table. `hosts = []` cannot be reopened as
+// an array of tables, which would make the next boot refuse the file.
+func TestHubTOMLRewriteWithNoHostsOmitsTheHostsKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub.toml")
+	if err := writeHubTOMLHosts(path, nil); err != nil {
+		t.Fatalf("write empty hub.toml: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read hub.toml: %v", err)
+	}
+	if _, err := decodeConfig(path, string(data)); err != nil {
+		t.Fatalf("empty rewrite is not loadable: %v", err)
+	}
+	handEdited := string(data) + "\n[[hosts]]\nname = \"hand\"\nssh = \"hand.example\"\n"
+	if _, err := decodeConfig(path, handEdited); err != nil {
+		t.Fatalf("a hand-added [[hosts]] over an empty rewrite does not load: %v", err)
+	}
+}
+
 // TestHubTOMLMigrationSetAsideSyncFailureIsLoudAndRetryable pins the
 // migration's crash-safety story: when the set-aside rename's directory sync
 // fails, the merged hub.toml is already durable, the sidecar still exists, and
@@ -583,6 +608,9 @@ func TestHubTOMLMigrationSetAsideSyncFailureIsLoudAndRetryable(t *testing.T) {
 		}
 		return saved(d)
 	}
+	// The swap must not outlive this test even when a Fatalf fires before the
+	// explicit restore below.
+	t.Cleanup(func() { hubTOMLSyncDir = saved })
 	var logs []string
 	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
 	m := boot(logf)

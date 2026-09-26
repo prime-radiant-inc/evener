@@ -258,7 +258,10 @@ func loadLegacyHostSidecar(path string) ([]hostreg.Host, error) {
 // parseLegacyHostSidecar decodes the retired sidecar's bytes in file order: the
 // one-time migration's parse. A present document must
 // carry a "hosts" array: an absent or null field is a load error, not an empty
-// sidecar — a present empty array is the legitimate one.
+// sidecar — a present empty array is the legitimate one. `hosts` is also the
+// only record a sidecar may carry: any other top-level record is a shape this
+// series never shipped, and the migration refuses it (keys named) rather than
+// folding the hosts and silently stripping records the operator may need.
 func parseLegacyHostSidecar(data []byte) ([]hostreg.Host, error) {
 	// The shape gate rides the typed decode: `hosts` must be present and
 	// non-null, which is exactly "the pointer is non-nil" — absent and null
@@ -274,6 +277,26 @@ func parseLegacyHostSidecar(data []byte) ([]hostreg.Host, error) {
 	}
 	if file.Hosts == nil {
 		return nil, errors.New(`parse legacy host sidecar: missing or null "hosts" array`)
+	}
+	// Only `hosts` is a recognized record: a document carrying anything else
+	// fails the migration loudly, with the unrecognized keys named — nothing
+	// merges, both files stay untouched, and the operator archives or repairs
+	// the file. The pre-decision revision sketched a records-bearing sidecar
+	// (tombstones, generations, receipts, remnants, markers); folding its
+	// hosts while ignoring the rest would strip exactly those records.
+	var records map[string]json.RawMessage
+	if err := json.Unmarshal(data, &records); err != nil {
+		return nil, fmt.Errorf("parse legacy host sidecar: %w", err)
+	}
+	var unknown []string
+	for key := range records {
+		if key != "hosts" {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		slices.Sort(unknown)
+		return nil, fmt.Errorf("parse legacy host sidecar: unrecognized records %s — only \"hosts\" is migrated; archive or repair the file (nothing was migrated)", strings.Join(unknown, ", "))
 	}
 	entries := make([]hostreg.Host, 0, len(*file.Hosts))
 	for _, h := range *file.Hosts {
@@ -343,7 +366,16 @@ func writeHubTOMLHostsKnown(path string, entries, known []hostreg.Host, migrated
 	if err != nil {
 		return err
 	}
-	doc["hosts"] = append(hubTOMLHostTables(entries), extra...)
+	tables := append(hubTOMLHostTables(entries), extra...)
+	if len(tables) == 0 {
+		// Write no `hosts` key at all for an empty set: `hosts = []` cannot be
+		// reopened as an array of tables, so a later operator hand-add of a
+		// `[[hosts]]` table would make the file unreadable at the next boot.
+		// The banner-only shape stays hand-editable.
+		delete(doc, "hosts")
+	} else {
+		doc["hosts"] = tables
+	}
 	if migrated {
 		doc[legacySidecarMigratedKey] = true
 	}
