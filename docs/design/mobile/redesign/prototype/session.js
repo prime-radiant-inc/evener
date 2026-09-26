@@ -174,6 +174,7 @@
   // ---------- actions ----------
   EV.addItem = (sid, it) => { (EV.S.transcripts[sid] = EV.S.transcripts[sid] || []).push(it); };
   EV.setWorking = function (s, activity) {
+    s.turn = (s.turn || 0) + 1;
     s.state = "working";
     s.live = true;
     s.stuck = false;
@@ -261,7 +262,7 @@
           EV.addItem(s.id, { t: "user", text, kind: "steer" });
           s.updatedAt = Date.now();
           EV.update();
-          setTimeout(() => { EV.addItem(s.id, { t: "agent", md: "Got it. Adjusting course: " + text.charAt(0).toLowerCase() + text.slice(1).replace(/[.!]?$/, ".") }); s.updatedAt = Date.now(); EV.update(); }, 2600);
+          EV.laterInTurn(s, 2600, () => { EV.addItem(s.id, { t: "agent", md: "Got it. Adjusting course: " + text.charAt(0).toLowerCase() + text.slice(1).replace(/[.!]?$/, ".") }); s.updatedAt = Date.now(); });
         }, 2200);
       }
       S.prefs.hintUses++;
@@ -272,12 +273,11 @@
     const resumed = s.state === "shutdown";
     EV.setWorking(s, resumed ? "Resuming" : "Thinking");
     EV.log("send", { sessionId: s.id, mode: resumed ? "resume" : "send", text, images: imgs, kind: kind || null });
-    setTimeout(() => {
+    EV.laterInTurn(s, 3000, () => {
       EV.addItem(s.id, { t: "agent", md: EV.replyFor(s, text) });
       s.activity = "Working on it";
       s.updatedAt = Date.now();
-      EV.update();
-    }, 3000);
+    });
     EV.update();
   };
   EV.replyFor = function (s, text) {
@@ -300,13 +300,12 @@
     s.why = "";
     EV.log("answer", { sessionId: s.id, askId: ask.id, answers: qa.map((x) => x.a), how });
     EV.toast("Answer sent");
-    setTimeout(() => {
+    EV.laterInTurn(s, 3200, () => {
       const first = (qa[0] && qa[0].a) || "";
       EV.addItem(s.id, { t: "agent", md: /drop/i.test(first) ? "Dropping the implied options from all 14 descriptions. I'll start the next audit when that's done." : /keychain/i.test(first) ? "Keychain it is, with a file fallback on headless hosts." : "Thanks. Continuing with that." });
       s.activity = "Editing agent/internal/tool/definitions.go";
       s.updatedAt = Date.now();
-      EV.update();
-    }, 3200);
+    });
     EV.update();
   };
 
@@ -324,23 +323,22 @@
     s.why = "";
     EV.log("approval", { sessionId: s.id, decision: decision === "scope" ? "allow_scope" : decision ? "allow" : "deny" });
     EV.toast(decision === "scope" ? "Allowed for " + a.scope : decision ? "Allowed once" : "Denied");
-    if (decision === "scope" || !a.next) EV.setWorking(s, decision ? (a.after || "Continuing") : "Thinking");
+    if (!decision) {
+      EV.setWorking(s, "Thinking");
+      EV.laterInTurn(s, 2500, () => EV.addItem(s.id, { t: "agent", md: "Understood. I'll write the mirror inside the workspace at `./mirror` instead." }));
+    } else if (decision === "scope" || !a.next) EV.setWorking(s, a.after || "Continuing");
     else {
       EV.setWorking(s, "Writing " + a.target);
-      setTimeout(() => {
-        if (s.state !== "working") return;
-        const id = tr[i] && a.next ? a.next.id : null;
-        if (!id) return;
+      EV.laterInTurn(s, 5000, () => {
+        const id = a.next.id;
         S.approvals[id] = Object.assign({}, a, a.next, { next: null });
         s.state = "approval";
         s.why = "Wants to write outside the workspace: " + a.scope;
         s.updatedAt = Date.now();
         EV.addItem(s.id, { t: "appr", id });
         EV.alert({ kind: "approval", sessionId: s.id, why: s.why });
-        EV.update();
-      }, 5000);
+      });
     }
-    if (!decision) setTimeout(() => { EV.addItem(s.id, { t: "agent", md: "Understood. I'll write the mirror inside the workspace at `./mirror` instead." }); EV.update(); }, 2500);
     EV.update();
   };
 

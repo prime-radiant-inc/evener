@@ -68,7 +68,7 @@
       EV.log("start_session", { sessionId: id, host: L.host, project: L.project, model: L.model, effort: L.effort, plugins: L.plugins.slice().sort(), access: L.access, branch: L.branch, prompt: L.prompt.trim(), images: L.images });
       EV.closeAllSheets();
       EV.openSession(id, { from: "new" });
-      setTimeout(() => { const tr = S.transcripts[id]; tr.pop(); tr.push({ t: "agent", md: "Starting on this now. I'll read the relevant code first and report back." }, { t: "act", live: true, steps: [{ i: "Read the relevant files", g: "cmd/evener-hub/…", s: "run" }] }); s.activity = "Reading the relevant files"; s.updatedAt = Date.now(); EV.update(); }, 3500);
+      EV.laterInTurn(s, 3500, () => { const tr = S.transcripts[id]; const k = tr.findIndex((x) => x.t === "think" && x.live); if (k >= 0) tr.splice(k, 1); tr.push({ t: "agent", md: "Starting on this now. I'll read the relevant code first and report back." }, { t: "act", live: true, steps: [{ i: "Read the relevant files", g: "cmd/evener-hub/…", s: "run" }] }); s.activity = "Reading the relevant files"; s.updatedAt = Date.now(); });
     };
     const recipeChip = (id, name, run) => html`<button class=${"chip" + (L.recipe === id ? " on" : "")} onClick=${run}>${name}</button>`;
     return html`<${EV.Sheet} title="New session" left=${html`<button class="text-btn" onClick=${() => { EV.log("new_session_cancel", {}); EV.closeSheet(); }}>Cancel</button>`}

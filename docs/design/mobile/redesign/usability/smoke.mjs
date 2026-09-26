@@ -188,6 +188,22 @@ async function runChecks(page, scheme) {
     await ev(page, `window.__proto.trigger('question')`); await sleep(400);
     if (await page.locator('.dock-min').count()) throw new Error('the question asked again arrives collapsed');
   });
+  // The scripted agent answers a few seconds after you act. Whatever you do
+  // in between (Deny, Stop) must win over the script.
+  await check(S('flow-deny-ends-the-request'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-mirror')`); await sleep(400);
+    await tapRole('button', 'Deny'); await sleep(5600);
+    const after = await ev(page, `(() => { const s = EV.sess('s-mirror'); return { state: s.state, asks: EV.S.transcripts['s-mirror'].filter((x) => x.t === 'appr').length }; })()`);
+    if (after.state === 'approval' || after.asks) throw new Error('after Deny the agent asked for the next write anyway: ' + JSON.stringify(after));
+  });
+  await check(S('flow-stop-silences-the-reply'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-deslop')`); await sleep(400);
+    await page.locator('textarea[aria-label="Message"]').tap(); await page.keyboard.type('Tighten the install section');
+    await page.getByRole('button', { name: 'Send', exact: true }).tap(); await sleep(300);
+    await tapRole('button', 'Stop this turn'); await sleep(3600);
+    const last = await ev(page, `(() => { const tr = EV.S.transcripts['s-deslop']; return tr[tr.length - 1]; })()`);
+    if (!last || last.text !== 'Stopped by you') throw new Error('the agent replied after you stopped the turn: ' + JSON.stringify(last));
+  });
   await check(S('flow-other-answer-brings-composer'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-audit')`); await sleep(400);
     if (await page.locator('textarea[aria-label="Message"]').count()) throw new Error('the composer shows while the question dock is open');

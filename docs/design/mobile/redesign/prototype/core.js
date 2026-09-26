@@ -138,6 +138,17 @@
     const st = EV.stateOf(s);
     return st === "working" || st === "stuck";
   };
+  // The scripted agent's follow-up to something you did: fn runs after ms
+  // only if the same turn is still going (setWorking starts a new one), so a
+  // Stop, a shutdown, a newer turn or a reset in between wins over the script.
+  EV.laterInTurn = function (s, ms, fn) {
+    const S = EV.S, turn = s.turn;
+    setTimeout(() => {
+      if (EV.S !== S || s.turn !== turn || !EV.inTurn(s)) return;
+      fn();
+      EV.update();
+    }, ms);
+  };
   const NEEDS = ["failed", "question", "approval", "warning", "restart"];
   EV.isNeeds = (s) => NEEDS.includes(s.state);
   EV.band = function (s) {
