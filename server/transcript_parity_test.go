@@ -189,9 +189,14 @@ func (ps *paritySession) await(t *testing.T, kind events.EventKind, match func(e
 	defer timer.Stop()
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
+	from := ps.next
 	for {
 		if ps.next < 0 {
-			t.Fatalf("timed out awaiting %s", kind)
+			var since []string
+			for _, ev := range ps.seen[from:] {
+				since = append(since, string(ev.Kind))
+			}
+			t.Fatalf("timed out awaiting %s; events since the previous await: %v", kind, since)
 		}
 		for ; ps.next < len(ps.seen); ps.next++ {
 			ev := ps.seen[ps.next]
@@ -341,7 +346,10 @@ func TestTranscriptParity(t *testing.T) {
 	}
 	ps := bridgeParitySession(t, sess, prepared, stateDir)
 	ctx := context.Background()
-	endOfInput := func() { ps.await(t, events.EventSessionEnd, nil) }
+	endOfInput := func() {
+		t.Helper()
+		ps.await(t, events.EventSessionEnd, nil)
+	}
 	processInput := func(text string) {
 		t.Helper()
 		if _, err := sess.ProcessInput(ctx, text, nil); err != nil {
