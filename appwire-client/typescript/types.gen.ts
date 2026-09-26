@@ -2100,6 +2100,13 @@ export interface NavigationSessionSummary {
    * daemon (or a past-index entry) and therefore absent-able for consumers.
    */
   watches?: NavigationWatchSummary[];
+  /**
+   * Tasks is the task line's facts ("Task 4 of 7 · Fix the settle/drain
+   * race"). Absent for a session with no task list or an empty one, and for
+   * every session this hub has no live daemon entry for: ended sessions,
+   * in-process children, and rows from other hosts.
+   */
+  tasks?: NavigationTaskProgress;
   children: NavigationSessionSummary[];
 }
 
@@ -2107,6 +2114,19 @@ export interface NavigationSnapshot {
   metadata: unknown;
   entities: NavigationEntityRecord[];
   containers: NavigationOrderContainer[];
+}
+
+export interface NavigationTaskProgress {
+  total: number;
+  done: number;
+  cancelled?: number;
+  /**
+   * CurrentID and Current name the first task in progress: its ID in the
+   * session's task list and its description, cut to the label bound. Both
+   * are absent while no task is in progress.
+   */
+  current_id?: number;
+  current?: string;
 }
 
 export interface NavigationTier {
@@ -2473,6 +2493,19 @@ export interface SessionDeleteResponse {
   deleted: string[];
   skipped: DeletionSkip[];
   navigation: NavigationMutation;
+}
+
+export interface SessionImageParams {
+  sessionId: string;
+  sha?: string;
+  path?: string;
+}
+
+export interface SessionImageResponse {
+  mediaType: string;
+  size: number;
+  sha?: string;
+  data: string;
 }
 
 export interface SessionPinAssignParams {
@@ -3606,6 +3639,7 @@ export const METHOD_NAMES = [
   "evener/host/remove",
   "evener/host/update",
   "evener/host/pushCredentials",
+  "evener/session/image",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -3818,6 +3852,7 @@ export interface MethodTypes {
   "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
   "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
+  "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };
 }
 
 export interface NotificationTypes {

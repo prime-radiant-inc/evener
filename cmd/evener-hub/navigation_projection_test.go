@@ -930,8 +930,12 @@ func TestNavigationProjectionPinsDecorationsAndOrder(t *testing.T) {
 			"session-a":        true,
 			"session-dangling": true,
 		},
-		PinSections:    []hubcore.PinSection{{ID: "pin", Name: "Pinned", MemberCount: 3}, {ID: "empty", Name: "Empty", MemberCount: 0}},
-		PinAssignments: map[string]hubcore.SessionPin{"session-a": {SectionID: "pin"}, "session-z": {SectionID: "pin"}, "session-dangling": {SectionID: "missing"}},
+		PinSections: []hubcore.PinSection{{ID: "pin", Name: "Pinned", MemberCount: 3}, {ID: "empty", Name: "Empty", MemberCount: 0}},
+		PinAssignments: map[hubcore.ArchiveKey]hubcore.SessionPin{
+			hubcore.SessionPinKey("", "session-a"):        {SectionID: "pin"},
+			hubcore.SessionPinKey("", "session-z"):        {SectionID: "pin"},
+			hubcore.SessionPinKey("", "session-dangling"): {SectionID: "missing"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1369,6 +1373,21 @@ func TestCloneNavigationLiveEntriesOwnsWatches(t *testing.T) {
 	}
 	if cloneNavigationLiveEntries(nil) != nil {
 		t.Fatal("cloneNavigationLiveEntries(nil) must stay nil")
+	}
+}
+
+// The navigation inputs own their live entries' task progress too: a shared
+// aggregate would let the roster's next probe rewrite a built projection's
+// current task.
+func TestCloneNavigationLiveEntriesOwnsTasks(t *testing.T) {
+	original := []hubcore.LiveEntry{{Tasks: &appwire.TaskAggregate{
+		Total: 2, Remaining: 2, Current: &appwire.TaskSummary{ID: 1, Description: "first"},
+	}}}
+	clone := cloneNavigationLiveEntries(original)
+	original[0].Tasks.Total = 9
+	original[0].Tasks.Current.Description = "mutated"
+	if clone[0].Tasks.Total != 2 || clone[0].Tasks.Current.Description != "first" {
+		t.Fatalf("clone task progress changed through the original: %+v %+v", clone[0].Tasks, clone[0].Tasks.Current)
 	}
 }
 

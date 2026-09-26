@@ -182,6 +182,7 @@ func TestCovSubagentNeedsCommunicateNudge(t *testing.T) {
 // TestCovRestoreFrozenSkillBodies covers restoreFrozenSkillBodies
 // (subagents.go lines 413-434).
 func TestCovRestoreFrozenSkillBodies(t *testing.T) {
+	t.Parallel()
 	// Both empty — nil, no error.
 	bodies, err := restoreFrozenSkillBodies(nil, nil)
 	if err != nil || bodies != nil {

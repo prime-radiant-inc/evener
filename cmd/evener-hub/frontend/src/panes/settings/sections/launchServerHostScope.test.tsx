@@ -2,13 +2,14 @@ import type { HostRow, LaunchOptionSchemaResponse } from "@evener/appwire-client
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../stores/connection";
 import { hostsStore } from "../../../stores/hosts";
 import { resetLaunchConfigHostStoresForTests, resetLaunchConfigStoreForTests } from "../../../stores/launchConfig";
 import { resetSettingsHostForTests, setSettingsHost } from "../../../stores/settingsHost";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { LaunchServerHostScope } from "./launchServer";
+import { LAUNCH_CONFIG_REFRESH_DEBOUNCE_MS } from "./useConnectedEffect";
 
 // The launch-evener settings surface's host scope (component 07b): the shared
 // HostPicker over the selected host, whose own launch config both shows and
@@ -72,6 +73,8 @@ afterEach(() => {
   resetLaunchConfigHostStoresForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   window.history.pushState({}, "", "/");
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 test("with this hub selected the section issues the plain launch calls and never the proxy", async () => {
@@ -260,7 +263,19 @@ function emitLaunchUpdated(fake: FakeClient): void {
 // changes under them. A burst of notifications must be bounded, a change for
 // another host must not touch this pane, and a re-read must never silently take
 // away what the user is typing.
+//
+// A change re-reads the pane after a 250ms debounce (useConnectedEffect.ts), so
+// these tests put the clock under fake timers: the stubbed `jest` global lets
+// Testing Library's findBy/waitFor polls advance it, and user-event advances it
+// for its own delays, so getting past the debounce costs a poll, not real time.
+function installFakeClock() {
+  vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+  return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+}
+
 test("a launch-config change for the SELECTED host re-reads the pane and shows the host's new value", async () => {
+  installFakeClock();
   const fake = connectFakeClient();
   let agent = "beta-agent";
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
@@ -291,6 +306,7 @@ test("a launch-config change for the SELECTED host re-reads the pane and shows t
 });
 
 test("a launch-config change for a DIFFERENT host does not re-read the selected pane", async () => {
+  installFakeClock();
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", (params) => {
@@ -309,13 +325,14 @@ test("a launch-config change for a DIFFERENT host does not re-read the selected 
 
   // gamma's own change must not move beta's pane.
   emitHostLaunchUpdated(fake, "gamma");
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  await act(() => vi.advanceTimersByTimeAsync(LAUNCH_CONFIG_REFRESH_DEBOUNCE_MS));
 
   expect(forwardedMethodCalls(fake, "beta", "evener/launch/getLayer")).toBe(reads);
   expect(forwardedMethodCalls(fake, "gamma", "evener/launch/getLayer")).toBe(0);
 });
 
 test("a BURST of launch-config changes for the selected host produces one bounded re-read", async () => {
+  installFakeClock();
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", (params) => {
@@ -333,14 +350,17 @@ test("a BURST of launch-config changes for the selected host produces one bounde
   const reads = forwardedMethodCalls(fake, "beta", "evener/launch/getLayer");
 
   for (let i = 0; i < 5; i++) emitHostLaunchUpdated(fake, "beta");
-  await new Promise((resolve) => setTimeout(resolve, 400));
+  await act(() => vi.advanceTimersByTimeAsync(LAUNCH_CONFIG_REFRESH_DEBOUNCE_MS));
 
-  // Five notifications inside the 250ms debounce window coalesce into exactly
-  // one layer read.
+  // Five notifications inside the debounce window coalesce into exactly one
+  // layer read, and no second one follows once another window has passed.
+  expect(forwardedMethodCalls(fake, "beta", "evener/launch/getLayer")).toBe(reads + 1);
+  await act(() => vi.advanceTimersByTimeAsync(LAUNCH_CONFIG_REFRESH_DEBOUNCE_MS));
   expect(forwardedMethodCalls(fake, "beta", "evener/launch/getLayer")).toBe(reads + 1);
 });
 
 test("an incoming change keeps the user's typed draft and says the host's values changed", async () => {
+  const user = installFakeClock();
   const fake = connectFakeClient();
   let agent = "beta-agent";
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
@@ -355,7 +375,6 @@ test("an incoming change keeps the user's typed draft and says the host's values
 
   setSettingsHost("beta");
   render(<LaunchServerHostScope sectionId="launch-evener" />);
-  const user = userEvent.setup();
   const agentInput = (await screen.findByLabelText("Agent")) as HTMLInputElement;
   await user.clear(agentInput);
   await user.type(agentInput, "typed-on-beta");
@@ -373,6 +392,7 @@ test("an incoming change keeps the user's typed draft and says the host's values
 });
 
 test("with the local hub selected, a change to its launch config re-reads the pane", async () => {
+  installFakeClock();
   const fake = connectFakeClient();
   let agent = "controller-agent";
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
@@ -395,6 +415,7 @@ test("with the local hub selected, a change to its launch config re-reads the pa
 });
 
 test("with the local hub selected, a REPLACED controller connection re-reads the pane", async () => {
+  installFakeClock();
   const first = connectFakeClient();
   first.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   first.on("evener/launch/schema", () => schema("controller schema"));
@@ -426,6 +447,7 @@ test("with the local hub selected, a REPLACED controller connection re-reads the
 });
 
 test("with the local hub selected, a RECOVERED controller connection re-reads the pane", async () => {
+  installFakeClock();
   const fake = connectFakeClient();
   let agent = "controller-agent";
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
