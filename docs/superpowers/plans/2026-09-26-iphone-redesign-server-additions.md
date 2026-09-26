@@ -1406,20 +1406,14 @@ In `agent/session_state.go`, replace `WireState` and its doc comment. The preced
 // masking the question as "working" would deadlock, since the wakes that
 // could move the session are gated behind the very answer the user was never
 // told to give. TestWireState_AwaitingOutranksAutonomy pins this.
+//
+// The two reads take their own locks in turn, never nested, as WireState
+// always has: sessionWorkPending's signals each take their own lock (the
+// settle lock discipline, autonomyInFlight), and a change between the reads
+// publishes again through the session's state events.
 func (s *Session) WireState() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.wireStateLocked()
-}
-
-// wireStateLocked derives the resting state and the pending work under one
-// hold of s.mu, so a turn or queue change can't land between the two reads.
-// Before relying on it, check that sessionWorkPending's inputs are guarded
-// by s.mu and that it takes no lock of its own; if it does, keep the lock
-// order it needs rather than calling it under s.mu.
-func (s *Session) wireStateLocked() string {
-	state := s.restingWireStateLocked()
-	if (state == string(SessionIdle) || state == appwire.ThreadStatusSystemError) && s.sessionWorkPendingLocked() {
+	state := s.RestingWireState()
+	if (state == string(SessionIdle) || state == appwire.ThreadStatusSystemError) && s.sessionWorkPending() {
 		return string(SessionProcessing)
 	}
 	return state
@@ -1443,12 +1437,6 @@ func (s *Session) wireStateLocked() string {
 func (s *Session) RestingWireState() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.restingWireStateLocked()
-}
-
-// restingWireStateLocked is RestingWireState for a caller that already holds
-// s.mu (wireStateLocked).
-func (s *Session) restingWireStateLocked() string {
 	resting := s.state == SessionIdle || s.state == SessionAwaiting
 	if resting && len(s.askPending) == 0 && historyEndsInTurnFailure(s.history) {
 		return appwire.ThreadStatusSystemError
