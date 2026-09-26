@@ -227,7 +227,8 @@ func TestHubTOMLWriteOrderIsTheStores(t *testing.T) {
 func TestHubTOMLMigrationMergesSidecarOnce(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
-	if err := os.WriteFile(configPath, []byte("[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n"), 0o600); err != nil {
+	hubTOMLSeed := []byte("addr = \"127.0.0.1:9199\"\n\n[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n")
+	if err := os.WriteFile(configPath, hubTOMLSeed, 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
 	sidecarPath := filepath.Join(dir, "hub.hosts.json")
@@ -257,6 +258,17 @@ func TestHubTOMLMigrationMergesSidecarOnce(t *testing.T) {
 	}
 	if !names["alpha"] || !names["beta"] || len(names) != 2 {
 		t.Fatalf("hub.toml after migration = %+v, want alpha and beta exactly once", probe.Hosts)
+	}
+	// The merged rewrite is a read-modify-write: the file's non-host keys
+	// survive the migration unchanged.
+	var after struct {
+		Addr string `toml:"addr"`
+	}
+	if _, err := toml.Decode(string(data), &after); err != nil {
+		t.Fatalf("hub.toml unparsable after migration: %v", err)
+	}
+	if after.Addr != "127.0.0.1:9199" {
+		t.Fatalf("migration lost the file's non-host key: addr = %q", after.Addr)
 	}
 	if _, err := os.Stat(sidecarPath); !os.IsNotExist(err) {
 		t.Fatalf("sidecar still present after migration: %v", err)
