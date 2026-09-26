@@ -133,22 +133,22 @@ The Board is home. It shows every session, ordered by who needs you, followed by
 ### 7.1 Layout
 
 ```
-▂▅▇ magic-kingdom ▾                                        ⌕
+magic-kingdom ▾                                            ⌕
 [Live 20 (4)] [📌 Release 2] [📌 Research 1] [Projects 14] [Archi…
 
 ⚠  codex-jesse-fsck.com sign-in expired · 3 sessions    Sign in
 ─────────────────────────────────────────────────────────────
-4 need you   4 finished   • 9 working   3 idle
+4 need you   4 finished   ▂▅▇ 9 working   3 idle
 
 NEEDS YOU · 4
 ✕  Fix Endless Provider Retry Loop                         2m
    Failed · codex-jesse-fsck.com sign-in expired (401)
-   ☑ Task 3 of 4 · Cap retries per provider · 1 subagent failed · ⌂ paradise-park
+   ☑ Task 3 of 4 · Cap retries per… · 1 subagent failed · ⌂ paradise-park
 ?  Audit Tool Descriptions for Implied Options            14m
    Question · keep or drop the implied options?
 ✋ Mirror Docs Site Locally                                21m
    Approval · wants to write outside the workspace: ~/sites/docs
-   prime-radiant-inc.github.io
+   ▭ prime-radiant-inc.github.io
 FINISHED · 4
 •  Host Project Hierarchy UI Mockups                       1h
    Three layouts are ready for review. I recommend B…
@@ -168,11 +168,11 @@ ARCHIVED · 271                                              ›
 Select                                                      ✎
 ```
 
-- **Header (glass nav bar).** Leading: the hub button: a fleet pulse meter (the whole fleet's activity, section 16.4; gray while the connection is down), the hub name, a chevron. Trailing: Search. No large title; the section chips carry orientation.
+- **Header (glass nav bar).** Leading: the hub button (the hub name and a chevron). Trailing: Search. No large title; the section chips carry orientation. A connection that isn't live shows in the toolbar (section 14), never as a dot here: a meter in front of the hub name read as signal strength to two critics.
 - **Section chips (sticky under the header).** Live, one chip per pinned category (with a pin glyph), Projects, Archived, each with a count. Chips are landmarks, so their names never change with display settings. Tapping scrolls to that section. The Live chip carries an amber badge with the Needs you count when it is above zero. Chips for empty sections are hidden. The row fades at its trailing edge, so a cut-off chip reads as "there's more".
 - **Notices (only when present).** Hub-level problems that block sessions: a provider sign-in expired or expiring within a day, a host offline, a plugin marked broken. A host running a different Evener version than the hub is not a notice: the hub attaches a protocol-compatible host on its own build, so work continues (Hub > Hosts shows the version). Each notice sits on the page like a row: the ⚠ mark, one sentence naming the affected count in ink, and one action in blue ("Sign in", "Reconnect"). No tinted box: the mark says it needs you. Notices dismiss themselves when resolved.
 - **Continue reading (only when present).** Leaving a plan or document before its end leaves one row under the notices for two hours: "Continue reading · 62%" and the document's title. Tapping it reopens the document at the same position, inside its session. This is the way back after an interruption.
-- **Live summary.** One line counts the Live bands: "4 need you · 4 finished · 9 working · 3 idle", with the Needs you count in amber ink and a green dot before "working". Each count jumps to its band (Idle unfolds). It shows when at least two bands have sessions, so the first screen always says what's working even when Needs you fills it (a first-glance participant found no sign of working sessions without it).
+- **Live summary.** One line counts the Live bands: "4 need you · 4 finished · ▂▅▇ 9 working · 3 idle", with the Needs you count in amber ink and the fleet pulse meter (the whole fleet's activity, section 16.4; gray while the connection is down) before "working", where its label says what it measures. Each count jumps to its band (Idle unfolds). It shows when at least two bands have sessions, so the first screen always says what's working even when Needs you fills it (a first-glance participant found no sign of working sessions without it).
 - **Live** holds every live, unarchived top-level session, in four bands:
   - Needs you: failed first (oldest failure first), then questions, approvals, warnings and restart-needed, oldest waiting first.
   - Finished: sessions whose turn ended, newest first. A blue dot marks the ones you haven't opened since.
@@ -180,7 +180,7 @@ Select                                                      ✎
   - Idle: finished sessions you have already seen, collapsed by default, most recent first.
   Band headers show counts. Empty bands are omitted.
 - **Pinned categories.** Pinned sessions live in the user's named categories, and each category is its own section (as on the web's rail), in the order the hub returns them; there is no generic "Pinned" section. Each section header has a pin glyph, the name, a count, a collapse toggle and a ⋯ menu (Rename, Delete). An empty category says how to pin to it. Deleting a category unpins its sessions; it never deletes sessions. A pinned session also appears in Live while it is live, so pinning never hides attention.
-- **Projects / Hosts** mirrors the web's "Organize by" control: "Project, then host" (default) or "Host, then project". The toggle sits in the section header, flips the section title between Projects and Hosts, and appears only when more than one host exists. Pinned projects float to the top with a pin mark. Inside a project, sessions split like the web: today, recent, and a folded archived group. Each project and host row shows its live count.
+- **Projects / Hosts** mirrors the web's "Organize by" control: "Project, then host" (default) or "Host, then project". The toggle sits in the section header, flips the section title between Projects and Hosts, and appears only when more than one host exists. Pinned projects float to the top with a pin mark. Inside a project, sessions split like the web: today, recent, and a folded archived group. Each project and host row shows its live count. A host shows its state only when it isn't connected (an amber "Offline"); connected hosts carry no dot, so green means working and nothing else.
 - **Test runs** (collapsed): projects whose sessions all came from test runs, as on the web.
 - **Archived** (collapsed): archived sessions and projects, newest first. Unarchive from the row's swipe or menu.
 - **Bottom toolbar (glass).** Leading: Select (multi-select mode with Archive, Pin, Mark as read). Center: the connection status only when it isn't live ("Reconnecting…", "Offline · updated 3m ago"); a live connection shows nothing extra, since the header's meter is already moving (section 14). Trailing: New session, a plain compose glyph in the accent color.
@@ -195,9 +195,9 @@ Signal rows (needs you, finished and not yet seen, working) have up to three lin
 | Leading mark | 28pt column. State mark (see 13.1). Working rows in the Live band show the pulse meter. The same session listed again under a pinned category or in Projects shows a still green dot: only the Live band moves. |
 | Title | SF Pro semibold 17/22, one line (two for Needs you), tail truncation. |
 | Age | Trailing on line 1, 13pt tabular, ink-low. "2m", "1h", "3d". For working rows, time since the session last started a turn. |
-| Why line | 15/20. Needs you: the state word, semibold in its hue ("Failed", "Question", "Approval", "Restart needed", "May be stuck"), a middle dot, then the reason in ink. Only the word takes the hue; the reason is what you read. Finished (not yet seen): the opening of the last agent message in Source Serif 15/21, ink-mid, without quotation marks, up to two lines; the typeface says the agent is speaking. Working: the current activity in ink-mid ("Running go test ./agent/...", "Thinking", "Waiting on 31 subagents", "Quiet 4m"). |
+| Why line | 15/20, up to two lines for Needs you so the reason's key words survive. Needs you: the state word, semibold in its hue ("Failed", "Question", "Approval", "Restart needed", "May be stuck"), a middle dot, then the reason in ink. Only the word takes the hue; the reason is what you read. Finished (not yet seen): the opening of the last agent message in Source Serif 15/21, ink-mid, without quotation marks, up to two lines; the typeface says the agent is speaking. Working: the current activity in ink-mid ("Running go test ./agent/...", "Thinking", "Waiting on 31 subagents", "Quiet 4m"). |
 | Attachments (finished, not yet seen) | Up to two chips for documents or artifacts named in the final message: "[Plan] Host and project hierarchy", "[Artifact] Hierarchy layouts". Tapping a chip opens it on top of its session, so Back goes to the session. |
-| Last line | 13/18, ink-low, only what applies, in this order: task progress when the session keeps a task list and hasn't finished it ("☑ Task 4 of 7 · Fix the settle/drain race"); "2 subagents failed" in red ink when any failed; the project, and the host with a server glyph, only when they differ from the fleet's usual ones; the model's display name when "Show model on Board rows" is on. With none of these, the row has no last line. |
+| Last line | 13/18, ink-low, only what applies, in this order: task progress when the session keeps a task list and hasn't finished it ("☑ Task 4 of 7 · Fix the settle/drain race"); "2 subagents failed" in red ink when any failed; the project with a folder glyph, and the host with a server glyph, only when they differ from the fleet's usual ones; the model's display name when "Show model on Board rows" is on. With none of these, the row has no last line. The line never wraps: the task's title truncates first. |
 | Draft tag | A small blue "Draft" tag before the age when the session has an unsent draft. |
 
 Why task progress rather than subagents: the task line says where a session is in its own plan, and the activity line says what it's doing now. A subagent count says how big a job is, not how far along it is ("31 running" looks the same at minute 2 and minute 40), so subagents appear on a row only as an exception, when some failed. The strip and the full counts live on the session's Subagents chip (Jesse's call, 2026-09-25). "Task 4 of 7" is spelled out because a bare "3/7" beside a task name read like a setting to a first-glance participant.
@@ -209,7 +209,7 @@ Row heights: signal rows about 64 to 88pt; quiet rows 48pt. Horizontal padding 1
 - **Tap** opens the session at the right spot: the pending question or approval, the start of the unread result, or the live end of the transcript.
 - **Swipe right** (leading): Archive (blue-gray action). Full swipe archives. An "Archived · Undo" toast appears at the bottom for 8 seconds. Swipes that begin in the 24pt screen-edge zone never act on a row, so the system back gesture can't archive anything (in round 1 it did, on the root screen, where there is nothing to go back to).
 - **Swipe left** (trailing): Stop (only when working; ends the current turn), Pin, More (the long-press menu).
-- **Long-press** opens a context menu with a preview card (title, state, why line, task progress, subagent count with failures, project, host, model and effort, last message excerpt) and actions: Open, Pin to category… (category list plus "New category…"), Mark as read / Mark as unread, Stop, Shut down, Archive, Copy link, Rename.
+- **Long-press** opens a context menu with a preview card (title, state, why line, task progress, subagent count with failures, project, host, model and effort, last message excerpt; tapping the card opens the session, so there is no "Open" item, whose chevron read as a submenu) and actions: Pin to category… (category list plus "New category…"), Mark as read / Mark as unread, Stop, Shut down, Archive, Copy link, Rename.
 - **Pull down** at the top reveals Search.
 - The list never reorders while a finger is on it or it is scrolling. Changes apply when the list settles, rows move with a 250ms spring, and a row entering Needs you gets a brief amber wash (1.2s fade).
 
@@ -230,7 +230,7 @@ Tapping Search (or pulling down) shows the search field at the top with scope ch
 ```
 ‹ 4      Get PR 2138 Test Clean           ⋯
          ● Working · 38m ›
-[Subagents ▬▬▬▬ 55 •] [Files 1] [Tasks 3/7] [Goal] [Queue 1]
+[Subagents 55 · 2 failed] [Files 1] [Tasks 3/7] [Goal] [Queue 1]
 👤 Your note: Don't skip or quarantine tests…   3 links ›
 ────────────────────────────────────────────
                      Today 2:14 PM
@@ -243,7 +243,7 @@ tree settle pass and the retirement drain. I'm
 splitting the fix into two subagents…
 
 ▸ 12 steps · 8m · read 6 files, ran go test (2 failed), edited 3 files
-▎Fix race in tree settle               failed · 21m
+▎Fix race in tree settle                failed · 6m
 ▎Failed: go test exited 1 (3 times)
 [Plan] Fix the settle/drain race
                     ╭───────────────────────────╮
@@ -253,12 +253,12 @@ splitting the fix into two subagents…
 ▂▅▇ Running go test ./agent/... · 42s
 ┌──────────────────────────────────────────┐
 │ Tell the agent something…                │
-│ +   GLM 5.3 Vision · XHigh   /       ■   │
+│ +   GLM 5.3 Vision · XHigh           ■   │
 └──────────────────────────────────────────┘
 ```
 
 - **Nav bar (glass).** Back shows an amber count of sessions that need you (excluding this one). The center holds the title (15pt semibold, one line) and a subtitle with a still state mark (a green dot while working; the pulse meter lives in the tray) and the state with its time ("Working · 38m", "Finished · 1h ago", "Asks a question", "Failed"), then a small chevron that says the title is tappable. Tapping the center opens the Session sheet; it has a pressed state and sits clear of Back. Trailing: the ⋯ menu.
-- **Context chips (under the nav bar; hide on scroll down, return on scroll up).** Subagents (with a mini strip and the count; a red dot if any failed), Files (count; blue dot when something new or changed), Tasks (done/total), Goal (when set; amber when blocked), Queue (count, when non-empty). Chips appear only when they have content. The transcript's detail level is not a chip: it is a view setting, and "Detail: Intent" on a chip meant nothing to first-glance participants. It lives in the ⋯ menu (section 8.7), where every level says what it shows.
+- **Context chips (under the nav bar; hide on scroll down, return on scroll up).** Subagents (the count, then "· 2 failed" in red ink when any failed; a 48pt strip made 2 of 55 a 1.7pt sliver), Files (count; blue dot when something new or changed), Tasks (done/total), Goal (when set; amber when blocked), Queue (count, when non-empty). Chips appear only when they have content. The transcript's detail level is not a chip: it is a view setting, and "Detail: Intent" on a chip meant nothing to first-glance participants. It lives in the ⋯ menu (section 8.7), where every level says what it shows.
 - **Notes bar (under the chips, only when the session has a note or a link).** One 32pt line, the phone's form of the web's collapsed notes bar (section 8.8).
 - **Transcript** (section 8.2).
 - **Next capsule** (section 8.3), floating over the end of the transcript when other sessions need you and this one doesn't.
@@ -284,9 +284,9 @@ These are the hub's levels and names, shared with the web because the setting is
 | Time marker | Centered caption, ink-low: "Today 2:14 PM". Shown at a turn start after a gap of 10 minutes or more, and at day changes. |
 | Your message | Right-aligned bubble, max 85% width, a `bubble` fill (the accent tint in light mode, a warm neutral in dark), Source Serif 4 17/25 as on the web, continuous 18pt radius. Steered messages carry a small "Steered in mid-turn" caption; queued messages that were delivered carry "Queued". Long-press: Copy, Fork from here, Quote. |
 | Agent message | No bubble. Source Serif 4, 17/26, ink-hi, full width with 16pt margins. Markdown: headings in SF Pro semibold (20/17/15), lists, block quotes with a 2pt ink-low rule, tables and code blocks in their own horizontally scrolling insets, links in accent ink. Paths to files become document chips. Long-press: Copy, Quote in reply, Select text. |
-| Activity run | One collapsed line per run of tool calls: "▸ 12 steps · 8m · read 6 files, ran go test (2 failed), edited 3 files" in 14pt ink-mid, with how long the run took. Failure counts show in red ink even when collapsed. Tap to expand into one line per step: intent sentence, target in SF Mono, and a status mark. Tapping a step shows its evidence: command output in an SF Mono inset (first 40 lines, then "Show all 412 lines" which opens a full-screen log viewer), diffs as unified hunks with the web's add/delete washes and a "+18 −4" summary. A live run never folds. |
+| Activity run | One collapsed line per run of tool calls: "▸ 12 steps · 8m · read 6 files, ran go test (2 failed), edited 3 files" in 14pt ink-mid, with how long the run took. A live run lists only its finished steps; the step in progress is the status tray's one live line, so "working" is said once. Failure counts show in red ink even when collapsed. Tap to expand into one line per step: intent sentence, target in SF Mono, and a status mark. Tapping a step shows its evidence: command output in an SF Mono inset (first 40 lines, then "Show all 412 lines" which opens a full-screen log viewer), diffs as unified hunks with the web's add/delete washes and a "+18 −4" summary. A live run never folds. |
 | Thinking | Settled: "Thought for 12s ›" (collapsed). Live: "Thinking… ~1.2K tokens" with the one sanctioned pulse. |
-| Subagent | The web's shape: a 2pt left rail in the state's hue (green running, red failed, edge-strong done), square corners, no card and no pill. The title in SF Pro semibold 15 with the state word and its time at the trailing edge ("failed · 21m", in red ink when failed), and the latest line beneath in Source Serif 15/21, ink-mid. Tap opens the subagent. |
+| Subagent | The web's shape: a 2pt left rail in the state's hue (green running, red failed, edge-strong done), square corners, no card and no pill. The title in SF Pro semibold 15 with the state word and its time in that state at the trailing edge ("failed · 6m", in red ink when failed), and the latest activity beneath in SF Pro 14/19, ink-mid (it's status, not prose, and it reads the same as in the Subagents list). Tap opens the subagent. |
 | Document chip | The kind (Plan, Spec, Doc, Code, Image), the document's own title from its first heading in the reading serif, then the file name, line count and age. Tap opens the Reader. A blue dot and "changed since you last read" mark a document that changed since you last opened it. |
 | Artifact card | Title, one-line summary, a static preview image when available, version ("v3"), and "Open". If you answered its proposal, the card says so ("You chose B"). |
 | Question (history) | Amber left rule, the question, and your answer beneath ("You answered: Drop them"). While the question is still open, the dock is the question, so the transcript doesn't repeat it. |
@@ -306,11 +306,11 @@ Scrolling:
 
 **Tray.** A single 36pt line above the composer, only while the agent works: the pulse meter and the current activity with elapsed time ("Running go test ./agent/... · 42s", "Thinking… · 1.2K tokens", "Waiting on 12 subagents", "Quiet 40s", "May be stuck · no updates for 12m" in amber ink). Tapping it jumps to the live end of the transcript. Other states have no tray: the title's subtitle already says "Finished · 1h ago", "Failed" or "Shut down", and the transcript and composer say the rest ("Message to resume").
 
-**Next capsule.** When other sessions need you, a small glass capsule floats at the trailing edge, 10pt above the tray or composer: "4 others need you  Next ›", the count in ink-mid and "Next ›" in accent. Tapping it moves to the next session that needs you (alerts held while you read first, then Needs you order), opening it at its question or failure. Touch and hold opens the list of sessions that need you. The transcript keeps 60pt of room at its end so the capsule never sits on the last line.
+**Next capsule.** When other sessions need you, a small capsule floats at the trailing edge, 10pt above the tray or composer, on the raised surface with a strong edge so it floats in both themes: "4 others need you  Next ›", the count in amber ink and "Next ›" in accent. Tapping it moves to the next session that needs you (alerts held while you read first, then Needs you order), opening it at its question or failure. Touch and hold opens the list of sessions that need you. The transcript keeps 60pt of room at its end so the capsule never sits on the last line.
 
 - It shows only when you're free to move on: never while this session's own question or approval is open.
 - It never shows in the Reader or the artifact viewer, which stay quiet (section 13.3).
-- It replaced a full-width amber bar that sat on almost every session screen, repeated Back's count, and was the largest amber shape in the app. A first try at a bare "Next" with the next session's mark failed first-glance testing: all three participants were unsure what "Next" moves through, and the red ✕ led two of them to guess "the next failure", so the capsule keeps the words.
+- It replaced a full-width amber bar that sat on almost every session screen, repeated Back's count, and was the largest amber shape in the app. A first try at a bare "Next" with the next session's mark failed first-glance testing: all three participants were unsure what "Next" moves through, and all three guessed "the next failure" from the red ✕, so the capsule keeps the words.
 
 ### 8.4 Ask dock
 
@@ -349,23 +349,21 @@ When the session has a pending question or approval, an amber-edged dock replace
 │ This session can only write inside its      │
 │ project folder. It's about to write the     │
 │ first of 214 pages.                         │
+│ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓ │
+│ ┃        Allow this file only             ┃ │
+│ ┃   It will ask again for the next one    ┃ │
+│ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ │
 │ ┌─────────────────────────────────────────┐ │
 │ │      Allow all of ~/sites/docs          │ │
 │ │      For the rest of this session       │ │
 │ └─────────────────────────────────────────┘ │
-│ ┌─────────────────────────────────────────┐ │
-│ │        Allow this file only             │ │
-│ │   It will ask again for the next one    │ │
-│ └─────────────────────────────────────────┘ │
-│ ┌─────────────────────────────────────────┐ │
-│ │                 Deny                    │ │
-│ └─────────────────────────────────────────┘ │
+│                    Deny                     │
 │        Tell the agent something else…       │
 └─────────────────────────────────────────────┘
 ```
 
-- No header: the ✋ mark and the amber edge say what this is. What it wants in Source Serif semibold; the tool and target in SF Mono; one plain sentence of scope in ink-mid.
-- The choices are buttons, because each acts on the first tap: two accent-tinted buttons for the allows, each with its consequence on a second line, then Deny on an inset fill in ink. Deny is the safe outcome, so it isn't red. The result shows as a toast ("Allowed once") and in the transcript history.
+- No header: the ✋ mark and the amber edge say what this is. What it wants in SF Pro semibold (the hub's sentence, not the agent's prose); the tool and target in SF Mono; one plain sentence of scope in ink-mid.
+- The choices are buttons, because each acts on the first tap, and they run from the narrowest grant to the broadest, so a reflex tap grants the least: "Allow this file only" as the filled primary, "Allow all of <folder>" accent-tinted, each with its consequence on a second line, then Deny as a plain text button in ink. Deny is the safe outcome, so it isn't red. The result shows as a toast ("Allowed once") and in the transcript history.
 - "Allow this file only" covers exactly one action, so a batch job asks again for its next file. "Allow all of <folder>" appears when the action targets a folder and ends the prompts for this session (server addition S12). When the action has no folder scope, the first button is "Allow once · Just this action".
 
 ### 8.5 Composer
@@ -374,9 +372,9 @@ Layout: the text field on top (grows to six lines, then scrolls; an expand contr
 
 Controls row, left to right:
 
-- **+**: Photo library, Camera. Attached images show as removable thumbnails above the text.
+- **+**: Photo library, Camera, and Commands and skills. Attached images show as removable thumbnails above the text. Typing "/" as the first character also opens Commands and skills. (A separate "/" button read as a divider between the model chip and Send.)
 - **Model chip**: the model's display name and effort, "GLM 5.3 Vision · XHigh" (a model is called one way everywhere people read it). Opens the model sheet: recent models first, then all models grouped by provider, each with context size and price; an Effort segmented control at the bottom showing only the levels the model supports. Changes apply from the next turn ("Applies from the next turn").
-- **/**: Commands and skills. A sheet with search, built-in commands first (Goal, Compact context, Aside, Tasks, Model, Effort, Clear), then skills grouped by plugin. Choosing one inserts it as a token.
+- **Commands and skills** (from + or a leading "/"): a sheet with search, built-in commands first (Goal, Compact context, Aside, Tasks, Model, Effort, Clear), then skills grouped by plugin. Choosing one inserts it as a token.
 - **Primary button** (trailing), by state:
 
 | Session state | Field empty | Field has text |
@@ -390,7 +388,7 @@ Controls row, left to right:
 - The first time Steer and Queue appear, a one-line hint sits above the field: "Steer arrives at the agent's next step. Queue waits until this turn ends." It does not return after two uses.
 - **Queued messages** appear as dashed ghost bubbles above the composer: "Queued · sends when this turn ends". Tap for Steer now, Edit, or Cancel. Swipe left to cancel.
 - **Steering in flight** appears as a ghost bubble "Steering · arrives at the next step" until the agent picks it up; then it becomes a normal message with the "Steered in mid-turn" caption.
-- While a dock is open and the composer has come back, the model chip and / step aside: the dock is what you're answering.
+- While a dock is open and the composer has come back, the model chip steps aside: the dock is what you're answering.
 - **Stop** ends the current turn immediately (no confirmation; stopping is recoverable by sending again). A toast confirms: "Stopped".
 - Placeholder copy: "Message" (idle), "Tell the agent something…" (working), "Answer or ask…" (question pending), "Message to resume" (shut down).
 - The draft persists per session across navigation, backgrounding and relaunch.
@@ -416,11 +414,11 @@ Detail level (with the current level and its description as a second line, "Inte
 
 The same shared notes the web shows in its Notes panel: your note, the agent's note, and the session's links (`humanNote`, `agentNote` and `sessionUrls` on the thread; updates arrive as `evener/notes/updated` and `evener/urls/updated`). Hidden when the session lacks the `sharedNotes` capability.
 
-- **Notes bar.** Under the context chips, one line, shown only when there is something in it. It previews, in the web's order, your note (person glyph), else the agent's note (sparkle glyph), else the links: a lone link by its label, several as "3 links". When a note is showing and links exist, a trailing link glyph carries their count. The whole bar opens the sheet. The web also shows an empty "Add a note…" bar; the phone leaves it out to keep 32pt of transcript, and "Notes & links" in the ⋯ menu and the Session sheet is always there instead.
+- **Notes bar.** Under the context chips, one line, shown only when there is something in it. It previews, in the web's order, your note ("Your note: …" with a person glyph), else the agent's note ("Agent's note: …" with a sparkle glyph), else the links: a lone link by its label, several as "3 links". When a note is showing and links exist, a trailing "3 links" says so in words; a bare glyph and count read as attachments to all three first-glance participants. The whole bar opens the sheet. The web also shows an empty "Add a note…" bar; the phone leaves it out to keep 32pt of transcript, and "Notes & links" in the ⋯ menu and the Session sheet is always there instead.
 - **Sheet** ("Notes & links", large detent, Done). Three groups, as on the web:
   - **Your note.** A serif editor with the placeholder "Make a note…". Below it one status line: "Saving will wake the agent." when it isn't in a turn, "The agent gets your note at its next step." while it works, "Saves in 10 seconds. Tap the note to keep editing." once you leave it, then "Saved".
   - **Agent.** The agent's note in the serif, or "No agent note yet".
-  - **Links.** Each row shows the label and, beneath it, the full URL in SF Mono. The URL is never hidden, so a trusted-looking label can't disguise where a link goes. Web links show a globe, file links a document. A web link opens in an in-app browser (SFSafariViewController) over the sheet, with Done coming back. A `file://` link opens in the Reader when it names a document the phone can show; any other file keeps its text and isn't tappable, as on the web. Swipe left for Remove; long-press for Open, Copy link and Remove link. Removal can't be undone from the phone, because only the agent adds links (`urls/add` is agent-only), and the toast says so. Footer: "The agent adds links as it works. Swipe left on one to remove it." Empty: "No links yet".
+  - **Links.** Each row shows the label and, beneath it, the full URL in SF Mono, wrapping only after a slash. The URL is never hidden, so a trusted-looking label can't disguise where a link goes. Web links show a globe, file links a document. A web link opens in an in-app browser (SFSafariViewController) over the sheet, with Done coming back. A `file://` link opens in the Reader when it names a document the phone can show; any other file keeps its text and isn't tappable, as on the web. Swipe left for Remove; long-press for Open, Copy link and Remove link. Removal can't be undone from the phone, because only the agent adds links (`urls/add` is agent-only), and the toast says so. Footer: "The agent adds links as it works. Swipe left on one to remove it." Empty: "No links yet".
   - Ended sessions show what was saved, read-only, with no editor and no Remove; with nothing saved, "No shared notes".
 - **Saving.** Saving your note is a steer: the daemon hands it to the agent at its next step and wakes an agent that isn't in a turn (`SetHumanNote` in agent/session_notes_rpc.go). So the phone saves the way the web does: leaving the note schedules the save 10 seconds later and returning to it cancels that, so a burst of edits reaches the agent once. On the phone, closing the sheet counts as leaving the note; the web instead keeps an unsaved draft when a panel closes without the field losing focus, which has no equivalent on a phone.
 - **Transcript.** A saved note shows where it reached the agent: "You updated your note" over the text in the serif, with a left rule, at every detail level (the web shows the same moment as a divider labeled "Human note").
@@ -433,23 +431,23 @@ Opened from the Subagents chip or a subagent row in the transcript.
 ‹ Back        Subagents · 55
               Get PR 2138 Test Clean
 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
-[All 55] [Running 32] [Failed 2] [Done 21]
+[All 55] [■ Failed 2] [■ Running 32] [■ Done 21]
 
 FAILED · 2
 ✕  Fix race in tree settle                   6m ago
    Failed: go test exited 1 (3 times)
-   GLM 5.3 Vision · ⑂ fix-settle-race · 1.2M tokens
+   ⑂ fix-settle-race · 1.2M tokens
 RUNNING · 32
 ●  Check drain ordering in tests                 4m
    Reading agent/retirement_test.go
-   from Fix race in tree settle · DeepSeek 4.1 Flash · 210K tokens
+   from Fix race in tree settle · 210K tokens
 Done · 21                                          ›
 ```
 
 - A subagent is running, failed or done, as the hub's job counts are (active, failed, completed). An earlier "waiting on the coordinator" state is folded into done: it meant "finished; the coordinator hasn't read the report yet", which the phone can't know, and it clashed with the coordinator's own "Waiting on 31 subagents".
-- A full-width strip that reads as progress: done fills from the left in ink-mid, then failures in red (never thinner than 3pt, so 2 of 55 still shows), then running work in green; no empty track. Once every subagent is done the strip isn't drawn anywhere. Then filter chips with counts. Default filter: All.
+- A full-width strip in the list's own order: failures in red (never thinner than 3pt, so 2 of 55 still shows), running work in green, then done in the lightest neutral, so the weight lands on what's live or broken; no empty track. Once every subagent is done the strip isn't drawn. Then filter chips with counts, each carrying its state's swatch, so the chips are the strip's legend. Default filter: All.
 - One flat list by state: failed first, then running (newest first), then done (folded as "Done · 21"). Every section's count matches its chip. A subagent started by another subagent says so in its last line ("from Fix race in tree settle"); nesting it under its parent had put a running row inside the Failed section.
-- Rows: a still mark (a green dot for running, ✕ failed, ✓ done; one pulse meter per view, and on this screen that's none), the mandate as title, the latest activity or outcome as the why line, and a last line with the model's display name, a branch glyph and the branch name when the subagent works in its own worktree, and tokens. The trailing time is time in the current state: how long a running subagent has run, how long ago one failed or finished.
+- Rows: a still mark (a green dot for running, ✕ failed, ✓ done; one pulse meter per view, and on this screen that's none), the mandate as title, the latest activity or outcome as the why line, and a last line with the model's display name (only when it differs from the coordinator's), a branch glyph and the branch name when the subagent works in its own worktree, and tokens. The trailing time is bare time in the current state, as the Board's ages are: how long a running subagent has run, how long since one failed or finished.
 - The list virtualizes; trees of 500 must scroll smoothly. A search field filters by title.
 - **Subagent transcript** opens read-only with the same renderer. A banner at the top: "Subagent of Get PR 2138 Test Clean. Talk to it through its coordinator." The composer is replaced by an action bar: **Ask coordinator to stop it** and **Open coordinator**.
 - **Ask coordinator to stop it** opens a sheet with a prefilled, editable steer to the parent ("Stop subagent 'Fix race in tree settle': it has failed three times.") and Steer / Queue buttons. When the hub gains a direct stop call (server addition S6), this becomes **Stop subagent** with a confirmation and no message.
@@ -465,24 +463,23 @@ A sheet listing everything the session wrote or linked, newest first: documents 
 ### 10.2 Reader
 
 ```
-‹ •             Plan · updated 3m ago          ☰  ⋯
-3 changes since you read it yesterday        ‹  ›
-Touch and hold a paragraph to comment on it.  Got it
-───────────────────────────────────────────
+‹ •                                          ☰  ⋯
+Plan · updated 3m ago · 3 changes since you read it yesterday
 # Fix the settle/drain race
 The retirement drain and the tree settle pass
 both take the tree lock, but…              💬 1
 ▎ The drain now waits for settle.
 …
 ───────────────────────────────────────────
-Comments 2                         Send review
+     Touch and hold a paragraph to comment on it
+💬 2        ‹ Change 1 of 3 ›         Send review
 ```
 
 - Full-screen reading surface: Source Serif 4 18/28 in the `prose` color on page, 16pt margins. Headings in serif semibold, ink-hi. Code blocks in SF Mono 13 insets that scroll horizontally. Task lists render as checkboxes (read-only). Tables scroll horizontally.
-- Header: the kind and age ("Plan · updated 3m ago") until the document's own first heading scrolls away; then its title takes the nav bar, with the kind and age beneath. The outline button (headings list for jumping) and ⋯ (Open session, Copy path, Copy text). Back carries a small amber dot while alerts are held (section 13.3).
-- **Changes since you last read:** changed paragraphs get a blue left rule, and nothing else (no "Changed" label); a summary line at the top ("3 changes since you read it yesterday") with previous/next arrows. The line says when you read it, so it can't be mistaken for a first read.
-- **Comment:** long-press a paragraph (or select text) for Comment, Quote in reply, Copy. In a list, the comment attaches to the item under your finger, which is highlighted while the menu is open. A comment attaches to its paragraph or item; the paragraph shows a comment marker with a count. Comments are drafts until sent and persist per document. A one-time tip ("Touch and hold a paragraph to comment on it") shows until you dismiss it or comment.
-- **Review bar (bottom):** Comments (count; opens the list) and Send review. No Next capsule here: the Reader stays quiet.
+- Header: an empty nav bar until the document's own first heading scrolls away; then its title takes the nav bar, with the kind and age beneath. Above the heading, one caption line in ink-low: "Plan · updated 3m ago", then "3 changes since you read it yesterday" in accent when there are changes. The outline button (headings list for jumping) and ⋯ (Open session, Copy path, Copy text). Back carries a small amber dot while alerts are held (section 13.3).
+- **Changes since you last read:** changed paragraphs get a blue left rule, and nothing else (no "Changed" label); the caption says how many ("3 changes since you read it yesterday"), and the bottom bar steps through them ("‹ Change 1 of 3 ›"), within thumb reach. The caption says when you read it, so it can't be mistaken for a first read.
+- **Comment:** long-press a paragraph (or select text) for Comment, Quote in reply, Copy. In a list, the comment attaches to the item under your finger, which is highlighted while the menu is open. A comment attaches to its paragraph or item; the paragraph shows a comment marker with a count. Comments are drafts until sent and persist per document. Until you comment, a one-line caption above the bottom bar says "Touch and hold a paragraph to comment on it"; there is no tip card over the text.
+- **Review bar (bottom):** Comments (a count, once there are any; opens the list), the change stepper when there are changes, and Send review. No Next capsule here: the Reader stays quiet.
 - **Review** sheet (titled "Review" so its title never repeats the "Send review" button): choose Approve, Request changes, or Comment only (nothing is chosen for you, and Send stays disabled until you choose); an optional overall note; the comments listed with their quoted paragraphs. The primary button matches the session state: Send (idle), Steer and Queue (working). The message format:
 
 ```
@@ -519,8 +516,7 @@ Cancel          New session          Start
 │ +                                        │
 └──────────────────────────────────────────┘
 [Same as last time] [Evener coordinator] [Quick question] [+ Save]
-Sets magic-kingdom · evener · GLM 5.3 Vision · XHigh · 10 plugins · Workspace write
-Host        magic-kingdom ●                    ›
+Host        magic-kingdom                      ›
 Project     evener                             ›
 Model       GLM 5.3 Vision   via lunaroute     ›
 Effort      How long it thinks before acting
@@ -532,12 +528,12 @@ More options                                   ›
 ```
 
 - **Prompt** first, focused on open, SF Pro 17; + attaches images. (Dictation works through the keyboard's own mic; the sheet doesn't say so.)
-- **Recipes:** chips for "Same as last time" (selected by default; the last setup used for the chosen project), saved recipes, and "+ Save" to save the current setup as a recipe. A recipe sets host, project, model, effort, plugins, access and branch. A line under the chips says what the selection sets ("Sets magic-kingdom · evener · GLM 5.3 Vision · XHigh · 10 plugins · Workspace write"); after any change it reads "Custom: …" and a Custom chip appears. ("Last used" was ambiguous to first-glance participants.)
-- **Host:** hosts with connection state. Offline hosts are disabled and offer "Connect". Changing host keeps the project when it exists on the new host; otherwise it switches to that host's most recent project and says so under the list.
+- **Recipes:** chips for "Same as last time" (selected by default; the last setup used for the chosen project), saved recipes, and "+ Save" to save the current setup as a recipe. A recipe sets host, project, model, effort, plugins, access and branch, and the rows beneath show what it set. After any change a Custom chip lights up instead. ("Last used" was ambiguous to first-glance participants. A round-3 line spelling out what the recipe sets was later removed: all three critics found it repeated the rows directly beneath it.)
+- **Host:** hosts; connected ones carry no mark, offline ones are disabled, marked "Offline" in amber, and offer "Connect". Changing host keeps the project when it exists on the new host; otherwise it switches to that host's most recent project and says so under the list.
 - **Project:** recent projects on the chosen host (name and path), then "Browse folders on <host>…" with path completion and "New folder".
 - **Model:** recent (up to five), then all models grouped by provider profile. Each row: display name, provider profile, capability icons (vision, tools), context size, price per million tokens. The launch row shows the provider as "via lunaroute"; a bare profile name meant nothing to first-glance participants.
 - **Effort:** "How long it thinks before acting" under the label, then a segmented control showing only the levels the model supports. The model sheet opened from here has no effort control of its own, so effort lives in one place in this flow.
-- **Plugins:** "10 of 14" opens a checklist grouped by marketplace, with All and None. Each row: name, one-line description, counts (skills, agents, commands, hooks, MCP servers), and any preview warning. Footer: "Plugins can't be changed after the session starts." Start is disabled with an explanation while a selected plugin has a blocking problem.
+- **Plugins:** "10 of 14" opens a checklist grouped by marketplace (headers as typed, in SF Mono, never uppercased), with All and None. Its footer says "10 of 14 on" without re-listing names the checkmarks already show. Each row: name, one-line description, counts (skills, agents, commands, hooks, MCP servers), and any preview warning. Footer: "Plugins can't be changed after the session starts." Start is disabled with an explanation while a selected plugin has a blocking problem.
 - **Access:** Full access, Workspace write, Read-only, Restricted; network on or off.
 - **Branch:** current branch, or a new worktree branch (name field).
 - **More options:** the few launch settings worth touching on a phone (context strategy, max subagent depth, max turns), each showing the hub default. Everything else stays at hub defaults.
@@ -547,16 +543,16 @@ More options                                   ›
 
 Opened from the hub button. A large-detent sheet with a grouped list.
 
-- **Header:** hub name, connection state, version ("evener 0.9.412 · up to date" or "Update available").
+- **Header:** hub name, connection state, version ("Connected · evener 0.9.412 · up to date" or "Update available"). About doesn't repeat the version.
 - Rows carry bare SF Symbols in ink-mid, never colored Settings-style tiles (those brought five hues the app doesn't have). Hubs has its own glyph, distinct from Hosts.
-- **Hosts:** each row shows name, state (Connected, Connecting, Offline · last seen 2d, Error), OS and architecture, version (a gray "Hub runs 0.9.412" tag when it differs from the hub), and live session count. Host detail: status, version, sessions ("3 live", or "3 live, out of reach" while offline), roots, last error, and actions: Connect / Reconnect (showing "Connecting…" while it tries), Edit and Remove (only for hosts added from the app or web; hosts from `hub.toml` are read-only and say so), the same set the web offers. When the host's version differs from the hub's, a footer says: "This host runs a different version of Evener than the hub. Sessions keep working. Update Evener on the host when it's convenient." There is no Update button: the hub attaches a protocol-compatible host on its own build and logs the difference, and installs its own build on connect only when a deploy path is configured (`cmd/evener-hub/internal/sshconn/manager.go`), so the phone has nothing to call.
+- **Hosts:** each row shows name, state (Connected, Connecting, Offline · last seen 2d, Error), OS and architecture, version (a gray "Hub runs 0.9.412" tag when it differs from the hub), and live session count; no green dot for a connected host. Host detail: status in words ("Connected", "Connecting…", an amber "Offline"), version, sessions ("3 live", or "3 live, out of reach" while offline), roots, last error, and actions: Connect / Reconnect (showing "Connecting…" while it tries), Edit and Remove (only for hosts added from the app or web; hosts from `hub.toml` are read-only and say so), the same set the web offers. An offline host's footer leads with what's wrong and what to do: "This host is offline, so its sessions can't be reached. Reconnect to reach them." When a connected host's version differs from the hub's, the footer says instead: "This host runs a different version of Evener than the hub. Sessions keep working. Update Evener on the host when it's convenient." There is no Update button: the hub attaches a protocol-compatible host on its own build and logs the difference, and installs its own build on connect only when a deploy path is configured (`cmd/evener-hub/internal/sshconn/manager.go`), so the phone has nothing to call.
 - **Providers:** instances with sign-in status (Signed in, Expires in 3d, Sign-in expired in amber, Key set, Error). Detail: default model, models, Sign in (device code flow: the code, a copy button, "Open sign-in page", and automatic completion), Replace key (paste), Test. The hub's device flow hands the app only a page URL and a code (`AuthDeviceStartResponse`), so "Open sign-in page" copies the code on the way and opens the page in an in-app browser; the sheet says "this code is copied for you. Paste it when the page asks for it," and the waiting state repeats the code.
 - **Plugins:** Installed (on-by-default switch, update badge, Upgrade, Remove), Marketplaces (add by GitHub repo or URL, refresh, remove), Browse and Install.
 - **Recipes:** list, edit, reorder, delete.
 - **Display:** Appearance (System, Light, Dark), Reading font (Serif, Sans), Default detail level, Show model on Board rows.
 - **In-app alerts:** banners for failures (on), questions and approvals (on), finished results (off); hold alerts while reading (on); haptics (on).
 - **Hubs:** the connected hub, add a hub (scan pairing code or paste link), switch, remove.
-- **About:** phone app version, hub version, Update hub (confirms).
+- **About:** phone app version, and Update hub (confirms) only when an update is available.
 
 Not on the phone, with a footer line "More settings are in the web app": keyboard shortcuts, raw launch configuration fields, AGENTS.md, MCP servers, storage paths and daemon tuning.
 
@@ -568,12 +564,12 @@ Not on the phone, with a footer line "More settings are in the web app": keyboar
 |---|---|---|---|---|
 | `errored` / `systemError` | Failed | ✕ red (`xmark.octagon.fill`) | Needs you | "Failed: <error summary>" |
 | `awaiting` + `askPending` | Question | ? amber (`questionmark.circle.fill`) | Needs you | "Asks: <first question>" |
-| pending sandbox escalation | Approval | ✋ amber (`hand.raised.fill`) | Needs you | "Wants to <action> <target>" |
+| pending sandbox escalation | Approval | ✋ in a filled amber disc (`hand.raised.circle.fill`), the same family as the other needs-you marks | Needs you | "Wants to <action> <target>" |
 | `warning` | Warning | ⚠ amber (`exclamationmark.triangle.fill`) | Needs you | the warning text |
 | `restartRequired` | Restart needed | two-arrow cycle, amber (`arrow.triangle.2.circlepath.circle.fill`; a single arc read as a "C" or a spinner) | Needs you | "Restart needed · to pick up the hub's update" |
 | `active` | Working | pulse meter, green | Working | current activity |
 | `active`, no activity 3 to 10 min | Quiet | flat pulse meter | Working | "Quiet 4m" |
-| `active`, no activity 10 min or more | May be stuck | amber hollow ring | top of Working | "May be stuck · no updates for 12m" (amber ink) |
+| `active`, no activity 10 min or more | May be stuck | the pulse meter gone flat and amber (a ring read like the restart mark at row size) | top of Working | "May be stuck · no updates for 12m" (amber ink) |
 | turn ended, not seen since | Finished | blue dot (`circle.fill`, 8pt) | Finished | last message excerpt |
 | turn ended, seen | Idle | none | Idle (collapsed) | age only |
 | shut down / not loaded | Shut down | none | Projects only | age only |
@@ -584,7 +580,7 @@ Marks always pair shape with color so they read without color.
 
 - **Needs you** = Failed + Question + Approval + Warning + Restart needed, over live, unarchived, top-level sessions. This is the single number used on the Live chip badge, the session Back button, the Live summary line and the Next capsule.
 - Finished and Working counts appear only in their band headers.
-- Subagent failures never count toward Needs you; they show on the row's last line ("2 subagents failed") and in the subagent strip.
+- Subagent failures never count toward Needs you; they show on the row's last line ("2 subagents failed"), on the Subagents chip ("55 · 2 failed") and in the Subagents list's strip.
 
 ### 13.3 In-app alerts (this version's push)
 
@@ -636,11 +632,12 @@ The phone uses the web's tokens (`cmd/evener-hub/frontend/src/styles/tokens.css`
 | ink-mid | #5F5F57 | #B0AFA6 | secondary text |
 | ink-low | #6D6D64 | #99998F | tertiary, timestamps |
 | prose | = ink-hi | #E0DED6 | long-form reading text (agent prose, documents, your bubbles); a step below ink-hi in dark to cut glare over hours of reading |
-| bubble | = accent-bg | #2B2B28 | your message bubble; a warm neutral in dark, where the accent tint went blue-gray |
+| bubble | = accent-bg | accent at 15% over surface | your message bubble: the accent tint in both themes, as on the web (a neutral fill read as a pressed row in dark mode) |
 | attention / attention-ink | #F59E0B / #AD5209 | #F68F3C / #F68F3C | a human is needed |
 | alive / alive-ink | #189A4D / #12763B | #3DBB72 / #3DBB72 | working |
 | danger / danger-ink | #E3474C / #C51D23 | #EE5C61 / #F17478 | failed, destructive |
 | accent / accent-ink | #0285FF / #0064C2 | #3D9AFF / #459EFF | tappable, selected, unread, links |
+| accent-fill | #0070E0 | #0070E0 | filled buttons (Send, Steer, Send review, the primary approval): white on it is 4.8:1 in both themes, where white on dark mode's #3D9AFF was 2.9:1 |
 | diff add / delete bg | #E9F4EE / #F5EAF0 | #19251A / #170B17 | diffs only |
 
 Tints: each hue's `-bg` is the hue at 15% over surface; `-edge` is the hue at 40% over edge. No other hues exist in the app. Diff washes are not status colors.
@@ -662,7 +659,7 @@ Each hue has one job, including in the details: switches are accent, not the wor
 | Documents | Source Serif 4 | 18/28; headings semibold 24/20/18 | Reader |
 | Machine text | SF Mono | 13/18; tags 12 | paths, commands, model ids, code |
 
-The serif is the conversation's voice, as on the web: what the agent wrote, what you wrote, the dock's question, notes, and the Board's finished excerpts. SF Pro is the phone's voice for everything you operate. SF Mono marks only what a machine reads (paths, commands, branch names, code), never counts or model names. "Reading font: Sans" in Display swaps the serif for SF Pro.
+The serif is the conversation's voice, as on the web: what the agent wrote, what you wrote, the dock's question, notes, and the Board's finished excerpts. SF Pro is the phone's voice for everything you operate. SF Mono marks only what a machine reads (paths, commands, branch names, code), never counts or model names. Status lines (a subagent's latest activity, the hub's approval prompt) are SF Pro: the serif is for words someone wrote. "Reading font: Sans" in Display swaps the serif for SF Pro.
 
 ### 16.3 Layout, shape, elevation
 
@@ -678,7 +675,7 @@ The one piece of expression in the app: a live 7-bar activity meter (22×15pt). 
 One meter per view, so motion means the thing you're watching moved:
 
 - **Board:** on working rows in the Live band only. The same session under a pinned category or in Projects gets a still green dot.
-- **Board header:** a fleet meter, the whole fleet's activity summed onto the same scale, in place of a connection dot; it grays when the connection drops.
+- **Live summary line:** a fleet meter before "9 working", the whole fleet's activity summed onto the same scale; it grays when the connection drops. (In the header, in front of the hub name, it read as signal strength.)
 - **Session:** in the status tray only. The title's subtitle and the live step get a still green dot.
 - **Subagents list and Tasks:** still marks.
 

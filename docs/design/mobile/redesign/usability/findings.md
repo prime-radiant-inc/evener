@@ -93,3 +93,53 @@ Five fresh participants with the same personas, so nobody had learned the app. T
 
 - Two reported problems were artifacts of each task starting from fresh data ("the Board shows stale status", "changes since you last read reappeared"). Round 3 instructions say every task starts fresh.
 - Taps right after a sheet opened could miss while the sheet was still sliding in. The harness now waits for finite animations to settle before locating a target.
+
+## Round 3 (2026-09-25, prototype at cce8ae3df)
+
+Three fresh participants (Editor, Commuter, Operator) on the tasks round 2 changed most, plus launch, sign-in and the offline host. Materials: `round3/tasks.json`, `round3/scores.txt`.
+
+**Result: 9 of 9 task attempts succeeded.** The problems were about understanding, not completion:
+
+| # | Severity | Problem | Evidence | Change |
+|---|---|---|---|---|
+| 1 | 3 | "N other sessions need you · Next" was one control, so there was no way to see which sessions before jumping, and alerts held while reading weren't served first. | Editor and Commuter, T10. | Split into a list of what needs you and Next; Next serves held alerts first. (Phase 2 later turned this into the Next capsule.) |
+| 2 | 3 | A comment on a bullet attached to the whole list. | Editor, T2b (answering one open question). | Comments attach to the list item under the finger, which highlights while the menu is open. |
+| 3 | 2 | The review sheet pre-selected a verdict. | T2b. | Nothing is chosen for you; Send stays disabled until you choose. |
+| 4 | 2 | The "Changed" marker sat on a heading, reading as part of the title. | T2b. | The blue rule alone marks a change. |
+| 5 | 2 | Edge-swipe back inside the plugin picker (a sheet over the launch sheet) did nothing. | Operator, T4. | Edge-swipe back closes the top stacked sheet; one swipe can no longer go back twice. |
+| 6 | 2 | "Last used" didn't say what it would set; effort wasn't explained. | Operator, T4. | "Same as last time", a line saying what it sets (later removed in phase 2, when the rows beneath were found to say the same), and "How long it thinks before acting". |
+| 7 | 2 | Sign-in copy promised a page with the code filled in. | Operator, T7. | The hub's device flow sends only a page URL and a code, so the app copies the code on the way and says so. |
+| 8 | 2 | The host's "Update host" button had nothing real behind it. | Operator, T13, checked against the hub: a protocol-compatible host attaches on its own build (`cmd/evener-hub/internal/sshconn/manager.go`), and the web offers no update action. | Removed; a note says sessions keep working. |
+
+Also noted, not changed: the artifact's note field couldn't be typed into by the harness (its focus stays on the iframe; a harness limit, not a design problem), and the Editor would like a role filter that hides engineering failures from Needs you (future work).
+
+## Phase 2: intelligibility and craft (2026-09-25)
+
+With usability holding, phase 2 asked whether people can read the app at a glance and whether it holds together. Two instruments, each run twice (before and after the changes):
+
+- **Three design critics** (an Apple Design Award-style iOS juror, an information designer, a brand and craft reviewer; Opus) scored 22 to 23 gallery screens and ranked twelve changes each. They saw screenshots and the spec, never the source.
+- **A first-glance comprehension test**: three personas (Newcomer, Editor, Orchestrator; Sonnet) answered questions about each screen from a single look, graded against a key.
+
+Critic scores, first pass → rerun:
+
+| Critic | Improved | Unchanged | Worse |
+|---|---|---|---|
+| iOS juror | color 5→7, elegance 6→7 | hierarchy 7, type 8, spacing 7, consistency 6, native feel 7, density 6, distinctiveness 8, touch 7 | iconography 7→6 |
+| Information designer | data-ink 5→7, encoding 5→6, density 4→5, redundancy 4→5, Board 5→6, transcript 6→7, type 7→8, color 6→8 | consistency 5, numbers and time 6 | none |
+| Brand and craft | color 5→7, restraint 4→6, family resemblance 6→7, craft 6→7, dark mode 6→7 | distinctiveness 5, copy 7, delight 5 | type voice 7→6, signature 5→3 |
+
+What phase 2 changed (details in the spec, sections 7, 8, 9, 10, 16):
+
+- **Board:** the fleet pulse meter moved into a Live summary line ("4 need you · 4 finished · 9 working · 3 idle", each a jump); notices became rows; only the state word and the mark carry color; the finished excerpt is in the serif; project and host print only when unusual; the last line shows task progress ("Task 3 of 4 · Cap retries per provider", Jesse's call) and subagents only when some failed; meters move only in the Live band.
+- **Session:** the full-width amber Next bar became a floating capsule ("4 others need you  Next"), hidden while this session asks you something and in the Reader; the tray shows only while working; Detail moved from the chip row into the ⋯ menu; the docks drop their transcript duplicate and push the composer aside; approval choices are buttons, narrowest grant first; notes and links, like the web.
+- **Everywhere:** icon tiles, amber pins, green switches and ink-filled chips are gone; three subagent states (the hub's own); one model name; a darker fill blue so white text passes contrast in dark mode; a two-arrow restart mark and filled-disc marks.
+
+What the first-glance retest caught, and what changed after it:
+
+- "Next" alone, with the next session's red mark, confused all three participants, and all three guessed it meant "the next failure"; the capsule now has words.
+- All three read the notes bar as the original prompt, with its link count as attachments; it now says "Your note:" and "3 links".
+- "2/4 · Cap retries per provider" read like a setting to one participant; it now says "Task 3 of 4".
+- "lunaroute" under Model meant nothing to all three; it reads "via lunaroute".
+- All three guessed the blue dot right (finished, not yet seen) but with low confidence; unchanged.
+
+Where the critics disagreed with the evidence, the evidence won. Two critics wanted the Live summary line gone and one wanted it kept; participants relied on it for "how many are working", so it stayed. One critic wanted the folder-wide approval back as a link under the buttons; round 2 showed people miss it there. One critic wanted your messages in SF Pro; the web sets them in the serif (`usermessageitem.module.css`), so the phone matches the web.
