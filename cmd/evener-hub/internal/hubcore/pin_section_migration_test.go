@@ -312,3 +312,39 @@ func TestPinSectionStoreMigrationKeepsNewestCollidingPin(t *testing.T) {
 		t.Fatalf("assignments after migration = %+v, want the local spelling folded onto the controller key", assignments)
 	}
 }
+
+// TestPinSectionStoreMigrationTieBreaksCollidingPinsDeterministically pins the
+// determinism half of that rule: two legacy spellings of one controller
+// session assigned at the same instant keep the lexically smaller stored
+// identity, so the survivor never depends on the order rows are scanned.
+func TestPinSectionStoreMigrationTieBreaksCollidingPinsDeterministically(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "index.db")
+	seedLegacyIndexStore(t, dbPath)
+	db, err := sql.Open("sqlite", sqliteDSN(dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`INSERT INTO pin_section (id, name, name_key, created_at, updated_at) VALUES ('sec-tie', 'Tie', 'tie', 100, 100)`); err != nil {
+		t.Fatal(err)
+	}
+	// The seeded bare "th_1" pin is assigned at 111; this "local:th_1" row is
+	// the same controller session at the same instant. "local:th_1" sorts
+	// before "th_1", so the tie must keep this row.
+	if _, err := db.Exec(`INSERT INTO session_pin (session_id, section_id, assigned_at) VALUES ('local:th_1', 'sec-tie', 111)`); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewPinSectionStore(dbPath)
+	assignments, err := store.Assignments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept, ok := assignments[SessionPinKey("", "th_1")]
+	if !ok {
+		t.Fatalf("assignments after migration = %+v, want the controller th_1 pin", assignments)
+	}
+	if kept.SectionID != "sec-tie" || kept.AssignedAt != time.Unix(111, 0).UTC() {
+		t.Fatalf("colliding pin survivor = %+v, want the lexically smaller stored identity's row (section sec-tie)", kept)
+	}
+}
