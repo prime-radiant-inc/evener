@@ -8,18 +8,14 @@
 import { describe, expect, test } from "vitest";
 import payloadsGo from "../../agent/events/payloads.go?raw";
 import type { ItemModel } from "./model";
+import { goConstantValue } from "./testing/goConstants";
 import { isInformationalWarning, WarningCodeContextBudget } from "./warnings";
 
-// goWarningCode reads one warning code's value out of
-// agent/events/payloads.go, the file the daemon stamps every WarningData.Code
-// from. Reading the source (the way errors.test.ts binds its discriminants to
-// appwire/errors.go) is what makes the binding real: renaming the constant or
-// changing its value in Go fails here, rather than leaving every client
-// matching a code the daemon no longer sends.
+// goWarningCode reads one warning code's value out of agent/events/payloads.go
+// (goConstants.ts's own header says why reading the source is what makes the
+// binding real).
 function goWarningCode(name: string): string {
-  const match = payloadsGo.match(new RegExp(`${name}\\s*=\\s*"([^"]+)"`));
-  if (!match) throw new Error(`agent/events/payloads.go has no ${name} constant`);
-  return match[1]!;
+  return goConstantValue(payloadsGo, name, "agent/events/payloads.go");
 }
 
 describe("the informational context-budget code is bound to agent/events/payloads.go", () => {

@@ -22,12 +22,11 @@
 }
 
 /* An informational warning (a coded "no action needed" notice) renders as one
- * quiet line: caption size at --ink-low with no chip, the same grammar
- * SystemNoticeItem's .line uses, so routine budget arithmetic never reads as a
- * failure block. Tokens only - no hue reference of its own. */
+ * quiet line: the same rule SystemNoticeItem's .line already defines (caption
+ * size at --ink-low, no chip), composed rather than restated so the two
+ * quiet-line grammars cannot drift. Cross-file composes is this codebase's
+ * established form; same-file composes is not used (see
+ * activitypanel.module.css's own note). */
 .quiet {
-  padding: var(--space-1) 0;
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
+  composes: line from "./systemnoticeitem.module.css";
 }

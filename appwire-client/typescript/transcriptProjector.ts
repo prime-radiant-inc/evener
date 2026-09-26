@@ -4,6 +4,7 @@ import { hasWarningText } from "./reducer";
 import {
   type ContentVector,
   type HookExitDetail,
+  informationalNoticesVisible,
   normalizeConfig,
   presetContent,
   type TranscriptDisplayConfigV1,
@@ -301,11 +302,10 @@ function decisionFor(
   // check by type also makes warnings and steering independent of their prose.
   // One exception: an informational warning (a coded "no action needed"
   // notice - budget arithmetic, not a failure) is quiet detail, so it shows
-  // only at the high verbosity levels, whose content vector is exactly
-  // expandByDefault (activity and full presets, and a custom vector that
-  // opted in).
+  // only where informationalNoticesVisible says the level is high verbosity
+  // (the activity and full presets, and a custom vector that opted in).
   if (item.type === "warning") {
-    if (isInformationalWarning(item)) return vector.expandByDefault ? "critical" : "hidden";
+    if (isInformationalWarning(item)) return informationalNoticesVisible(vector) ? "critical" : "hidden";
     return "critical";
   }
   if (item.type === "steering") return "critical";

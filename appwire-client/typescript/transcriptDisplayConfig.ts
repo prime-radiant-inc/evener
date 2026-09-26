@@ -154,6 +154,16 @@ export function presetContent(level: ContentLevel): ContentVector {
   return cloneVector(CONTENT_VECTORS[level]);
 }
 
+/** The one rule both the transcript projector and this module's category
+ * inventory answer from: informational notices (coded "no action needed"
+ * warnings) are high-verbosity content. expandByDefault is the content-vector
+ * field that marks the high levels - it is on exactly for the activity and
+ * full presets, the sole field separating tools from activity - and a custom
+ * vector opts the notices in by opting into default expansion. */
+export function informationalNoticesVisible(vector: ContentVector): boolean {
+  return vector.expandByDefault;
+}
+
 export function normalizeContent(content: ContentSelection): ContentSelection {
   if (content.kind === "preset") {
     // Rebuild named presets instead of retaining a caller-owned object. This
@@ -489,10 +499,9 @@ export function visibleCategoryInventory(config: TranscriptDisplayConfigV1): Vis
     ["expandByDefault", "expandedDetails"],
   ];
   for (const [field, category] of contentCategories) (content[field] ? visible : hidden).push(category);
-  // Informational warnings (coded "no action needed" notices) share
-  // expandByDefault's posture - the projector gates them on that same field -
-  // so the inventory answers for them with the same rule.
-  (content.expandByDefault ? visible : hidden).push("informationalNotices");
+  // Informational notices answer from the same rule the projector gates them
+  // by, so the settings summary can never disagree with what renders.
+  (informationalNoticesVisible(content) ? visible : hidden).push("informationalNotices");
 
   const advanced = normalized.advanced;
   const advancedCategories: readonly [boolean, TranscriptDisplayCategory][] = [

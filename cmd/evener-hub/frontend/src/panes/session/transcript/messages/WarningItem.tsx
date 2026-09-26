@@ -49,8 +49,7 @@ export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) 
   // nothing about the row reads as a failure. The same quiet one-liner grammar
   // SystemNoticeItem's .line uses (caption size, --ink-low, no chip).
   if (isInformationalWarning(item)) {
-    const lineText = message !== "" ? message : (hint ?? title ?? "");
-    if (lineText === "") return null;
+    const lineText = message || hint || title;
     return (
       <div className={CLASS.quiet} data-testid="warning-quiet-line" title={hint}>
         {lineText}
