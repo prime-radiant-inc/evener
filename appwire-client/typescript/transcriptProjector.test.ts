@@ -295,6 +295,47 @@ describe("transcript projector", () => {
         ]);
       }
     });
+
+    test("the terminal fallback does not resurrect a hidden informational warning", () => {
+      // A failed turn renders no empty (terminalFallbackEntry promotes its
+      // last item), but that fallback must consult the same visibility rule
+      // decisionFor applied: a failed turn whose ONLY item is a
+      // context-budget notice stays hidden below high verbosity - the
+      // failure end cap still represents the turn, so nothing is lost.
+      const failedBudgetTurn = {
+        ...BASE_THREAD,
+        turns: [
+          {
+            id: "turn-1",
+            status: "failed",
+            items: [
+              item("budget", "warning", {
+                text: "Output allocation reduced for inst/model: requested=100 admitted=50",
+                warning: { title: "Context budget", code: WarningCodeContextBudget },
+              }),
+            ],
+          },
+        ],
+      } as unknown as ThreadModel;
+      expect(entriesFor(failedBudgetTurn, preset("tools"))).toEqual([]);
+      expect(entriesFor(failedBudgetTurn, preset("activity"))).toEqual([
+        expect.objectContaining({ kind: "critical", id: "budget" }),
+      ]);
+
+      // An uncoded actionable warning keeps the fallback: a failed turn
+      // whose only item is a real warning must never render empty.
+      const failedActionableTurn = {
+        ...BASE_THREAD,
+        turns: [
+          { id: "turn-1", status: "failed", items: [item("actionable", "warning", { text: "provider degraded" })] },
+        ],
+      } as unknown as ThreadModel;
+      for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+        expect(entriesFor(failedActionableTurn, preset(level))).toEqual([
+          expect.objectContaining({ kind: "critical", id: "actionable" }),
+        ]);
+      }
+    });
   });
 
   test("filters routine system events by typed event kind and keeps unknown events fail-open", () => {

@@ -349,6 +349,11 @@ function terminalFallbackEntry(
   if (!sourceItem) return undefined;
   const sourceIndex = sourceIndexByItem.get(sourceItem);
   if (sourceIndex === undefined) return undefined;
+  // The fallback exists so a terminal turn never renders empty - but it
+  // must not resurrect an informational warning decisionFor just hid (a
+  // failed turn whose only item is a context-budget notice): the failure
+  // end cap still represents the turn, so refusing loses nothing.
+  if (isInformationalWarning(sourceItem) && !informationalNoticesVisible(vector)) return undefined;
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));
 }
 
