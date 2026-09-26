@@ -642,3 +642,15 @@ test("the sheet variant's rows meet the 48px tap floor", () => {
   const rule = /\.sheetRow\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rule).toContain("min-height: 48px");
 });
+
+test("Enter on a non-matching typed text does not select anything", async () => {
+  const user = userEvent.setup();
+  const { onChange } = renderPicker();
+  const input = await openPicker(user);
+
+  // Type something that doesn't match any model exactly
+  await user.type(input, "nonexistent-model");
+  await user.keyboard("{Enter}");
+
+  expect(onChange).not.toHaveBeenCalled();
+});

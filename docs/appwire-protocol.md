@@ -200,6 +200,7 @@ no router (reserved).
 | `evener/host/remove` | hub | `HostRemoveParams` | `HostRemoveResponse` | Deregisters one sidecar host entry, stopping its supervisor and dropping its channel; hub.toml-declared names cannot be removed here. |
 | `evener/host/update` | hub | `HostUpdateParams` | `HostUpdateResponse` | Edits one live sidecar host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; hub.toml-declared names are refused. |
 | `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
+| `evener/session/image` | hub | `SessionImageParams` | `SessionImageResponse` | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a session-relative file inside the session's working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
 
 ## Notifications (server → client)
 
@@ -1769,6 +1770,25 @@ _(no fields)_
 | `deleted` | `[]string` |  |  |
 | `skipped` | `[]appwire.DeletionSkip` |  |  |
 | `navigation` | `appwire.NavigationMutation` |  |  |
+
+
+### `SessionImageParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sessionId` | `string` |  |  |
+| `sha` | `string` | yes |  |
+| `path` | `string` | yes |  |
+
+
+### `SessionImageResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `mediaType` | `string` |  |  |
+| `size` | `int64` |  |  |
+| `sha` | `string` | yes |  |
+| `data` | `[]uint8` |  |  |
 
 
 ### `SessionPinAssignParams`

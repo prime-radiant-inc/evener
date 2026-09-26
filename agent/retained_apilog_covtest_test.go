@@ -341,6 +341,7 @@ func TestRetainedLineScanner_Next(t *testing.T) {
 // TestNextRetainedSearchLine_PendingAndEOF covers the pending-buffer and EOF
 // paths.
 func TestNextRetainedSearchLine_PendingAndEOF(t *testing.T) {
+	t.Parallel()
 	// Pending lines are returned first.
 	pending := []retainedSearchLine{{content: []byte("pending"), start: 0, end: 7, complete: true}}
 	eof := false

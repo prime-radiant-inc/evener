@@ -1,0 +1,111 @@
+{
+  "session": {
+    "ref": "local:01FIXTURE",
+    "host_id": "local",
+    "session_id": "01FIXTURE",
+    "title": "Fixture session",
+    "project": "evener-0123456789",
+    "state": "active",
+    "kind": "session",
+    "branch": "main",
+    "cluster_count": 2,
+    "favorite": true,
+    "rename": true,
+    "live": true,
+    "ask_pending": true,
+    "dormant": true,
+    "offline": true,
+    "updated_at": "2026-09-26T12:00:00Z",
+    "more_subagents": 3,
+    "omitted_descendants": 4,
+    "omitted_watches": 2,
+    "omitted_armed_watches": 1,
+    "running_jobs": [
+      {
+        "job_id": "job-1",
+        "job_type": "shell",
+        "status": "running",
+        "command": "go test ./agent/...",
+        "task": "Run the agent tests",
+        "reason": "verify the fix",
+        "intent": "check the settle race",
+        "full_command": "go test ./agent/... -run Settle -count=1"
+      }
+    ],
+    "completed_jobs": [
+      {
+        "job_id": "job-2",
+        "job_type": "shell",
+        "status": "completed",
+        "command": "make lint",
+        "task": "Lint",
+        "reason": "gate",
+        "intent": "check formatting",
+        "full_command": "make lint LINT_TARGETS=lint-go"
+      }
+    ],
+    "watches": [
+      {
+        "id": "watch-1",
+        "source": "self",
+        "target": "ci",
+        "send_to": "self",
+        "note": "wake me when CI finishes",
+        "cadence": [
+          {
+            "kind": "events",
+            "seconds": 60,
+            "derived_next_fire_at": "2026-09-26T12:01:00Z",
+            "every": 2,
+            "filter": "status=error"
+          }
+        ],
+        "output_match": "FAIL",
+        "events": ["ci.finished"],
+        "wildcard_events": true,
+        "deliveries": 3,
+        "delivery_times": ["2026-09-26T11:59:00Z"],
+        "created_at": "2026-09-26T11:00:00Z",
+        "active": true,
+        "end_reason": "finished"
+      }
+    ],
+    "children": []
+  },
+  "project": {
+    "key": "evener-0123456789",
+    "name": "evener",
+    "working_dir": "/Users/jesse/git/evener",
+    "rollup_state": "working",
+    "rollup_live": 2,
+    "rollup_attn": 1,
+    "default_expanded": true,
+    "more_current": 1,
+    "more_recent": 2,
+    "more_archived": 3,
+    "worktrees": 2,
+    "is_archived": true,
+    "favorite": true,
+    "sources": ["local", "paradise-park"],
+    "session_count": 7
+  },
+  "pin_section": { "id": "release", "name": "Release", "count": 2 },
+  "manifest": {
+    "generation_id": "g",
+    "revision": 1,
+    "sources": [{ "id": "local", "label": "magic-kingdom", "kind": "local", "online": true }],
+    "attentionSummary": { "needsYou": 4, "error": 1, "working": 9 },
+    "sections": { "live": { "count": 20 }, "needs_you": { "count": 4 }, "pin_sections": { "count": 2 } },
+    "catalogs": { "projects": { "count": 14 }, "archived_projects": { "count": 3 }, "test_runs": { "count": 1 } }
+  },
+  "location": {
+    "generation_id": "g",
+    "revision": 1,
+    "ref": "local:01FIXTURE",
+    "top_level_ref": "local:01FIXTURE",
+    "project_key": "evener-0123456789",
+    "top_level": true,
+    "tier": "current",
+    "pin_section_id": "release"
+  }
+}

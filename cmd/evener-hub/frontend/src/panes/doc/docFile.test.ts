@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { DOC_FILE_MAX_BYTES } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";

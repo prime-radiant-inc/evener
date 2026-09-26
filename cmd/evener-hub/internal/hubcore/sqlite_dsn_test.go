@@ -92,7 +92,7 @@ func TestSharedStoresOpenDatabaseInWALMode(t *testing.T) {
 		}},
 		{"pin_section", func(t *testing.T, dbPath string) {
 			t.Helper()
-			if _, _, err := NewPinSectionStore(dbPath).CreateOrReuseAndAssign("inbox", "s1", time.Unix(1, 0)); err != nil {
+			if _, _, err := NewPinSectionStore(dbPath).CreateOrReuseAndAssign("inbox", "", "s1", time.Unix(1, 0)); err != nil {
 				t.Fatalf("pin section assign: %v", err)
 			}
 		}},

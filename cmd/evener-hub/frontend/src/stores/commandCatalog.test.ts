@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useCommandCatalog } from "./commandCatalog";
