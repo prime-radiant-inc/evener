@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"sort"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -40,7 +41,12 @@ func (x *Index) Latest(limit int) (Window, error) {
 	defer x.mu.Unlock()
 	var window Window
 	err = x.locked(false, func() (err error) {
-		window, err = x.window(x.preludeCount()+x.items.n, limit)
+		r := newReader(x)
+		flush, err := x.pendingFlush(r)
+		if err != nil {
+			return err
+		}
+		window, err = x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
 		return err
 	})
 	return window, err
@@ -57,11 +63,16 @@ func (x *Index) Before(before appwire.ThreadItemPosition, limit int) (Window, er
 	defer x.mu.Unlock()
 	var window Window
 	err = x.locked(false, func() error {
-		rank, err := x.rank(before)
+		r := newReader(x)
+		flush, err := x.pendingFlush(r)
 		if err != nil {
 			return err
 		}
-		window, err = x.window(rank, limit)
+		rank, err := x.rank(before, flush)
+		if err != nil {
+			return err
+		}
+		window, err = x.window(r, rank, limit, flush)
 		return err
 	})
 	return window, err
@@ -75,14 +86,20 @@ func (x *Index) preludeCount() uint64 {
 }
 
 // rank is the position's index among all items: prelude items first, then
-// item records, which are sorted by position.
-func (x *Index) rank(position appwire.ThreadItemPosition) (uint64, error) {
+// item records (sorted by position), then flush's pending-communicate items,
+// if any, at the very end.
+func (x *Index) rank(position appwire.ThreadItemPosition, flush []appitempaging.TranscriptItemCandidate) (uint64, error) {
 	prelude := x.preludeCount()
 	if position.Entry == 0 {
 		if uint64(position.Item) < prelude {
 			return uint64(position.Item), nil
 		}
 		return 0, appwire.TranscriptItemCursorStale()
+	}
+	for i, f := range flush {
+		if f.Position == position {
+			return prelude + x.items.n + uint64(i), nil
+		}
 	}
 	slot, err := x.items.search(func(buf []byte) bool {
 		record := decodeItem(buf)
@@ -103,22 +120,33 @@ func (x *Index) rank(position appwire.ThreadItemPosition) (uint64, error) {
 	return 0, appwire.TranscriptItemCursorStale()
 }
 
-// window reads the items ranked [end-limit, end).
-func (x *Index) window(end uint64, limit int) (Window, error) {
+// window reads the items ranked [end-limit, end): prelude items, then item
+// records, then flush's pending-communicate items, if any, at the very end
+// (see rank). end may reach past prelude+items.n by up to len(flush).
+func (x *Index) window(r *reader, end uint64, limit int, flush []appitempaging.TranscriptItemCandidate) (Window, error) {
 	start := end - min(end, uint64(limit))
 	window := Window{Candidates: make([]appitempaging.TranscriptItemCandidate, 0, end-start), HasOlder: start > 0, Incarnation: x.meta.Incarnation, Length: x.meta.Length}
 	prelude := x.preludeCount()
 	for rank := start; rank < min(end, prelude); rank++ {
 		window.Candidates = append(window.Candidates, x.preludeCandidate(int(rank)))
 	}
-	if end <= prelude {
-		return window, nil
+	indexed := prelude + x.items.n
+	realEnd := min(end, indexed)
+	if start < realEnd {
+		candidates, err := x.span(r, max(start, prelude)-prelude, realEnd-prelude)
+		if err != nil {
+			return Window{}, err
+		}
+		if realEnd == indexed && len(flush) > 0 && len(candidates) > 0 {
+			// The last real item's turn continues into the flushed
+			// items, whether or not this window's limit reaches them.
+			candidates[len(candidates)-1].HasLaterItems = true
+		}
+		window.Candidates = append(window.Candidates, candidates...)
 	}
-	candidates, err := x.span(newReader(x), max(start, prelude)-prelude, end-prelude)
-	if err != nil {
-		return Window{}, err
+	if end > indexed {
+		window.Candidates = append(window.Candidates, flush[max(start, indexed)-indexed:end-indexed]...)
 	}
-	window.Candidates = append(window.Candidates, candidates...)
 	return window, nil
 }
 
@@ -247,6 +275,153 @@ func (x *Index) preludeCandidate(i int) appitempaging.TranscriptItemCandidate {
 		HasEarlierItems: i > 0,
 		HasLaterItems:   i+1 < len(x.prelude.Items),
 	}
+}
+
+// lastCandidate is the very last item overall (prelude or indexed), or nil
+// when the index holds none yet.
+func (x *Index) lastCandidate(r *reader) (*appitempaging.TranscriptItemCandidate, error) {
+	total := x.preludeCount() + x.items.n
+	if total == 0 {
+		return nil, nil
+	}
+	if x.items.n == 0 {
+		c := x.preludeCandidate(int(total - 1))
+		return &c, nil
+	}
+	candidates, err := x.span(r, x.items.n-1, x.items.n)
+	if err != nil {
+		return nil, x.fail(err)
+	}
+	return &candidates[0], nil
+}
+
+// lastTurnItemCount is how many items the last item's turn holds overall
+// (not just within its opening entry): apptranscript.FlushUnpairedCommunicates
+// positions a flushed item at this count, matching the full-file projection's
+// appwire.Turn.Items length, which — unlike every other item's entry-relative
+// Position.Item — counts every item the turn has accumulated. Items are
+// appended in file order, so the last turn's are exactly the table's tail;
+// counting backward from x.items.n-1 while the turn slot matches is bounded
+// by that one turn's own item count.
+func (x *Index) lastTurnItemCount(turnSlot uint32) (uint64, error) {
+	var count uint64
+	for slot := x.items.n; slot > 0; slot-- {
+		buf, err := x.items.read(slot-1, 1)
+		if err != nil {
+			return 0, x.fail(err)
+		}
+		if decodeItem(buf).Turn != turnSlot {
+			break
+		}
+		count++
+	}
+	return count, nil
+}
+
+// pendingFlush computes the trailing items a communicate call the transcript
+// ends on (no result yet) contributes: the same rendering
+// apptranscript.FlushUnpairedCommunicates gives the whole-file projection,
+// reproduced here so Latest/Before can include it — matching every production
+// reader (server/appwire_turns.go, cmd/evener-hub/app_threadread.go,
+// internal/apptranscript/turn_index.go), which all flush a read that reaches
+// the transcript's tail. Returns nil when nothing is pending. Not persisted:
+// recomputed from the builder's live commCalls/lastAssistant* state, which a
+// pending call forces Extend to keep accurate (see meta.PendingCommunicate).
+func (x *Index) pendingFlush(r *reader) ([]appitempaging.TranscriptItemCandidate, error) {
+	if len(x.builder.commCalls) == 0 {
+		return nil, nil
+	}
+	last, err := x.lastCandidate(r)
+	if err != nil || last == nil {
+		return nil, err
+	}
+	if x.items.n == 0 {
+		// A prelude-only tail has no assistant entries to open a call, so
+		// commCalls could not be non-empty; guard anyway for a future
+		// bounded-read call that mixes prelude and pendingFlush.
+		return nil, nil
+	}
+	buf, err := x.items.read(x.items.n-1, 1)
+	if err != nil {
+		return nil, x.fail(err)
+	}
+	itemCount, err := x.lastTurnItemCount(decodeItem(buf).Turn)
+	if err != nil {
+		return nil, err
+	}
+	reg, err := x.pendingRegistry(r)
+	if err != nil {
+		return nil, err
+	}
+	turn := last.Turn
+	turn.Items = make([]appwire.ThreadItem, itemCount)
+	turn.Items[itemCount-1] = last.Item
+	turns := []appwire.Turn{turn}
+	if !apptranscript.FlushUnpairedCommunicates(&turns, reg) {
+		return nil, nil
+	}
+	flushed := turns[0].Items[itemCount:]
+	candidates := make([]appitempaging.TranscriptItemCandidate, len(flushed))
+	for i := range flushed {
+		flushed[i].TranscriptKey = ItemKey(last.TurnID, *flushed[i].Position)
+		candidates[i] = appitempaging.TranscriptItemCandidate{
+			TurnID:          last.TurnID,
+			Turn:            last.Turn,
+			Item:            flushed[i],
+			Position:        *flushed[i].Position,
+			HasEarlierItems: true,
+			HasLaterItems:   i+1 < len(flushed),
+		}
+	}
+	return candidates, nil
+}
+
+// pendingRegistry rebuilds the ToolCallRegistry state pendingFlush needs by
+// replaying, in file order, every still-open communicate call's assistant
+// entry (for CommRawArgs) and the entry that most recently set
+// LastAssistantText (for the echo check) — the same replay projectWithContext
+// does for one item's Context, generalized to the builder's whole live
+// pending state.
+func (x *Index) pendingRegistry(r *reader) (*apptranscript.ToolCallRegistry, error) {
+	type pending struct {
+		pos    contributor
+		turnID string
+	}
+	seen := map[int64]bool{}
+	var replay []pending
+	add := func(pos contributor, turnID string) {
+		if pos.Length == 0 || seen[pos.Offset] {
+			return
+		}
+		seen[pos.Offset] = true
+		replay = append(replay, pending{pos, turnID})
+	}
+	for _, state := range x.builder.commCalls {
+		add(state.pos, state.turnID)
+	}
+	if x.builder.lastAssistantKnown {
+		add(x.builder.lastAssistantPos, x.builder.lastAssistantTurnID)
+	}
+	sort.Slice(replay, func(i, j int) bool { return replay[i].pos.Ordinal < replay[j].pos.Ordinal })
+	reg := apptranscript.NewToolCallRegistry()
+	for _, p := range replay {
+		entry, err := r.entry(p.pos.Offset, p.pos.Length)
+		if err != nil {
+			return nil, err
+		}
+		apptranscript.ProjectTurnParts(p.turnID, int(p.pos.Ordinal)+1, *entry, reg, nil, apptranscript.ToolResultOutputImages)
+	}
+	// The lastAssistant entry replayed above for its text may itself carry a
+	// communicate call that a later (unreplayed) result entry already
+	// consumed — replaying it in isolation reintroduces that resolved call's
+	// CommRawArgs, since ProjectTurnParts cannot know a later entry deleted
+	// it. Prune to exactly the calls commCalls still tracks as pending.
+	for id := range reg.CommRawArgs {
+		if _, ok := x.builder.commCalls[id]; !ok {
+			delete(reg.CommRawArgs, id)
+		}
+	}
+	return reg, nil
 }
 
 func newReader(x *Index) *reader {

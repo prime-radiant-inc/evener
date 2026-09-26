@@ -74,6 +74,16 @@ type meta struct {
 	Open       bool   `json:"open"`
 	OpenTurnID string `json:"open_turn_id"`
 	TurnSlot   uint64 `json:"turn_slot"`
+	// PendingCommunicate reports whether the builder's commCalls held any
+	// deferred communicate call at the end of the last build/extend: the
+	// transcript's tail is a communicate call with no result yet.
+	// restoreBuilder does not reconstruct commCalls (see builder's doc
+	// comment), so extend forces a full rebuild instead of an incremental
+	// restore when this is set, keeping pendingFlush's read of
+	// builder.commCalls accurate across a reopen — matching the errRebuild
+	// policy used elsewhere for state an incremental extend cannot
+	// reconstruct.
+	PendingCommunicate bool `json:"pending_communicate,omitempty"`
 }
 
 // Index is an open transcript index. It is safe for concurrent use, and other
@@ -288,6 +298,13 @@ func (x *Index) extend(length int64) error {
 	if x.build == "" || x.stale || !x.grownByAppends(info) {
 		return x.rebuild(length, "")
 	}
+	if x.meta.PendingCommunicate {
+		// A pending communicate call at the covered tail is exactly what
+		// errRebuild guards elsewhere (restoreBuilder cannot reconstruct
+		// commCalls); catching it here, before attempting to extend, keeps
+		// the incarnation the way a caught errRebuild would.
+		return x.rebuild(length, x.meta.Incarnation)
+	}
 	if length <= x.meta.Length {
 		return nil
 	}
@@ -313,6 +330,7 @@ func (x *Index) extend(length int64) error {
 		}
 		return x.rebuild(length, incarnation)
 	}
+	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	return x.writeMeta()
 }
 
@@ -436,6 +454,7 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	// Only the open turn's names are kept past a build: memory stays bounded
 	// by the open turn, and errRebuild covers the rest.
 	x.builder.global = nil
+	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	if err := x.writeMeta(); err != nil {
 		return err
 	}

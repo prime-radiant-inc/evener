@@ -119,6 +119,22 @@ func referenceTurns(t testing.TB, path string) []appwire.Turn {
 		apptranscript.StampGroupedTurn(&turn, g.entries)
 		turns = append(turns, turn)
 	}
+	// Flush a communicate call the transcript ends on with no result yet,
+	// matching what every production reader does (server/appwire_turns.go,
+	// cmd/evener-hub/app_threadread.go): reg still holds its CommRawArgs, and
+	// FlushUnpairedCommunicates appends the delivered message to the last
+	// turn. Re-key the flushed item(s) in this package's v2 scheme —
+	// FlushUnpairedCommunicates sets appitempaging's v1 key, matching its own
+	// production callers, not this file's ItemKey.
+	if len(turns) > 0 {
+		before := len(turns[len(turns)-1].Items)
+		if apptranscript.FlushUnpairedCommunicates(&turns, reg) {
+			last := &turns[len(turns)-1]
+			for i := before; i < len(last.Items); i++ {
+				last.Items[i].TranscriptKey = ItemKey(last.ID, *last.Items[i].Position)
+			}
+		}
+	}
 	return turns
 }
 
@@ -162,6 +178,10 @@ func TestReferenceEqualsTodaysFileProjectionApartFromPositions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Every production caller flushes after projecting (e.g.
+			// server/appwire_turns.go's appTurnProjectionFromTranscriptFile);
+			// ItemTurnsFromFile alone does not, so match that here too.
+			apptranscript.FlushUnpairedCommunicates(&today, reg)
 			reference := referenceTurns(t, path)
 			if len(reference) == 0 {
 				t.Fatal("fixture projected no turns")

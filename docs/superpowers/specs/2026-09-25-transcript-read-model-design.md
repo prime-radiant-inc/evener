@@ -1227,16 +1227,21 @@ rather than resolved in prose here:
 
 ## Known gap in the phase 1 index (PR #2303 roborev)
 
-- **Unpaired-communicate flush.** `internal/transcriptindex`'s `Window`/
-  `Latest`/`Before` reads do not run `apptranscript.FlushUnpairedCommunicates`
-  the way every production reader does, so a transcript ending on a
-  communicate call with no result yet silently omits the delivered message —
-  unlike the full-file projection and the bounded `turn_index.go` reader.
-  Closing this needs the flushed item(s) to participate in the index's rank/
-  pagination as a persisted item does (`Before` anchored at a flushed
-  position, limit-aware truncation across the real/flushed boundary), which
-  is unimplemented. Track it as a blocker before phase 3 wires this index
-  into reads; it does not block phase 1 (the index is not read from yet).
+- ~~**Unpaired-communicate flush.**~~ Fixed: `Latest`/`Before` now run the
+  same rendering `apptranscript.FlushUnpairedCommunicates` gives the
+  full-file projection (`pendingFlush` in `internal/transcriptindex/
+  window.go`), with the flushed item(s) participating in rank/pagination
+  like a persisted item (a `Before` anchored at a flushed position, correct
+  limit-aware truncation across the real/flushed boundary, a later pairing
+  entry superseding it). `referenceTurns`/`referenceCandidates` and the
+  `TestReferenceEqualsTodaysFileProjectionApartFromPositions` oracle now
+  flush too, so a wrong index can't pass. `meta.PendingCommunicate` forces a
+  full rebuild instead of an incremental extend while a call is pending,
+  since `restoreBuilder` cannot reconstruct `commCalls` (matching the
+  `errRebuild` policy used elsewhere). `ChangedSince` still does not surface
+  a flushed item — it has no itemRecord or update-log entry to begin with —
+  which is out of this fix's scope (Latest/Before only) and not currently a
+  problem (nothing reads from this index in production yet).
 - **`CatchUpTo`'s truncate-first extension can leak in-place updates past
   the requested length.** `extend`'s truncate loop assumes the following
   scan re-applies every entry whose in-place update it just truncated away;

@@ -97,6 +97,39 @@ func needsCommunicateHistory(turn schema.Turn) bool {
 	return false
 }
 
+// communicatePendingTracker follows which communicate calls are open across
+// successive turns: meta.PendingCommunicate forces a rebuild for EVERY line
+// applied while one is still open (see its doc comment), not only the call
+// and result lines themselves — an intervening standalone turn (e.g.
+// TurnHookCompleted) between them rebuilds too. Conservative about closing
+// (any tool result named "communicate" or nameless might be one), which only
+// widens the test's rebuild exemption, never narrows real coverage.
+type communicatePendingTracker struct {
+	open map[string]bool
+}
+
+// pendingBefore reports whether a call was already open before turn, then
+// applies turn's own effects for the next line.
+func (c *communicatePendingTracker) pendingBefore(turn schema.Turn) bool {
+	if c.open == nil {
+		c.open = map[string]bool{}
+	}
+	pending := len(c.open) > 0
+	for _, part := range turn.Message.Content {
+		switch part.Kind {
+		case llm.ContentToolCall:
+			if part.ToolCall != nil && part.ToolCall.Name == "communicate" {
+				c.open[part.ToolCall.ID] = true
+			}
+		case llm.ContentToolResult:
+			if part.ToolResult != nil && (part.ToolResult.Name == "communicate" || part.ToolResult.Name == "") {
+				delete(c.open, part.ToolResult.ToolCallID)
+			}
+		}
+	}
+	return pending
+}
+
 // liveBuild is the sidecar's live build directory.
 func liveBuild(t testing.TB, dir string) string {
 	t.Helper()
@@ -146,21 +179,24 @@ func TestAppendEntryByEntryMatchesTheReference(t *testing.T) {
 	path, lines := writeHeaderOnly(t, fx)
 	dir := t.TempDir()
 	x := openIndex(t, path, dir)
+	var pending communicatePendingTracker
 	for i, line := range lines {
 		appendBytes(t, path, line)
+		wasPending := pending.pendingBefore(fx.lines[i].turn)
+		exempt := hasNamelessResult(fx.lines[i].turn) || needsCommunicateHistory(fx.lines[i].turn) || wasPending
 		if i%7 == 6 {
 			// A reopen resumes from the sidecar: no rebuild.
 			if err := x.Close(); err != nil {
 				t.Fatal(err)
 			}
 			x = openIndex(t, path, dir)
-			if x.rebuilds != 0 && !fx.lines[i].blank && !hasNamelessResult(fx.lines[i].turn) && !needsCommunicateHistory(fx.lines[i].turn) {
+			if x.rebuilds != 0 && !fx.lines[i].blank && !exempt {
 				t.Fatalf("line %d: reopening rebuilt the index", i)
 			}
 		} else {
 			before := x.rebuilds
 			catchUp(t, x)
-			if x.rebuilds != before && !hasNamelessResult(fx.lines[i].turn) && !needsCommunicateHistory(fx.lines[i].turn) {
+			if x.rebuilds != before && !exempt {
 				t.Fatalf("line %d: extending rebuilt the index", i)
 			}
 		}
@@ -169,7 +205,7 @@ func TestAppendEntryByEntryMatchesTheReference(t *testing.T) {
 }
 
 func TestUnterminatedTailIsPickedUpLater(t *testing.T) {
-	fx := everything()
+	fx := namedResults()
 	header, lines := fx.encode(t)
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	if err := os.WriteFile(path, header, 0o600); err != nil {
@@ -268,7 +304,7 @@ func joinLines(lines [][]byte) []byte {
 func TestReplayAfterCrashIsIdempotent(t *testing.T) {
 	// The replayed entries continue the open turn: they add usage to its
 	// summary and complete a call item, both in-place updates.
-	fx := everything()
+	fx := namedResults()
 	fx.lines = append(fx.lines,
 		entryLine(withUsage(at(user("replay"), 50), 1, 1, 0, 2)),
 		entryLine(withUsage(assistant(call("rp1", "read_file", `{}`)), 10, 20, 5, 30)),
