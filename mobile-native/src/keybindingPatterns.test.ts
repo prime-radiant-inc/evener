@@ -1,6 +1,6 @@
 import { parseKeybinding } from "tinykeys";
 import { parseKeybinding as parseWeb } from "tinykeys-reference";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 
 const samples = [
@@ -40,6 +40,7 @@ const patterns = [
 ];
 
 describe("native shortcut pattern compilation", () => {
+	const authoredChord = String.raw`([\p{ASCII}&&\p{Letter}])`;
 	it.each(patterns)(
 		"compiles %s to UnicodeSets membership without the v flag",
 		(pattern) => {
@@ -68,16 +69,18 @@ describe("native shortcut pattern compilation", () => {
 			}
 		},
 	);
+	let changed: ReturnType<typeof checkedKeybindingChange>;
+	let preview: ReturnType<typeof keybindingPreview>;
+	beforeAll(() => {
+		changed = checkedKeybindingChange([], "palette.open", authoredChord);
+		preview = keybindingPreview(changed);
+	});
 	it("preserves the authored pattern through the real native preview and change validator", () => {
-		const chord = String.raw`([\p{ASCII}&&\p{Letter}])`;
-		const changed = checkedKeybindingChange([], "palette.open", chord);
-		expect(changed).toEqual([{ action: "palette.open", chord }]);
-		expect(keybindingPreview(changed).warnings).toEqual([]);
+		expect(changed).toEqual([{ action: "palette.open", chord: authoredChord }]);
+		expect(preview.warnings).toEqual([]);
 		expect(
-			keybindingPreview(changed).rows.find(
-				(row) => row.actionId === "palette.open",
-			)?.shortcuts,
-		).toEqual([chord]);
+			preview.rows.find((row) => row.actionId === "palette.open")?.shortcuts,
+		).toEqual([authoredChord]);
 	});
 	it("rejects the same invalid Unicode sets as the web parser", () => {
 		for (const chord of ["([a&&])", "([a--])", "(\\p{NotAProperty})"]) {
