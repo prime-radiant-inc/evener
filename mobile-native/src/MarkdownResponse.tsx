@@ -143,8 +143,11 @@ export const MarkdownResponse = memo(function MarkdownResponse({
         },
       },
       table: {
-        ...body,
+        marginTop: body.marginTop,
+        marginBottom: body.marginBottom,
+        lineHeight: body.lineHeight,
         fontSize: 14,
+        color: colors.text,
         headerTextColor: colors.text,
         headerBackgroundColor: colors.surface,
         rowEvenBackgroundColor: colors.background,

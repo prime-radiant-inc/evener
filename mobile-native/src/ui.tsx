@@ -156,8 +156,8 @@ export function Copy({
 				variant === "yourMessage"
 					? {
 							fontFamily: typeRoles.yourMessage.fontFamily,
-							fontSize: 17 * textScale,
-							lineHeight: 25 * textScale,
+							fontSize: typeRoles.yourMessage.fontSize * textScale,
+							lineHeight: typeRoles.yourMessage.lineHeight * textScale,
 							color: colors.palette.prose,
 						}
 					: {

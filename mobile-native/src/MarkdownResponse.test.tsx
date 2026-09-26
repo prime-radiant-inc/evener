@@ -48,3 +48,13 @@ it("uses the dimmer prose ink in dark mode", () => {
 	mode.scheme = "dark";
 	expect(markdownStyle("Hello").paragraph).toMatchObject({ color: "#E0DED6" });
 });
+
+it("keeps tables in the system font and ink-hi, unlike the serif prose", () => {
+	mode.scheme = "light";
+	const light = markdownStyle("| a |\n|---|\n| 1 |").table;
+	expect(light.fontFamily).toBeUndefined();
+	expect(light.color).toBe("#252521");
+
+	mode.scheme = "dark";
+	expect(markdownStyle("| a |\n|---|\n| 1 |").table.color).toBe("#F2F1EB");
+});
