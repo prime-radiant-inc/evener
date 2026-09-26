@@ -764,6 +764,7 @@ mark.hit { background: var(--accent-bg); color: inherit; font-weight: 600; borde
   display: grid; grid-template-columns: 24px 1fr; gap: 10px; text-align: left; width: calc(100% - 16px);
   animation: bannerIn 360ms cubic-bezier(.2,.9,.25,1.1) both; border: 1px solid var(--attention-edge);
 }
+.banner.finished { border-color: var(--accent-edge); }
 @keyframes bannerIn { from { transform: translateY(-24px); opacity: 0; } }
 .banner .bt { font: 600 15px/20px var(--sans); display: flex; justify-content: space-between; gap: 8px; }
 .banner .bt span.w { font: 12px var(--sans); color: var(--ink-low); }

@@ -405,6 +405,16 @@ async function runChecks(page, scheme) {
     const n = await page.getByRole('button', { name: 'Open sign-in page' }).count();
     if (!n) throw new Error('signing in again should open at the code step, not "Signed in"');
   });
+  // The "A session finishes" alert switch (off by default) actually gates
+  // the finished banner, and never coalesces into a "needs you" banner.
+  await check(S('flow-finished-alert-follows-its-switch'), page, async () => {
+    await reset(page); await ev(page, `window.__proto.trigger('finish')`); await sleep(300);
+    if (await ev(page, `!!EV.S.banner`)) throw new Error('a finished alert showed a banner with the switch off');
+    await reset(page); await ev(page, `EV.S.prefs.alerts.finished = true`); await ev(page, `window.__proto.trigger('finish')`); await sleep(300);
+    const kind = await ev(page, `EV.S.banner && EV.S.banner.kind`);
+    if (kind !== 'finished') throw new Error('the finished alert did not show a banner with the switch on; banner kind was ' + kind);
+    if (!(await page.locator('.banner.finished').count())) throw new Error('the finished banner is missing the "finished" class');
+  });
 }
 
 try {

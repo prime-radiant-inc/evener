@@ -283,10 +283,15 @@
     const pref = S.prefs.alerts;
     if (a.kind === "failed" && !pref.failures) return;
     if ((a.kind === "question" || a.kind === "approval") && !pref.questions) return;
+    if (a.kind === "finished" && !pref.finished) return;
     const t = EV.top();
     if (t && t.name === "session" && t.id === a.sessionId) return;
     // Whatever alerted you last is what Next goes to first, shown or held.
     if (a.sessionId) S.recent = [a.sessionId].concat(S.recent.filter((id) => id !== a.sessionId));
+    // A finished result never joins or replaces an alert about sessions that
+    // need you: coalescing would read "3 sessions need you". It already
+    // lands in Finished on the Board.
+    if (a.kind === "finished" && S.banner) return;
     if ((S.reading || S.typing) && pref.hold) {
       S.held.push(a);
       EV.log("banner_held", { kind: a.kind, sessionId: a.sessionId });
@@ -581,7 +586,7 @@
     else if (s) { title = s.title; const w = EV.whyParts && EV.whyParts(s); why = w ? h(EV.WhyText, { w }) : b.why || s.why; mark = h(EV.Mark, { s }); }
     // In-app alerts drop in just below the nav bar, so they never cover the
     // Back button, the title or the ask dock. Swipe up to dismiss.
-    return html`<button class="banner" key=${b.key} onClick=${tap}
+    return html`<button class=${"banner" + (b.kind === "finished" ? " finished" : "")} key=${b.key} onClick=${tap}
       onPointerDown=${(e) => { startY.current = e.clientY; EV.S.bannerHeld = true; }}
       onPointerUp=${(e) => { EV.S.bannerHeld = false; if (startY.current != null && startY.current - e.clientY > 30) { e.preventDefault(); EV.log("banner_dismiss", {}); EV.dismissBanner(); } startY.current = null; }}
       onPointerCancel=${() => { EV.S.bannerHeld = false; }}

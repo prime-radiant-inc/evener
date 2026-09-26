@@ -91,6 +91,7 @@
       s.updatedAt = Date.now();
       s.pulse = [0, 0, 0, 0, 0, 0, 0];
       EV.addItem(s.id, { t: "agent", md: "Fixed: resuming a session now replays the original prompt. I added two tests that cover resume after a crash and after an upgrade." });
+      EV.alert({ kind: "finished", sessionId: s.id, why: s.why });
     },
     approval() {
       const s = EV.sess("s-landing");
