@@ -53,11 +53,11 @@ Decisions the spec leaves open, with the reason for each.
 11. **No new meta write at the boundary.** The stamp persists with the next meta save: processInput's exit save, retirement and `Close` (`agent/session_lifecycle.go:1916-1932`, `agent/session_retirement_prepare.go:245`, and the `Close` autosave that `TestWorkMillis_InterruptThenCloseFlushesToDisk` pins). A daemon crash in between loses only that stamp, the same exposure `WorkMillis` has.
 12. **The hub computes `unseen` and sends it beside `turn_ended_at`;** clients never see the marker, the epoch or the unread flag. One rule in one place, and the phone's attention model keeps only its state precedence (Question and Failed outrank Finished). The design section sent `seen_through` on the summary and left the comparison to clients; that would put the epoch and the unread flag in every client too.
 13. **The store's epoch is the time it first opened.** A turn that ended before the epoch counts as seen, so the first Board after the upgrade does not flood Finished with every live session (phase 2 Review Focus 4 avoided the same flood with a device epoch).
-14. **`seen/set` takes the row's own `turn_ended_at` as `seenThrough`,** never the phone's clock or the hub's "now": a device showing an older Board marks only the turn it showed, so a newer turn stays unseen. Seen-through only moves forward. "Mark as unread" is an explicit flag, because clearing a mark would leave a session whose turn ended before the epoch impossible to mark unread. So each mark is `{ref, seenThrough}` or `{ref, unread: true}` rather than the design section's `{refs, seenThrough?}`: one `seenThrough` cannot be right for several rows that ended at different times.
+14. **`seen/set` takes the row's own `turn_ended_at` as `seenThrough`,** never the phone's clock or the hub's "now": a device showing an older Board marks only the turn it showed, so a newer turn stays unseen. Seen-through only moves forward. "Mark as unread" is an explicit flag, because clearing a mark would leave a session whose turn ended before the epoch impossible to mark unread. So each mark is `{ref, seenThrough}` or `{ref, unread: true}` rather than the design section's `{refs, seenThrough?}`: one `seenThrough` cannot be right for several rows that ended at different times. Because seen-through never moves back, the hub refuses a `seenThrough` more than a day past its own clock: a client that sent its own clock, or a garbage value, would otherwise hide that session's turns for good.
 15. **Per user means per hub.** The hub has no user identity (`initialize` carries only `clientInfo.name`); on a personal hub the two are the same.
 16. **Live rows never fold into a cluster.** `clusterable` (`tree.go:1838-1848`) let a live idle session fold, contradicting its caller's own rule that live signal is never hidden (`clusterRepeatedTitles`, `tree.go:1768-1777`), and an unseen Finished session is live by definition. After this change only ended rows fold; the existing cluster tests use ended rows and keep passing. This is simpler than the design section's route of carrying the marker into `BuildTree` so `clusterable` could skip unseen rows, and it keeps a live row findable whether or not it is unseen.
 17. **The phone switches per row, by the presence of `turn_ended_at`.** A row carrying it is hub-authoritative. A row without it (an older hub, or a live session whose daemon predates PR 16 and has not ended a turn since) keeps the phone's local `SeenMarkers` fallback unchanged. The phone does not upload its local marks: they compare `updated_at` values, and the hub's epoch already covers the upgrade. The handoff section below has the details.
-18. **The web marks a session seen when its pane opens,** and when the page becomes visible again while the pane is open, so a session read on the web loses its blue dot on the phone (spec 18's "Finished-and-unseen vs Idle agrees across phone and web"). A turn that ends while the pane stays open is not "opened since", exactly as on the phone. Whether the web also draws blue dots is a later web design question.
+18. **The web marks a session seen when its pane opens while the page is visible,** and when the page becomes visible again while the pane is open (a pane restored in a background tab marks nothing until you look at it), so a session read on the web loses its blue dot on the phone (spec 18's "Finished-and-unseen vs Idle agrees across phone and web"). A turn that ends while the pane stays open is not "opened since", exactly as on the phone. Whether the web also draws blue dots is a later web design question.
 
 **S3, subagent tallies**
 
@@ -3054,7 +3054,7 @@ git commit -m "feat(hub): live rows carry turn_ended_at and unseen against the s
 
 **Interfaces:**
 - Consumes: `SessionSeenStore.MarkSeen`, `MarkUnread`, `Delete`, `SetOnChange` (Task 17.1); `WebConfig.SessionSeen` (Task 17.3); `validateDecisionSource` (`app_archive.go:221`); `hubapi.ParseRef`.
-- Produces: `appwire.MethodEvenerSessionSeenSet = "evener/session/seen/set"`; `SessionSeenSetParams{Sessions []SessionSeenMark}`; `SessionSeenMark{Ref string; SeenThrough int64; Unread bool}` (`ref`, `seenThrough,omitempty`, `unread,omitempty`); `SessionSeenSetResponse{OK, Changed bool; Navigation NavigationMutation}`; `maxSessionSeenMarks = 500`; `commitNavigationChange(ctx, cfg, navigation, changed)`.
+- Produces: `appwire.MethodEvenerSessionSeenSet = "evener/session/seen/set"`; `SessionSeenSetParams{Sessions []SessionSeenMark}`; `SessionSeenMark{Ref string; SeenThrough int64; Unread bool}` (`ref`, `seenThrough,omitempty`, `unread,omitempty`); `SessionSeenSetResponse{OK, Changed bool; Navigation NavigationMutation}`; `maxSessionSeenMarks = 500`; `maxSeenThroughLead = 24 * time.Hour`; `commitNavigationChange(ctx, cfg, navigation, changed)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -3127,6 +3127,7 @@ func TestSessionSeenSetRefusesAMalformedCallWithoutWriting(t *testing.T) {
 		"neither seenThrough nor unread": {good, {Ref: "local:01B"}},
 		"a negative seenThrough":         {good, {Ref: "local:01B", SeenThrough: -1, Unread: true}},
 		"an unknown source":              {good, {Ref: "ghost:01B", SeenThrough: 1}},
+		"a seenThrough days ahead":       {good, {Ref: "local:01B", SeenThrough: time.Now().Add(48 * time.Hour).UnixMilli()}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := dispatchSessionSeenSet(t, web, marks...)
@@ -3257,6 +3258,7 @@ package hub
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -3268,9 +3270,16 @@ import (
 // sends one mark, and Mark as read on a selection sends one per row.
 const maxSessionSeenMarks = 500
 
+// maxSeenThroughLead bounds how far past the hub's clock a seenThrough may be.
+// A correct mark echoes a row's turn_ended_at, which a daemon stamped, so it
+// is never far ahead even from a host whose clock drifts. Seen-through only
+// moves forward, so an unbounded future mark would hide the session's turns
+// for good.
+const maxSeenThroughLead = 24 * time.Hour
+
 func registerSessionSeenHandler(server *appserver.Server, cfg hubcore.WebConfig, navigation *NavigationService) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionSeenSet, func(ctx context.Context, params appwire.SessionSeenSetParams) (appwire.SessionSeenSetResponse, error) {
-		return sessionSeenSet(ctx, cfg, navigation, params)
+		return sessionSeenSet(ctx, cfg, navigation, params, time.Now())
 	})
 }
 
@@ -3286,7 +3295,7 @@ type sessionSeenWrite struct {
 // before any is written, so a malformed call changes nothing. A mark names its
 // session by the row's ref as sent; it is not resolved to a current session,
 // because the projection reads markers by that same ref.
-func sessionSeenSet(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, params appwire.SessionSeenSetParams) (appwire.SessionSeenSetResponse, error) {
+func sessionSeenSet(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, params appwire.SessionSeenSetParams, now time.Time) (appwire.SessionSeenSetResponse, error) {
 	if len(params.Sessions) == 0 || len(params.Sessions) > maxSessionSeenMarks {
 		return appwire.SessionSeenSetResponse{}, appwire.InvalidParams(fmt.Sprintf("sessions must name 1 to %d sessions", maxSessionSeenMarks))
 	}
@@ -3301,6 +3310,9 @@ func sessionSeenSet(ctx context.Context, cfg hubcore.WebConfig, navigation *Navi
 		}
 		if mark.SeenThrough < 0 || (mark.SeenThrough > 0) == mark.Unread {
 			return appwire.SessionSeenSetResponse{}, appwire.InvalidParams("each session sets exactly one of seenThrough or unread")
+		}
+		if mark.SeenThrough > now.Add(maxSeenThroughLead).UnixMilli() {
+			return appwire.SessionSeenSetResponse{}, appwire.InvalidParams("sessions[].seenThrough is a row's turn_ended_at and cannot be a day past the hub's clock")
 		}
 		source := hubcore.NormalizeDecisionSource(ref.HostID)
 		if err := validateDecisionSource(cfg, source); err != nil {
@@ -3679,6 +3691,16 @@ test("coming back to the page marks the turn the row shows now", () => {
   expect(marks(fake)).toEqual([markFor(FIRST_TURN), markFor(NEXT_TURN)]);
 });
 
+test("a pane that opens while the page is hidden waits until the page is shown", () => {
+  visibility = "hidden";
+  showRow({ unseen: true, turn_ended_at: FIRST_TURN });
+  const fake = connectFake();
+  renderHook(() => useMarkSessionSeenOnOpen(REF));
+  expect(marks(fake)).toEqual([]);
+  setVisibility("visible");
+  expect(marks(fake)).toEqual([markFor(FIRST_TURN)]);
+});
+
 test("the mark waits for a ready connection", () => {
   showRow({ unseen: true, turn_ended_at: FIRST_TURN });
   renderHook(() => useMarkSessionSeenOnOpen(REF));
@@ -3746,15 +3768,17 @@ export function seenThroughToMark(
 
 /** Marks a session seen on the hub when its pane opens, and again when the
  * page becomes visible with the pane still open, so its blue dot clears on
- * every device (spec 18, S4). Each open marks the row as the pane first finds
- * it, once: a turn that ends while the pane stays open is not "opened since".
- * A row still loading is marked when it arrives. The hub's mark is idempotent,
- * so a failed one is left for the next open. */
+ * every device (spec 18, S4). It marks only while the page is visible, so a
+ * pane restored in a background tab marks nothing until you look at it. Each
+ * open marks the row as the pane first finds it, once: a turn that ends while
+ * the pane stays open is not "opened since". A row still loading is marked
+ * when it arrives. The hub's mark is idempotent, so a failed one is left for
+ * the next open. */
 export function useMarkSessionSeenOnOpen(ref: string): void {
   useEffect(() => {
     let awaitingRow = true;
     const markOnce = () => {
-      if (!awaitingRow) return;
+      if (!awaitingRow || document.visibilityState !== "visible") return;
       const { client, state } = connectionStore.getState();
       if (state !== "ready" || !client) return;
       const summary = selectSessionSummary(ref, navigationStore.getState());
