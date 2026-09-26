@@ -44,7 +44,8 @@ The registry spec defines update (§4) and the UI (§13). This slice implements:
   rebinds before it clears or re-keys name-keyed resolved state, so the retiring
   identity is fenced out first; commit first, then rebind or tear down, gate
   released last.
-- §13 — the Add/Edit dialog covers **all seven** `HostConfig` fields, none
+- §13 — the Add/Edit dialog covers **all eight** `HostConfig` fields (the
+  component-03 set plus `key_path`), none
   invented and none hidden, each with its validation message mapped from the
   backend's refusal; Edit does not offer `name`; the row renders the host's
   installed version beside the controller's.
@@ -62,16 +63,16 @@ deviation and what the pipeline slice inherits.
   reshaping it a second time. This revises slice 1's flat
   `{name, address, keyPath}` params, and the regenerated client and the pane's
   store follow.
-- `entry` carries the record's six mutable `HostConfig` fields under slice 1's
+- `entry` carries the record's seven mutable `HostConfig` fields under slice 1's
   wire spellings — `address` (schema `ssh`), `user`, `evenerPath` (schema
-  `evener_path`), `configPath` (schema `config_path`), `addr`, `roots` — plus
-  the one field slice 1 added that the schema does not have: `keyPath`.
-  `keyPath` is **not** a `HostConfig` field: `config.go`'s schema has no key,
-  `hostreg`'s own comment says hub.toml has no key field, and the record's
-  update entry is "the six non-name fields". Slice 1 invented the wire field
-  because the dial needs one, and this slice keeps it and round-trips it —
-  dropping it would zero a stored key path on every edit, which the
-  no-regression criterion forbids. §6 records the extension.
+  `evener_path`), `configPath` (schema `config_path`), `addr`, `roots`, and
+  `keyPath` (schema `key_path`) — every one of them a schema field now: the
+  storage decision added `key_path` to component 03's schema and to
+  `hub.toml`, so the wire field slice 1 shipped under `keyPath` is the eighth
+  `HostConfig` field, not an extension (see the storage-decision note above;
+  component 08 §6/§11). The dial needs it, this slice keeps it and round-trips
+  it — dropping it would zero a stored key path on every edit, which the
+  no-regression criterion forbids.
 - `add`'s entry also carries `name`, which is required there and absent from
   the update entry because the update's target name is the request's own
   field.
@@ -188,10 +189,11 @@ and the compensation paths in one shape:
   `hostreg.ValidateEntry` call the add flow runs for exactly this reason — so a
   refusal commits nothing and an entry the registry would reject never reaches
   the file. Then persist durable-first with one atomic `hub.toml` write that
-  replaces the entry **in place**, through a store-level replace: the file
-  keeps the order it already had, so an edit is a minimal change to it rather
-  than a reordering nothing asked for. (The rendered list is name-sorted
-  regardless — this is about the file's own order, not the list's.) A failure whose
+  replaces the entry **in place**, through a store-level replace: the entry
+  keeps its position in the host array, so an edit reorders nothing. (The
+  rewrite is otherwise wholesale per component 08 §6 — comments, blank lines,
+  key order, and formatting do not survive it, and the file's host order is the
+  hub's, not the operator's; the rendered list is name-sorted regardless.) A failure whose
   rename already committed compensates back to the live contents exactly as add
   and remove do. Replace the store row in the same critical section, set the
   mark, release the mutex.
@@ -420,11 +422,12 @@ reversal.
    arrives with them.
 8. **The params adopt §11's nested `entry`** and revise slice 1's flat add
    params, so the guards can be added later without a second wire change.
-9. **`keyPath` is a slice-1 extension, not a schema field.** The record's
-   `HostConfig` has no key field and §13's dialog is its seven inputs; slice 1
-   shipped the wire field and the Key path control because the dial needs one.
-   This slice keeps both, round-trips the field, and records the extension here
-   instead of hiding a schema field or dropping the control.
+9. **`keyPath` is a schema field, from slice 1's wire onward.** Slice 1
+   shipped the wire field and the Key path control because the dial needs one;
+   the storage decision then made `key_path` the eighth `HostConfig` field
+   (component 03's schema, component 08 §6/§11). This slice keeps both and
+   round-trips the field; what it shipped as an extension is now schema, and
+   the storage-decision note above records that.
 10. **Every update tears the channel down** (§3.3). The record allows either
     rebinding live resources to the new entry or tearing them down; this slice
     always tears down, because a supervisor's capture is generation-fenced and

@@ -692,7 +692,11 @@ carries a machine-managed banner comment at its top:
 # The hub rewrites it in place; comments and formatting are not preserved.
 ```
 
-That banner is how the file states the trade itself: an operator's comments,
+The rewrite is a read-modify-write of the whole document, not a hosts-only
+marshal: it replaces the `[[hosts]]` array and nothing else, so every other key
+the file holds — the hub's own settings, provider overlays, plugin settings,
+and the machine-managed records below — round-trips unchanged. That banner is
+how the file states the trade itself: an operator's comments,
 blank lines, key order, and formatting do not survive a rewrite, so the file
 says so before the first one. Hand edits are still read (the external-edit
 reconciliation below and in §15 still applies), but they are unsupported: the
@@ -712,7 +716,13 @@ UI after a completed migration can never be resurrected by a rename that a
 power loss undid: no write could have acted on the merged state first. A crash
 at any point re-runs the whole migration on the next boot and converges, since
 already-merged names collide and are skipped and the set-aside rename either
-already landed or is retried. A sidecar that fails to parse or validate is not
+already landed or is retried. The retired sidecar's durable content is exactly
+its host entries: the JSON shape carries no tombstones, receipts, remnants,
+generations, high-water marks, presence epochs, or fencing records — those are
+the §15/§6 records, and they live in `hub.toml`. The merge therefore drops at
+most a colliding duplicate *host entry* (the file's wins) and never any other
+record, and because the merged rewrite is a read-modify-write, every
+machine-managed record the file already holds survives it unchanged. A sidecar that fails to parse or validate is not
 migrated at all: boot logs the refusal loudly and leaves both files untouched
 (the posture the shipped store already takes for an unreadable sidecar). The file's stored host fields are the component-03 set plus `key_path` (the
 SSH identity file the shipped Add/Edit dialog collects and `sshconn` dials
@@ -806,8 +816,14 @@ error naming the file, the same posture as any corrupt machine-state section.
 Recovery is to fix the file. The only reconciliation left across versions is
 the one-time legacy-sidecar migration above, and the only reconciliation left
 within a running hub is the fingerprint-bound adopt/reconcile discipline this
-section defines (a hand edit is adopted, and the on-disk file wins any race
-with a staged commit).
+section defines: a hand edit the re-reads observe — before the staged write or
+after the rename — is adopted (after the rename the file's bytes win and the
+receipt says `collision-dropped`). The re-reads bound the race, they do not
+prevent it: a hand edit that lands between the final fingerprint check and the
+rename is itself overwritten by the rename (last writer wins, and the
+post-rename re-read then sees the hub's own bytes, so there is nothing left to
+reconcile). Writers are not coordinated through an OS lock, and the spec does
+not promise a compare-and-swap.
 
 `hub.toml` also carries the tombstone records (§15), so a removal's
 entry-delete plus tombstone-write is one atomic write and the tombstone set
@@ -1983,8 +1999,9 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   validation fails the reconcile instead of publishing: the
   last-good snapshot stays live and the failure surfaces as the typed
   `concurrent-edit` configuration error), the machine-managed banner, an
-  in-place rewrite that preserves every pre-existing entry, the one-time
-  `hub.toml` migration, the boot-time hard-error duplicate,
+  in-place rewrite that preserves every pre-existing host entry and every
+  non-host key the file carries, the one-time
+  `hub.toml` migration (entries and every machine-managed record survive), the boot-time hard-error duplicate,
   swap-failure compensation (prior `hub.toml` bytes restored, runtime reverted,
   retry re-applies cleanly), and the corrupt/schema-invalid `hub.toml` boot hard
   error, the host-admin controller live-set tests (forwarded requests reach
@@ -2142,8 +2159,9 @@ lost). Remnant-gate tests:
   rewrite + fingerprint derive from it. Legacy-migration tests: a pre-existing sidecar folds into `hub.toml` exactly
   once (entries survive, the sidecar is left aside, a second boot does not
   re-merge), and an unreadable sidecar leaves both files untouched with host
-  mutations refused. Adoption tests: a hand edit landing across a staged commit
-  is adopted (the on-disk file wins, the receipt says `collision-dropped`), a
+  mutations refused. Adoption tests: a hand edit the post-rename re-read
+  observes is adopted (the file's bytes win, the receipt says
+  `collision-dropped`), a
   `hub.toml` that fails validation at boot is a hard startup error, and a
   tombstone/live collision restores the live generation strictly above the
   high-water mark with

@@ -752,7 +752,7 @@ advances the record past `armed`. The preimage persists before the purge, never 
 it. Past the commit point the committer clears the armed record in its own store write:
 the purge stands. Only on the failure path does the restorer run. The record carries
 `phase` (`compensating-armed` → `compensating-hubtoml` → `compensating-rows` →
-`compensating-runtime` → `compensating-clear`) plus the stash reference the `hub.toml` restore must apply. The
+`compensating-runtime` → `compensating-clear`) plus the stash reference the `hub.toml` restore must apply. The middle literal was renamed from `compensating-sidecar` when the storage decision retired the sidecar; a persisted record may still carry the old spelling, so boot treats `compensating-sidecar` as an alias for `compensating-hubtoml` (same arm, same restore), never as an unknown phase. The
 restorer advances the phase in its own store write per step: `hub.toml` restore first
 (stash bytes back, phase to `compensating-rows`), then the row re-insert (phase to
 `compensating-runtime`), then the runtime revert (phase to

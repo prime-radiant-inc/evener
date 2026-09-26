@@ -392,16 +392,22 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   verified; a first attach to an unknown host therefore fails with that
   actionable error rather than hanging, and the remedy is documented instead of
   inviting `StrictHostKeyChecking=no`.
-- **Port, identity file, and jump hosts go through the user's `ssh_config`.**
-  The argv pins the destination as `-- <dest>` (`dest` is a bare host or
-  `user@host`, component 03), which deliberately makes `-p`/`-i`/`ProxyJump`
-  inexpressible as direct arguments: a value starting with `-` after `--` would
-  be read as the destination, and injecting such options before `--` would
-  reopen the option-injection hole `--` closes. The supported way to reach a
-  non-default port, key, or jump host is therefore the user's `ssh_config`
-  (matching `<dest>` or a `Host` alias the operator puts in the `ssh` field),
-  which ssh applies itself. This is documented as the supported path, not left
-  as an escape hatch, and no `[[hosts]]` field (nor a `dest` spelling) may
+- **The one direct identity option is `key_path`; ports and jump hosts go
+  through the user's `ssh_config`.** The argv pins the destination as
+  `-- <dest>` (`dest` is a bare host or `user@host`, component 03), which
+  deliberately makes `-p` and `ProxyJump` inexpressible as direct arguments: a
+  value starting with `-` after `--` would be read as the destination, and
+  injecting such options before `--` would reopen the option-injection hole
+  `--` closes. The one exception is the entry's `key_path` (component 03's
+  optional field, component 08 §6's stored schema field): it is emitted as the
+  paired argument `["-i", key_path]` before the `--` terminator — the value
+  travels as `-i`'s argument, never as a bare option, so a key path that begins
+  with `-` cannot smuggle one (`sshIdentityArgv`,
+  `cmd/evener-hub/internal/sshconn/runner.go`). Every other non-default port,
+  key, or jump host is reached through the user's `ssh_config` (matching
+  `<dest>` or a `Host` alias the operator puts in the `ssh` field), which ssh
+  applies itself. This is documented as the supported path, not left as an
+  escape hatch, and no other `[[hosts]]` field (nor a `dest` spelling) may
   reintroduce raw ssh options.
 - stdin/stdout are the framed AppWire stream; stderr is diagnostics
   (spike `spike/client/main.go`, `cmd.Stderr = os.Stderr`).

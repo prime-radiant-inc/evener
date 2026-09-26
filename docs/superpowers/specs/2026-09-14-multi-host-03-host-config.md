@@ -68,7 +68,7 @@ evener_path = "/usr/local/bin/evener"    # optional; remote binary path
 roots       = ["/Users/jesse/src"]       # optional; remote working roots
 config_path = "/etc/evener/hub.toml"     # optional; the host's hub.toml
 addr        = "127.0.0.1:9180"           # optional; the host hub's loopback address
-key_path    = "~/.ssh/id_m4"              # optional; SSH identity file for this host
+key_path    = "/home/jesse/.ssh/id_m4"    # optional; SSH identity file (absolute; used verbatim)
 ```
 
 - `name` → `appwire.Ref.SourceID`; refs surface as `name:<sessionID>`
@@ -86,7 +86,16 @@ key_path    = "~/.ssh/id_m4"              # optional; SSH identity file for this
 - `key_path` (optional) is the SSH private-key file the controller dials with.
   It is a component-08 addition to the stored schema: the machine-managed
   `hub.toml` carries it so a UI-added host's key path round-trips through a
-  rewrite (component 08, §6).
+  rewrite (component 08, §6). Shape rules, matching the shipped behavior: it is
+  optional, trimmed, and empty-after-trim is absent (`hostreg.Normalize` trims;
+  `validateHostConfigs` then validates the normalized value, so a padded value
+  never reaches a consumer untrimmed); the hub performs no `~` or environment
+  expansion — the value travels to ssh verbatim as `["-i", key_path]` before
+  the `--` destination terminator (component 04, §"SSH channel argv") — so an
+  absolute path is what a client should store. Like `evener_path`, this is
+  shape-only validation: a key file that does not exist surfaces at dial time
+  as ssh's own failure, not as a load-time refusal. A rewrite round-trips the
+  field (component 08's rewrite tests pin it).
 - **`config_path` / `addr` — the connection parameters both halves must
   agree on (corrected contract).** The bridge resolves the host hub's address
   and capability-token state root from the `hub.toml` it reads; component 04's
