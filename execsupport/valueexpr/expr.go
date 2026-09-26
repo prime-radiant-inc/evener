@@ -179,6 +179,7 @@ func Scan(value string) (Inventory, error) {
 // PieceKind names one piece of a scanned value.
 type PieceKind int8
 
+// PieceLit, PieceRef, and PieceCommand identify literal, reference, and command pieces.
 const (
 	PieceLit     PieceKind = iota // a literal run
 	PieceRef                      // a $NAME / ${NAME...} reference
