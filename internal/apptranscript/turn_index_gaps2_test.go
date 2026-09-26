@@ -457,7 +457,7 @@ func TestUsableTurnIndexAppendOnlyAnchorsMismatch(t *testing.T) {
 	index.IntegrityStamp = turnIndexIntegrityStamp(index)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "anchors.transcript.jsonl")
-	// Write 10 bytes so appendOnly is true (sameFile check requires fileIdentity)
+	// Write 10 bytes so appendOnly is true (sameFile check requires FileIdentity)
 	data := []byte("0123456789")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
@@ -621,7 +621,7 @@ func TestFileIdentityWindowsStruct(t *testing.T) {
 		FileIndexLow       uint64
 	}
 	info := mockFileInfo{sys: winStat{VolumeSerialNumber: 42, FileIndexHigh: 7, FileIndexLow: 3}}
-	got := fileIdentity(info)
+	got := FileIdentity(info)
 	if !strings.HasPrefix(got, "volume:") {
 		t.Fatalf("expected 'volume:' prefix for Windows file identity, got %q", got)
 	}
@@ -636,7 +636,7 @@ func TestFileIdentityWindowsShortNames(t *testing.T) {
 		idxlo uint64
 	}
 	info := mockFileInfo{sys: winStat{vol: 99, idxhi: 1, idxlo: 2}}
-	got := fileIdentity(info)
+	got := FileIdentity(info)
 	if !strings.HasPrefix(got, "volume:99:") {
 		t.Fatalf("expected 'volume:99:' prefix for Windows short names, got %q", got)
 	}
@@ -649,10 +649,10 @@ func TestFileIdentityDevIno(t *testing.T) {
 		Ino uint64
 	}
 	info := mockFileInfo{sys: unixStat{Dev: 10, Ino: 20}}
-	got := fileIdentity(info)
+	got := FileIdentity(info)
 	want := "dev:10:ino:20"
 	if got != want {
-		t.Fatalf("fileIdentity with Dev/Ino = %q, want %q", got, want)
+		t.Fatalf("FileIdentity with Dev/Ino = %q, want %q", got, want)
 	}
 }
 
@@ -664,10 +664,10 @@ func TestFileIdentityNonIntField(t *testing.T) {
 		Ino uint64
 	}
 	info := mockFileInfo{sys: weirdStat{Dev: "not-a-number", Ino: 20}}
-	got := fileIdentity(info)
+	got := FileIdentity(info)
 	// Dev field is a string so field("Dev") returns false; should fall through
 	if got != "" {
-		t.Fatalf("fileIdentity with non-int Dev should return empty, got %q", got)
+		t.Fatalf("FileIdentity with non-int Dev should return empty, got %q", got)
 	}
 }
 
@@ -678,9 +678,9 @@ func TestFileIdentityNoMatchingFields(t *testing.T) {
 		Foo string
 	}
 	info := mockFileInfo{sys: emptyStat{Foo: "bar"}}
-	got := fileIdentity(info)
+	got := FileIdentity(info)
 	if got != "" {
-		t.Fatalf("fileIdentity with no matching fields should return empty, got %q", got)
+		t.Fatalf("FileIdentity with no matching fields should return empty, got %q", got)
 	}
 }
 

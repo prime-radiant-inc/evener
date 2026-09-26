@@ -1224,3 +1224,56 @@ rather than resolved in prose here:
   and a crash between adoption and fsync.
 - **Minting delivery turn IDs.** Name which component mints them: the registry
   entry, under the append lock.
+
+## Known gap in the phase 1 index (PR #2303 roborev)
+
+- ~~**Unpaired-communicate flush.**~~ Fixed: `Latest`/`Before` now run the
+  same rendering `apptranscript.FlushUnpairedCommunicates` gives the
+  full-file projection (`pendingFlush` in `internal/transcriptindex/
+  window.go`), with the flushed item(s) participating in rank/pagination
+  like a persisted item (a `Before` anchored at a flushed position, correct
+  limit-aware truncation across the real/flushed boundary, a later pairing
+  entry superseding it). `referenceTurns`/`referenceCandidates` and the
+  `TestReferenceEqualsTodaysFileProjectionApartFromPositions` oracle now
+  flush too, so a wrong index can't pass. `meta.PendingCommunicate` forces a
+  full rebuild instead of an incremental extend while a call is pending,
+  since `restoreBuilder` cannot reconstruct `commCalls` (matching the
+  `errRebuild` policy used elsewhere). `ChangedSince` still does not surface
+  a flushed item — it has no itemRecord or update-log entry to begin with —
+  which is out of this fix's scope (Latest/Before only) and not currently a
+  problem (nothing reads from this index in production yet).
+- **`CatchUpTo`'s truncate-first extension can leak in-place updates past
+  the requested length.** `extend`'s truncate loop assumes the following
+  scan re-applies every entry whose in-place update it just truncated away;
+  a `CatchUpTo(length)` call for a `length` that stops before re-scanning
+  such an entry loses that update-log record without redoing it, so
+  `Latest`/`Before` can return content beyond `Window.Length` and
+  `ChangedSince` can omit the change. Latent in phase 1: every current
+  caller only calls it (via `CatchUp`) with the transcript's current full
+  size, never a smaller recorded length, so the truncated records are
+  always re-scanned. Needs either a rebuild fallback when the requested
+  length would not reach the highest version already written, or
+  re-deriving the update log from surviving record versions, before a
+  caller passes it a client-recorded (not-necessarily-current) length.
+- **Cross-version schema skew on a shared sidecar.** `readMeta` accepts a
+  build whose `format`/`projection` match, but nothing records which
+  binary's `schema.Turn`/`llm.Message` shape built it. Reads decode
+  contributor entries with `agent/transcript.DecodeValidatedEntry`, which
+  skips the strict unknown-field check `DecodeEntry` applies everywhere
+  else (deliberately, since the index re-decodes only bytes it already
+  validated once, at build time, in the same process). An index one binary
+  built and a different (older or newer) binary later reads would silently
+  drop fields the reader's schema doesn't declare, instead of failing the
+  whole transcript the way every other reader does. Needs either the
+  reader to re-run the strict decode when the build might predate it, or a
+  schema/decoder identity folded into `projectionID` so a mismatched build
+  fails closed into a rebuild.
+- **`ChangedSince` over-reports turns.** `stampTurn` logs `updatedTurn` for
+  every entry after a turn's first, regardless of whether the wire-visible
+  summary (status/lifecycle/started/usage) actually changed, so
+  `ChangedSince` returns every turn present after the snapshot length, not
+  only the ones an entry "completed or restamped" as Task 4c's acceptance
+  criteria describe. Bounded harm today (clients upsert idempotently), but
+  it no longer bounds the resend set as intended. Needs `stampTurn` to log
+  `updatedTurn` only on an actual summary change, and a test asserting the
+  unchanged turns `ChangedSince` must NOT return.
