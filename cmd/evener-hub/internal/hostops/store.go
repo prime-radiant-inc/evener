@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/afero"
 
@@ -535,6 +536,12 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 	raw, err := afero.ReadFile(fs, path)
 	if err != nil {
 		return snapshot{}, fmt.Errorf("hostops: read store %s: %w", path, err)
+	}
+	// The whole file must be UTF-8: the decoder replaces invalid bytes with
+	// U+FFFD, so a file carrying them would be read as a value the writer never
+	// wrote, and the next write would change the bytes it did not understand.
+	if !utf8.Valid(raw) {
+		return snapshot{}, fmt.Errorf("%w: %s is not valid UTF-8", ErrStoreCorrupt, path)
 	}
 	var file storeFile
 	decoder := json.NewDecoder(bytes.NewReader(raw))

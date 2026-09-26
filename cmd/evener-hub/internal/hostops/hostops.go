@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"unicode/utf8"
 )
 
 // MaxClientOperationIDBytes is spec §1's bound on a client operation ID: an
@@ -207,6 +208,23 @@ func validateRecord(record Record) error {
 	if record.Host == "" {
 		return fmt.Errorf("%w: record %q names no host", ErrInvalidRecord, record.ID)
 	}
+	// Every string this store persists must be valid UTF-8: encoding/json
+	// replaces invalid bytes with U+FFFD on the way out, so a value the store
+	// accepted would come back changed after a reload, and the file would hold
+	// something the adopted state never had. Identities are the sharpest case —
+	// §4 keys dedup on the client operation ID and pins the host name.
+	for _, text := range []struct {
+		value string
+		what  string
+	}{
+		{record.ClientOperationID, "client operation id"},
+		{record.Host, "host"},
+		{record.IncarnationID, "incarnation id"},
+	} {
+		if !utf8.ValidString(text.value) {
+			return fmt.Errorf("%w: record %q %s is not valid UTF-8", ErrInvalidRecord, record.ID, text.what)
+		}
+	}
 	if !record.Kind.Valid() {
 		return fmt.Errorf("%w: record %q has kind %q", ErrInvalidRecord, record.ID, record.Kind)
 	}
@@ -243,9 +261,24 @@ func validateRecord(record Record) error {
 		if entry.TS.IsZero() || entry.Message == "" {
 			return fmt.Errorf("%w: record %q carries an empty progress entry", ErrInvalidRecord, record.ID)
 		}
+		if !utf8.ValidString(entry.Message) {
+			return fmt.Errorf("%w: record %q carries a progress entry that is not valid UTF-8", ErrInvalidRecord, record.ID)
+		}
 	}
-	if record.Result != nil && record.Result.Message == "" {
-		return fmt.Errorf("%w: record %q carries an empty terminal result", ErrInvalidRecord, record.ID)
+	// A result is terminal data: it belongs to a record that has finished. A
+	// running or pending record carrying one would render a finished outcome for
+	// an operation still in flight.
+	if record.Result != nil {
+		if !record.State.Terminal() {
+			return fmt.Errorf("%w: record %q carries a terminal result in state %q",
+				ErrInvalidRecord, record.ID, record.State)
+		}
+		if record.Result.Message == "" {
+			return fmt.Errorf("%w: record %q carries an empty terminal result", ErrInvalidRecord, record.ID)
+		}
+		if !utf8.ValidString(record.Result.Message) {
+			return fmt.Errorf("%w: record %q carries a terminal result that is not valid UTF-8", ErrInvalidRecord, record.ID)
+		}
 	}
 	switch {
 	case record.Sequence > 0 && !record.State.Terminal():

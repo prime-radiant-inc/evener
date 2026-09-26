@@ -236,6 +236,13 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"result":{"ok":null,"message":"failed"}`, 1) + `]}`,
 		"null result": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"result":null`, 1) + `]}`,
+		// A result is terminal data, and the file's strings must be valid UTF-8:
+		// encoding/json replaces invalid bytes with U+FFFD on the way out, so a
+		// value the store accepted would come back changed.
+		"result on a pending record": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"hostRemoved":false`, `"hostRemoved":false,"result":{"ok":true,"message":"deployed"}`, 1) + `]}`,
+		"invalid utf-8 in a message": `{"version":1,"sequence":1,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(terminalRecordJSON("00000000000000000001", 1), `"hostRemoved":false`, `"hostRemoved":false,"result":{"ok":false,"message":"`+"\xff\xfe"+`"}`, 1) + `]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1059,4 +1066,63 @@ func TestOpenRevalidatesTheOwnerOnlyModeOfAnAlreadyHeldStore(t *testing.T) {
 	if _, err := Open(path); !errors.Is(err, ErrStoreReadableBeyondOwner) {
 		t.Fatalf("Open on a widened store file with a held cell: err = %v, want ErrStoreReadableBeyondOwner", err)
 	}
+}
+
+// TestCreateAndTransitionRefuseValuesTheStoreCannotWriteBack pins the two value
+// rules the writer's encoder imposes: a result is terminal data, so a record that
+// has not finished cannot carry one, and every persisted string must be valid
+// UTF-8, because encoding/json would write U+FFFD in place of invalid bytes and
+// the reloaded value would differ from the one the caller handed in.
+func TestCreateAndTransitionRefuseValuesTheStoreCannotWriteBack(t *testing.T) {
+	t.Run("create with an invalid utf-8 host", func(t *testing.T) {
+		store, path := openTestStore(t)
+		createTestRecord(t, store, "h1")
+		before := mustReadFile(t, path)
+		if _, err := store.Create(NewRecord{
+			ClientOperationID: "client-h1", Host: "h\xff\xfe", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+		}); !errors.Is(err, ErrInvalidRecord) {
+			t.Fatalf("Create with an invalid UTF-8 host: err = %v, want ErrInvalidRecord", err)
+		}
+		if got := string(mustReadFile(t, path)); got != string(before) {
+			t.Fatalf("a refused Create rewrote the store file")
+		}
+	})
+	t.Run("create with an invalid utf-8 client operation id", func(t *testing.T) {
+		store, _ := openTestStore(t)
+		if _, err := store.Create(NewRecord{
+			ClientOperationID: "client-\xff\xfe", Host: "h1", Kind: KindDeploy, Generation: 7, IncarnationID: "inc-1",
+		}); !errors.Is(err, ErrInvalidRecord) {
+			t.Fatalf("Create with an invalid UTF-8 client operation id: err = %v, want ErrInvalidRecord", err)
+		}
+	})
+	t.Run("result on a non-terminal transition", func(t *testing.T) {
+		store, _ := openTestStore(t)
+		record := createTestRecord(t, store, "h1")
+		if _, err := store.Transition(record.ID, StateRunning, func(r *Record) {
+			r.Result = &Result{OK: true, Message: "deployed"}
+		}); !errors.Is(err, ErrInvalidRecord) {
+			t.Fatalf("Transition into running carrying a result: err = %v, want ErrInvalidRecord", err)
+		}
+		if stored, _ := store.Record(record.ID); stored.Result != nil || stored.State != StatePending {
+			t.Fatalf("the refused transition mutated the record: %+v", stored)
+		}
+	})
+	t.Run("invalid utf-8 result message", func(t *testing.T) {
+		store, _ := openTestStore(t)
+		record := createTestRecord(t, store, "h1")
+		if _, err := store.Transition(record.ID, StateFailed, func(r *Record) {
+			r.Result = &Result{OK: false, Message: "boom \xff\xfe"}
+		}); !errors.Is(err, ErrInvalidRecord) {
+			t.Fatalf("Transition with an invalid UTF-8 result: err = %v, want ErrInvalidRecord", err)
+		}
+	})
+	t.Run("invalid utf-8 progress entry", func(t *testing.T) {
+		store, _ := openTestStore(t)
+		record := createTestRecord(t, store, "h1")
+		if _, err := store.Transition(record.ID, StateRunning, func(r *Record) {
+			r.Progress = []ProgressEntry{{TS: time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC), Message: "pushed \xff\xfe"}}
+		}); !errors.Is(err, ErrInvalidRecord) {
+			t.Fatalf("Transition with an invalid UTF-8 progress entry: err = %v, want ErrInvalidRecord", err)
+		}
+	})
 }
