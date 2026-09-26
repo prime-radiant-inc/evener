@@ -26,7 +26,7 @@ Each phase is one plan and usually two to four PRs. A phase starts only after th
 | 4 | Subagents and Reader | Subagents list and read-only subagent transcript (spec 9); the document Reader with comments and review (10.1-10.2), on `docContent` / `nativeDocPort.ts`. The artifact viewer (10.3) waits for the shared-artifacts work to reach main. |
 | 5 | New session and Hub | The launch sheet (spec 11) and the Hub sheet with hosts, providers and sign-in, plugins, recipes, display, alerts, hubs (spec 12), as native form sheets. |
 | 6 | Attention and resilience | In-app alerts (13.3): banners below the nav, coalescing, held while reading or typing, Next serving held sessions first; connection states and outbox presentation (14). |
-| 7 | Server additions | In value order, each its own small PR with hub tests: S2 pending-approval flag, S1 row "why" payload, S13 task progress, S5 activity buckets, S4 seen-through marker, S3 subagent tallies, S12 scoped approvals. The phone switches from each fallback as its addition lands. |
+| 7 | Server additions | In value order, each its own small PR with hub tests: S2 pending-approval flag, S1 row "why" payload, S13 task progress, S5 activity buckets, S4 seen-through marker, S3 subagent tallies, S12 scoped approvals, then S11 hub notices feed, S7 remote image and document proxying, S9 document revision identity, S8 hub-stored launch recipes and S6 direct subagent stop. The phone switches from each fallback as its addition lands; S10 (push) is out of scope here. |
 
 Out of scope here, as in the spec: push notifications and Live Activities (S10, phase 2 of the product), iPad, Android, the decision inbox.
 
