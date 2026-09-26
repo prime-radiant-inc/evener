@@ -70,7 +70,7 @@ sixteen shared terms below are identical in all three documents.
 
 **Operation record.** The durable controller-side record of one `deploy`/`restart`, keyed by controller-assigned id, deduplicated on (host, kind, client operation ID, pinned generation, pinned incarnation id).
 
-**Boundary.** A persisted ownership description a verifier checks before signaling a possibly-live process: `local-linux`, `local-darwin`, `local-markerless`, or `remote-fencing` (defined in the crash-fencing spec §9).
+**Boundary.** A persisted ownership description a verifier checks before signaling a possibly-live process: `local-linux`, `local-darwin`, `local-markerless`, or `remote-fencing` (defined in the crash-fencing spec §9), plus the `boundary-unavailable` custody sentinel a corrupt-store custody import carries when corruption destroyed the boundary (crash-fencing spec §9).
 
 **Fencing epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) presented on every SSH command it runs.
 
@@ -1277,7 +1277,7 @@ documents and are cited, never restated):
   explicit value above, so no non-optional field is left unknown.
 - `evener/host/add`: params are one full host entry (all seven `HostConfig`
   fields; `name` required) plus optional `mutationId: string` (opaque,
-  non-empty, at most 128 bytes — the idempotency key; a keyless `add` skips dedup and is non-retryable as a continuation — §5 — and commits a keyless-add audit record under a server-generated internal key with no client idempotency semantics, so the crash/audit trail has no keyless gap (audit records compact under the same dual bound as receipts — at most 64 newest per name plus an owner-set audit TTL in the same knob family, every sidecar mutation and every boot compacting past either bound in the same atomic write, and riding the 64-tombstone / 16 MiB global sidecar cap in §15 — so keyless-add spam cannot grow the sidecar without limit); response is the
+  non-empty, at most 128 bytes — the idempotency key; a keyless `add` skips dedup and is non-retryable as a continuation — §5 — and commits a keyless-add audit record under a server-generated internal key with no client idempotency semantics, so the crash/audit trail has no keyless gap (audit records compact under the same dual bound as receipts — at most 64 newest per name plus an owner-set audit TTL in the same knob family, every sidecar mutation and every boot compacting past either bound in the same atomic write — so keyless-add spam against one name cannot grow the sidecar without limit; the §15 tombstone cap is tombstone-scoped and does not cover these records, so across names sidecar size scales with the operator's host list, the same accepted bound as the withdrawn host-count cap); response is the
   mutation-result union below.
 - `evener/host/update`: params `{name: string, entry: <the six non-name
   `HostConfig` fields>, mutationId: string, expectedGeneration: number,
