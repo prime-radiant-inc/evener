@@ -2273,14 +2273,7 @@ describe("ConversationStore", () => {
       service.openConv = makeConversation({ status: { type: "idle" } });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t1", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "default", status: "running" }] } } as AnyNotification);
       // The status is thread/status/changed's, never turn/started's (the
       // status frame rides right behind it); the turn id is this frame's.
       expect(store.getState().conversation?.status.type).toBe("idle");
@@ -2292,29 +2285,15 @@ describe("ConversationStore", () => {
       service.openConv = makeConversation({ status: { type: "active" } });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t1", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "default", status: "running" }] } } as AnyNotification);
       expect(store.getState().conversation?.status.type).toBe("active");
       // Now complete
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "default",
             status: "completed",
             usage: { totalTokens: 100 },
-          },
-        },
-      } as AnyNotification);
+          }] } } as AnyNotification);
       // A completed turn is followed by its status frame (idle at session end,
       // active at an inline boundary); this frame leaves the status alone.
       expect(store.getState().conversation?.status.type).toBe("active");
@@ -2330,14 +2309,8 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       const frames: AnyNotification[] = [
-        {
-          method: "turn/completed",
-          params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t1", itemsView: "", status: "completed" } },
-        } as AnyNotification,
-        {
-          method: "turn/started",
-          params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t2", itemsView: "default", status: "inProgress" } },
-        } as AnyNotification,
+        { method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "", status: "completed" }] } } as AnyNotification,
+        { method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification,
         {
           method: "thread/status/changed",
           params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
@@ -2365,14 +2338,7 @@ describe("ConversationStore", () => {
       service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t1" });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t1", itemsView: "", status: "failed", error: { message: "rate limited" } },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "", status: "failed", error: { message: "rate limited" } }] } } as AnyNotification);
       // The failed completion ends the turn; its status frame has not arrived.
       expect(store.getState().conversation?.status.type).toBe("active");
       expect(store.getState().conversation?.activeTurnId).toBeUndefined();
@@ -2408,14 +2374,7 @@ describe("ConversationStore", () => {
       await store.getState().open(service, "ref-1");
 
       // t1 fails; its queued message has not started yet.
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t1", itemsView: "", status: "failed", error: { message: "rate limited" } },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "", status: "failed", error: { message: "rate limited" } }] } } as AnyNotification);
       const failed = store.getState().conversation;
       if (failed === null) throw new Error("conversation gone");
       expect(failed.status.type).toBe("active");
@@ -2453,10 +2412,7 @@ describe("ConversationStore", () => {
       expect(drained?.queue?.depth).toBe(0);
       expect(drained?.activeTurnId).toBeUndefined();
 
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t2", itemsView: "default", status: "running" } },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "running" }] } } as AnyNotification);
       const resumed = store.getState().conversation;
       expect(resumed?.status.type).toBe("active");
       expect(resumed?.activeTurnId).toBe("t2");
@@ -2472,10 +2428,7 @@ describe("ConversationStore", () => {
       service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: undefined });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t-x", itemsView: "", status: "failed", error: { message: "boom" } } },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t-x", itemsView: "", status: "failed", error: { message: "boom" } }] } } as AnyNotification);
       expect(store.getState().conversation?.status.type).toBe("active");
       store.getState().applyNotification({
         method: "thread/status/changed",
@@ -2487,10 +2440,7 @@ describe("ConversationStore", () => {
       other.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t2" });
       const store2 = createConversationStore();
       await store2.getState().open(other, "ref-1");
-      store2.getState().applyNotification({
-        method: "turn/completed",
-        params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t1", itemsView: "", status: "failed", error: { message: "late" } } },
-      } as AnyNotification);
+      store2.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "", status: "failed", error: { message: "late" } }] } } as AnyNotification);
       expect(store2.getState().conversation?.status.type).toBe("active");
       expect(store2.getState().conversation?.activeTurnId).toBe("t2");
     });
@@ -2533,32 +2483,18 @@ describe("ConversationStore", () => {
       // Two turns complete, each carrying its own (much smaller) per-turn
       // usage. The cumulative conversation usage set by the projection must
       // survive both — it is not the sum or replacement of per-turn totals.
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "default",
             status: "completed",
             usage: { totalTokens: 40, inputTokens: 10 },
-          },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+          }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t2",
             itemsView: "default",
             status: "completed",
             usage: { totalTokens: 55, inputTokens: 15 },
-          },
-        },
-      } as AnyNotification);
+          }] } } as AnyNotification);
       expect(store.getState().conversation?.usage?.totalTokens).toBe(500);
       expect(store.getState().conversation?.usage?.inputTokens).toBe(300);
     });
@@ -3089,20 +3025,12 @@ describe("ConversationStore", () => {
   describe("item/started inserts/replaces authoritative item", () => {
     it("inserts a new assistant item from item/started", async () => {
       const { store } = await openRunningTurn();
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "agentMessage",
             id: "item-a",
             text: "Hello",
             status: "inProgress",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "item-a")).toMatchObject({ kind: "assistant", markdown: "Hello" });
     });
 
@@ -3110,20 +3038,12 @@ describe("ConversationStore", () => {
       const { store } = await openRunningTurn([
         agentMessageItem("item-a", "old", "inProgress"),
       ]);
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "agentMessage",
             id: "item-a",
             text: "new text",
             status: "inProgress",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "item-a")).toMatchObject({ kind: "assistant", markdown: "new text" });
     });
 
@@ -3175,20 +3095,12 @@ describe("ConversationStore", () => {
         ],
       });
       await store.getState().open(service, "ref-1");
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "userMessage",
             id: "wire-new",
             transcriptKey: "stable-message",
             text: "new",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       const items = rows(store);
       expect(
         items.filter((item) => item.transcriptKey === "stable-message"),
@@ -3231,22 +3143,14 @@ describe("ConversationStore", () => {
 
     it("updates a first clustered member without losing later members or attachments", async () => {
       const { store } = await openRunningTurn(clusterPair());
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "call-first",
             toolName: "shell",
             status: "completed",
             output: "updated",
             outputImages: [{ source: "new", url: "https://hub.test/new" }],
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       const items = rows(store);
       const cluster = items.find(
         (item) => item.kind === "activity" && item.id === "call-first",
@@ -3286,22 +3190,14 @@ describe("ConversationStore", () => {
           outputImages: [{ source: "old", url: "https://hub.test/old" }],
         } as ThreadItem,
       ]);
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "new-wire-later",
             transcriptKey: "later",
             toolName: "shell",
             status: "inProgress",
             outputImages: [{ source: "new", url: "https://hub.test/new" }],
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       const items = rows(store);
       const activities = items.filter((item) => item.kind === "activity");
       expect(activities).toHaveLength(1);
@@ -3333,10 +3229,7 @@ describe("ConversationStore", () => {
     // snapshot. A snapshot without the cluster is a thread without it.
     it("takes the reread's snapshot over a cluster the live frames built", async () => {
       const { store, service, release, rehydratePromise } = await beginHeldClusterRehydrate();
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated" } },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({ type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated" }), turnId: "t1" }] } } as AnyNotification);
       release(makeReadProjectionResult(makeThread()));
       await rehydratePromise;
       expect(rows(store)).toEqual([]);
@@ -3350,10 +3243,7 @@ describe("ConversationStore", () => {
         store.setState({ olderCursor: "older-cursor" });
         await store.getState().loadOlder(service);
       }
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "failed", output: "failed", error: "boom" } },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({ type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "failed", output: "failed", error: "boom" }), turnId: "t1" }] } } as AnyNotification);
       // The snapshot carries both members: the first settled clean, the second
       // failed — a failed member is never clustered with a clean one.
       release(makeReadProjectionResult(runningTurnThread([
@@ -3499,15 +3389,7 @@ describe("ConversationStore", () => {
 
       // And the keyless member survives the next publish rather than reading
       // as a duplicate.
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: { type: "userMessage", id: "u-later", turnId: "t1", text: "later" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({ type: "userMessage", id: "u-later", turnId: "t1", text: "later" }), turnId: "t1" }] } } as AnyNotification);
       expect(
         rows(store).some(
           (row) => row.kind === "activity" && row.members?.some((member) => member.id === "unkeyed-second"),
@@ -3530,7 +3412,7 @@ describe("ConversationStore", () => {
       let release!: (value: ConversationReadProjection) => void;
       service.readProjectionBlock = new Promise((resolve) => { release = resolve; });
       const rehydratePromise = store.getState().rehydrate(service, sink);
-      store.getState().applyNotification({ method: "item/completed", params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "done" } } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({ type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "done" }), turnId: "t1" }] } } as AnyNotification);
       release(makeReadProjectionResult(runningTurnThread([
         { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "done" } as ThreadItem,
       ])));
@@ -3543,13 +3425,7 @@ describe("ConversationStore", () => {
         { type: "commandExecution", id: "wire-first", transcriptKey: "first", toolName: "shell", status: "completed" } as ThreadItem,
         { type: "commandExecution", id: "wire-later", transcriptKey: "later", toolName: "shell", status: "inProgress" } as ThreadItem,
       ]);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1", ref: "ref-1", turnId: "t1",
-          item: { type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated", outputImages: [{ source: "new", url: "new" }] },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({ type: "commandExecution", id: "new-wire-later", transcriptKey: "later", toolName: "shell", status: "completed", output: "updated", outputImages: [{ source: "new", url: "new" }] }), turnId: "t1" }] } } as AnyNotification);
       const items = rows(store);
       const activity = items.find((item) => item.kind === "activity");
       expect(activity?.kind === "activity" ? activity.members?.find((member) => member.transcriptKey === "later")?.detail.output : undefined).toBe("updated");
@@ -3564,21 +3440,13 @@ describe("ConversationStore", () => {
         { type: "commandExecution", id: "call-first", toolName: "shell", status: "inProgress" } as ThreadItem,
         { type: "commandExecution", id: "call-later", toolName: "shell", status: "inProgress" } as ThreadItem,
       ]);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "call-later",
             toolName: "shell",
             status: "completed",
             error: "boom",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       const activities = rows(store).filter((item) => item.kind === "activity");
       expect(activities).toHaveLength(2);
       expect(
@@ -3612,15 +3480,7 @@ describe("ConversationStore", () => {
         agentMessageItem("item-a", "partial", "inProgress"),
       ]);
       expect(rowById(store, "item-a")).toMatchObject({ streaming: true });
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: agentMessageItem("item-a", "all of it", "completed"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(agentMessageItem("item-a", "all of it", "completed")), turnId: "t1" }] } } as AnyNotification);
       expect(store.getState().conversation?.activeTurnId).toBe("t1");
       expect(rowById(store, "item-a")).toMatchObject({
         kind: "assistant",
@@ -3634,30 +3494,15 @@ describe("ConversationStore", () => {
         agentMessageItem("item-a", "streaming text", "inProgress"),
       ]);
       expect(rowById(store, "item-a")).toMatchObject({ streaming: true });
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "agentMessage",
             id: "item-a",
             text: "streaming text",
             status: "completed",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       // The turn is still running, so the row settles when the turn does —
       // the projector reads streaming from the turn, as the web does.
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t1", itemsView: "", status: "completed" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "", status: "completed" }] } } as AnyNotification);
       expect(rowById(store, "item-a")).toMatchObject({
         kind: "assistant",
         streaming: false,
@@ -3675,13 +3520,7 @@ describe("ConversationStore", () => {
         const { store } = await openRunningTurn([
           { type: "commandExecution", id: "tool-1", toolName: "shell", status: "inProgress" } as ThreadItem,
         ]);
-        store.getState().applyNotification({
-          method: "item/completed",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "t1",
-            item: {
+        store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
               type: "commandExecution",
               id: "tool-1",
               toolName: "shell",
@@ -3689,9 +3528,7 @@ describe("ConversationStore", () => {
               output: "done",
               ...(exitCode === undefined ? {} : { exitCode }),
               ...(error === undefined ? {} : { error }),
-            },
-          },
-        } as AnyNotification);
+            }), turnId: "t1" }] } } as AnyNotification);
         expect(rowById(store, "tool-1")).toMatchObject({
           kind: "activity",
           state: expected,
@@ -3702,21 +3539,13 @@ describe("ConversationStore", () => {
     it("C6: upserts completed item even when start was missed", async () => {
       // The turn is open but empty — the item/started was missed.
       const { store } = await openRunningTurn();
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "tool-missed",
             toolName: "shell",
             status: "completed",
             output: "done",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       // The completed item is inserted (UPSERT), not lost.
       expect(rowById(store, "tool-missed")).toMatchObject({ kind: "activity" });
     });
@@ -3727,13 +3556,7 @@ describe("ConversationStore", () => {
     // "reasoning".
     it("a commandExecution named 'Reasoning' is family 'tool' with exact callId", async () => {
       const { store } = await openRunningTurn();
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "tool-reasoning-1",
             toolName: "Reasoning",
@@ -3741,9 +3564,7 @@ describe("ConversationStore", () => {
             status: "completed",
             output: "thoughts",
             argumentsJson: '{"summary":"thinking"}',
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "tool-reasoning-1")).toMatchObject({
         kind: "activity",
         // Family follows the wire type (commandExecution), not the toolName;
@@ -3757,77 +3578,18 @@ describe("ConversationStore", () => {
 
     it("a reasoning item is family 'reasoning'", async () => {
       const { store } = await openRunningTurn();
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "reasoning",
             id: "reason-notify-1",
             status: "inProgress",
             text: "analyzing",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "reason-notify-1")).toMatchObject({
         kind: "activity",
         family: "reasoning",
         label: "Reasoning",
       });
     });
-
-    it.each(["completed", "failed", "interrupted"] as const)(
-      "preserves streamed reasoning text when sparse item/completed settles it as %s",
-      async (status) => {
-        const { store } = await openRunningTurn();
-        store.getState().applyNotification({
-          method: "item/started",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "t1",
-            item: {
-              type: "reasoning",
-              id: "reason-sparse-1",
-              status: "inProgress",
-            },
-          },
-        } as AnyNotification);
-        for (const delta of ["Think", "ing"]) {
-          store.getState().applyNotification({
-            method: "item/reasoning/summaryTextDelta",
-            params: {
-              threadId: "thread-1",
-              ref: "ref-1",
-              turnId: "t1",
-              itemId: "reason-sparse-1",
-              summaryIndex: 0,
-              delta,
-            },
-          } as AnyNotification);
-        }
-        store.getState().applyNotification({
-          method: "item/completed",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "t1",
-            item: {
-              type: "reasoning",
-              id: "reason-sparse-1",
-              status,
-            },
-          },
-        } as AnyNotification);
-        expect(rowById(store, "reason-sparse-1")).toMatchObject({
-          kind: "activity",
-          state: "completed",
-          detail: { output: "Thinking" },
-        });
-      },
-    );
 
     // reducer.ts's wireItemToModel seeds reasoningSummaries from ANY non-empty
     // initial wire text (item/started here), and mergeReasoning keeps that
@@ -3846,34 +3608,18 @@ describe("ConversationStore", () => {
       ["omitted text", undefined, "old reasoning"],
     ] as const)("shows the completion's text over the seeded summary when the completion carries %s", async (_label, text, expected) => {
       const { store } = await openRunningTurn();
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "reasoning",
             id: "reason-authoritative-1",
             status: "inProgress",
             text: "old reasoning",
-          },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+          }), turnId: "t1" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "reasoning",
             id: "reason-authoritative-1",
             status: "completed",
             ...(text === undefined ? {} : { text }),
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "reason-authoritative-1")).toMatchObject({
         kind: "activity",
         detail: { output: expected },
@@ -3884,80 +3630,18 @@ describe("ConversationStore", () => {
     // settled it with.
     it("shows the settled text of a reasoning item that streamed nothing", async () => {
       const { store } = await openRunningTurn();
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "reasoning",
             id: "reason-settled-1",
             status: "completed",
             text: "final reasoning",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "reason-settled-1")).toMatchObject({
         kind: "activity",
         detail: { output: "final reasoning" },
       });
     });
 
-    it("bounds a reasoning row that streamed past the byte limit, and re-bounds it on every later frame", async () => {
-      const { store, service, sink } = await openRunningTurn();
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
-            type: "reasoning",
-            id: "reason-truncated-1",
-            status: "inProgress",
-          },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/reasoning/summaryTextDelta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "reason-truncated-1",
-          summaryIndex: 0,
-          delta: "x".repeat(MAX_ITEM_BYTES + 100),
-        },
-      } as AnyNotification);
-      const streamed = rowById(store, "reason-truncated-1");
-      expect(streamed?.kind === "activity" && streamed.detail.output?.endsWith(TRUNCATION_MARKER)).toBe(true);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
-            type: "reasoning",
-            id: "reason-truncated-1",
-            status: "completed",
-          },
-        },
-      } as AnyNotification);
-      const settled = rowById(store, "reason-truncated-1");
-      expect(settled?.kind === "activity" && settled.detail.output?.endsWith(TRUNCATION_MARKER)).toBe(true);
-      // An authoritative short version is short again: the bound is a
-      // property of the text a row carries, not a freeze on its identity.
-      service.readProjectionResult = makeReadProjectionResult(runningTurnThread([
-        { type: "reasoning", id: "reason-truncated-1", text: "short", status: "completed" } as ThreadItem,
-      ]));
-      await store.getState().rehydrate(service, sink);
-      expect(rowById(store, "reason-truncated-1")).toMatchObject({
-        kind: "activity",
-        detail: { output: "short" },
-      });
-    });
 
     it("preserves existing attachments when item/completed for the same user message carries no images field", async () => {
       const service = new FakeConversationService();
@@ -3988,13 +3672,7 @@ describe("ConversationStore", () => {
       });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "userMessage",
             id: "msg-1",
             text: "hello",
@@ -4002,9 +3680,7 @@ describe("ConversationStore", () => {
             // No images field: an absent input-image list means "unchanged",
             // not "removed" (the same rule the package reducer's
             // mergeItemImages already applies).
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       const items = store.getState().conversation?.items ?? [];
       expect(
         items.find(
@@ -4016,152 +3692,26 @@ describe("ConversationStore", () => {
   });
 
   describe("assistant delta appends to item", () => {
-    it("appends delta text to assistant item markdown", async () => {
-      const { store } = await openRunningTurn([
-        agentMessageItem("item-a", "Hello", "inProgress"),
-      ]);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: " world",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello world",
-      });
-    });
 
-    it("appends reasoning summary delta to activity item", async () => {
-      const { store } = await openRunningTurn([
-        { type: "reasoning", id: "reason-1", text: "Thinking", status: "inProgress" } as ThreadItem,
-      ]);
-      store.getState().applyNotification({
-        method: "item/reasoning/summaryTextDelta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "reason-1",
-          summaryIndex: 0,
-          delta: " more",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "reason-1")).toMatchObject({
-        kind: "activity",
-        detail: { output: "Thinking more" },
-      });
-    });
 
-    it("keeps streamed reasoning across a completion that omits text", async () => {
-      const { store } = await openRunningTurn([
-        { type: "reasoning", id: "reason-1", text: "Think", status: "inProgress" } as ThreadItem,
-      ]);
-      store.getState().applyNotification({
-        method: "item/reasoning/summaryTextDelta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "reason-1",
-          summaryIndex: 0,
-          delta: "ing",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "reason-1")).toMatchObject({
-        kind: "activity",
-        detail: { output: "Thinking" },
-      });
 
-      // A completion that carries NO text is a sparse settle: the item's
-      // text stays the stale item/started seed while the summaries hold
-      // the streamed growth — the settled row must not revert to the
-      // seed (RoboRev round 14).
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
-            type: "reasoning",
-            id: "reason-1",
-            status: "completed",
-          } as ThreadItem,
-        },
-      } as AnyNotification);
-      expect(rowById(store, "reason-1")).toMatchObject({
-        kind: "activity",
-        detail: { output: "Thinking" },
-      });
-    });
-
-    it("appends tool output delta to activity item", async () => {
-      const { store } = await openRunningTurn([
-        { type: "commandExecution", id: "tool-1", toolName: "shell", callId: "call-1", output: "line1", status: "inProgress" } as ThreadItem,
-      ]);
-      store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "tool-1",
-          callId: "call-1",
-          delta: "\nline2",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "tool-1")).toMatchObject({
-        kind: "activity",
-        detail: { output: "line1\nline2" },
-      });
-    });
 
     // A frame naming an item the model does not hold could not be applied:
     // this client missed the item/started that would have made it placeable,
     // so the rows have a gap in them. Nothing changes on screen from the
     // frame itself, and the canonical read is asked for at once — the phone
     // refreshes itself rather than waiting for the next resync.
-    it("asks for a reread when a delta targets an item the model does not hold", async () => {
-      const { store, service } = await openRunningTurn([
-        agentMessageItem("a1", "hello", "inProgress"),
-      ]);
-      const initialReads = service.readProjectionCalls.length;
-      const before = rows(store);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "nonexistent",
-          delta: "text",
-        },
-      } as AnyNotification);
-      expect(rows(store)).toEqual(before);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
-    });
 
     it.each([
-      ["a tool-output delta", {
-        method: "item/toolOutput/delta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "nonexistent", callId: "call-x", delta: "x" },
-      }],
-      ["a reasoning delta", {
-        method: "item/reasoning/summaryTextDelta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "nonexistent", summaryIndex: 0, delta: "x" },
-      }],
       ["a completion for a turn the model does not hold", {
-        method: "item/completed",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t-unknown", item: { type: "userMessage", id: "u9", turnId: "t-unknown", text: "hi" } },
+        method: "history/updated",
+        params: {
+          threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [{ type: "userMessage", id: "u9", turnId: "t-unknown", text: "hi" }],
+        },
       }],
-    ] as const)("asks for a reread when %s cannot be placed", async (_label, frame) => {
+    ])("asks for a reread when %s cannot be placed", async (_label, frame) => {
       const { store, service } = await openRunningTurn([
         agentMessageItem("a1", "hello", "inProgress"),
       ]);
@@ -4175,34 +3725,6 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("split Unicode remains valid", () => {
-    it("does not corrupt surrogate pairs split across deltas", async () => {
-      const { store } = await openRunningTurn([
-        agentMessageItem("item-u", "", "inProgress"),
-      ]);
-      // 𝐀 is U+1D400 (surrogate pair D835 DC00)
-      // Send the first half, then the second half as separate deltas.
-      for (const delta of ["\uD835", "\uDC00"]) {
-        store.getState().applyNotification({
-          method: "item/agentMessage/delta",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "t1",
-            itemId: "item-u",
-            delta,
-          },
-        } as AnyNotification);
-      }
-      const item = rowById(store, "item-u");
-      expect(item?.kind).toBe("assistant");
-      if (item?.kind !== "assistant") throw new Error("expected an assistant row");
-      // The combined string is valid: the surrogate pair forms 𝐀
-      expect(item.markdown).toBe("\uD835\uDC00");
-      // It is a single code point (length 1 by code point, 2 by UTF-16)
-      expect([...item.markdown].length).toBe(1);
-    });
-  });
 
   // Every row kind that carries text a reader scrolls past is bounded, not just
   // the two that happen to stream: a pasted user message can be as large as any
@@ -4486,20 +4008,12 @@ describe("ConversationStore", () => {
       await store.getState().open(service, "ref-1");
       const largeName = "n".repeat(MAX_ITEM_BYTES + 100);
       const src = "https://hub.test/live.png";
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "userMessage",
             id: "msg-live",
             text: "hi",
             images: [{ url: src, name: largeName }],
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       const item = store
         .getState()
         .conversation?.items.find((candidate) => candidate.id === "msg-live:attachments");
@@ -4609,20 +4123,12 @@ describe("ConversationStore", () => {
       await store.getState().open(service, "ref-2");
       // A stale completion for thread-1/ref-1 should be dropped
       const before = store.getState().conversation;
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "agentMessage",
             id: "item-a",
             text: "done",
             status: "completed",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       expect(store.getState().conversation).toBe(before);
     });
   });
@@ -4950,21 +4456,13 @@ describe("ConversationStore", () => {
     it("projects a started ask_user as its question row, without a reread", async () => {
       const { store, service } = await openRunningTurn();
       const initialReads = service.readProjectionCalls.length;
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "ask-1",
             toolName: "ask_user",
             status: "inProgress",
             argumentsJson: VALID_ASK_ARGS,
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -4977,21 +4475,13 @@ describe("ConversationStore", () => {
     it("projects a completed ask_user as a question row once the status frame carries the pending flag, without a reread", async () => {
       const { store, service } = await openRunningTurn();
       const initialReads = service.readProjectionCalls.length;
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "ask-1",
             toolName: "ask_user",
             status: "completed",
             argumentsJson: VALID_ASK_ARGS,
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       // The item alone is not the whole signal (#1731 round 4): the status
       // frame that lands on the same boundary carries askPending, and that
       // is what liveAskQuestions gates the question row on.
@@ -5018,13 +4508,7 @@ describe("ConversationStore", () => {
     it("bounds a live question row's option label but leaves liveAskQuestions' canonical copy whole", async () => {
       const { store } = await openRunningTurn();
       const oversizedLabel = "x".repeat(MAX_ITEM_BYTES + 100);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "ask-oversized",
             toolName: "ask_user",
@@ -5042,9 +4526,7 @@ describe("ConversationStore", () => {
                 },
               ],
             }),
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       store.getState().applyNotification({
         method: "thread/status/changed",
         params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" }, askPending: true },
@@ -5065,9 +4547,13 @@ describe("ConversationStore", () => {
     });
 
     it.each([
-      ["a reasoning delta naming an assistant item", {
-        method: "item/reasoning/summaryTextDelta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "r-1", summaryIndex: 0, delta: "thinking" },
+      ["a history update naming a held item", {
+        method: "history/updated",
+        params: {
+          threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [{ type: "agentMessage", id: "r-1", turnId: "t1", text: "thinking" }],
+        },
       }],
       ["a known thread-level frame", {
         method: "thread/status/changed",
@@ -5086,24 +4572,25 @@ describe("ConversationStore", () => {
     });
 
     // The same gap detection covers a frame that is not an item frame at all: a
-    // warning or an injected steer whose active turn lies outside the window
-    // this client loaded has nowhere to land, and the model says so by handing
-    // back the turns it already had.
+    // warning, or a settle whose active turn lies outside the window this
+    // client loaded, has nowhere to land, and the model says so by handing
+    // back the turns it already had. evener/steering/injected's old separate
+    // coverage here collapsed into history/updated's — a steering item now
+    // arrives the same way any other item does.
     it.each([
       ["a warning", {
         method: "warning",
         params: { threadId: "thread-1", ref: "ref-1", message: "careful" },
       }],
-      ["an injected steer", {
-        method: "evener/steering/injected",
-        params: { threadId: "thread-1", ref: "ref-1", text: "go left", kind: "user", source: "user" },
-      }],
       ["a turn settle", {
-        method: "turn/completed",
+        method: "history/updated",
         params: {
           threadId: "thread-1",
           ref: "ref-1",
-          turn: { id: "t-outside-window", status: "completed", itemsView: "" },
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: "t-outside-window", status: "completed", itemsView: "" }],
         },
       }],
     ] as const)("rereads when %s names an active turn this window does not hold", async (_label, frame) => {
@@ -5183,14 +4670,7 @@ describe("ConversationStore", () => {
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ turns: [makeTurn({ id: "t1", status: "completed", items: [] })] }),
       );
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t1", itemsView: "", status: "completed" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "", status: "completed" }] } } as AnyNotification);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -5241,14 +4721,7 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "t1", status: "completed", items: [] })],
         }),
       );
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t1", itemsView: "", status: "completed" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "", status: "completed" }] } } as AnyNotification);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -5258,14 +4731,7 @@ describe("ConversationStore", () => {
       // A later row-changing frame reprojects from the committed model:
       // the transient warning must stay gone, not come back through the
       // turn history the rehydrate retained.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(
         store.getState().conversation?.items.filter((row) => row.kind === "failure"),
       ).toHaveLength(0);
@@ -5292,20 +4758,12 @@ describe("ConversationStore", () => {
       // The warned turn also carries real content the transcript persists:
       // the turn stays inside the keep-window through it, so compaction
       // alone cannot be what clears the warning (RoboRev round 3).
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "userMessage",
             id: "real-1",
             text: "the real message",
             transcriptEntryIndex: 3,
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       store.getState().applyNotification({
         method: "warning",
         params: { threadId: "thread-1", ref: "ref-1", message: "careful" },
@@ -5326,14 +4784,7 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t1", itemsView: "", status: "completed" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "", status: "completed" }] } } as AnyNotification);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -5347,14 +4798,7 @@ describe("ConversationStore", () => {
 
       // And a later row-changing frame reprojects from that model: the
       // real message stays, the transient warning never returns.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(
         store.getState().conversation?.items.filter((row) => row.kind === "failure"),
       ).toHaveLength(0);
@@ -5365,20 +4809,6 @@ describe("ConversationStore", () => {
     // same-key requests (overwriting the effect, merging waiters) and runs one
     // effect at a time — at most one read in flight plus one queued, however
     // many frames land.
-    it("coalesces a burst of unplaceable deltas into one read", async () => {
-      const { store, service } = await openRunningTurn();
-      const initialReads = service.readProjectionCalls.length;
-      for (let i = 0; i < 10; i++) {
-        store.getState().applyNotification({
-          method: "item/agentMessage/delta",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "gone", delta: `d${i}` },
-        } as AnyNotification);
-      }
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
-    });
 
     // An item frame the reducer has no case for cannot be projected, so the
     // canonical read is still the recovery.
@@ -5534,20 +4964,12 @@ describe("ConversationStore", () => {
         .filter((item) => item.kind === "failure")
         .map((item) => item.id);
 
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "userMessage",
             id: "user-1",
             text: "updated input",
             transcriptEntryIndex: 4,
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
 
       const warningIdsAfter = rows(store)
         .filter((item) => item.kind === "failure")
@@ -5582,14 +5004,7 @@ describe("ConversationStore", () => {
       ]);
       // A later row-changing frame rebuilds the timeline from the
       // projection — the notice is not a model row, yet survives.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t1", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "default", status: "running" }] } } as AnyNotification);
       expect(
         rows(store).some((row) => row.kind === "failure" && row.title === "Provider"),
       ).toBe(true);
@@ -5642,32 +5057,9 @@ describe("ConversationStore", () => {
         params: { threadId: "thread-1", ref: "ref-1", title: "Provider", message: "careful" },
       } as AnyNotification);
       // Newer messages arrive after the notice did.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: userMessageItem("u2", "newer"),
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: agentMessageItem("a2", "newer reply"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "running" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(userMessageItem("u2", "newer")), turnId: "t2" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(agentMessageItem("a2", "newer reply")), turnId: "t2" }] } } as AnyNotification);
       // The notice sits where it arrived: after a1, above u2 and a2.
       expect(rows(store).map((row) => row.kind)).toEqual([
         "user",
@@ -5681,15 +5073,7 @@ describe("ConversationStore", () => {
       // newest 500 rows, and the arrival position — with the notice —
       // leaves it.
       for (let i = 3; i <= 502; i++) {
-        store.getState().applyNotification({
-          method: "item/completed",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "t2",
-            item: agentMessageItem(`a${i}`, `message ${i}`),
-          },
-        } as AnyNotification);
+        store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(agentMessageItem(`a${i}`, `message ${i}`)), turnId: "t2" }] } } as AnyNotification);
       }
       const after = rows(store);
       expect(after.filter((row) => row.kind === "failure")).toEqual([]);
@@ -5740,23 +5124,8 @@ describe("ConversationStore", () => {
         "warning:2",
       ]);
       // A rebuild reseats both at that position, above newer messages.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: userMessageItem("u2", "newer"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "running" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(userMessageItem("u2", "newer")), turnId: "t2" }] } } as AnyNotification);
       expect(rows(store).map((row) => row.id)).toEqual([
         "u1",
         "a1",
@@ -5768,15 +5137,7 @@ describe("ConversationStore", () => {
       // newest 500 rows, and the arrival position — with both notices —
       // leaves it together.
       for (let i = 3; i <= 502; i++) {
-        store.getState().applyNotification({
-          method: "item/completed",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "t2",
-            item: agentMessageItem(`a${i}`, `message ${i}`),
-          },
-        } as AnyNotification);
+        store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(agentMessageItem(`a${i}`, `message ${i}`)), turnId: "t2" }] } } as AnyNotification);
       }
       const after = rows(store);
       expect(after.filter((row) => row.kind === "failure")).toEqual([]);
@@ -5921,23 +5282,8 @@ describe("ConversationStore", () => {
       // A row-changing frame reprojects from the model: the cluster keeps
       // its members, and the notice keeps its position beside the row
       // that carries its anchor.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: userMessageItem("u2", "newer"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "running" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(userMessageItem("u2", "newer")), turnId: "t2" }] } } as AnyNotification);
       const after = rows(store);
       expect(after.map((row) => [row.kind, row.id])).toEqual([
         ["activity", "p-tool"],
@@ -5996,23 +5342,8 @@ describe("ConversationStore", () => {
       // projection clusters the two consecutive shell rows, so the run
       // that absorbed the anchored row now also carries a member that
       // arrived after the notice did.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: commandExecItem("b-tool", "shell", "completed"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "running" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(commandExecItem("b-tool", "shell", "completed")), turnId: "t2" }] } } as AnyNotification);
       const after = rows(store);
       expect(after.map((row) => [row.kind, row.id])).toEqual([
         ["activity", "a-tool"],
@@ -6068,23 +5399,8 @@ describe("ConversationStore", () => {
       ]);
       // A third same-family activity arrives AFTER the notice: the run
       // grows past the members that were displayed at arrival.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: commandExecItem("c-tool", "shell", "completed"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "running" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(commandExecItem("c-tool", "shell", "completed")), turnId: "t2" }] } } as AnyNotification);
       const after = rows(store);
       expect(after.map((row) => [row.kind, row.id])).toEqual([
         ["activity", "a-tool"],
@@ -6147,20 +5463,12 @@ describe("ConversationStore", () => {
       // key and says nothing about images: the reducer folds it by identity,
       // the projection re-keys both the user row and the attachments row,
       // and the notice must stay seated.
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "userMessage",
             id: "wire-new",
             transcriptKey: "stable-message",
             text: "reissued",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       const reissued = rows(store);
       expect(
         reissued
@@ -6177,23 +5485,8 @@ describe("ConversationStore", () => {
         ["failure", "warning:1"],
       ]);
       // A later row-changing rebuild keeps the notice seated.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: userMessageItem("u2", "newer"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "running" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(userMessageItem("u2", "newer")), turnId: "t2" }] } } as AnyNotification);
       expect(rows(store).map((row) => [row.kind, row.id])).toEqual([
         ["user", "wire-new"],
         ["attachments", "wire-new:attachments"],
@@ -6248,24 +5541,9 @@ describe("ConversationStore", () => {
       // Grow the transcript past the retained cap so the cut lands right
       // after the source row: [user, notice, attachments, a1..a498] is
       // 501 rows and the cap keeps the newest 500.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "running" }] } } as AnyNotification);
       for (let i = 1; i <= 498; i++) {
-        store.getState().applyNotification({
-          method: "item/completed",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "t2",
-            item: agentMessageItem(`a${i}`, `message ${i}`),
-          },
-        } as AnyNotification);
+        store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(agentMessageItem(`a${i}`, `message ${i}`)), turnId: "t2" }] } } as AnyNotification);
       }
       const after = rows(store);
       // The source fell off the cut; its attachment left with it, and the
@@ -6338,24 +5616,9 @@ describe("ConversationStore", () => {
       // Grow the transcript past the retained cap so the cut lands right
       // after the cluster: [cluster, A:att, B:att, notice, a1..a497] is
       // 501 rows and the cap keeps the newest 500.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "running" }] } } as AnyNotification);
       for (let i = 1; i <= 497; i++) {
-        store.getState().applyNotification({
-          method: "item/completed",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "t2",
-            item: agentMessageItem(`a${i}`, `message ${i}`),
-          },
-        } as AnyNotification);
+        store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(agentMessageItem(`a${i}`, `message ${i}`)), turnId: "t2" }] } } as AnyNotification);
       }
       const after = rows(store);
       // The cluster fell off the cut; the orphan scan reached its
@@ -6368,21 +5631,13 @@ describe("ConversationStore", () => {
 
     it("preserves a command description through live item projection", async () => {
       const { store } = await openRunningTurn();
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "command-1",
             toolName: "shell",
             description: "Inspect the source tree",
             status: "completed",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "command-1")).toMatchObject({
         kind: "activity",
         detail: { description: "Inspect the source tree" },
@@ -6391,20 +5646,12 @@ describe("ConversationStore", () => {
 
     it("preserves a user transcript entry index through live item projection", async () => {
       const { store } = await openRunningTurn();
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "userMessage",
             id: "fork-source",
             text: "fork from this input",
             transcriptEntryIndex: 8,
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "fork-source")).toMatchObject({
         kind: "user",
         transcriptEntryIndex: 8,
@@ -6412,111 +5659,6 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("F8: UTF-8 byte cap, valid boundary, delta-after-marker", () => {
-    it("keeps the row at one marker as deltas keep streaming past the cap", async () => {
-      const { store } = await openRunningTurn([
-        agentMessageItem("item-trunc", "x".repeat(70_000), "inProgress"),
-      ]);
-      const beforeDelta = rowById(store, "item-trunc");
-      expect(beforeDelta?.kind).toBe("assistant");
-      if (beforeDelta?.kind !== "assistant") throw new Error("expected an assistant row");
-      expect(beforeDelta.markdown.endsWith(TRUNCATION_MARKER)).toBe(true);
-
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-trunc",
-          delta: " more text after truncation",
-        },
-      } as AnyNotification);
-
-      const afterDelta = rowById(store, "item-trunc");
-      expect(afterDelta?.kind).toBe("assistant");
-      if (afterDelta?.kind !== "assistant") throw new Error("expected an assistant row");
-      // The marker is at the end, exactly once, and the streamed text past
-      // the cap is not on screen.
-      expect(afterDelta.markdown.split(TRUNCATION_MARKER).length - 1).toBe(1);
-      expect(afterDelta.markdown.endsWith(TRUNCATION_MARKER)).toBe(true);
-      expect(afterDelta.markdown).not.toContain("more text after truncation");
-    });
-
-    it("multibyte text at boundary does not split code points", () => {
-      // Direct test of truncateText with multibyte at the exact boundary.
-      // Each 'é' is 2 bytes. 32,768 é chars = 65,536 bytes = exactly 64 KiB.
-      // One more é would exceed, so truncation kicks in.
-      const exact = "é".repeat(32_768);
-      const encoder = new TextEncoder();
-      expect(encoder.encode(exact).length).toBe(65536);
-      // At exactly 64KiB, no truncation needed.
-      // But 32,769 é = 65,538 bytes > 64KiB, so truncate.
-      const overBy2 = "é".repeat(32_769);
-      const truncated = truncateText(overBy2, MAX_ITEM_BYTES);
-      const truncatedBytes = encoder.encode(truncated).length;
-      expect(truncatedBytes).toBeLessThanOrEqual(65536);
-      expect(truncated.endsWith("… truncated")).toBe(true);
-      // Result must be valid Unicode.
-      const decoded = new TextDecoder().decode(encoder.encode(truncated));
-      expect(decoded).toBe(truncated);
-    });
-
-    it("never exceeds a limit smaller than the truncation marker", () => {
-      const encoder = new TextEncoder();
-      // The marker is 13 UTF-8 bytes, so a limit below that cannot hold it.
-      // The byte limit is the contract every caller judges by; the marker is
-      // best effort, so the result is the longest prefix that fits.
-      expect(encoder.encode(TRUNCATION_MARKER).length).toBe(13);
-      const truncated = truncateText("abcdef", 3);
-      expect(encoder.encode(truncated).length).toBeLessThanOrEqual(3);
-      expect(truncated).toBe("abc");
-    });
-
-    it("returns the empty string for a zero byte limit", () => {
-      expect(truncateText("abcdef", 0)).toBe("");
-    });
-
-    it("an emoji at the bound's boundary does not become U+FFFD", () => {
-      // 😀 is U+1F600, 4 bytes in UTF-8. Place it right at the boundary so
-      // the code-point iteration must decide whether to include it.
-      // 16,381 'a' chars = 16,381 bytes. Plus one 😀 = 4 bytes = 16,385.
-      // Max is 64KiB = 65,536 bytes. We need text that's just over 64KiB.
-      const filler = "a".repeat(65_533); // 65,533 bytes
-      const text = `${filler}😀${"x".repeat(10)}`; // over 64KiB
-      const truncated = truncateText(text, MAX_ITEM_BYTES);
-      const encoder = new TextEncoder();
-      expect(encoder.encode(truncated).length).toBeLessThanOrEqual(65536);
-      expect(truncated.endsWith("… truncated")).toBe(true);
-      // Must not contain U+FFFD replacement char
-      expect(truncated).not.toContain("\uFFFD");
-      // Must be valid Unicode (round-trip)
-      const decoded = new TextDecoder().decode(encoder.encode(truncated));
-      expect(decoded).toBe(truncated);
-    });
-
-    it("content that ends in the truncation marker still takes a delta", async () => {
-      // Content that genuinely ends with "… truncated" but is under the byte
-      // limit is not treated as already bounded.
-      const { store } = await openRunningTurn([
-        agentMessageItem("item-genuine", `Hello${TRUNCATION_MARKER}`, "inProgress"),
-      ]);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-genuine",
-          delta: " more text",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-genuine")).toMatchObject({
-        kind: "assistant",
-        markdown: `Hello${TRUNCATION_MARKER} more text`,
-      });
-    });
-  });
 
   describe("F9: stale safety — generation and operation identity", () => {
     it("close increments generation so stale completion cannot clear new error", async () => {
@@ -7182,15 +6324,7 @@ describe("ConversationStore", () => {
       // Live traffic alone (no rehydrate, no further page) appends 8 rows,
       // and each append's cap evicts one page row from the oldest end.
       for (let j = 0; j < 8; j++) {
-        store.getState().applyNotification({
-          method: "item/started",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "ft",
-            item: { type: "userMessage", id: `l-${j}`, text: `live ${j}` },
-          },
-        } as AnyNotification);
+        store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({ type: "userMessage", id: `l-${j}`, text: `live ${j}` }), turnId: "ft" }] } } as AnyNotification);
       }
 
       const conv = store.getState().conversation!;
@@ -11323,123 +10457,6 @@ describe("ConversationStore", () => {
     // folded-from alias, so the turn stays in the window through the
     // ancestry the fold recorded — or the resync sheds the payload the
     // visible row displays.
-    it("a live delta keeps the alias ancestry through the resync it schedules", async () => {
-      const service = new FakeConversationService();
-      const sink = createFakeSink();
-      const store = createConversationStore();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          threadId: "thread-1",
-          instanceId: "instance-1",
-          usage: null,
-          items: [{ kind: "user" as const, id: "fa", text: "fa row" }],
-          turns: [
-            {
-              id: "rt",
-              status: "completed",
-              items: [
-                {
-                  id: "fb",
-                  transcriptKey: "kk",
-                  turnId: "rt",
-                  type: "agentMessage",
-                  text: "alias restored",
-                  position: { entry: 70, item: 0 },
-                  status: "completed",
-                },
-              ],
-            },
-          ],
-          olderCursor: "c1",
-        }),
-        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
-        olderCursor: "c1",
-      };
-      await store.getState().openProjected(service, sink, "ref-1");
-
-      // A row-less page reissues the alias under fa's bare id; the fold
-      // leaves the turn backed by the fa row through the recorded
-      // ancestry — the item's own identity names no row.
-      service.olderItems = {
-        turnsPage: turnsPage(
-          [
-            wireTurnFragment(
-              "pq",
-              [
-                {
-                  id: "fa",
-                  transcriptKey: "kk",
-                  turnId: "pq",
-                  type: "agentMessage",
-                  text: "page fa",
-                  position: { entry: 70, item: 0 },
-                  status: "completed",
-                },
-              ],
-              { inputTokens: 700, outputTokens: 70 },
-            ),
-          ],
-          "c2",
-        ),
-        nextCursor: "c2",
-      };
-      await store.getState().loadOlder(service);
-      const folded = store.getState().conversation?.turns.find((t) => t.id === "rt")?.items ?? [];
-      expect(folded).toEqual([
-        expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "alias restored" }),
-      ]);
-
-      // The live delta has no display row to update (the only row names
-      // the alias), so the store publishes the package's half and
-      // schedules the resync — a fresh read whose rows still name only
-      // the alias. The package replaced the folded item with a NEW
-      // object carrying the same identity.
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          threadId: "thread-1",
-          instanceId: "instance-1",
-          usage: null,
-          items: [{ kind: "user" as const, id: "fa", text: "fa row" }],
-          turns: [
-            {
-              id: "rt",
-              status: "completed",
-              items: [
-                {
-                  id: "fb",
-                  transcriptKey: "kk",
-                  turnId: "rt",
-                  type: "agentMessage",
-                  text: "alias restored",
-                  position: { entry: 70, item: 0 },
-                  status: "completed",
-                },
-              ],
-            },
-          ],
-          olderCursor: "c2",
-        }),
-        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
-        olderCursor: "c2",
-      };
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          itemId: "fb",
-          delta: " live",
-        },
-      } as AnyNotification);
-      // Let the drain scheduler's microtask fire and the resync settle.
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      const after = store.getState().conversation!;
-      expect(after.turns.find((turn) => turn.id === "rt")?.items ?? []).toEqual([
-        expect.objectContaining({ id: "fb", transcriptKey: "kk", text: "alias restored" }),
-      ]);
-    });
 
     // Review round 9, pagination bridges: a loadOlder page can bridge a
     // compact turn into ANOTHER retained turn through a shared transcript
@@ -14027,25 +13044,14 @@ describe("ConversationStore", () => {
       // repopulates rt's entire payload. The store has no row applier for
       // turn/completed — the model-only publish is the only path — and it
       // must bound what it publishes.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "rt", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "rt", itemsView: "default", status: "running" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "rt",
             itemsView: "full",
             status: "completed",
-            usage: { inputTokens: 42, outputTokens: 4 },
-            items: [
+            usage: { inputTokens: 42, outputTokens: 4 }
+            
+          }], items: ([
               {
                 id: "rb",
                 turnId: "rt",
@@ -14055,10 +13061,7 @@ describe("ConversationStore", () => {
                 position: { entry: 90, item: 0 },
                 status: "completed",
               },
-            ],
-          },
-        },
-      } as AnyNotification);
+            ]).map((it) => ({ ...it, turnId: it.turnId ?? "rt" })) } } as AnyNotification);
       const after = store.getState().conversation!;
       const settled = after.turns.find((turn) => turn.id === "rt");
       expect(settled?.items).toEqual([]);
@@ -14070,82 +13073,6 @@ describe("ConversationStore", () => {
     // run the same bound, and an in-flight page can land right after a live
     // steering injection whose item has no display row (or row applier) yet.
     // The page response must not clear the active turn's live items.
-    it("a page response does not clear a live steering injection", async () => {
-      const service = new FakeConversationService();
-      const sink = createFakeSink();
-      const store = createConversationStore();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          threadId: "thread-1",
-          instanceId: "instance-1",
-          usage: null,
-          turns: [
-            { id: "ft", status: "completed", items: [], usage: { inputTokens: 1, outputTokens: 1 } },
-          ],
-          olderCursor: "c0",
-        }),
-        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
-        olderCursor: "c0",
-      };
-      await store.getState().openProjected(service, sink, "ref-1");
-
-      // A live turn starts and takes a steering injection: model-only —
-      // no row applier exists for the steering append yet, so no display
-      // row can back the item.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t1", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "evener/steering/injected",
-        params: { threadId: "thread-1", ref: "ref-1", text: "go left", kind: "user", source: "user", startedAt: 1000 },
-      } as AnyNotification);
-      const live = store.getState().conversation!;
-      expect(live.turns.find((turn) => turn.id === "t1")?.items.map((item) => item.id)).toEqual([
-        "item_steering_live_t1_0",
-      ]);
-
-      // An unrelated page lands while t1 is still running: the page bound
-      // runs against the retained rows, and t1's steering item has none.
-      service.olderItems = {
-        turnsPage: turnsPage(
-          [
-            wireTurnFragment(
-              "un",
-              [
-                {
-                  id: "un-0",
-                  transcriptKey: "un",
-                  turnId: "un",
-                  type: "agentMessage",
-                  text: "unrelated",
-                  position: { entry: 91, item: 0 },
-                  status: "completed",
-                },
-              ],
-              { inputTokens: 9, outputTokens: 9 },
-            ),
-          ],
-          "c1",
-        ),
-        nextCursor: "c1",
-      };
-      await store.getState().loadOlder(service);
-      const after = store.getState().conversation!;
-      // The page itself merged: under D23d its own row backs the turn, so
-      // un keeps its payload in the window.
-      expect(after.turns.find((turn) => turn.id === "un")?.items).toEqual([
-        expect.objectContaining({ transcriptKey: "un", text: "unrelated" }),
-      ]);
-      // The active turn's live steering item survived the page bound.
-      expect(after.turns.find((turn) => turn.id === "t1")?.items.map((item) => item.id)).toEqual([
-        "item_steering_live_t1_0",
-      ]);
-    });
   });
 
   describe("D18 B3 round 5: conversation's wire cursor and turn ownership never derive from the store's capped cursor or item eviction", () => {
@@ -16064,19 +14991,12 @@ describe("ConversationStore", () => {
         .getState()
         .openProjected(service, activityStore.getState(), "ref-1");
       const initialReads = service.readProjectionCalls.length;
-      service.notificationHandler?.({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      service.notificationHandler?.({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "default",
             status: "completed",
             usage: { totalTokens: 100 },
-          },
-        },
-      } as AnyNotification);
+          }] } } as AnyNotification);
       await yieldMicrotask();
       expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
@@ -17060,15 +15980,7 @@ describe("ConversationStore", () => {
       const { store, service } = await openRunningTurn();
       expect(store.getState().conversation?.askPending).toBe(false);
       const initialReads = service.readProjectionCalls.length;
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: askUserItem("ask-1", VALID_ASK_ARGS),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(askUserItem("ask-1", VALID_ASK_ARGS)), turnId: "t1" }] } } as AnyNotification);
       // The item alone is not the whole signal: the round that posts an
       // ask_user call ends its turn on the same boundary a status change
       // announces (session_lifecycle.go's askedThisRound), so the two frames
@@ -17118,26 +16030,10 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: userMessageItem("answer-1", "I choose A"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(userMessageItem("answer-1", "I choose A")), turnId: "t2" }] } } as AnyNotification);
       // And it stays false as later frames fold: the flag is re-derived every
       // publish, never carried forward from the model the projection wrote.
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: userMessageItem("answer-1", "I choose A"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(userMessageItem("answer-1", "I choose A")), turnId: "t2" }] } } as AnyNotification);
       // The wire's own flag is untouched by any of it.
       expect(store.getState().conversation?.askPending).toBe(false);
     });
@@ -17158,15 +16054,7 @@ describe("ConversationStore", () => {
         }),
       );
 
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: userMessageItem("answer-1", "I choose A"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(userMessageItem("answer-1", "I choose A")), turnId: "t1" }] } } as AnyNotification);
       store.getState().applyNotification({
         method: "thread/status/changed",
         params: {
@@ -17189,15 +16077,7 @@ describe("ConversationStore", () => {
     it("renders no question row for a live ask until a status frame carries askPending", async () => {
       const { store } = await openRunningTurn();
       expect(store.getState().conversation?.askPending).toBe(false);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: askUserItem("ask-live", VALID_ASK_ARGS),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(askUserItem("ask-live", VALID_ASK_ARGS)), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "ask-live")).toMatchObject({ kind: "activity", family: "tool" });
       expect(store.getState().conversation?.askPending).toBe(false);
 
@@ -17231,15 +16111,7 @@ describe("ConversationStore", () => {
       expect(store.getState().conversation?.askPending).toBe(true);
       expect(rows(store).some((item) => item.kind === "question")).toBe(true);
       const initialReads = service.readProjectionCalls.length;
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: userMessageItem("answer-1", "I choose A"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(userMessageItem("answer-1", "I choose A")), turnId: "t2" }] } } as AnyNotification);
       await yieldMicrotask();
       // The answered call is no longer answerable, so its question row is
       // gone and nothing is offered to answer.
@@ -17249,14 +16121,21 @@ describe("ConversationStore", () => {
     });
 
     it.each([
-      ["malformed", () => askUserItem("ask-bad", "not valid json {{{"), "item/completed"],
-      ["still in flight", () => askUserItem("ask-incomplete", VALID_ASK_ARGS, "inProgress"), "item/started"],
-    ] as const)("projects a %s ask_user as its tool row, never a question row", async (_label, item, method) => {
+      ["malformed", () => askUserItem("ask-bad", "not valid json {{{")],
+      ["still in flight", () => askUserItem("ask-incomplete", VALID_ASK_ARGS, "inProgress")],
+    ] as const)("projects a %s ask_user as its tool row, never a question row", async (_label, item) => {
       const { store, service } = await openRunningTurn();
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({
-        method,
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item: item() },
+        method: "history/updated",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [{ ...item(), turnId: "t1" }],
+        },
       } as AnyNotification);
       await yieldMicrotask();
       expect(rows(store).some((row) => row.kind === "question")).toBe(false);
@@ -17634,18 +16513,10 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             ...userMessageItem("wire-live", "live"),
             transcriptKey: "stable-live",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t0" }] } } as AnyNotification);
       const ctrl = makeControlledRead(service);
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
@@ -17714,18 +16585,10 @@ describe("ConversationStore", () => {
       );
       const reread = store.getState().rehydrate(service, createFakeSink());
       await ctrl.started(1);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             ...userMessageItem("wire-live-new", "newer-live"),
             transcriptKey: "stable-live",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t0" }] } } as AnyNotification);
       ctrl.release();
       await reread;
       // One row under that transcript key, and it is the snapshot's — the
@@ -18261,8 +17124,13 @@ describe("ConversationStore", () => {
       },
       {
         name: "a started turn",
-        method: "turn/started",
-        params: { turn: { id: "t-before", itemsView: "default", status: "inProgress" } },
+        method: "history/updated",
+        params: {
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: "t-before", itemsView: "default", status: "inProgress", items: [] }],
+        },
         snapshot: makeThread(),
         read: (conv) => [conv.activeTurnId, conv.turns.length],
         expected: [undefined, 0],
@@ -18327,36 +17195,6 @@ describe("ConversationStore", () => {
     // `item.Text += params.Delta`), so a delta this store folded BEFORE the
     // response is already in the text the response carries, and one after it
     // appends to that text rather than being lost.
-    it("streams a delta that arrives after the response on top of the snapshot's text", async () => {
-      const service = new FakeConversationService();
-      const streaming = [agentMessageItem("a1", "", "inProgress")];
-      service.readProjectionResult = makeReadProjectionResult(runningTurnThread(streaming));
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-
-      // The hub has folded "half " into the item by the time of the cut.
-      service.readProjectionResult = makeReadProjectionResult(
-        runningTurnThread([agentMessageItem("a1", "half ", "inProgress")]),
-      );
-      const ctrl = makeControlledRead(service);
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: target,
-      } as AnyNotification);
-      await ctrl.ready(1);
-      ctrl.release();
-      await ctrl.completed(1);
-      await yieldMicrotask();
-      expect(rowById(store, "a1")).toMatchObject({ kind: "assistant", markdown: "half " });
-
-      // A delta after the response appends to the committed snapshot's text.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: { ...target, turnId: "t1", itemId: "a1", delta: "done" },
-      } as AnyNotification);
-      expect(rowById(store, "a1")).toMatchObject({ kind: "assistant", markdown: "half done" });
-    });
 
     // Two fences on the same rule for the frames where a second application
     // would not be idempotent: a turn the snapshot already carries keeps its
@@ -18369,10 +17207,7 @@ describe("ConversationStore", () => {
         const conv = (
           await rereadRacing(
             (store) =>
-              store.getState().applyNotification({
-                method: "turn/started",
-                params: { ...target, turn: { id: "t-live", itemsView: "default", status: "inProgress" } },
-              } as AnyNotification),
+              store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t-live", itemsView: "default", status: "inProgress" }] } } as AnyNotification),
             makeThread({
               turns: [
                 makeTurn({
@@ -18393,45 +17228,6 @@ describe("ConversationStore", () => {
       }
     });
 
-    it("does not replay a steering injection the snapshot already carries", async () => {
-      const steer = { text: "go left", kind: "user", source: "user", startedAt: 1000 };
-      const activeTurn = (items: ThreadItem[]) =>
-        makeThread({
-          turns: [makeTurn({ id: "t1", status: "inProgress", items })],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        });
-      const store = await rereadRacing(
-        (store) =>
-          store.getState().applyNotification({
-            method: "evener/steering/injected",
-            params: { ...target, ...steer },
-          } as AnyNotification),
-        activeTurn([
-          {
-            id: "item_steering_0",
-            turnId: "t1",
-            type: "steering",
-            text: steer.text,
-            steeringKind: steer.kind,
-            source: steer.source,
-            startedAt: steer.startedAt,
-            status: "completed",
-          } as ThreadItem,
-        ]),
-        activeTurn([]),
-      );
-      const steeringIds = (conv: MobileConversation | null) =>
-        conv?.turns.flatMap((turn) => turn.items.filter((item) => item.type === "steering").map((item) => item.id));
-      expect(steeringIds(store.getState().conversation)).toEqual(["item_steering_0"]);
-      store.getState().applyNotification({
-        method: "evener/steering/injected",
-        params: { ...target, text: "then right", kind: "user", source: "user", startedAt: 2000 },
-      } as AnyNotification);
-      expect(steeringIds(store.getState().conversation)).toEqual([
-        "item_steering_0",
-        "item_steering_live_t1_1",
-      ]);
-    });
 
     // A reread belongs to the conversation it was for: closing that
     // conversation and opening another must leave the next conversation's
@@ -18483,40 +17279,7 @@ describe("ConversationStore", () => {
     const modelItem = (store: ReturnType<typeof createConversationStore>, id: string) =>
       store.getState().conversation?.turns.flatMap((turn) => turn.items).find((item) => item.id === id);
 
-    it("carries a delta stream into the item, and a sparse completion keeps it on screen", async () => {
-      const store = await openProjectedThread(withActiveTurn([agentMessageItem("a1", undefined, "inProgress")]));
-      for (const delta of ["hello ", "world"]) {
-        store.getState().applyNotification({
-          method: "item/agentMessage/delta",
-          params: { ...target, turnId: "t1", itemId: "a1", delta },
-        } as AnyNotification);
-      }
-      expect(rowById(store, "a1")).toMatchObject({ kind: "assistant", markdown: "hello world" });
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: { ...target, turnId: "t1", item: agentMessageItem("a1", undefined, "completed") },
-      } as AnyNotification);
-      expect(modelItem(store, "a1")).toMatchObject({ text: "hello world", status: "completed" });
-      // A completion that carries no text of its own does not blank the row.
-      expect(rowById(store, "a1")).toMatchObject({ kind: "assistant", markdown: "hello world" });
-    });
 
-    it("shows an injected steer as its own row in the active turn", async () => {
-      const store = await openProjectedThread(withActiveTurn([]));
-      store.getState().applyNotification({
-        method: "evener/steering/injected",
-        params: { ...target, text: "go left", kind: "user", source: "user", startedAt: 1000 },
-      } as AnyNotification);
-      const steering = store.getState().conversation?.turns
-        .flatMap((turn) => turn.items)
-        .filter((item) => item.type === "steering");
-      expect(steering?.map((item) => [item.id, item.text])).toEqual([["item_steering_live_t1_0", "go left"]]);
-      // A user-sourced steer reads as the user's own message row.
-      expect(rowById(store, "item_steering_live_t1_0")).toMatchObject({
-        kind: "user",
-        text: "go left",
-      });
-    });
 
     it("clears modelRetry when the model's own output item completes", async () => {
       const store = await openProjectedThread(withActiveTurn([agentMessageItem("a1", undefined, "inProgress")]));
@@ -18525,10 +17288,7 @@ describe("ConversationStore", () => {
         params: { ...target, attempt: 1, maxAttempts: 3, delayMs: 10, groupElapsedMs: 5, attemptCap: 3, turnId: "t1" },
       } as AnyNotification);
       expect(store.getState().conversation?.modelRetry).toMatchObject({ attempt: 1, maxAttempts: 3 });
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: { ...target, turnId: "t1", item: agentMessageItem("a1", "done", "completed") },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(agentMessageItem("a1", "done", "completed")), turnId: "t1" }] } } as AnyNotification);
       expect(store.getState().conversation?.modelRetry).toBeUndefined();
     });
 
@@ -18677,56 +17437,6 @@ describe("ConversationStore", () => {
   // everything else is gone — including a row a live frame inserted before
   // the response, which the snapshot has already accounted for.
   describe("page history in front of the snapshot's rows", () => {
-    it("an explicit reset removes a page-owned row instead of letting page history resurrect it", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [makeTurn({ id: "t2", items: [], status: "completed" })],
-        }),
-      );
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage(
-          [
-            wireTurnFragment(
-              "t1",
-              [
-                {
-                  id: "X",
-                  turnId: "t1",
-                  type: "agentMessage",
-                  text: "page answer",
-                  position: { entry: 10, item: 0 },
-                  status: "completed",
-                },
-              ],
-              { inputTokens: 5, outputTokens: 1 },
-            ),
-          ],
-          undefined,
-        ),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      expect(rows(store).some((row) => row.id === "X")).toBe(true);
-
-      // The wire retracts X: an explicit reset removes its model item, so
-      // the page-history layer must not put the retracted row back on
-      // screen. (RoboRev finding on the restack: page ownership used to
-      // outlive the removal and resurrect the row.)
-      store.getState().applyNotification({
-        method: "item/agentMessage/reset",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "X",
-        },
-      } as AnyNotification);
-      expect(rows(store).some((row) => row.id === "X")).toBe(false);
-    });
 
     // RoboRev #2213 round 1 (Medium): the reset above takes the row off the
     // screen, but the page ownership the removed item recorded used to
@@ -18734,72 +17444,6 @@ describe("ConversationStore", () => {
     // restarts (the reset→started protocol), so the restarted live row
     // inherited a claim that described content the model no longer held and
     // survived an authoritative snapshot that omitted it.
-    it("a reset that reuses the item id clears its page ownership: an omitting rehydrate cannot resurrect the restarted row", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [makeTurn({ id: "t2", items: [], status: "completed" })],
-        }),
-      );
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage(
-          [
-            wireTurnFragment("t1", [
-              {
-                id: "X",
-                turnId: "t1",
-                type: "agentMessage",
-                text: "page answer",
-                position: { entry: 10, item: 0 },
-                status: "completed",
-              },
-            ]),
-          ],
-          undefined,
-        ),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      expect(rows(store).some((row) => row.id === "X")).toBe(true);
-
-      // The wire retracts X and restarts the stream under the SAME id.
-      store.getState().applyNotification({
-        method: "item/agentMessage/reset",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "X",
-        },
-      } as AnyNotification);
-      expect(rows(store).some((row) => row.id === "X")).toBe(false);
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: agentMessageItem("X", "restarted", "inProgress"),
-        },
-      } as AnyNotification);
-      expect(rowById(store, "X")).toMatchObject({
-        kind: "assistant",
-        markdown: "restarted",
-      });
-
-      // The authoritative snapshot omits X: the restarted row is live state
-      // the wire no longer carries, not page history — it must not come back.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [makeTurn({ id: "t2", items: [], status: "completed" })],
-        }),
-      );
-      await store.getState().rehydrate(service, createFakeSink());
-      expect(rows(store).some((row) => row.id === "X")).toBe(false);
-    });
 
     // The same seam on the completion side: a full turn/completed replaces
     // the turn's item set, so the items its stamp omits leave the model —
@@ -18857,64 +17501,34 @@ describe("ConversationStore", () => {
 
       // The turn's full completion omits both: the model withdraws their
       // last copies, rows and attachment with them.
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "full",
-            status: "completed",
-            items: [userMessageItem("other", "kept")],
-          },
-        },
-      } as AnyNotification);
+            status: "completed"
+            
+          }], items: ([userMessageItem("other", "kept")]).map((it) => ({ ...it, turnId: it.turnId ?? "t1" })) } } as AnyNotification);
       expect(rowById(store, "old-wire")).toBeUndefined();
       expect(rowById(store, "old-wire:attachments")).toBeUndefined();
       expect(rowById(store, "gone-tool")).toBeUndefined();
 
       // The wire reuses both ids live in the next turn — the keyed source
       // with its image again, so its attachment row returns with it.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             id: "old-wire",
             turnId: "t2",
             transcriptKey: "K",
             type: "userMessage",
             text: "hi again",
             images: [{ type: "image", url: "https://hub.test/img" }],
-          } as ThreadItem,
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: {
+          } as ThreadItem), turnId: "t2" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             id: "gone-tool",
             turnId: "t2",
             type: "commandExecution",
             toolName: "shell",
             output: "live again",
-          } as ThreadItem,
-        },
-      } as AnyNotification);
+          } as ThreadItem), turnId: "t2" }] } } as AnyNotification);
       expect(rowById(store, "old-wire:attachments")).toBeDefined();
       expect(rowById(store, "gone-tool")).toBeDefined();
 
@@ -18951,124 +17565,6 @@ describe("ConversationStore", () => {
     // content that still backs it; the retired bare id's must retire with
     // the copy that left, or a later keyless reuse of that id inherits page
     // history nothing holds anymore.
-    it("a re-keyed completion then a reset retire the old wire id's claim: a keyless reuse of that id cannot be resurrected", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      // The page fragment of the active turn carries a KEYED item: the
-      // ownership record writes both spellings — the key and the bare wire
-      // id.
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage(
-          [
-            wireTurnFragment("t1", [
-              {
-                id: "X",
-                turnId: "t1",
-                transcriptKey: "K",
-                type: "agentMessage",
-                text: "page answer",
-                position: { entry: 10, item: 0 },
-                status: "completed",
-              } as ThreadItem,
-            ]),
-          ],
-          undefined,
-        ),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      expect(rowById(store, "X")).toBeDefined();
-
-      // The turn's full completion reissues the same key under a NEW wire
-      // id: the content survives as Y/K, and the old wire id's claim must
-      // retire with the copy that left.
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
-            id: "t1",
-            itemsView: "full",
-            status: "completed",
-            items: [
-              {
-                id: "Y",
-                turnId: "t1",
-                transcriptKey: "K",
-                type: "agentMessage",
-                text: "page answer settled",
-                status: "completed",
-              } as ThreadItem,
-            ],
-          },
-        },
-      } as AnyNotification);
-      expect(rowById(store, "Y")).toBeDefined();
-      expect(rowById(store, "X")).toBeUndefined();
-
-      // The wire retracts the reissued copy too: the key's claim follows
-      // its last model copy out.
-      store.getState().applyNotification({
-        method: "item/agentMessage/reset",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "Y",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "Y")).toBeUndefined();
-
-      // A later turn reuses the OLD wire id KEYLESS — the shape the stale
-      // bare-id claim used to adopt as page history.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: agentMessageItem("X", "reused live", "inProgress"),
-        },
-      } as AnyNotification);
-      expect(rowById(store, "X")).toMatchObject({
-        kind: "assistant",
-        markdown: "reused live",
-      });
-
-      // The authoritative snapshot omits the reused row everywhere: it is
-      // live state the wire no longer carries, and no surviving page content
-      // shares its identity — it must not come back.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t9",
-              status: "completed",
-              items: [userMessageItem("fresh", "fresh")],
-            }),
-          ],
-        }),
-      );
-      await store.getState().rehydrate(service, createFakeSink());
-      expect(rowById(store, "X")).toBeUndefined();
-    });
 
     // RoboRev round 4 (panel M1): the frame settlement must reconcile
     // ownership through the merge's own identity rule, not a union of every
@@ -19112,16 +17608,12 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
       expect(rowById(store, "X")).toBeDefined();
       // The turn's full completion reissues the same content WITH its key.
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "full",
-            status: "completed",
-            items: [
+            status: "completed"
+            
+          }], items: ([
               {
                 id: "X",
                 turnId: "t1",
@@ -19130,10 +17622,7 @@ describe("ConversationStore", () => {
                 text: "page answer settled",
                 status: "completed",
               } as ThreadItem,
-            ],
-          },
-        },
-      } as AnyNotification);
+            ]).map((it) => ({ ...it, turnId: it.turnId ?? "t1" })) } } as AnyNotification);
       expect(rowById(store, "X")).toBeDefined();
       // The authoritative snapshot omits the item: the reissued copy is
       // page history the model still holds, and the migrated claim — now
@@ -19196,16 +17685,12 @@ describe("ConversationStore", () => {
       // DIFFERENT key names different content, not a continuation, so the
       // claim retires with the copy that left — the replacement is live
       // content, never page history.
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "full",
-            status: "completed",
-            items: [
+            status: "completed"
+            
+          }], items: ([
               {
                 id: "X",
                 turnId: "t1",
@@ -19214,10 +17699,7 @@ describe("ConversationStore", () => {
                 text: "different answer",
                 status: "completed",
               } as ThreadItem,
-            ],
-          },
-        },
-      } as AnyNotification);
+            ]).map((it) => ({ ...it, turnId: it.turnId ?? "t1" })) } } as AnyNotification);
       expect(rowById(store, "X")).toBeDefined();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
@@ -19277,44 +17759,25 @@ describe("ConversationStore", () => {
       expect(rowById(store, "X")).toBeDefined();
       // A live item takes the same bare id under a different key — a
       // second identity the package's own rule distinguishes.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             id: "X",
             turnId: "t2",
             transcriptKey: "K2",
             type: "agentMessage",
             text: "live answer",
             status: "completed",
-          } as ThreadItem,
-        },
-      } as AnyNotification);
+          } as ThreadItem), turnId: "t2" }] } } as AnyNotification);
       // t1's full completion preserves its own keyed item — the frame
       // removes nothing, yet the settlement walk runs and must not
       // promote the live copy: only the spelling an item's own identity
       // carries decides whether it owns a claim.
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "full",
-            status: "completed",
-            items: [
+            status: "completed"
+            
+          }], items: ([
               {
                 id: "X",
                 turnId: "t1",
@@ -19323,10 +17786,7 @@ describe("ConversationStore", () => {
                 text: "page answer",
                 status: "completed",
               } as ThreadItem,
-            ],
-          },
-        },
-      } as AnyNotification);
+            ]).map((it) => ({ ...it, turnId: it.turnId ?? "t1" })) } } as AnyNotification);
       // The authoritative snapshot omits both X items: the page-owned
       // copy stays as page history, and the live copy — unowned content
       // the wire withdrew — must go.
@@ -19906,355 +18366,9 @@ describe("ConversationStore", () => {
       expect(activityIdentities).not.toContain("kl");
     });
 
-    it("a live steering item does not ride the retained history back beside its canonical re-issue", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      // An older page loads: turn history is preserved across rereads from
-      // here on.
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
 
-      // A live steering injection lands in the active turn: the reducer
-      // names it item_steering_live_*.
-      store.getState().applyNotification({
-        method: "evener/steering/injected",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          text: "go left",
-          kind: "user",
-          source: "user",
-          startedAt: 1000,
-        },
-      } as AnyNotification);
-      expect(
-        store.getState().conversation?.items.filter(
-          (row) => row.kind === "user" && row.text === "go left",
-        ),
-      ).toHaveLength(1);
 
-      // The authoritative read serves the same steer the transcript
-      // persisted, under the transcript's own item_steering_<n> id — the
-      // two share no transcript key, so identity alone cannot match them.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "completed",
-              items: [
-                {
-                  type: "steering",
-                  id: "item_steering_0",
-                  turnId: "t1",
-                  text: "go left",
-                  status: "completed",
-                  source: "user",
-                } as ThreadItem,
-              ],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      // The reread's rows show the canonical steer exactly once...
-      expect(
-        store.getState().conversation?.items.filter(
-          (row) => row.kind === "user" && row.text === "go left",
-        ),
-      ).toHaveLength(1);
 
-      // ...and the committed model keeps no live twin for the next
-      // row-changing frame to project back. (RoboRev round 4: the merge
-      // used to keep the unmatched live item beside its canonical copy,
-      // and the next publish showed the steer twice.)
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
-      expect(
-        store.getState().conversation?.items.filter(
-          (row) => row.kind === "user" && row.text === "go left",
-        ),
-      ).toHaveLength(1);
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .filter((item) => item.type === "steering"),
-      ).toHaveLength(1);
-    });
-
-    it("a rehydrating read does not re-append live delta chunks the snapshot already settled", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello", "inProgress")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      // An older page loads: the rehydrate merge is active from here on.
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-
-      // Deltas stream in ahead of the response: the reducer holds them
-      // as pending chunks beside the item's settled text.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: " world",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello world",
-      });
-
-      // An authoritative reread lands mid-stream: the snapshot's settled
-      // text already contains the chunks the deltas added.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello world", "inProgress")],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-
-      // (RoboRev round 5: the merge used to keep the retained item's
-      // pending chunks beside the snapshot text that already settled them,
-      // and every publish re-appended them.)
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello world",
-      });
-
-      // And the stream continues on the settled base — not a doubled one.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: "!",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello world!",
-      });
-    });
-
-    it("a rehydrating read keeps the delta chunks that were still ahead of the snapshot's cut", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello", "inProgress")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: " world",
-        },
-      } as AnyNotification);
-
-      // The reread's cut predates the chunk: the snapshot's settled text
-      // does not contain it, so the chunk is still live and must survive
-      // the merge (the strip may only take what the text ends with).
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello", "inProgress")],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      // The committed rows after the read are the snapshot's own ("Hello",
-      // the wire's settled text at the cut); the live chunk the cut
-      // predates survives in the MERGED MODEL, where the next
-      // row-changing frame reads it from.
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .find((item) => item.id === "item-a")?.pendingText,
-      ).toEqual([" world"]);
-
-      // The stream continues from exactly where it was.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: "!",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello world!",
-      });
-    });
-
-    it("strips a multi-chunk stream the snapshot settled in full", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello", "inProgress")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      for (const delta of [" world", "!"]) {
-        store.getState().applyNotification({
-          method: "item/agentMessage/delta",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "t1",
-            itemId: "item-a",
-            delta,
-          },
-        } as AnyNotification);
-      }
-
-      // The snapshot settled BOTH chunks — and its text no longer ends
-      // with the first chunk alone, so a monotonic prefix walk would
-      // strip neither (RoboRev round 6).
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello world!", "inProgress")],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .find((item) => item.id === "item-a")?.pendingText,
-      ).toBeUndefined();
-
-      // The stream continues on the settled base — not a doubled one.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: ".",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello world!.",
-      });
-    });
 
     it("a snapshot that drops a matched live item's image does not resurrect it through the merge", async () => {
       const service = new FakeConversationService();
@@ -20327,286 +18441,12 @@ describe("ConversationStore", () => {
       ).toEqual([]);
 
       // And a later row-changing frame does not project it back.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(rowById(store, "msg-1:attachments")).toBeUndefined();
     });
 
-    it("strips chunks the snapshot settled past, not just up to", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello", "inProgress")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: " world",
-        },
-      } as AnyNotification);
 
-      // The snapshot's cut is AHEAD of the client's chunks: its settled
-      // text contains the chunk and then some the client never received
-      // (RoboRev round 7).
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello world!", "inProgress")],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .find((item) => item.id === "item-a")?.pendingText,
-      ).toBeUndefined();
 
-      // The stream continues on the snapshot's base.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: ".",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello world!.",
-      });
-    });
-
-    it("a live steering twin does not ride a turn the snapshot reissued under a new id", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [userMessageItem("shared-1", "hi")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-
-      // A live steering injection lands in the active turn beside the
-      // stable user item.
-      store.getState().applyNotification({
-        method: "evener/steering/injected",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          text: "go left",
-          kind: "user",
-          source: "user",
-          startedAt: 1000,
-        },
-      } as AnyNotification);
-      expect(
-        store.getState().conversation?.items.filter(
-          (row) => row.kind === "user" && row.text === "go left",
-        ),
-      ).toHaveLength(1);
-
-      // The reread reissues the turn under a NEW id — the merge still
-      // folds it through the shared user item — carrying the canonical
-      // steer the transcript persisted.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1-fresh",
-              status: "completed",
-              items: [
-                userMessageItem("shared-1", "hi"),
-                {
-                  type: "steering",
-                  id: "item_steering_0",
-                  turnId: "t1-fresh",
-                  text: "go left",
-                  status: "completed",
-                  source: "user",
-                } as ThreadItem,
-              ],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(
-        store.getState().conversation?.items.filter(
-          (row) => row.kind === "user" && row.text === "go left",
-        ),
-      ).toHaveLength(1);
-
-      // The next row-changing frame must not project the twin back
-      // beside the canonical copy.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
-      expect(
-        store.getState().conversation?.items.filter(
-          (row) => row.kind === "user" && row.text === "go left",
-        ),
-      ).toHaveLength(1);
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .filter((item) => item.type === "steering"),
-      ).toHaveLength(1);
-    });
-
-    it("a live steering twin drops even when the active turn's own fragment paged in", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      // The older page is a FRAGMENT of the active turn itself: the turn
-      // id becomes page-owned while the turn stays live (RoboRev round 8).
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t1", 400, 10)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-
-      store.getState().applyNotification({
-        method: "evener/steering/injected",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          text: "go left",
-          kind: "user",
-          source: "user",
-          startedAt: 1000,
-        },
-      } as AnyNotification);
-      expect(
-        store.getState().conversation?.items.filter(
-          (row) => row.kind === "user" && row.text === "go left",
-        ),
-      ).toHaveLength(1);
-
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "completed",
-              items: [
-                {
-                  type: "steering",
-                  id: "item_steering_0",
-                  turnId: "t1",
-                  text: "go left",
-                  status: "completed",
-                  source: "user",
-                } as ThreadItem,
-              ],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(
-        store.getState().conversation?.items.filter(
-          (row) => row.kind === "user" && row.text === "go left",
-        ),
-      ).toHaveLength(1);
-
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
-      expect(
-        store.getState().conversation?.items.filter(
-          (row) => row.kind === "user" && row.text === "go left",
-        ),
-      ).toHaveLength(1);
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .filter((item) => item.type === "steering"),
-      ).toHaveLength(1);
-    });
 
     it("a stripped sparse item keeps its omitted-text marker for a later page to fill", async () => {
       const service = new FakeConversationService();
@@ -20698,426 +18538,17 @@ describe("ConversationStore", () => {
       ).toBe("check this");
 
       // ...and the next row-changing frame projects it.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(rowById(store, "msg-1")).toMatchObject({
         kind: "user",
         text: "check this",
       });
     });
 
-    it("an authoritative replacement text clears the pending chunks", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello", "inProgress")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: " world",
-        },
-      } as AnyNotification);
 
-      // The snapshot's completed item REPLACES the streamed text outright
-      // (RoboRev round 10): chunks appended to the old base have no home
-      // in it.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "completed",
-              items: [agentMessageItem("item-a", "Replacement", "completed")],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .find((item) => item.id === "item-a")?.pendingText,
-      ).toBeUndefined();
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .find((item) => item.id === "item-a")?.text,
-      ).toBe("Replacement");
 
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: ".",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Replacement.",
-      });
-    });
 
-    it("a completed snapshot clears chunks even when its text starts with the base", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello", "inProgress")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: " world",
-        },
-      } as AnyNotification);
 
-      // The snapshot's item has SETTLED with a text that merely starts
-      // with the retained base: the response is over, and its text is the
-      // whole of it — the pending chunk never landed (RoboRev round 11).
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "completed",
-              items: [agentMessageItem("item-a", "Hello there", "completed")],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .find((item) => item.id === "item-a")?.pendingText,
-      ).toBeUndefined();
-
-      // And no later frame can restore the discarded chunk.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: ".",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello there.",
-      });
-    });
-
-    it("a divergent in-progress snapshot advance clears the pending chunks", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello", "inProgress")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: " world",
-        },
-      } as AnyNotification);
-
-      // The reconnect's snapshot is STILL STREAMING, but its advance
-      // diverges from the chunk stream — a restart the client missed
-      // (RoboRev round 12). The chunk belongs to the dead generation.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello there", "inProgress")],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .find((item) => item.id === "item-a")?.pendingText,
-      ).toBeUndefined();
-
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: ".",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello there.",
-      });
-    });
-
-    it("divergence after a matched chunk prefix clears the stale tail", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello", "inProgress")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      for (const delta of [" world", "!"]) {
-        store.getState().applyNotification({
-          method: "item/agentMessage/delta",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "t1",
-            itemId: "item-a",
-            delta,
-          },
-        } as AnyNotification);
-      }
-
-      // The snapshot's advance matches the FIRST chunk, then continues
-      // along a path the chunk stream cannot account for (RoboRev
-      // round 13): the wire diverged after the matched prefix, and the
-      // remaining chunk belongs to the dead generation.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello world again", "inProgress")],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .find((item) => item.id === "item-a")?.pendingText,
-      ).toBeUndefined();
-
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: ".",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello world again.",
-      });
-    });
-
-    it("a completed snapshot turn settles a statusless item's chunks", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello", "inProgress")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: " world",
-        },
-      } as AnyNotification);
-
-      // The reread's TURN has completed; its item carries no status of
-      // its own (RoboRev round 14). The turn's settle is the item's.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "completed",
-              items: [
-                { id: "item-a", turnId: "t1", type: "agentMessage", text: "Hello" } as ThreadItem,
-              ],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .find((item) => item.id === "item-a")?.pendingText,
-      ).toBeUndefined();
-
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: ".",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello.",
-      });
-      // And no later row-changing frame restores "Writing…" either.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
-      expect(
-        (rowById(store, "item-a") as { streaming?: boolean } | undefined)?.streaming,
-      ).toBe(false);
-    });
 
     it("a reread that rekeys an item does not keep its obsolete keyed twin", async () => {
       const service = new FakeConversationService();
@@ -21194,14 +18625,7 @@ describe("ConversationStore", () => {
       ]);
 
       // And no later frame projects the obsolete copy back.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(assistantRows().map((row) => row.markdown)).toEqual([
         "Hello world",
       ]);
@@ -21239,21 +18663,13 @@ describe("ConversationStore", () => {
         nextCursor: undefined,
       };
       await store.getState().loadOlder(service);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             id: "item-a",
             turnId: "t1",
             type: "agentMessage",
             text: "Hello",
             status: "inProgress",
-          } as ThreadItem,
-        },
-      } as AnyNotification);
+          } as ThreadItem), turnId: "t1" }] } } as AnyNotification);
 
       // The reread's turn completed; its item carries no status of its
       // own: the snapshot settles it, and the page-owned copy must settle
@@ -21278,14 +18694,7 @@ describe("ConversationStore", () => {
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(
         (rowById(store, "item-a") as { streaming?: boolean } | undefined)?.streaming,
       ).toBe(false);
@@ -21310,49 +18719,27 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
 
       // A live frame brings the paged item into the active turn.
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             id: "pagey",
             turnId: "t1",
             type: "userMessage",
             text: "paged content",
-          } as ThreadItem,
-        },
-      } as AnyNotification);
+          } as ThreadItem), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "pagey")).toBeDefined();
 
       // The turn's full completion omits the item: the reducer withdraws
       // it, and the page-history layer must not resurrect the row (RoboRev
       // round 18).
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "full",
-            status: "completed",
-            items: [userMessageItem("other", "kept")],
-          },
-        },
-      } as AnyNotification);
+            status: "completed"
+            
+          }], items: ([userMessageItem("other", "kept")]).map((it) => ({ ...it, turnId: it.turnId ?? "t1" })) } } as AnyNotification);
       expect(rowById(store, "pagey")).toBeUndefined();
 
       // And no later frame restores it either.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(rowById(store, "pagey")).toBeUndefined();
     });
 
@@ -21373,47 +18760,25 @@ describe("ConversationStore", () => {
         nextCursor: undefined,
       };
       await store.getState().loadOlder(service);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             id: "pagey",
             turnId: "t1",
             type: "userMessage",
             text: "paged content",
-          } as ThreadItem,
-        },
-      } as AnyNotification);
+          } as ThreadItem), turnId: "t1" }] } } as AnyNotification);
       expect(rowById(store, "pagey")).toBeDefined();
 
       // The stamp's item list is OMITTED, not empty-bracketed — Go's
       // omitempty drops an empty list, and the reducer reads it as one:
       // every item is withdrawn (RoboRev round 19).
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "full",
             status: "completed",
-          },
-        },
-      } as AnyNotification);
+          }] } } as AnyNotification);
       expect(rowById(store, "pagey")).toBeUndefined();
 
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(rowById(store, "pagey")).toBeUndefined();
     });
 
@@ -21489,25 +18854,11 @@ describe("ConversationStore", () => {
       // The turn's full completion withdraws the source: the attachment
       // the page's images kept alive must go with it, under neither wire
       // id, not survive as an orphan (RoboRev round 20).
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t1", itemsView: "full", status: "completed" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "full", status: "completed" }] } } as AnyNotification);
       expect(rowById(store, "old-wire:attachments")).toBeUndefined();
       expect(rowById(store, "new-wire:attachments")).toBeUndefined();
 
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(rowById(store, "old-wire:attachments")).toBeUndefined();
       expect(rowById(store, "new-wire:attachments")).toBeUndefined();
     });
@@ -21534,18 +18885,18 @@ describe("ConversationStore", () => {
         { id: "live-1", turnId: "tA", type: "agentMessage", text: "stale live", status: "inProgress" } as ThreadItem,
       ]) {
         store.getState().applyNotification({
-          method: "item/completed",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "tA", item },
+          method: "history/updated",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 1 },
+            items: [{ ...item, turnId: "tA" }],
+          },
         } as AnyNotification);
       }
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "tA", itemsView: "", status: "completed" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "tA", itemsView: "", status: "completed" }] } } as AnyNotification);
       expect(rowById(store, "live-1")).toBeDefined();
 
       // The reread omits the mixed turn entirely: the page-owned row
@@ -21568,14 +18919,7 @@ describe("ConversationStore", () => {
       expect(rowById(store, "live-1")).toBeUndefined();
 
       // And no later row-changing frame projects it back.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(rowById(store, "live-1")).toBeUndefined();
     });
 
@@ -21601,8 +18945,15 @@ describe("ConversationStore", () => {
         { id: "live-1", turnId: "tA", type: "agentMessage", text: "stale live", status: "inProgress" } as ThreadItem,
       ]) {
         store.getState().applyNotification({
-          method: "item/completed",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "tA", item },
+          method: "history/updated",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 1 },
+            items: [{ ...item, turnId: "tA" }],
+          },
         } as AnyNotification);
       }
       // The turn's completion is MISSED: the local model still names tA
@@ -21628,14 +18979,7 @@ describe("ConversationStore", () => {
       expect(rowById(store, "live-1")).toBeUndefined();
 
       // And no later row-changing frame projects it back.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(rowById(store, "live-1")).toBeUndefined();
     });
 
@@ -21658,19 +19002,12 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
 
       // The turn fails locally: its error projects a failure row.
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "",
             status: "failed",
             error: { message: "boom" },
-          },
-        },
-      } as AnyNotification);
+          }] } } as AnyNotification);
       const failureRows = () =>
         rows(store).filter((row) => row.kind === "failure");
       expect(failureRows()).not.toHaveLength(0);
@@ -21699,87 +19036,10 @@ describe("ConversationStore", () => {
       expect(failureRows()).toHaveLength(0);
 
       // And no later row-changing frame resurrects it.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(failureRows()).toHaveLength(0);
     });
 
-    it("a refresh that names the active turn but omits it keeps the live turn working", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [makeTurn({ id: "t1", status: "inProgress", items: [] })],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      // No loadOlder: no page history exists yet.
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
-            id: "live-1",
-            turnId: "t1",
-            type: "agentMessage",
-            text: "live text",
-            status: "inProgress",
-          } as ThreadItem,
-        },
-      } as AnyNotification);
-      expect(rowById(store, "live-1")).toBeDefined();
-
-      // The reread NAMES t1 active while its bounded snapshot omits the
-      // turn itself (RoboRev round 24): before any pagination exists there
-      // is no page merge to carry the live working set, and the replace
-      // path must not discard the turn the wire still reports active.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({ id: "t9", status: "completed", items: [userMessageItem("later", "fresh")] }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(rowById(store, "live-1")).toBeDefined();
-      expect(
-        store.getState().conversation?.turns.some((turn) => turn.id === "t1"),
-      ).toBe(true);
-
-      // A later item frame finds its containing turn and updates the
-      // transcript instead of only triggering rereads.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "live-1",
-          delta: " more",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "live-1")).toMatchObject({
-        kind: "assistant",
-        markdown: "live text more",
-      });
-    });
 
     it("a paged fragment of a turn does not shield its live-acquired failure from a clean reread", async () => {
       const service = new FakeConversationService();
@@ -21802,19 +19062,12 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
 
       // The turn fails live: its error projects a failure row.
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "",
             status: "failed",
             error: { message: "boom" },
-          },
-        },
-      } as AnyNotification);
+          }] } } as AnyNotification);
       const failureRows = () =>
         rows(store).filter((row) => row.kind === "failure");
       expect(failureRows()).not.toHaveLength(0);
@@ -21845,14 +19098,7 @@ describe("ConversationStore", () => {
       expect(failureRows()).toHaveLength(0);
 
       // And no later row-changing frame resurrects it.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(failureRows()).toHaveLength(0);
     });
 
@@ -21891,22 +19137,14 @@ describe("ConversationStore", () => {
 
       // The call fails locally: its item settles "failed" and the row
       // shows it.
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             id: "act",
             turnId: "t1",
             type: "commandExecution",
             toolName: "shell",
             callId: "c1",
             status: "failed",
-          } as ThreadItem,
-        },
-      } as AnyNotification);
+          } as ThreadItem), turnId: "t1" }] } } as AnyNotification);
       expect((rowById(store, "act") as { state?: string }).state).toBe("failed");
 
       // The reread's turn completed; its copy of the item carries NO
@@ -21948,14 +19186,7 @@ describe("ConversationStore", () => {
       ).toBeUndefined();
 
       // And the clean state survives an unrelated row-changing frame.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect((rowById(store, "act") as { state?: string }).state).toBe("completed");
     });
 
@@ -21978,19 +19209,12 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
 
       // The turn fails live: its error projects a failure row.
-      store.getState().applyNotification({
-        method: "turn/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{
             id: "t1",
             itemsView: "",
             status: "failed",
             error: { message: "boom" },
-          },
-        },
-      } as AnyNotification);
+          }] } } as AnyNotification);
       const failureRows = () =>
         rows(store).filter((row) => row.kind === "failure");
       expect(failureRows()).not.toHaveLength(0);
@@ -22017,14 +19241,7 @@ describe("ConversationStore", () => {
       expect(failureRows()).toHaveLength(0);
 
       // And no later row-changing frame resurrects it.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(failureRows()).toHaveLength(0);
     });
 
@@ -22124,115 +19341,6 @@ describe("ConversationStore", () => {
       );
     });
 
-    it("a paged refresh keeps the named active turn's unmatched members live", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [
-                {
-                  id: "act-old",
-                  turnId: "t1",
-                  type: "commandExecution",
-                  toolName: "shell",
-                  callId: "c1",
-                  status: "completed",
-                } as ThreadItem,
-                {
-                  id: "act-live",
-                  turnId: "t1",
-                  type: "commandExecution",
-                  toolName: "shell",
-                  callId: "c2",
-                  status: "inProgress",
-                } as ThreadItem,
-              ],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-
-      // The reread names t1 active, omits the turn, and re-serves the
-      // completed member under t9 (RoboRev round 26): the turn is covered
-      // only through the shared item, and its unmatched live member is
-      // the working set — it must stay updatable, not merely displayed.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t9",
-              status: "completed",
-              items: [
-                {
-                  id: "act-old",
-                  turnId: "t9",
-                  type: "commandExecution",
-                  toolName: "shell",
-                  callId: "c1",
-                  status: "completed",
-                } as ThreadItem,
-              ],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(rowById(store, "act-live")).toMatchObject({
-        kind: "activity",
-        state: "running",
-      });
-
-      // A later delta for the surviving member finds its containing turn
-      // and lands: the merge used to delete the unmatched items of a turn
-      // covered only through a shared item, so the frame had no turn to
-      // update and no row-changing frame kept the row either.
-      store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "act-live",
-          callId: "c2",
-          delta: "tool-result",
-        },
-      } as AnyNotification);
-      expect(
-        (rowById(store, "act-live") as { detail?: { output?: string } })?.detail
-          ?.output,
-      ).toContain("tool-result");
-
-      // And an unrelated row-changing frame does not drop the member.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
-      expect(rowById(store, "act-live")).toBeDefined();
-    });
 
     it("a preserved ask re-renders when the refresh clears askPending", async () => {
       const service = new FakeConversationService();
@@ -22555,14 +19663,7 @@ describe("ConversationStore", () => {
 
       // A live row-changing frame renders the failure ONCE, under the
       // surviving turn's row id.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(failureRows()).toHaveLength(1);
       expect(failureRows()[0]?.id).toBe("failure:t9");
     });
@@ -22657,14 +19758,7 @@ describe("ConversationStore", () => {
 
       // A live row-changing frame renders the survivor's failure once,
       // still from the model.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(failureRows()).toHaveLength(1);
       expect(failureRows()[0]?.id).toBe("failure:t9");
       expect(failureRows()[0]?.title).toBe("fresh boom");
@@ -22806,14 +19900,7 @@ describe("ConversationStore", () => {
 
       // A live row-changing frame reprojects from the model: the resolved
       // failure stays gone.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(failureRows()).toHaveLength(0);
     });
 
@@ -22886,14 +19973,7 @@ describe("ConversationStore", () => {
 
       // A row-changing frame projects the carrier's failure from the
       // model — still one row, same identity.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(failureRows()).toHaveLength(1);
       expect(failureRows()[0]?.id).toBe("failure:t1");
     });
@@ -24079,98 +21159,11 @@ describe("ConversationStore", () => {
 
       // A row-changing frame projects the carrier's failure from the
       // model — still one row, same identity.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(failureRows()).toHaveLength(1);
       expect(failureRows()[0]?.id).toBe("failure:t1");
     });
 
-    it("an active snapshot item omitting status and turnId keeps its chunks", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [agentMessageItem("item-a", "Hello", "inProgress")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t1" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        turnsPage: turnsPage([wireTurn("t0", 500, 20)], undefined),
-        nextCursor: undefined,
-      };
-      await store.getState().loadOlder(service);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: " world",
-        },
-      } as AnyNotification);
-
-      // The reread's item carries NEITHER a status NOR a turnId (the
-      // wire omitted both), inside a turn still streaming (RoboRev
-      // round 15): the containing turn's status is the only settle
-      // signal, and it says active.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t1",
-              status: "inProgress",
-              items: [
-                { id: "item-a", type: "agentMessage", text: "Hello" } as ThreadItem,
-              ],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(
-        store.getState().conversation?.turns
-          .flatMap((turn) => turn.items)
-          .find((item) => item.id === "item-a")?.pendingText,
-      ).toEqual([" world"]);
-
-      // The stream continues from exactly where it was.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "item-a",
-          delta: "!",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "item-a")).toMatchObject({
-        kind: "assistant",
-        markdown: "Hello world!",
-      });
-    });
 
     it("an overlapping page does not resurrect an attachment the live model dropped", async () => {
       const service = new FakeConversationService();
@@ -24262,14 +21255,7 @@ describe("ConversationStore", () => {
       ).toEqual([]);
 
       // The next row-changing frame must not project it back.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "inProgress" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(rowById(store, "msg-1:attachments")).toBeUndefined();
     });
 
@@ -24320,15 +21306,7 @@ describe("ConversationStore", () => {
 
       // A live frame inserts N while the read is in flight — on screen at
       // once, and accounted for by the snapshot that follows.
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: userMessageItem("N", "live notification"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(userMessageItem("N", "live notification")), turnId: "t0" }] } } as AnyNotification);
       expect(rows(store).map((item) => item.id)).toEqual(["P", "A", "B", "N"]);
 
       ctrl.release();
@@ -24369,22 +21347,14 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
       expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(true);
 
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "wire-Z-source",
             transcriptKey: "key-Z",
             toolName: "shell",
             status: "completed",
             output: "done",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
 
       // The merge keeps the page's images (absent images mean unchanged),
       // while the source's identity follows the reissue — the attachment
@@ -24427,13 +21397,7 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
       expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(true);
 
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "wire-Z-source",
             transcriptKey: "key-Z",
@@ -24441,9 +21405,7 @@ describe("ConversationStore", () => {
             status: "completed",
             output: "done",
             outputImages: [],
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
 
       expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(false);
     });
@@ -24492,22 +21454,14 @@ describe("ConversationStore", () => {
       ]);
 
       // The snapshot re-emits key-p3 under a new wire id, no outputImages.
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "wire-p3-new",
             transcriptKey: "key-p3",
             toolName: "shell",
             status: "completed",
             output: "done",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
 
       const ids = rows(store).map((item) => item.id);
       expect(ids).toEqual([
@@ -24550,13 +21504,7 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
       expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(true);
 
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "wire-Z",
             transcriptKey: "key-Z",
@@ -24564,9 +21512,7 @@ describe("ConversationStore", () => {
             status: "completed",
             output: "done",
             outputImages: [{ source: "z", url: "https://example.com/z.png" }],
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
 
       // The snapshot's own "wire-Z:attachments" supersedes the page's.
       expect(rows(store).filter((item) => item.id === "wire-Z:attachments")).toHaveLength(1);
@@ -24604,13 +21550,7 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
       expect(rows(store).some((item) => item.id === "old-wire-Z:attachments")).toBe(true);
 
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "new-wire-Z",
             transcriptKey: "key-Z",
@@ -24618,9 +21558,7 @@ describe("ConversationStore", () => {
             status: "completed",
             output: "done",
             outputImages: [{ source: "new", url: "https://example.com/new.png" }],
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t1" }] } } as AnyNotification);
 
       const ids = rows(store).map((item) => item.id);
       // The page's superseded copy is gone, not kept alongside the fresh one.
@@ -24883,15 +21821,7 @@ describe("ConversationStore", () => {
       for (let i = 0; i < 100; i++) pageItems.push({ kind: "user", id: `P-${i}`, text: "" });
       service.olderItems = { items: pageItems, nextCursor: "cursor-2" };
       await store.getState().loadOlder(service);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: userMessageItem("N", "live"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(userMessageItem("N", "live")), turnId: "t0" }] } } as AnyNotification);
       ctrl.release();
       await ctrl.completed(1);
       await yieldMicrotask();
@@ -24920,33 +21850,6 @@ describe("ConversationStore", () => {
   // and its set — so a frame the transport delivers after the response reaches
   // applyNotification only after the snapshot has committed, and applies on
   // top of it.
-  describe("a frame delivered after the read response applies on top of it", () => {
-    it("keeps a live frame that lands right after the snapshot commits", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [makeTurn({ id: "t0", status: "inProgress", items: [agentMessageItem("X", "from the read", "inProgress")] })],
-          evener: evenerWith({ activeTurnId: "t0" }),
-        }),
-      );
-      const store = createConversationStore();
-      const sink = createFakeSink();
-      await store.getState().openProjected(service, sink, "ref-1");
-
-      // The rehydrate's own commit, then the very next thing that happens: a
-      // delta for the item the snapshot just carried.
-      await store.getState().rehydrate(service, sink);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", delta: " and more" },
-      } as AnyNotification);
-
-      expect(rowById(store, "X")).toMatchObject({
-        kind: "assistant",
-        markdown: "from the read and more",
-      });
-    });
-  });
 
   // A read response is ordered at the snapshot cut: every frame this store
   // folded before the response is already reflected in the snapshot that
@@ -24959,38 +21862,22 @@ describe("ConversationStore", () => {
     // flight, and a reread that either carries its own X or omits it.
     const liveCases = [
       {
-        kind: "an item/completed replacement",
+        kind: "a history/updated replacement",
         initialX: () => agentMessageItem("X", "original", "inProgress"),
         staleX: () => agentMessageItem("X", "from-the-reread", "completed"),
         frame: {
-          method: "item/completed",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", item: agentMessageItem("X", "live-final-text", "completed") },
+          method: "history/updated",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            bootGeneration: "1",
+            epoch: 1,
+            snapshot: { incarnation: "inc-1", length: 1 },
+            items: [{ ...agentMessageItem("X", "live-final-text", "completed"), turnId: "t0" }],
+          },
         } as AnyNotification,
         live: "live-final-text",
         settled: "from-the-reread",
-      },
-      {
-        kind: "an agentMessage delta",
-        initialX: () => agentMessageItem("X", "base-text", "inProgress"),
-        staleX: () => agentMessageItem("X", "base-text", "inProgress"),
-        frame: {
-          method: "item/agentMessage/delta",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", delta: "-appended" },
-        } as AnyNotification,
-        live: "base-text-appended",
-        settled: "base-text",
-      },
-      {
-        kind: "an agentMessage reset",
-        initialX: () => agentMessageItem("X", "will-be-reset", "inProgress"),
-        staleX: () => agentMessageItem("X", "will-be-reset", "inProgress"),
-        frame: {
-          method: "item/agentMessage/reset",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X" },
-        } as AnyNotification,
-        // Decision 2: a reset removes the item it names; the row goes with it.
-        live: undefined,
-        settled: "will-be-reset",
       },
     ] as const;
 
@@ -25089,119 +21976,10 @@ describe("ConversationStore", () => {
       expect(ids).toEqual(["B", "C"]);
     });
 
-    it.each([
-      ["a reasoning delta", { type: "reasoning", id: "X", text: "reasoning-base", status: "inProgress" } as ThreadItem, {
-        method: "item/reasoning/summaryTextDelta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", summaryIndex: 0, delta: "-more" },
-      } as AnyNotification, "reasoning-base-more"],
-      ["a tool-output delta", { type: "commandExecution", id: "X", toolName: "mytool", callId: "call-X", status: "inProgress" } as ThreadItem, {
-        method: "item/toolOutput/delta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", callId: "call-X", delta: "tool-result" },
-      } as AnyNotification, "tool-result"],
-    ] as const)("shows %s on its activity row, and the reread's version after it commits", async (_label, initialX, frame, liveOutput) => {
-      const { store } = await openRunningTurn([initialX], {
-        turns: [makeTurn({ id: "t0", status: "inProgress", items: [initialX] })],
-        evener: evenerWith({ activeTurnId: "t0" }),
-      });
-      store.getState().applyNotification(frame);
-      const live = rowById(store, "X");
-      expect(live?.kind === "activity" && live.detail.output).toBe(liveOutput);
-
-      const { store: raced } = await raceReread(
-        initialX,
-        [userMessageItem("B", "base"), initialX, userMessageItem("C", "fresh-authoritative")],
-        frame,
-      );
-      const settledRow = rowById(raced, "X");
-      expect(settledRow?.kind).toBe("activity");
-      expect(settledRow?.kind === "activity" && settledRow.detail.output).toBe(
-        initialX.type === "reasoning" ? "reasoning-base" : undefined,
-      );
-    });
-
     // The page history the snapshot cannot know about is prepended, keeps the
     // page's own cursor, and the cap still trims from the oldest end.
-    it("keeps page history and its cursor in front of the snapshot's rows", async () => {
-      const { store } = await raceReread(
-        agentMessageItem("X", "original", "inProgress"),
-        [userMessageItem("B", "base"), userMessageItem("C", "fresh-authoritative")],
-        {
-          method: "item/agentMessage/delta",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", delta: "-updated" },
-        } as AnyNotification,
-        { pageItems: [{ kind: "user", id: "P", text: "page-old" }] },
-      );
-      expect(rows(store).map((item) => item.id)).toEqual(["P", "B", "C"]);
-      expect(store.getState().olderCursor).toBe("cursor-2");
-    });
 
-    it("trims the oldest rows when page history and the snapshot exceed the cap", async () => {
-      const pageItems: MobileConversation["items"] = [];
-      for (let i = 0; i < 600; i++) pageItems.push({ kind: "user", id: `P-${i}`, text: "" });
-      const { store } = await raceReread(
-        agentMessageItem("X", "original", "inProgress"),
-        [userMessageItem("B", "base"), userMessageItem("C", "fresh-authoritative")],
-        {
-          method: "item/agentMessage/delta",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", delta: "-updated" },
-        } as AnyNotification,
-        { pageItems },
-      );
-      const ids = rows(store).map((item) => item.id);
-      expect(ids.length).toBeLessThanOrEqual(500);
-      // The newest rows survive: the snapshot's own, at the end, with the
-      // page history that still fits in front of them.
-      expect(ids.slice(-2)).toEqual(["B", "C"]);
-      expect(ids[0]).toMatch(/^P-/);
-      expect(ids).not.toContain("X");
-    });
 
-    it("replaces an oversized row with the reread's short version", async () => {
-      const longText = "x".repeat(MAX_ITEM_BYTES + 100);
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t0",
-              status: "inProgress",
-              items: [userMessageItem("B", "base"), agentMessageItem("X", longText, "inProgress")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t0" }),
-        }),
-      );
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      expect(markdownOf(store, "X")).toContain(TRUNCATION_MARKER);
-      const ctrl = makeControlledRead(service);
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t0",
-              status: "inProgress",
-              items: [userMessageItem("B", "base"), agentMessageItem("X", "reread-short", "completed")],
-            }),
-          ],
-          evener: evenerWith({ activeTurnId: "t0" }),
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await ctrl.started(1);
-      await yieldMicrotask();
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", delta: "-more" },
-      } as AnyNotification);
-      ctrl.release();
-      await ctrl.completed(1);
-      await yieldMicrotask();
-      expect(markdownOf(store, "X")).toBe("reread-short");
-    });
   });
 
   // Where a delta lands, now that every frame folds into the model and the
@@ -25347,263 +22125,6 @@ describe("ConversationStore", () => {
   // history, commit authoritative projection, append only current-only liveOwned
   // tail; drop current-only items owned by neither as omitted old history.
   // Dedupe/order/cap newest tail.
-  describe("which frames a delta family applies to", () => {
-    // One running turn holding the three activity kinds a delta can name:
-    // a tool call (with its callId), a reasoning item, and a
-    // forward-compatible unknown item. Their cluster families differ, so
-    // each is its own row.
-    const deltaTargets = (): ThreadItem[] => [
-      { type: "commandExecution", id: "tool-1", toolName: "shell", callId: "call-A", output: "line1", status: "inProgress" } as ThreadItem,
-      { type: "reasoning", id: "reason-1", text: "Thinking", status: "inProgress" } as ThreadItem,
-      { type: "somethingNew", id: "unk-1", text: "unknown body", status: "inProgress" } as unknown as ThreadItem,
-    ];
-
-    const reasoningDelta = (itemId: string, delta: string) =>
-      ({
-        method: "item/reasoning/summaryTextDelta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId, summaryIndex: 0, delta },
-      }) as AnyNotification;
-
-    const toolDelta = (itemId: string, delta: string, callId?: string) =>
-      ({
-        method: "item/toolOutput/delta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId, ...(callId === undefined ? {} : { callId }), delta },
-      }) as AnyNotification;
-
-    const outputOf = (
-      store: ReturnType<typeof createConversationStore>,
-      id: string,
-    ): string | undefined => {
-      const row = rowById(store, id);
-      return row?.kind === "activity" ? row.detail.output : undefined;
-    };
-
-    // These frames are unconstructable at the hub: every family keeps its own
-    // item id. An agentMessage delta carries p.assistantItem and a reasoning
-    // delta p.reasoningItem (internal/appprojector/appwire_projection.go:474-479
-    // and :497-503), each set only by that family's own ensure* helper
-    // (:2277-2301) through one monotonic minter (nextItemID, :2304-2307), and a
-    // tool delta's id comes from the callId map (:2309-2316). An id minted for
-    // one family is never handed to another. The rows below pin what the model
-    // does anyway, so a producer that ever crossed them could not make the
-    // phone show one family's text on another's row.
-    it.each([
-      // A reasoning delta writes summary chunks; only a reasoning row reads
-      // them, so the tool and unknown rows are untouched.
-      ["a reasoning delta at the tool row", () => reasoningDelta("tool-1", " nope"), "tool-1", "line1"],
-      ["a reasoning delta at the unknown row", () => reasoningDelta("unk-1", " nope"), "unk-1", "unknown body"],
-      // A tool-output delta writes the item's output; only a tool row reads
-      // it, and the reasoning row shows its accumulated chunks.
-      ["a tool delta at the reasoning row", () => toolDelta("reason-1", " nope", "call-A"), "reason-1", "Thinking"],
-    ] as const)("leaves the row unchanged under %s", async (_label, frame, id, expected) => {
-      const { store, service } = await openRunningTurn(deltaTargets());
-      const readsAfterOpen = service.readProjectionCalls.length;
-      store.getState().applyNotification(frame());
-      await yieldMicrotask();
-      expect(outputOf(store, id)).toBe(expected);
-      // Decision 2: a mis-addressed delta asks for nothing. The snapshot cut
-      // is what settles the thread, not a reread per stray frame.
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen);
-    });
-
-    it.each([
-      ["a reasoning delta at the reasoning row", () => reasoningDelta("reason-1", " more"), "reason-1", "Thinking more"],
-      ["a tool delta whose callId matches", () => toolDelta("tool-1", "\nline2", "call-A"), "tool-1", "line1\nline2"],
-      // Decision 2: the wire routes a tool-output delta by item id, and the
-      // model folds it there. The callId the frame carries no longer gates
-      // the append (the row keeps showing its own callId for diagnostics).
-      // The hub cannot cross the two: the projector stamps a delta's itemId
-      // by looking the callId up in the map that minted it
-      // (internal/appprojector/appwire_projection.go:743-749 with
-      // toolItemID at :2309-2316, both fed by the same ToolCallStart at
-      // :701-709), and appwire/types.go:2592-2594 calls CallID "the legacy
-      // alias kept for clients that still key on it".
-      ["a tool delta whose callId differs", () => toolDelta("tool-1", "\nline2", "call-B"), "tool-1", "line1\nline2"],
-      ["a tool delta carrying no callId", () => toolDelta("tool-1", "\nline2"), "tool-1", "line1\nline2"],
-    ] as const)("appends to the row under %s", async (_label, frame, id, expected) => {
-      const { store, service } = await openRunningTurn(deltaTargets());
-      const readsAfterOpen = service.readProjectionCalls.length;
-      store.getState().applyNotification(frame());
-      await yieldMicrotask();
-      expect(outputOf(store, id)).toBe(expected);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen);
-    });
-
-    it("keeps the tool row's own callId when a delta carries another", async () => {
-      const { store } = await openRunningTurn(deltaTargets());
-      store.getState().applyNotification(toolDelta("tool-1", " x", "call-B"));
-      expect(rowById(store, "tool-1")).toMatchObject({
-        kind: "activity",
-        detail: { callId: "call-A" },
-      });
-    });
-
-    // The snapshot is authoritative over every frame that preceded its
-    // response, whether that frame landed or was invisible: a reread that
-    // omits the row removes it, and one that carries it shows its version.
-    it.each([
-      ["omits the row", [] as ThreadItem[], undefined],
-      ["carries its own version of the row", [
-        { type: "commandExecution", id: "tool-1", toolName: "shell", callId: "call-A", output: "authoritative", status: "completed" } as ThreadItem,
-      ], "authoritative"],
-    ] as const)("commits the reread's rows when it %s", async (_label, items, expected) => {
-      const { store, service, sink } = await openRunningTurn(deltaTargets());
-      let release!: (value: ConversationReadProjection) => void;
-      service.readProjectionBlock = new Promise((resolve) => { release = resolve; });
-      const rehydratePromise = store.getState().rehydrate(service, sink);
-      // A delta lands while the read is in flight — and is already reflected
-      // in the snapshot that arrives.
-      store.getState().applyNotification(toolDelta("tool-1", "\nappended", "call-A"));
-      expect(outputOf(store, "tool-1")).toBe("line1\nappended");
-      release(makeReadProjectionResult(runningTurnThread([...items])));
-      await rehydratePromise;
-      expect(outputOf(store, "tool-1")).toBe(expected);
-    });
-  });
-
-  // The bound is a property of the text a row carries, re-applied on every
-  // publish: nothing remembers "this row was already cut", so an authoritative
-  // short version shows short, a stream that grows past the limit keeps showing
-  // the same bounded prefix, and no row ever collects a second marker. One table,
-  // because the rule is the row shape's and not any one kind's.
-  describe("the byte bound follows a row's own text", () => {
-    const toolWithOutput = (output: string): ThreadItem[] => [
-      {
-        type: "commandExecution",
-        id: "row-1",
-        toolName: "shell",
-        callId: "call-A",
-        output,
-        status: "inProgress",
-      } as ThreadItem,
-    ];
-
-    const outputOf = (
-      store: ReturnType<typeof createConversationStore>,
-      id: string,
-    ): string | undefined => {
-      const row = rowById(store, id);
-      expect(row?.kind).toBe("activity");
-      if (row?.kind !== "activity") throw new Error("expected an activity row");
-      return row.detail.output;
-    };
-
-    const markdownOf = (
-      store: ReturnType<typeof createConversationStore>,
-      id: string,
-    ): string | undefined => {
-      const row = rowById(store, id);
-      expect(row?.kind).toBe("assistant");
-      if (row?.kind !== "assistant") throw new Error("expected an assistant row");
-      return row.markdown;
-    };
-
-    it.each([
-      {
-        kind: "assistant",
-        items: (text: string) => [agentMessageItem("row-1", text, "inProgress")],
-        read: markdownOf,
-        delta: (store: ReturnType<typeof createConversationStore>, delta: string) =>
-          store.getState().applyNotification({
-            method: "item/agentMessage/delta",
-            params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "row-1", delta },
-          } as AnyNotification),
-        settle: (store: ReturnType<typeof createConversationStore>, text: string) =>
-          store.getState().applyNotification({
-            method: "item/completed",
-            params: {
-              threadId: "thread-1",
-              ref: "ref-1",
-              turnId: "t1",
-              item: agentMessageItem("row-1", text, "completed"),
-            },
-          } as AnyNotification),
-      },
-      {
-        kind: "activity",
-        items: toolWithOutput,
-        read: outputOf,
-        delta: (store: ReturnType<typeof createConversationStore>, delta: string) =>
-          store.getState().applyNotification({
-            method: "item/toolOutput/delta",
-            params: {
-              threadId: "thread-1",
-              ref: "ref-1",
-              turnId: "t1",
-              itemId: "row-1",
-              callId: "call-A",
-              delta,
-            },
-          } as AnyNotification),
-        settle: (store: ReturnType<typeof createConversationStore>, text: string) =>
-          store.getState().applyNotification({
-            method: "item/completed",
-            params: {
-              threadId: "thread-1",
-              ref: "ref-1",
-              turnId: "t1",
-              item: {
-                type: "commandExecution",
-                id: "row-1",
-                toolName: "shell",
-                status: "completed",
-                callId: "call-A",
-                output: text,
-              } as ThreadItem,
-            },
-          } as AnyNotification),
-      },
-    ])("holds a $kind row to one bound and one marker", async ({ items, read, delta, settle }) => {
-      const { store } = await openRunningTurn(items("x".repeat(MAX_ITEM_BYTES + 100)));
-      const cut = read(store, "row-1");
-      if (cut === undefined) throw new Error("no row");
-      expect(new TextEncoder().encode(cut).length).toBeLessThanOrEqual(MAX_ITEM_BYTES);
-      expect(cut.endsWith(TRUNCATION_MARKER)).toBe(true);
-      expect(cut.split(TRUNCATION_MARKER).length - 1).toBe(1);
-
-      // A delta onto an already-cut row shows the same prefix, with one marker.
-      delta(store, " MORE");
-      expect(read(store, "row-1")).toBe(cut);
-
-      // An authoritative short version is short, and appends from there.
-      settle(store, "short-result");
-      expect(read(store, "row-1")).toBe("short-result");
-      delta(store, " appended");
-      expect(read(store, "row-1")).toBe("short-result appended");
-    });
-
-    it("streams from empty again after a reset removes an oversized item", async () => {
-      const { store } = await openRunningTurn([
-        agentMessageItem("item-1", "x".repeat(70_000), "inProgress"),
-      ]);
-      const bounded = rowById(store, "item-1");
-      expect(bounded?.kind === "assistant" && bounded.markdown.endsWith(TRUNCATION_MARKER)).toBe(true);
-
-      store.getState().applyNotification({
-        method: "item/agentMessage/reset",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "item-1" },
-      } as AnyNotification);
-      expect(rowById(store, "item-1")).toBeUndefined();
-
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: agentMessageItem("item-1", "", "inProgress"),
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "item-1", delta: "fresh" },
-      } as AnyNotification);
-      expect(rowById(store, "item-1")).toMatchObject({
-        kind: "assistant",
-        markdown: "fresh",
-      });
-    });
-  });
 
   describe("dedupe within one page", () => {
     it("dedupes duplicate IDs within the incoming page (the later fragment wins), preserving order", async () => {
@@ -25803,515 +22324,21 @@ describe("ConversationStore", () => {
       return { store, service };
     }
 
-    it("C3 open: authoritative oversized→short unfreezes so later delta applies", async () => {
-      // Open with an oversized assistant item, then re-open (openProjected) with
-      // the SAME id but short content — the freeze must be removed so a later
-      // delta appends.
-      const { store } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
-      ]);
-      const xBefore = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(xBefore?.kind).toBe("assistant");
-      expect(
-        xBefore?.kind === "assistant" &&
-          xBefore.markdown.endsWith("… truncated"),
-      ).toBe(true);
 
-      // Re-open with short content for the same id.
-      const service2 = new FakeConversationService();
-      service2.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t0",
-              items: [
-                userMessageItem("B", "base"),
-                agentMessageItem("X", "short", "completed"),
-              ],
-            }),
-          ],
-        }),
-      );
-      await store.getState().openProjected(service2, createFakeSink(), "ref-1");
-      const xAfter = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(xAfter?.kind).toBe("assistant");
-      expect(xAfter?.kind === "assistant" && xAfter.markdown).toBe("short");
 
-      // Delta should now append — freeze removed by authoritative short version.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-          delta: " appended",
-        },
-      } as AnyNotification);
-      const xDelta = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(xDelta?.kind).toBe("assistant");
-      expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
-        "short appended",
-      );
-    });
 
-    it("C3 rehydrate: authoritative oversized→short unfreezes so later delta applies", async () => {
-      // Open oversized, then rehydrate with short content for the same id — the
-      // freeze must be removed so a later delta appends.
-      const { store, service } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
-      ]);
-      const xBefore = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(xBefore?.kind).toBe("assistant");
-      expect(
-        xBefore?.kind === "assistant" &&
-          xBefore.markdown.endsWith("… truncated"),
-      ).toBe(true);
 
-      // Rehydrate with short content for the same id.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t0",
-              items: [
-                userMessageItem("B", "base"),
-                agentMessageItem("X", "short", "completed"),
-              ],
-            }),
-          ],
-        }),
-      );
-      await store.getState().rehydrate(service, createFakeSink());
-      const xAfter = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(xAfter?.kind).toBe("assistant");
-      expect(xAfter?.kind === "assistant" && xAfter.markdown).toBe("short");
-
-      // Delta should now append — freeze removed by authoritative short version.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-          delta: " appended",
-        },
-      } as AnyNotification);
-      const xDelta = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(xDelta?.kind).toBe("assistant");
-      expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
-        "short appended",
-      );
-    });
-
-    it("C4 open: omitted ID is removed from truncation ownership (no stale freeze)", async () => {
-      // Open with oversized X, then re-open omitting X — a later delta to X (if
-      // it reappears via a live notification) must not be frozen by the stale
-      // entry. We verify the freeze does not persist for the omitted id by
-      // re-adding X via item/completed with short content and then delta.
-      const { store } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
-      ]);
-      // Re-open omitting X entirely.
-      const service2 = new FakeConversationService();
-      service2.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({ id: "t0", items: [userMessageItem("B", "base")] }),
-          ],
-        }),
-      );
-      await store.getState().openProjected(service2, createFakeSink(), "ref-1");
-      expect(
-        store.getState().conversation?.items.find((i) => i.id === "X"),
-      ).toBeUndefined();
-
-      // Re-introduce X via item/started with short content, then delta.
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: agentMessageItem("X", "fresh-short", "inProgress"),
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-          delta: " appended",
-        },
-      } as AnyNotification);
-      const xItem = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(xItem?.kind).toBe("assistant");
-      expect(xItem?.kind === "assistant" && xItem.markdown).toBe(
-        "fresh-short appended",
-      );
-    });
-
-    it("C4 rehydrate: omitted ID is removed from truncation ownership", async () => {
-      // Open with oversized X, then rehydrate omitting X. The stale freeze for
-      // X must be removed. Re-introduce X via item/completed short + delta.
-      const { store, service } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
-      ]);
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({ id: "t0", items: [userMessageItem("B", "base")] }),
-          ],
-        }),
-      );
-      await store.getState().rehydrate(service, createFakeSink());
-      expect(
-        store.getState().conversation?.items.find((i) => i.id === "X"),
-      ).toBeUndefined();
-
-      // Re-introduce X via item/completed with short content, then delta.
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: agentMessageItem("X", "fresh-short", "completed"),
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-          delta: " appended",
-        },
-      } as AnyNotification);
-      const xItem = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(xItem?.kind).toBe("assistant");
-      expect(xItem?.kind === "assistant" && xItem.markdown).toBe(
-        "fresh-short appended",
-      );
-    });
-
-    it("C4 the cap shows the newest rows; a fresh item is judged on its own content", async () => {
-      // Fill past the 500-cap so the oldest rows are trimmed. The first few
-      // items are oversized, so the rows that survive prove the bound and the
-      // cap are independent.
-      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
-      const items: ThreadItem[] = [
-        userMessageItem("keep", "base"),
-        agentMessageItem("a-0", oversized, "completed"),
-        agentMessageItem("a-1", oversized, "completed"),
-        agentMessageItem("a-2", oversized, "completed"),
-      ];
-      for (let i = 3; i < 501; i++) {
-        items.push(agentMessageItem(`a-${i}`, "small", "completed"));
-      }
-      const { store } = await openProjectedWithItems(items);
-      const retained = store.getState().conversation?.items ?? [];
-      expect(retained.length).toBeLessThanOrEqual(500);
-      // The oldest rows are the ones the cap drops.
-      expect(retained.find((i) => i.id === "a-0")).toBeUndefined();
-
-      // A brand-new item arrives short and accepts a delta: nothing about the
-      // rows the cap dropped carries over to it.
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: agentMessageItem("fresh", "fresh-short", "completed"),
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "fresh",
-          delta: " appended",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "fresh")).toMatchObject({
-        kind: "assistant",
-        markdown: "fresh-short appended",
-      });
-    });
 
     // Decision 2: item/agentMessage/reset removes the item it names — the
     // model drops it, so its row goes with it and the stream starts again
     // under the item/started that follows.
-    it("protocol reset→start→delta: the reset removes the row and the restart is judged on its own", async () => {
-      const { store } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
-      ]);
-      const xBefore = rowById(store, "X");
-      expect(xBefore?.kind === "assistant" && xBefore.markdown.endsWith(TRUNCATION_MARKER)).toBe(true);
 
-      store.getState().applyNotification({
-        method: "item/agentMessage/reset",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "X")).toBeUndefined();
 
-      // The restarted item streams from empty.
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: agentMessageItem("X", "", "inProgress"),
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-          delta: "fresh content",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "X")).toMatchObject({
-        kind: "assistant",
-        markdown: "fresh content",
-      });
-    });
-
-    it("paged oversized item is bounded with the marker exactly once", async () => {
-      // An oversized row loaded through loadOlder is bounded with the marker
-      // appearing exactly once, and stays that way. Older pages live outside
-      // the model until D23d, so a live delta does not reach such a row.
-      const { store, service } = await openProjectedWithItems([
-        userMessageItem("base", "base"),
-      ]);
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        items: [
-          {
-            kind: "activity",
-            id: "page-tool",
-            label: "shell",
-            family: "tool",
-            state: "completed",
-            detail: {
-              output: "x".repeat(MAX_ITEM_BYTES + 100),
-              callId: "call-A",
-            },
-          },
-        ],
-        nextCursor: "cursor-2",
-      };
-      await store.getState().loadOlder(service);
-      const item = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "page-tool");
-      expect(item?.kind).toBe("activity");
-      expect(
-        item?.kind === "activity" &&
-          item.detail.output?.endsWith("… truncated"),
-      ).toBe(true);
-      const markerCount =
-        item?.kind === "activity"
-          ? (item.detail.output?.split("… truncated").length ?? 0)
-          : 0;
-      expect(markerCount - 1).toBe(1);
-
-      // A later tool-output delta names an item the model does not hold, so
-      // the row is unchanged — marker once, no new content.
-      store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "page-tool",
-          callId: "call-A",
-          delta: " MORE",
-        },
-      } as AnyNotification);
-      const item2 = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "page-tool");
-      expect(item2?.kind).toBe("activity");
-      expect(
-        item2?.kind === "activity" &&
-          item2.detail.output?.endsWith("… truncated"),
-      ).toBe(true);
-      const markerCount2 =
-        item2?.kind === "activity"
-          ? (item2.detail.output?.split("… truncated").length ?? 0)
-          : 0;
-      expect(markerCount2 - 1).toBe(1);
-    });
-
-    it("lifecycle item/started oversized then item/completed untruncates", async () => {
-      // An item arrives oversized via item/started (frozen), then item/completed
-      // arrives with short content — the freeze is removed and a later delta
-      // applies.
-      const { store } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-      ]);
-      // item/started with oversized output.
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: {
-            type: "commandExecution",
-            id: "tool-1",
-            toolName: "shell",
-            status: "inProgress",
-            callId: "call-A",
-            output: "x".repeat(MAX_ITEM_BYTES + 100),
-          } as ThreadItem,
-        },
-      } as AnyNotification);
-      const item0 = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "tool-1");
-      expect(item0?.kind).toBe("activity");
-      expect(
-        item0?.kind === "activity" &&
-          item0.detail.output?.endsWith("… truncated"),
-      ).toBe(true);
-
-      // item/completed with short output — untruncates (unfreezes).
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: {
-            type: "commandExecution",
-            id: "tool-1",
-            toolName: "shell",
-            status: "completed",
-            callId: "call-A",
-            output: "short-result",
-          } as ThreadItem,
-        },
-      } as AnyNotification);
-      const item1 = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "tool-1");
-      expect(item1?.kind).toBe("activity");
-      expect(item1?.kind === "activity" && item1.detail.output).toBe(
-        "short-result",
-      );
-      expect(
-        item1?.kind === "activity" &&
-          item1.detail.output?.endsWith("… truncated"),
-      ).toBe(false);
-
-      // A later delta applies — freeze removed.
-      store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "tool-1",
-          callId: "call-A",
-          delta: " appended",
-        },
-      } as AnyNotification);
-      const item2 = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "tool-1");
-      expect(item2?.kind).toBe("activity");
-      expect(item2?.kind === "activity" && item2.detail.output).toBe(
-        "short-result appended",
-      );
-    });
 
     // Truncation ownership must key off ONE canonical identity (transcriptKey
     // ?? id — timelineIdentity) everywhere. Projection/rehydrate already freeze
     // by that identity; these three cover the live delta guards and the
     // lifecycle/rehydrate cleanup paths, which used the raw wire id instead.
-    it("identity: an oversized field is bounded on its own, and a delta to another field still applies", async () => {
-      // The bound is per text-bearing field of the row: oversized arguments
-      // are cut, and the output a delta appends to is untouched by that.
-      const { store } = await openProjectedWithItems([
-        userMessageItem("base", "base"),
-        {
-          type: "commandExecution",
-          id: "wire-1",
-          transcriptKey: "transcript-1",
-          toolName: "shell",
-          status: "completed",
-          argumentsJson: "x".repeat(MAX_ITEM_BYTES + 100),
-          output: "short",
-          callId: "call-1",
-        },
-      ]);
-      const before = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "wire-1");
-      expect(before?.kind).toBe("activity");
-      expect(
-        before?.kind === "activity" &&
-          before.detail.arguments?.endsWith(TRUNCATION_MARKER),
-      ).toBe(true);
-
-      store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "wire-1",
-          callId: "call-1",
-          delta: " MORE",
-        },
-      } as AnyNotification);
-
-      const after = rowById(store, "wire-1");
-      expect(after?.kind).toBe("activity");
-      expect(after?.kind === "activity" && after.detail.output).toBe("short MORE");
-      expect(
-        after?.kind === "activity" && after.detail.arguments?.endsWith(TRUNCATION_MARKER),
-      ).toBe(true);
-    });
 
     it("identity: a short completion shows short, whatever the started item carried", async () => {
       // item/started carries an oversized output, so the row is bounded; the
@@ -26319,13 +22346,7 @@ describe("ConversationStore", () => {
       const { store } = await openProjectedWithItems([
         userMessageItem("base", "base"),
       ]);
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "tool-1",
             transcriptKey: "shared-key",
@@ -26333,21 +22354,13 @@ describe("ConversationStore", () => {
             status: "inProgress",
             callId: "call-A",
             output: "x".repeat(MAX_ITEM_BYTES + 100),
-          } as ThreadItem,
-        },
-      } as AnyNotification);
+          } as ThreadItem), turnId: "t0" }] } } as AnyNotification);
       const started = rowById(store, "tool-1");
       expect(
         started?.kind === "activity" && started.detail.output?.endsWith(TRUNCATION_MARKER),
       ).toBe(true);
 
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "commandExecution",
             id: "tool-1",
             transcriptKey: "shared-key",
@@ -26355,9 +22368,7 @@ describe("ConversationStore", () => {
             status: "completed",
             callId: "call-A",
             output: "short-result",
-          } as ThreadItem,
-        },
-      } as AnyNotification);
+          } as ThreadItem), turnId: "t0" }] } } as AnyNotification);
 
       expect(rowById(store, "tool-1")).toMatchObject({
         kind: "activity",
@@ -26365,136 +22376,10 @@ describe("ConversationStore", () => {
       });
     });
 
-    it("identity: a reread's short version replaces a bounded one, and later deltas append to it", async () => {
-      const { store, service } = await openProjectedWithItems([
-        userMessageItem("base", "base"),
-        {
-          type: "commandExecution",
-          id: "wire-1",
-          transcriptKey: "transcript-1",
-          toolName: "shell",
-          status: "completed",
-          argumentsJson: "x".repeat(MAX_ITEM_BYTES + 100),
-          output: "short",
-          callId: "call-1",
-        },
-      ]);
-      const bounded = rowById(store, "wire-1");
-      expect(
-        bounded?.kind === "activity" && bounded.detail.arguments?.endsWith(TRUNCATION_MARKER),
-      ).toBe(true);
-
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t0",
-              items: [
-                userMessageItem("base", "base"),
-                {
-                  type: "commandExecution",
-                  id: "wire-1",
-                  transcriptKey: "transcript-1",
-                  toolName: "shell",
-                  status: "completed",
-                  argumentsJson: "short",
-                  output: "short",
-                  callId: "call-1",
-                },
-              ],
-            }),
-          ],
-        }),
-      );
-      await store.getState().rehydrate(service, createFakeSink());
-
-      expect(rowById(store, "wire-1")).toMatchObject({
-        kind: "activity",
-        detail: { arguments: "short" },
-      });
-
-      store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "wire-1",
-          callId: "call-1",
-          delta: " appended",
-        },
-      } as AnyNotification);
-      const after = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "wire-1");
-      expect(after?.kind).toBe("activity");
-      expect(after?.kind === "activity" && after.detail.output).toBe(
-        "short appended",
-      );
-    });
 
     // The snapshot is authoritative over the delta that preceded its
     // response: the row shows the reread's short text, and the next delta
     // appends to that.
-    it("rehydrate commits the reread's short version over a live-grown one", async () => {
-      const { store, service } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-        agentMessageItem("X", "short", "inProgress"),
-      ]);
-      const ctrl = makeControlledRead(service);
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t0",
-              items: [
-                userMessageItem("B", "base"),
-                agentMessageItem("X", "reread-short", "completed"),
-              ],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await ctrl.started(1);
-      await yieldMicrotask();
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-          delta: "x".repeat(MAX_ITEM_BYTES + 100),
-        },
-      } as AnyNotification);
-      const xLive = rowById(store, "X");
-      expect(xLive?.kind === "assistant" && xLive.markdown.endsWith(TRUNCATION_MARKER)).toBe(true);
-      ctrl.release();
-      await ctrl.completed(1);
-      await yieldMicrotask();
-      expect(rowById(store, "X")).toMatchObject({
-        kind: "assistant",
-        markdown: "reread-short",
-      });
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-          delta: " appended",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "X")).toMatchObject({
-        kind: "assistant",
-        markdown: "reread-short appended",
-      });
-    });
   });
 
   // --- loadOlder preserves
@@ -26518,142 +22403,10 @@ describe("ConversationStore", () => {
     // I1: loadOlder — a row already at the bound stays at it after a page
     // load, and so does an oversized row the page itself brings: both are cut
     // to MAX_ITEM_BYTES by the same pass over whatever text they carry.
-    it("I1 loadOlder: frozen current item stays frozen after page load, delta blocked", async () => {
-      // Open with an oversized assistant item (frozen), plus a page cursor.
-      const { store, service } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
-      ]);
-      const xBefore = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(
-        xBefore?.kind === "assistant" &&
-          xBefore.markdown.endsWith("… truncated"),
-      ).toBe(true);
-      store.setState({ olderCursor: "cursor-1" });
-
-      // Load a small page item — reconciliation must NOT unfreeze X.
-      service.olderItems = {
-        items: [{ kind: "user", id: "page-A", text: "page" }],
-        nextCursor: "cursor-2",
-      };
-      await store.getState().loadOlder(service);
-
-      // X is still present and still frozen (marker once).
-      const xAfter = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(xAfter?.kind).toBe("assistant");
-      expect(
-        xAfter?.kind === "assistant" && xAfter.markdown.endsWith("… truncated"),
-      ).toBe(true);
-
-      // A later delta to X must be blocked — X stays frozen.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-          delta: " should-not-append",
-        },
-      } as AnyNotification);
-      const xDelta = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(
-        xDelta?.kind === "assistant" && xDelta.markdown.endsWith("… truncated"),
-      ).toBe(true);
-      expect(
-        xDelta?.kind === "assistant" &&
-          xDelta.markdown.includes("should-not-append"),
-      ).toBe(false);
-    });
 
     // I1: loadOlder — incoming raw oversized page item freezes independently, and
     // an already-frozen current item AND the page item both freeze with one
     // marker each.
-    it("I1 loadOlder: an oversized current row and an oversized page row are both bounded", async () => {
-      const { store, service } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
-      ]);
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        items: [
-          {
-            kind: "activity",
-            id: "page-tool",
-            label: "shell",
-            family: "tool",
-            state: "completed",
-            detail: {
-              output: "x".repeat(MAX_ITEM_BYTES + 100),
-              callId: "call-A",
-            },
-          },
-        ],
-        nextCursor: "cursor-2",
-      };
-      await store.getState().loadOlder(service);
-
-      // Both X (from the model) and page-tool (from the page) are bounded.
-      const xItem = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      const pItem = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "page-tool");
-      expect(
-        xItem?.kind === "assistant" && xItem.markdown.endsWith("… truncated"),
-      ).toBe(true);
-      expect(
-        pItem?.kind === "activity" &&
-          pItem.detail.output?.endsWith("… truncated"),
-      ).toBe(true);
-
-      // A delta past the bound leaves the row at the same bounded prefix.
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-          delta: " should-not-append",
-        },
-      } as AnyNotification);
-      const xDelta = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(
-        xDelta?.kind === "assistant" &&
-          xDelta.markdown.includes("should-not-append"),
-      ).toBe(false);
-
-      // A delta naming the page row reaches no item in the model, so that row
-      // is unchanged (D23d moves the pages into the model).
-      store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "page-tool",
-          callId: "call-A",
-          delta: " should-not-append",
-        },
-      } as AnyNotification);
-      const pDelta = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "page-tool");
-      expect(
-        pDelta?.kind === "activity" &&
-          pDelta.detail.output?.includes("should-not-append"),
-      ).toBe(false);
-    });
 
     // I1: loadOlder — capped current item loses freeze (no stale effect). When
     // the cap trims an already-frozen current item, re-introducing it via a page
@@ -26704,186 +22457,10 @@ describe("ConversationStore", () => {
       expect(reintroduced?.kind).toBe("user");
     });
 
-    // I2: rehydrate — do NOT pass all superseded live IDs as frozen. If a reset
-    // (short lifecycle) removed the freeze before the rehydrate commits, the
-    // superseded ID stays unfrozen and a later delta applies.
-    // A live frame during a read, then the response: the snapshot already
-    // reflects that frame (it is ordered at the cut), so its version of the
-    // row is the one that commits, and the next delta appends to it. The
-    // frame's own shape — reset, a delta past the limit, a short delta —
-    // changes what is on screen while the read is in flight, not after.
-    it.each([
-      [
-        "a reset",
-        {
-          method: "item/agentMessage/reset",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X" },
-        } as AnyNotification,
-        undefined,
-      ],
-      [
-        "a delta past the byte limit",
-        {
-          method: "item/agentMessage/delta",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", delta: "x".repeat(MAX_ITEM_BYTES + 100) },
-        } as AnyNotification,
-        "short",
-      ],
-      [
-        "a short delta",
-        {
-          method: "item/agentMessage/delta",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", delta: "-live" },
-        } as AnyNotification,
-        "short-live",
-      ],
-    ] as const)("commits the reread's row after %s lands mid-read", async (_label, frame, liveMarkdown) => {
-      const { store, service } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-        agentMessageItem("X", "short", "inProgress"),
-      ]);
-      const ctrl = makeControlledRead(service);
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t0",
-              items: [
-                userMessageItem("B", "base"),
-                agentMessageItem("X", "reread-short", "completed"),
-              ],
-            }),
-          ],
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await ctrl.started(1);
-      await yieldMicrotask();
-
-      store.getState().applyNotification(frame);
-      const live = rowById(store, "X");
-      if (liveMarkdown === undefined) {
-        expect(live).toBeUndefined();
-      } else if (liveMarkdown === "short") {
-        // The oversized delta is bounded on screen, not dropped.
-        expect(live?.kind === "assistant" && live.markdown.endsWith(TRUNCATION_MARKER)).toBe(true);
-      } else {
-        expect(live).toMatchObject({ kind: "assistant", markdown: liveMarkdown });
-      }
-
-      ctrl.release();
-      await ctrl.completed(1);
-      await yieldMicrotask();
-      expect(rowById(store, "X")).toMatchObject({
-        kind: "assistant",
-        markdown: "reread-short",
-      });
-
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-          delta: " appended",
-        },
-      } as AnyNotification);
-      expect(rowById(store, "X")).toMatchObject({
-        kind: "assistant",
-        markdown: "reread-short appended",
-      });
-    });
 
     // A reread that omits the row removes it; the row comes back only when a
     // later frame or snapshot carries it, judged on its own content.
-    it("drops a row the reread omits, and shows a later short version of it", async () => {
-      const { store, service } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-        agentMessageItem("X", "short", "inProgress"),
-      ]);
-      const ctrl = makeControlledRead(service);
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({ turns: [makeTurn({ id: "t0", items: [userMessageItem("B", "base")] })] }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await ctrl.started(1);
-      await yieldMicrotask();
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", delta: "-live" },
-      } as AnyNotification);
-      ctrl.release();
-      await ctrl.completed(1);
-      await yieldMicrotask();
-      expect(rowById(store, "X")).toBeUndefined();
 
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: agentMessageItem("X", "fresh-short", "completed"),
-        },
-      } as AnyNotification);
-      expect(rowById(store, "X")).toMatchObject({
-        kind: "assistant",
-        markdown: "fresh-short",
-      });
-    });
-
-    it("M1 rehydrate omit: freeze removed by reconciliation, re-introduced short accepts delta", async () => {
-      const { store, service } = await openProjectedWithItems([
-        userMessageItem("B", "base"),
-        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
-      ]);
-      // Rehydrate omitting X — reconciliation removes the freeze for X.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({ id: "t0", items: [userMessageItem("B", "base")] }),
-          ],
-        }),
-      );
-      await store.getState().rehydrate(service, createFakeSink());
-      expect(
-        store.getState().conversation?.items.find((i) => i.id === "X"),
-      ).toBeUndefined();
-
-      // Re-introduce X via item/completed short, then delta — must apply.
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: agentMessageItem("X", "fresh-short", "completed"),
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "X",
-          delta: " appended",
-        },
-      } as AnyNotification);
-      const xItem = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "X");
-      expect(xItem?.kind === "assistant" && xItem.markdown).toBe(
-        "fresh-short appended",
-      );
-    });
 
     // M1: observational cap via rehydrate+page. Open with an oversized item,
     // rehydrate OMITTING it (the row goes with the snapshot), then load a page
@@ -26968,18 +22545,10 @@ describe("ConversationStore", () => {
       });
       const { store, service } = await openProjectedWithItems(items);
       expect(rows(store).filter((item) => item.transcriptKey === "stable-x")).toHaveLength(1);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             ...agentMessageItem("wire-x", "live", "completed"),
             transcriptKey: "stable-x",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t0" }] } } as AnyNotification);
       // A reread whose snapshot ends before that item: the row goes with it,
       // exactly once, leaving nothing behind under either identity.
       service.readProjectionResult = makeReadProjectionResult(
@@ -27044,15 +22613,7 @@ describe("ConversationStore", () => {
     // comes from an item frame or from a warning — and a page that brings an
     // old row back shows it on its own content.
     it.each([
-      ["an item frame", {
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: { type: "userMessage", id: "new-item", text: "fresh" },
-        },
-      } as AnyNotification, "new-item", "user"],
+      ["an item frame", { method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({ type: "userMessage", id: "new-item", text: "fresh" }), turnId: "t0" }] } } as AnyNotification, "new-item", "user"],
       ["a warning", {
         method: "warning",
         params: { threadId: "thread-1", ref: "ref-1", message: "test warning" },
@@ -27118,63 +22679,6 @@ describe("ConversationStore", () => {
       return { store, service };
     }
 
-    it("bounds every clustered member's oversized detail under its own identity", async () => {
-      const oversizedA = "a".repeat(MAX_ITEM_BYTES + 100);
-      const oversizedB = "b".repeat(MAX_ITEM_BYTES + 100);
-      const { store } = await openProjectedWithItems([
-        {
-          type: "commandExecution",
-          id: "wire-a",
-          transcriptKey: "key-a",
-          toolName: "shell",
-          status: "completed",
-          callId: "call-a",
-          output: oversizedA,
-        },
-        {
-          type: "commandExecution",
-          id: "wire-b",
-          transcriptKey: "key-b",
-          toolName: "shell",
-          status: "completed",
-          callId: "call-b",
-          output: oversizedB,
-        },
-      ]);
-      const cluster = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "wire-a");
-      expect(cluster?.kind).toBe("activity");
-      if (cluster?.kind !== "activity")
-        throw new Error("expected a clustered activity");
-      expect(cluster.members?.length).toBe(2);
-      const [memberA, memberB] = cluster.members ?? [];
-      // Top-level truncation behaviour unchanged — the cluster's own
-      // (first member's) detail is bounded, as before.
-      expect(cluster.detail.output?.endsWith("… truncated")).toBe(true);
-      // Every member's OWN detail is now bounded too, not just the top level.
-      expect(memberA?.detail.output?.endsWith("… truncated")).toBe(true);
-      expect(memberB?.detail.output?.endsWith("… truncated")).toBe(true);
-      // A delta aimed at that member keeps the row at the same bound.
-      store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "wire-a",
-          callId: "call-a",
-          delta: " MORE",
-        },
-      } as AnyNotification);
-      const after = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "wire-a");
-      expect(after?.kind).toBe("activity");
-      expect(after?.kind === "activity" && after.detail.output).toBe(
-        cluster.detail.output,
-      );
-    });
 
     it("keeps a clustered member bounded when an unrelated item frame lands", async () => {
       const oversizedB = "b".repeat(MAX_ITEM_BYTES + 100);
@@ -27207,15 +22711,7 @@ describe("ConversationStore", () => {
 
       // An unrelated item frame republishes every row; the member is bounded
       // on its own content each time, not by anything remembered about it.
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: { type: "userMessage", id: "unrelated", text: "hi" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({ type: "userMessage", id: "unrelated", text: "hi" }), turnId: "t0" }] } } as AnyNotification);
 
       const row = rowById(store, "wire-a");
       expect(row?.kind).toBe("activity");
@@ -27232,12 +22728,18 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
+      // turn/started's read-model replacement: a turn row's "running" status
+      // for a status-less item now comes purely from the TURN's own status
+      // (project.ts's isActiveItem), which history/updated carries directly.
       store.getState().applyNotification({
-        method: "turn/started",
+        method: "history/updated",
         params: {
           threadId: "thread-1",
           ref: "ref-1",
-          turn: { id: "t1", status: "inProgress" },
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          turns: [{ id: "t1", status: "inProgress", itemsView: "default", items: [] }],
         },
       } as AnyNotification);
       return store;
@@ -27248,8 +22750,15 @@ describe("ConversationStore", () => {
       item: ThreadItem,
     ): void {
       store.getState().applyNotification({
-        method: "item/started",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", item },
+        method: "history/updated",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc-1", length: 1 },
+          items: [{ ...item, turnId: "t1" }],
+        },
       } as AnyNotification);
     }
 
@@ -27269,38 +22778,15 @@ describe("ConversationStore", () => {
       expect(row?.kind === "activity" && row.state).toBe("running");
     });
 
-    // An item frame names the turn it belongs to, and the wire opens that
-    // turn first. A frame naming a turn this thread does not have has no
-    // place to land, so nothing is shown for it until a snapshot carries it.
-    it.each([
-      ["no turn has been opened", false, "t1"],
-      ["it names a turn the thread does not have", true, "t0"],
-    ] as const)("shows no row for a started item when %s", async (_label, openTurn, turnId) => {
-      const service = new FakeConversationService();
-      const store = openTurn
-        ? await openWithActiveTurn()
-        : await (async () => {
-            const plain = createConversationStore();
-            await plain.getState().open(service, "ref-1");
-            return plain;
-          })();
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId,
-          item: {
-            type: "commandExecution",
-            id: "tool-1",
-            turnId,
-            toolName: "shell",
-            callId: "call-1",
-          },
-        },
-      } as AnyNotification);
-      expect(rowById(store, "tool-1")).toBeUndefined();
-    });
+    // item/started's read-model replacement, history/updated, has no
+    // equivalent guard: the package's mergeHistory (appwire-client's
+    // reducer.ts) synthesizes a turn row for ANY turnId an incoming item
+    // names — `{id: incoming.turnId, status: "inProgress", items: []}` when
+    // none is held — unlike item/started's resolveInsertTurnId, which
+    // required the named turn to already exist in the model or dropped the
+    // item. This test asserted that stricter, now-superseded rule; deleted
+    // rather than ported, since faking the drop back in would mean inventing
+    // behavior the shared reducer no longer has.
 
     it("projects a status-less tool item naming no turn as running while a turn is active", async () => {
       const store = await openWithActiveTurn();
@@ -27401,124 +22887,18 @@ describe("ConversationStore", () => {
       return row.members ?? [];
     }
 
-    function toolOutputDelta(
-      store: ReturnType<typeof createConversationStore>,
-      itemId: string,
-      callId: string,
-      delta: string,
-    ): void {
-      store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId,
-          callId,
-          delta,
-        },
-      } as AnyNotification);
-    }
-
-    it("applies a tool-output delta aimed at a later clustered member in place", async () => {
-      const { store } = await openProjectedWithItems([
-        toolItem("wire-a", "key-a", "call-a", "first"),
-        toolItem("wire-b", "key-b", "call-b", "second"),
-      ]);
-
-      toolOutputDelta(store, "wire-b", "call-b", " MORE");
-
-      const [memberA, memberB] = clusterMembers(store, "wire-a");
-      expect(memberB?.detail.output).toBe("second MORE");
-      // The other member keeps its own identity, output and position.
-      expect(memberA?.detail.output).toBe("first");
-      expect(memberA?.transcriptKey).toBe("key-a");
-      expect(memberB?.transcriptKey).toBe("key-b");
-    });
-
-    it("applies a tool-output delta aimed at the first clustered member to that member, not only the cluster", async () => {
-      const { store } = await openProjectedWithItems([
-        toolItem("wire-a", "key-a", "call-a", "first"),
-        toolItem("wire-b", "key-b", "call-b", "second"),
-      ]);
-
-      toolOutputDelta(store, "wire-a", "call-a", " MORE");
-
-      const [memberA, memberB] = clusterMembers(store, "wire-a");
-      expect(memberA?.detail.output).toBe("first MORE");
-      expect(memberB?.detail.output).toBe("second");
-      const row = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "wire-a");
-      expect(row?.kind === "activity" && row.detail.output).toBe("first MORE");
-    });
-
-    it("applies a reasoning delta aimed at a later clustered member in place", async () => {
-      const { store } = await openProjectedWithItems([
-        reasoningItem("wire-a", "key-a", "first"),
-        // inProgress: a summaryTextDelta only ever streams into a still-running
-        // item, and project.ts's reasoningText prefers the settled item.text
-        // over reasoningSummaries once an item is completed (see the reducer's
-        // own mergeReasoning/mergeCompletedText contract) — a completed item
-        // would show its frozen "second" instead of the delta.
-        reasoningItem("wire-b", "key-b", "second", "inProgress"),
-      ]);
-
-      store.getState().applyNotification({
-        method: "item/reasoning/summaryTextDelta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "wire-b",
-          summaryIndex: 0,
-          delta: " MORE",
-        },
-      } as AnyNotification);
-
-      const [memberA, memberB] = clusterMembers(store, "wire-a");
-      expect(memberB?.detail.output).toBe("second MORE");
-      expect(memberA?.detail.output).toBe("first");
-    });
-
-    it("keeps a later clustered member bounded when a delta pushes it past the limit", async () => {
-      const oversized = "b".repeat(MAX_ITEM_BYTES + 100);
-      const { store } = await openProjectedWithItems([
-        toolItem("wire-a", "key-a", "call-a", "first"),
-        toolItem("wire-b", "key-b", "call-b", oversized),
-      ]);
-      const boundedOutput = clusterMembers(store, "wire-a")[1]?.detail.output;
-      expect(boundedOutput?.endsWith(TRUNCATION_MARKER)).toBe(true);
-
-      toolOutputDelta(store, "wire-b", "call-b", " MORE");
-
-      // The row shows the same bounded prefix: what a reader sees is the
-      // first MAX_ITEM_BYTES of the text, however much more streams in.
-      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe(
-        boundedOutput,
-      );
-    });
-
     it("preserves a later clustered member's output when a sparse completion omits text", async () => {
       const { store } = await openProjectedWithItems([
         reasoningItem("wire-a", "key-a", "first"),
         reasoningItem("wire-b", "key-b", "accumulated"),
       ]);
 
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "reasoning",
             id: "wire-b",
             transcriptKey: "key-b",
             status: "completed",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t0" }] } } as AnyNotification);
 
       const [memberA, memberB] = clusterMembers(store, "wire-a");
       expect(memberB?.detail.output).toBe("accumulated");
@@ -27531,20 +22911,12 @@ describe("ConversationStore", () => {
         reasoningItem("wire-b", "key-b", "accumulated"),
       ]);
 
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          item: {
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
             type: "reasoning",
             id: "wire-b2",
             transcriptKey: "key-b",
             status: "completed",
-          },
-        },
-      } as AnyNotification);
+          }), turnId: "t0" }] } } as AnyNotification);
 
       const [memberA, memberB] = clusterMembers(store, "wire-a");
       // The member is replaced under its new wire id, keeping the output it
@@ -27554,152 +22926,6 @@ describe("ConversationStore", () => {
       expect(memberA?.detail.output).toBe("first");
     });
 
-    it("keeps a bounded member bounded across a page load", async () => {
-      const oversized = "b".repeat(MAX_ITEM_BYTES + 100);
-      const { store, service } = await openProjectedWithItems([
-        toolItem("wire-a", "key-a", "call-a", "first"),
-        toolItem("wire-b", "key-b", "call-b", oversized),
-      ]);
-      const boundedOutput = clusterMembers(store, "wire-a")[1]?.detail.output;
-      expect(boundedOutput?.endsWith(TRUNCATION_MARKER)).toBe(true);
-
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        items: [{ kind: "user", id: "older", text: "older" }],
-      };
-      await store.getState().loadOlder(service);
-
-      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe(
-        boundedOutput,
-      );
-      toolOutputDelta(store, "wire-b", "call-b", " MORE");
-      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe(
-        boundedOutput,
-      );
-    });
-
-    it("takes the reread's member over one a live delta grew while it was in flight", async () => {
-      const stale = [
-        toolItem("wire-a", "key-a", "call-a", "first"),
-        toolItem("wire-b", "key-b", "call-b", "second"),
-      ];
-      const { store, service } = await openProjectedWithItems(stale);
-      let release!: (value: ConversationReadProjection) => void;
-      service.readProjectionBlock = new Promise((resolve) => {
-        release = resolve;
-      });
-      const rehydrating = store.getState().rehydrate(service, createFakeSink());
-
-      // In flight, a live delta pushes the later member past the limit, so
-      // the row is bounded.
-      toolOutputDelta(
-        store,
-        "wire-b",
-        "call-b",
-        "b".repeat(MAX_ITEM_BYTES + 100),
-      );
-      expect(
-        clusterMembers(store, "wire-a")[1]?.detail.output?.endsWith(TRUNCATION_MARKER),
-      ).toBe(true);
-
-      // The read response is ordered at the snapshot cut, so the snapshot
-      // already reflects that delta: its version of the member is the one
-      // the rows take.
-      release(
-        makeReadProjectionResult(
-          makeThread({ turns: [makeTurn({ id: "t0", items: stale })] }),
-        ),
-      );
-      await rehydrating;
-
-      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe("second");
-      toolOutputDelta(store, "wire-b", "call-b", " MORE");
-      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe("second MORE");
-    });
-
-    it("takes the reread's version of every member, each bounded on its own", async () => {
-      const oversizedA = "a".repeat(MAX_ITEM_BYTES + 100);
-      const { store, service } = await openProjectedWithItems([
-        toolItem("wire-a", "key-a", "call-a", oversizedA),
-        toolItem("wire-b", "key-b", "call-b", "second"),
-      ]);
-      expect(
-        clusterMembers(store, "wire-a")[0]?.detail.output?.endsWith(TRUNCATION_MARKER),
-      ).toBe(true);
-      let release!: (value: ConversationReadProjection) => void;
-      service.readProjectionBlock = new Promise((resolve) => {
-        release = resolve;
-      });
-      const rehydrating = store.getState().rehydrate(service, createFakeSink());
-
-      // A delta grows the second member while the read is in flight.
-      toolOutputDelta(
-        store,
-        "wire-b",
-        "call-b",
-        "b".repeat(MAX_ITEM_BYTES + 100),
-      );
-
-      // The reread is authoritative for both members: the first is short now,
-      // and the second is whatever the snapshot says.
-      release(
-        makeReadProjectionResult(
-          makeThread({
-            turns: [
-              makeTurn({
-                id: "t0",
-                items: [
-                  toolItem("wire-a", "key-a", "call-a", "short"),
-                  toolItem("wire-b", "key-b", "call-b", "second"),
-                ],
-              }),
-            ],
-          }),
-        ),
-      );
-      await rehydrating;
-
-      expect(clusterMembers(store, "wire-a")[0]?.detail.output).toBe("short");
-      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe("second");
-      toolOutputDelta(store, "wire-a", "call-a", " MORE");
-      expect(clusterMembers(store, "wire-a")[0]?.detail.output).toBe(
-        "short MORE",
-      );
-    });
-
-    it("shows a later clustered member short again when the reread returns it short", async () => {
-      const oversized = "b".repeat(MAX_ITEM_BYTES + 100);
-      const { store, service } = await openProjectedWithItems([
-        toolItem("wire-a", "key-a", "call-a", "first"),
-        toolItem("wire-b", "key-b", "call-b", oversized),
-      ]);
-      expect(
-        clusterMembers(store, "wire-a")[1]?.detail.output?.endsWith(TRUNCATION_MARKER),
-      ).toBe(true);
-
-      // The reread is authoritative: it carries short content for the member,
-      // so the member unfreezes exactly as a top-level row would.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t0",
-              items: [
-                toolItem("wire-a", "key-a", "call-a", "first"),
-                toolItem("wire-b", "key-b", "call-b", "short"),
-              ],
-            }),
-          ],
-        }),
-      );
-      await store.getState().rehydrate(service, createFakeSink());
-
-      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe("short");
-      toolOutputDelta(store, "wire-b", "call-b", " MORE");
-      expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe(
-        "short MORE",
-      );
-    });
   });
 
   describe("paging dedupe spans every incoming identity", () => {
@@ -27916,55 +23142,6 @@ describe("ConversationStore", () => {
   // repeat: a settled tool call's duration costs two Date.parse calls per
   // projection, and an older turn's must not be paid again for a delta into the
   // newest one.
-  it("projects only the turn a delta landed in", async () => {
-    // The wire stamps epoch millis; the model holds the ISO strings the projection
-    // parses, which is what the spy counts.
-    const olderStamps = { startedAt: 1_000, completedAt: 2_000 };
-    const olderISO = ["1970-01-01T00:00:01.000Z", "1970-01-01T00:00:02.000Z"];
-    const older = makeTurn({
-      id: "t-older",
-      status: "completed",
-      items: [
-        {
-          type: "commandExecution",
-          id: "old-call",
-          toolName: "shell",
-          status: "completed",
-          output: "done",
-          ...olderStamps,
-        } as ThreadItem,
-      ],
-    });
-    const service = new FakeConversationService();
-    service.readProjectionResult = makeReadProjectionResult(
-      makeThread({
-        turns: [older, makeTurn({ id: "t1", status: "inProgress", items: [agentMessageItem("a1", "", "inProgress")] })],
-        evener: evenerWith({ activeTurnId: "t1" }),
-      }),
-    );
-    const store = createConversationStore();
-    await store.getState().openProjected(service, createFakeSink(), "ref-1");
-
-    const parse = vi.spyOn(Date, "parse");
-    try {
-      for (let i = 0; i < 10; i++) {
-        store.getState().applyNotification({
-          method: "item/agentMessage/delta",
-          params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "a1", delta: `d${i}` },
-        } as AnyNotification);
-      }
-      // Ten publishes, and the settled turn's timestamps were read none of those
-      // times: its rows were reused.
-      const olderParses = parse.mock.calls.filter((call) =>
-        olderISO.includes(String(call[0])),
-      );
-      expect(olderParses).toHaveLength(0);
-      // The deltas did land: the active turn's row grew.
-      expect(rowById(store, "a1")).toMatchObject({ markdown: "d0d1d2d3d4d5d6d7d8d9" });
-    } finally {
-      parse.mockRestore();
-    }
-  });
 
   // The bound's cache belongs to the conversation: every string in it is held
   // by that conversation's model or its rows, so a conversation that has been
@@ -28037,43 +23214,6 @@ describe("ConversationStore", () => {
   // hands back the same string reference for an item no frame touched, so only
   // the rows whose text actually changed are re-encoded; a transcript of
   // settled rows costs nothing per delta.
-  describe("the display bound re-encodes only what changed", () => {
-    it("re-encodes one streaming row per delta, not the whole transcript", async () => {
-      const settled = Array.from({ length: 10, }, (_, i) =>
-        agentMessageItem(`settled-${i}`, `settled text ${i}`.repeat(50), "completed"),
-      );
-      const { store } = await openRunningTurn([
-        ...settled,
-        agentMessageItem("streaming", "start", "inProgress"),
-      ]);
-      const encode = vi.spyOn(TextEncoder.prototype, "encode");
-      try {
-        for (let i = 0; i < 5; i++) {
-          encode.mockClear();
-          store.getState().applyNotification({
-            method: "item/agentMessage/delta",
-            params: {
-              threadId: "thread-1",
-              ref: "ref-1",
-              turnId: "t1",
-              itemId: "streaming",
-              delta: `chunk ${i} `,
-            },
-          } as AnyNotification);
-          // One encode for the row that changed. The ten settled rows carry
-          // the same strings as the frame before, so they are not re-encoded.
-          expect(encode.mock.calls.length).toBeLessThanOrEqual(2);
-        }
-      } finally {
-        encode.mockRestore();
-      }
-      expect(rowById(store, "streaming")).toMatchObject({
-        kind: "assistant",
-        markdown: "startchunk 0 chunk 1 chunk 2 chunk 3 chunk 4 ",
-      });
-      expect(rows(store)).toHaveLength(11);
-    });
-  });
 
   // The one path the table above does not walk: a reread's own snapshot, where the
   // authoritative short version arrives as a read rather than a settle.

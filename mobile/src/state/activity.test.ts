@@ -18,11 +18,12 @@
 // beneath a duplicated/ambiguous parent ID also return "rehydrate" — the
 // store never patches the first match silently.
 //
-// Usage: turn/completed carries per-turn usage, NOT the cumulative
-// Thread.evener.usage aggregate. The store returns "rehydrate" for
-// turn/completed and never overwrites the activity usage aggregate with
-// per-turn values. An authoritative reread (setLiveView) is the only path
-// that refreshes usage.
+// Usage: a settled turn on history/updated (the read model's replacement for
+// turn/completed) carries per-turn usage, NOT the cumulative
+// Thread.evener.usage aggregate. The store returns "rehydrate" for a
+// history/updated frame naming a settled turn and never overwrites the
+// activity usage aggregate with per-turn values. An authoritative reread
+// (setLiveView) is the only path that refreshes usage.
 
 import { describe, expect, it } from "vitest";
 import type {
@@ -227,22 +228,28 @@ function jobNotification(
   } as AnyNotification;
 }
 
-// Build a turn/completed notification with optional per-turn usage.
+// Build a history/updated notification naming one settled turn, with
+// optional per-turn usage — turn/completed's read-model replacement.
 function turnCompletedNotification(
   usage: Record<string, number> | undefined,
   id: ActivityIdentity = identity(),
 ): AnyNotification {
   return {
-    method: "turn/completed",
+    method: "history/updated",
     params: {
       threadId: id.threadId,
       ref: id.ref,
-      turn: {
-        id: "t1",
-        itemsView: "default",
-        status: "completed",
-        ...(usage === undefined ? {} : { usage }),
-      },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [
+        {
+          id: "t1",
+          itemsView: "default",
+          status: "completed",
+          ...(usage === undefined ? {} : { usage }),
+        },
+      ],
     },
   } as AnyNotification;
 }
@@ -642,9 +649,9 @@ describe("ActivityStore", () => {
       expect(openGroup?.count).toBe(3);
     });
 
-    // --- usage: turn/completed is per-turn, never overwrites aggregate (I1) --
+    // --- usage: a settled turn on history/updated is per-turn, never overwrites aggregate (I1) --
 
-    it("turn/completed with per-turn usage returns rehydrate (never overwrites aggregate)", () => {
+    it("a settled turn on history/updated with per-turn usage returns rehydrate (never overwrites aggregate)", () => {
       const store = createActivityStore();
       const view: ActivityView = {
         tasks: [],
@@ -669,7 +676,7 @@ describe("ActivityStore", () => {
       expect(v?.usage.cost).toBe("$5.00");
     });
 
-    it("turn/completed without usage returns rehydrate", () => {
+    it("a settled turn on history/updated without usage returns rehydrate", () => {
       const store = createActivityStore();
       store
         .getState()
@@ -686,7 +693,7 @@ describe("ActivityStore", () => {
       expect(result).toBe("rehydrate");
     });
 
-    it("turn/completed with total-only usage returns rehydrate", () => {
+    it("a settled turn on history/updated with total-only usage returns rehydrate", () => {
       const store = createActivityStore();
       store
         .getState()
@@ -703,7 +710,7 @@ describe("ActivityStore", () => {
       expect(result).toBe("rehydrate");
     });
 
-    it("turn/completed with complete consistent usage still returns rehydrate (per-turn, not cumulative)", () => {
+    it("a settled turn on history/updated with complete consistent usage still returns rehydrate (per-turn, not cumulative)", () => {
       const store = createActivityStore();
       store
         .getState()
@@ -1222,7 +1229,7 @@ describe("ActivityStore", () => {
     });
   });
 
-  // --- jobs-tree + turn/completed rehydrate --------------------------------
+  // --- jobs-tree + settled-turn rehydrate ------------------------------------
 
   describe("signal-only rehydrate", () => {
     it("evener/jobs/treeUpdated returns rehydrate", () => {
