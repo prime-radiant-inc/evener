@@ -301,9 +301,12 @@
     }
     showBanner(a);
   };
+  // Only alerts about sessions that need you combine into "N sessions need
+  // you"; a finished result or a hub notice is never counted as one of them.
+  const needsYou = (b) => b.kind === "many" || (!!b.sessionId && b.kind !== "finished");
   function showBanner(a) {
     const S = EV.S;
-    if (S.banner && S.banner.kind !== "finished" && Date.now() - S.banner.at < 5000 && S.banner.sessionId !== a.sessionId) {
+    if (S.banner && needsYou(S.banner) && needsYou(a) && Date.now() - S.banner.at < 5000 && S.banner.sessionId !== a.sessionId) {
       const n = (S.banner.count || 1) + 1;
       S.banner = { kind: "many", count: n, at: Date.now(), key: Date.now() };
     } else {
@@ -323,8 +326,12 @@
     if (!S.held.length) return;
     const list = S.held;
     S.held = [];
-    if (list.length === 1) showBanner(list[0]);
-    else { S.banner = { kind: "many", count: list.length, at: Date.now(), key: Date.now() }; EV.log("banner_shown", { kind: "many", count: list.length }); armBannerTimer(); }
+    // Each waiting session counts once. A held notice shows only when no
+    // session is waiting; it stays in Notices on the Board either way.
+    const sessions = list.filter(needsYou);
+    const count = new Set(sessions.map((a) => a.sessionId)).size;
+    if (count > 1) { S.banner = { kind: "many", count, at: Date.now(), key: Date.now() }; EV.log("banner_shown", { kind: "many", count }); armBannerTimer(); }
+    else showBanner(sessions.length ? sessions[sessions.length - 1] : list[list.length - 1]);
   };
   EV.dismissBanner = function () { EV.S.banner = null; EV.update(); };
 
