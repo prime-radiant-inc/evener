@@ -5300,33 +5300,36 @@ PR 9 finishes spec 8.2's table, with what the data carries today:
 - Test: `mobile-native/src/session/CommandsSheet.test.tsx`
 
 **Interfaces:**
-- Consumes: `createSessionCommandCatalog` and `SlashMenuItem` from `@evener/appwire-client` (as `CommandCompletion` uses them), `composerCommandAvailable` (`src/composerCommand.ts`), and `mergeDraftText`.
-- Produces: `<CommandsSheet client={CommandCatalogClient} sessionRef={string} session={ComposerCommandSession} onChoose={(invocation: string) => void} onClose={() => void} />`
+- Consumes: `createSessionCommandCatalog` and `SlashMenuItem` from `@evener/appwire-client` (as `CommandCompletion` uses them), `composerCommandAvailable` (`src/composerCommand.ts`), and `spliceSlashCommand` with its `SlashSpliceResult` from `@evener/appwire-client` (`slashCompletion.ts:343`, the splice today's inline completion uses at `screens.tsx:2452`).
+- Produces:
+  - `<CommandsSheet client={CommandCatalogClient} sessionRef={string} session={ComposerCommandSession} onChoose={(invocation: string) => void} onClose={() => void} />`
+  - `insertInvocation(draft: string, invocation: string): SlashSpliceResult`, exported from `CommandsSheet.tsx`. It is `spliceSlashCommand(draft, { start: 0, end: 0, query: "" }, invocation)`: the invocation at the start of the draft, one space after it unless the draft already starts with whitespace, and what you typed kept after it. The caret lands just after the invocation and its space.
 
 **Requirements (spec 8.5; ruling 15):**
 1. **The sheet** is a `pageSheet` modal titled "Commands and skills", with Done and a search field that filters both sections by name and line.
 2. **Commands** come first, in the spec's order, each only when `composerCommandAvailable` allows it for this session:
 
-   | Row | Inserts | Its line |
+   | Row | Invocation | Its line |
    |---|---|---|
-   | Goal | `/goal ` | "An objective the agent pursues until it's done" |
+   | Goal | `/goal` | "An objective the agent pursues until it's done" |
    | Compact context | `/compact` | "Free up token space" |
    | Aside | `/aside` | "A side question in its own session; this one keeps working" |
    | Tasks | `/tasks` | "The session's task list" |
-   | Model | `/model ` | "Change the model" |
-   | Effort | `/reasoning-effort ` | "How long it thinks before acting" |
+   | Model | `/model` | "Change the model" |
+   | Effort | `/reasoning-effort` | "How long it thinks before acting" |
    | Clear | `/clear` | "Start fresh in this session" |
 
-   The typed commands `composerCommand.ts` knows keep working when someone types them.
+   Invocations are bare, as the catalog's built-in items are; `insertInvocation` adds the space. The typed commands `composerCommand.ts` knows keep working when someone types them.
 3. **Skills and plugin commands** follow: the catalog's `plugin` and `skill` items, grouped under one header per plugin. The plugin name comes from the item's `key` (`plugin:<pluginName>:<name>`). Headers are in Menlo 12, as typed, never uppercased. Each row shows the item's label (17/22) and hint (13/18 `inkMid`). Loading shows skeleton rows; an error shows its one line.
-4. **Choosing** an item puts its invocation at the start of the draft, followed by a space when the draft has text: `mergeDraftText(invocation, draft, "prefix")` shape, so any text you typed stays after it. The sheet closes and the field focuses with the caret at the end.
+4. **Choosing** an item calls `onChoose(invocation)`. The screen sets the draft to `insertInvocation(draft, invocation).text`, so "hello" becomes "/goal hello" and an empty draft becomes "/compact ". The sheet closes, and the field focuses with the caret at the result's `caret`, ready for the command's argument.
 5. **Opening.** + → "Commands and skills", or typing "/" as the first character of an empty draft. In the second case the "/" itself isn't kept.
 
 - [ ] **Step 1: Write the failing tests** (`CommandsSheet.test.tsx`, with a fake catalog client answering the calls `createSessionCommandCatalog` makes; read `commandCatalog.ts:85-120` for them):
   - the commands section lists only the available rows, in order, with their lines;
   - a skill groups under its plugin's Menlo header;
   - search filters both sections;
-  - choosing "Compact context" calls `onChoose("/compact")`.
+  - choosing "Compact context" calls `onChoose("/compact")`;
+  - `insertInvocation("", "/compact")` is `{ text: "/compact ", caret: 9 }`, `insertInvocation("hello", "/goal")` is `{ text: "/goal hello", caret: 6 }`, and `insertInvocation(" hello", "/goal")` is `{ text: "/goal hello", caret: 5 }`.
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/CommandsSheet.test.tsx`
 - [ ] **Step 3: Implement**, then delete `CommandCompletion.tsx`.
 - [ ] **Step 4: Run them and watch them pass**, then `npm run check`.
