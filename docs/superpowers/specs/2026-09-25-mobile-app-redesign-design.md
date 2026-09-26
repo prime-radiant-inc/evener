@@ -697,7 +697,7 @@ SF Symbols only, weight matched to adjacent text. Core set: `questionmark.circle
 | Element | Source |
 |---|---|
 | Board sections, rows, children | `evener/navigation/read` (Live, needs-you, projects, pin sections, archived), `NavigationSessionSummary` (title, state, ask_pending, live, updated_at, host_id, project, branch, children, running_jobs, more_subagents, omitted_descendants), invalidated by `evener/navigation/invalidated`; task progress on rows needs S13 |
-| Needs you count | `evener/attention/changed` (`AttentionSummary{NeedsYou, Error, Working}`) |
+| Needs you count | Computed on the phone from Live and `needs_you` rows (section 13.2). The hub's `AttentionSummary.needsYou` (`evener/attention/changed`, the manifest) counts every awaiting session, Finished included, and counts failures separately, so it is not this number |
 | Search | `evener/search` |
 | Session content | `thread/read` with subscribe; `item/*` streaming notifications; `thread/status/changed`, `thread/queueChanged`, `evener/goal/updated`, `evener/task/updated`, `evener/notes/updated`, `evener/urls/updated`, `evener/delegate/updated`, `evener/jobs/treeUpdated` |
 | Capabilities | `ThreadCapabilities` gates every control (send, steer, interrupt, compact, clear, forkFromTurn, shutdown, changeModel, queue, goal, sharedNotes, rename, skillInput) |
@@ -732,6 +732,7 @@ Each has a fallback so the phone works before it lands.
 | S12 | Scoped approvals: "allow writes under this folder for the rest of this session" as an escalation resolution | A batch job (a 214-page mirror) doesn't ask 214 times | Allow once, repeatedly |
 | S11 | Hub notices feed: provider sign-in expired or expiring, host offline, broken plugin, each with affected session counts | Notices row on the Board | Derive from host and instance status reads |
 | S13 | Task progress on navigation summaries: tasks done, total, and the current task's title | The row's task line ("Task 4 of 7 · Fix the settle/drain race") | No task line until it lands; the session's Tasks chip still reads `evener/task/updated` |
+| S14 | Message-text search: `evener/search` hits inside sessions' messages, with a snippet and the hit's position, and an archived flag on every result | Search's "In sessions" group and its Archived scope (section 7.4) | Sessions and Projects groups only, with the All and Live scopes |
 
 ## 19. Out of scope and future
 
