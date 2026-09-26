@@ -98,7 +98,6 @@ func TestSessionWithNoConsumerDropsRatherThanWedging(t *testing.T) {
 }
 
 func TestSessionCloseReleasesBlockedAuthoritativeEmitters(t *testing.T) {
-	t.Parallel()
 	shortenCloseCascadeBudget(t, 20*time.Millisecond)
 
 	s := losslessTestSession("close-wedged")
@@ -278,7 +277,6 @@ func fillEventBuffer(s *Session) {
 // literal the other tests in this file use -- that one has no session context at
 // all, which is exactly why it cannot see this.
 func TestBudgetPublishedAfterAParkStillOwnsTheEvent(t *testing.T) {
-	t.Parallel()
 	// The fixture leaves a full buffer with nothing draining, so the close this
 	// session's cleanup runs would spend the shipped budget parked on its own
 	// terminal boundary. What is under test is which deadline owns the event,
@@ -349,7 +347,6 @@ func TestBudgetPublishedAfterAParkStillOwnsTheEvent(t *testing.T) {
 // a context nothing cancels spends its whole timeout inside the shutdown
 // budget, delaying session cleanup and the rendezvous removal behind it.
 func TestNotificationHookRunningAtShutdownIsInterrupted(t *testing.T) {
-	t.Parallel()
 	shortenCloseCascadeBudget(t, 20*time.Millisecond)
 
 	s := newSession(t, withoutGitSnapshot())

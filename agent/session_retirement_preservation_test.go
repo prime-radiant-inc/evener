@@ -167,7 +167,6 @@ func TestRetirementReleaseRefusesUncommittedPreparation(t *testing.T) {
 // close failure after Commit and asserts a failed retiring diagnostic with no
 // Abort path and no reopened admission.
 func TestRetirementReleaseFailureAfterCommitStaysRetiring(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	c, err := NewRetirementController(0, clock.Real())
@@ -1864,7 +1863,6 @@ func retirementSharedChildScratchBindingsRestore(t *testing.T, sandboxed bool) {
 // for the same committed preparation must win teardown exactly once; run under
 // -race so the detector observes the guard access.
 func TestRetirementConcurrentReleaseOnlyOneProceeds(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	defer root.Close()

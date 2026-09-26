@@ -506,7 +506,6 @@ func TestWorktreeSwap_CloseWaitsForAnAdmittedSwapBeforeEnvironmentCleanup(t *tes
 // process table under whatever is still running, so it says what it walked
 // past, by name.
 func TestWorktreeSwap_CloseBudgetExpiringOnTheEnvWorkFenceNamesWhatItWalkedPast(t *testing.T) {
-	t.Parallel()
 	budget := shortenCloseCascadeBudget(t, 200*time.Millisecond)
 
 	sr := newScriptedLaneRepo(t)
