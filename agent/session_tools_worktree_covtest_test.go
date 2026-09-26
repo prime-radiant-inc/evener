@@ -21,6 +21,7 @@ import (
 // (session_tools_worktree.go lines 55-60): the hook-seam path and the
 // production path.
 func TestCovWriteWorktreeSidecar(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := &Session{}
 	sidecar := worktree.Sidecar{Name: "test_sidecar", Branch: "test-branch", BaseSHA: "abc123", CreatorSession: "session_1"}
@@ -39,6 +40,7 @@ func TestCovWriteWorktreeSidecar(t *testing.T) {
 // TestCovDeleteWorktreeSidecar covers deleteWorktreeSidecar
 // (session_tools_worktree.go lines 62-67).
 func TestCovDeleteWorktreeSidecar(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := &Session{}
 	// Write then delete.
@@ -58,6 +60,7 @@ func TestCovDeleteWorktreeSidecar(t *testing.T) {
 // (session_tools_worktree.go lines 69-74): the hook-seam path and the
 // production path.
 func TestCovUpdateWorktreeSidecar(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := &Session{}
 	// Write initial.
@@ -84,6 +87,7 @@ func TestCovUpdateWorktreeSidecar(t *testing.T) {
 // TestCovProjectIsGitCheckout covers projectIsGitCheckout
 // (session_tools_worktree.go lines 701-707).
 func TestCovProjectIsGitCheckout(t *testing.T) {
+	t.Parallel()
 	// Empty canonical path — false.
 	if projectIsGitCheckout(identifier.Project{}) {
 		t.Fatal("empty project should return false")
@@ -145,6 +149,7 @@ func TestCovWorktreeRootForProject(t *testing.T) {
 // TestCovManagedWorktreeExists covers managedWorktreeExists
 // (session_tools_worktree.go lines 2983-2986).
 func TestCovManagedWorktreeExists(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	// No .git — false.
 	if managedWorktreeExists(dir) {
@@ -162,6 +167,7 @@ func TestCovManagedWorktreeExists(t *testing.T) {
 // TestCovBranchExists covers branchExists
 // (session_tools_worktree.go lines 2975-2978): using a scripted git runner.
 func TestCovBranchExists(t *testing.T) {
+	t.Parallel()
 	// Scripted runner that simulates branch not found (error).
 	run := func(args ...string) (string, error) {
 		want := []string{"show-ref", "--verify", "--quiet", "refs/heads/nonexistent"}
@@ -190,6 +196,7 @@ func TestCovBranchExists(t *testing.T) {
 // TestCovBranchAtRoot covers branchAtRoot
 // (session_tools_worktree.go lines 2990-2996).
 func TestCovBranchAtRoot(t *testing.T) {
+	t.Parallel()
 	// Error case — returns empty string.
 	runErr := func(args ...string) (string, error) {
 		want := []string{"-C", "/repo", "symbolic-ref", "--quiet", "--short", "HEAD"}
@@ -232,6 +239,7 @@ func TestCovBranchAtRoot(t *testing.T) {
 // TestCovShouldRecoverForwardedTerminalRecord covers
 // shouldRecoverForwardedTerminalRecord (jobs_nested.go lines 615-624).
 func TestCovShouldRecoverForwardedTerminalRecord(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// nil rec — false.
@@ -294,6 +302,7 @@ func TestCovShouldRecoverForwardedTerminalRecord(t *testing.T) {
 // TestCovRecoveredEventTime covers recoveredEventTime
 // (jobs_nested.go lines 626-631).
 func TestCovRecoveredEventTime(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// With EndedAt — returns EndedAt.
@@ -314,6 +323,7 @@ func TestCovRecoveredEventTime(t *testing.T) {
 // TestCovLiveSubagentSession covers liveSubagentSession
 // (jobs_nested.go lines 256-271).
 func TestCovLiveSubagentSession(t *testing.T) {
+	t.Parallel()
 	// nil manager — nil.
 	if liveSubagentSession(nil, "child_1") != nil {
 		t.Fatal("nil manager should return nil")
@@ -328,6 +338,7 @@ func TestCovLiveSubagentSession(t *testing.T) {
 
 // TestCovForwardEvent covers forwardEvent (jobs_nested.go lines 635-662).
 func TestCovForwardEvent(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// Simple event append — should succeed.
@@ -438,6 +449,7 @@ func TestCovForwardEvent(t *testing.T) {
 // TestCovTrySteerEnqueue_Closed covers trySteerEnqueue
 // (session_queue.go lines 252-274): closed session returns false.
 func TestCovTrySteerEnqueue_Closed(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.mu.Lock()
 	s.state = SessionClosed
@@ -449,6 +461,7 @@ func TestCovTrySteerEnqueue_Closed(t *testing.T) {
 
 // TestCovTrySteerEnqueue_EmptyMsg covers empty message + no images.
 func TestCovTrySteerEnqueue_EmptyMsg(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if ok, err := s.trySteerEnqueue("", nil, nil, "", ""); err != nil || ok {
 		t.Fatal("empty msg + no images should return false")
@@ -460,6 +473,7 @@ func TestCovTrySteerEnqueue_EmptyMsg(t *testing.T) {
 
 // TestCovTrySteerEnqueue_Success covers a successful enqueue.
 func TestCovTrySteerEnqueue_Success(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if ok, err := s.trySteerEnqueue("hello", nil, nil, "", ""); err != nil || !ok {
 		t.Fatal("valid msg should return true")
@@ -473,6 +487,7 @@ func TestCovTrySteerEnqueue_Success(t *testing.T) {
 
 // TestCovTrySteerEnqueue_UserSource covers the user-source path (skips persist).
 func TestCovTrySteerEnqueue_UserSource(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if ok, err := s.trySteerEnqueue("user msg", nil, nil, events.SteeringSourceUser, ""); err != nil || !ok {
 		t.Fatal("user source should return true")
@@ -488,6 +503,7 @@ func TestCovTrySteerEnqueue_UserSource(t *testing.T) {
 // TestCovTrySteerWithProvenanceAndNotify covers
 // trySteerWithProvenanceAndNotify (session_queue.go lines 202-208).
 func TestCovTrySteerWithProvenanceAndNotify(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// Empty message — trySteer returns false, so should return false.
 	if s.trySteerWithProvenanceAndNotify("", nil, "") {
@@ -498,6 +514,7 @@ func TestCovTrySteerWithProvenanceAndNotify(t *testing.T) {
 // TestCovDrainAsSteerWithInput_Closed covers DrainAsSteerWithInput
 // (session_queue.go lines 393-424): closed session.
 func TestCovDrainAsSteerWithInput_Closed(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.mu.Lock()
 	s.state = SessionClosed
@@ -509,6 +526,7 @@ func TestCovDrainAsSteerWithInput_Closed(t *testing.T) {
 
 // TestCovDrainAsSteerWithInput_NotProcessing covers no active turn.
 func TestCovDrainAsSteerWithInput_NotProcessing(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if err := s.DrainAsSteerWithInput(context.Background(), "", nil); err == nil {
 		t.Fatal("not processing should return error")
@@ -517,6 +535,7 @@ func TestCovDrainAsSteerWithInput_NotProcessing(t *testing.T) {
 
 // TestCovDrainAsSteerWithInput_CanceledCtx covers canceled context.
 func TestCovDrainAsSteerWithInput_CanceledCtx(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -527,6 +546,7 @@ func TestCovDrainAsSteerWithInput_CanceledCtx(t *testing.T) {
 
 // TestCovPopSteeringHead_Success covers a successful pop.
 func TestCovPopSteeringHead_Success(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.mu.Lock()
 	s.steeringQueue = []steeringMessage{{Text: "msg1"}}
@@ -546,6 +566,7 @@ func TestCovPopSteeringHead_Success(t *testing.T) {
 // TestCovPushQueueHead_Empty covers pushQueueHead
 // (session_queue.go lines 635-683): empty text + no images — no-op.
 func TestCovPushQueueHead_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if err := s.pushQueueHead(queuedInput{}); err != nil {
 		t.Fatal(err)
@@ -560,6 +581,7 @@ func TestCovPushQueueHead_Empty(t *testing.T) {
 // TestCovPushQueueHead_NoClientMutation covers pushQueueHead without
 // a client mutation ID — the direct-input-queue path.
 func TestCovPushQueueHead_NoClientMutation(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if err := s.pushQueueHead(queuedInput{ID: "q1", Text: "hello"}); err != nil {
 		t.Fatal(err)
@@ -577,6 +599,7 @@ func TestCovPushQueueHead_NoClientMutation(t *testing.T) {
 // hasPendingDelegateAttentionArmRetry (session_attention.go lines 485-493)
 // with arms set.
 func TestCovHasPendingDelegateAttentionArmRetry_WithArms(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.attentionMu.Lock()
 	s.delegateAttentionArmIDs = map[string]struct{}{"arm_1": {}}
@@ -589,6 +612,7 @@ func TestCovHasPendingDelegateAttentionArmRetry_WithArms(t *testing.T) {
 // TestCovResetDelegateAttentionArmRetryLocked covers
 // resetDelegateAttentionArmRetryLocked (session_attention.go lines 734-738).
 func TestCovResetDelegateAttentionArmRetryLocked(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.attentionMu.Lock()
 	s.delegateAttentionArmRetry.active = true
@@ -608,6 +632,7 @@ func TestCovResetDelegateAttentionArmRetryLocked(t *testing.T) {
 // TestCovIsRootDelegateAttentionReceiver_NoController covers
 // isRootDelegateAttentionReceiver (session_attention.go lines 552-559).
 func TestCovIsRootDelegateAttentionReceiver_NoController2(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if s.isRootDelegateAttentionReceiver() {
 		t.Fatal("no controller should return false")
@@ -616,6 +641,7 @@ func TestCovIsRootDelegateAttentionReceiver_NoController2(t *testing.T) {
 
 // TestCovIsRootDelegateAttentionReceiver_RootRuntime covers the root path.
 func TestCovIsRootDelegateAttentionReceiver_RootRuntime(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.delegateController = &delegateTreeController{rootRuntime: s}
 	if !s.isRootDelegateAttentionReceiver() {
@@ -626,6 +652,7 @@ func TestCovIsRootDelegateAttentionReceiver_RootRuntime(t *testing.T) {
 // TestCovResetStableDelegateAttentionRetry covers
 // resetStableDelegateAttentionRetry (session_attention.go lines 784+).
 func TestCovResetStableDelegateAttentionRetry(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.attentionMu.Lock()
 	s.stableAttentionRetry.active = true
@@ -645,6 +672,7 @@ func TestCovResetStableDelegateAttentionRetry(t *testing.T) {
 // TestCovAcceptDelegateAttention_NilReservation covers
 // acceptDelegateAttention (session_attention.go lines 527+).
 func TestCovAcceptDelegateAttention_NilReservation2(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	err := s.acceptDelegateAttention(nil)
 	if err == nil {
@@ -654,6 +682,7 @@ func TestCovAcceptDelegateAttention_NilReservation2(t *testing.T) {
 
 // TestCovAcceptDelegateAttention_NoController covers with no controller.
 func TestCovAcceptDelegateAttention_NoController2(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	err := s.acceptDelegateAttention(nil)
 	if err == nil || !errors.Is(err, errDelegateStaleLease) {

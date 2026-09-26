@@ -17,6 +17,7 @@ import (
 
 // TestCovAvailableEventKindNames covers availableEventKindNames (job_watch.go line 29).
 func TestCovAvailableEventKindNames(t *testing.T) {
+	t.Parallel()
 	names := availableEventKindNames()
 	want := []string{"assistant.tool", "communicate", "job.notification"}
 	if !reflect.DeepEqual(names, want) {
@@ -33,6 +34,7 @@ func TestCovAvailableEventKindNames(t *testing.T) {
 // TestCovQuietWatchdogMessage covers quietWatchdogMessage and formatQuietWindow
 // (job_watch.go lines 76-89).
 func TestCovQuietWatchdogMessage(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
 	got := quietWatchdogMessage(10*time.Minute, now)
 	if !strings.Contains(got, "10m") || !strings.Contains(got, "2025-01-15T10:30:00") {
@@ -54,6 +56,7 @@ func TestCovQuietWatchdogMessage(t *testing.T) {
 
 // TestCovFormatQuietWindow covers formatQuietWindow (job_watch.go lines 84-89).
 func TestCovFormatQuietWindow(t *testing.T) {
+	t.Parallel()
 	if got := formatQuietWindow(10 * time.Minute); got != "10m" {
 		t.Fatalf("10m = %q", got)
 	}
@@ -71,6 +74,7 @@ func TestCovFormatQuietWindow(t *testing.T) {
 // TestCovWatchEndedUnfiredMessage covers watchEndedUnfiredMessage
 // (job_watch.go lines 95-100).
 func TestCovWatchEndedUnfiredMessage(t *testing.T) {
+	t.Parallel()
 	got := watchEndedUnfiredMessage("job_1", jobstore.StatusCompleted, "done", 4096)
 	if !strings.Contains(got, "job_1") || !strings.Contains(got, "completed") || !strings.Contains(got, "done") || !strings.Contains(got, "4096") {
 		t.Fatalf("watchEndedUnfiredMessage = %q", got)
@@ -79,6 +83,7 @@ func TestCovWatchEndedUnfiredMessage(t *testing.T) {
 
 // TestCovWatchArgsHasCondition covers watchArgsHasCondition (job_watch.go lines 731-736).
 func TestCovWatchArgsHasCondition(t *testing.T) {
+	t.Parallel()
 	// No condition → false.
 	if watchArgsHasCondition(watchArgs{}) {
 		t.Fatal("empty args should not have condition")
@@ -107,6 +112,7 @@ func TestCovWatchArgsHasCondition(t *testing.T) {
 
 // TestCovWatchArgsIsOutputMatchOnly covers watchArgsIsOutputMatchOnly (job_watch.go lines 743-749).
 func TestCovWatchArgsIsOutputMatchOnly(t *testing.T) {
+	t.Parallel()
 	if !watchArgsIsOutputMatchOnly(watchArgs{OutputMatch: "READY"}) {
 		t.Fatal("output_match only should be true")
 	}
@@ -129,6 +135,7 @@ func TestCovWatchArgsIsOutputMatchOnly(t *testing.T) {
 
 // TestCovValidateWatchEventArgs covers validateWatchEventArgs (job_watch.go lines 751+).
 func TestCovValidateWatchEventArgs(t *testing.T) {
+	t.Parallel()
 	// Wildcard event → ok.
 	if err := validateWatchEventArgs(watchArgs{Events: []string{"*"}}); err != nil {
 		t.Fatalf("wildcard: %v", err)
@@ -178,6 +185,7 @@ func TestCovValidateWatchEventArgs(t *testing.T) {
 
 // TestCovNormalizeWatchArgs covers normalizeWatchArgs (job_watch.go lines 505-529).
 func TestCovNormalizeWatchArgs(t *testing.T) {
+	t.Parallel()
 	// Negative progress → error.
 	err := normalizeWatchArgs(&watchArgs{ProgressIntervalMS: -1})
 	if err == nil || !strings.Contains(err.Error(), "progress_interval_ms must be non-negative") {
@@ -241,6 +249,7 @@ func TestCovNormalizeWatchArgs(t *testing.T) {
 
 // TestCovCloneWatchEventFilter covers cloneWatchEventFilter (job_watch.go lines 1100-1106).
 func TestCovCloneWatchEventFilter(t *testing.T) {
+	t.Parallel()
 	// Nil → nil.
 	if got := cloneWatchEventFilter(nil); got != nil {
 		t.Fatal("nil should return nil")
@@ -260,6 +269,7 @@ func TestCovCloneWatchEventFilter(t *testing.T) {
 
 // TestCovCloneWatchSendArgs covers cloneWatchSendArgs (job_watch.go lines 1118-1124).
 func TestCovCloneWatchSendArgs(t *testing.T) {
+	t.Parallel()
 	// Nil → nil.
 	if got := cloneWatchSendArgs(nil); got != nil {
 		t.Fatal("nil should return nil")
@@ -278,6 +288,7 @@ func TestCovCloneWatchSendArgs(t *testing.T) {
 
 // TestCovWatchEventFilterSummary covers watchEventFilterSummary (job_watch.go lines 2152-2163).
 func TestCovWatchEventFilterSummary(t *testing.T) {
+	t.Parallel()
 	// Nil → "".
 	if got := watchEventFilterSummary(nil); got != "" {
 		t.Fatalf("nil = %q", got)
@@ -309,6 +320,7 @@ func TestCovWatchEventFilterSummary(t *testing.T) {
 
 // TestCovWatchConditionSummary covers watchConditionSummary (job_watch.go lines 2126-2150).
 func TestCovWatchConditionSummary(t *testing.T) {
+	t.Parallel()
 	// Empty → "".
 	if got := watchConditionSummary(&watchConfig{}); got != "" {
 		t.Fatalf("empty = %q", got)
@@ -363,6 +375,7 @@ func TestCovWatchConditionSummary(t *testing.T) {
 // TestCovWatchConfigMatchesReceiver covers watchConfigMatchesReceiver
 // (job_watch.go lines 2098-2104).
 func TestCovWatchConfigMatchesReceiver(t *testing.T) {
+	t.Parallel()
 	// Nil → false.
 	if watchConfigMatchesReceiver(nil, "sess1", "") {
 		t.Fatal("nil should be false")
@@ -383,6 +396,7 @@ func TestCovWatchConfigMatchesReceiver(t *testing.T) {
 // TestCovWatchConfigVisibleToSession covers watchConfigVisibleToSession
 // (job_watch.go lines 2106-2111).
 func TestCovWatchConfigVisibleToSession(t *testing.T) {
+	t.Parallel()
 	// Nil → false.
 	if watchConfigVisibleToSession(nil, "sess1") {
 		t.Fatal("nil should be false")
@@ -409,6 +423,7 @@ func TestCovWatchConfigVisibleToSession(t *testing.T) {
 // TestCovWatchHistoryMatchesReceiver covers watchHistoryMatchesReceiver
 // (job_watch.go lines 2113-2116).
 func TestCovWatchHistoryMatchesReceiver(t *testing.T) {
+	t.Parallel()
 	h := watchHistoryEntry{receiverSessionID: "sess1", receiverDelegateID: "dlg_1"}
 	if !watchHistoryMatchesReceiver(h, "sess1", "dlg_1") {
 		t.Fatal("exact match should be true")
@@ -421,6 +436,7 @@ func TestCovWatchHistoryMatchesReceiver(t *testing.T) {
 // TestCovWatchHistoryVisibleToSession covers watchHistoryVisibleToSession
 // (job_watch.go lines 2118-2120).
 func TestCovWatchHistoryVisibleToSession(t *testing.T) {
+	t.Parallel()
 	// Empty receiver → visible to all.
 	h := watchHistoryEntry{}
 	if !watchHistoryVisibleToSession(h, "sess1") {
@@ -442,6 +458,7 @@ func TestCovWatchHistoryVisibleToSession(t *testing.T) {
 // TestCovWatchSendKeyMatchesWatchKey covers watchSendKeyMatchesWatchKey
 // (job_watch.go lines 4084-4094).
 func TestCovWatchSendKeyMatchesWatchKey(t *testing.T) {
+	t.Parallel()
 	pending := jobstore.WatchSendKey{
 		VisibleSessionID:        "sess1",
 		WatchTarget:             "job_1",
@@ -496,6 +513,7 @@ func TestCovWatchSendKeyMatchesWatchKey(t *testing.T) {
 // TestCovWatchConfigReceiverMatchesWatchKey covers watchConfigReceiverMatchesWatchKey
 // (job_watch.go lines 4122+).
 func TestCovWatchConfigReceiverMatchesWatchKey(t *testing.T) {
+	t.Parallel()
 	// Nil → false.
 	if watchConfigReceiverMatchesWatchKey(nil, watchKey{}) {
 		t.Fatal("nil should be false")
@@ -523,6 +541,7 @@ func TestCovWatchConfigReceiverMatchesWatchKey(t *testing.T) {
 
 // TestCovLimitWatchText covers limitWatchText (job_watch.go lines 4881-4891).
 func TestCovLimitWatchText(t *testing.T) {
+	t.Parallel()
 	// No limit → unchanged.
 	if got := limitWatchText("hello", 0); got != "hello" {
 		t.Fatalf("no limit = %q", got)
@@ -618,6 +637,7 @@ func TestCovJobFinishedEventData(t *testing.T) {
 // TestCovWatchEventFilterMatches covers watchEventFilterMatches
 // (job_watch.go lines 2415+).
 func TestCovWatchEventFilterMatches(t *testing.T) {
+	t.Parallel()
 	// Nil filter → matches everything.
 	if !watchEventFilterMatches(nil, events.SessionEvent{Kind: events.EventToolCallEnd}) {
 		t.Fatal("nil filter should match")
@@ -649,6 +669,7 @@ func TestCovWatchEventFilterMatches(t *testing.T) {
 
 // TestCovCloneJobRecord covers cloneJobRecord (jobs.go lines 2355-2361).
 func TestCovCloneJobRecord(t *testing.T) {
+	t.Parallel()
 	// Nil → nil.
 	if got := cloneJobRecord(nil); got != nil {
 		t.Fatal("nil should return nil")
@@ -667,6 +688,7 @@ func TestCovCloneJobRecord(t *testing.T) {
 
 // TestCovStringOutputResult covers stringOutputResult (jobs.go lines 2168-2173).
 func TestCovStringOutputResult(t *testing.T) {
+	t.Parallel()
 	// With error.
 	wantErr := errors.New("read error")
 	out, total, truncated, err := stringOutputResult(nil, 100, true, wantErr)
@@ -683,6 +705,7 @@ func TestCovStringOutputResult(t *testing.T) {
 
 // TestCovAppendJobEvents covers appendJobEvents (jobs.go lines 265-278).
 func TestCovAppendJobEvents(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{}
 	// Empty events → nil.
 	if err := jm.appendJobEvents(nil); err != nil {
@@ -692,6 +715,7 @@ func TestCovAppendJobEvents(t *testing.T) {
 
 // TestCovCurrentCausalProvenance covers currentCausalProvenance (jobs.go lines 283-288).
 func TestCovCurrentCausalProvenance(t *testing.T) {
+	t.Parallel()
 	// Nil manager.
 	var jm *jobManager
 	if got := jm.currentCausalProvenance(); got != nil {
@@ -723,6 +747,7 @@ func TestCovCurrentCausalProvenance(t *testing.T) {
 
 // TestCovRunningJobIDs covers runningJobIDs (jobs.go lines 1444-1454).
 func TestCovRunningJobIDs(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{running: map[string]*runningJob{}}
 	// No running jobs.
 	if got := jm.runningJobIDs(); len(got) != 0 {
@@ -740,6 +765,7 @@ func TestCovRunningJobIDs(t *testing.T) {
 
 // TestCovLiveWorkHandles covers liveWorkHandles (jobs.go lines 407+).
 func TestCovLiveWorkHandles(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{running: map[string]*runningJob{}}
 	// No running jobs.
 	if got := jm.liveWorkHandles(); len(got) != 0 {
@@ -762,6 +788,7 @@ func TestCovLiveWorkHandles(t *testing.T) {
 
 // TestCovLiveShellHandles covers liveShellHandles (jobs.go lines 429+).
 func TestCovLiveShellHandles(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{running: map[string]*runningJob{}}
 	// No running jobs.
 	if got := jm.liveShellHandles(); len(got) != 0 {
@@ -801,6 +828,7 @@ func TestCovLiveShellHandles(t *testing.T) {
 // TestCovDelegateQuietAttentionID covers delegateQuietAttentionID and
 // delegateQuietAttentionIDForStretch (delegate_runtime.go lines 160-166).
 func TestCovDelegateQuietAttentionID(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 2}
 	got := delegateQuietAttentionID(lease)
 	if got != "quiet:dlg_1:2:1" {
@@ -816,6 +844,7 @@ func TestCovDelegateQuietAttentionID(t *testing.T) {
 // TestCovDelegateQuietAttentionContent covers delegateQuietAttentionContent
 // (delegate_runtime.go lines 168-174).
 func TestCovDelegateQuietAttentionContent(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	now := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
 	got := delegateQuietAttentionContent(lease, now)
@@ -828,6 +857,7 @@ func TestCovDelegateQuietAttentionContent(t *testing.T) {
 
 // TestCovFatalRunGatedSnapshot covers fatalRunGatedSnapshot (subagents.go lines 1456-1463).
 func TestCovFatalRunGatedSnapshot(t *testing.T) {
+	t.Parallel()
 	// Nil subagent.
 	var a *subagent
 	if a.fatalRunGatedSnapshot() {
@@ -849,6 +879,7 @@ func TestCovFatalRunGatedSnapshot(t *testing.T) {
 
 // TestCovChildFatalRunGated covers childFatalRunGated (subagents.go lines 1465-1471).
 func TestCovChildFatalRunGated(t *testing.T) {
+	t.Parallel()
 	// Nil session.
 	var s *Session
 	if s.childFatalRunGated("child1") {
@@ -909,6 +940,7 @@ func TestCovDelegateTranscriptPathFromRef(t *testing.T) {
 // TestCovKeepIncomingDescendantRow covers keepIncomingDescendantRow
 // (jobs_nested.go lines 122-127).
 func TestCovKeepIncomingDescendantRow(t *testing.T) {
+	t.Parallel()
 	// Not seen → always keep.
 	if !keepIncomingDescendantRow(false, false, false) {
 		t.Fatal("not seen should keep")

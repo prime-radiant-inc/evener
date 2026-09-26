@@ -1073,6 +1073,7 @@ func TestWorktreeRemove_RemoveCurrentForeignLockedRestoreWarns(t *testing.T) {
 // process table a concurrent close reaps. The fence has to cover the whole
 // operation, not just the swap some operations happen to perform.
 func TestWorktreeRemove_CloseWaitsForTheOperationItInterrupts(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	if _, err := r.create(t, map[string]any{"name": "a"}); err != nil {
@@ -1137,6 +1138,7 @@ func TestWorktreeRemove_CloseWaitsForTheOperationItInterrupts(t *testing.T) {
 // concurrently with an operation that is still moving locks and lanes around.
 // The join belongs before any of that.
 func TestWorktreeRemove_CloseDefersItsOwnLaneCleanupUntilTheOperationReturns(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	if _, err := r.create(t, map[string]any{"name": "a"}); err != nil {
@@ -1200,6 +1202,7 @@ func TestWorktreeRemove_CloseDefersItsOwnLaneCleanupUntilTheOperationReturns(t *
 // refusal IS the answer, and it has to reach the caller instead of being
 // dropped on the floor while the operation runs anyway.
 func TestWorktreeOps_DispatchWhileClosingIsRefusedAndRunsNoGit(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	r.s.Close()
