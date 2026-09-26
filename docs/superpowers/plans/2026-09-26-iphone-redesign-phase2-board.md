@@ -77,7 +77,7 @@ Decisions this plan makes where the spec is silent or its data doesn't exist yet
 8. **Notices.**
    - A provider notice appears when `evener/auth/list` reports `needsLogin`. `needsRefresh` (within five minutes of expiry, OAuth only) is left to the hub, and "expiring within a day" isn't knowable.
    - A plugin notice appears when `evener/plugin/list` reports `broken`. It's polled when the Board comes into view and every 5 minutes while it's shown, because `evener/plugin/updated` fires only on mutations.
-   - A host notice comes from the manifest's `sources[].online`, with its action "Details" (spec 7.1 as amended in #2460).
+   - A host notice comes from the manifest's `sources[].online`, with its action "Details" rather than "Reconnect": the hub already retries a dropped host with backoff (`cmd/evener-hub/internal/sshconn`), so Details opens the host with its last error. #2460 amends spec 7.1 to say the same.
 9. **The hub button opens a menu until phase 5's Hub sheet exists.** It lists the destinations the old home header offered: "Hub settings" (`HubSettings`) and "Switch hub" (`Hubs`). "Browse projects" and "Pinned sections" become Board sections.
 10. **The Working band keeps the hub's Live order.** The hub sorts Live by attention rank, then `updated_at` newest first, which for working rows is newest turn first: stable, and the closest thing to start time the phone has until S5.
 
@@ -1596,12 +1596,12 @@ export function createBoardController(): BoardController;
 **Requirements:**
 1. `setClient(client)` with a client creates four readers:
    - Live: `new NavigationPages<NavigationSessionSummary>(client, { resource: "section", section: "live" }, "sessions", (row) => row.ref, 50)`.
-   - Needs you: the same with `section: "needs_you"`. Keep reading its pages with `more()` until `remaining` is 0 or 200 rows are loaded: the spec's Needs you must be complete, and the hub caps a page at 50.
+   - Needs you: the same with `section: "needs_you"`. Keep reading its pages with `more()` until `remaining` is 0: the spec's Needs you must be complete, and the hub caps a page at 50.
    - The pin catalog: `{ resource: "pin_catalog" }`, field `"pin_sections"`, key `(row) => row.id`, limit 100.
    - The manifest: read with `evener/navigation/read { resource: "manifest", representationVersion: 2 }`, decoded and materialized as in `navigationReadback.ts`. It is re-read on any `evener/navigation/invalidated` whose targets include `{ kind: "manifest" }`, coalesced with `singleFlight` from `src/singleFlight.ts`.
 
    Each paged reader is `watch()`ed so invalidations re-read it (`NavigationPages` does the work).
-2. `setClient(null)` cancels the readers (`cancel()`) and keeps the last snapshot's rows with `retained: true`. A later `setClient(next)` builds fresh readers on `next`. Until each fresh reader's first read lands, the snapshot keeps that reader's retained rows. When it lands, its rows replace the retained ones and `retained` turns false once Live, Needs you and the manifest have all landed. No snapshot emitted after `loaded` first turns true may have an empty Live whose retained copy had rows, unless the fresh read itself returned no rows.
+2. `setClient(null)` cancels the readers (`cancel()`) and keeps the last snapshot's rows with `retained: true`. A later `setClient(next)` builds fresh readers on `next`. Until each fresh reader's first read lands, the snapshot keeps that reader's retained rows. When it lands, its rows replace the retained ones and `retained` turns false once all four readers (Live, Needs you, the pin catalog and the manifest) have landed. No snapshot emitted after `loaded` first turns true may have an empty Live whose retained copy had rows, unless the fresh read itself returned no rows.
 3. A failed first read sets `error` to the reader's message and leaves `loaded` false. A failed read after `loaded` keeps the rows and sets `error`. The screen doesn't show it, because the Board's toolbar status and the retry in Task 1 cover connection loss (spec 14: errors inline, specific, one action; a navigation read has no action of its own).
 4. `loadMoreLive()` calls `more()` on Live. `pause()` and `resume()` call `cancel()` and `resume()` on every reader; the screen pauses while it isn't focused. `dispose()` unsubscribes and unwatches everything.
 5. `getSnapshot()` returns the same object until something changes, because the screen reads it through `useSyncExternalStore`.
@@ -1643,7 +1643,7 @@ it("reads Live, Needs you, the pin catalog and the manifest when it gets a clien
 Then:
 - "answers become the snapshot": Live 2 rows, Needs you 1, pin catalog 1 and the manifest arrive; `loaded` is true, `retained` false, and the rows and manifest sources are exposed.
 - "keeps showing its rows while disconnected and replaces them only when the new connection's reads land": load, then `setClient(null)`; the snapshot keeps its 2 Live rows with `retained: true`. Then `setClient(second)`; answer the second client's Live read only. Record every snapshot emitted with `subscribe`: none has an empty Live, and after all four reads land `retained` is false.
-- "reads every Needs you page, up to 200 rows": the first needs_you page has `remaining: 30`, and the controller requests `offset: 50`.
+- "reads every Needs you page": the first needs_you page has `remaining: 30`, the controller requests `offset: 50`, and a fifth page (past 200 rows) is still read.
 - "loads the next Live page on request": `loadMoreLive()` sends `offset: 50`.
 - "re-reads the manifest when the hub invalidates it": deliver an `evener/navigation/invalidated` notification to `hub.listeners` with targets `[{ kind: "manifest", revision: 2 }]`; a second manifest request goes out, and two invalidations before it answers cause one request.
 - "an approval that resolves leaves Needs you": invalidate `{ kind: "section", section: "needs_you", revision: 2 }` and answer the re-read without the row; the snapshot's `needsYou.rows` no longer has it.
@@ -1738,8 +1738,8 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 - Consumes: Tasks 2-6 and `useConnection()` (`client`, `state`, `activeProfile`).
 - Produces:
   - `BoardScreen` (a route component for `"Sessions"`).
-  - `connectionStatus(state: ConnectionState, downSince: number | null, lastLiveAt: number | null, now: number): string | null`, which returns `null` when live, "Reconnecting…" after 2 seconds down, and "Offline · updated 3m ago" after 30 seconds (the age comes from `relativeAge` on `lastLiveAt`).
-  - `DraftRepository.refsWithDrafts(hubId: string): Set<string>` (`SELECT session_ref FROM drafts WHERE hub_id = ? AND (draft != '' OR unconfirmed IS NOT NULL)`) and `DraftLibrary.refsWithDrafts(hubId)` passing it through.
+  - `connectionStatus(state: ConnectionState, downSince: number | null, lastLiveAt: number | null, now: number): string | null`, which returns `null` when live, "Reconnecting…" after 2 seconds down, and "Offline · updated 3m ago" after 30 seconds (the age comes from `relativeAge` on `lastLiveAt`; with no `lastLiveAt`, because the hub was never reached this launch, it says "Offline").
+  - `DraftRepository.refsWithDrafts(hubId: string): Set<string>` (`SELECT session_ref FROM drafts WHERE hub_id = ? AND (draft != '' OR unconfirmed IS NOT NULL)`) and `DraftLibrary.refsWithDrafts(hubId)` passing it through (add `"refsWithDrafts"` to the `DraftStorage` `Pick` in `draftLibrary.ts`).
 
 **Requirements (spec 7.1, 7.5, 14; layout from top to bottom):**
 1. **Header** (native stack header, no large title):
@@ -1775,7 +1775,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 10. **Drafts:** `drafts.refsWithDrafts(hubId)` is read on focus. Rows whose ref is in it show the Draft tag.
 
 - [ ] **Step 1: Write the failing tests.**
-  - `connectionStatus.test.ts` is a table: live → null; down 1s → null; down 2s → "Reconnecting…"; down 31s with `lastLiveAt` 3 minutes ago → "Offline · updated 3m ago"; closed → the same timeline.
+  - `connectionStatus.test.ts` is a table: live → null; down 1s → null; down 2s → "Reconnecting…"; down 31s with `lastLiveAt` 3 minutes ago → "Offline · updated 3m ago"; down 31s with no `lastLiveAt` → "Offline"; closed → the same timeline.
   - `draftRepository.test.ts`: `refsWithDrafts` returns refs with non-empty or unconfirmed drafts for that hub only.
   - `BoardScreen.test.tsx`: mock `react-native`, `expo-symbols`, `@react-navigation/native` (`useFocusEffect`, `useIsFocused`, `useNavigation`) and `../ConnectionProvider` (a `useConnection` returning `screenConnection(...)` from `renderNative.testkit`). Drive the hub through `scriptedClient` from `renderNative.testkit` answering navigation reads with `wireV2`. Cover:
     - the fixture fleet renders bands in order with counts;
@@ -1880,8 +1880,8 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 
 **Files:**
 - Create: `mobile-native/src/board/boardSearch.ts` (the controller and recent searches) and `mobile-native/src/board/SearchResults.tsx`
-- Modify: `mobile-native/src/board/BoardScreen.tsx` (replace the `RosterSearch` field from Task 7)
-- Test: `mobile-native/src/board/boardSearch.test.ts` and `mobile-native/src/board/SearchResults.test.tsx`
+- Modify: `mobile-native/src/board/BoardScreen.tsx` (replace the `RosterSearch` field from Task 7) and `mobile-native/src/board/boardMemory.ts` (`forgetBoard` removes `evener.native.recent-searches.${hubId}` too)
+- Test: `mobile-native/src/board/boardSearch.test.ts`, `mobile-native/src/board/SearchResults.test.tsx` and `mobile-native/src/board/boardMemory.test.ts` (the forget test covers all three keys)
 
 **Requirements (spec 7.4, ruling 7):**
 - **Showing search:**
