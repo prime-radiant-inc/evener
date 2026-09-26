@@ -227,6 +227,9 @@ func symlinkErrorDeep(path, root string) error {
 // the higher bar — a symlink under projects/ could point outside the state
 // root and expose transcripts from elsewhere, so the agent never follows
 // them. The doctor's symlink policy is a separate concern.
+// The doctor intentionally still follows symlinks per #2275 ("this is a user
+// tool. allow symlinked buckets.") — do not "harmonize" the two sides
+// without the owner.
 func enumerateBuckets(stateHome string) ([]string, error) {
 	// Validate the glob pattern for well-formedness BEFORE the prefix
 	// not-exists shortcut below. A stateHome containing unmatched glob

@@ -17,9 +17,9 @@ import * as pageReload from "./pageReload";
 // runs its own real setTimeout-based exponential-backoff reconnect loop
 // (protocol/client.ts) that close() is the only thing that cancels - setting
 // connectionStore's client to null in afterEach below detaches THIS store's
-// reference but leaves that client object's own live timer running for the
-// rest of the worker's life under isolate:false (same hazard App.test.tsx's
-// own closeStaleClient guards against).
+// reference but leaves that client object's own live timer redialing through
+// this file's later tests (same hazard App.test.tsx's own
+// closeAllCreatedClients guards against).
 //
 // Nulls connectionStore's client reference BEFORE closing it: connection.ts's
 // own client->store state mirror only republishes while
@@ -60,31 +60,21 @@ const ALL_FEATURES_OFF = {
 // below relies on exactly that; other blocks override it per case.
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 200 })));
+  // The notification engine runs in the real app beside this banner, and
+  // several tests here connect a fresh client straight to "ready", the exact
+  // transition its "reconnect" detector (sawReady) watches for. Its module
+  // state lives across every test in this file, so reset and re-init it
+  // before each test: every test runs with the engine started, seeded from
+  // an idle connection, with nothing armed by an earlier test. Runs after the fetch stub above so the
+  // engine's baseline load hits the stub, not the network.
+  resetNotificationsForTests();
+  initNotifications();
 });
 
 afterEach(() => {
   cleanup();
   closeStaleClient();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  // Whichever earlier test file in this isolate:false worker first imported
-  // AppShell.tsx armed notifications/index.ts's connectionStore subscriber
-  // (its "reconnect" detector, sawReady) for the rest of the worker's life -
-  // this file has SEVERAL tests above (and in "clicking Retry" below) that
-  // each connect a FRESH client straight to "ready", the exact transition
-  // that detector watches for. Left unreset, the first such test here arms
-  // sawReady and every later one in this file reads as a spurious reconnect,
-  // firing an extra, unscripted navigationStore.loadManifest() request
-  // that can consume one of a later test's own scripted fetchMock slots (the
-  // "clicking Retry > a retry re-probes..." flake this reset fixes - see
-  // AppShell.test.tsx's identical reset for the fuller writeup). Reset+reinit
-  // (not just reset) for the same reason as there: initNotifications() only
-  // ever fires once per worker, so leaving it merely reset would starve
-  // every later file's own attention/title wiring for the rest of the run.
-  // Run before vi.unstubAllGlobals() below so initNotifications()'s baseline
-  // ensureLoaded() fetch still hits a stub (this test's own, still active)
-  // instead of a real network call.
-  resetNotificationsForTests();
-  initNotifications();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();

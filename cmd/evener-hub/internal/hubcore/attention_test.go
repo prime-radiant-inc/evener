@@ -106,6 +106,23 @@ func fuzzScenarioDeriveAttention_CarriesAskPending(t *testing.T) {
 	}
 }
 
+// fuzzScenarioDeriveAttention_CarriesApprovalPending: the attention entry says
+// why an escalation-promoted session needs you, beside the promotion, so a
+// client can show an approval.
+func fuzzScenarioDeriveAttention_CarriesApprovalPending(t *testing.T) {
+	metas := []schema.SessionMeta{{ID: "01A", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
+	live := []LiveEntry{{SessionID: "01A", Status: appwire.ThreadStatusActive, PendingEscalation: true}}
+	entries, _ := DeriveAttention(metas, live, nil)
+	if got := entries["01A"]; !got.ApprovalPending || got.Level != "needs_you" {
+		t.Fatalf("entry = %+v, want ApprovalPending at level needs_you", got)
+	}
+	live = []LiveEntry{{SessionID: "01A", Status: appwire.ThreadStatusActive}}
+	entries, _ = DeriveAttention(metas, live, nil)
+	if entries["01A"].ApprovalPending {
+		t.Fatalf("entry without an escalation carries ApprovalPending: %+v", entries["01A"])
+	}
+}
+
 func fuzzScenarioDeriveAttention_PendingEscalationPromotesToNeedsYou(t *testing.T) {
 	metas := []schema.SessionMeta{{ID: "01A", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}}}
 	// A sandbox escalation blocks MID-TURN, so the daemon status is still "active"
@@ -150,5 +167,22 @@ func fuzzScenarioAttentionWatcher_TicksOnAskOnlyFlip(t *testing.T) {
 	}
 	if !got[0].Changed[0].AskPending {
 		t.Fatalf("changed entry must carry the new AskPending=true, got %+v", got[0].Changed[0])
+	}
+}
+
+// fuzzScenarioAttentionWatcher_TicksOnApprovalOnlyFlip: level and ask can hold
+// still while the approval moves; a client keyed on the approval must hear it,
+// and a session that goes away clears it.
+func fuzzScenarioAttentionWatcher_TicksOnApprovalOnlyFlip(t *testing.T) {
+	var got []appwire.AttentionChangedPayload
+	w := NewAttentionWatcher(func(p appwire.AttentionChangedPayload) { got = append(got, p) })
+	w.Tick(map[string]appwire.AttentionEntry{"01A": {ID: "01A", Level: "needs_you", AskPending: true}}, appwire.AttentionSummary{})
+	w.Tick(map[string]appwire.AttentionEntry{"01A": {ID: "01A", Level: "needs_you", AskPending: true, ApprovalPending: true}}, appwire.AttentionSummary{})
+	if len(got) != 1 || !got[0].Changed[0].ApprovalPending {
+		t.Fatalf("payloads = %+v, want one change carrying ApprovalPending", got)
+	}
+	w.Tick(map[string]appwire.AttentionEntry{}, appwire.AttentionSummary{})
+	if len(got) != 2 || got[1].Changed[0].ApprovalPending {
+		t.Fatalf("payloads = %+v, want the gone entry with ApprovalPending cleared", got)
 	}
 }

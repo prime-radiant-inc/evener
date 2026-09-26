@@ -1376,6 +1376,21 @@ func TestCloneNavigationLiveEntriesOwnsWatches(t *testing.T) {
 	}
 }
 
+// The navigation inputs own their live entries' task progress too: a shared
+// aggregate would let the roster's next probe rewrite a built projection's
+// current task.
+func TestCloneNavigationLiveEntriesOwnsTasks(t *testing.T) {
+	original := []hubcore.LiveEntry{{Tasks: &appwire.TaskAggregate{
+		Total: 2, Remaining: 2, Current: &appwire.TaskSummary{ID: 1, Description: "first"},
+	}}}
+	clone := cloneNavigationLiveEntries(original)
+	original[0].Tasks.Total = 9
+	original[0].Tasks.Current.Description = "mutated"
+	if clone[0].Tasks.Total != 2 || clone[0].Tasks.Current.Description != "first" {
+		t.Fatalf("clone task progress changed through the original: %+v %+v", clone[0].Tasks, clone[0].Tasks.Current)
+	}
+}
+
 // The projection build must honor cancellation inside the duplicate-Key merge,
 // not only around it. navigationMergeProjectBucketsContext folds every tree
 // group that collides on a wire Key into one catalog row, and a tree whose

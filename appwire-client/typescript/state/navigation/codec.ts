@@ -159,6 +159,7 @@ const WATCH_KEYS = valueRecordKeys(
   ["target", "send_to", "note", "cadence", "output_match", "events", "wildcard_events", "delivery_times", "end_reason"],
   { cadence: WATCH_CADENCE_KEYS },
 );
+const TASKS_KEYS = valueRecordKeys(["total", "done"], ["cancelled", "current_id", "current"]);
 const SESSION_KEYS = valueRecordKeys(
   ["ref", "host_id", "session_id", "title", "project", "state", "kind", "live", "children"],
   [
@@ -167,6 +168,7 @@ const SESSION_KEYS = valueRecordKeys(
     "favorite",
     "rename",
     "ask_pending",
+    "approval_pending",
     "dormant",
     "offline",
     "updated_at",
@@ -177,8 +179,9 @@ const SESSION_KEYS = valueRecordKeys(
     "running_jobs",
     "completed_jobs",
     "watches",
+    "tasks",
   ],
-  { running_jobs: JOB_KEYS, completed_jobs: JOB_KEYS, watches: WATCH_KEYS },
+  { running_jobs: JOB_KEYS, completed_jobs: JOB_KEYS, watches: WATCH_KEYS, tasks: TASKS_KEYS },
 );
 const PROJECT_KEYS = valueRecordKeys(
   ["key", "name", "session_count"],
@@ -275,6 +278,18 @@ function watchValue(value: unknown): boolean {
 const omittedArmedWithinOmitted = (value: Record<string, unknown>): boolean =>
   ((value.omitted_armed_watches as number | undefined) ?? 0) <= ((value.omitted_watches as number | undefined) ?? 0);
 
+// Mirrors navigationTaskProgressValid: safe non-negative counts, no more tasks
+// done and cancelled than exist (an absent cancelled count is zero), and a
+// current task within the label bound.
+const tasksValue = (value: unknown): boolean =>
+  knownKeys(value, TASKS_KEYS) &&
+  count(value.total) &&
+  count(value.done) &&
+  optional(value.cancelled, count) &&
+  optional(value.current_id, count) &&
+  optional(value.current, (item) => boundedString(item, 512)) &&
+  (value.done as number) + ((value.cancelled as number | undefined) ?? 0) <= (value.total as number);
+
 function sessionValue(value: unknown): value is Record<string, unknown> {
   return (
     knownKeys(value, SESSION_KEYS) &&
@@ -293,6 +308,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.favorite, bool) &&
     optional(value.rename, bool) &&
     optional(value.ask_pending, bool) &&
+    optional(value.approval_pending, bool) &&
     optional(value.dormant, bool) &&
     optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&
@@ -303,7 +319,8 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     omittedArmedWithinOmitted(value) &&
     optional(value.running_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
     optional(value.completed_jobs, (item) => Array.isArray(item) && item.every(jobValue)) &&
-    optional(value.watches, (item) => Array.isArray(item) && item.every(watchValue))
+    optional(value.watches, (item) => Array.isArray(item) && item.every(watchValue)) &&
+    optional(value.tasks, tasksValue)
   );
 }
 
