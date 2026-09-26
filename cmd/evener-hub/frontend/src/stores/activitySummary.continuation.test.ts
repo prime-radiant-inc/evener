@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import type { ActivityTree } from "@evener/appwire-client";
 import { beforeEach, expect, test, vi } from "vitest";
 import { activityPanelStore, retainedActivityTree } from "./activityPanel";

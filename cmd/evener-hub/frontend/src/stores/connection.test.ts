@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { answerRequests, callsTo, FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { connectedClientPort, connectionStore } from "./connection";

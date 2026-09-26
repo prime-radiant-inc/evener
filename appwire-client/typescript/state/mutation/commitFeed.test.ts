@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test, vi } from "vitest";
 import { type MutationCommit, type MutationCommitFeed, wireMutationCommitFeed } from "./commitFeed";
 import type { MutationProjectionFence } from "./projection";

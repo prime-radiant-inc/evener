@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { capability, manifest } from "@evener/appwire-client/testing/navigation";
 import { expect, test } from "vitest";
 import { buildShutdownConvergence } from "./shutdownConvergence";

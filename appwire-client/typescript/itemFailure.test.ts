@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test } from "vitest";
 import { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 import type { ItemModel } from "./model";
