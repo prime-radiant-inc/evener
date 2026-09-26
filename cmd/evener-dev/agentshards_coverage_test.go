@@ -414,6 +414,66 @@ func TestReplaySurveyFailuresKeepsFallbackContextAtBlockLimit(t *testing.T) {
 	}
 }
 
+func TestReplaySurveyFailuresKeepsDeferredLinesAndLaterAssertion(t *testing.T) {
+	const assertion = "    parent_test.go:99: real assertion"
+	var log strings.Builder
+	log.WriteString("=== RUN   TestParent\n")
+	log.WriteString("=== RUN   TestSibling\n")
+	log.WriteString("=== NAME  TestParent\n")
+	for i := 1; i <= surveyContextBefore; i++ {
+		fmt.Fprintf(&log, "    parent output line %d\n", i)
+	}
+	log.WriteString("--- FAIL: TestSibling (0.00s)\n")
+	log.WriteString("=== NAME  TestParent\n")
+	log.WriteString(assertion + "\n")
+	log.WriteString("--- FAIL: TestParent (0.00s)\n")
+
+	got := replayLines(t, writeSurveyLog(t, log.String()), 10)
+	assertionCount := 0
+	for _, line := range got {
+		if line == assertion {
+			assertionCount++
+		}
+	}
+	if assertionCount != 1 {
+		t.Fatalf("parent assertion occurred %d times: %q", assertionCount, got)
+	}
+	for i := 1; i <= surveyContextBefore; i++ {
+		line := fmt.Sprintf("parent output line %d", i)
+		fullLine := "    " + line
+		count := 0
+		for _, gotLine := range got {
+			if gotLine == fullLine {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("deferred parent line %q occurred %d times: %q", line, count, got)
+		}
+	}
+}
+
+func TestReplaySurveyFailuresDefersFailedChildDiagnosticToParent(t *testing.T) {
+	const childDiagnostic = "    child_test.go:7: failed child assertion"
+	path := writeSurveyLog(t,
+		"=== RUN   TestParent\n"+
+			"=== RUN   TestSibling\n"+
+			"=== NAME  TestParent/child\n"+
+			childDiagnostic+"\n"+
+			"--- FAIL: TestSibling (0.00s)\n"+
+			"--- FAIL: TestParent (0.00s)\n")
+
+	got := replayLines(t, path, 10)
+	want := []string{
+		"--- FAIL: TestSibling (0.00s)",
+		childDiagnostic,
+		"--- FAIL: TestParent (0.00s)",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("replayed %q, want child diagnostic beside parent failure %q", got, want)
+	}
+}
+
 // TestReplaySurveyFailuresSeparatesInterleavedSiblingDiagnostics covers the
 // top-level parallel shape from go test -v: a sibling resumes after the
 // parent's assertion, emits source-located diagnostics, passes, and the

@@ -920,8 +920,8 @@ func surveyFailureHasMismatchedOwner(lines []string, marker int) bool {
 // line when that owner has a later top-level failure marker within the remaining
 // block budget. The caller defers only those lines, so maxBlocks exhaustion
 // cannot silently discard context. Ownership follows RUN/CONT/NAME frames and
-// test verdicts, matching expandSurveyFailure; later markers are top-level
-// because surveyRedLine is anchored.
+// verdicts, matching expandSurveyFailure; a parent marker can claim a failed
+// descendant. A later RUN of the owner ends the earlier output's claim.
 func surveyFallbackLineLaterFailureOwner(lines []string, index, marker, maxBlocks int) string {
 	if surveyFrameworkLine(lines[index]) {
 		return ""
@@ -933,7 +933,7 @@ func surveyFallbackLineLaterFailureOwner(lines []string, index, marker, maxBlock
 			owner = frameOwner
 		}
 		if verdict := strings.TrimSpace(lines[frame]); surveyTestVerdictLine.MatchString(verdict) {
-			owner = surveyFailureName(verdict)
+			owner = current
 		}
 	}
 	if owner == "" || owner == current {
@@ -944,9 +944,15 @@ func surveyFallbackLineLaterFailureOwner(lines []string, index, marker, maxBlock
 			continue
 		}
 		failures++
-		if surveyFailureName(lines[later]) == owner {
+		laterName := surveyFailureName(lines[later])
+		if laterName == owner || strings.HasPrefix(owner, laterName+"/") {
+			for between := index + 1; between < later; between++ {
+				if lines[between] == "=== RUN   "+owner {
+					return ""
+				}
+			}
 			if failures <= maxBlocks {
-				return owner
+				return laterName
 			}
 			return ""
 		}
@@ -1104,12 +1110,11 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	ordinaryBudget := ordinaryBudgetForReservations()
 	keep := make(map[int]struct{}, maxExpandedLines)
 	selectedCount := 0
-	for i := len(deferredLines) - 1; i >= 0 && selectedCount < maxExpandedLines; i-- {
-		if _, exists := emittedLines[deferredLines[i]]; exists {
+	for i := len(deferredLines) - 1; i >= 0; i-- {
+		if deferredLines[i] <= run {
 			continue
 		}
 		keep[deferredLines[i]] = struct{}{}
-		selectedCount++
 	}
 	selectNewest := func(candidates []int, limit int) {
 		for i := len(candidates) - 1; i >= 0 && selectedCount < limit; i-- {
@@ -1135,10 +1140,10 @@ func expandSurveyFailure(lines []string, marker, ordinaryStart int, emittedLines
 	selectNewest(ownedDiagnosticCandidates, maxExpandedLines)
 	selectNewest(ownedOutputCandidates, maxExpandedLines)
 	selectNewest(ordinaryContextCandidates, maxExpandedLines)
-	if selectedCount == 0 {
+	if selectedCount == 0 && len(keep) == 0 {
 		return nil, false
 	}
-	result := make([]string, 0, selectedCount+1)
+	result := make([]string, 0, len(keep)+1)
 	for index := run + 1; index < marker; index++ {
 		if _, exists := keep[index]; exists {
 			result = append(result, lines[index])
