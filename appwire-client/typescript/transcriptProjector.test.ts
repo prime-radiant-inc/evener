@@ -391,6 +391,78 @@ describe("transcript projector", () => {
     });
   });
 
+  describe("tool-repair notices", () => {
+    const repair = () =>
+      item("repair", "systemMessage", {
+        eventKind: "tool_repair",
+        text: 'Fixed the communicate call: filled the required "message" key.',
+      });
+
+    test("hidden below the high verbosity levels, critical at activity and full", () => {
+      const model = threadWith(repair());
+      for (const level of ["chat", "intent", "tools"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([]);
+      }
+      for (const level of ["activity", "full"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([expect.objectContaining({ kind: "critical", id: "repair" })]);
+      }
+    });
+
+    test("a hidden repair leaves no visible item or anchor behind", () => {
+      const model = threadWith(repair());
+      const projection = projectThread(model, preset("tools"));
+      expect(projection.turns[0]?.visibleItems).toEqual([]);
+      expect(projection.anchors).toEqual([]);
+    });
+
+    test("a custom vector gates repair notices on expandByDefault", () => {
+      const model = threadWith(repair());
+      expect(
+        entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: false })),
+      ).toEqual([]);
+      expect(
+        entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: true })),
+      ).toEqual([expect.objectContaining({ kind: "critical", id: "repair" })]);
+    });
+
+    test("an error systemMessage stays critical at every level", () => {
+      const model = threadWith(item("boom", "systemMessage", { eventKind: "error", text: "provider went away" }));
+      for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([expect.objectContaining({ kind: "critical", id: "boom" })]);
+      }
+    });
+
+    test("the terminal fallback does not resurrect a hidden repair where an end cap will render", () => {
+      // The same shape the informational-warning fallback follows: a failed
+      // turn that carries the error its end cap renders must not fall back to
+      // the repair decisionFor just hid; an interrupted turn carries no error
+      // object, so its fallback keeps the never-empty guarantee.
+      const failedRepairTurn = {
+        ...BASE_THREAD,
+        turns: [
+          {
+            id: "turn-1",
+            status: "failed",
+            error: { message: "the model call failed" },
+            items: [repair()],
+          },
+        ],
+      } as unknown as ThreadModel;
+      expect(entriesFor(failedRepairTurn, preset("tools"))).toEqual([]);
+      expect(entriesFor(failedRepairTurn, preset("activity"))).toEqual([
+        expect.objectContaining({ kind: "critical", id: "repair" }),
+      ]);
+
+      const interruptedRepairTurn = {
+        ...BASE_THREAD,
+        turns: [{ id: "turn-1", status: "interrupted", items: [repair()] }],
+      } as unknown as ThreadModel;
+      expect(entriesFor(interruptedRepairTurn, preset("tools"))).toEqual([
+        expect.objectContaining({ kind: "critical", id: "repair" }),
+      ]);
+    });
+  });
+
   test("filters routine system events by typed event kind and keeps unknown events fail-open", () => {
     const model = threadWith(
       item("system", "systemMessage", { eventKind: "plugin_loaded" }),
@@ -462,12 +534,17 @@ describe("transcript projector", () => {
       ),
     );
 
+    // tool_repair stays in the vocabulary above - the projector must still
+    // know the kind - but it is the one member gated on high verbosity
+    // rather than the Advanced diagnostics flags, so it does not render at
+    // this chat-level config. The tool-repair notices block pins its own
+    // visibility matrix.
     expect(
       entriesFor(
         model,
         preset("chat", { systemEvents: true, promptEvents: true, roundTimings: true, hookExits: "all" }),
       ).map((entry) => entry.id),
-    ).toEqual(eventKinds.map((_, index) => `event-${index}`));
+    ).toEqual(eventKinds.map((_, index) => `event-${index}`).filter((id) => id !== "event-12"));
   });
 
   test("keeps approval vocabulary and recovery events critical without parsing prose", () => {
