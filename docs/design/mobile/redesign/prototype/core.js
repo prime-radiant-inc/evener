@@ -138,16 +138,24 @@
     const st = EV.stateOf(s);
     return st === "working" || st === "stuck";
   };
+  // Delayed work belongs to the state it was scheduled in. A reset (every
+  // usability task starts with one) swaps in a fresh state, and anything still
+  // pending from before is dropped instead of landing in the next task's
+  // transcript, toasts or action log. Returns the timer for clearTimeout.
+  EV.later = function (ms, fn) {
+    const S = EV.S;
+    return setTimeout(() => { if (EV.S === S) fn(); }, ms);
+  };
   // The scripted agent's follow-up to something you did: fn runs after ms
   // only if the same turn is still going (setWorking starts a new one), so a
-  // Stop, a shutdown, a newer turn or a reset in between wins over the script.
+  // Stop, a shutdown or a newer turn in between wins over the script.
   EV.laterInTurn = function (s, ms, fn) {
-    const S = EV.S, turn = s.turn;
-    setTimeout(() => {
-      if (EV.S !== S || s.turn !== turn || !EV.inTurn(s)) return;
+    const turn = s.turn;
+    return EV.later(ms, () => {
+      if (s.turn !== turn || !EV.inTurn(s)) return;
       fn();
       EV.update();
-    }, ms);
+    });
   };
   const NEEDS = ["failed", "question", "approval", "warning", "restart"];
   EV.isNeeds = (s) => NEEDS.includes(s.state);

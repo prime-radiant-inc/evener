@@ -32,7 +32,7 @@
     x.state = "connecting";
     EV.toast("Connecting to " + id + "…");
     EV.update();
-    setTimeout(() => { x.state = "connected"; x.lastError = null; EV.toast("Connected to " + id); EV.update(); }, 1800);
+    EV.later(1800, () => { x.state = "connected"; x.lastError = null; EV.toast("Connected to " + id); EV.update(); });
   };
 
   // ---------- row ----------
@@ -181,14 +181,14 @@
     const why = whyFor(s);
     EV.log("row_menu", { sessionId: s.id });
     const items = [
-      !s.archived ? { label: s.category ? "Change category…" : "Pin to category…", icon: I.pin({ s: 18 }), run: () => setTimeout(() => EV.pinMenu(s), 30) } : null,
+      !s.archived ? { label: s.category ? "Change category…" : "Pin to category…", icon: I.pin({ s: 18 }), run: () => EV.later(30, () => EV.pinMenu(s)) } : null,
       s.state === "yourmove" ? { label: s.unseen ? "Mark as read" : "Mark as unread", icon: I.check({ s: 18 }), run: () => { s.unseen = !s.unseen; EV.log(s.unseen ? "mark_unread" : "mark_read", { sessionId: s.id }); EV.update(); } } : null,
       s.state === "idle" ? { label: "Mark as unread", icon: I.check({ s: 18 }), run: () => { s.state = "yourmove"; s.unseen = true; EV.log("mark_unread", { sessionId: s.id }); EV.update(); } } : null,
       EV.inTurn(s) ? { label: "Stop this turn", icon: I.stop({ s: 14 }), run: () => EV.stopTurn(s, "menu") } : null,
       { label: "Rename", icon: I.compose({ s: 18 }), run: () => EV.openSheet("rename", { sessionId: s.id }) },
       { label: "Copy link", icon: I.link({ s: 18 }), run: () => { EV.log("copy_link", { sessionId: s.id }); EV.toast("Link copied"); } },
       { label: s.archived ? "Unarchive" : "Archive", icon: I.archive({ s: 18 }), sep: true, run: () => EV.setArchived(s, !s.archived) },
-      s.live ? { label: "Shut down…", icon: I.power({ s: 18 }), danger: true, run: () => setTimeout(() => EV.confirmShutdown(s), 30) } : null,
+      s.live ? { label: "Shut down…", icon: I.power({ s: 18 }), danger: true, run: () => EV.later(30, () => EV.confirmShutdown(s)) } : null,
     ];
     const preview = html`<div class="preview" role="button" tabindex="0" style="cursor:pointer" onClick=${() => { EV.closeMenu(); EV.log("row_menu_open", { sessionId: s.id }); EV.openSession(s.id, { from: "menu" }); }}>
       <div style="display:flex;gap:8px;align-items:center">${h(EV.Mark, { s })}<div class="pt">${s.title}</div></div>
@@ -412,7 +412,7 @@
     const onInput = (e) => {
       S.board.query = e.currentTarget.value;
       clearTimeout(Search.t);
-      Search.t = setTimeout(() => EV.log("search", { query: S.board.query, scope: S.board.scope }), 500);
+      Search.t = EV.later(500, () => EV.log("search", { query: S.board.query, scope: S.board.scope }));
       EV.update();
     };
     const openHit = (x) => {

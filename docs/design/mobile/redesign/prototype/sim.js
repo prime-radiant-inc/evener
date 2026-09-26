@@ -103,7 +103,7 @@
       flash(s);
       EV.alert({ kind: "approval", sessionId: s.id, why: s.why });
     },
-    many() { events.question(); setTimeout(events.failure, 900); },
+    many() { events.question(); EV.later(900, events.failure); },
     "host-offline"() {
       const x = EV.host("paradise-park");
       x.state = "offline";
@@ -113,7 +113,7 @@
     "host-online"() { const x = EV.host("paradise-park"); x.state = "connected"; x.lastError = null; },
     reconnecting() {
       EV.S.conn = "reconnecting"; EV.S.connSince = Date.now();
-      setTimeout(() => { if (EV.S.conn === "reconnecting") { EV.S.conn = "live"; flushOutbox(); EV.update(); } }, 6000);
+      EV.later(6000, () => { if (EV.S.conn === "reconnecting") { EV.S.conn = "live"; flushOutbox(); EV.update(); } });
     },
     offline() { EV.S.conn = "offline"; EV.S.connSince = Date.now(); },
     online() { EV.S.conn = "live"; flushOutbox(); },

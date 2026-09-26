@@ -204,6 +204,17 @@ async function runChecks(page, scheme) {
     const last = await ev(page, `(() => { const tr = EV.S.transcripts['s-deslop']; return tr[tr.length - 1]; })()`);
     if (!last || last.text !== 'Stopped by you') throw new Error('the agent replied after you stopped the turn: ' + JSON.stringify(last));
   });
+  // Every usability task starts with a reset; nothing still pending from the
+  // task before may land in the fresh transcript or action log.
+  await check(S('flow-reset-drops-pending-work'), page, async () => {
+    await reset(page); await ev(page, `EV.openSession('s-tasklist')`); await sleep(400);
+    await page.locator('textarea[aria-label="Message"]').tap(); await page.keyboard.type('Also cover the empty state');
+    await page.getByRole('button', { name: 'Steer', exact: true }).tap(); await sleep(100);
+    await ev(page, `EV.reconnectHost('paradise-park')`);
+    await reset(page); await sleep(2600);
+    const leaked = await ev(page, `({ steers: EV.S.transcripts['s-tasklist'].filter((x) => x.kind === 'steer').map((x) => x.text), log: window.__proto.log.map((e) => e.type).filter((t) => t !== 'reset'), toast: EV.S.toast && EV.S.toast.text })`);
+    if (leaked.steers.includes('Also cover the empty state') || leaked.toast) throw new Error('work from before the reset landed after it: ' + JSON.stringify(leaked));
+  });
   await check(S('flow-other-answer-brings-composer'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-audit')`); await sleep(400);
     if (await page.locator('textarea[aria-label="Message"]').count()) throw new Error('the composer shows while the question dock is open');

@@ -116,12 +116,12 @@
       EV.log("copy_code", { provider, auto: true });
       EV.log("provider_signin_start", { provider });
       setPhase("waiting");
-      setTimeout(() => {
+      EV.later(3200, () => {
         p.status = "ok"; p.statusText = "Signed in";
         EV.log("provider_signin", { provider });
         setPhase("done");
         EV.update();
-      }, 3200);
+      });
     };
     return html`<${EV.Sheet} title=${"Sign in to " + provider} left=${html`<button class="text-btn" onClick=${EV.closeSheet}>${phase === "done" ? "Close" : "Cancel"}</button>`} size=${stacked ? "stacked" : "medium"}>
       ${phase === "start" ? html`<div style="padding:4px 20px">

@@ -256,14 +256,14 @@
       } else {
         S.steering[s.id] = { text, at: Date.now() };
         EV.log("send", { sessionId: s.id, mode: "steer", text, images: imgs });
-        setTimeout(() => {
+        EV.later(2200, () => {
           if (!S.steering[s.id]) return;
           delete S.steering[s.id];
           EV.addItem(s.id, { t: "user", text, kind: "steer" });
           s.updatedAt = Date.now();
           EV.update();
           EV.laterInTurn(s, 2600, () => { EV.addItem(s.id, { t: "agent", md: "Got it. Adjusting course: " + text.charAt(0).toLowerCase() + text.slice(1).replace(/[.!]?$/, ".") }); s.updatedAt = Date.now(); });
-        }, 2200);
+        });
       }
       S.prefs.hintUses++;
       EV.update();
@@ -497,7 +497,7 @@
         ${imgs.length ? html`<div class="thumbs">${imgs.map((x, i) => html`<div class="th"><button aria-label="Remove image" onClick=${() => { imgs.splice(i, 1); EV.update(); }}>${I.x({ s: 10 })}</button></div>`)}</div>` : null}
         <textarea ref=${ta} id=${"composer-" + s.id} rows="1" placeholder=${ph} value=${text} aria-label="Message"
           onInput=${(e) => { const v = e.currentTarget.value; if (v === "/") { S.drafts[s.id] = ""; EV.log("commands_slash", { sessionId: s.id }); EV.openSheet("commands", { sessionId: s.id }); EV.update(); return; } S.drafts[s.id] = v; EV.update(); }}
-          onFocus=${() => { S.typing = true; }} onBlur=${() => { S.typing = false; setTimeout(() => { if (!S.typing) EV.releaseHeld(); }, 200); }}></textarea>
+          onFocus=${() => { S.typing = true; }} onBlur=${() => { S.typing = false; EV.later(200, () => { if (!S.typing) EV.releaseHeld(); }); }}></textarea>
         <div class="crow">
           <button class="cbtn" aria-label="Attach" onClick=${() => EV.openMenu({ kind: "list", top: 470, title: "Attach", items: [
             { label: "Photo library", icon: I.photo({ s: 18 }), run: () => { imgs.push(1); S.images[s.id] = imgs; EV.log("attach", { sessionId: s.id, source: "library" }); EV.update(); } },
@@ -518,7 +518,7 @@
     const steer = S.steering[s.id];
     return html`${steer ? html`<div class="u-msg ghost"><div class="u-bubble">${steer.text}</div><div class="u-cap">Steering · arrives at the next step</div></div>` : null}
       ${q.map((m) => html`<div class="u-msg ghost" key=${m.id}><div class="u-bubble">${m.text}</div><div class="u-cap">Queued · sends when this turn ends</div>
-        <div class="ghost-row"><button class="mini-btn" onClick=${() => { S.queue[s.id] = q.filter((x) => x !== m); S.steering[s.id] = { text: m.text, at: Date.now() }; EV.log("queue_promote", { sessionId: s.id }); EV.update(); setTimeout(() => { if (S.steering[s.id]) { delete S.steering[s.id]; EV.addItem(s.id, { t: "user", text: m.text, kind: "steer" }); EV.update(); } }, 2200); }}>Steer now</button>
+        <div class="ghost-row"><button class="mini-btn" onClick=${() => { S.queue[s.id] = q.filter((x) => x !== m); S.steering[s.id] = { text: m.text, at: Date.now() }; EV.log("queue_promote", { sessionId: s.id }); EV.update(); EV.later(2200, () => { if (S.steering[s.id]) { delete S.steering[s.id]; EV.addItem(s.id, { t: "user", text: m.text, kind: "steer" }); EV.update(); } }); }}>Steer now</button>
         <button class="mini-btn" onClick=${() => { S.queue[s.id] = q.filter((x) => x !== m); S.drafts[s.id] = m.text; S.focusComposer = s.id; EV.log("queue_edit", { sessionId: s.id }); EV.update(); }}>Edit</button>
         <button class="mini-btn danger" onClick=${() => { S.queue[s.id] = q.filter((x) => x !== m); EV.log("queue_cancel", { sessionId: s.id }); EV.toast("Removed from queue"); EV.update(); }}>Cancel</button></div></div>`)}`;
   }
@@ -588,17 +588,17 @@
       if (Math.abs(dx) < 8) { EV.log("session_sheet_open", { sessionId: s.id }); EV.openSheet("session", { sessionId: s.id }); }
     };
     const menu = () => EV.openMenu({ kind: "list", top: 96, right: true, title: "Session menu", items: [
-      { label: "Detail level", sub: EV.level(s.id) + " · " + LEVEL_HELP[EV.level(s.id)], icon: I.outline({ s: 18 }), run: () => setTimeout(() => EV.detailMenu(s), 30) },
+      { label: "Detail level", sub: EV.level(s.id) + " · " + LEVEL_HELP[EV.level(s.id)], icon: I.outline({ s: 18 }), run: () => EV.later(30, () => EV.detailMenu(s)) },
       { label: "Find in session", icon: I.search({ s: 18 }), run: () => EV.openSheet("find", { sessionId: s.id }) },
       files ? { label: "Files & artifacts", icon: I.doc({ s: 18 }), run: () => EV.openSheet("files", { sessionId: s.id }) } : null,
       tot ? { label: "Subagents", icon: I.people({ s: 18 }), run: () => EV.push("subagents", { sessionId: s.id }) } : null,
       { label: "Notes & links", icon: I.note({ s: 18 }), run: () => { EV.log("notes_open", { sessionId: s.id, from: "menu" }); EV.openSheet("notes", { sessionId: s.id }); } },
       { label: "Session info", icon: I.gauge({ s: 18 }), run: () => EV.openSheet("session", { sessionId: s.id }) },
       { label: "Ask aside…", sub: "A side question in its own session; this one keeps working", icon: I.bubble({ s: 18 }), sep: true, run: () => EV.openSheet("aside", { sessionId: s.id }) },
-      { label: s.category ? "Change category…" : "Pin to category…", icon: I.pin({ s: 18 }), run: () => setTimeout(() => EV.pinMenu(s), 30) },
+      { label: s.category ? "Change category…" : "Pin to category…", icon: I.pin({ s: 18 }), run: () => EV.later(30, () => EV.pinMenu(s)) },
       { label: "New session like this", icon: I.compose({ s: 18 }), run: () => EV.openNew("like", { like: s.id }) },
       { label: s.archived ? "Unarchive" : "Archive", icon: I.archive({ s: 18 }), run: () => { EV.setArchived(s, !s.archived); } },
-      s.live ? { label: "Shut down…", icon: I.power({ s: 18 }), danger: true, run: () => setTimeout(() => EV.confirmShutdown(s), 30) } : null,
+      s.live ? { label: "Shut down…", icon: I.power({ s: 18 }), danger: true, run: () => EV.later(30, () => EV.confirmShutdown(s)) } : null,
     ] });
 
     const onScroll = (e) => {
@@ -713,7 +713,7 @@
         ${h(EV.Gi, { label: "Compact context", cls: "accent", onClick: () => { EV.addItem(s.id, { t: "sys", text: "Context compacted · " + s.ctx.used + "K → " + Math.round(s.ctx.used / 4) + "K tokens" }); s.ctx.used = Math.round(s.ctx.used / 4); EV.log("compact", { sessionId: s.id }); EV.toast("Context compacted"); } })}
         ${h(EV.Gi, { label: "Rename", cls: "accent", onClick: () => EV.openSheet("rename", { sessionId: s.id }) })}
         ${h(EV.Gi, { label: s.archived ? "Unarchive" : "Archive", cls: "accent", onClick: () => { EV.closeAllSheets(); EV.setArchived(s, !s.archived); } })}
-        ${s.live ? h(EV.Gi, { label: "Shut down…", cls: "danger", onClick: () => { EV.closeAllSheets(); setTimeout(() => EV.confirmShutdown(s), 50); } }) : null}
+        ${s.live ? h(EV.Gi, { label: "Shut down…", cls: "danger", onClick: () => { EV.closeAllSheets(); EV.later(50, () => EV.confirmShutdown(s)); } }) : null}
       </div>
     </${EV.Sheet}>`;
   };
@@ -878,7 +878,7 @@
     if (S.noteState[s.id] === "pending") return;
     S.noteState[s.id] = "pending";
     EV.log("note_leave", { sessionId: s.id, text: draft, how: "blur" });
-    noteTimers[s.id] = setTimeout(() => saveNote(s, S), NOTE_DELAY);
+    noteTimers[s.id] = EV.later(NOTE_DELAY, () => saveNote(s, S));
     EV.update();
   };
   EV.focusNote = function (s) {

@@ -138,7 +138,7 @@
       EV.log("subagent_stop_request", { sessionId, subagentId: subId, mode, text: txt });
       EV.closeSheet();
       EV.toast("Asked the coordinator to stop it");
-      setTimeout(() => { if (EV.S !== S) return; g.state = "stopped"; g.line = "Stopped at your request"; EV.log("subagent_stopped", { sessionId, subagentId: subId }); EV.toast("“" + g.title + "” stopped"); EV.update(); }, 3000);
+      EV.later(3000, () => { g.state = "stopped"; g.line = "Stopped at your request"; EV.log("subagent_stopped", { sessionId, subagentId: subId }); EV.toast("“" + g.title + "” stopped"); EV.update(); });
     };
     return html`<${EV.Sheet} title="Stop subagent" left=${h(Cancel)} size="medium">
       <div class="gfoot" style="padding:4px 32px 10px">Subagents take direction from their coordinator. This sends the coordinator a message asking it to stop “${g.title}”.</div>
