@@ -1376,6 +1376,24 @@ func TestCloneNavigationLiveEntriesOwnsWatches(t *testing.T) {
 	}
 }
 
+// TestCloneNavigationLiveEntriesOwnsPendingEscalations: the navigation inputs
+// own their escalation cards, so a roster refresh that edits its copy cannot
+// change a projection built from the earlier one.
+func TestCloneNavigationLiveEntriesOwnsPendingEscalations(t *testing.T) {
+	original := []hubcore.LiveEntry{{
+		PendingEscalation:  true,
+		PendingEscalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "write_file", DeniedPath: "/srv/docs/a.md"}},
+	}}
+	clone := cloneNavigationLiveEntries(original)
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatalf("clone = %+v, want a copy of %+v", clone, original)
+	}
+	original[0].PendingEscalations[0].DeniedPath = "mutated"
+	if clone[0].PendingEscalations[0].DeniedPath != "/srv/docs/a.md" {
+		t.Fatalf("clone card changed through the original: %+v", clone[0].PendingEscalations)
+	}
+}
+
 // The navigation inputs own their live entries' task progress too: a shared
 // aggregate would let the roster's next probe rewrite a built projection's
 // current task.
