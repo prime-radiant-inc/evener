@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // ErrStreamFrameTooLarge is returned when a frame exceeds the transport's read
@@ -23,6 +25,16 @@ var ErrStreamClosed = errors.New("appwire stream: closed")
 // WebSocket transport uses. Tests that need a smaller cap build a transport with
 // NewStreamTransportWithLimit rather than mutating a package-level value.
 const defaultStreamFrameLimit = appWireWebSocketReadLimit
+
+// streamCloseDrainTimeout bounds every wait in Close: the underlying rw.Close()
+// and the admitted-write drain. The accepted-stream contract narrows the stream
+// to one whose Close interrupts a blocked Read and Write, but the transport
+// cannot enforce that — so this backstop is what keeps a non-conforming stream
+// (one whose Close or pending Write never returns) from hanging shutdown.
+//
+// It is a const because the seam is per transport (closeTimeout), not a mutable
+// package global: a test shrinks the one transport it is exercising.
+const streamCloseDrainTimeout = 5 * time.Second
 
 // StreamTransport carries AppWire Messages over any byte stream as
 // newline-delimited JSON: Send writes one marshaled Message plus '\n', Recv
@@ -54,22 +66,36 @@ type StreamTransport struct {
 	rw    io.ReadWriteCloser
 	br    *bufio.Reader
 	limit int
+	// closeTimeout bounds every wait in Close. It defaults to
+	// streamCloseDrainTimeout; a test shrinks it on the transport it builds.
+	closeTimeout time.Duration
 	// send is the write lock, a buffered channel rather than a sync.Mutex so a
 	// send queued behind another stalled write can still obey its context.
 	send chan struct{}
 	// opMu admits writes. Close latches under mu and then closes the stream; the
 	// read lock makes "check the latch, then write" atomic with respect to that,
-	// and the drain on Close is what makes "Close has returned" mean no write can
-	// still begin.
+	// and the bounded drain on Close is what makes "Close has returned" mean no
+	// write can still begin.
 	opMu sync.RWMutex
 
 	mu       sync.Mutex
 	poisoned error
-	// closeOnce runs the underlying close exactly once; every later caller waits
-	// for it rather than reaching the closer again, so no caller can observe the
-	// stream as closed until it really is.
-	closeOnce sync.Once
-	closeErr  error
+	// latched is closed when the terminal cause is first recorded. A Send that
+	// arrives after the latch selects on it and is refused immediately instead of
+	// queueing on send behind a stranded writer or drainer.
+	latched chan struct{}
+	// closeStarted flips atomically once, when the first caller starts teardown.
+	// startClose never holds a lock another caller needs and never waits for the
+	// underlying close, so a later caller cannot strand behind the initiator.
+	closeStarted atomic.Bool
+	closeDone    chan struct{}
+	closeErr     error
+	// drainOnce starts the admitted-write drain exactly once; drainDone is closed
+	// when every admitted write has finished (or the barrier is abandoned, in
+	// which case a stalled write holds opMu and drainDone never closes). Repeated
+	// Close calls share the one drain rather than each spawning a stranded waiter.
+	drainOnce sync.Once
+	drainDone chan struct{}
 }
 
 // NewStreamTransport returns a transport with the default frame limit.
@@ -91,10 +117,14 @@ func NewStreamTransportWithLimit(rw io.ReadWriteCloser, limit int) *StreamTransp
 		limit = 1
 	}
 	return &StreamTransport{
-		rw:    rw,
-		br:    bufio.NewReaderSize(rw, min(4096, limit+1)),
-		limit: limit,
-		send:  make(chan struct{}, 1),
+		rw:           rw,
+		br:           bufio.NewReaderSize(rw, min(4096, limit+1)),
+		limit:        limit,
+		closeTimeout: streamCloseDrainTimeout,
+		send:         make(chan struct{}, 1),
+		latched:      make(chan struct{}),
+		closeDone:    make(chan struct{}),
+		drainDone:    make(chan struct{}),
 	}
 }
 
@@ -125,6 +155,12 @@ func (t *StreamTransport) Send(ctx context.Context, msg Message) error {
 	case t.send <- struct{}{}:
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-t.latched:
+		// A terminal cause is latched: admit nothing, and do not queue behind a
+		// writer or drainer that may be stranded. Report the latched cause — a
+		// Close's ErrStreamClosed or the error that poisoned the transport — so
+		// this call agrees with every later call.
+		return t.poisonErr()
 	}
 	defer func() { <-t.send }()
 
@@ -366,26 +402,61 @@ func (t *StreamTransport) readLine() ([]byte, error) {
 // stream; it is writing to a stream this call just closed, its own error path
 // reports the recorded cause, and nothing new can be admitted.
 func (t *StreamTransport) poison(err error) {
-	t.mu.Lock()
-	first := t.poisoned == nil
-	if first {
-		t.poisoned = err
-	}
-	t.mu.Unlock()
-	if first {
-		_ = t.doClose()
+	if t.latch(err) {
+		t.startClose()
 	}
 }
 
-// doClose closes the underlying stream, once. A caller arriving while the close
-// is in progress waits for it: io.Closer's post-close behavior is undefined, and
-// a second caller must not be able to report the transport closed while the
-// first close is still running.
-func (t *StreamTransport) doClose() error {
-	t.closeOnce.Do(func() {
-		t.closeErr = t.rw.Close()
-	})
-	return t.closeErr
+// latch records the terminal cause exactly once and closes the latched signal so
+// a Send blocked on admission wakes. It reports whether this call recorded the
+// cause; a later latch leaves the first one in place.
+func (t *StreamTransport) latch(err error) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.poisoned != nil {
+		return false
+	}
+	t.poisoned = err
+	close(t.latched)
+	return true
+}
+
+// startClose runs the underlying close exactly once, on its own goroutine, and
+// returns immediately: a stream whose Close blocks must not block the caller
+// that starts it. The goroutine stores closeErr and closes closeDone when the
+// close returns, which is what waitClose bounds against.
+//
+// io.Closer's post-close behavior is undefined, so only the first caller reaches
+// the closer; every other caller waits on closeDone rather than calling Close a
+// second time.
+func (t *StreamTransport) startClose() {
+	if !t.closeStarted.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		err := t.rw.Close()
+		t.closeErr = err
+		close(t.closeDone)
+	}()
+}
+
+// waitClose waits for the underlying close to finish, bounded by closeTimeout. It
+// reports whether the close completed before the bound expired.
+func (t *StreamTransport) waitClose() bool {
+	return t.awaitWithin(t.closeDone)
+}
+
+// awaitWithin waits for done to close, bounded by closeTimeout. It reports
+// whether the signal arrived before the bound expired.
+func (t *StreamTransport) awaitWithin(done <-chan struct{}) bool {
+	timer := time.NewTimer(t.closeTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func (t *StreamTransport) poisonErr() error {
@@ -415,41 +486,50 @@ func (t *StreamTransport) latchLateCancel(ctx context.Context, stop func() bool)
 
 // Close ends the transport. The closed state is latched, so Send and Recv keep
 // reporting ErrStreamClosed afterwards even when the reader still holds frames
-// it prefetched. Only the call that latches reaches the underlying closer:
+// it prefetched. Only the first caller starts the underlying close:
 // io.Closer's post-close behavior is undefined, so a repeat must not call an
 // arbitrary closer a second time.
+//
+// Every wait is bounded by closeTimeout: the underlying close runs on its own
+// goroutine, and the admitted-write drain runs on its own goroutine, so a
+// non-conforming stream — one whose own Close or pending Write never returns —
+// cannot hang shutdown. On expiry Close returns the latched terminal cause: that
+// tells the caller shutdown did not complete cleanly, but it does NOT tell the
+// caller the underlying resource was released, because on that path the close
+// goroutine (and a stranded writer) are abandoned.
 func (t *StreamTransport) Close() error {
-	t.mu.Lock()
-	first := t.poisoned == nil
-	if first {
-		t.poisoned = ErrStreamClosed
+	first := t.latch(ErrStreamClosed)
+	t.startClose()
+	if !t.waitClose() {
+		return t.poisonErr()
 	}
-	t.mu.Unlock()
-	if !first {
-		// Already terminal, but the close that poisoned it may still be running
-		// and a write admitted before it may still be in flight. Wait for the
-		// close (doClose returns as soon as the one real close has finished) and
-		// then drain, so returning here never reports the transport closed while
-		// the stream is still open or a writer can still reach it.
-		_ = t.doClose()
-		t.drainWrites()
-		return nil
-	}
-	err := t.doClose()
 	// Wait for admitted writes to finish: after this returns, no write can still
 	// reach the stream. The close above is what unblocks one already in flight,
-	// so this cannot wait forever on a write that is merely stalled.
-	t.drainWrites()
-	return err
+	// so for an accepted stream this drain does not stall.
+	if !t.drainWrites() {
+		return t.poisonErr()
+	}
+	if first {
+		// waitClose observed closeDone, so the close goroutine's write of closeErr
+		// happens-before this read.
+		return t.closeErr
+	}
+	return nil
 }
 
-// drainWrites blocks until every admitted write has finished. It is an empty
-// critical section on purpose — acquiring the write lock IS the wait — so both
-// of gocritic's lock heuristics misread it: badLock sees the adjacent
-// Lock/Unlock as a mistake, and unnecessaryDefer sees a defer with nothing after
-// it. Neither applies to a barrier.
-func (t *StreamTransport) drainWrites() {
-	t.opMu.Lock()
-	//nolint:gocritic // deliberate barrier, not a forgotten defer or a stray unlock
-	defer t.opMu.Unlock()
+// drainWrites waits until every admitted write has finished, bounded by
+// closeTimeout. Acquiring the write lock IS the wait, so it runs on its own
+// goroutine: a stream whose Close does not interrupt a blocked Write leaves that
+// write abandoned rather than hanging Close. It reports whether the drain
+// completed before the bound expired.
+func (t *StreamTransport) drainWrites() bool {
+	t.drainOnce.Do(func() {
+		go func() {
+			t.opMu.Lock()
+			//nolint:gocritic // deliberate barrier: acquiring the lock IS the wait for admitted writes
+			defer t.opMu.Unlock()
+			close(t.drainDone)
+		}()
+	})
+	return t.awaitWithin(t.drainDone)
 }

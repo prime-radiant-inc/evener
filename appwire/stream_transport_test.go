@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -869,5 +870,172 @@ func TestStreamTransportPartialWritePoisons(t *testing.T) {
 	}
 	if err := tr.Send(context.Background(), ResponseMessage(NewIntID(2), json.RawMessage(`{"ok":true}`))); !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("second Send err = %v, want the poisoning io.ErrShortWrite", err)
+	}
+}
+
+// streamCloseTestBound is the wall-clock budget for a test that proves Close is
+// bounded. It is 60x the 50ms seam those tests set, so a loaded machine still has
+// ample margin, while a pre-fix hang reports as a failure rather than hanging the
+// suite (the form used for the RED evidence).
+const streamCloseTestBound = 3 * time.Second
+
+// newShortTimeoutTransport builds a transport whose shutdown waits use the small
+// test seam instead of the production default, so a bounded Close is provable in
+// milliseconds rather than seconds.
+func newShortTimeoutTransport(t *testing.T, rw io.ReadWriteCloser) *StreamTransport {
+	t.Helper()
+	tr := NewStreamTransport(rw)
+	tr.closeTimeout = 50 * time.Millisecond
+	return tr
+}
+
+// requireErrWithin waits for one transport result within streamCloseTestBound and
+// asserts it reports want. It keeps the bounded-wait assertion in one place so
+// the three calls below cannot drift apart.
+func requireErrWithin(t *testing.T, what string, result <-chan error, want error) {
+	t.Helper()
+	select {
+	case err := <-result:
+		if !errors.Is(err, want) {
+			t.Fatalf("%s = %v, want %v", what, err, want)
+		}
+	case <-time.After(streamCloseTestBound):
+		t.Fatalf("%s did not return within %s", what, streamCloseTestBound)
+	}
+}
+
+// TestStreamTransportCloseBoundedByBlockingUnderlyingClose is the regression
+// guard for the bounded-Close requirement: a stream whose own Close blocks
+// forever must not hang the transport's Close. The drain timeout alone does not
+// cover this — the underlying close is called first — so Close must bound the
+// underlying rw.Close() too.
+func TestStreamTransportCloseBoundedByBlockingUnderlyingClose(t *testing.T) {
+	stream := &blockingCloseStream{entered: make(chan struct{}, 1), released: make(chan struct{})}
+	tr := newShortTimeoutTransport(t, stream)
+	defer close(stream.released)
+
+	done := make(chan error, 1)
+	go func() { done <- tr.Close() }()
+
+	requireErrWithin(t, "Close with the underlying Close blocked", done, ErrStreamClosed)
+
+	if err := tr.Send(context.Background(), ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`))); !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("Send after a timed-out Close = %v, want ErrStreamClosed", err)
+	}
+	if _, err := tr.Recv(context.Background()); !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("Recv after a timed-out Close = %v, want ErrStreamClosed", err)
+	}
+}
+
+// TestStreamTransportCloseBoundedByStalledWrite is the regression guard for the
+// accepted-stream contract: a stream whose Close does not interrupt a blocked
+// Write must still not hang Close. Close must return within the bound, report the
+// terminal cause, abandon the stalled write, and refuse a later Send immediately
+// rather than queue it behind the stranded writer.
+func TestStreamTransportCloseBoundedByStalledWrite(t *testing.T) {
+	stream := &blockingWriteStream{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	tr := newShortTimeoutTransport(t, stream)
+
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(stream.release) }) }
+	defer release()
+
+	sendDone := make(chan error, 1)
+	go func() {
+		sendDone <- tr.Send(context.Background(), ResponseMessage(NewIntID(1), json.RawMessage(`{"ok":true}`)))
+	}()
+	// Wait until the write is provably admitted and holding the write lock, so
+	// the drain below has something to abandon rather than racing a sleep.
+	stream.awaitWrite(t)
+
+	done := make(chan error, 1)
+	go func() { done <- tr.Close() }()
+	requireErrWithin(t, "Close with a stalled write", done, ErrStreamClosed)
+
+	late := make(chan error, 1)
+	go func() {
+		late <- tr.Send(context.Background(), ResponseMessage(NewIntID(2), json.RawMessage(`{"ok":true}`)))
+	}()
+	requireErrWithin(t, "a Send after Close behind the stranded write", late, ErrStreamClosed)
+	if _, err := tr.Recv(context.Background()); !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("Recv after a timed-out Close = %v, want ErrStreamClosed", err)
+	}
+
+	release()
+	<-sendDone
+}
+
+// slowWriteStream is deliberately slow: each Write pauses before appending. A
+// transport that did not serialize writes would let two Sends overlap inside it,
+// and the recorded bytes would then not split into whole frames. The mutex
+// protects the record itself; the pause is what widens the interleave window.
+type slowWriteStream struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *slowWriteStream) Read([]byte) (int, error) { return 0, io.EOF }
+
+func (s *slowWriteStream) Write(p []byte) (int, error) {
+	time.Sleep(time.Millisecond)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *slowWriteStream) Close() error { return nil }
+
+func (s *slowWriteStream) written() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return bytes.Clone(s.buf.Bytes())
+}
+
+// Concurrent Sends must not interleave: the transport serializes writes, so each
+// frame reaches the stream whole. The slow stream widens the window an
+// unserialized write would need to interleave in.
+func TestStreamTransportConcurrentSendsDoNotInterleave(t *testing.T) {
+	const senders = 16
+	stream := &slowWriteStream{}
+	tr := NewStreamTransport(stream)
+
+	var wg sync.WaitGroup
+	errs := make(chan error, senders)
+	for i := range senders {
+		wg.Add(1)
+		go func(id int64) {
+			defer wg.Done()
+			errs <- tr.Send(context.Background(), ResponseMessage(NewIntID(id), json.RawMessage(`{"ok":true}`)))
+		}(int64(i + 1))
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Send: %v", err)
+		}
+	}
+
+	raw := stream.written()
+	if len(raw) == 0 || raw[len(raw)-1] != '\n' {
+		t.Fatalf("stream content %q does not end in a frame delimiter", raw)
+	}
+	lines := bytes.Split(raw[:len(raw)-1], []byte("\n"))
+	if len(lines) != senders {
+		t.Fatalf("stream holds %d frames, want %d", len(lines), senders)
+	}
+	seen := make(map[int64]bool, senders)
+	for _, line := range lines {
+		var msg Message
+		if err := json.Unmarshal(line, &msg); err != nil {
+			t.Fatalf("frame %q is not a whole JSON frame: %v", line, err)
+		}
+		if msg.Response == nil || msg.Response.ID.IsZero() {
+			t.Fatalf("frame %q is not a response frame", line)
+		}
+		seen[msg.Response.ID.Int64()] = true
+	}
+	if len(seen) != senders {
+		t.Fatalf("saw %d distinct frame ids, want %d", len(seen), senders)
 	}
 }
