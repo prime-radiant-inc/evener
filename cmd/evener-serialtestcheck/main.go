@@ -13,11 +13,14 @@
 //   - a global test setter (a Set... or Observe... function whose name
 //     contains ForTest);
 //   - a write to, or through, a package-level variable (v = x, v[k] = x,
-//     v.f = x, v++), or a one-value atomic Store, Swap or CompareAndSwap on
-//     one - unless the variable is a reviewed synchronized cache
+//     v.f = x, v++), or any method call on one (v.Register(x), v.f.Reset()) -
+//     unless the variable is a reviewed synchronized cache or its lock
 //     (synchronizedCaches);
 //
-// or when its doc comment says why it is not parallel ("Not parallel: ...").
+// or when a comment in or on it says why it is not parallel ("Not parallel:
+// ..."). Only a t.Parallel() in the test's own body, or in a helper it calls,
+// makes it parallel: one inside a subtest's function literal parallelizes the
+// subtest, not the test.
 // A test that calls another test, or is called by one, is left alone: a
 // t.Parallel in both would run twice on one T.
 //
@@ -52,7 +55,9 @@ var defaultDirs = []string{"agent"}
 // was read and confirmed; add one only after reading every write to it.
 var synchronizedCaches = map[string]bool{
 	"testRegistryCache": true, // agent: testRegistryWith, under testRegistryMu
+	"testRegistryMu":    true, // agent: the lock testRegistryCache is read and written under
 	"feedOffsets":       true, // agent: feedJob, under feedOffsetsMu
+	"feedOffsetsMu":     true, // agent: the lock feedOffsets is read and written under
 	"wtBaseRepoPath":    true, // agent: worktreeBaseRepo, in wtBaseRepoOnce
 	"wtBaseRepoHead":    true, // agent: worktreeBaseRepo, in wtBaseRepoOnce
 	"errWtBaseRepo":     true, // agent: worktreeBaseRepo, in wtBaseRepoOnce
@@ -163,7 +168,7 @@ func check(dir string, synced map[string]bool) ([]finding, error) {
 			}
 			inspectBody(fd.Body, f, isShared)
 			if fd.Recv == nil && testFile[file] && isTestFunc(fd) {
-				tests = append(tests, test{name: name, pos: fset.Position(fd.Pos()), reason: statesSerialReason(fd.Doc)})
+				tests = append(tests, test{name: name, pos: fset.Position(fd.Pos()), reason: statesSerialReason(fd.Doc) || statesSerialReasonWithin(file, fd)})
 			}
 		}
 	}
@@ -200,8 +205,21 @@ func check(dir string, synced map[string]bool) ([]finding, error) {
 }
 
 // inspectBody records what one body calls, whether it calls .Parallel(), and
-// whether it reaches process-wide state itself.
+// whether it reaches process-wide state itself. Function literals are part of
+// the body for what they call and touch - a closure runs - but a .Parallel()
+// inside one parallelizes its own T (a subtest), not this function's.
 func inspectBody(body *ast.BlockStmt, f *function, isShared func(*ast.Ident) bool) {
+	ast.Inspect(body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		if call, ok := n.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Parallel" && len(call.Args) == 0 {
+				f.parallel = true
+			}
+		}
+		return true
+	})
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.AssignStmt:
@@ -227,22 +245,18 @@ func inspectBody(body *ast.BlockStmt, f *function, isShared func(*ast.Ident) boo
 			case *ast.SelectorExpr:
 				sel := fun.Sel.Name
 				f.calls[sel] = true
-				switch {
-				case sel == "Parallel" && len(n.Args) == 0:
-					f.parallel = true
-				case sel == "Setenv" || sel == "Chdir" || isGlobalSetter(sel):
+				if sel == "Setenv" || sel == "Chdir" || isGlobalSetter(sel) {
+					f.shared = true
+				}
+				// Any method on a package variable, however deep the selector:
+				// Register, Put and Reset change it as surely as a write does.
+				if isShared(rootIdent(fun.X)) {
 					f.shared = true
 				}
 				if x, ok := fun.X.(*ast.Ident); ok {
 					switch x.Name + "." + sel {
 					case "os.Setenv", "os.Unsetenv", "os.Chdir", "os.Clearenv",
 						"slog.SetDefault", "log.SetOutput", "log.SetFlags", "log.SetPrefix":
-						f.shared = true
-					}
-					// An atomic override of a package value: Store(v), Swap(v),
-					// CompareAndSwap(old, new). A keyed map's Store(k, v) is
-					// scoped by its key.
-					if isShared(x) && (((sel == "Store" || sel == "Swap") && len(n.Args) == 1) || (sel == "CompareAndSwap" && len(n.Args) == 2)) {
 						f.shared = true
 					}
 				}
@@ -310,6 +324,17 @@ func statesSerialReason(doc *ast.CommentGroup) bool {
 	text := strings.ToLower(doc.Text())
 	for _, phrase := range []string{"not parallel", "no t.parallel", "must not run in parallel"} {
 		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// statesSerialReasonWithin reports whether a comment inside fd, not only its
+// doc comment, says the test is serial on purpose.
+func statesSerialReasonWithin(file *ast.File, fd *ast.FuncDecl) bool {
+	for _, group := range file.Comments {
+		if group.Pos() >= fd.Body.Lbrace && group.End() <= fd.Body.Rbrace && statesSerialReason(group) {
 			return true
 		}
 	}

@@ -143,7 +143,7 @@ func TestCached(t *testing.T) { _ = cached("k") }
 	if got := flagged(t, dir); len(got) != 0 {
 		t.Fatalf("unreviewed cache: flagged %v, want none -- an unknown package write counts as shared", got)
 	}
-	if got := flagged(t, dir, "cache"); !slices.Equal(got, []string{"TestCached"}) {
+	if got := flagged(t, dir, "cache", "cacheMu"); !slices.Equal(got, []string{"TestCached"}) {
 		t.Fatalf("reviewed cache: flagged %v, want TestCached", got)
 	}
 }
@@ -182,5 +182,48 @@ func TestRunReportsFileLineAndTheFix(t *testing.T) {
 	stdout.Reset()
 	if code := run([]string{clean}, &stdout, &stderr); code != 0 || stdout.Len() != 0 {
 		t.Fatalf("clean package: exit = %d, output %q; want 0 and nothing", code, stdout.String())
+	}
+}
+
+func TestAReasonCommentInTheBodyKeepsATestSerial(t *testing.T) {
+	t.Parallel()
+	dir := writePackage(t, "", testingImport+`
+func TestAllocations(t *testing.T) {
+	// Not parallel: it measures process-wide allocation.
+	_ = 1
+}
+`)
+	if got := flagged(t, dir); len(got) != 0 {
+		t.Fatalf("flagged %v, want none: the comment in its body gives the reason", got)
+	}
+}
+
+func TestAParallelSubtestLeavesItsParentSerial(t *testing.T) {
+	t.Parallel()
+	dir := writePackage(t, "", testingImport+`
+func TestParent(t *testing.T) {
+	t.Run("child", func(t *testing.T) {
+		t.Parallel()
+	})
+}
+`)
+	if got := flagged(t, dir); !slices.Equal(got, []string{"TestParent"}) {
+		t.Fatalf("flagged %v, want TestParent: only its subtest is parallel", got)
+	}
+}
+
+func TestAMethodCallOnAPackageVariableIsShared(t *testing.T) {
+	t.Parallel()
+	dir := writePackage(t, `
+type registry struct{ names []string }
+
+func (r *registry) Register(name string) { r.names = append(r.names, name) }
+
+var globalRegistry = &registry{}
+`, testingImport+`
+func TestRegisters(t *testing.T) { globalRegistry.Register("x") }
+`)
+	if got := flagged(t, dir); len(got) != 0 {
+		t.Fatalf("flagged %v, want none: a method on a package variable can change it", got)
 	}
 }
