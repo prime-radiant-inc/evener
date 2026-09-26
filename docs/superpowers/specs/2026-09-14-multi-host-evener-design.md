@@ -35,10 +35,10 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   source (a controller that is attached to this hub as a host) is served **only
   from local state**, and any attempt to route or fan that request out to
   another remote source is refused with a typed error. Together with the
-  `["local"]` remap **the implementing PR adds** to strip a remote's own nested
-  hosts on the list path (component 05, §"Ref translation detail"; the shipped
-  `remapRemoteSourceIDs` returns `nil` for an empty incoming filter, so this
-  half is the implementing PR's requirement, not a present fact), this caps
+  `["local"]` remap that strips a remote's own nested hosts on the list path
+  (component 05, §"Ref translation detail"; shipped — `remapRemoteSourceIDs`
+  returns `["local"]` for an empty incoming filter,
+  `remote_hub_refs.go:56-67`), this caps
   fan-out at depth 1 and terminates any A→B→A chain regardless of what the
   config can see — the
   caller-identity guard that a later host-list RPC would make config-aware. The
@@ -64,6 +64,14 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   follow-up. The
   local-only rule is enforced at the typed fan-out seam (component 05, §"Ref
   translation detail"), not by an advisory check in a handler.
+- **Host-count cap: withdrawn (Jesse, 2026-09-26).** The 64-source cap
+  (`ErrTooManyHosts`) is **not** implemented — not at config load and not in the
+  registry add paths. Bounded fan-out is a risk accepted for v1: the cap was the
+  mitigation for an over-limit `[[hosts]]` config (component 06 caps the
+  manifest's `sources` at 64 including `local`, so more than 63 hosts can fail
+  navigation for the whole hub), and the operator's own config is now the only
+  bound. Do not implement the cap without a new decision. (Component 03 §Scope
+  carries the same record.)
 - **Remote side**: a full `evener hub` per host.
 - **Transport**: AppWire JSON-RPC over an SSH channel on stdin/stdout. No HTTP
   port exposed beyond the host's loopback.
@@ -74,6 +82,10 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
 - **Deployment**: push a matching binary over SSH and/or run the installer. The
   controller is the version authority: on attach it auto-matches the host to its
   own build, restarting the host hub; running sessions keep their old binary.
+  Auto-match converges only where a deploy path is configured: a host that
+  answered the controller's `launch-check` speaks its protocol, so a
+  protocol-compatible host on another build is attached with the difference
+  reported rather than refused (component 04, §5).
 - **Configuration**: host-owned storage. The Hub UI administers remote config by
   proxying the host's own RPCs, plus an explicit "copy credentials to this host"
   action. The controller stores only connection entries.
@@ -110,7 +122,10 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   **retained** for every other harness value and is consulted only when `Source`
   is empty; retiring it outright would make a non-empty harness like `"claude"`
   with an empty `Source` fall through to the local spawner in silence.
-  Harness-as-host targeting is therefore refused, not endorsed.
+  Harness-as-host targeting is therefore required to be refused, not endorsed;
+  the shipped code (`hubThreadStart`, `app_threadlifecycle.go:66-74`) still
+  resolves the fallback unconditionally, so the refusal is a code delta this
+  ledger carries ([06] harness targeting), not a present fact.
 - Daemon spawn, run-dir roster discovery, force-stop safety
   (pidfd/`proc_info`, UID, argv, log ownership), and per-host indexing all stay
   as they are and stay host-local.
@@ -177,6 +192,11 @@ Ordered by dependency; each is independently reviewable and landable.
   and fan-out to a second remote source is refused, so an A→B→A chain cannot
   recurse even though the config still cannot detect it (component 05,
   §Open questions item 3).
+- **Unbounded host count (accepted for v1)**: the 64-source cap was withdrawn by
+  decision (§2 "Host-count cap: withdrawn"), so nothing rejects a `[[hosts]]`
+  list larger than the navigation manifest's 64-source limit. Such a config
+  fails navigation for the whole hub until it shrinks, and fan-out cost scales
+  with the operator's own host list.
 - **Ref translation**: `host:<thread>` ↔ remote `local:<thread>`, including
   sub-thread aliases.
 - **Version-match restart** drops live browser/controller connections; decide
@@ -218,15 +238,20 @@ exact scope. None is a present fact.
   admitted-write drain with a `streamCloseDrainTimeout` constant, and make the
   accepted-stream contract explicit (`Close` must interrupt a blocked read **and**
   write); a non-conforming stream must not hang shutdown.
-- **[02/05] hub edge bridge marker** — `cmd/evener-hub/attach.go` (send
-  `X-Evener-Bridge: 1`), `cmd/evener-hub/web.go` +
-  `cmd/evener-hub/internal/hubedge/auth_token.go` (read it beside the bearer
-  token, classify the connection role, stamp `origin` into request context), and
-  bind the role to a **server-verifiable** signal (a distinct bridge credential,
-  or the `ssh`-spawned transport's channel identity) so the marker is not merely
+- **[02/05] hub edge bridge marker** — landed except for the last clause:
+  `cmd/evener-hub/attach.go` sends `X-Evener-Bridge: 1` and
+  `cmd/evener-hub/host_routing_origin.go` + `cmd/evener-hub/web.go` read it
+  beside the bearer token, classify the connection role, and stamp `origin` into
+  the request context. What remains is to bind the role to a
+  **server-verifiable** signal (a distinct bridge credential, or the
+  `ssh`-spawned transport's channel identity) so the marker is not merely
   cooperative.
-- **[03] host registry** — enforce the 64-source cap (`ErrTooManyHosts`) in
-  `New`/`Add`/`AddWithUpstreams`, not only in `LoadConfig`.
+- **[03] host registry — withdrawn (Jesse, 2026-09-26).** This entry required
+  the 64-source cap (`ErrTooManyHosts`) to be enforced in
+  `New`/`Add`/`AddWithUpstreams`, not only in `LoadConfig`. That requirement is
+  **withdrawn, not deferred**: do not implement the cap and do not add the
+  sentinel; bounded fan-out is a risk accepted for v1 (§2 "Host-count cap:
+  withdrawn"; component 03 §Scope).
 - **[03] host config** — `validateHostConfigs` (and the pre-probe path) must
   reject a non-loopback `addr` before any health check or restart; an explicit
   `--config` that is missing/unparseable exits nonzero instead of falling back
@@ -533,8 +558,8 @@ exact scope. None is a present fact.
 - **[04] fail-closed supervisor ambiguity (round 21)** — the cold-bootstrap
   unit-definition match must preserve the shipped `pickSupervisor` refusal:
   **more than one match is `ErrRestart` with no kill and no relaunch**
-  ("an ambiguous listing is fatal, not a fallback", `sshconn/version.go`,
-  `multi-host-pr04b-deploy-restart`, pending merge), never a fall-through to
+  ("an ambiguous listing is fatal, not a fallback", `sshconn/version.go`), never
+  a fall-through to
   the ad hoc launch, and the same refusal applies when an identified launchd
   label fails the bare-safe gate instead of the old ad hoc fallback. The ad hoc
   launch is reached only when **no** candidate definition matches, and only on
@@ -564,8 +589,8 @@ exact scope. None is a present fact.
   (`translateOut`, `translateNotification`); the `EnrichThreadFileBackedImages`
   gate in `cmd/evener-hub/app_rpc.go`. Mirrors component-05 §"Image URLs are
   host-scoped and must be rewritten through the controller".
-- **[05] remote item-candidate paging (round 21; implemented on the in-flight
-  05a branch — keep it in scope)** — the spec now *requires*
+- **[05] remote item-candidate paging (round 21; landed with 05a,
+  `4f64b223ba`)** — the spec now *requires*
   `ItemReadCandidateSource` (`ItemCandidatesFromRead`) and
   `ItemCandidateSource` (`ReadItemCandidates`/`ListItemCandidates`) on
   `RemoteHubSource` (controller-minted cursor identity + `RebaseCursor`

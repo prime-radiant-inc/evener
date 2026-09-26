@@ -483,9 +483,9 @@ The controller's chosen host is expressed purely by *which*
 with its own default routing when the harness is empty. No other `Source` method
 carries a host selector: every other method addresses an existing thread by
 `Ref`, which is translated (above). **Implementation status:** the shipped 05c
-`StartThread` (`remote_hub_mutations.go`) rewrites `remote.Harness = "evener"`
-and does not clear `Source` at all; forwarding the harness and clearing `Source`
-is the 05c requirement, not a present fact.
+`StartThread` (`remote_hub_mutations.go:101-119`) clears `Source` and neutralizes
+`Harness` to `"evener"`; forwarding the caller's harness rather than
+overwriting it is the requirement, not a present fact.
 
 **The receiving hub must reject a non-local resolution for a remote-originated
 `thread/start`.** The controller-side harness refusal is bounded by the
@@ -840,8 +840,10 @@ Ref translation detail (`remote_hub_refs.go`):
     hub as a host): such a request is served from local state only, and an
     attempt to route it onward is refused typed. That caller-identity guard
     terminates an A→B→A chain even though the config alone cannot detect it
-    (design §2 "Topology"; §Open questions item 3). It is a requirement of this
-    component's routing seam, not a present fact.
+    (design §2 "Topology"; §Open questions item 3). It is shipped: the refusal
+    is enforced at the routing seam's two shared guards
+    (`appsource.guardRemoteDispatch`, `cmd/evener-hub/host_routing_origin.go`'s
+    `guardRemoteHostDial`), so no handler carries its own origin check.
   - **The origin signal is an explicit bridge marker on the
     connection, never `InitializeParams.ClientInfo`.** `ClientInfo` is
     caller-supplied and spoofable, and no origin/hop field exists today in the
@@ -898,12 +900,13 @@ Ref translation detail (`remote_hub_refs.go`):
     remote-originated `thread/list` (and each other fan-out path) and asserts it
     is never routed to a second remote source, with the typed refusal surfaced;
     and a local-originated request still fanned normally.
-  - **Implementation status:** the shipped `remapRemoteSourceIDs`
-    (`remote_hub_refs.go`, `multi-host-pr05a-remote-hub-source`) returns `nil`
-    for an empty incoming filter — which `ListThreads` forwards as unfiltered —
-    and returns an empty slice for an omitting filter. The `["local"]`-for-empty
-    rule, the "must not reach the remote / must error" half, and the per-row drop
-    are the implementing PR's requirements, not present facts.
+  - **Implementation status:** shipped. `remapRemoteSourceIDs`
+    (`remote_hub_refs.go:56-67`) returns `["local"]` for an empty incoming
+    filter; `ListThreads` (`remote_hub_source.go:491-512`) answers an explicit
+    exclusion that names no other source with an empty response instead of
+    widening it to an unfiltered list; and `translateOut`
+    (`remote_hub_refs.go:498-516`) drops the one unrepresentable row while
+    keeping the valid rows beside it.
 - Outbound threads: set `Thread.Source = s.id`; rewrite `Thread.Evener.Ref`
   from `local:X` to `s.id + ":" + X`; rewrite `Thread.Evener.ParentRef` the same
   way (sub-thread aliases). Leave `Thread.Evener.InstanceID` untouched: it is an
@@ -1108,9 +1111,9 @@ The identity must rotate when the observed window is rewritten (an item
 replaced, the transcript re-projected) so a stale continuation cannot splice
 two different projections; the retention/rotation policy and the per-thread
 serialization of paging are the implementing PR's.
-`remote_hub_source_paging_test.go` (`multi-host-pr05a-remote-hub-source`,
-pending merge) is the shape to keep — a multi-page round trip through the real
-packer, plus stale/rotated-boundary refusals.
+`remote_hub_source_paging_test.go` (shipped with 05a) pins the shape — a
+multi-page round trip through the real packer, plus stale/rotated-boundary
+refusals.
 
 **Image URLs are host-scoped and must be rewritten through the controller.**
 A hub stamps image URLs into the thread snapshots it returns: the sha-addressed
