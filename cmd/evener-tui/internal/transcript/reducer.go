@@ -522,7 +522,7 @@ func (r *TranscriptReducer) toolRowIndexByOverlayKey(key string) (int, bool) {
 // active-item indices past each removal, like RemovePending does for a
 // pending placeholder.
 func (r *TranscriptReducer) dropOverlayRows(match func(ChatMessage) bool) {
-	for i := len(r.messages) - 1; i >= 0; i-- {
+	for i := range slices.Backward(r.messages) {
 		if !match(r.messages[i]) {
 			continue
 		}
