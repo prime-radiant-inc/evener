@@ -1,9 +1,9 @@
 // webGate runs a web gate's checks side by side (make test-web's typecheck,
 // test and lint; make test-web-browser's browser guards): every check runs so
 // one failure does not hide another's verdict, verdicts print in a fixed order
-// once all have finished, and the exit status is the first nonzero one in that
-// order. A failed check's log is replayed and the scratch is kept and named; a
-// clean run removes it.
+// once all have finished, each with its check's wall time, and the exit status
+// is the first nonzero one in that order. A failed check's log is replayed and
+// the scratch is kept and named; a clean run removes it.
 //
 // Interrupts (HUP/INT/TERM, exiting 129/130/143): the gate TERMs every running
 // check, except those a gate names as never signalled, and waits for each, so an
@@ -94,7 +94,9 @@ type webGate struct {
 	// unsignalled are the checks an interrupt waits for but never signals.
 	unsignalled []string
 
-	launcher      guardLauncher
+	launcher guardLauncher
+	// now is the clock each check's wall time is read from; nil is time.Now.
+	now           func() time.Time
 	slots         int
 	scratch       string
 	buildFrontend bool
@@ -119,6 +121,9 @@ func signalStatus(sig os.Signal) int {
 // run runs every guard and returns the gate's exit status, plus whether the
 // scratch must be kept (a failure, or an interrupt, keeps it).
 func (g *webGate) run() (int, bool) {
+	if g.now == nil {
+		g.now = time.Now
+	}
 	buildStatus := 0
 	buildLog := filepath.Join(g.scratch, g.needsBuild+"-build.log")
 	if g.buildFrontend {
@@ -159,6 +164,10 @@ func (g *webGate) run() (int, bool) {
 
 	n := len(g.checks)
 	statuses := make([]int, n)
+	// started and elapsed are each check's start and wall time; a check that
+	// never started has no wall time and its verdict names none.
+	started := make([]time.Time, n)
+	elapsed := make([]time.Duration, n)
 	live := make([]guardProcess, n)
 	exits := make(chan guardExit, n)
 	next, running, done := 0, 0, 0
@@ -196,6 +205,7 @@ func (g *webGate) run() (int, bool) {
 				done++
 				continue
 			}
+			started[index] = g.now()
 			live[index] = proc
 			running++
 			go func() { exits <- guardExit{index, proc.Wait()} }()
@@ -208,6 +218,7 @@ func (g *webGate) run() (int, bool) {
 		select {
 		case exit := <-exits:
 			statuses[exit.index] = exit.status
+			elapsed[exit.index] = g.now().Sub(started[exit.index])
 			live[exit.index] = nil
 			running--
 			done++
@@ -220,13 +231,17 @@ func (g *webGate) run() (int, bool) {
 	for i, guard := range g.checks {
 		switch {
 		case statuses[i] == 0:
-			_, _ = fmt.Fprintf(g.stdout, "PASS  web-%s\n", guard)
+			_, _ = fmt.Fprintf(g.stdout, "PASS  web-%s (%.1fs)\n", guard, elapsed[i].Seconds())
 			continue
 		case guard == g.needsBuild && buildStatus != 0:
 			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (frontend build, exit %d)\n", guard, buildStatus)
 			g.replay(buildLog)
 		default:
-			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (exit %d)\n", guard, statuses[i])
+			wallTime := ""
+			if !started[i].IsZero() {
+				wallTime = fmt.Sprintf(", %.1fs", elapsed[i].Seconds())
+			}
+			_, _ = fmt.Fprintf(g.stderr, "FAIL  web-%s (exit %d%s)\n", guard, statuses[i], wallTime)
 			g.replay(filepath.Join(g.scratch, guard+".log"))
 		}
 		if status == 0 {
