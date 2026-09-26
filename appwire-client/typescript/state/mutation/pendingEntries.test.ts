@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { expect, test } from "vitest";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import { queueEntryPreviewText, reconcilePendingEntries } from "./pendingEntries";

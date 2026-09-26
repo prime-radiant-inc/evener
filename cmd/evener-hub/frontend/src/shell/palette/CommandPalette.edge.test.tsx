@@ -10,7 +10,7 @@
 
 import { act, cleanup, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
 import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests } from "../../panes/session/composer/composerFocus";
@@ -130,17 +130,79 @@ test("commandErrorMessage uses err.message for Error instances", () => {
   expect(commandErrorMessage(new Error("boom"))).toBe("boom");
 });
 
-// --- search failure (lines 283-285) ---
+// --- remote search results ---
 
-test("a failed search shows 'Search failed' empty state", async () => {
-  const user = userEvent.setup();
-  scriptSearchFailure();
+// Remote search waits out the palette's search debounce. Fake timers own that
+// clock, and the stubbed `jest` global lets Testing Library's waitFor polls
+// advance it, so the debounce costs a poll rather than real time.
+describe("remote search results", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
-  render(<CommandPalette />);
-  act(() => openPalette());
-  await user.type(screen.getByRole("combobox"), "query");
+  // --- search failure (lines 283-285) ---
 
-  await waitFor(() => expect(screen.getByText("Search failed")).toBeTruthy());
+  test("a failed search shows 'Search failed' empty state", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearchFailure();
+
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "query");
+
+    await waitFor(() => expect(screen.getByText("Search failed")).toBeTruthy());
+  });
+
+  // --- search result activation: live/past with newTab (lines 505-506) ---
+
+  test("Mod+Enter on a search result opens it in a new tab", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const anchors = captureNewTabs();
+    scriptSearch({
+      live: [{ id: "live1", ref: "local:live1", title: "live result", project: "p", state: "active", age: "now" }],
+      past: [],
+    });
+
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "live");
+
+    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    // The anchor's rel keeps the opened tab from copying this tab's
+    // sessionStorage - the per-client mutation identity lives there, and a
+    // shared identity would let both tabs claim each other's durable sends.
+    expect(openedNewTab(anchors)).toEqual({
+      url: "/s/local%3Alive1",
+      target: "_blank",
+      rel: NEW_TAB_POLICY,
+    });
+  });
+
+  // --- search result: past result activation (line 504) ---
+
+  test("clicking a past search result navigates to the session", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearch({
+      live: [],
+      past: [{ id: "past1", ref: "local:past1", title: "old session", project: "p", state: "ended", age: "2h" }],
+    });
+
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "old");
+
+    await waitFor(() => expect(screen.getByText("Past · 1")).toBeTruthy());
+    const row = screen.getAllByRole("option").find((o) => o.textContent?.includes("old session"));
+    await user.click(row as HTMLElement);
+
+    expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:past1");
+  });
 });
 
 // --- search result activation: insession (lines 494-495) ---
@@ -163,33 +225,6 @@ test("Shift+Enter on an in-session search result closes the palette without navi
   expect(anchors).toHaveLength(0);
 });
 
-// --- search result activation: live/past with newTab (lines 505-506) ---
-
-test("Mod+Enter on a search result opens it in a new tab", async () => {
-  const user = userEvent.setup();
-  const anchors = captureNewTabs();
-  scriptSearch({
-    live: [{ id: "live1", ref: "local:live1", title: "live result", project: "p", state: "active", age: "now" }],
-    past: [],
-  });
-
-  render(<CommandPalette />);
-  act(() => openPalette());
-  await user.type(screen.getByRole("combobox"), "live");
-
-  await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
-  await user.keyboard("{Meta>}{Enter}{/Meta}");
-
-  // The anchor's rel keeps the opened tab from copying this tab's
-  // sessionStorage - the per-client mutation identity lives there, and a
-  // shared identity would let both tabs claim each other's durable sends.
-  expect(openedNewTab(anchors)).toEqual({
-    url: "/s/local%3Alive1",
-    target: "_blank",
-    rel: NEW_TAB_POLICY,
-  });
-});
-
 // --- enterPressed: handoff via arrow+Enter (lines 519-524) ---
 
 test("arrow-down then Enter on the handoff row hands off to the composer", async () => {
@@ -205,26 +240,6 @@ test("arrow-down then Enter on the handoff row hands off to the composer", async
   const { result: insert } = renderHook(() => useQuoteInsertRequest("ref_a"));
   expect(insert.current?.text).toBe("/interrupt ");
   expect(screen.queryByRole("dialog")).toBeNull();
-});
-
-// --- search result: past result activation (line 504) ---
-
-test("clicking a past search result navigates to the session", async () => {
-  const user = userEvent.setup();
-  scriptSearch({
-    live: [],
-    past: [{ id: "past1", ref: "local:past1", title: "old session", project: "p", state: "ended", age: "2h" }],
-  });
-
-  render(<CommandPalette />);
-  act(() => openPalette());
-  await user.type(screen.getByRole("combobox"), "old");
-
-  await waitFor(() => expect(screen.getByText("Past · 1")).toBeTruthy());
-  const row = screen.getAllByRole("option").find((o) => o.textContent?.includes("old session"));
-  await user.click(row as HTMLElement);
-
-  expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:past1");
 });
 
 // --- clearToSearch and showHelp UI callbacks (lines 248-251) ---

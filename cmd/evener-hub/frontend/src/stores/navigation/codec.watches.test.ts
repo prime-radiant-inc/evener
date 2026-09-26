@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 // Regression tests for the navigation codec's session-entity schema: a live
 // hub projects each session's armed watches onto its summary (`watches` on the
 // entity value, see navigation_projection.go's navigationWatches). The codec's
