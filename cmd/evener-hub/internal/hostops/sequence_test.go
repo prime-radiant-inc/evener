@@ -387,3 +387,37 @@ func TestTransitionDoesNotAliasCallerOwnedValues(t *testing.T) {
 		t.Fatalf("the persisted result is not the one the transition wrote: %+v", again.Result)
 	}
 }
+
+// TestTransitionDoesNotLeakAPointerIntoTheAdoptedState pins the other half of the
+// callback boundary: the callback never receives a pointer into the snapshot the
+// store adopts, so a callback that keeps the pointer cannot mutate store state
+// after the call returned — with no lock held and no write.
+func TestTransitionDoesNotLeakAPointerIntoTheAdoptedState(t *testing.T) {
+	store, path := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+
+	var retained *Record
+	if _, err := store.Transition(record.ID, StateRunning, func(r *Record) { retained = r }); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	if retained == nil {
+		t.Fatalf("the callback never saw the record")
+	}
+	before := mustReadFile(t, path)
+
+	retained.State = StateFailed
+	retained.Host = "h2"
+	retained.Sequence = 7
+	retained.UpdatedAt = retained.UpdatedAt.Add(time.Hour)
+
+	stored, ok := store.Record(record.ID)
+	if !ok {
+		t.Fatalf("record %q disappeared", record.ID)
+	}
+	if stored.State != StateRunning || stored.Host != "h1" || stored.Sequence != 0 {
+		t.Fatalf("a retained pointer reached into the store's state: %+v", stored)
+	}
+	if got := string(mustReadFile(t, path)); got != string(before) {
+		t.Fatalf("a retained pointer rewrote the store file")
+	}
+}

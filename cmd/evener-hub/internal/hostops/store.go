@@ -304,7 +304,11 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 	if index < 0 {
 		return Record{}, fmt.Errorf("%w: %q", ErrRecordNotFound, id)
 	}
-	record := &next.Records[index]
+	// The record the callback sees is this call's own value, never a pointer into
+	// the snapshot the store may adopt: a callback that retains the pointer could
+	// otherwise mutate store state after this call returned, with no lock held
+	// and no write, leaving memory and the file disagreeing.
+	record := next.Records[index]
 	if record.State.Terminal() {
 		return Record{}, fmt.Errorf("%w: record %q is already %q", ErrRecordTerminal, id, record.State)
 	}
@@ -317,11 +321,11 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 		return Record{}, fmt.Errorf("%w: orphan-unverified record %q resolves only to %q",
 			ErrInvalidTransition, id, StateInterrupted)
 	}
-	identity := identityOf(*record)
+	identity := identityOf(record)
 	if change != nil {
-		change(record)
+		change(&record)
 	}
-	if changed := identityOf(*record); changed != identity {
+	if changed := identityOf(record); changed != identity {
 		// A change may carry progress, the terminal result, the fencing epoch,
 		// the orphan boundary and the host-removed mark. The record's durable
 		// identity and the store's stamp are not a caller's to rewrite: a record
@@ -329,28 +333,25 @@ func (s *Store) Transition(id string, to State, change func(*Record)) (Record, e
 		// scope §4 keys on, and the sequence stamp is what race scans compare.
 		return Record{}, fmt.Errorf("%w: the change rewrote record %q's immutable fields", ErrInvalidRecord, id)
 	}
-	// The store adopts the snapshot it just wrote, so it must own every value in
-	// it: a callback that hands in a progress slice, a result or a raw message it
-	// still holds could otherwise rewrite in-memory state after this call
-	// returned, with no write and no lock, leaving memory and the file
-	// disagreeing. The record's mutable fields are copied here, once, before
-	// validation.
-	*record = cloneRecord(*record)
 	record.State = to
 	record.UpdatedAt = nowUTC()
 	if to.Terminal() {
-		next.advanceSequence(record)
+		next.advanceSequence(&record)
 	}
-	if err := validateRecord(*record); err != nil {
+	if err := validateRecord(record); err != nil {
 		return Record{}, err
 	}
+	// The store owns every value it adopts: the record's mutable fields are
+	// copied, so progress slices, results and raw messages the callback assigned
+	// (or still holds) cannot alias into store state.
+	next.Records[index] = cloneRecord(record)
 	adopted, err := s.commitLocked(next)
 	if err != nil && !adopted {
 		return Record{}, err
 	}
 	// See Create: a landed rename is a durable transition even when the
 	// directory sync behind it failed.
-	return cloneRecord(*record), err
+	return cloneRecord(record), err
 }
 
 // recordIdentity is the part of a record a transition may never change: its
