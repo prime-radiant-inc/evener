@@ -351,7 +351,7 @@ func TestPinSectionStoreDeleteSectionCountNonRetryable(t *testing.T) {
 }
 
 // TestPinSectionStoreDeleteSessionRowsAffectedNonRetryable covers the
-// RowsAffected non-retryable error path in DeleteSession ("", line 524-526).
+// RowsAffected non-retryable error path in DeleteSession.
 func TestPinSectionStoreDeleteSessionRowsAffectedNonRetryable(t *testing.T) {
 	store := setupErrorStore(t)
 	resetErrorCounters()
