@@ -148,10 +148,11 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 		return nil, err
 	}
 	if existing, held := storeCells.Load(key); held {
-		// A cached cell is not a licence to skip the file's kind: the handle it
-		// hands out would otherwise write through a path that has since become a
-		// link or a fifo, and its rename would replace the link rather than what
-		// it names.
+		// A cached cell makes no load, but Open still enforces the path rules a
+		// fresh open enforces, on the same file the handle will write: the handle
+		// must not be handed out for a path that has become a link or a fifo (its
+		// rename would replace the link rather than what it names), nor for a
+		// store file made readable beyond its owner since the cell was created.
 		info, err := lstat(fs, path)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
@@ -160,6 +161,9 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 		default:
 			if err := rejectNonStoreFileKind(path, info); err != nil {
 				return nil, err
+			}
+			if perm := info.Mode().Perm(); !ownerOnly(perm) {
+				return nil, fmt.Errorf("%w: %s has mode %04o", ErrStoreReadableBeyondOwner, path, perm)
 			}
 		}
 		return &Store{path: path, fs: fs, faults: faults, cell: existing.(*storeCell)}, nil

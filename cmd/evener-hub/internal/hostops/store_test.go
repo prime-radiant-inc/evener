@@ -1036,3 +1036,27 @@ func TestOpenRefusesEveryRequiredRecordFieldThatIsOmitted(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenRevalidatesTheOwnerOnlyModeOfAnAlreadyHeldStore pins the cached-open
+// half of §4's "Startup refuses to load a store readable beyond its owner": a
+// cached cell makes no load, but Open still refuses a handle for a store file
+// that has become readable beyond its owner since the cell was created, so the
+// rule reads the same whether or not a handle is already held.
+func TestOpenRevalidatesTheOwnerOnlyModeOfAnAlreadyHeldStore(t *testing.T) {
+	path := StorePath(t.TempDir())
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	createTestRecord(t, first, "h1")
+	if _, err := Open(path); err != nil {
+		t.Fatalf("second Open of a healthy store: %v", err)
+	}
+
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("Chmod(%s, 0644): %v", path, err)
+	}
+	if _, err := Open(path); !errors.Is(err, ErrStoreReadableBeyondOwner) {
+		t.Fatalf("Open on a widened store file with a held cell: err = %v, want ErrStoreReadableBeyondOwner", err)
+	}
+}
