@@ -288,11 +288,12 @@
     if (t && t.name === "session" && t.id === a.sessionId) return;
     // Whatever alerted you last is what Next goes to first, shown or held.
     if (a.sessionId) S.recent = [a.sessionId].concat(S.recent.filter((id) => id !== a.sessionId));
-    // A finished result never joins or replaces an alert about sessions that
-    // need you: coalescing would read "3 sessions need you". It already
-    // lands in Finished on the Board.
-    if (a.kind === "finished" && S.banner) return;
-    if ((S.reading || S.typing) && pref.hold) {
+    // A finished result never joins, replaces or waits with alerts about
+    // sessions that need you, where it would be counted as one of them ("3
+    // sessions need you"). It already lands in Finished on the Board.
+    const holding = (S.reading || S.typing) && pref.hold;
+    if (a.kind === "finished" && (S.banner || holding)) return;
+    if (holding) {
       S.held.push(a);
       EV.log("banner_held", { kind: a.kind, sessionId: a.sessionId });
       EV.update();
@@ -302,7 +303,7 @@
   };
   function showBanner(a) {
     const S = EV.S;
-    if (S.banner && Date.now() - S.banner.at < 5000 && S.banner.sessionId !== a.sessionId) {
+    if (S.banner && S.banner.kind !== "finished" && Date.now() - S.banner.at < 5000 && S.banner.sessionId !== a.sessionId) {
       const n = (S.banner.count || 1) + 1;
       S.banner = { kind: "many", count: n, at: Date.now(), key: Date.now() };
     } else {

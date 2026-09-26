@@ -414,6 +414,17 @@ async function runChecks(page, scheme) {
     const kind = await ev(page, `EV.S.banner && EV.S.banner.kind`);
     if (kind !== 'finished') throw new Error('the finished alert did not show a banner with the switch on; banner kind was ' + kind);
     if (!(await page.locator('.banner.finished').count())) throw new Error('the finished banner is missing the "finished" class');
+    // A question right behind it replaces it instead of counting it as a
+    // session that needs you.
+    await ev(page, `window.__proto.trigger('question')`); await sleep(300);
+    const after = await ev(page, `EV.S.banner && EV.S.banner.kind`);
+    if (after !== 'question') throw new Error('a question after a finished alert should replace it; banner kind was ' + after);
+    // While alerts are held, a finished result is not held with them.
+    await reset(page, 'reading'); await ev(page, `EV.S.prefs.alerts.finished = true`);
+    await ev(page, `window.__proto.trigger('question')`); await ev(page, `window.__proto.trigger('finish')`); await sleep(300);
+    await ev(page, `EV.releaseHeld()`); await sleep(200);
+    const released = await ev(page, `EV.S.banner && EV.S.banner.kind`);
+    if (released !== 'question') throw new Error('held alerts released with a finished result among them; banner kind was ' + released);
   });
 }
 
