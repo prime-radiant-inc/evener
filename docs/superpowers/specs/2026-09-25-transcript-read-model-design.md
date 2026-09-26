@@ -1263,3 +1263,12 @@ rather than resolved in prose here:
   reader to re-run the strict decode when the build might predate it, or a
   schema/decoder identity folded into `projectionID` so a mismatched build
   fails closed into a rebuild.
+- **`ChangedSince` over-reports turns.** `stampTurn` logs `updatedTurn` for
+  every entry after a turn's first, regardless of whether the wire-visible
+  summary (status/lifecycle/started/usage) actually changed, so
+  `ChangedSince` returns every turn present after the snapshot length, not
+  only the ones an entry "completed or restamped" as Task 4c's acceptance
+  criteria describe. Bounded harm today (clients upsert idempotently), but
+  it no longer bounds the resend set as intended. Needs `stampTurn` to log
+  `updatedTurn` only on an actual summary change, and a test asserting the
+  unchanged turns `ChangedSince` must NOT return.
