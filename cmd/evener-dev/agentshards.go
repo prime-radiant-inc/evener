@@ -889,13 +889,13 @@ var surveyDiagnosticLine = regexp.MustCompile(`(?:^|[[:space:]])[^[:space:]]+\.g
 // already-selected ordinary context. Selection starts with owned ordinary
 // output. When that window has no lines owned by the failing test or its
 // descendants, descendant diagnostics fill all but one slot when a parent
-// diagnostic exists, reserving one slot for the newest parent diagnostic. With
-// owned ordinary output, newest parent diagnostics take priority over other
-// owned diagnostics, owned output, then unindented lines after a foreign frame
-// as lowest-priority backfill. Source diagnostics are associated with the most
-// recent go test RUN/CONT/NAME frame; a verdict returns ownership to the failing
-// test. If ordinary context owned by the failing test or its descendants exists,
-// expansion requires a parent-owned source diagnostic.
+// diagnostic exists, reserving one slot for the newest parent diagnostic.
+// Remaining slots are then backfilled from owned diagnostics, then owned output,
+// then unindented ordinary-window lines owned by other tests. Source diagnostics
+// are associated with the most recent go test RUN/CONT/NAME frame; a verdict
+// returns ownership to the failing test. If ordinary context owned by the
+// failing test or its descendants exists, expansion requires a parent-owned
+// source diagnostic.
 // When ordinary context overflows its budget, the newest budget-sized tail is
 // kept contiguously, dropping only older lines.
 // The result is still no larger than one block's existing before bound plus its
