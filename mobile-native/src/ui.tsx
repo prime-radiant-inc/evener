@@ -12,9 +12,9 @@ import { paletteFor } from "./design/tokens";
 
 /** The app's colors: the redesign palette (src/design/tokens.ts) under the
  * keys every existing screen already reads, plus the full palette for new
- * code. Three keys differ from the palette's names: `surface` is the
- * palette's `inset` (not `palette.surface`), `accent` is `accentInk` (text
- * and outlines, not a fill), and `onAccent` is the text color for
+ * code. Two keys share a name with a different palette color: `surface` is
+ * `palette.inset` (not `palette.surface`) and `accent` is `palette.accentInk`
+ * (text and outlines, not a fill). `onAccent` is the text color for
  * `palette.accentFill`, not for `accent`. */
 export function useColors() {
 	const palette = paletteFor(useColorScheme());
