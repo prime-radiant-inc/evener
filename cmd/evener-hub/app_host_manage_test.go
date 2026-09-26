@@ -595,17 +595,19 @@ func TestHostManageAddPersistsHubTOML(t *testing.T) {
 	}
 }
 
-// TestHubTOMLMigrationSidecarCollisionDrops pins the migration's collision
-// rule: a sidecar name colliding with a hub.toml entry is dropped in favor of
-// the file's entry, never shadowing it, and the sidecar is still set aside.
-func TestHubTOMLMigrationSidecarCollisionDrops(t *testing.T) {
+// TestHubTOMLMigrationSidecarIdenticalDuplicateDrops pins the agreement arm of
+// the migration's collision rule: a sidecar entry byte-identical to the
+// hub.toml entry of the same name is dropped (nothing is lost), the file's
+// entry is never shadowed, and the sidecar is still set aside. The differing
+// arm — a loud refusal — is TestHubTOMLMigrationRefusesADifferingCollision.
+func TestHubTOMLMigrationSidecarIdenticalDuplicateDrops(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
 	if err := os.WriteFile(configPath, []byte("[[hosts]]\nname = \"m4\"\nssh = \"hub.example\"\n"), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
 	sidecar := filepath.Join(dir, "hub.hosts.json")
-	sidecarBytes := []byte(`{"hosts":[{"name":"m4","ssh":"sidecar.example"}]}`)
+	sidecarBytes := []byte(`{"hosts":[{"name":"m4","ssh":"hub.example"}]}`)
 	if err := os.WriteFile(sidecar, sidecarBytes, 0o600); err != nil {
 		t.Fatalf("write sidecar: %v", err)
 	}

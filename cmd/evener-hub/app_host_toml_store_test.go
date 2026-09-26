@@ -325,16 +325,100 @@ func TestHubTOMLMigrationIgnoresAStaleReappearedSidecar(t *testing.T) {
 	if len(logs) == 0 {
 		t.Fatal("a stale sidecar produced no log line at startup")
 	}
-	// Nothing is unmigrated, so mutations keep working; the retired file is
-	// left where it is (never read again), and a new add lands normally.
+	// Nothing is unmigrated, so mutations keep working; the stale file is
+	// retired (its entries are never read again), and a new add lands normally.
 	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}}); err != nil {
 		t.Fatalf("Add after a stale sidecar = %v, want success", err)
 	}
 	if got := hubTOMLHostNames(t, configPath); !slices.Equal(got, []string{"alpha", "new"}) {
 		t.Fatalf("hub.toml after the add = %v, want alpha + new", got)
 	}
-	if data, err := os.ReadFile(sidecar); err != nil || !bytes.Equal(data, sidecarBytes) {
-		t.Fatalf("stale sidecar touched: %q, %v", data, err)
+	if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
+		t.Fatalf("stale sidecar not retired: %v", err)
+	}
+	if aside, err := os.ReadFile(sidecar + legacyHostSidecarAsideSuffix); err != nil || !bytes.Equal(aside, sidecarBytes) {
+		t.Fatalf("stale sidecar set aside = %q, %v; want the original bytes", aside, err)
+	}
+}
+
+// TestHubTOMLMigrationRefusesADifferingCollision pins the disagreement arm: a
+// sidecar entry that collides with a hub.toml name but says something different
+// is refused loudly — the migration never silently drops settings — and both
+// files stay untouched with writes poisoned.
+func TestHubTOMLMigrationRefusesADifferingCollision(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	hubTOMLBytes := []byte("[[hosts]]\nname = \"m4\"\nssh = \"hub.example\"\n")
+	if err := os.WriteFile(configPath, hubTOMLBytes, 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	sidecar := legacySidecarPathFor(configPath)
+	sidecarBytes := []byte(`{"hosts":[{"name":"m4","ssh":"sidecar.example","key_path":"/k/only-in-sidecar"}]}`)
+	if err := os.WriteFile(sidecar, sidecarBytes, 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	var logs []string
+	logf := func(format string, args ...any) { logs = append(logs, fmt.Sprintf(format, args...)) }
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "hub.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, logf)
+	if len(logs) == 0 {
+		t.Fatal("a differing collision produced no log line at startup")
+	}
+	// Both files keep their bytes; writes are refused until the operator
+	// resolves the duplicate.
+	if got, err := os.ReadFile(configPath); err != nil || !bytes.Equal(got, hubTOMLBytes) {
+		t.Fatalf("hub.toml changed by the refused migration: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(sidecar); err != nil || !bytes.Equal(got, sidecarBytes) {
+		t.Fatalf("sidecar changed by the refused migration: %q, %v", got, err)
+	}
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}}); err == nil {
+		t.Fatal("Add over a refused migration succeeded, want the poisoned refusal")
+	}
+}
+
+// TestHubTOMLRewritePreservesAHandAddedEntry pins the rewrite's treatment of
+// out-of-band edits: a host the operator added to hub.toml while the hub was
+// running is not live (the boot set is what the hub serves), but a rewrite must
+// carry it through rather than silently delete it — it becomes live on the
+// next boot.
+func TestHubTOMLRewritePreservesAHandAddedEntry(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "alpha", SSH: "alpha.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	if _, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "alpha"}); err != nil {
+		t.Fatalf("Status(alpha) = %v", err)
+	}
+	// The operator hand-adds a host while the hub runs.
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read hub.toml: %v", err)
+	}
+	raw = append(raw, []byte("\n[[hosts]]\nname = \"hand\"\nssh = \"hand.example\"\n")...)
+	if err := os.WriteFile(configPath, raw, 0o600); err != nil {
+		t.Fatalf("hand-edit hub.toml: %v", err)
+	}
+	// A UI mutation rewrites the file; the hand-added entry survives.
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "new", Address: "new.example"}}); err != nil {
+		t.Fatalf("Add(new) = %v", err)
+	}
+	if got := hubTOMLHostNames(t, configPath); !slices.Equal(got, []string{"alpha", "new", "hand"}) {
+		t.Fatalf("hub.toml after the rewrite = %v, want the hand-added entry carried through", got)
+	}
+	// It is not live yet (the boot set is the running hub's host set)...
+	if _, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "hand"}); err == nil {
+		t.Fatal("a hand-added entry served without a boot")
+	}
+	// ...and a fresh boot makes it live.
+	fresh := bootHostManager(t, configPath)
+	if _, err := fresh.Status(context.Background(), appwire.HostStatusParams{Name: "hand"}); err != nil {
+		t.Fatalf("Status(hand) after the next boot = %v", err)
 	}
 }
 
