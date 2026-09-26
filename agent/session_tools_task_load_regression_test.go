@@ -2,11 +2,16 @@ package agent
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/agent/internal/tool"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/fuzz/fault"
+	"primeradiant.com/evener/llm"
 )
 
 func TestSession_TaskToolsRejectAfterFailedTaskLoad(t *testing.T) {
@@ -69,6 +74,51 @@ func TestSession_TasksWithErrorRetainsInitialLoadErrorAfterStoreRepair(t *testin
 	tasks, err := s.TasksWithError()
 	if len(tasks) != 0 || err == nil {
 		t.Fatalf("TasksWithError after successful existing reload = tasks=%v err=%v; want empty snapshot plus initial aggregate error", tasks, err)
+	}
+}
+
+func TestSession_TaskListRecoversAfterTransientLoadFailure(t *testing.T) {
+	t.Parallel()
+	base := afero.NewMemMapFs()
+	store := taskpkg.NewTaskStore("/state", "transient-session").SetFs(base)
+	path := "/state/tasks/transient-session.json"
+	original := []byte("[]")
+	if err := afero.WriteFile(base, path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Model getOrCreateTaskStore's one initial Load failing transiently. Consume
+	// the session's once so the later call below is the real task_list executor,
+	// not another store construction or a direct recovery Load in the assertion.
+	store.SetFs(fault.FS(base, fault.FromBytes([]byte{0})))
+	if err := store.Load(); err == nil {
+		t.Fatal("transient initial Load unexpectedly succeeded")
+	}
+	if got, err := afero.ReadFile(base, path); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("failed initial Load changed original bytes: got %q, err=%v", got, err)
+	}
+	store.SetFs(base) // external repair: the file is readable again.
+
+	s := newTestSession(t)
+	s.taskStore = store
+	s.taskStoreOnce.Do(func() {})
+	reg := tool.NewRegistry()
+	registerTaskTools(reg, newToolDeps(s))
+	args, err := json.Marshal(map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{
+		ID: "transient-load-recovery", Name: "task_list", Arguments: args,
+	})
+	if result.IsError {
+		t.Fatalf("real task_list after external repair = %q; want recovery", result.Output)
+	}
+	if err := store.LoadError(); err != nil {
+		t.Fatalf("store.LoadError after recovered task_list = %v, want nil", err)
+	}
+	if got, err := afero.ReadFile(base, path); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("recovered task_list changed original bytes: got %q, err=%v", got, err)
 	}
 }
 

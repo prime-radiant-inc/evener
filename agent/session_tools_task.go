@@ -338,7 +338,12 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				return nil, err
 			}
 			if err := store.LoadError(); err != nil {
-				return nil, err
+				// A first load can fail transiently before the task file is
+				// readable again. Retry the existing read path here; a continued
+				// failure leaves the store fenced and preserves its bytes.
+				if reloadErr := store.Load(); reloadErr != nil {
+					return nil, store.LoadError()
+				}
 			}
 			if len(adds) == 0 && len(updates) == 0 {
 				// Bare or all-empty call: view. (Empty arrays decode to nil
