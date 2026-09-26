@@ -532,7 +532,15 @@ func TestTranscriptParity(t *testing.T) {
 	}
 	var header transcript.Header
 	var entries []transcript.Entry
-	resumed, err := agent.RestoreSessionFromMetaWithConfig(client, provider.NewOpenAIProfile(meta.Model), execenv.NewLocalExecutionEnvironment(workDir), meta, agent.RestoreSessionConfig{
+	// The restarted daemon runs the session from another directory, so the
+	// turn after the restart always records an environment entry. Whether it
+	// recorded one would otherwise turn on whether the host's clock hour or
+	// load, memory or disk pressure moved since the last one.
+	restartDir := filepath.Join(root, "work-restarted")
+	if err := os.MkdirAll(restartDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := agent.RestoreSessionFromMetaWithConfig(client, provider.NewOpenAIProfile(meta.Model), execenv.NewLocalExecutionEnvironment(restartDir), meta, agent.RestoreSessionConfig{
 		StateDir:       stateDir,
 		LLMRetryPolicy: retry,
 		LLMSleep:       noSleep,
@@ -671,6 +679,7 @@ var parityBeforeRestart = parityTable(
 // turn's live identity and the restart's own notices diverge.
 var parityAfterRestart = parityTable(
 	parityRows(whyIdentity, "item-field", "agentMessage", "callId", "id", "position", "transcriptKey", "turnId"),
+	parityRows(whyIdentity, "item-field", "systemMessage/environment", "id", "position", "transcriptEntryIndex", "transcriptKey"),
 	parityRows(whyIdentity, "item-field", "systemMessage/hook_completed", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
 	parityRows(whyIdentity, "item-field", "userMessage", "id", "position", "transcriptEntryIndex", "transcriptKey", "turnId"),
 	parityRows(whyGrouping, "turn-split", "live turn spans file turns"),
