@@ -105,6 +105,7 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 		Source:            string(diagnostic.SourceEvener),
 		Title:             "Context budget",
 		Hint:              "The conversation is nearing the model's context window; compaction will manage it. No action needed.",
+		Code:              events.WarningCodeContextBudget,
 		ApproxTokens:      approxTokens,
 		ContextWindowSize: cw,
 		Percent:           pct,
@@ -1454,6 +1455,7 @@ func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.Toke
 		Source: string(diagnostic.SourceEvener),
 		Title:  "Context budget",
 		Hint:   "The model's output allocation was reduced to fit its context window. No action needed.",
+		Code:   events.WarningCodeContextBudget,
 	})
 }
 

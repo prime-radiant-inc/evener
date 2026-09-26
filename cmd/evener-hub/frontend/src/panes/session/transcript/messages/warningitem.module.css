@@ -20,3 +20,14 @@
   font-size: var(--font-size-caption);
   color: var(--ink-low);
 }
+
+/* An informational warning (a coded "no action needed" notice) renders as one
+ * quiet line: caption size at --ink-low with no chip, the same grammar
+ * SystemNoticeItem's .line uses, so routine budget arithmetic never reads as a
+ * failure block. Tokens only - no hue reference of its own. */
+.quiet {
+  padding: var(--space-1) 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}

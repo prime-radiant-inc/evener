@@ -246,8 +246,32 @@ describe("transcript display config", () => {
         "tokenCounts",
         "hookExits",
       ],
-      hidden: ["reasoning", "expandedDetails", "estimatedCost", "systemEvents", "promptEvents"],
+      hidden: ["reasoning", "expandedDetails", "informationalNotices", "estimatedCost", "systemEvents", "promptEvents"],
     });
+  });
+
+  test("inventory gates informational notices on expandByDefault (the high verbosity levels)", () => {
+    for (const level of ["activity", "full"] as const) {
+      expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level })).visible).toContain(
+        "informationalNotices",
+      );
+    }
+    for (const level of ["chat", "intent", "tools"] as const) {
+      expect(visibleCategoryInventory(makeTranscriptDisplayConfig({ kind: "preset", level })).hidden).toContain(
+        "informationalNotices",
+      );
+    }
+    expect(
+      visibleCategoryInventory(
+        makeTranscriptDisplayConfig({
+          kind: "custom",
+          toolIntent: true,
+          toolCalls: true,
+          reasoning: false,
+          expandByDefault: true,
+        }),
+      ).visible,
+    ).toContain("informationalNotices");
   });
 
   test("maps legacy values with exact fallbacks and hook precedence", () => {

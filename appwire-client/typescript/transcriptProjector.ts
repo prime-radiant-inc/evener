@@ -8,6 +8,7 @@ import {
   presetContent,
   type TranscriptDisplayConfigV1,
 } from "./transcriptDisplayConfig";
+import { isInformationalWarning } from "./warnings";
 
 export const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
 
@@ -298,7 +299,16 @@ function decisionFor(
 
   // These live item types are always actionable/attention-worthy. Keeping the
   // check by type also makes warnings and steering independent of their prose.
-  if (item.type === "warning" || item.type === "steering") return "critical";
+  // One exception: an informational warning (a coded "no action needed"
+  // notice - budget arithmetic, not a failure) is quiet detail, so it shows
+  // only at the high verbosity levels, whose content vector is exactly
+  // expandByDefault (activity and full presets, and a custom vector that
+  // opted in).
+  if (item.type === "warning") {
+    if (isInformationalWarning(item)) return vector.expandByDefault ? "critical" : "hidden";
+    return "critical";
+  }
+  if (item.type === "steering") return "critical";
 
   // Future item types render through the raw renderer instead of disappearing.
   return "item";

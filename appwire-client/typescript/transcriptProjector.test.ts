@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "./transcriptDisplayConfig";
 import { projectThread } from "./transcriptProjector";
+import { WarningCodeContextBudget } from "./warnings";
 
 const BASE_THREAD = {
   ref: "ref:test",
@@ -250,6 +251,50 @@ describe("transcript projector", () => {
     for (const level of ["tools", "activity", "full"] as const) {
       expect(entriesFor(model, preset(level))).toEqual([expect.objectContaining({ kind: "item", id: "blank-tool" })]);
     }
+  });
+
+  describe("informational warnings", () => {
+    const informational = () =>
+      item("budget", "warning", {
+        text: "Output allocation reduced for inst/model: requested=100 admitted=50",
+        warning: { title: "Context budget", code: WarningCodeContextBudget },
+      });
+
+    test("hidden below the high verbosity levels, critical at activity and full", () => {
+      const model = threadWith(informational());
+      for (const level of ["chat", "intent", "tools"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([]);
+      }
+      for (const level of ["activity", "full"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([expect.objectContaining({ kind: "critical", id: "budget" })]);
+      }
+    });
+
+    test("a hidden informational warning leaves no visible item or anchor behind", () => {
+      const model = threadWith(informational());
+      const projection = projectThread(model, preset("tools"));
+      expect(projection.turns[0]?.visibleItems).toEqual([]);
+      expect(projection.anchors).toEqual([]);
+    });
+
+    test("a custom vector gates informational warnings on expandByDefault", () => {
+      const model = threadWith(informational());
+      expect(
+        entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: false })),
+      ).toEqual([]);
+      expect(
+        entriesFor(model, custom({ toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: true })),
+      ).toEqual([expect.objectContaining({ kind: "critical", id: "budget" })]);
+    });
+
+    test("an uncoded warning stays critical at every level", () => {
+      const model = threadWith(item("actionable", "warning", { text: "provider degraded" }));
+      for (const level of ["chat", "intent", "tools", "activity", "full"] as const) {
+        expect(entriesFor(model, preset(level))).toEqual([
+          expect.objectContaining({ kind: "critical", id: "actionable" }),
+        ]);
+      }
+    });
   });
 
   test("filters routine system events by typed event kind and keeps unknown events fail-open", () => {

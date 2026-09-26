@@ -1,5 +1,5 @@
 import type { AnyNotification, ItemModel, Thread, TurnModel } from "@evener/appwire-client";
-import { applyNotification, hydrateThread } from "@evener/appwire-client";
+import { applyNotification, hydrateThread, WarningCodeContextBudget } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { ignoringTurn, itemRendererFor } from "../types";
@@ -156,4 +156,63 @@ test.each([
   ["an object title", { text: "body", warning: { title: { nested: true } as unknown as string } }],
 ])("%s does not throw while rendering", (_case, overrides) => {
   expect(() => render(<WarningItem item={item(overrides)} turn={turn} live={false} />)).not.toThrow();
+});
+
+// An informational warning (a coded "no action needed" notice, the projector
+// only lets through at high verbosity) renders as ONE quiet line instead of
+// the attention-chip block: no chip, no separate hint row, the message as the
+// line's text, the hint reachable on the line's hover title.
+test("an informational warning renders one quiet line with the hint on the hover title", () => {
+  render(
+    <WarningItem
+      item={item({
+        text: "Output allocation reduced for inst/model: requested=100 admitted=50",
+        warning: {
+          title: "Context budget",
+          hint: "The model's output allocation was reduced to fit its context window. No action needed.",
+          code: WarningCodeContextBudget,
+        },
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const line = screen.getByTestId("warning-quiet-line");
+  expect(line.textContent).toBe("Output allocation reduced for inst/model: requested=100 admitted=50");
+  expect(screen.queryByText("Context budget")).toBeNull(); // no chip label
+  expect(line.getAttribute("title")).toContain("No action needed");
+});
+
+test("an informational warning with no message renders its hint as the quiet line", () => {
+  render(
+    <WarningItem
+      item={item({
+        text: "",
+        warning: {
+          title: "Context budget",
+          hint: "Compaction will manage the window.",
+          code: WarningCodeContextBudget,
+        },
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("warning-quiet-line").textContent).toBe("Compaction will manage the window.");
+});
+
+test("an actionable (uncoded) warning keeps the attention-chip rendering", () => {
+  render(
+    <WarningItem
+      item={item({
+        text: "provider degraded",
+        warning: { title: "Provider", hint: "check the provider status" },
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByText("Provider")).toBeTruthy();
+  expect(screen.getByText("provider degraded")).toBeTruthy();
+  expect(screen.queryByTestId("warning-quiet-line")).toBeNull();
 });

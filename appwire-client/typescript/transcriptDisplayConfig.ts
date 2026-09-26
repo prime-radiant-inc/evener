@@ -464,6 +464,7 @@ export type TranscriptDisplayCategory =
   | "toolCalls"
   | "reasoning"
   | "expandedDetails"
+  | "informationalNotices"
   | "roundTimings"
   | "tokenCounts"
   | "estimatedCost"
@@ -488,6 +489,10 @@ export function visibleCategoryInventory(config: TranscriptDisplayConfigV1): Vis
     ["expandByDefault", "expandedDetails"],
   ];
   for (const [field, category] of contentCategories) (content[field] ? visible : hidden).push(category);
+  // Informational warnings (coded "no action needed" notices) share
+  // expandByDefault's posture - the projector gates them on that same field -
+  // so the inventory answers for them with the same rule.
+  (content.expandByDefault ? visible : hidden).push("informationalNotices");
 
   const advanced = normalized.advanced;
   const advancedCategories: readonly [boolean, TranscriptDisplayCategory][] = [

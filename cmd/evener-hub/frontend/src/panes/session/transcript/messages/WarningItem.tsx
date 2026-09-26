@@ -12,7 +12,7 @@
 // quiet below - each piece renders only when present/non-empty, and the
 // whole row renders nothing at all when there is truly nothing to show.
 
-import { hasWarningText } from "@evener/appwire-client";
+import { hasWarningText, isInformationalWarning } from "@evener/appwire-client";
 import { memo } from "react";
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -23,6 +23,7 @@ const CLASS = {
   row: requireClass(styles.row, "warningitem.module.css", "row"),
   message: requireClass(styles.message, "warningitem.module.css", "message"),
   hint: requireClass(styles.hint, "warningitem.module.css", "hint"),
+  quiet: requireClass(styles.quiet, "warningitem.module.css", "quiet"),
 };
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -40,6 +41,22 @@ export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) 
   const hint = hasWarningText(item.warning?.hint) ? item.warning?.hint : undefined;
   const message = hasWarningText(item.text) ? item.text : "";
   if (!title && !message && !hint) return null; // nothing to show
+
+  // An informational warning (a coded "no action needed" notice - budget
+  // arithmetic, not a failure; the projector only lets it through at high
+  // verbosity) renders as ONE quiet line instead of the attention-chip block:
+  // the message is the line, the hint stays reachable on the hover title, and
+  // nothing about the row reads as a failure. The same quiet one-liner grammar
+  // SystemNoticeItem's .line uses (caption size, --ink-low, no chip).
+  if (isInformationalWarning(item)) {
+    const lineText = message !== "" ? message : (hint ?? title ?? "");
+    if (lineText === "") return null;
+    return (
+      <div className={CLASS.quiet} data-testid="warning-quiet-line" title={hint}>
+        {lineText}
+      </div>
+    );
+  }
 
   return (
     <div className={CLASS.row} data-testid="warning-item">

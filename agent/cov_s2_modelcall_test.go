@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/llm"
 )
 
@@ -73,6 +74,11 @@ func TestS2Cov_MaybeWarnContextUsage(t *testing.T) {
 		if strings.Contains(w.Message, "Context usage at") {
 			if w.Title == "Evener error" || strings.Contains(strings.ToLower(w.Hint), "session log") {
 				t.Fatalf("context-usage warning classified as an error: title=%q hint=%q", w.Title, w.Hint)
+			}
+			// Same quiet-notice contract as the output-reduction warning: the
+			// code is what clients gate on, not the prose.
+			if w.Code != events.WarningCodeContextBudget {
+				t.Fatalf("context-usage warning code = %q, want %q", w.Code, events.WarningCodeContextBudget)
 			}
 		}
 	}
