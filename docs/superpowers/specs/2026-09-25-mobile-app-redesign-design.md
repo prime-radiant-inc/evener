@@ -1,6 +1,6 @@
 # Evener for iPhone: redesign spec
 
-Date: 2026-09-25. Status: design approved in conversation with Jesse (Board approach, sections 1 and 2); later sections decided under his "I trust you" delegation. A clickable HTML prototype and virtual usability testing accompany this spec (see "Prototype and usability testing").
+Date: 2026-09-25. Status: design approved in conversation with Jesse (Board approach, sections 1 and 2); later sections decided under his "I trust you" delegation. A clickable HTML prototype and virtual usability testing back this spec; they land in their own PR, #2442 (see "Prototype and usability testing").
 
 This document is the full design brief. It is written so that a designer (or Claude Design) can produce every screen from it, and so that an engineer can map every element to its data source. Where the design needs something the hub does not provide today, the gap is named in "Server additions" with the fallback the phone uses until it lands.
 
@@ -739,6 +739,8 @@ Each has a fallback so the phone works before it lands.
 - iPad and Android (paused and deferred), voice, a cross-session document library, desktop-only administration, and diff review beyond the evidence rendering in 8.2.
 
 ## 20. Prototype and usability testing
+
+The prototype, its harness and the usability record land in #2442; the paths below are where they live once it merges.
 
 - Prototype: `docs/design/mobile/redesign/prototype/` (a clickable HTML model of this spec with fixture data shaped like the real usage in section 2).
 - Harness and study materials: `docs/design/mobile/redesign/usability/`.

@@ -4,7 +4,7 @@
 
 **Goal:** Rebuild the iPhone app's interface (`mobile-native/`) to the redesign spec, on the app's existing data layer, landing on main phase by phase so every merge leaves a working app.
 
-**Spec:** `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`. The clickable prototype (`docs/design/mobile/redesign/prototype/`) and its usability record (`docs/design/mobile/redesign/usability/findings.md`) show the intended behavior screen by screen; when the spec and the prototype disagree, the spec wins.
+**Spec:** `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`. The clickable prototype (`docs/design/mobile/redesign/prototype/`) and its usability record (`docs/design/mobile/redesign/usability/findings.md`), which land in #2442, show the intended behavior screen by screen; when the spec and the prototype disagree, the spec wins.
 
 ## Approach
 
@@ -19,7 +19,7 @@ Each phase is one plan and usually two to four PRs. A phase starts only after th
 
 | Phase | Plan | Delivers |
 |---|---|---|
-| 0 | (this branch) | The spec, prototype, usability record and this roadmap on main. |
+| 0 | #2438, #2442 | The spec, this roadmap and the phase 1 plan (#2438); the prototype and usability record (#2442). |
 | 1 | Foundations | Design tokens (spec 16.1-16.3) behind `useColors()` so every existing screen adopts the palette at once; Source Serif 4 embedded; SF Symbols; the attention model (spec 13.1-13.2) as pure functions; primitives: state marks, pulse meter, subagent strip, chips, section headers, grouped rows. |
 | 2 | Board | The Board (spec 7) replaces the project-first Sessions screen as home: section chips, notices, Continue reading, the Live summary line, the four Live bands, pinned-category sections, Projects/Hosts, Test runs, Archived, search, select mode, row swipes and the long-press menu, all on the fallbacks. |
 | 3 | Session | The workbench (spec 8): nav and context chips, the notes bar and Notes & links sheet (8.8), the restyled transcript items, the status tray, the Next capsule, the ask dock for questions and approvals, the composer, the session sheet and ⋯ menu, detail level. |
