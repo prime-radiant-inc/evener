@@ -3509,18 +3509,22 @@ func TestHubModelTurnStartEnablesTurnActions(t *testing.T) {
 	got.detail.ActiveTurnID = ""
 	got.detail.Capabilities.Interrupt = false
 	got.detail.Capabilities.Steer = false
-	params, err := json.Marshal(map[string]any{
-		"turn": appwire.Turn{ID: "turn_notified", Status: appwire.TurnStatusInProgress},
+	// The read model's turn/started replacement: an open turn's id rides
+	// thread/status/changed's own ActiveTurnID field (the spec's "Turn
+	// status" display rule), not a dedicated turn-boundary notification.
+	params, err := json.Marshal(appwire.ThreadStatusChangedParams{
+		Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		ActiveTurnID: "turn_notified",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got.applyHubNotification(appwire.Notification{Method: appwire.NotifyTurnStarted, Params: params})
+	got.applyHubNotification(appwire.Notification{Method: appwire.NotifyThreadStatusChanged, Params: params})
 	if got.detail.ActiveTurnID != "turn_notified" {
 		t.Fatalf("notified active turn id=%q", got.detail.ActiveTurnID)
 	}
 	if got.detail.Capabilities.Interrupt || got.detail.Capabilities.Steer {
-		t.Fatalf("turn/started mutated unsupported turn actions: %+v", got.detail.Capabilities)
+		t.Fatalf("thread/status/changed mutated unsupported turn actions: %+v", got.detail.Capabilities)
 	}
 }
 
@@ -4555,19 +4559,25 @@ func TestHubModelIgnoresNotificationsForOtherSessions(t *testing.T) {
 		session: newModel(nil),
 	}
 
-	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
 		ThreadID: "other",
 		Ref:      "local:other",
-		Delta:    "wrong",
+		Item: appwire.OverlayItem{
+			Key: "stream:round_1/0:agentMessage", Kind: appwire.OverlayStream,
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:round_1/0:agentMessage", Text: "wrong"},
+		},
 	}).Notification)
 	if len(m.session.messages) != 0 {
 		t.Fatalf("messages=%+v, want no mutation from other session", m.session.messages)
 	}
 
-	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyOverlayUpserted, appwire.OverlayUpsertedParams{
 		ThreadID: "current",
 		Ref:      "local:current",
-		Delta:    "right",
+		Item: appwire.OverlayItem{
+			Key: "stream:round_1/0:agentMessage", Kind: appwire.OverlayStream,
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: "stream:round_1/0:agentMessage", Text: "right"},
+		},
 	}).Notification)
 	if len(m.session.messages) != 1 || m.session.messages[0].Text != "right" {
 		t.Fatalf("messages=%+v", m.session.messages)
