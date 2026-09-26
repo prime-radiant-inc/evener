@@ -1831,7 +1831,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 
 ## PRs 3, 5 and 4 (Tasks 9-15)
 
-Pinned categories, projects and hosts, test runs and archived (PR 3), notices and search (PR 5), and row actions, select mode and list stability (PR 4) are planned in part 2: `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-board-part2.md`.
+Pinned categories, projects and hosts, test runs and archived (PR 3), notices and search (PR 5), and row actions, select mode and list stability (PR 4) are planned in part 2, `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-board-part2.md`, which lands in its own PR once PR 2 is under way.
 
 ## PR B: the demo fleet
 
