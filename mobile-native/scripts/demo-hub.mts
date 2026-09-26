@@ -11,8 +11,19 @@ import type {
 	Turn,
 	TurnStartParams,
 } from "@evener/appwire-client";
+import { capability } from "@evener/appwire-client/testing/navigation";
+import { createDemoFleet, type DemoFleetOptions } from "./demoFleet.mjs";
 
-export async function createDemoHub(port = 9196, initialMarkdown?: string) {
+// The generation id the fleet's navigation capability and every response
+// share; fixed because the fleet is read-only for the demo hub's lifetime.
+const DEMO_FLEET_GENERATION = "demo-fleet";
+
+export async function createDemoHub(
+	port = 9196,
+	initialMarkdown?: string,
+	fleetOptions?: DemoFleetOptions,
+) {
+	const demoFleet = fleetOptions ? createDemoFleet(fleetOptions) : null;
 	const server = new WebSocketServer({ host: "0.0.0.0", port, path: "/rpc" });
 	await once(server, "listening");
 	const address = server.address();
@@ -89,8 +100,9 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 			transcriptList: false,
 			modelList: true,
 			directoryComplete: false,
-			auth: false,
+			auth: demoFleet !== null,
 		},
+		...(demoFleet ? { navigation: capability(DEMO_FLEET_GENERATION) } : {}),
 	};
 	let turnNumber = 0;
 	function resync(thread: Thread) {
@@ -365,6 +377,26 @@ export async function createDemoHub(port = 9196, initialMarkdown?: string) {
 						changed = thread;
 						break;
 					}
+					case "evener/navigation/read":
+						if (!demoFleet)
+							throw new Error("Method not implemented by demonstration server");
+						result = demoFleet.answerNavigationRead(params);
+						break;
+					case "evener/search":
+						if (!demoFleet)
+							throw new Error("Method not implemented by demonstration server");
+						result = demoFleet.answerSearch(params);
+						break;
+					case "evener/auth/list":
+						if (!demoFleet)
+							throw new Error("Method not implemented by demonstration server");
+						result = demoFleet.answerAuthList();
+						break;
+					case "evener/plugin/list":
+						if (!demoFleet)
+							throw new Error("Method not implemented by demonstration server");
+						result = demoFleet.answerPluginList();
+						break;
 					default:
 						throw new Error("Method not implemented by demonstration server");
 				}
@@ -404,6 +436,9 @@ if (
 		Number(process.env.EVENER_DEMO_PORT ?? 9196),
 		process.env.EVENER_DEMO_MARKDOWN
 			? readFileSync(process.env.EVENER_DEMO_MARKDOWN, "utf8")
+			: undefined,
+		process.env.EVENER_DEMO_FLEET === "1"
+			? { offlineHost: process.env.EVENER_DEMO_FLEET_OFFLINE_HOST === "1" }
 			: undefined,
 	);
 	console.info(
