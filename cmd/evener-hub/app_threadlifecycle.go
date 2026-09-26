@@ -70,6 +70,22 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if sourceID == "" {
 		sourceID = launchSourceID(params)
 	}
+	// The harness is the caller's backend selection, not a host selector: a
+	// harness value naming a registered non-local source is refused rather than
+	// resolved (or forwarded to a source that would resolve it against its own
+	// registry). The launchSourceID fallback above is retained for every other
+	// harness value (component 06, §"Write contract (session targeting)").
+	if err := refuseHarnessNamingHost(sources, params.Harness); err != nil {
+		return appwire.ThreadStartResponse{}, err
+	}
+	// A request that arrived over a peer hub's attach bridge resolves only to
+	// this hub's local state (design §2 "Topology"; component 05, §"The
+	// receiving hub must reject a non-local resolution for a remote-originated
+	// thread/start"), so a preserved harness naming one of this hub's own
+	// configured hosts cannot fan the spawn out to that host.
+	if err := guardRemoteSpawnSource(ctx, sourceID); err != nil {
+		return appwire.ThreadStartResponse{}, err
+	}
 	if sourceID != "" && sourceID != "local" {
 		source, ok := sources.Source(sourceID)
 		if !ok || source == nil {
@@ -337,14 +353,37 @@ func localSpawnInstanceID(entry rendezvous.Entry, thread appwire.Thread) string 
 }
 
 func launchSourceID(params appwire.ThreadStartParams) string {
-	harness := strings.TrimSpace(params.Harness)
-	if harness != "" {
-		if harness == "evener" {
-			return "local"
-		}
-		return harness
+	return harnessSourceID(params.Harness)
+}
+
+// harnessSourceID resolves a legacy harness value to the source ID it names:
+// "evener" is the hub's own backend and resolves to local, any other non-empty
+// value is read as a source ID, and an empty harness names no source.
+func harnessSourceID(harness string) string {
+	harness = strings.TrimSpace(harness)
+	if harness == "" {
+		return ""
 	}
-	return ""
+	if harness == "evener" {
+		return "local"
+	}
+	return harness
+}
+
+// refuseHarnessNamingHost refuses a harness value that names a registered
+// non-local source: the harness fallback would otherwise resolve it as a source
+// ID and silently retarget the spawn — or forward it to a source that
+// re-resolves it against its own registry. Only the host-naming case is refused
+// (component 06, §"Write contract (session targeting)").
+func refuseHarnessNamingHost(sources *appsource.Registry, harness string) error {
+	sourceID := harnessSourceID(harness)
+	if sourceID == "" || sourceID == "local" {
+		return nil
+	}
+	if _, ok := sources.Source(sourceID); ok {
+		return appwire.InvalidParams(fmt.Sprintf("harness %q names a registered host source; use source to select a host", sourceID))
+	}
+	return nil
 }
 
 func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
