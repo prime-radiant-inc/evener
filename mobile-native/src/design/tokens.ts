@@ -173,9 +173,11 @@ export function paletteFor(scheme: string | null | undefined): Palette {
 	return scheme === "dark" ? palettes.dark : palettes.light;
 }
 
-/** iOS PostScript names of the embedded Source Serif 4 faces (see app.json's
- * expo-font plugin), and the app's existing machine face. A custom face is
- * chosen by name, never by fontWeight. */
+/** iOS PostScript names of the embedded Source Serif 4 faces (app.json's
+ * expo-font plugin) and the app's existing machine face. Markdown's strong
+ * and em reach the SemiBold, Italic and SemiBold Italic faces by trait
+ * matching inside the "Source Serif 4" family, so every face here is in use
+ * even where no code names it. */
 export const fonts = {
 	serif: "SourceSerif4-Regular",
 	serifItalic: "SourceSerif4-Italic",
@@ -184,8 +186,10 @@ export const fonts = {
 	mono: "Menlo",
 } as const;
 
-/** Reading roles from spec 16.2. Sizes are points before Dynamic Type; callers
- * multiply fontSize and lineHeight by the iOS font scale, as ui.tsx does. */
+/** Reading roles from spec 16.2, in points before Dynamic Type. A React
+ * Native Text with font scaling off multiplies fontSize and lineHeight by the
+ * iOS font scale, as ui.tsx's Copy does; EnrichedMarkdownText scales on its
+ * own, so MarkdownResponse passes a role as it is. */
 export const typeRoles = {
 	agentProse: { fontFamily: fonts.serif, fontSize: 17, lineHeight: 26 },
 	yourMessage: { fontFamily: fonts.serif, fontSize: 17, lineHeight: 25 },
