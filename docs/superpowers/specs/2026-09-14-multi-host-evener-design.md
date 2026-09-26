@@ -122,10 +122,11 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   **retained** for every other harness value and is consulted only when `Source`
   is empty; retiring it outright would make a non-empty harness like `"claude"`
   with an empty `Source` fall through to the local spawner in silence.
-  Harness-as-host targeting is therefore required to be refused, not endorsed;
-  the shipped code (`hubThreadStart`, `app_threadlifecycle.go:66-74`) still
-  resolves the fallback unconditionally, so the refusal is a code delta this
-  ledger carries ([06] harness targeting), not a present fact.
+  Harness-as-host targeting is therefore refused, not endorsed: `hubThreadStart`
+  refuses a harness naming a registered non-local source (`refuseHarnessNamingHost`,
+  `app_threadlifecycle.go:378`) while keeping the fallback for every other
+  harness value, and the recipient hub refuses a remote-originated spawn that
+  would resolve to another source (`guardRemoteSpawnSource`).
 - Daemon spawn, run-dir roster discovery, force-stop safety
   (pidfd/`proc_info`, UID, argv, log ownership), and per-host indexing all stay
   as they are and stay host-local.
@@ -232,7 +233,8 @@ Multi-master or election; automatic host discovery; remote *tool execution*
 
 This spec series is the design record; these are the code deltas its reviews
 surfaced and that still need implementing. Each line names the component and the
-exact scope. None is a present fact.
+exact scope; entries that have since landed are marked in place, and every
+unmarked one is not a present fact.
 
 - **[01] stream transport** — `appwire/stream_transport.go`: bound `Close`'s
   admitted-write drain with a `streamCloseDrainTimeout` constant, and make the
@@ -315,10 +317,11 @@ exact scope. None is a present fact.
   handler (`registerMiscHandlers`) calling `sshManager.Ensure` with typed-error
   pass-through; give every offline/never-attached host an enabled Connect/Attach
   affordance.
-- **[06] harness targeting** — `hubThreadStart` (`app_threadlifecycle.go`)
-  refuses `InvalidParams` for a harness value naming a configured/registered
-  non-local source, while retaining the `launchSourceID` fallback for all other
-  harness values and consulting it only when `Source` is empty.
+- **[06] harness targeting (landed, `1e4018fa5d`)** — `hubThreadStart`
+  (`app_threadlifecycle.go`'s `refuseHarnessNamingHost`) refuses `InvalidParams`
+  for a harness value naming a configured/registered non-local source, while
+  retaining the `launchSourceID` fallback for all other harness values and
+  consulting it only when `Source` is empty.
 - **[06b] frontend discovery routing** — the spawn form's host-dependent
   discovery calls route through `evener/host/request` with the selected host.
 - **[07a] proxy allow-list** — extend the exact `evener/host/request` method set
@@ -450,9 +453,10 @@ exact scope. None is a present fact.
   restart therefore refuses `ErrRestart` with no signal on Linux exactly as on
   Darwin; see the round-19/22 item below.) Mirrors component-04 acceptance
   criterion 20.
-- **[05/06] remote-originated `thread/start` resolution (round 17)** — at the
-  **receiving** hub, `hubThreadStart` (`app_threadlifecycle.go`) and the
-  request-context `origin` plumbing (`cmd/evener-hub/app_rpc.go`) must refuse
+- **[05/06] remote-originated `thread/start` resolution (round 17; landed,
+  `1e4018fa5d`)** — at the **receiving** hub, `hubThreadStart`
+  (`app_threadlifecycle.go`) and the request-context `origin` plumbing
+  (`cmd/evener-hub/app_rpc.go`) must refuse
   `InvalidParams` for a remote-originated (`origin` non-empty) `thread/start`
   whose effective source — a set `ThreadStartParams.Source`, or the legacy
   `launchSourceID(params.Harness)` fallback — is any non-local source, resolving

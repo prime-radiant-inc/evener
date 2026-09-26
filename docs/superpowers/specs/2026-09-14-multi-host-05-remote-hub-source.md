@@ -501,9 +501,11 @@ request whose routing-seam `origin` is non-empty (remote-originated),
 harness fallback) would be any non-local source is refused typed
 (`InvalidParams`) and must never be routed. The `launchSourceID` fallback
 remains for local-originated requests under component 06's contract ("Write
-contract (session targeting)"). **Implementation status:** neither the
-`origin`-aware refusal nor the harness restriction exists today; it is a
-requirement, and the code delta is a tracked follow-up (component 05a/06).
+contract (session targeting)"). **Implementation status:** shipped — both
+refusals are in `hubThreadStart`: `refuseHarnessNamingHost`
+(`app_threadlifecycle.go:378`) refuses a harness naming a registered non-local
+source, and `guardRemoteSpawnSource` (`cmd/evener-hub/host_routing_origin.go:97`)
+refuses a remote-originated spawn whose effective source is non-local.
 
 `hubThreadResume` already routes a non-local ref to its source
 (`app_threadlifecycle.go`), so resuming a remote session by

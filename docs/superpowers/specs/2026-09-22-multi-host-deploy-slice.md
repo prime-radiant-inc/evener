@@ -199,7 +199,7 @@ does not have.
 **Re-examined, and held.** After this ruling was recorded, the master design
 doc's tracked-follow-up ledger turned out to carry the *opposite* decision as
 unimplemented work: "[04] installer fallback is release-only (round 22)", which
-would have `installerRefFor` lose its `snapshot` arm (`design.md:666`, whose
+would have `installerRefFor` lose its `snapshot` arm (`design.md:670`, whose
 entry is now titled "[04] installer fallback's reference (round 22; reconsidered
 and reversed 2026-09-22)"). That was
 put back to Jesse, since the earlier question had not mentioned it, and he held
@@ -292,7 +292,7 @@ to carry two further **decided but unimplemented** items in this same deploy
 half. Both were done here rather than left as "tracked", because this is the
 slice that owns them and both are small.
 
-- **Run target must be `evener`** (`design.md:647`, round 22).
+- **Run target must be `evener`** (`design.md:651`, round 22).
   `installableEvenerBasename` accepted `evener-dev`, the development/test tooling
   binary — no `hub` subcommand and no `launch-check` — so a host configured with
   it *installed and then failed* preflight, health and restart, after the

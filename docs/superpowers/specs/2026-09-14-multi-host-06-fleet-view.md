@@ -157,9 +157,10 @@ Deleting the fallback is explicitly *not* the contract — it would make a spawn
 with a non-empty harness like `"claude"` and an empty `Source` fall through to
 the local spawner in silence (`app_threadlifecycle.go:53-61`) instead of
 resolving its backend, which is the routing regression this section exists to
-prevent. **Implementation status:** the shipped `hubThreadStart`
-(`app_threadlifecycle.go:66-74`) resolves the fallback unconditionally, so the
-host-naming refusal is a requirement, not a present fact.
+prevent. **Implementation status:** shipped — `hubThreadStart` refuses a harness
+naming a registered non-local source with `InvalidParams`
+(`refuseHarnessNamingHost`, `app_threadlifecycle.go:378`), keeping the
+`launchSourceID` fallback for every other harness value.
 
 **The host selector is controller-only; the harness is preserved.** The
 `Source` field names a source in the controller's registry; the remote hub would
@@ -186,8 +187,9 @@ routing-seam `origin` is non-empty: an effective non-local source (from a set
 `Source` or the harness fallback) is refused (`InvalidParams`) and never routed.
 The `launchSourceID` fallback above applies unchanged to local-originated
 requests. See component 05, §"The receiving hub must reject a non-local
-resolution for a remote-originated `thread/start`"; the code delta is a tracked
-follow-up.
+resolution for a remote-originated `thread/start`"; it is shipped too:
+`guardRemoteSpawnSource` (`cmd/evener-hub/host_routing_origin.go:97`) refuses a
+remote-originated spawn whose effective source is non-local.
 
 ## Implementation approach
 
