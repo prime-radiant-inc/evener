@@ -98,20 +98,54 @@ test("folds reducer-prepended history before live-appended turns with last-prese
       },
     ],
   });
-  let model = { threadId: "thr_t", ref: "ref_t", turns: [] } as unknown as ThreadModel;
+  // history establishes versioned history up front (the read model's own
+  // bootstrap rule, reducer.ts's classifySignal): a live history/updated
+  // frame can only ever merge once an authoritative read has first
+  // established an incarnation to merge against, never bootstrap history
+  // from nothing on its own — so this fixture model, unlike a real one,
+  // seeds `history` directly rather than folding its way to it.
+  let model = {
+    threadId: "thr_t",
+    ref: "ref_t",
+    turns: [],
+    history: {
+      bootGeneration: "",
+      epoch: 0,
+      incarnation: "inc-1",
+      length: 0,
+      appliedGeneration: 0,
+      issuedGeneration: 0,
+      deferredPages: [],
+      turns: [],
+    },
+  } as unknown as ThreadModel;
   model = applyNotification(
     model,
     {
-      method: "turn/started",
+      method: "history/updated",
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turn: turn("turn_2", "live-create", {
+        bootGeneration: "",
+        epoch: 0,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [
+          {
+            ...turn("turn_2", "live-create", {
+              watch_id: "watch_x",
+              watching: true,
+              source: "job_live",
+              condition: "output_match: live",
+            }),
+            items: [],
+          },
+        ],
+        items: turn("turn_2", "live-create", {
           watch_id: "watch_x",
           watching: true,
           source: "job_live",
           condition: "output_match: live",
-        }),
+        }).items,
       },
     },
     1001,
@@ -119,11 +153,15 @@ test("folds reducer-prepended history before live-appended turns with last-prese
   model = applyNotification(
     model,
     {
-      method: "turn/started",
+      method: "history/updated",
       params: {
         threadId: "thr_t",
         ref: "ref_t",
-        turn: turn("turn_3", "live-inspect", { watch_id: "watch_x", deliveries: 7 }),
+        bootGeneration: "",
+        epoch: 0,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ ...turn("turn_3", "live-inspect", { watch_id: "watch_x", deliveries: 7 }), items: [] }],
+        items: turn("turn_3", "live-inspect", { watch_id: "watch_x", deliveries: 7 }).items,
       },
     },
     1002,

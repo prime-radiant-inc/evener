@@ -9,7 +9,7 @@
 // infrastructure.
 import type { ThreadModel } from "../model";
 import { applyNotification, hydrateThread } from "../reducer";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../types.gen";
+import type { AnyNotification, OverlayItem, Thread, ThreadCapabilities, ThreadReadResponse } from "../types.gen";
 
 // mulberry32: a small, fast, deterministic PRNG (public-domain algorithm) -
 // used only for chunk-length variety, never for anything security-sensitive.
@@ -115,67 +115,85 @@ export interface FloodStream {
   itemId: string;
 }
 
-// Builds the exact wire-shaped stream the wave plan's gate names: turn/
-// started -> item/started -> `count` item/agentMessage/delta notifications
-// -> item/completed (carrying the server's own authoritative final text,
-// matching real wire behavior - see streaming-with-reset.jsonl line 15,
-// where item/completed's item.text is exactly the concatenation of the
-// deltas that preceded it) -> a BARE turn/completed stamp (no items,
-// itemsView "" - the live wire's real settle shape; reducer.ts's own
-// "turn/completed" case comment, and R1's fix, both establish that a
-// non-"full" itemsView means "this payload has nothing to say about items,"
-// preserving whatever the model already accumulated rather than replacing
-// it with an empty list).
+// Builds the exact wire-shaped stream the wave plan's gate names, ported to
+// the read model: history/updated (opens the turn) -> overlay/upserted
+// (starts the stream, reducer.history.test.ts's own streamOverlay
+// convention: key "stream:<roundId>/<attempt>:agentMessage") -> `count`
+// overlay/delta notifications (item/agentMessage/delta's read-model
+// replacement) -> overlay/end (closes the round) -> history/updated
+// (settling the turn AND the item with the server's own authoritative final
+// text, matching real wire behavior - see streaming-with-reset.jsonl line
+// 15, where item/completed's item.text is exactly the concatenation of the
+// deltas that preceded it).
 export function buildFloodStream(count: number, seed = 1): FloodStream {
   const threadId = "thr_flood";
   const ref = "ref_flood";
   const turnId = "turn_flood";
   const itemId = "item_flood";
+  const roundId = "round_flood";
+  const streamId = `${roundId}/0`;
+  const overlayKey = `stream:${streamId}:agentMessage`;
   const chunks = buildFloodChunks(count, seed);
   const expectedText = chunks.join("");
 
+  const streamOverlayItem: OverlayItem = {
+    key: overlayKey,
+    kind: "stream",
+    turnId,
+    roundId,
+    streamId,
+    item: { type: "agentMessage", id: itemId, turnId, roundId, status: "inProgress" },
+  };
+
   const notifications: AnyNotification[] = [
     {
-      method: "turn/started",
-      params: { threadId, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId,
+        ref,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc_flood", length: 1 },
+        turns: [{ id: turnId, status: "inProgress", itemsView: "" }],
+      },
     } as AnyNotification,
     {
-      method: "item/started",
-      params: { threadId, ref, turnId, item: { type: "agentMessage", id: itemId, turnId, status: "inProgress" } },
+      method: "overlay/upserted",
+      params: { threadId, ref, item: streamOverlayItem },
     } as AnyNotification,
     ...chunks.map(
       (delta) =>
         ({
-          method: "item/agentMessage/delta",
-          params: { threadId, ref, turnId, itemId, delta },
+          method: "overlay/delta",
+          params: { threadId, ref, key: overlayKey, field: "text", delta },
         }) as AnyNotification,
     ),
     {
-      method: "item/completed",
+      method: "overlay/end",
+      params: { threadId, ref, roundId },
+    } as AnyNotification,
+    {
+      method: "history/updated",
       params: {
         threadId,
         ref,
-        turnId,
-        item: { type: "agentMessage", id: itemId, turnId, text: expectedText, status: "completed" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc_flood", length: 2 },
+        turns: [{ id: turnId, status: "completed", itemsView: "" }],
+        items: [{ type: "agentMessage", id: itemId, turnId, roundId, text: expectedText, status: "completed" }],
       },
-    } as AnyNotification,
-    {
-      method: "turn/completed",
-      params: { threadId, ref, turn: { id: turnId, status: "completed", itemsView: "" } },
     } as AnyNotification,
   ];
 
   return { notifications, expectedText, chunkCount: count, ref, threadId, turnId, itemId };
 }
 
-// A model hydrated and folded up to (and including) item/started for one
-// in-flight agentMessage item — the canonical "streaming item" scaffold the
-// token-flood stream (buildFloodStream above) opens with and that
-// chunkview.test.ts's O(1)/purity/branch tests fold deltas onto. Shared here
-// (next to buildFloodStream's own notifications) rather than re-implemented
-// per test file. `ids` overrides the flood defaults so callers can pin their
-// own thread/ref/turn/item identity; determinism is by construction (no
-// randomness anywhere).
+// A model hydrated and folded up to (and including) overlay/upserted for one
+// in-flight agentMessage stream — the canonical "streaming item" scaffold the
+// token-flood stream (buildFloodStream above) opens with. `ids` overrides the
+// flood defaults so callers can pin their own thread/ref/turn/item identity;
+// determinism is by construction (no randomness anywhere).
 export function hydrateStreamingAgentMessage(
   ref: string,
   ids?: { threadId?: string; turnId?: string; itemId?: string },
@@ -183,20 +201,39 @@ export function hydrateStreamingAgentMessage(
   const threadId = ids?.threadId ?? `thr_${ref}`;
   const turnId = ids?.turnId ?? "turn_1";
   const itemId = ids?.itemId ?? "item_1";
+  const roundId = `${turnId}_round`;
   let model = hydrateFloodModel(ref);
   model = applyNotification(
     model,
     {
-      method: "turn/started",
-      params: { threadId, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+      method: "history/updated",
+      params: {
+        threadId,
+        ref,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc_flood", length: 1 },
+        turns: [{ id: turnId, status: "inProgress", itemsView: "" }],
+      },
     } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
     {
-      method: "item/started",
-      params: { threadId, ref, turnId, item: { type: "agentMessage", id: itemId, turnId, status: "inProgress" } },
+      method: "overlay/upserted",
+      params: {
+        threadId,
+        ref,
+        item: {
+          key: `stream:${roundId}/0:agentMessage`,
+          kind: "stream",
+          turnId,
+          roundId,
+          streamId: `${roundId}/0`,
+          item: { type: "agentMessage", id: itemId, turnId, roundId, status: "inProgress" },
+        },
+      },
     } as AnyNotification,
     1002,
   );
@@ -221,16 +258,17 @@ const CAPABILITIES: ThreadCapabilities = {
 
 export interface FoldTimingResult {
   model: ThreadModel;
-  /** One entry per item/agentMessage/delta notification, in stream order. */
+  /** One entry per overlay/delta notification, in stream order. */
   perDeltaMs: number[];
   /** Wall time for the WHOLE fold (every notification, not just deltas). */
   totalMs: number;
 }
 
 // Folds `notifications` through applyNotification sequentially, timing each
-// individual item/agentMessage/delta application with performance.now() -
-// the primitive both tokenFlood.test.tsx's sanity-ceiling test and
-// tokenFlood.bench.ts's growth-curve profile are built from.
+// individual overlay/delta application (item/agentMessage/delta's read-model
+// replacement) with performance.now() - the primitive both
+// tokenFlood.test.tsx's sanity-ceiling test and tokenFlood.bench.ts's
+// growth-curve profile are built from.
 export function foldWithTiming(model: ThreadModel, notifications: AnyNotification[]): FoldTimingResult {
   const perDeltaMs: number[] = [];
   let m = model;
@@ -238,7 +276,7 @@ export function foldWithTiming(model: ThreadModel, notifications: AnyNotificatio
   const start = performance.now();
   for (const n of notifications) {
     now += 1;
-    if (n.method === "item/agentMessage/delta") {
+    if (n.method === "overlay/delta") {
       const t0 = performance.now();
       m = applyNotification(m, n, now);
       perDeltaMs.push(performance.now() - t0);

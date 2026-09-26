@@ -103,12 +103,16 @@ test.each(["idle", "awaiting", "ended", "closed", "notLoaded", "restartRequired"
 // The daemon runs consecutive turns inside ONE input whenever a queued
 // message, a notification turn, a goal continuation or a drained steering
 // carrier follows a turn. The projector's openTurn
-// (internal/appprojector/appwire_projection.go) then emits turn/completed
-// (previous) + turn/started (next) + thread/status/changed(active) from one
-// session event, and the thread status never leaves active: the projector
-// publishes idle only at EventSessionEnd. The hub relays each of those as its
-// own WebSocket message and the client folds them one at a time, so the
-// predicate is evaluated between the two turn frames. Issue #1330.
+// (internal/appprojector/appwire_projection.go) publishes history/updated
+// (settling the previous turn, opening the next) + thread/status/changed
+// (active, naming the next turn) from one session event, and the thread
+// status never leaves active: the projector publishes idle only at
+// EventSessionEnd. The hub relays each of those as its own WebSocket message
+// and the client folds them one at a time, so the predicate is evaluated
+// between the two frames. Issue #1330's regression window, ported from
+// turn/completed + turn/started's activeTurnId clear/set (now
+// runningTurnId, which thread/status/changed alone owns — see model.ts's
+// doc comment): busy must not follow it either.
 function activeThread(): ThreadModel {
   const thread = wireThread("ref_t", {
     status: { type: "active" },
@@ -120,36 +124,38 @@ function activeThread(): ThreadModel {
 
 const INLINE_TURN_BOUNDARY: AnyNotification[] = [
   {
-    method: "turn/completed",
-    params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "completed", itemsView: "" } },
-  },
-  {
-    method: "turn/started",
+    method: "history/updated",
     params: {
       threadId: "thr_t",
       ref: "ref_t",
-      turn: { id: "turn_2", status: "inProgress", itemsView: "full", startedAt: 2000 },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [
+        { id: "turn_1", status: "completed", itemsView: "" },
+        { id: "turn_2", status: "inProgress", itemsView: "full", startedAt: 2000 },
+      ],
     },
   },
   {
     method: "thread/status/changed",
-    params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } },
+    params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" }, activeTurnId: "turn_2" },
   },
 ];
 
-test("a session stays busy at every step of an inline turn boundary (turn/completed, turn/started, status active as separate frames)", () => {
+test("a session stays busy at every step of an inline turn boundary (history/updated, status active as separate frames)", () => {
   let model = activeThread();
   expect(isTurnActive(model.status.type)).toBe(true);
   const afterEachFrame = INLINE_TURN_BOUNDARY.map((frame) => {
     model = applyNotification(model, frame, 2000);
-    return { method: frame.method, busy: isTurnActive(model.status.type), activeTurnId: model.activeTurnId };
+    return { method: frame.method, busy: isTurnActive(model.status.type), runningTurnId: model.runningTurnId };
   });
-  // activeTurnId is the regression window: the reducer clears it on
-  // turn/completed and sets it again on turn/started, and busy must not follow.
+  // runningTurnId is the regression window (activeTurnId's read-model
+  // replacement): it is unset until the status frame names the next turn,
+  // and busy must not follow that gap.
   expect(afterEachFrame).toEqual([
-    { method: "turn/completed", busy: true, activeTurnId: undefined },
-    { method: "turn/started", busy: true, activeTurnId: "turn_2" },
-    { method: "thread/status/changed", busy: true, activeTurnId: "turn_2" },
+    { method: "history/updated", busy: true, runningTurnId: undefined },
+    { method: "thread/status/changed", busy: true, runningTurnId: "turn_2" },
   ]);
 });
 
