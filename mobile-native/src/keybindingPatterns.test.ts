@@ -1,6 +1,6 @@
 import { parseKeybinding } from "tinykeys";
 import { parseKeybinding as parseWeb } from "tinykeys-reference";
-import { beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 
 const samples = [
@@ -69,13 +69,9 @@ describe("native shortcut pattern compilation", () => {
 			}
 		},
 	);
-	let changed: ReturnType<typeof checkedKeybindingChange>;
-	let preview: ReturnType<typeof keybindingPreview>;
-	beforeAll(() => {
-		changed = checkedKeybindingChange([], "palette.open", authoredChord);
-		preview = keybindingPreview(changed);
-	});
 	it("preserves the authored pattern through the real native preview and change validator", () => {
+		const changed = checkedKeybindingChange([], "palette.open", authoredChord);
+		const preview = keybindingPreview(changed);
 		expect(changed).toEqual([{ action: "palette.open", chord: authoredChord }]);
 		expect(preview.warnings).toEqual([]);
 		expect(
