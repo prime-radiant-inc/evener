@@ -1862,12 +1862,12 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 - Test: `mobile-native/src/board/notices.test.ts`, `mobile-native/src/board/boardData.test.ts` and `mobile-native/src/board/Notices.test.tsx`
 
 **Interfaces:**
-- Produces: `type Notice = { kind: "signIn" | "host" | "plugin"; key: string; text: string; action: "Sign in" | "Details" }` and `notices(input: { auth: AuthStatusResponse[]; sources: Source[]; plugins: PluginEntry[]; liveRows: readonly NavigationSessionSummary[]; projectRows: readonly NavigationSessionSummary[] }): Notice[]`.
+- Produces: `type Notice = { kind: "signIn" | "host" | "plugin"; key: string; text: string; action: "Sign in" | "Details" | "Plugins" }` and `notices(input: { auth: AuthStatusResponse[]; sources: Source[]; plugins: PluginEntry[]; liveRows: readonly NavigationSessionSummary[]; projectRows: readonly NavigationSessionSummary[] }): Notice[]`.
 
 **Requirements (spec 7.1, ruling 8):**
 - **Sign-in:** one notice per provider with `needsLogin`: "<provider> sign-in expired". Its action "Sign in" opens today's provider sign-in flow for that provider.
 - **Host:** one notice per offline source: "<label> is offline · 3 sessions", where the count is the number of loaded rows whose `host_id` is that source. The action "Details" opens `HubSettings` until phase 5.
-- **Plugin:** one notice per broken plugin: "<plugin> is broken". "Details" opens today's `Plugins` screen.
+- **Plugin:** one notice per broken plugin: "<plugin> is broken". Its action "Plugins" opens today's `Plugins` screen.
 - **Placement and style:** notices sit under the chips as rows: `exclamationmark.triangle.fill` in amber, the sentence in `inkHi`, the action in `accentInk`. No tinted box. They disappear when resolved.
 - **Reads:**
   - `evener/auth/list` on focus and on `evener/auth/updated`.
