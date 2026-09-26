@@ -7,28 +7,23 @@ import { PulseMeter } from "./PulseMeter";
 type Tint = "danger" | "attention" | "accent" | "alive";
 export type Glyph = { name: SFSymbol; tint: Tint; size: number };
 
+const GLYPHS: Record<BoardState, Glyph | null> = {
+	failed: { name: "xmark.octagon.fill", tint: "danger", size: 20 },
+	question: { name: "questionmark.circle.fill", tint: "attention", size: 20 },
+	approval: { name: "hand.raised.circle.fill", tint: "attention", size: 20 },
+	warning: { name: "exclamationmark.triangle.fill", tint: "attention", size: 20 },
+	restartNeeded: { name: "arrow.triangle.2.circlepath.circle.fill", tint: "attention", size: 20 },
+	working: { name: "circle.fill", tint: "alive", size: 8 },
+	finished: { name: "circle.fill", tint: "accent", size: 8 },
+	idle: null,
+	shutDown: null,
+};
+
 /** A row's leading mark (spec 13.1). `moving` is true only on Live's working
  * rows: one meter per view, and a pinned or project copy of the same session
  * gets a still green dot. */
 export function markFor(state: BoardState, moving: boolean): Glyph | "meter" | null {
-	switch (state) {
-		case "failed":
-			return { name: "xmark.octagon.fill", tint: "danger", size: 20 };
-		case "question":
-			return { name: "questionmark.circle.fill", tint: "attention", size: 20 };
-		case "approval":
-			return { name: "hand.raised.circle.fill", tint: "attention", size: 20 };
-		case "warning":
-			return { name: "exclamationmark.triangle.fill", tint: "attention", size: 20 };
-		case "restartNeeded":
-			return { name: "arrow.triangle.2.circlepath.circle.fill", tint: "attention", size: 20 };
-		case "finished":
-			return { name: "circle.fill", tint: "accent", size: 8 };
-		case "working":
-			return moving ? "meter" : { name: "circle.fill", tint: "alive", size: 8 };
-		default:
-			return null;
-	}
+	return state === "working" && moving ? "meter" : GLYPHS[state];
 }
 
 export function StateMark({

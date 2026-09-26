@@ -9,14 +9,15 @@ vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
 describe("state marks pair shape with color (spec 13.1)", () => {
 	it.each([
-		["failed", "xmark.octagon.fill", "danger"],
-		["question", "questionmark.circle.fill", "attention"],
-		["approval", "hand.raised.circle.fill", "attention"],
-		["warning", "exclamationmark.triangle.fill", "attention"],
-		["restartNeeded", "arrow.triangle.2.circlepath.circle.fill", "attention"],
-		["finished", "circle.fill", "accent"],
-	] as const)("%s", (state, name, tint) => {
-		expect(markFor(state, false)).toMatchObject({ name, tint });
+		["failed", "xmark.octagon.fill", "danger", 20],
+		["question", "questionmark.circle.fill", "attention", 20],
+		["approval", "hand.raised.circle.fill", "attention", 20],
+		["warning", "exclamationmark.triangle.fill", "attention", 20],
+		["restartNeeded", "arrow.triangle.2.circlepath.circle.fill", "attention", 20],
+		["finished", "circle.fill", "accent", 8],
+	] as const)("%s", (state, name, tint, size) => {
+		expect(markFor(state, false)).toMatchObject({ name, tint, size });
+		expect(markFor(state, true)).toEqual(markFor(state, false));
 	});
 
 	it("moves only on Live's working rows; elsewhere working is a still green dot", () => {
