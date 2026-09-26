@@ -39,6 +39,7 @@
 // with no hover to reveal them).
 
 import {
+  approvalWaiting,
   canReadSharedNotes,
   humanizeState,
   isActivityFailure,
@@ -230,15 +231,22 @@ function Signal({ wireState }: { wireState: string }) {
 // on the main line it charged its width to the title at the rail's default
 // 280px. Exported for direct testing of the join, which the rendered line can
 // only assert on as one flat string.
+//
+// A restart or a pending approval leads the line whatever else is running:
+// each is something a person must do, and a subagent or job count in its
+// place would read as work in progress.
 export function activityGloss(session: RailSession, activity = activeWorkSummary(session)): string {
   const workingCount = activity.workingSubagents;
   const jobCount = activity.runningJobs;
+  const approvalPending = session.approval_pending === true;
+  const word = humanizeState(session.state, session.ask_pending === true, approvalPending);
+  const wordLeads = session.state === "restartRequired" || approvalWaiting(session.state, approvalPending);
   const parts: string[] = [];
-  if (session.state === "restartRequired") parts.push(humanizeState(session.state, session.ask_pending === true));
+  if (wordLeads) parts.push(word);
   if (workingCount > 0) {
     parts.push(`${workingCount} subagent${workingCount === 1 ? "" : "s"} working`);
-  } else if (session.state !== "restartRequired" && (jobCount === 0 || session.state === "active")) {
-    parts.push(humanizeState(session.state, session.ask_pending === true));
+  } else if (!wordLeads && (jobCount === 0 || session.state === "active")) {
+    parts.push(word);
   }
   if (jobCount > 0) parts.push(`${jobCount} job${jobCount === 1 ? "" : "s"} running`);
   if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
@@ -461,7 +469,8 @@ function rowTooltip(session: RailSession, showsGloss: boolean, saysNotStarted: b
   // instead: "idle" is true of it but tells the reader nothing they don't
   // already believe, and it is the very confusion this line exists to end.
   if (saysNotStarted) parts.push("not started");
-  else if (!showsGloss) parts.push(humanizeState(displayState(session), session.ask_pending === true));
+  else if (!showsGloss)
+    parts.push(humanizeState(displayState(session), session.ask_pending === true, session.approval_pending === true));
   // "current" is the unremarkable default state of a session - the same
   // exclusion the visible line used to make.
   if (session.tier !== undefined && session.tier !== "" && session.tier !== "current") parts.push(session.tier);
@@ -651,10 +660,15 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   const hasRunningJobs = activity.runningJobs > 0;
   const hasActiveWork = session.state === "active" || hasWorkingDescendants || hasRunningJobs;
   // Descendant/job activity is a working signal for the owning session. A
-  // failed session still wins over that rollup so an error cannot disappear
-  // behind a green child.
+  // failure, a restart and a pending approval still win over that rollup, so
+  // none can disappear behind a green child - nor, for an approval, behind
+  // the row's own "active" wire state (the escalation blocks mid-turn).
+  const outranksWork =
+    presented === "errored" ||
+    presented === "restartRequired" ||
+    approvalWaiting(session.state, session.approval_pending === true);
   let effectiveState = presented;
-  if (effectiveState !== "errored" && effectiveState !== "restartRequired" && hasActiveWork) effectiveState = "active";
+  if (!outranksWork && hasActiveWork) effectiveState = "active";
   const showsGloss = SIGNAL_STATES.has(cadenceStateFor(effectiveState));
   // kata hxjn: the ROOT of a flat, cross-project tier (Live/Needs-you/Pinned
   // - the rows sessionNodes builds, marked crossProjectTier on the node; a
