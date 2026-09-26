@@ -1274,9 +1274,11 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 				seedRegistryFromRecord(reg, index.recordAt(i))
 			}
 			zg := indexedGroup{id: slot, start: i, end: spanEnd, turnID: index.recordAt(i).TurnID, openerIndex: index.recordAt(i).Index, items: 0, calls: nil, open: false}
-			if _, _, err := projectIndexedGroup(ctx, file, index, &zg, entryOrdinalAt, project, reg); err != nil {
+			_, zeroProjected, err := projectIndexedGroup(ctx, file, index, &zg, entryOrdinalAt, project, reg)
+			if err != nil {
 				return nil, projected, err
 			}
+			projected += zeroProjected
 			i = spanEnd
 			continue
 		}
@@ -1907,12 +1909,20 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 	return turnID, calls
 }
 
-// seedRegistryFromRecord copies a StartsGroup record's persisted
-// CommRawArgs/LastAssistantText onto a registry, cloning the args map only
-// when the record carries one so the common no-args case allocates nothing.
-// Bounded reads seed from the index record instead of replaying the prefix.
+// seedRegistryFromRecord authoritatively resets the registry from a
+// StartsGroup record's persisted CommRawArgs/LastAssistantText. The args map
+// is replaced wholesale (not merged) so entries consumed by a preceding group's
+// delivered result — whose consume happened in a before-window group the
+// bounded read skipped — do not leak into the in-window state and render a
+// duplicate flushed agentMessage at the tail. The empty-record case resets the
+// map to a fresh non-nil map so a later group never sees a stale entry; cloning
+// is skipped when the record carries no args to keep the common case allocation
+// -free. Bounded reads seed from the index record instead of replaying the
+// prefix.
 func seedRegistryFromRecord(reg *ToolCallRegistry, record indexedTurn) {
-	if len(record.CommRawArgs) > 0 {
+	if len(record.CommRawArgs) == 0 {
+		reg.CommRawArgs = map[string]string{}
+	} else {
 		reg.CommRawArgs = maps.Clone(record.CommRawArgs)
 	}
 	reg.LastAssistantText = record.LastAssistantText
