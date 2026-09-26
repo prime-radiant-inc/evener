@@ -233,8 +233,9 @@ Multi-master or election; automatic host discovery; remote *tool execution*
 
 This spec series is the design record; these are the code deltas its reviews
 surfaced and that still need implementing. Each line names the component and the
-exact scope; entries that have since landed are marked in place, and every
-unmarked one is not a present fact.
+exact scope. Entries are marked `landed` as they ship; an unmarked entry is the
+original requirement as written, so re-check it against `main` before
+implementing — several have landed without their entry being re-marked.
 
 - **[01] stream transport** — `appwire/stream_transport.go`: bound `Close`'s
   admitted-write drain with a `streamCloseDrainTimeout` constant, and make the
@@ -258,10 +259,10 @@ unmarked one is not a present fact.
   reject a non-loopback `addr` before any health check or restart; an explicit
   `--config` that is missing/unparseable exits nonzero instead of falling back
   to `DefaultConfig()`.
-- **[03] wiring** — `hubcore.WebConfig` gains `RemoteHostClientIfAttached`,
+- **[03] wiring (landed)** — `hubcore.WebConfig` gains `RemoteHostClientIfAttached`,
   `RemoteHostFacts`, and `RemoteHostHandshake`, populated from the `sshconn`
   manager and installed on each `RemoteHubSource`.
-- **[04] attached-only accessors** — `sshconn.Manager` gains
+- **[04] attached-only accessors (landed, `e166493920`)** — `sshconn.Manager` gains
   `ClientIfAttached`, `HandshakeIfAttached`, and `PreflightIfAttached`: read the
   installed channel under the manager-wide mutex, never dial.
 - **[04] run-target resolution** — resolve one canonical **absolute** `run_path`
@@ -289,7 +290,7 @@ unmarked one is not a present fact.
   `Delegate.ChildRef`/`.Child` (recursive) / `.Turns[].OwnerRef`/`.TranscriptRef`),
   plus `Thread.Evener.Diagnostics` and the `evener/job/*` /
   `evener/delegate/updated` transcript refs.
-- **[05] loop guard** — `app_rpc.go` records the connection role and threads
+- **[05] loop guard (landed)** — `app_rpc.go` records the connection role and threads
   `origin` into the request context; every fan-out path
   (`hubThreadListWithSourceTimeout`, `app_threadlist.go`) refuses a
   remote-originated request to any source other than `local` (depth 1).
@@ -304,7 +305,8 @@ unmarked one is not a present fact.
   `ProjectID`/`ProjectPath`; `identifier.Project` and the navigation projection
   carry the owning source; `refreshRemoteThreadSnapshot`/`remoteThreadFetch`
   resolve through the attached-only lookup.
-- **[06] archive/favorite/delete** — `ArchiveParams`/`FavoriteSetParams`/
+- **[06] archive/favorite/delete (landed, except the frontend menu-hiding
+  clause: the shipped guard refuses the action instead)** — `ArchiveParams`/`FavoriteSetParams`/
   `ProjectDeleteParams` gain `Source`; `app_archive.go`/`app_favorite.go` **accept
   and key a non-local source** by `(source, id)` (they route archive/favorite by
   source and must **not** reject it); only project deletion
@@ -648,15 +650,16 @@ unmarked one is not a present fact.
   seam). Mirrors component-05 §"Every other remote call is non-dialing, not just
   the snapshot and the non-explicit list" and component-06 acceptance
   criterion 13.
-- **[04] run target must be `evener` (round 22)** — `installableEvenerBasename`
-  (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`) accepts
-  `evener-dev`, which is the development/test tooling binary
-  (`cmd/evener-dev/bin`) with no `hub` subcommand and no `launch-check`; a host
-  configured with an `evener-dev` run target installs and then fails preflight,
-  health, and restart. Narrow the acceptance to `evener` and refuse an
-  `evener-dev` (or otherwise unshipped) run-target basename **terminally** —
-  the distinct `errRunTargetUnservable` sentinel `isTerminal` recognises, not
-  the retryable `ErrDeploy` — before any install, push, or write. Terminal is
+- **[04] run target must be `evener` (round 22; landed, `84eb525e70`)** —
+  `installableEvenerBasename` (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`)
+  accepted `evener-dev`, the development/test tooling binary
+  (`cmd/evener-dev/bin`) with no `hub` subcommand and no `launch-check`, so a
+  host configured with an `evener-dev` run target installed and then failed
+  preflight, health, and restart. The required narrowing is in: the acceptance
+  is `evener`-only, and an `evener-dev` (or otherwise unshipped) run-target
+  basename is refused **terminally** — the distinct `errRunTargetUnservable`
+  sentinel `isTerminal` recognises, not the retryable `ErrDeploy` — before any
+  install, push, or write. Terminal is
   the right shape because the refusal names an operator configuration defect a
   host cannot recover from: retrying the same misconfigured path can never
   install a hub-servable binary, so a supervisor would re-refuse it forever and

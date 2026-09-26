@@ -482,7 +482,7 @@ The controller's chosen host is expressed purely by *which*
 with its own default routing when the harness is empty. No other `Source` method
 carries a host selector: every other method addresses an existing thread by
 `Ref`, which is translated (above). **Implementation status:** the shipped 05c
-`StartThread` (`remote_hub_mutations.go:101-119`) clears `Source` and neutralizes
+`StartThread` (`remote_hub_mutations.go`) clears `Source` and neutralizes
 `Harness` to `"evener"`; forwarding the caller's harness rather than
 overwriting it is the requirement, not a present fact.
 
@@ -503,8 +503,8 @@ harness fallback) would be any non-local source is refused typed
 remains for local-originated requests under component 06's contract ("Write
 contract (session targeting)"). **Implementation status:** shipped — both
 refusals are in `hubThreadStart`: `refuseHarnessNamingHost`
-(`app_threadlifecycle.go:378`) refuses a harness naming a registered non-local
-source, and `guardRemoteSpawnSource` (`cmd/evener-hub/host_routing_origin.go:97`)
+(`app_threadlifecycle.go`) refuses a harness naming a registered non-local
+source, and `guardRemoteSpawnSource` (`cmd/evener-hub/host_routing_origin.go`)
 refuses a remote-originated spawn whose effective source is non-local.
 
 `hubThreadResume` already routes a non-local ref to its source
@@ -902,11 +902,11 @@ Ref translation detail (`remote_hub_refs.go`):
     is never routed to a second remote source, with the typed refusal surfaced;
     and a local-originated request still fanned normally.
   - **Implementation status:** shipped. `remapRemoteSourceIDs`
-    (`remote_hub_refs.go:56-67`) returns `["local"]` for an empty incoming
-    filter; `ListThreads` (`remote_hub_source.go:491-512`) answers an explicit
+    (`remote_hub_refs.go`) returns `["local"]` for an empty incoming
+    filter; `ListThreads` (`remote_hub_source.go`) answers an explicit
     exclusion that names no other source with an empty response instead of
     widening it to an unfiltered list; and `translateOut`
-    (`remote_hub_refs.go:498-516`) drops the one unrepresentable row while
+    (`remote_hub_refs.go`) drops the one unrepresentable row while
     keeping the valid rows beside it.
 - Outbound threads: set `Thread.Source = s.id`; rewrite `Thread.Evener.Ref`
   from `local:X` to `s.id + ":" + X`; rewrite `Thread.Evener.ParentRef` the same

@@ -248,8 +248,8 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   diagnostics into the framed stream; `-T` keeps stdout the raw AppWire byte
   stream and stderr the diagnostic channel (component 02's stdout discipline).
   **Implementation status:** shipped — `sshBaseArgv` passes `-T` on every ssh
-  invocation (`cmd/evener-hub/internal/sshconn/runner.go:244-256`), so a user's
-  `ssh_config` cannot allocate a PTY for the bridge.
+  invocation (`sshconn/runner.go`), so a user's `ssh_config` cannot allocate a
+  PTY for the bridge.
 - **`--` ends ssh's own option parsing.** The destination is emitted as
   `-- <dest>` (shipped: `sshDest` in `sshconn/runner.go`). A registry `ssh`
   value that begins with `-` must be read as a hostname and never as an ssh
@@ -350,9 +350,9 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
   `addr` for a custom-address host. **Implementation status:** shipped. The
   `hostreg` entry stores `ConfigPath` and `Addr` as independent optional fields
   and `channelArgv` passes whichever is present; the restart, port, and health
-  probes resolve the address through `Manager.hostAddr` (`hostAddrFor`,
-  `sshconn/version.go:63-80`; per-host `Addr`, else `Options.HubAddr`, else
-  `127.0.0.1:9180`), and `checkHostAddr` (`sshconn/version.go:83-100`) refuses a
+  probes resolve the address through `Manager.hostAddr` (`sshconn/version.go`,
+  `hostAddrFor`; per-host `Addr`, else `Options.HubAddr`, else
+  `127.0.0.1:9180`), and `checkHostAddr` (`sshconn/version.go`) refuses a
   non-loopback or malformed address — and a `config_path` with no address —
   before any ssh command runs. The paired `config_path`/`addr` validation
   remains a requirement for the implementing PR.
@@ -684,10 +684,10 @@ Run over non-interactive SSH (no login shell, no TTY):
   deploy ladder would push a binary at a host that never answered.
   **Implementation status:** shipped for the classification and the route: a
   `launch-check` whose shell reports a missing command is classified
-  `errExecutableMissing` (`sshconn/preflight.go:326-355`), and with a deploy path
+  `errExecutableMissing` (`sshconn/preflight.go`), and with a deploy path
   configured `preflight` defers it into deploy/install, while an unreachable
   host, an auth refusal, an unparseable answer, or a protocol/launch-contract
-  refusal never runs the installer (`sshconn/preflight.go:271-300`). The
+  refusal never runs the installer (`sshconn/preflight.go`'s deploy deferral). The
   dedicated `test -x` probe and its ssh-diagnostic separation remain round 19.
 - **Roots (probed).** Preflight resolves the host's config root and state root
   from the probed environment with the same chain the host binary uses
@@ -714,7 +714,7 @@ Run over non-interactive SSH (no login shell, no TTY):
   both; a restart the manager cannot match to the configured address is refused
   (§5) rather than guessed.
   **Implementation status:** shipped — `Manager.hostAddr`
-  (`sshconn/version.go:63-80`) resolves the per-host `addr` for the restart,
+  (`sshconn/version.go`'s `hostAddr`) resolves the per-host `addr` for the restart,
   port probe, and health probe, and `checkHostAddr` refuses a non-loopback or
   malformed address — and a `config_path` with no address — before any ssh
   command runs; the paired `config_path`/`addr` validation remains a
@@ -940,8 +940,8 @@ Two paths, chosen per host (open question: which wins when both are viable):
     only through the atomic push path (§"Push target resolution",
     `Options.BuildBinary`) at an `evener`-named target.
     **Implementation status:** shipped — `installableEvenerBasename`
-    (`sshconn/version.go:1452`) accepts only `evener`, and `checkRunTarget`
-    (`sshconn/deploy.go:425`) refuses any other run-target basename terminally
+    (`sshconn/version.go`) accepts only `evener`, and `checkRunTarget`
+    (`sshconn/deploy.go`) refuses any other run-target basename terminally
     (`ErrRunTargetUnservable`) before any probe, push, or install.
   - When `evener_path` is empty, the installer targets the host's resolved
     `run_path` (`BINDIR=dirname(run_path)`, the same value the push path
@@ -1590,10 +1590,10 @@ with the remote hub and its daemons still running.
   *running* hub is stale while the on-disk binary is right: restart once and
   re-attach. Only a mismatch that survives the restart becomes terminal
   `ErrProtocolIncompatible`. (Implementation status: shipped. `probeLaunchCheck`
-  classifies a protocol refusal (`sshconn/preflight.go:310-320`); with a deploy
+  classifies a protocol refusal (`sshconn/preflight.go`); with a deploy
   path configured, `preflight` lets the ladder deploy, re-probe, restart, and
   refuse terminally only when the protocol still mismatches
-  (`sshconn/preflight.go:271-287`; `sshconn/manager.go`, after the restart).)
+  (`sshconn/preflight.go`'s deploy deferral; `sshconn/manager.go`, after the restart).)
 - **Missing `api-log` launch flag** (`spawn.go`) → `ErrLaunchContract`. A
   too-old host binary cannot be launched, and the version-match deploy is
   exactly its fix, so this is an auto-match trigger first (deploy, restart,
@@ -1942,7 +1942,7 @@ from the component-03 registry.
 - **Per-host config path and address (corrected contract, coupled fields).**
   `hostreg.Host` carries `ConfigPath` and `Addr` (`hostreg/hostreg.go`), and
   `channelArgv` passes whichever is present. `Manager.hostAddr`
-  (`sshconn/version.go:63-80`, shipped on `main`) reads the per-host `addr` on
+  (`sshconn/version.go`, shipped on `main`) reads the per-host `addr` on
   the restart/health path, falling back to `Options.HubAddr` and then the
   default. The contract (component 03, §"`config_path` / `addr`") is that
   the two fields are set together; the remaining implementation choice is how an
