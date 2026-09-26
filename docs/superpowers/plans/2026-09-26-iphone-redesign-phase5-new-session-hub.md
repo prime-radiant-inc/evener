@@ -25,7 +25,7 @@ CocoaPods runs through Bundler 2.7.2 on Ruby 3.3.6.
 **Spec:** `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`. This phase uses:
 - principle 2 (Calm), the vocabulary (5), and structure and sheets (6);
 - New session (11), the Hub (12), states (14) and first run (15);
-- the visual system (16), data sources (17), and server additions S8 and S11 (18).
+- the visual system (16), data sources (17), and server additions S8, S11, S17 and S18 (18).
 
 Other sources:
 - The roadmap: `docs/superpowers/plans/2026-09-25-iphone-redesign-roadmap.md`.
@@ -107,7 +107,7 @@ Other sources:
 
 ## Built on earlier phases
 
-The roadmap starts this phase once phase 4's PRs are on main. Phases 2 to 4 are planned in parallel with this plan, so a few names below are what those plans are expected to produce. Before a task that uses one, read the landed code. If a module isn't there, build the fallback in the right-hand column in that task's PR.
+The roadmap starts this phase once phase 4's PRs are on main. Phases 2 to 4 are planned in parallel with this plan, so a few names below are what those plans are expected to produce; phase 3's rows name what its plan (`2026-09-26-iphone-redesign-phase3-session.md`, on main) says it builds. Before a task that uses one, read the landed code. If a module isn't there, build the fallback in the right-hand column in that task's PR.
 
 | This plan needs | From | Used by | If it isn't on main |
 |---|---|---|---|
@@ -115,14 +115,14 @@ The roadmap starts this phase once phase 4's PRs are on main. Phases 2 to 4 are 
 | The Board's hub button and New session button (`src/board/BoardScreen.tsx`, `BoardToolbar.tsx`) | phase 2, Task 7 | Tasks 3 and 20 | Stop: phase 2 must land first. |
 | The notices' actions (`src/board/notices.ts`, `src/board/Notices.tsx`) | phase 2, Task 14 | Tasks 11, 13 and 15 | Skip that task's rewire step and say so in the PR. |
 | `expo-symbols` | phase 2, Task 4 | every screen | Stop: phase 2 must land first. |
-| The detail levels' names and descriptions (spec 8.2's table) | phase 3, the ⋯ menu's Detail level picker | Task 7 | Create `src/detailLevels.ts` holding spec 8.2's table, and use it there. |
-| The model list (recent first, then grouped by provider) and effort labels ("Med", "XHigh") | phase 3, the composer's model sheet (spec 8.5) | Tasks 16 and 21 | Use `effortLabel` from Task 16 and build the list in `src/newSession/ModelList.tsx` (Task 21). |
+| `DETAIL_LEVELS` in `src/session/detailLevels.ts`: spec 8.2's table as `{ level, label, description }[]` | phase 3, Task 12 | Task 7 | Create that module with spec 8.2's table in that shape, and use it there. |
+| The model list (recent first, then grouped by provider) | phase 3, Task 21's model sheet (`src/session/ModelSheet.tsx`, spec 8.5) | Task 21 | Build the list in `src/newSession/ModelList.tsx` (Task 21). |
 | `expo-web-browser` (SFSafariViewController) | phase 3, Notes & links (spec 8.8) | Task 14 | `npx expo install expo-web-browser`, then regenerate the pod lock. |
 | The session's ⋯ menu | phase 3 (spec 8.7) | Task 25 | Add the item where the session screen builds its menu today. |
 
 ## Rulings
 
-Decisions this plan makes where the spec is silent, or where the data it wants doesn't exist yet. The roadmap edit that goes with ruling 11 is in this plan's PR.
+Decisions this plan makes where the spec is silent, or where the data it wants doesn't exist yet. The roadmap edits that go with rulings 11 and 26, and ruling 26's rows in spec 18, are in this plan's PR.
 
 1. **The sheets are modal with a nested stack.**
    - `presentation: "modal"` is the native-stack presentation documented to host a nested stack (`@react-navigation/native-stack`'s types: "this also allows for a nested stack to be rendered inside the screen"). `formSheet`'s detents make no such promise.
@@ -153,7 +153,7 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
    - "Expires in 3d" waits for the sign-in expiry the hub doesn't expose (S11b, the server plan's PR 23). Jesse's answer on S11 notes that no refresh-token lifetime exists anywhere, so the hub may never report one. Until it does, a signed-in provider shows no expiry.
    - #2483 (on main) sets `needsLogin` only when the access token has expired and no refresh token can renew it. A rejected refresh isn't recorded until #2479, and until then the phone can't say so.
 7. **Plugins show no update badge.** `PluginEntry` carries no available version (`appwire/types.go`). Upgrade stays in a plugin's detail. Its result says "Already up to date" when version and commit didn't change, or "Upgraded to <version>".
-8. **"Show model on Board rows" waits.** Navigation summaries carry no model, and no server addition adds one (phase 2, ruling 6). A toggle that changes nothing breaks principle 2, so Display leaves it out (Question 5).
+8. **"Show model on Board rows" waits for S17.** Navigation summaries carry no model (phase 2, ruling 6). S17 is the server item that will add the model's display name to them (ruling 26). Until it lands, the toggle would change nothing, which breaks principle 2, so Display leaves it out.
 9. **Details open where their state lives.**
    - A plugin's and a provider's details open as sheets over their list, as today. Their mutation gates, fences and sign-in flows live with the list (`PluginsScreen.tsx` around line 90, `ProvidersScreen.tsx` around line 105), and splitting them across pages would put that machinery at risk.
    - A host's detail pushes as a page, because the hosts controller is shared through the Hub sheet's context.
@@ -163,7 +163,7 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
     - Display opens `TranscriptPreferences`;
     - Hubs opens the root `Hubs`;
     - "Hub settings" opens `HubSettings` (keyboard shortcuts, launch defaults and the upgrade live there today).
-11. **In-app alerts ship with phase 6.** The Alerts page's five toggles control banners, holds and haptics that phase 6 builds, and a toggle that controls nothing breaks principle 2. This PR moves "alerts" from the roadmap's phase 5 row to phase 6's (Question 1).
+11. **In-app alerts ship with phase 6.** The Alerts page's five toggles control banners, holds and haptics that phase 6 builds, and a toggle that controls nothing breaks principle 2. The coordinator ruled this way on 2026-09-26. This PR moves the Alerts page from the roadmap's phase 5 row to phase 6's.
 12. **Desktop-only settings leave the phone** (spec 12's footer, spec 3's non-goals):
     - keyboard shortcuts;
     - launch defaults and project launch settings (raw launch configuration);
@@ -177,7 +177,7 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
     - `sandboxNet` shows as "Network" only when a sandbox mode is set, since it has no effect otherwise (`sandbox_net`, `cmd/evener-hub/internal/launchconfig/schema.go`).
     - More options writes `contextStrategy`, `maxSubagentDepth` and `maxRounds`. The last is labelled "Max turns", spec 11's word; the schema calls it "Max rounds".
     - Each row names the hub's default for the chosen host and project, from `evener/launch/resolve`'s `effective` with the sheet's own overrides left out.
-15. **Branch shows the current branch.** `evener/git/head` gives the project's branch. The hub has no way to start a session in a new worktree (`ThreadStartParams` has no such field), so the Branch row is information only, and recipes carry no branch (Question 5).
+15. **Branch shows the current branch until S18.** `evener/git/head` gives the project's branch. Today the hub has no way to start a session in a new worktree (`ThreadStartParams` has no such field), and S18 is the server item for it (ruling 26). Until it lands, the Branch row is information only, and recipes carry no branch.
 16. **Recipes and "Same as last time" live on the phone** (S8's fallback), per hub.
     - Every successful Start records its setup.
     - "Same as last time" is the last setup started for the chosen host and project. With none, it is the newest setup on this hub, moved to that project. With nothing ever started here, the chip is hidden and the sheet starts from the hub's defaults.
@@ -210,10 +210,16 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
     - "Sign in" opens Providers with that provider's sign-in.
 
     Each call is `navigation.navigate("Hub", { screen, params, initial: false })`. That keeps the Hub's home under the page, so Back works inside the sheet.
+26. **Two server items join the lane.** Two spec items need hub work that no server item covered. The coordinator ruled on 2026-09-26 that both join the server lane. Phase 3's plan took S15 and S16, so these are:
+    - S17: the model's display name on navigation summaries, for "Show model on Board rows" (ruling 8);
+    - S18: starting a session in a new worktree branch, for spec 11's Branch (ruling 15).
+
+    This PR adds both to spec 18's table and to the roadmap's phase 7 row. This phase ships on their fallbacks: no model toggle in Display, and a Branch row that only shows the current branch. The phone switches when each lands, as the roadmap's phase 7 does for every item.
 
 ## Questions for Jesse
 
-1. **In-app alerts:** move the Alerts page to phase 6, so its toggles arrive with the banners, holds and haptics they control? I recommend yes: in phase 5 they would control nothing, which breaks principle 2. This plan assumes yes and edits the roadmap's phase 5 and 6 rows.
+The coordinator settled question 1 (the Alerts page moves to phase 6: ruling 11) and question 5 (S17 and S18 join the server lane: ruling 26) on 2026-09-26. The three below stay open. Each keeps its number and says what this plan builds until you answer.
+
 2. **Desktop administration leaves the phone:** delete these screens in this phase's last PR (Task 28)?
    - the keyboard-shortcut editor;
    - launch defaults and project launch settings;
@@ -222,12 +228,7 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
 
    I recommend yes: spec 12 and the prototype send them to the web, which has all of them. Until you answer, the Hub keeps "Keyboard shortcuts" and "Launch defaults" in a temporary MORE group.
 3. **Hub updates:** replace the phone's install-only upgrade with `evener/update/apply`, which installs and restarts the hub as the web does? Today the phone calls `evener/upgrade`, then shows a restart message nobody on a phone can act on. I recommend yes. This plan assumes yes: Task 4 builds the new controller, and Task 5 deletes `hubUpgrade.ts`, `hubUpgradeRepository.ts`, `hubUpgradeValidation.ts`, `nativeHubUpgrade.ts` and `HubUpgradeSection.tsx`.
-4. **Drafts saved before this phase have no host:** may the saved draft's new `source` field be optional, with absent meaning the hub's own machine, so those drafts still load? This is backward compatibility for stored data, which needs your approval. I recommend yes. The alternative is failing to load them, with the "saved creation draft could not be loaded" error.
-5. **Two spec items need hub work no server item covers:**
-   - the model's display name on navigation summaries, for "Show model on Board rows";
-   - starting a session in a new worktree branch, for spec 11's Branch.
-
-   Add them to the server lane as S15 and S16? I recommend yes for both. Until then, Display has no model toggle and Branch only shows the current branch.
+4. **Drafts saved before this phase have no host:** may the saved draft's new `source` field be optional, with absent meaning the hub's own machine, so those drafts still load? This is backward compatibility for stored data, which needs your approval. I recommend yes. The alternative is failing to load them, with the "saved creation draft could not be loaded" error. This plan assumes yes (Task 19), so PR 8 waits for your answer before it starts.
 
 ## Review Focus
 
@@ -252,7 +253,7 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
 | PR | Tasks | Model | Starts when | Lane |
 |---|---|---|---|---|
 | 1: the Hub sheet | 1-3 | Sonnet for 1-2, Opus (medium) for 3 | phase 4's PRs are on main | A |
-| 8: the New session's rules and reads | 16-19 | Sonnet | phase 4's PRs are on main | B |
+| 8: the New session's rules and reads | 16-19 | Sonnet | phase 4's PRs are on main, and Jesse has answered Question 4 | B |
 | 12: the demo hub serves New session and the Hub | 26 | Sonnet | phase 4's PRs are on main (it builds on #2471, already there) | C |
 | 2: About and hub updates | 4-5 | Sonnet for 4, Opus for 5 | PR 1 lands | A |
 | 3: Display | 6-7 | Sonnet for 6, Opus for 7 | PR 1 lands | A2 |
@@ -2033,7 +2034,7 @@ Also stage any other component the grep converted.
 - Create:
   - `mobile-native/src/hub/DisplayPage.tsx`;
   - `mobile-native/src/hub/DetailLevelPage.tsx`;
-  - `mobile-native/src/detailLevels.ts`, only if phase 3 left no module holding spec 8.2's table ("Built on earlier phases").
+  - `mobile-native/src/session/detailLevels.ts`, only if phase 3's Task 12 didn't land it ("Built on earlier phases").
 - Modify:
   - `mobile-native/src/hub/HubSheet.tsx`: routes `Display: { hubId }` and `DetailLevel: { hubId }`.
   - `mobile-native/src/hub/HubHome.tsx`: Display pushes, with a value.
@@ -2049,19 +2050,19 @@ Also stage any other component the grep converted.
   - Task 6's `useDisplayPreferences` and `useDisplayChoices`;
   - `useNativePreferences()` (`src/NativePreferencesProvider.tsx`): `model` with `editTranscript(config)`, `saveTranscript()`, `refresh()`, `discardTranscriptDraft()` and `rebaseTranscriptDraft(revision)`; `snapshot.transcriptMobile`; `connected`;
   - `CONTENT_LEVELS`, `presetContent` and `HOOK_EXIT_DETAILS` from `@evener/appwire-client`;
-  - the detail-level table: `{ level, name, shows }[]` in spec 8.2's order.
+  - `DETAIL_LEVELS` from `src/session/detailLevels.ts` (phase 3's Task 12): `{ level, label, description }[]` in spec 8.2's order.
 
 **Requirements (spec 12's Display, spec 8.2):**
 1. **Display page** (title "Display"):
    - "APPEARANCE": `Segmented` System, Light, Dark.
    - "READING FONT": `Segmented` Serif, Sans, with the footer "For what agents write: messages, plans and documents.".
-   - "DEFAULT DETAIL LEVEL": one row, "Default detail level". Its value is the hub's saved level by its spec 8.2 name, or "Custom". It pushes `DetailLevel`.
+   - "DEFAULT DETAIL LEVEL": one row, "Default detail level". Its value is the hub's saved level by its `DETAIL_LEVELS` label, or "Custom". It pushes `DetailLevel`.
      - Footer: "Each session can override this from its menu."
      - A hub that doesn't offer the setting (`support === "unsupported"`) shows only the footer "This hub doesn't keep a default detail level."
    - A choice that fails to store says "This choice applies now but couldn't be saved on this phone." as a danger footer under its group.
    - No "Show model on Board rows" toggle (ruling 8).
 2. **Default detail level page** (title "Default detail level"):
-   - One checked row per level: its name, with spec 8.2's description as the second line.
+   - One checked row per `DETAIL_LEVELS` entry: its `label`, with its `description` as the second line.
    - Then "Custom", with the second line "Choose what the transcript shows".
    - Choosing a row edits the config and saves at once (`editTranscript` then `saveTranscript`). There is no Save button and no draft bar.
    - While saving, the rows are disabled.
@@ -3424,7 +3425,7 @@ describe("changing host (ruling 17)", () => {
 });
 
 describe("labels", () => {
-	it("spells efforts the composer's way", () => {
+	it("spells efforts as spec 11's Effort control does", () => {
 		expect(["low", "medium", "high", "xhigh", "max", "minimal", "none", "turbo"].map(effortLabel)).toEqual([
 			"Low",
 			"Med",
@@ -3680,8 +3681,11 @@ const EFFORT_LABELS: Record<string, string> = {
 	max: "Max",
 };
 
-/** An effort level's label, as the composer's model chip spells it ("GLM 5.3
- * Vision · XHigh", spec 8.5). A level this build doesn't know shows as sent. */
+/** An effort level's label on New session's Effort control, spelled as spec
+ * 11's frame spells them: Low, Med, High, XHigh, Max. Phase 3's effortName
+ * (src/session/sessionFacts.ts) spells them in full for the composer's chip;
+ * a segment needs the short form. A level this build doesn't know shows as
+ * sent. */
 export function effortLabel(level: string): string {
 	return EFFORT_LABELS[level] ?? level;
 }
@@ -5508,7 +5512,7 @@ Save them under `docs/design/mobile/assets/2026-09-2x-redesign-phase5-*.png`, na
   - Effort, with only the model's levels: Task 20;
   - Plugins, with the grouped checklist, All and None, counts, warnings and the blocking problem: Tasks 22 and 20;
   - Access and network: Task 22 (ruling 14);
-  - Branch: Task 22 (ruling 15; Question 5);
+  - Branch: Task 22 (rulings 15 and 26);
   - More options: Task 22;
   - Start, replacing the sheet: Task 20. Rejections: Task 20 (ruling 20);
   - "New session like this": Task 25 (ruling 24).
@@ -5520,7 +5524,7 @@ Save them under `docs/design/mobile/assets/2026-09-2x-redesign-phase5-*.png`, na
   - Plugins: Task 15 (ruling 7);
   - Recipes: Task 24;
   - Display: Tasks 6 and 7 (ruling 8);
-  - In-app alerts: phase 6 (ruling 11; Question 1);
+  - In-app alerts: phase 6 (ruling 11);
   - Hubs: Tasks 8 and 9;
   - About: Task 5 (ruling 22; Question 3);
   - "More settings are in the web app": Task 28 (ruling 12; Question 2).
