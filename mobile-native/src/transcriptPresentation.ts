@@ -166,6 +166,7 @@ function memberItem(
 		...(member.summaryOnly ? { summaryOnly: member.summaryOnly } : {}),
 		...(member.transcriptKey ? { transcriptKey: member.transcriptKey } : {}),
 		...(member.position ? { position: member.position } : {}),
+		...(member.turnId ? { turnId: member.turnId } : {}),
 	};
 }
 

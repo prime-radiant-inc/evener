@@ -103,6 +103,11 @@ export interface ActivityDetail {
 	exitCode?: number;
 	durationMs?: number;
 	callId?: string;
+	// The item's startedAt/completedAt parsed to epoch milliseconds, the same
+	// way durationMs is: absent when either timestamp is missing or fails to
+	// parse.
+	startedAtMs?: number;
+	endedAtMs?: number;
 }
 
 export interface ActivityMember {
@@ -117,6 +122,7 @@ export interface ActivityMember {
 	summaryOnly?: boolean;
 	transcriptKey?: string;
 	position?: { entry: number; item: number };
+	turnId?: string;
 }
 
 // Tone of a steering/lifecycle notice row. "info" for ordinary steering/system
@@ -138,7 +144,10 @@ export type NoticeFamily =
 // The mobile timeline item union. A pure projection of one thread's turns
 // into the families the phone timeline renders. Discriminated by `kind`.
 export type MobileTimelineItem = (
-	| { kind: "user"; id: string; text: string; transcriptEntryIndex?: number }
+	// origin is set only when this row projects a user-sourced steering item
+	// (the message was steered into the transcript mid-turn); a userMessage
+	// row never carries it.
+	| { kind: "user"; id: string; text: string; transcriptEntryIndex?: number; origin?: "steered" }
 	| { kind: "assistant"; id: string; markdown: string; streaming: boolean }
 	| {
 			kind: "activity";
@@ -180,6 +189,10 @@ export type MobileTimelineItem = (
 	transcriptKey?: string;
 	sourceTranscriptKey?: string;
 	position?: { entry: number; item: number };
+	// The turn this row's item belongs to (ItemModel.turnId), or the failing
+	// turn's id on a turn-error failure row (failureItem). Absent when the
+	// source carried none.
+	turnId?: string;
 };
 
 // --- the entry mapping --------------------------------------------------------
@@ -285,6 +298,7 @@ function rowForItem(it: ItemModel, context: ProjectedRowContext): MobileTimeline
 			...(it.type === "userMessage" && it.transcriptEntryIndex !== undefined
 				? { transcriptEntryIndex: it.transcriptEntryIndex }
 				: {}),
+			...(it.type === "steering" ? { origin: "steered" as const } : {}),
 			...identity,
 		};
 	}
@@ -400,10 +414,12 @@ function isAskUser(it: ItemModel): boolean {
 function itemIdentity(it: ItemModel): {
 	transcriptKey?: string;
 	position?: ItemModel["position"];
+	turnId?: string;
 } {
 	return {
 		...(it.transcriptKey ? { transcriptKey: it.transcriptKey } : {}),
 		...(it.position ? { position: it.position } : {}),
+		...(it.turnId ? { turnId: it.turnId } : {}),
 	};
 }
 
@@ -441,25 +457,31 @@ function activityDescription(it: ItemModel): string | undefined {
 		.join("; ")}`;
 }
 
-// The canonical duration behavior (D24-3's deferred delta): a duration whose
-// timestamps do not parse is dropped (undefined) instead of NaN.
-function itemDurationMs(it: ItemModel): number | undefined {
-	if (it.startedAt === undefined || it.completedAt === undefined) return undefined;
+// The item's started/completed timestamps as epoch milliseconds. The
+// canonical duration behavior (D24-3's deferred delta): absent (both, not
+// just one) when either timestamp is missing or fails to parse, instead of
+// producing NaN — so durationMs, startedAtMs and endedAtMs never disagree
+// about whether this item's timing is known.
+function parsedItemTimes(it: ItemModel): { start?: number; end?: number } {
+	if (it.startedAt === undefined || it.completedAt === undefined) return {};
 	const start = Date.parse(it.startedAt);
 	const end = Date.parse(it.completedAt);
-	if (Number.isNaN(start) || Number.isNaN(end)) return undefined;
-	return end - start;
+	if (Number.isNaN(start) || Number.isNaN(end)) return {};
+	return { start, end };
 }
 
 function activityDetail(it: ItemModel): ActivityDetail {
+	const { start, end } = parsedItemTimes(it);
 	return {
 		description: activityDescription(it),
 		arguments: it.argumentsJSON,
 		output: it.output,
 		error: it.error,
 		exitCode: it.exitCode,
-		durationMs: itemDurationMs(it),
+		durationMs: start !== undefined && end !== undefined ? end - start : undefined,
 		callId: it.callId,
+		startedAtMs: start,
+		endedAtMs: end,
 	};
 }
 
@@ -680,6 +702,7 @@ function clusterActivityRun(
 		...(item.summaryOnly ? { summaryOnly: item.summaryOnly } : {}),
 		...(item.transcriptKey ? { transcriptKey: item.transcriptKey } : {}),
 		...(item.position ? { position: item.position } : {}),
+		...(item.turnId ? { turnId: item.turnId } : {}),
 	}));
 	return { ...first, state, members };
 }
@@ -869,12 +892,13 @@ function attachmentsRow(
 	source: MobileTimelineItem,
 	attachments: AttachmentRef[],
 	fallbackToId = false,
-): { id: string; items: AttachmentRef[]; sourceTranscriptKey?: string } {
+): { id: string; items: AttachmentRef[]; sourceTranscriptKey?: string; turnId?: string } {
 	const key = source.transcriptKey ?? (fallbackToId ? source.id : undefined);
 	return {
 		id: `${source.id}:attachments`,
 		items: attachments,
 		...(key === undefined ? {} : { sourceTranscriptKey: key }),
+		...(source.turnId ? { turnId: source.turnId } : {}),
 	};
 }
 
@@ -905,7 +929,12 @@ export function projectTimeline(
 	// rebuild the timeline in original order.
 	const items: MobileTimelineItem[] = [];
 	let activityRun: PreActivity[] = [];
-	let activityAttachments: Array<{ id: string; items: AttachmentRef[]; sourceTranscriptKey?: string }> = [];
+	let activityAttachments: Array<{
+		id: string;
+		items: AttachmentRef[];
+		sourceTranscriptKey?: string;
+		turnId?: string;
+	}> = [];
 
 	const flushActivityRun = () => {
 		if (activityRun.length === 0) return;
@@ -979,6 +1008,7 @@ function failureItem(
 		id: failureRowIdentity(turnID),
 		title,
 		detail: parts.join("\n"),
+		...(turnID ? { turnId: turnID } : {}),
 	};
 }
 
