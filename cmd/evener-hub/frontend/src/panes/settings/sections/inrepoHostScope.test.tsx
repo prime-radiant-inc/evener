@@ -43,7 +43,7 @@ beforeAll(() => {
 });
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return { origin: "sidecar", attached: false, midAttach: false, removed: false, ...overrides };
+  return { origin: "hub.toml", attached: false, midAttach: false, removed: false, ...overrides };
 }
 
 function connectFakeClient(): FakeClient {

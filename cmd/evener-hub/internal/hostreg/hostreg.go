@@ -1,5 +1,5 @@
 // Package hostreg holds the controller hub's in-memory registry of remote
-// hosts: the validated [[hosts]] entries from hub.toml plus the add-time cycle
+// hosts: the validated [[hosts]] entries from the machine-managed hub.toml plus the add-time cycle
 // check that keeps the host graph acyclic.
 //
 // It is the data layer only. It opens no connections, spawns no SSH, and
@@ -58,11 +58,10 @@ type Host struct {
 	ConfigPath string
 	Addr       string
 	Roots      []string
-	// KeyPath is the SSH private-key file the controller dials with. A
-	// [[hosts]] entry never sets it (hub.toml's schema has no key field, so a
-	// file-declared host resolves its identity the way the operator's ssh_config
-	// does); a UI-added sidecar host carries its key here so the one live dial
-	// path — the registry entry this package stores — sees it.
+	// KeyPath is the SSH private-key file the controller dials with. The
+	// machine-managed hub.toml stores it as key_path (registry spec 08 §6), so
+	// a UI-added host round-trips its key through a rewrite; a host that never
+	// set one resolves its identity the way the operator's ssh_config does.
 	KeyPath string
 	// Generation is the registry-wide insert generation: a counter the
 	// registry advances on every insert and never reuses, so a name's

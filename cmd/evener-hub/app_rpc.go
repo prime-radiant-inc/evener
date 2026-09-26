@@ -1111,8 +1111,8 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// tick.
 	// The manager, the live host registry, and the selected hub.toml path all
 	// come from cfg — main.go threads the real sshconn.Manager, the one
-	// registry shared with the attach handler, and the config path whose
-	// sidecar persists UI-added hosts, so the surface is wired, not a
+	// registry shared with the attach handler, and the config path the
+	// surface rewrites in place, so the surface is wired, not a
 	// placeholder. It returns the manager so newWebServer can expose it
 	// (main.go binds its event recorder to the SSH manager's lifecycle).
 	hostManage := registerHostManageHandlers(server, sources, cfg, cfg.RemoteHostRegistry, navigation, hubLogf)

@@ -25,7 +25,7 @@ function connectFakeClient(): FakeClient {
 const DOC: AgentsDocResponse = { path: "/home/u/.config/evener/AGENTS.md", exists: true, content: "# hi\n" };
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return { origin: "sidecar", attached: false, midAttach: false, removed: false, ...overrides };
+  return { origin: "hub.toml", attached: false, midAttach: false, removed: false, ...overrides };
 }
 
 beforeEach(() => {

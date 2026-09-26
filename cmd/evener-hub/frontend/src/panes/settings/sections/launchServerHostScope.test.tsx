@@ -18,7 +18,7 @@ import { LAUNCH_CONFIG_REFRESH_DEBOUNCE_MS } from "./useConnectedEffect";
 // controller's launch config.
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return { origin: "sidecar", attached: false, midAttach: false, removed: false, ...overrides };
+  return { origin: "hub.toml", attached: false, midAttach: false, removed: false, ...overrides };
 }
 
 function schema(description: string): LaunchOptionSchemaResponse {

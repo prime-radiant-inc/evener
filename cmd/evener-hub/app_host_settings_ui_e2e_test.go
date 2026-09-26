@@ -417,8 +417,8 @@ func TestHostSettingsUIDisposableHostE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step evener/host/add (ssh destination %q, config %q, addr %q): %v", dest, configPath, hostSettingsUIAddr, err)
 	}
-	if row.Origin != "sidecar" {
-		t.Fatalf("step evener/host/add: added row origin = %q, want %q (a host added through the wire is a sidecar entry)", row.Origin, "sidecar")
+	if row.Origin != "hub.toml" {
+		t.Fatalf("step evener/host/add: added row origin = %q, want %q (every host lives in the machine-managed hub.toml)", row.Origin, "hub.toml")
 	}
 	attached := awaitHostAttachedWithin(ctx, t, client, hostSettingsUIName, hostSettingsUIAttachTimeout)
 	t.Logf("attached disposable host %s: os=%s arch=%s hubVersion=%s", hostSettingsUIName, attached.OS, attached.Arch, attached.HubVersion)

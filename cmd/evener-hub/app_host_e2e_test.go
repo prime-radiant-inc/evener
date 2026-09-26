@@ -15,7 +15,7 @@ import (
 )
 
 // hostE2EName is the registry name the live check adds the environment's host
-// under. A fixed name keeps the failure output and the sidecar a test run leaves
+// under. A fixed name keeps the failure output and the files a test run leaves
 // in its throwaway config dir readable.
 const hostE2EName = "e2e"
 
@@ -109,8 +109,8 @@ func TestHostAddAttachForwardedDiscoveryE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step evener/host/add (ssh destination %q): %v", dest, err)
 	}
-	if row.Origin != "sidecar" {
-		t.Fatalf("step evener/host/add: added row origin = %q, want %q (a host added through the wire is a sidecar entry)", row.Origin, "sidecar")
+	if row.Origin != "hub.toml" {
+		t.Fatalf("step evener/host/add: added row origin = %q, want %q (every host lives in the machine-managed hub.toml)", row.Origin, "hub.toml")
 	}
 
 	// Before the attach there is no remote channel. The proxy must refuse the
