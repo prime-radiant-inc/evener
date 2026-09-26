@@ -1028,16 +1028,22 @@ In the `EventSessionStart` switch:
 			status = appwire.ThreadStatusSystemError
 ```
 
-In the `EventSessionEnd` switch:
+In the `EventSessionEnd` switch, name every value `WireState` can publish, so only a real close falls through to `closed`:
 
 ```go
 		case appwire.ThreadStatusSystemError:
 			// Open and resting on a failed turn (agent RestingWireState): the
 			// session takes the next message, so this is no close.
 			state = appwire.ThreadStatusSystemError
+		case appwire.ThreadStatusActive:
+			// A failed turn whose queued message is about to run (WireState's
+			// work-pending override): open and working, so no close.
+			state = appwire.ThreadStatusActive
+		case appwire.ThreadStatusIdle, appwire.ThreadStatusAwaiting:
+			state = sessionEnd.State
 ```
 
-The switch must name every value `WireState` can publish, not just `systemError`. A turn that fails while a message waits in the queue ends with `State: "active"`: the failure path returns before the drain ladder (`agent/session_lifecycle.go` about `:1440-1443`), and `endInputAtTurnFailure` (about `:1700-1716`) publishes the effective state, which is `active` while that queued turn is about to run. Mapping it to `closed` would announce a closed session. Only a real close (`""` or `closed`) projects `thread/closed`. Add a projector test for a failed-turn end with pending work (`State: "active"`) that asserts no `thread/closed`, and the matching `cmd/evener-tui` case.
+Read the switch's current cases first. Keep any value it already maps, and use the real constant names from `appwire/types.go`. A turn that fails while a message waits in the queue ends with `State: "active"`: the failure path returns before the drain ladder (`agent/session_lifecycle.go` about `:1440-1443`), and `endInputAtTurnFailure` (about `:1700-1716`) publishes the effective state, which is `active` while that queued turn is about to run. Mapping it to `closed` would announce a closed session. Only a real close (`""` or `closed`) projects `thread/closed`. Add a projector test for a failed-turn end with pending work (`State: "active"`) that asserts no `thread/closed`, and the matching `cmd/evener-tui` case.
 
 `server/bridge.go` needs nothing: `sessionEventClosesSession` treats only `""` and `closed` as closing (`:177-183`), and `sessionEventStatusEffect` stores the state it is given (`:199-231`).
 
@@ -1186,9 +1192,17 @@ func TestWireState_InterruptIsNotAFailedTurn(t *testing.T) {
 		_, err := sess.ProcessInput(turnCtx, "hello", nil)
 		done <- err
 	}()
-	<-blocked
+	select {
+	case <-blocked:
+	case <-outer.Done():
+		t.Fatal("the turn never reached the scripted block")
+	}
 	stop()
-	<-done
+	select {
+	case <-done:
+	case <-outer.Done():
+		t.Fatal("the interrupted turn never returned")
+	}
 	if got := sess.WireState(); got != string(SessionIdle) {
 		t.Fatalf("WireState after Stop = %q, want idle: an interrupt is not a failed turn", got)
 	}
@@ -1255,7 +1269,9 @@ func TestRestore_FailedTurnResumesFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
-	eventsPtr, mu, doneCh := collectEvents(restored)
+	// The SessionStart that restore emits can't be observed from here: it is
+	// published inside RestoreSessionFromMeta, before a collector could attach.
+	// serve_failed_turn_test.go asserts the first published state instead.
 	if got := restored.State(); got != SessionIdle {
 		t.Fatalf("restored State = %q, want idle", got)
 	}
@@ -1263,18 +1279,6 @@ func TestRestore_FailedTurnResumesFailed(t *testing.T) {
 		t.Fatalf("restored WireState = %q, want %q", got, appwire.ThreadStatusSystemError)
 	}
 	restored.Close()
-	<-doneCh
-	mu.Lock()
-	defer mu.Unlock()
-	for _, ev := range *eventsPtr {
-		if d, ok := ev.Data.(events.SessionStartData); ok && ev.Kind == events.EventSessionStart {
-			if d.State != appwire.ThreadStatusSystemError {
-				t.Fatalf("restored SessionStart State = %q, want %q", d.State, appwire.ThreadStatusSystemError)
-			}
-			return
-		}
-	}
-	t.Fatal("restored session emitted no SessionStart")
 }
 ```
 
@@ -1468,7 +1472,7 @@ func historyEndsInTurnFailure(history []schema.Turn) bool {
 }
 ```
 
-In `agent/session_init.go`, the restored `SessionStart` carries the effective wire state: `State: s.WireState(),` in place of `State: string(restoredState),` (`:1580`). The restore path takes and releases `s.mu` (about `:1568-1571`) before `emitSessionStartEnvelope` runs (about `:1573-1580`), so the locking `WireState` is the right read there. A lock-free read would race, and holding the lock across the emit won't work because the emit takes session locks itself. The test must observe the `SessionStart` emitted during restore: subscribe before restoring if the API allows it, otherwise verify it through the daemon-level startup test. `recomputeRestoredState` may later upgrade idle to awaiting; `RestingWireState` gives `systemError` for both when the history ends in a failure, so the published value cannot go stale.
+In `agent/session_init.go`, the restored `SessionStart` carries the effective wire state: `State: s.WireState(),` in place of `State: string(restoredState),` (`:1580`). It must be read after restoration is complete, including `recomputeRestoredState`'s pending asks: a failed session with a pending question publishes `awaiting`, never `systemError` first. If the emit can't move after the recompute, emit a corrective status when the recompute changes the effective state. `serve_failed_turn_test.go` covers both restored cases, failed alone (`systemError`) and failed with a pending question (`awaiting`). The restore path takes and releases `s.mu` (about `:1568-1571`) before `emitSessionStartEnvelope` runs (about `:1573-1580`), so the locking `WireState` is the right read there. A lock-free read would race, and holding the lock across the emit won't work because the emit takes session locks itself. The test must observe the `SessionStart` emitted during restore: subscribe before restoring if the API allows it, otherwise verify it through the daemon-level startup test. `recomputeRestoredState` may later upgrade idle to awaiting; `RestingWireState` gives `systemError` for both when the history ends in a failure, so the published value cannot go stale.
 
 In `cmd/evener/serve.go:1672`: `srv.SetState(sess.WireState())` in place of `srv.SetState(string(sess.State()))`. The restored `SessionStart` carries the same `WireState`, so the synchronous startup write and the bridge's event write agree whichever lands last (#251). A restored failed session whose restored queue already holds claimable work publishes `active` in both. Find where the restored work queues become known relative to these writes. If they arrive later, publish the state again when they do, so a restored failed session with claimable work reads `active` once its queue is known, never `systemError` for good. Add a restart test for a restored failed session with pending work that asserts the final published state is `active`.
 
