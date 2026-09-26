@@ -6,9 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/fuzz/fault"
 	"primeradiant.com/evener/llm"
 )
 
@@ -93,6 +95,64 @@ func taskStateEntry(t *testing.T, state []taskToolStateEntry, id int) taskToolSt
 	}
 	t.Fatalf("task state has no task %d: %+v", id, state)
 	return taskToolStateEntry{}
+}
+
+func TestTaskTool_AutoAdvanceSaveFailureReportsCommittedMutation(t *testing.T) {
+	t.Parallel()
+	base := afero.NewMemMapFs()
+	store := taskpkg.NewTaskStore("/state", "task-tool").SetFs(base)
+	if _, err := store.Append([]taskpkg.TaskInput{
+		{Description: "first", Prompt: "finish first"},
+		{Description: "second", Prompt: "start second"},
+	}); err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+
+	// One successful save consumes MkdirAll, OpenFile, Write, and Rename. Fail
+	// the next save at its MkdirAll so the explicit terminal update commits but
+	// its follow-up auto-advance cannot be persisted.
+	plan := make([]byte, 9)
+	for i := range plan {
+		plan[i] = 1
+	}
+	plan[4] = 0
+	store.SetFs(fault.FS(base, fault.FromBytes(plan)))
+
+	h := newTaskToolHarness(t, nil)
+	h.store = store
+	result := h.update(t, map[string]any{"id": 1, "status": "done"})
+	if result.Err != nil || result.IsError || !strings.Contains(result.Output, "post-commit auto-advance failed") {
+		t.Fatalf("auto-advance save failure result = err %v, isError=%v, output=%q; want committed-state warning", result.Err, result.IsError, result.Output)
+	}
+	if !strings.Contains(result.Output, fault.ErrInjected.Error()) {
+		t.Fatalf("auto-advance save failure output = %q, want injected cause", result.Output)
+	}
+	if len(h.steers) != 0 {
+		t.Fatalf("failed auto-advance steered %d times: %q", len(h.steers), h.steers)
+	}
+	if len(h.emitted) != 1 {
+		t.Fatalf("failed auto-advance emitted %d task events, want committed snapshot", len(h.emitted))
+	}
+	if len(result.ToolState) == 0 {
+		t.Fatal("failed auto-advance returned no committed task state")
+	}
+	state := decodeTaskToolState(t, result)
+	if taskStateEntry(t, state, 1).Status != taskpkg.TaskDone || taskStateEntry(t, state, 2).Status != taskpkg.TaskOpen {
+		t.Fatalf("published state after failed auto-advance = %#v", state)
+	}
+	view := store.View()
+	if view[0].Status != taskpkg.TaskDone || view[1].Status != taskpkg.TaskOpen {
+		t.Fatalf("in-memory state after failed auto-advance = %#v", view)
+	}
+
+	reloaded := taskpkg.NewTaskStore("/state", "task-tool").SetFs(base)
+	if err := reloaded.Load(); err != nil {
+		t.Fatalf("reload committed terminal state: %v", err)
+	}
+	view = reloaded.View()
+	if view[0].Status != taskpkg.TaskDone || view[1].Status != taskpkg.TaskOpen {
+		t.Fatalf("durable state after failed auto-advance = %#v", view)
+	}
 }
 
 func TestTaskTool_UpdateNotesOnlyKeepsStatus(t *testing.T) {

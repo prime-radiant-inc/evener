@@ -337,6 +337,9 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 			if err != nil {
 				return nil, err
 			}
+			if err := store.LoadError(); err != nil {
+				return nil, err
+			}
 			if len(adds) == 0 && len(updates) == 0 {
 				// Bare or all-empty call: view. (Empty arrays decode to nil
 				// slices; a mutation with nothing to mutate is the view.)
@@ -454,6 +457,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				msg.WriteString(formatMutationAck(len(adds), updates))
 				msg.WriteString(" ")
 				finalTasks := mutation.After
+				var postCommitErr error
 
 				if completedAny {
 					// Auto-advance unless the agent already picked what to do next.
@@ -461,7 +465,10 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						eligible := store.NextEligible()
 						if len(eligible) > 0 {
 							next := eligible[0]
-							if auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
+							auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}})
+							if err != nil {
+								postCommitErr = fmt.Errorf("post-commit auto-advance failed: %w", err)
+							} else {
 								finalTasks = auto.After
 								started[next.ID] = true
 								if err := deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask); err != nil {
@@ -503,6 +510,10 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				summary := taskpkg.Summarize(finalTasks)
 				taskUpdate := taskUpdatedData(summary, "", epoch, revision)
 				deps.emit(events.EventTaskUpdated, taskUpdate)
+				if postCommitErr != nil {
+					msg.WriteString(postCommitErr.Error())
+					msg.WriteString(" The terminal update was committed; retry auto-advance after fixing persistence. ")
+				}
 				fmt.Fprintf(&msg, "Progress: %s.", summary.ProgressText())
 				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, started, settled)}, nil
 			})

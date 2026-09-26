@@ -221,7 +221,10 @@ func taskFaultLifecycleMatrix(t *testing.T, input TaskInput) {
 		disappearing.tasks = disappearing.tasks[:1]
 		return time.Unix(1_700_000_100, 0).UTC()
 	})
-	if err := disappearing.Update([]TaskUpdate{{ID: 1, Status: TaskDone}, {ID: 2, Status: TaskCancelled}}); err == nil {
+	disappearing.mu.Lock()
+	_, err = disappearing.updateLocked([]TaskUpdate{{ID: 1, Status: TaskDone}, {ID: 2, Status: TaskCancelled}})
+	disappearing.mu.Unlock()
+	if err == nil {
 		t.Fatal("Update accepted a task that disappeared during application")
 	}
 
