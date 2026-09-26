@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
-import { renderHook } from "./renderNative.testkit";
+import { Action, useColors } from "./ui";
+import { render, renderHook } from "./renderNative.testkit";
 
 // vi.mock is hoisted above everything else, so the scheme it reads lives in
 // vi.hoisted state rather than a plain top-level variable.
@@ -10,9 +11,6 @@ vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
 	useColorScheme: () => mode.scheme,
 }));
-
-const { useColors, Action } = await import("./ui");
-const { render } = await import("./renderNative.testkit");
 
 it("maps the existing color keys onto the spec's light palette", () => {
 	mode.scheme = "light";

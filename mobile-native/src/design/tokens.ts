@@ -66,18 +66,19 @@ export function mix(hue: string, base: string, amount: number): string {
 type Core = Omit<Palette, "attentionBg" | "attentionEdge" | "aliveBg" | "aliveEdge" | "dangerBg" | "dangerEdge" | "accentBg" | "accentEdge" | "bubble">;
 
 function withTints(core: Core): Palette {
-	const accentBg = mix(core.accent, core.surface, 0.15);
+	const bg = (hue: string) => mix(hue, core.surface, 0.15);
+	const edge = (hue: string) => mix(hue, core.edge, 0.4);
 	return {
 		...core,
-		attentionBg: mix(core.attention, core.surface, 0.15),
-		attentionEdge: mix(core.attention, core.edge, 0.4),
-		aliveBg: mix(core.alive, core.surface, 0.15),
-		aliveEdge: mix(core.alive, core.edge, 0.4),
-		dangerBg: mix(core.danger, core.surface, 0.15),
-		dangerEdge: mix(core.danger, core.edge, 0.4),
-		accentBg,
-		accentEdge: mix(core.accent, core.edge, 0.4),
-		bubble: accentBg,
+		attentionBg: bg(core.attention),
+		attentionEdge: edge(core.attention),
+		aliveBg: bg(core.alive),
+		aliveEdge: edge(core.alive),
+		dangerBg: bg(core.danger),
+		dangerEdge: edge(core.danger),
+		accentBg: bg(core.accent),
+		accentEdge: edge(core.accent),
+		bubble: bg(core.accent),
 	};
 }
 

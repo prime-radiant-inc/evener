@@ -78,24 +78,23 @@ it("renders an ask's option rows without a duplicate-key report when the bounded
 	expect(errors.filter((line) => /same key/.test(line))).toEqual([]);
 });
 
-it("fills your message bubble with the accent tint in both themes", () => {
+function userBubbleStyle() {
 	const row: MobileTimelineItem = { kind: "user", id: "u-1", text: "Ship it" };
-
-	mode.scheme = "light";
-	const light = render(<TimelineItem item={row} hubId="hub" sessionRef="session" />);
-	const [lightBubble] = light.root.findAll(
+	const tree = render(<TimelineItem item={row} hubId="hub" sessionRef="session" />);
+	const [bubble] = tree.root.findAll(
 		(node) => String(node.type) === "View" && Array.isArray(node.props.style),
 	);
-	expect(lightBubble.props.style).toEqual(
+	return bubble.props.style;
+}
+
+it("fills your message bubble with the accent tint in both themes", () => {
+	mode.scheme = "light";
+	expect(userBubbleStyle()).toEqual(
 		expect.arrayContaining([expect.objectContaining({ backgroundColor: "#D7E9F9" })]),
 	);
 
 	mode.scheme = "dark";
-	const dark = render(<TimelineItem item={row} hubId="hub" sessionRef="session" />);
-	const [darkBubble] = dark.root.findAll(
-		(node) => String(node.type) === "View" && Array.isArray(node.props.style),
-	);
-	expect(darkBubble.props.style).toEqual(
+	expect(userBubbleStyle()).toEqual(
 		expect.arrayContaining([expect.objectContaining({ backgroundColor: "#273541" })]),
 	);
 });
