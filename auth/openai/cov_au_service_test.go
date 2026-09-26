@@ -214,6 +214,41 @@ func TestNeedsRefreshTreatsZeroExpiryAsStale(t *testing.T) {
 	}
 }
 
+// TestStatusFromRecordNeedsLoginRequiresBothExpiredAndNoRefreshToken pins
+// statusFromRecord's needsLogin contract directly against every combination
+// of expiry and refresh-token presence, including the zero-expiry and
+// no-refresh-token shapes that AuthRecord.Validate would refuse on a real
+// LoadAuth (so TestStatusExpiredAccessToken* in service_test.go cover the
+// production-reachable half through the real Status() path instead):
+// needsLogin fires only when the access token is expired AND no refresh
+// token would recover it (issue #2468, mirroring cmd/evener-hub's
+// openAIStatusFromRecord fix).
+func TestStatusFromRecordNeedsLoginRequiresBothExpiredAndNoRefreshToken(t *testing.T) {
+	now := time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC)
+	svc := newTestService(now)
+	tests := []struct {
+		name           string
+		expiry         time.Time
+		refreshToken   string
+		wantNeedsLogin bool
+	}{
+		{"zero expiry with refresh token", time.Time{}, "refresh-token", false},
+		{"zero expiry with no refresh token", time.Time{}, "", false},
+		{"expired with refresh token", now.Add(-time.Minute), "refresh-token", false},
+		{"expired with no refresh token", now.Add(-time.Minute), "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			record := sampleAuthRecord()
+			record.Expiry = tc.expiry
+			record.RefreshToken = tc.refreshToken
+			if got := svc.statusFromRecord(record); got.NeedsLogin != tc.wantNeedsLogin {
+				t.Fatalf("statusFromRecord(expiry=%v, refreshToken=%q).NeedsLogin = %t, want %t", tc.expiry, tc.refreshToken, got.NeedsLogin, tc.wantNeedsLogin)
+			}
+		})
+	}
+}
+
 func TestIsPermanentRefreshError(t *testing.T) {
 	tests := []struct {
 		name string

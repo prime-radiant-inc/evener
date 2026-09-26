@@ -61,9 +61,11 @@ type AuthStatus struct {
 	// NeedsRefresh is true when the access token has expired or is within the
 	// refresh-skew window and should be refreshed before use.
 	NeedsRefresh bool
-	// NeedsLogin is true when the access token has a non-zero expiry that is at
-	// or before the current time (fully expired, not merely within the refresh
-	// window).
+	// NeedsLogin is true when the user must sign in again: the access token is
+	// expired (a non-zero expiry at or before the current time) AND there is no
+	// refresh token on file to recover it with. An expired access token backed
+	// by a refresh token is routine - it gets refreshed on the next use - so
+	// that case is NeedsRefresh, not NeedsLogin (issue #2468).
 	NeedsLogin bool
 }
 
@@ -504,8 +506,19 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, insta
 	}, nil
 }
 
+// statusFromRecord reports needsLogin only when the user must actually sign
+// in again: the access token is expired AND there is no refresh token to
+// recover it with. An expired access token backed by a refresh token is
+// routine and expected - ResolveRuntimeCredentials refreshes it on the next
+// use - so evener openai status (and login/logout, which share
+// formatOpenAIStatus) must not tell the user to sign in again for that case
+// (issue #2468, mirroring cmd/evener-hub's openAIStatusFromRecord fix). A
+// refresh that was attempted and permanently rejected would also justify
+// needsLogin, but nothing persists that outcome to the stored record today,
+// so that case is not distinguishable here yet.
 func (s *Service) statusFromRecord(record AuthRecord) AuthStatus {
 	now := s.now()
+	expired := !record.Expiry.IsZero() && !record.Expiry.After(now)
 	return AuthStatus{
 		SignedIn:     true,
 		Source:       record.Source,
@@ -514,7 +527,7 @@ func (s *Service) statusFromRecord(record AuthRecord) AuthStatus {
 		WorkspaceID:  record.WorkspaceID,
 		Expiry:       record.Expiry,
 		NeedsRefresh: needsRefresh(now, record.Expiry),
-		NeedsLogin:   !record.Expiry.IsZero() && !record.Expiry.After(now),
+		NeedsLogin:   expired && strings.TrimSpace(record.RefreshToken) == "",
 	}
 }
 
