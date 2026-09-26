@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"path"
 	"reflect"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -470,6 +472,8 @@ func richCapabilityReply() func(method string, params json.RawMessage) scriptedR
 			return scriptedReply{result: appwire.AuthListResponse{Providers: []appwire.AuthStatusResponse{{Provider: "auth", AuthModes: []string{"auth-mode"}}}}}
 		case appwire.MethodEvenerInstanceList:
 			return scriptedReply{result: instanceListFixture()}
+		case appwire.MethodEvenerLaunchResolve:
+			return scriptedReply{result: launchResolvedFixture()}
 		default:
 			return scriptedReply{result: appwire.EmptyResponse{}}
 		}
@@ -553,6 +557,21 @@ func instanceListFixture() appwire.InstanceListResponse {
 			},
 		}},
 		Diagnostics: []string{"inst-diag"},
+	}
+}
+
+// launchResolvedFixture populates every mutable field of one per-root resolve
+// result: the effective layer, the per-layer map, provenance, the repo status
+// pointer, and the diagnostics slice.
+func launchResolvedFixture() appwire.LaunchConfigResolved {
+	return appwire.LaunchConfigResolved{
+		Effective:  launchLayerFixture(),
+		Layers:     map[string]appwire.LaunchConfigLayer{"global": launchLayerFixture()},
+		Provenance: map[string]string{"model": "global"},
+		Repo:       &appwire.RepoLaunchConfigStatus{Path: "/root/a", Hash: "abc", Trust: "trusted", Preview: "preview"},
+		Diagnostics: []appwire.LaunchConfigDiagnostic{
+			{Layer: "global", Field: "model", Message: "diag"},
+		},
 	}
 }
 
@@ -649,6 +668,36 @@ func capabilityIsolationCases() []capabilityIsolationCase {
 		scalarIsolationCase("Plugins.Plugins[0].Plugin", func(c *HostCapabilities) *string { return &c.Plugins.Plugins[0].Plugin }, "pl", "mutated"),
 		sliceIsolationCase("Auth.Providers[0].AuthModes", func(c *HostCapabilities) []string { return c.Auth.Providers[0].AuthModes }, "auth-mode", "mutated"),
 		scalarIsolationCase("Roots[0]", func(c *HostCapabilities) *string { return &c.Roots[0] }, "/root/a", "/mutated"),
+		// The per-root effective config: the map itself and the resolve shape
+		// (effective layer, layer map, provenance, repo status, diagnostics) a
+		// caller could mutate through it.
+		mapIsolationCase("LaunchResolved", func(c *HostCapabilities) map[string]appwire.LaunchConfigResolved {
+			return c.LaunchResolved
+		}, "/root/a", launchResolvedFixture(), appwire.LaunchConfigResolved{Effective: appwire.LaunchConfigLayer{Model: "mutated"}}),
+		scalarIsolationCase("LaunchResolved[/root/a].Effective.Schema", func(c *HostCapabilities) *int {
+			return c.LaunchResolved["/root/a"].Effective.Schema
+		}, 1, 99),
+		sliceIsolationCase("LaunchResolved[/root/a].Effective.SkillsDirs", func(c *HostCapabilities) []string {
+			return c.LaunchResolved["/root/a"].Effective.SkillsDirs
+		}, "skills-dir", "mutated"),
+		mapIsolationCase("LaunchResolved[/root/a].Effective.Env", func(c *HostCapabilities) map[string]string {
+			return c.LaunchResolved["/root/a"].Effective.Env
+		}, "launch-env", "launch-env-value", "mutated"),
+		mapIsolationCase("LaunchResolved[/root/a].Layers", func(c *HostCapabilities) map[string]appwire.LaunchConfigLayer {
+			return c.LaunchResolved["/root/a"].Layers
+		}, "global", launchLayerFixture(), appwire.LaunchConfigLayer{Model: "mutated"}),
+		mapIsolationCase("LaunchResolved[/root/a].Provenance", func(c *HostCapabilities) map[string]string {
+			return c.LaunchResolved["/root/a"].Provenance
+		}, "model", "global", "mutated"),
+		{
+			name:   "LaunchResolved[/root/a].Repo",
+			mutate: func(c *HostCapabilities) { c.LaunchResolved["/root/a"].Repo.Trust = "mutated" },
+			read:   func(c HostCapabilities) any { return c.LaunchResolved["/root/a"].Repo.Trust },
+			want:   "trusted",
+		},
+		scalarIsolationCase("LaunchResolved[/root/a].Diagnostics[0].Message", func(c *HostCapabilities) *string {
+			return &c.LaunchResolved["/root/a"].Diagnostics[0].Message
+		}, "diag", "mutated"),
 		// The instance list: both entry kinds, every field they own, and the
 		// Setup entry a provider descriptor points at.
 		scalarIsolationCase("Instances.Instances[0].Name", func(c *HostCapabilities) *string { return &c.Instances.Instances[0].Name }, "inst", "mutated"),
@@ -795,5 +844,127 @@ func TestRemoteHubSourceHostCapabilitiesCacheIsolatedPointerScalars(t *testing.T
 	}
 	if second.Models.Data[0].ContextWindow == nil || *second.Models.Data[0].ContextWindow != 1000 {
 		t.Fatalf("cached Models.Data[0].ContextWindow = %v, want 1000: caller mutation reached the cache", second.Models.Data[0].ContextWindow)
+	}
+}
+
+// TestRemoteHubSourceHostCapabilitiesResolvesLaunchPerRoot pins the per-root
+// effective-config probe row: for every configured root the probe calls
+// evener/launch/resolve with that root as cwd and stores the result in
+// LaunchResolved, keyed by the root path (component 05 spec, "Capability
+// probe": `Roots[i]` -> `evener/launch/resolve` result for that root).
+func TestRemoteHubSourceHostCapabilitiesResolvesLaunchPerRoot(t *testing.T) {
+	base := capabilityReply("gpt-x", "pl")
+	client, calls := newScriptedClient(t, func(method string, params json.RawMessage) scriptedReply {
+		if method == appwire.MethodEvenerLaunchResolve {
+			var resolve appwire.LaunchConfigResolveParams
+			if err := json.Unmarshal(params, &resolve); err != nil {
+				t.Fatalf("resolve params: %v", err)
+			}
+			return scriptedReply{result: appwire.LaunchConfigResolved{
+				Effective: appwire.LaunchConfigLayer{Model: "model-" + path.Base(resolve.CWD)},
+			}}
+		}
+		return base(method, params)
+	})
+	source := NewRemoteHubSource("host", []string{"/root/a", "/root/b"}, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	caps, err := source.HostCapabilities(t.Context())
+	if err != nil {
+		t.Fatalf("HostCapabilities: %v", err)
+	}
+	if len(caps.LaunchResolved) != 2 {
+		t.Fatalf("LaunchResolved = %+v, want one entry per configured root", caps.LaunchResolved)
+	}
+	for root, wantModel := range map[string]string{"/root/a": "model-a", "/root/b": "model-b"} {
+		resolved, ok := caps.LaunchResolved[root]
+		if !ok {
+			t.Fatalf("LaunchResolved[%q] missing; map = %+v", root, caps.LaunchResolved)
+		}
+		if resolved.Effective.Model != wantModel {
+			t.Fatalf("LaunchResolved[%q].Effective.Model = %q, want %q: the result must be keyed by its root", root, resolved.Effective.Model, wantModel)
+		}
+	}
+	var cwds []string
+	for _, call := range calls() {
+		if call.method != appwire.MethodEvenerLaunchResolve {
+			continue
+		}
+		var resolve appwire.LaunchConfigResolveParams
+		if err := json.Unmarshal(call.params, &resolve); err != nil {
+			t.Fatalf("resolve params: %v", err)
+		}
+		cwds = append(cwds, resolve.CWD)
+	}
+	if !slices.Equal(cwds, []string{"/root/a", "/root/b"}) {
+		t.Fatalf("resolve cwds = %v, want the configured roots in order", cwds)
+	}
+}
+
+// TestRemoteHubSourceHostCapabilitiesMissingRootStaysEmpty pins the spec
+// comment "empty when a root has no effective layer": a configured root whose
+// resolution cannot produce one — the hub answers InvalidParams because the
+// root does not exist on the host — is left out of LaunchResolved while the
+// rest of the snapshot still lands.
+func TestRemoteHubSourceHostCapabilitiesMissingRootStaysEmpty(t *testing.T) {
+	missing := appwire.InvalidParams("cwd: resolve: stat /missing: no such file or directory")
+	base := capabilityReply("gpt-x", "pl")
+	client, _ := newScriptedClient(t, func(method string, params json.RawMessage) scriptedReply {
+		if method == appwire.MethodEvenerLaunchResolve {
+			var resolve appwire.LaunchConfigResolveParams
+			if err := json.Unmarshal(params, &resolve); err != nil {
+				t.Fatalf("resolve params: %v", err)
+			}
+			if resolve.CWD == "/missing" {
+				return scriptedReply{wireErr: &missing}
+			}
+			return scriptedReply{result: appwire.LaunchConfigResolved{Effective: appwire.LaunchConfigLayer{Model: "model-present"}}}
+		}
+		return base(method, params)
+	})
+	source := NewRemoteHubSource("host", []string{"/present", "/missing"}, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	caps, err := source.HostCapabilities(t.Context())
+	if err != nil {
+		t.Fatalf("HostCapabilities: %v", err)
+	}
+	if resolved, ok := caps.LaunchResolved["/missing"]; ok {
+		t.Fatalf("LaunchResolved[/missing] = %+v, want no entry for a root with no effective layer", resolved)
+	}
+	if resolved, ok := caps.LaunchResolved["/present"]; !ok || resolved.Effective.Model != "model-present" {
+		t.Fatalf("LaunchResolved[/present] = %+v (present=%v), want the resolvable root's result", resolved, ok)
+	}
+	if caps.LaunchGlobal.Model != "gpt-x" {
+		t.Fatalf("LaunchGlobal.Model = %q, want gpt-x: the rest of the snapshot must still land", caps.LaunchGlobal.Model)
+	}
+}
+
+// TestRemoteHubSourceHostCapabilitiesResolveErrorStillAborts pins that the
+// per-root tolerance is narrow: only the InvalidParams that means "no
+// effective layer for this root" is skipped. Every other resolve failure —
+// here a hub-side InternalError — is a real probe failure.
+func TestRemoteHubSourceHostCapabilitiesResolveErrorStillAborts(t *testing.T) {
+	failed := appwire.InternalError("resolve: global: bad toml")
+	base := capabilityReply("gpt-x", "pl")
+	client, _ := newScriptedClient(t, func(method string, params json.RawMessage) scriptedReply {
+		if method == appwire.MethodEvenerLaunchResolve {
+			return scriptedReply{wireErr: &failed}
+		}
+		return base(method, params)
+	})
+	source := NewRemoteHubSource("host", []string{"/root/a"}, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+
+	_, err := source.HostCapabilities(t.Context())
+	if err == nil {
+		t.Fatal("HostCapabilities succeeded despite a non-InvalidParams resolve failure")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want InternalError WireError", err, err)
 	}
 }

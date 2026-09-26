@@ -124,6 +124,10 @@ type navigationProjection struct {
 	projects      map[string]hubcore.TreeProject
 	catalogs      map[navigationResourceKind][]hubcore.TreeProject
 	locations     map[string]hubapi.NavigationSessionLocation
+	// offlineSources is the set of manifest source IDs whose connection state
+	// is down, indexed once per projection so every row can answer "is my
+	// source unreachable?" from the same capture the manifest serves.
+	offlineSources map[string]bool
 }
 
 type navigationPinSection struct {
@@ -150,7 +154,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	if err != nil {
 		return navigationProjection{}, err
 	}
-	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation)}
+	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), offlineSources: offlineSourceIDs(cloned.Sources)}
 	p.live = p.inputs.Tree.Live
 	p.needsYou = p.inputs.Tree.NeedsYou
 	p.pinCandidates, err = navigationPinCandidatesContext(ctx, p.inputs.Tree)
@@ -1765,6 +1769,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Live:                p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
 		AskPending:          node.AskPending,
 		Dormant:             node.Dormant,
+		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           updatedAt,
 		MoreSubagents:       node.MoreSubagents,
 		RunningJobs:         navigationJobs(node.RunningJobs),
@@ -1774,6 +1779,39 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		OmittedArmedWatches: omittedArmedWatches,
 		Children:            hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
+}
+
+// offlineSourceIDs indexes the manifest sources whose connection state is
+// down, keyed by source ID so a row can ask "is my source unreachable?" from
+// the same enumeration the manifest serves.
+//
+// A source absent from the manifest is not offline, matching sourceOnline's
+// fail-open answer for an unregistered source.
+func offlineSourceIDs(sources []hubapi.Source) map[string]bool {
+	var offline map[string]bool
+	for _, source := range sources {
+		if source.ID == "" || source.Online {
+			continue
+		}
+		if offline == nil {
+			offline = make(map[string]bool)
+		}
+		offline[source.ID] = true
+	}
+	return offline
+}
+
+// sourceOffline reports whether the row's owning source is unreachable. It is
+// a property of the source, not the row: a quiet row is as offline as an
+// active one when its host is down.
+//
+// "Owning source" is the row's canonical source identity — the ref host that
+// HostID carries to the frontend — so the marker and the row's host label
+// always name the same source. A row whose advertised ref names a different
+// source than the one that listed it is a conflicting row (the ingestion
+// marks it incomplete); it still marks by the host it names.
+func (p navigationProjection) sourceOffline(hostID string) bool {
+	return p.offlineSources[hostID]
 }
 
 func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.NavigationJobSummary] {

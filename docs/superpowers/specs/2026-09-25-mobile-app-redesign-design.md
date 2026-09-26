@@ -61,13 +61,14 @@ Non-goals for this version: a decision inbox (a future design; Jesse has not des
 Every screen is checked against these.
 
 1. **Attention is the product.** Every screen answers "what needs me next?". One ordering everywhere: failed, then needs you, then finished, then working, then idle.
-2. **Summarize the swarm.** A coordinator's subagents appear on it as counts and a proportional strip. Detail is one tap away.
-3. **Read like a book, act like a remote.** Reading surfaces get a real reading typeface and a comfortable measure. Controls are compact and within thumb reach.
-4. **Honest liveness.** Show only real signals: what it is running, "quiet 40s", "no updates for 12m", "waiting on 8 subagents". No decorative spinners. Motion is evidence.
-5. **Never lose my place.** Drafts, scroll and reading positions, and filters survive everything. The app refreshes itself. Reconnecting never blanks a screen.
-6. **One word per thing, no plumbing.** No daemon, harness, thread, delegate, drain or runtime in the interface.
-7. **Color is meaning.** Four hues, one job each, inherited from the web: amber means a human is needed, green means working, red means failed or destructive, blue means tappable, selected or unread. Everything else is ink on paper.
-8. **Native chrome, Evener content.** iOS supplies the structure (glass bars, sheets, swipe actions, context menus, haptics, Dynamic Type). Evener supplies the content's voice (the web's reading serif and palette).
+2. **Calm.** The app stays quiet until something needs you. A control appears only when it can act: Stop shows only while the agent works. One control per intent: one Send, which queues while the agent works. The one exception is Ask coordinator to stop it (section 9), whose Send steers because the request is about the turn that is running. Nothing asks you to do what the app can do itself: it reconnects, keeps every screen current and retries its reads on its own, so no screen carries a Reconnect button or asks you to refresh. When in doubt, leave it out.
+3. **Summarize the swarm.** A coordinator's subagents appear on it as counts and a proportional strip. Detail is one tap away.
+4. **Read like a book, act like a remote.** Reading surfaces get a real reading typeface and a comfortable measure. Controls are compact and within thumb reach.
+5. **Honest liveness.** Show only real signals: what it is running, "quiet 40s", "no updates for 12m", "waiting on 8 subagents". No decorative spinners. Motion is evidence.
+6. **Never lose my place.** Drafts, scroll and reading positions, and filters survive everything. The app refreshes itself. Reconnecting never blanks a screen.
+7. **One word per thing, no plumbing.** No daemon, harness, thread, delegate, drain or runtime in the interface.
+8. **Color is meaning.** Four hues, one job each, inherited from the web: amber means a human is needed, green means working, red means failed or destructive, blue means tappable, selected or unread. Everything else is ink on paper.
+9. **Native chrome, Evener content.** iOS supplies the structure (glass bars, sheets, swipe actions, context menus, haptics, Dynamic Type). Evener supplies the content's voice (the web's reading serif and palette).
 
 ## 5. Vocabulary and copy
 
@@ -170,7 +171,7 @@ Select                                                      ✎
 
 - **Header (glass nav bar).** Leading: the hub button (the hub name and a chevron). Trailing: Search. No large title; the section chips carry orientation. A connection that isn't live shows in the toolbar (section 14), never as a dot here: a meter in front of the hub name read as signal strength to two critics.
 - **Section chips (sticky under the header).** Live, one chip per pinned category (with a pin glyph), Projects, Archived, each with a count. Chips are landmarks, so their names never change with display settings. Tapping scrolls to that section. The Live chip carries an amber badge with the Needs you count when it is above zero. Chips for empty sections are hidden. The row fades at its trailing edge, so a cut-off chip reads as "there's more".
-- **Notices (only when present).** Hub-level problems that block sessions: a provider sign-in expired or expiring within a day, a host offline, a plugin marked broken. A host running a different Evener version than the hub is not a notice: the hub attaches a protocol-compatible host on its own build, so work continues (Hub > Hosts shows the version). Each notice sits on the page like a row: the ⚠ mark, one sentence naming the affected count in ink, and one action in blue ("Sign in", "Reconnect"). No tinted box: the mark says it needs you. Notices dismiss themselves when resolved.
+- **Notices (only when present).** Hub-level problems that block sessions: a provider sign-in expired or expiring within a day, a host offline, a plugin marked broken. A host running a different Evener version than the hub is not a notice: the hub attaches a protocol-compatible host on its own build, so work continues (Hub > Hosts shows the version). Each notice sits on the page like a row: the ⚠ mark, one sentence naming the affected count in ink, and one action in blue: "Sign in" for a provider, "Details" for a host, "Plugins" for a broken plugin. Details opens the host in Hub > Hosts with its last error; Plugins opens Hub > Plugins at that plugin's row, where Upgrade and Remove live. A host offline never offers Reconnect: the hub retries a dropped host on its own (`cmd/evener-hub/internal/sshconn`). No tinted box: the mark says it needs you. Notices dismiss themselves when resolved.
 - **Continue reading (only when present).** Leaving a plan or document before its end leaves one row under the notices for two hours: "Continue reading · 62%" and the document's title. Tapping it reopens the document at the same position, inside its session. This is the way back after an interruption.
 - **Live summary.** One line counts the Live bands: "4 need you · 4 finished · ▂▅▇ 9 working · 3 idle", with the Needs you count in amber ink and the fleet pulse meter (the whole fleet's activity, section 16.4; gray while the connection is down) before "working", where its label says what it measures. Each count jumps to its band (Idle unfolds). It shows when at least two bands have sessions, so the first screen always says what's working even when Needs you fills it (a first-glance participant found no sign of working sessions without it).
 - **Live** holds every live, unarchived top-level session, in four bands:
@@ -250,10 +251,10 @@ splitting the fix into two subagents…
               │ Next  Fix Endless Provider Retry… › │
               ╰─────────────────────────────────────╯
 ────────────────────────────────────────────
-▂▅▇ Running go test ./agent/... · 42s
+▂▅▇ Running go test ./agent/... · 42s        ■
 ┌──────────────────────────────────────────┐
 │ Tell the agent something…                │
-│ +   GLM 5.3 Vision · XHigh           ■   │
+│ +   GLM 5.3 Vision · XHigh           ✈   │
 └──────────────────────────────────────────┘
 ```
 
@@ -262,8 +263,8 @@ splitting the fix into two subagents…
 - **Notes bar (under the chips, only when the session has a note or a link).** One 32pt line, the phone's form of the web's collapsed notes bar (section 8.8).
 - **Transcript** (section 8.2).
 - **Next capsule** (section 8.3), floating over the end of the transcript when other sessions need you and this one doesn't.
-- **Status tray** (section 8.3) while the agent works, or the **Ask dock** when a question or approval is pending (section 8.4).
-- **Composer** (section 8.5). While a dock is open, the composer steps aside until you ask for it.
+- **Status tray** (section 8.3) while the agent works, with Stop at its end, or the **Ask dock** when a question or approval is pending (section 8.4).
+- **Composer** (section 8.5), anchored to the bottom of the screen. While a dock is open, the composer steps aside until you ask for it.
 
 ### 8.2 Transcript
 
@@ -304,7 +305,7 @@ Scrolling:
 
 ### 8.3 Status tray and Next
 
-**Tray.** A single 36pt line above the composer, only while the agent works: the pulse meter and the current activity with elapsed time ("Running go test ./agent/... · 42s", "Thinking… · 1.2K tokens", "Waiting on 12 subagents", "Quiet 40s", "May be stuck · no updates for 12m" in amber ink). Tapping it jumps to the live end of the transcript. Other states have no tray: the title's subtitle already says "Finished · 1h ago", "Failed" or "Shut down", and the transcript and composer say the rest ("Message to resume").
+**Tray.** A single 36pt line above the composer, only while the agent works: the pulse meter and the current activity with elapsed time ("Running go test ./agent/... · 42s", "Thinking… · 1.2K tokens", "Waiting on 12 subagents", "Quiet 40s", "May be stuck · no updates for 12m" in amber ink). Tapping it jumps to the live end of the transcript. At its trailing end sits **Stop** (`stop.fill` in ink, a 44pt target): it ends the current turn immediately, with no confirmation, since stopping is recoverable by sending again, and a toast confirms "Stopped". Stop lives here, not beside Send, so it shows only while there is something to stop, the composer looks the same in every state, and a missed tap on Send can never interrupt the agent. Other states have no tray: the title's subtitle already says "Finished · 1h ago", "Failed" or "Shut down", and the transcript and composer say the rest ("Message to resume").
 
 **Next capsule.** When other sessions need you, a small capsule floats at the trailing edge, 10pt above the tray or composer, on the raised surface with a strong edge so it floats in both themes: "Next" in accent, then the title of the session it goes to (truncated), then a chevron. Back already carries the count. Tapping it opens that session at its question or failure. The order: whichever session alerted you most recently (shown or held), then Needs you order; a round-4 participant expected Next to go to what had just pinged, and it didn't. Touch and hold opens the list of sessions that need you. The transcript keeps 60pt of room at its end so the capsule never sits on the last line.
 
@@ -370,28 +371,32 @@ When the session has a pending question or approval, an amber-edged dock replace
 
 ### 8.5 Composer
 
-Layout: the text field on top (grows to six lines, then scrolls; an expand control opens a full-screen editor), and a controls row beneath it, per Jesse's ruling that send sits on the controls row.
+The composer is anchored to the bottom of the screen: it sits just above the home indicator, rises with the keyboard, and stays at the bottom when the transcript is short, with the transcript's end resting just above it.
+
+Layout: the text field on top (grows to six lines, then scrolls; an expand control opens a full-screen editor), and a controls row beneath it, per Jesse's ruling that send sits on the controls row. The row doesn't change when the agent starts or stops working.
 
 Controls row, left to right:
 
 - **+**: Photo library, Camera, and Commands and skills. Attached images show as removable thumbnails above the text. Typing "/" as the first character also opens Commands and skills. (A separate "/" button read as a divider between the model chip and Send.)
 - **Model chip**: the model's display name and effort, "GLM 5.3 Vision · XHigh" (a model is called one way everywhere people read it). Opens the model sheet: recent models first, then all models grouped by provider, each with context size and price; an Effort segmented control at the bottom showing only the levels the model supports. Changes apply from the next turn ("Applies from the next turn").
 - **Commands and skills** (from + or a leading "/"): a sheet with search, built-in commands first (Goal, Compact context, Aside, Tasks, Model, Effort, Clear), then skills grouped by plugin. Choosing one inserts it as a token.
-- **Primary button** (trailing), by state:
+- **Send** (trailing): a paper airplane (`paperplane.fill`) on the accent fill, disabled while the field is empty and nothing is attached. It is the only send control; what it does depends on the session:
 
-| Session state | Field empty | Field has text |
-|---|---|---|
-| Idle / finished | Send (disabled) | **Send** (accent, arrow up) |
-| Working | **Stop** (square, ink fill) | **Steer** (accent, primary) and **Queue** (secondary text button to its left) |
-| Question or approval pending | The composer is hidden while the dock is open (section 8.4) | After "Other answer…": **Send** (sends as the answer; the dock updates) |
-| Shut down | Send (disabled) | **Send** (resumes the session) |
-| Offline | Send (disabled) | **Send later** (goes to the outbox) |
+| Session state | Send |
+|---|---|
+| Idle / finished | Sends; the agent starts on it |
+| Working | Queues the message: it waits until this turn ends, and its **Steer now** (below) delivers it sooner |
+| Question or approval pending | The composer is hidden while the dock is open (section 8.4). After "Other answer…", Send sends your text as the answer, and the dock updates |
+| Shut down | Sends and resumes the session |
+| Offline | Holds the message in the outbox and sends it when the connection returns (section 14) |
 
-- The first time Steer and Queue appear, a one-line hint sits above the field: "Steer arrives at the agent's next step. Queue waits until this turn ends." It does not return after two uses.
-- **Queued messages** appear as dashed ghost bubbles above the composer: "Queued · sends when this turn ends". Tap for Steer now, Edit, or Cancel. Swipe left to cancel.
-- **Steering in flight** appears as a ghost bubble "Steering · arrives at the next step" until the agent picks it up; then it becomes a normal message with the "Steered in mid-turn" caption.
+- There is no Steer button and no Queue button. Steer and Queue are both ways of sending, so Send queues by default, and steering is something you do to a queued message.
+- **Queued messages** appear as dashed ghost bubbles above the composer, oldest first, in the order they will send (the queue is first in, first out): "Queued · sends when this turn ends", each with a visible **Steer now** text button that delivers it at the agent's next step instead (`turn/promoteQueuedAsSteer`); the other queued messages keep their order. Tap a bubble for Edit or Cancel. Swipe left to cancel. Edit takes the message out of the queue and puts its text in the field, after a blank line when you had already typed something there, as the web does.
+- **Stop parks the queue.** Queued messages don't send when a stopped turn ends: the daemon holds them (`QueueHeld`, agent/session_client_mutation.go) until you act. Each ghost then reads "Held · you stopped this turn", with Send now and Cancel. Sending anything releases the held queue.
+- **Steering in flight** appears as a ghost bubble "Steering · arrives at the next step" until the agent picks it up; then it becomes a normal message with the "Steered in mid-turn" caption. A steer is never dropped: if the turn ends before the agent's next step, it runs as the next turn.
+- **Stop** is not in the composer. It sits at the end of the status tray, which shows only while the agent works (section 8.3).
+- The composer carries no connection or recovery controls. The app reconnects on its own (section 14); a message sent while offline shows its state on its own ghost bubble, and a delivery that can't be confirmed says so on that message.
 - While a dock is open and the composer has come back, the model chip steps aside: the dock is what you're answering.
-- **Stop** ends the current turn immediately (no confirmation; stopping is recoverable by sending again). A toast confirms: "Stopped".
 - Placeholder copy: "Message" (idle), "Tell the agent something…" (working), "Answer or ask…" (question pending), "Message to resume" (shut down).
 - The draft persists per session across navigation, backgrounding and relaunch.
 
@@ -452,7 +457,7 @@ Done · 21                                          ›
 - Rows: a still mark (a green dot for running, ✕ failed, ✓ done; one pulse meter per view, and on this screen that's none), the mandate as title, the latest activity or outcome as the why line, and a last line with the model's display name (only when it differs from the coordinator's), a branch glyph and the branch name when the subagent works in its own worktree, and tokens. The trailing time is bare time in the current state, as the Board's ages are: how long a running subagent has run, how long since one failed or finished.
 - The list virtualizes; trees of 500 must scroll smoothly. A search field filters by title.
 - **Subagent transcript** opens read-only with the same renderer. A banner at the top: "Subagent of Get PR 2138 Test Clean. Talk to it through its coordinator." The composer is replaced by an action bar: **Ask coordinator to stop it** and **Open coordinator**.
-- **Ask coordinator to stop it** opens a sheet with a prefilled, editable steer to the parent ("Stop subagent 'Fix race in tree settle': it has failed three times.") and Steer / Queue buttons. The row then says "Stop requested from the coordinator" until the subagent's state changes, and when it stops the row reads "Stopped at your request" with a toast naming it; a round-4 participant didn't trust a request that never visibly completed. When the hub gains a direct stop call (server addition S6), this becomes **Stop subagent** with a confirmation and no message.
+- **Ask coordinator to stop it** opens a sheet with a prefilled, editable message to the coordinator ("Stop subagent 'Fix race in tree settle': it has failed three times."), the line "Arrives at the coordinator's next step" under it, and one Send. This Send steers instead of queueing, because the request is about the turn that is running. The row then says "Stop requested from the coordinator" until the subagent's state changes, and when it stops the row reads "Stopped at your request" with a toast naming it; a round-4 participant didn't trust a request that never visibly completed. When the hub gains a direct stop call (server addition S6), this becomes **Stop subagent** with a confirmation and no message.
 
 ## 10. Review: plans, documents and artifacts
 
@@ -482,7 +487,7 @@ both take the tree lock, but…              💬 1
 - **Changes since you last read:** changed paragraphs get a blue left rule, and nothing else (no "Changed" label); the caption says how many ("3 changes since you read it yesterday"), and the bottom bar steps through them ("‹ Change 1 of 3 ›"), within thumb reach. The caption says when you read it, so it can't be mistaken for a first read.
 - **Comment:** long-press a paragraph (or select text) for Comment, Quote in reply, Copy. In a list, the comment attaches to the item under your finger, which is highlighted while the menu is open. A comment attaches to its paragraph or item, and its marker (with a count) sits on that paragraph or on that list item, never on the list's first line. Comments are drafts until sent and persist per document. Until you comment, a one-line caption above the bottom bar says "Touch and hold a paragraph to comment on it"; there is no tip card over the text.
 - **Review bar (bottom):** Comments (a count, once there are any; opens the list), the change stepper when there are changes, and Send review. No Next capsule here: the Reader stays quiet.
-- **Review** sheet (titled "Review" so its title never repeats the "Send review" button): choose Approve, Request changes, or Comment only (nothing is chosen for you, and Send stays disabled until you choose); an optional overall note; the comments listed with their quoted paragraphs. The primary button matches the session state: Send (idle), Steer and Queue (working). The message format:
+- **Review** sheet (titled "Review" so its title never repeats the "Send review" button): choose Approve, Request changes, or Comment only (nothing is chosen for you, and Send stays disabled until you choose); an optional overall note; the comments listed with their quoted paragraphs. The primary button is the composer's one Send: it sends while the agent is idle and queues while it works, and the queued review offers Steer now like any queued message (section 8.5). The message format:
 
 ```
 Review of docs/superpowers/plans/2026-09-25-settle-race.md: request changes.
@@ -503,7 +508,7 @@ Artifacts are interactive HTML views an agent publishes (the shared-artifacts wo
 
 - Full-screen, with a thin top bar: back (with the held-alert dot, as in the Reader), title, "v3 · updated 2m ago", and ⋯ (About: summary, versions; Diagnostics). No Next capsule: the viewer stays quiet.
 - The artifact runs in the sandboxed viewer and can save its own state; a small "Saved" appears in the bar when it does.
-- **Proposals:** when the artifact proposes a message to the session (its `ui/message`), a sheet rises: "From the artifact", the proposed text (editable), and Discard plus Send (idle) or Steer and Queue (working). Nothing is sent without that explicit choice.
+- **Proposals:** when the artifact proposes a message to the session (its `ui/message`), a sheet rises: "From the artifact", the proposed text (editable), and Discard plus Send, which acts like the composer's (it queues while the agent works). Nothing is sent without that explicit choice.
 - When the artifact cannot run on this connection (remote use without the sandbox host), the viewer shows its title, summary and last static preview, with one sentence: "This artifact can't run over this connection. Open it on a computer on the same network as the hub."
 
 ## 11. New session
@@ -547,7 +552,7 @@ Opened from the hub button. A large-detent sheet with a grouped list.
 
 - **Header:** hub name, connection state, version ("Connected · evener 0.9.412 · up to date" or "Update available"). About doesn't repeat the version.
 - Rows carry bare SF Symbols in ink-mid, never colored Settings-style tiles (those brought five hues the app doesn't have). Hubs has its own glyph, distinct from Hosts.
-- **Hosts:** each row shows name, state (Connected, Connecting, Offline · last seen 2d, Error), OS and architecture, version (a gray "Hub runs 0.9.412" tag when it differs from the hub), and live session count; no green dot for a connected host. Host detail: status in words ("Connected", "Connecting…", an amber "Offline"), version, sessions ("3 live", or "3 live, out of reach" while offline), roots, last error, and actions: Connect / Reconnect (showing "Connecting…" while it tries), Edit and Remove (only for hosts added from the app or web; hosts from `hub.toml` are read-only and say so), the same set the web offers. An offline host's footer leads with what's wrong and what to do: "This host is offline, so its sessions can't be reached. Reconnect to reach them." When a connected host's version differs from the hub's, the footer says instead: "This host runs a different version of Evener than the hub. Sessions keep working. Update Evener on the host when it's convenient." There is no Update button: the hub attaches a protocol-compatible host on its own build and logs the difference, and installs its own build on connect only when a deploy path is configured (`cmd/evener-hub/internal/sshconn/manager.go`), so the phone has nothing to call.
+- **Hosts:** each row shows name, state (Connected, Connecting, Offline · last seen 2d, Error), OS and architecture, version (a gray "Hub runs 0.9.412" tag when it differs from the hub), and live session count; no green dot for a connected host. Host detail: status in words ("Connected", "Connecting…", an amber "Offline"), version, sessions ("3 live", or "3 live, out of reach" while offline), roots, last error, and actions: Connect, only for a host the hub isn't attached to (an attached host that drops is retried by the hub on its own), showing "Connecting…" while it tries, then Edit and Remove (only for hosts added from the app or web; hosts from `hub.toml` are read-only and say so), the same set the web offers. An offline host's footer leads with what's wrong and what to do: "This host is offline, so its sessions can't be reached.", then "The hub keeps trying to reach it." for an attached host (its status reads "Offline · reconnecting": the hub retries it at least every 30 seconds, so there is no force-retry) or "Connect to reach them." for one the hub isn't attached to. When a connected host's version differs from the hub's, the footer says instead: "This host runs a different version of Evener than the hub. Sessions keep working. Update Evener on the host when it's convenient." There is no Update button: the hub attaches a protocol-compatible host on its own build and logs the difference, and installs its own build on connect only when a deploy path is configured (`cmd/evener-hub/internal/sshconn/manager.go`), so the phone has nothing to call.
 - **Providers:** instances with sign-in status (Signed in, Expires in 3d, Sign-in expired in amber, Key set, Error). Detail: default model, models, Sign in (device code flow: the code, a copy button, "Open sign-in page", and automatic completion), Replace key (paste), Test. The hub's device flow hands the app only a page URL and a code (`AuthDeviceStartResponse`), so "Open sign-in page" copies the code on the way and opens the page in an in-app browser; the sheet says "this code is copied for you. Paste it when the page asks for it," and the waiting state repeats the code.
 - **Plugins:** Installed (on-by-default switch, update badge, Upgrade, Remove), Marketplaces (add by GitHub repo or URL, refresh, remove), Browse and Install.
 - **Recipes:** list, edit, reorder, delete.
@@ -602,7 +607,7 @@ Marks always pair shape with color so they read without color.
 
 ## 14. States and resilience
 
-- **Connection.** Live: nothing extra (the Board header's fleet meter moves; the toolbar says nothing). Reconnecting (after 2 seconds without a connection): the Board toolbar says "Reconnecting…" and the session shows a thin ink-low bar under the nav bar; everything stays visible and scrollable. Offline (after 30 seconds): "Offline · updated 3m ago". Coming back is silent: content updates in place.
+- **Connection.** The app reconnects on its own, and nothing offers a Reconnect button: it retries at once, then backs off to every 30 seconds while it is in the foreground, and retries at once when it returns to the foreground. A close that retrying can't fix (a hub that speaks a different protocol version) stops the retries and says what to do, with no button, since nothing on the phone can fix it: "This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub." The app tries again each time it returns to the foreground, so an update on either side is picked up without a Reconnect button. Live: nothing extra (the Board header's fleet meter moves; the toolbar says nothing). Reconnecting (after 2 seconds without a connection): the Board toolbar says "Reconnecting…" and the session shows a thin ink-low bar under the nav bar; everything stays visible and scrollable. Offline (after 30 seconds): "Offline · updated 3m ago". Coming back is silent: content updates in place.
 - **Outbox.** Every action taken while disconnected or unconfirmed shows its state where it was taken: a message ghost says "Sending…", then disappears into the transcript; an archive shows the row dimmed until confirmed. If delivery can't be confirmed after reconnecting, the item says "Couldn't confirm this was sent" with Check and Discard, inline. There is no separate recovery screen.
 - **Drafts.** Per session and per document (review comments), persisted locally. Board rows show a Draft tag.
 - **Errors.** Inline, specific, one action. Starting a session that the hub rejects keeps the sheet open with the reason. A failed session shows its error in the transcript with Retry or Resume.
@@ -639,7 +644,7 @@ The phone uses the web's tokens (`cmd/evener-hub/frontend/src/styles/tokens.css`
 | alive / alive-ink | #189A4D / #12763B | #3DBB72 / #3DBB72 | working |
 | danger / danger-ink | #E3474C / #C51D23 | #EE5C61 / #F17478 | failed, destructive |
 | accent / accent-ink | #0285FF / #0064C2 | #3D9AFF / #459EFF | tappable, selected, unread, links |
-| accent-fill | #0070E0 | #0070E0 | filled buttons (Send, Steer, Send review, the primary approval): white on it is 4.8:1 in both themes, where white on dark mode's #3D9AFF was 2.9:1 |
+| accent-fill | #0070E0 | #0070E0 | filled buttons (Send, Send review, the primary approval): white on it is 4.8:1 in both themes, where white on dark mode's #3D9AFF was 2.9:1 |
 | diff add / delete bg | #E9F4EE / #F5EAF0 | #19251A / #170B17 | diffs only |
 
 Tints: each hue's `-bg` is the hue at 15% over surface; `-edge` is the hue at 40% over edge, both mixed in OKLab as `tokens.css`'s `color-mix(in oklab, …)` does. No other hues exist in the app. Diff washes are not status colors.
@@ -683,7 +688,7 @@ One meter per view, so motion means the thing you're watching moved:
 
 ### 16.5 Iconography
 
-SF Symbols only, weight matched to adjacent text. Core set: `questionmark.circle.fill`, `hand.raised.fill`, `exclamationmark.triangle.fill`, `xmark.octagon.fill`, `arrow.triangle.2.circlepath.circle.fill` (restart needed), `circle.fill` (unread), `magnifyingglass`, `square.and.pencil` (new session), `ellipsis.circle`, `pin.fill`, `archivebox`, `stop.fill`, `arrow.up` (send), `plus`, `command` (commands and skills), `cpu` (model), `server.rack` (host), `folder` (project), `puzzlepiece.extension` (plugins), `lock.shield` (access), `doc.text` (plan and documents), `square.stack.3d.up` (artifact), `person.2` (subagents), `checklist` (tasks), `target` (goal), `note.text` (notes), `person` (your note), `sparkles` (the agent's note), `link` (links), `globe` (web link), `text.quote` (quote), `bubble.left` (comment), `power` (shut down), `doc.on.doc` (copy), `point.3.connected.trianglepath.dotted` (hubs), `arrow.triangle.branch` (branch).
+SF Symbols only, weight matched to adjacent text. Core set: `questionmark.circle.fill`, `hand.raised.fill`, `exclamationmark.triangle.fill`, `xmark.octagon.fill`, `arrow.triangle.2.circlepath.circle.fill` (restart needed), `circle.fill` (unread), `magnifyingglass`, `square.and.pencil` (new session), `ellipsis.circle`, `pin.fill`, `archivebox`, `stop.fill` (Stop, in the tray), `paperplane.fill` (Send), `plus`, `command` (commands and skills), `cpu` (model), `server.rack` (host), `folder` (project), `puzzlepiece.extension` (plugins), `lock.shield` (access), `doc.text` (plan and documents), `square.stack.3d.up` (artifact), `person.2` (subagents), `checklist` (tasks), `target` (goal), `note.text` (notes), `person` (your note), `sparkles` (the agent's note), `link` (links), `globe` (web link), `text.quote` (quote), `bubble.left` (comment), `power` (shut down), `doc.on.doc` (copy), `point.3.connected.trianglepath.dotted` (hubs), `arrow.triangle.branch` (branch).
 
 ### 16.6 Motion and haptics
 
@@ -744,6 +749,8 @@ Each has a fallback so the phone works before it lands.
 - Harness and study materials: `docs/design/mobile/redesign/usability/`.
 - Findings and the changes they caused are recorded in `docs/design/mobile/redesign/usability/findings.md` and folded back into this spec. Round 1 (five participants, 27 of 29 tasks succeeded) changed: edge-zone row swipes, the Next bar, alert placement and timing, Continue reading, detail-level descriptions, scoped approvals, "Finished", host update while offline, and effort in the launch flow. Round 2 (23 of 23) fixed the long-press lift and the edge-swipe back inside scroll areas. Round 3 (9 of 9) split the Next bar into a list and Next, attached comments to list items, required an explicit review verdict, and led to "Same as last time", the sign-in copy, the host version note and edge-swipe back inside stacked sheets.
 - Phase 2 moved from "can people do it" to "can people read it, and does it hold together": three design critics (an iOS design juror, an information designer, a brand and craft reviewer) scored 22 screens, a first-glance comprehension test asked three personas what each screen means, and the changes were checked by running both again. That phase produced the calmer Board (fleet meter, notices as rows, the Live summary line, color only on state words, the task line), the Next capsule, the slimmer docks, the serif conversation, one meter per view, three subagent states, and the color-discipline rules in 16.1.
+- Round 4 (four fresh participants on the tasks phase 2 touched most; 11 of 12 succeeded, one partial) made the note editor look and act like one, with a visible field and focus and a save on close confirmed by a toast; sent Next to whichever session alerted you most recently, named it, and kept Back returning to where you started; put comment markers on the list item they belong to; made "Stop requested" visibly complete; gave the Reader's Back a count; confirmed detail-level changes with a toast; quieted rows in pinned categories; and explained "Ask aside…" and "Restart needed".
+- Jesse's review of the native app (2026-09-26) added principle 2 (Calm) and reshaped the composer: one Send that queues while the agent works, Steer now on each queued message, Stop at the end of the status tray and only while the agent works, the composer anchored to the bottom of the screen, and reconnection that needs no button. The prototype still shows the earlier Steer and Queue buttons, the first-use hint and Stop in the composer; this spec wins where they differ.
 
 ## Appendix A: frames to produce
 
@@ -758,7 +765,7 @@ For Claude Design or any visual pass. Each frame at 393×852pt, light and dark u
 7. Session, working, Intent level: chips, the notes bar, messages, activity runs with durations, a subagent row with its rail, a document chip, the status tray, the Next capsule.
 8. Session, question pending: ask dock with two questions, a recommended option, multi-select variant; the composer stepped aside, and back after "Other answer…".
 9. Session, approval pending.
-10. Session, typing while working: Steer and Queue, the first-use hint, a queued ghost bubble.
+10. Session, typing while working: the one Send, Stop at the end of the tray, a queued ghost bubble with Steer now.
 11. Session, failed: error block with Retry.
 12. Session, Tools level with an expanded step showing command output and a diff.
 13. Session sheet: where, model, plugins (fixed), usage with context gauge.

@@ -442,6 +442,45 @@ async function runChecks(page, scheme) {
     const steers = await ev(page, `EV.S.transcripts['s-tasklist'].filter((x) => x.kind === 'steer').map((x) => x.text)`);
     if (JSON.stringify(steers.slice(-2)) !== JSON.stringify(['Also cover the empty state', 'And the error state'])) throw new Error('both steers should land in order; landed ' + JSON.stringify(steers));
   });
+  // Changing an already-pinned session's category must be undoable back to
+  // where it was, not just unpinned.
+  await check(S('flow-undo-category-change-restores-it'), page, async () => {
+    await reset(page);
+    await ev(page, `EV.pin(EV.sess('s-retry'), 'research')`); await sleep(300);
+    await ev(page, `EV.pin(EV.sess('s-retry'), 'release')`); await sleep(300);
+    await ev(page, `EV.S.toast.undo()`); await sleep(300);
+    const cat = await ev(page, `EV.sess('s-retry').category`);
+    if (cat !== 'research') throw new Error('undoing a category change should restore the previous category; got ' + JSON.stringify(cat));
+  });
+  // Once Release is deleted, the bulk menu must not still offer to pin into
+  // it: nothing it does should leave a session's category pointing at a
+  // category that no longer exists.
+  await check(S('flow-bulk-pin-needs-a-real-category'), page, async () => {
+    await reset(page);
+    await ev(page, `EV.categoryMenu(EV.S.categories.find((c) => c.id === 'release'))`); await sleep(300);
+    await tapRole('menuitem', 'Delete category'); await sleep(300);
+    await ev(page, `EV.S.board.selecting = true; EV.S.board.selected = { 's-retry': true, 's-audit': true }; EV.update()`); await sleep(300);
+    await ev(page, `EV.bulkMenu()`); await sleep(300);
+    const pinLabel = await ev(page, `EV.S.menu.items.filter(Boolean).map((i) => i.label).find((l) => /pin/i.test(l))`);
+    if (pinLabel) {
+      await tapRole('menuitem', pinLabel);
+      const after = await ev(page, `({ cats: ['s-retry', 's-audit'].map((id) => EV.sess(id).category), valid: EV.S.categories.map((c) => c.id) })`);
+      if (after.cats.some((c) => c && !after.valid.includes(c))) throw new Error('a bulk action pinned sessions to a deleted category: ' + JSON.stringify(after));
+    }
+  });
+  // Bulk Archive's undo must put each session back where it was, not
+  // unarchive rows that were already archived before the bulk action.
+  await check(S('flow-bulk-archive-undo-restores-each'), page, async () => {
+    await reset(page);
+    await ev(page, `EV.S.board.selecting = true; EV.S.board.selected = { 's-gocache': true, 's-retry': true }; EV.update()`); await sleep(300);
+    await ev(page, `EV.bulkMenu()`); await sleep(300);
+    await tapRole('menuitem', 'Archive'); await sleep(300);
+    await ev(page, `EV.S.toast.undo()`); await sleep(300);
+    const after = await ev(page, `({ gocache: EV.sess('s-gocache').archived, retry: EV.sess('s-retry').archived })`);
+    if (!after.gocache || after.retry) throw new Error("undoing a bulk archive should restore each session's prior archived state; got " + JSON.stringify(after));
+    // The undo lands in the action log, as a single row's undo does.
+    await logHas(page, 'bulk_unarchive', (e) => e.undo && e.ids.length === 1 && e.ids[0] === 's-retry');
+  });
 }
 
 try {

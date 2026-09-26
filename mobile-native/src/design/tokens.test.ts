@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mix, paletteFor, palettes } from "./tokens";
+import { fonts, mix, paletteFor, palettes, typeRoles } from "./tokens";
 
 describe("the palette is the spec's (section 16.1)", () => {
 	it("light", () => {
@@ -58,5 +58,23 @@ describe("paletteFor", () => {
 		expect(paletteFor(null).scheme).toBe("light");
 		expect(paletteFor(undefined).scheme).toBe("light");
 		expect(paletteFor("unspecified").scheme).toBe("light");
+	});
+});
+
+describe("type", () => {
+	it("names the embedded Source Serif 4 faces and the app's machine face", () => {
+		expect(fonts).toEqual({
+			serif: "SourceSerif4-Regular",
+			serifItalic: "SourceSerif4-Italic",
+			serifSemibold: "SourceSerif4-SemiBold",
+			serifSemiboldItalic: "SourceSerif4-SemiBoldItalic",
+			mono: "Menlo",
+		});
+	});
+	it("sets the spec's reading sizes", () => {
+		expect(typeRoles.agentProse).toEqual({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 26 });
+		expect(typeRoles.yourMessage).toEqual({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 25 });
+		expect(typeRoles.document).toEqual({ fontFamily: "SourceSerif4-Regular", fontSize: 18, lineHeight: 28 });
+		expect(typeRoles.machine).toEqual({ fontFamily: "Menlo", fontSize: 13, lineHeight: 18 });
 	});
 });

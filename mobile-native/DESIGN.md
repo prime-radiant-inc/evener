@@ -28,9 +28,9 @@ typography:
     fontSize: "17px"
     lineHeight: "23px"
   body:
-    fontFamily: "SF system, system-ui, sans-serif"
+    fontFamily: "Source Serif 4, Georgia, serif"
     fontSize: "17px"
-    lineHeight: "25px"
+    lineHeight: "26px"
   metadata:
     fontFamily: "SF system, system-ui, sans-serif"
     fontSize: "13px"
@@ -97,14 +97,14 @@ The implementation switches between light and dark palettes through the native c
 Dimensions below describe React Native logical units (points on iOS). The `px` values in the serialized tokens support documentation previews; they are not physical screen pixels or CSS used by the app.
 
 **Display Font:** SF system (with the platform system fallback)
-**Body Font:** SF system (with the platform system fallback)
+**Body Font:** Source Serif 4 for conversation prose (agent prose 17/26, your messages 17/25); headings inside a reply are SF Pro semibold at 20/17/15, and code is Menlo. See `typeRoles` in `src/design/tokens.ts`, which follows the redesign spec (`docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`, section 16.2).
 
 **Character:** A compact native hierarchy gives project names clear priority while leaving session prose comfortable to read and metadata subordinate.
 
 ### Hierarchy
 - **Project header** (600, 19px): Project name, up to two lines.
 - **Session title** (400, 17px, 23px line-height): Session row title, up to two lines.
-- **Body** (400, 17px, 25px line-height): Conversation and readable content.
+- **Body** (Source Serif 4, 17px, 26px line-height for agent prose / 25px for your messages): Conversation and readable content.
 - **Metadata** (400, 13px, 19px line-height): Counts, paths, and subordinate state.
 
 ### Named Rules

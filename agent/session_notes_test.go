@@ -39,6 +39,7 @@ func TestNormalizeNoteCollapsesWhitespaceAndClamps(t *testing.T) {
 }
 
 func TestAddSessionURLDedupsCanonically(t *testing.T) {
+	t.Parallel()
 	s := newTestNotesSession(t, "/tmp/proj")
 	a, err := s.addSessionURL("docs/x.md", "first")
 	if err != nil {
@@ -230,6 +231,7 @@ func TestSetAgentNoteStoresSeparately(t *testing.T) {
 }
 
 func TestRemoveSessionURLByID(t *testing.T) {
+	t.Parallel()
 	s := newTestNotesSession(t, "/tmp/proj")
 	a, err := s.addSessionURL("https://x.test/y", "")
 	if err != nil {

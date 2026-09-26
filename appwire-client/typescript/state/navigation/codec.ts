@@ -110,6 +110,7 @@ const SESSION_OPTIONAL = [
   "rename",
   "ask_pending",
   "dormant",
+  "offline",
   "updated_at",
   "more_subagents",
   "omitted_descendants",
@@ -221,6 +222,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.rename, bool) &&
     optional(value.ask_pending, bool) &&
     optional(value.dormant, bool) &&
+    optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&
     optional(value.more_subagents, count) &&
     optional(value.omitted_descendants, count) &&

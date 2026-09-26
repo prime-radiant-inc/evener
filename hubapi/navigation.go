@@ -223,20 +223,29 @@ type NavigationWatchSummary struct {
 
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
-	Ref                string     `json:"ref"`
-	HostID             string     `json:"host_id"`
-	SessionID          string     `json:"session_id"`
-	Title              string     `json:"title"`
-	Project            string     `json:"project"`
-	State              string     `json:"state"`
-	Kind               string     `json:"kind"`
-	Branch             string     `json:"branch,omitempty"`
-	ClusterCount       int        `json:"cluster_count,omitempty"`
-	Favorite           bool       `json:"favorite,omitempty"`
-	Rename             bool       `json:"rename,omitempty"`
-	Live               bool       `json:"live"`
-	AskPending         bool       `json:"ask_pending,omitempty"`
-	Dormant            bool       `json:"dormant,omitempty"`
+	Ref          string `json:"ref"`
+	HostID       string `json:"host_id"`
+	SessionID    string `json:"session_id"`
+	Title        string `json:"title"`
+	Project      string `json:"project"`
+	State        string `json:"state"`
+	Kind         string `json:"kind"`
+	Branch       string `json:"branch,omitempty"`
+	ClusterCount int    `json:"cluster_count,omitempty"`
+	Favorite     bool   `json:"favorite,omitempty"`
+	Rename       bool   `json:"rename,omitempty"`
+	Live         bool   `json:"live"`
+	AskPending   bool   `json:"ask_pending,omitempty"`
+	Dormant      bool   `json:"dormant,omitempty"`
+	// Offline marks a row folded into the merged list from a source that is
+	// currently unreachable: its last-known rows stay visible, but they are not
+	// live and cannot serve host-targeted actions until the source reattaches.
+	// It is keyed off the row's source identity (HostID), never the row's own
+	// state, and is never set for the controller's own local rows.
+	//
+	// It sits BESIDE Dormant rather than reusing it: Dormant means the session
+	// has never run, and an offline row that ran must not read as "Not started".
+	Offline            bool       `json:"offline,omitempty"`
 	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
 	MoreSubagents      int        `json:"more_subagents,omitempty"`
 	OmittedDescendants int        `json:"omitted_descendants,omitempty"`
