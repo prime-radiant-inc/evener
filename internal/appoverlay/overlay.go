@@ -22,10 +22,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// A call's output is capped at maxRunningOutputBytes. Passing the cap trims
-// it to its last trimmedRunningOutputBytes and sends the whole item once;
-// deltas resume until it passes the cap again, so a long-running command
-// costs one full item per 64 KB of output rather than one per delta.
 // The overlay remembers at most this many recent rounds and calls (see
 // Overlay.coveredRounds). Forgetting an old one is harmless: its round has
 // ended, so its overlay/end is sent and clients hold its history. Stream and
@@ -37,6 +33,10 @@ const (
 	maxRememberedCalls  = 256
 )
 
+// A call's output is capped at maxRunningOutputBytes. Passing the cap trims
+// it to its last trimmedRunningOutputBytes and sends the whole item once;
+// deltas resume until it passes the cap again, so a long-running command
+// costs one full item per 64 KB of output rather than one per delta.
 const (
 	maxRunningOutputBytes     = 256 << 10
 	trimmedRunningOutputBytes = 192 << 10
@@ -64,17 +64,18 @@ type Overlay struct {
 	attempt int
 	// coveredRounds are the rounds whose ASSISTANT entry is recorded: their
 	// text and reasoning are history now, so later deltas are dropped.
+	// Round end forgets a round's entries in all three of coveredRounds,
+	// discardedRounds and calls below. The caps only bound what round end
+	// never sees: entries of rounds this overlay never runs (restored or
+	// forked history recorded with their round ids) and calls no round
+	// claimed. A thread runs its rounds one after another, so the rounds and
+	// calls still live are always among the most recent.
 	coveredRounds recentSet[struct{}]
 	// discardedRounds are rounds whose uncovered streamed text a preview
 	// reset discarded; unless an ASSISTANT entry covers them after all, they
 	// still end interrupted.
 	discardedRounds recentSet[struct{}]
 	calls           recentSet[*call]
-	// Round end forgets a round's entries in all three. The caps only bound
-	// what round end never sees: entries of rounds this overlay never runs
-	// (restored or forked history recorded with their round ids) and calls
-	// no round claimed. A thread runs its rounds one after another, so the
-	// rounds and calls still live are always among the most recent.
 	// slots holds the streams, previews and tool states by overlay key.
 	slots    map[string]*slot
 	nextSlot uint64
@@ -419,6 +420,7 @@ func (o *Overlay) resetPreview(callID string) []Change {
 		for _, s := range o.slots {
 			if s.item.Kind == appwire.OverlayStream && s.item.StreamID == preview.item.StreamID && s.item.Item.Text != "" {
 				o.discardedRounds.put(roundID, struct{}{})
+				break
 			}
 		}
 	}

@@ -28,8 +28,6 @@ type notice struct {
 	charge       *charge
 }
 
-func (n *notice) isRoundTimings() bool { return n.roundTimings }
-
 // noticeRing is one thread's ephemeral notices, oldest first. Its methods
 // run under the owning Overlay's mutex.
 type noticeRing struct {
@@ -48,7 +46,7 @@ func (r *noticeRing) add(n *notice, budget *Budget) {
 	if n.roundTimings {
 		r.roundTimings++
 	}
-	r.evictOldest(budget, func() bool { return r.roundTimings > maxRoundTimingsNotices }, (*notice).isRoundTimings)
+	r.evictOldest(budget, func() bool { return r.roundTimings > maxRoundTimingsNotices }, func(n *notice) bool { return n.roundTimings })
 	r.evictOldest(budget, func() bool { return len(r.notices)-r.roundTimings > maxOtherNotices }, func(n *notice) bool { return !n.roundTimings })
 	r.evictOldest(budget, func() bool { return r.bytes > maxNoticeBytes }, func(*notice) bool { return true })
 }
