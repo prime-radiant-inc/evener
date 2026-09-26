@@ -1283,8 +1283,8 @@ binary's source (`git SHA`) so the version-match can verify the deploy landed.
   Supervisor detection obeys the same rules: a launchd label or systemd unit is
   accepted only when **exactly one** candidate names an evener hub *and* the hub
   it names owns the configured address. The three outcomes are distinct:
-  **exactly one ⇒ use it**; **none ⇒ the supervisorless branch, which refuses
-  `ErrRestart` with no signal and no relaunch** (a stopped host's cold bootstrap
+  **exactly one ⇒ use it**; **none ⇒ the supervisorless branch, which runs the
+  guarded verify-then-signal ad hoc restart** (a stopped host's cold bootstrap
   is start-only — it has no PID to pin, §"First attach to a stopped host must be
   able to start the hub"); **several ⇒ refuse
   `ErrRestart` with no kill and no relaunch**. An ambiguous match means at
@@ -1484,7 +1484,7 @@ hub.toml [[hosts]] →  hostreg.Registry (component 03)
                         │     changes the protocol a binary speaks
                         ├─ version != controller, and a deploy path can fix it?
                         │     ├─ deploy target build (cross-compile → scp/chmod)
-                        │     └─ restart host hub (identify → supervisor, else refuse ErrRestart)
+                        │     └─ restart host hub (identify → supervisor, else guarded ad hoc restart)
                         │          → Runner.Run on the host: curl /api/health
                         │            → answer + running version == the expected build
                         ├─ version != controller with nothing to deploy?
@@ -1639,7 +1639,8 @@ with the remote hub and its daemons still running.
   Supervisor cases: exactly one evener-named unit → restarted; two candidates →
   `ErrRestart` with no `kill` and no relaunch argv (the ambiguity refusal, never
   "first match" and never an ad hoc launch); zero candidates → the
-  supervisorless refusal: `ErrRestart` with no `kill` and no relaunch argv, and
+  supervisorless guarded ad hoc restart, refusing `ErrRestart` with no `kill`
+  and no relaunch argv only for a listener whose identity does not verify, and
   the cold-bootstrap **start** is the only no-supervisor launch.
 - **Health-verification tests.** Fake runner returns a body reporting the
   previous build's `version` → not accepted; a body reporting the expected
@@ -1892,11 +1893,12 @@ from the component-03 registry.
 - **How the host hub is stopped for restart (resolved, with identification).**
   No new host-side RPC is needed in v1: restart through the host's supervisor
   when one is identified unambiguously; when **none** is identified the manager
-  refuses the restart (`ErrRestart`, no signal, no relaunch) — it never runs the
-  ops doc's recipe itself. That recipe — find the listener by port with `lsof`,
+  runs the guarded verify-then-signal ad hoc restart itself, refusing
+  `ErrRestart` (no signal, no relaunch) only for a listener whose identity does
+  not verify. The ops doc's recipe — find the listener by port with `lsof`,
   verify *what it is* (single listener, evener hub argv, effective SSH user,
   matching address), recover argv/log, `kill` it, wait for the port to clear,
-  relaunch detached — is the **operator's** out-of-band procedure for a
+  relaunch detached — remains the **operator's** out-of-band procedure for a
   supervisorless host, and the cold-bootstrap **start** (no process to identify
   or signal) is the manager's only no-supervisor launch. See §5. `hub.lock`
   stays a pure mutual-exclusion `flock` (`main.go`; `hostlock.go`); it is never
@@ -1934,8 +1936,9 @@ from the component-03 registry.
   and must **not** be used to compare builds.
 - **Detach idiom on the host (partly resolved).** Supervised hubs restart
   through their supervisor (`launchctl kickstart -k`, `systemctl restart`); a
-  supervisorless **restart** is refused, not relaunched (§"Stop/restart
-  mechanics" check 5). An operator relaunches an ad hoc hub with `nohup <argv>
+  supervisorless **restart** is the guarded verify-then-signal ad hoc restart,
+  which relaunches the hub itself (§"Stop/restart mechanics" check 5). An
+  operator relaunches an ad hoc hub out of band with `nohup <argv>
   >> <log> 2>&1 </dev/null &`, preserving the recovered log (ops doc
   §"Restarting an ad hoc Hub"), or discards output (`</dev/null >/dev/null
   2>&1`) when no regular-file log was recovered; the manager's cold-bootstrap
