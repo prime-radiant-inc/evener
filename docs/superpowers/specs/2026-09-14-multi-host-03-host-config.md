@@ -23,7 +23,8 @@ not open connections, does not spawn SSH, and does not implement a source.
 
 - Add `Hosts []HostConfig` to the hub's `Config` and its TOML decoding path
   (`cmd/evener-hub/config.go`).
-- A `HostConfig` entry `{ name, ssh, user?, evener_path?, roots[] }` where
+- A `HostConfig` entry `{ name, ssh, user?, evener_path?, roots[], config_path?,
+  addr?, key_path? }` where
   `name` is the source ID surfaced in refs (`name:<sessionID>`) and URLs.
 - Validation of `name` against the ref grammar, reserve `local`, reject `..`,
   reject duplicates.
@@ -185,6 +186,7 @@ type HostConfig struct {
     Roots      []string `toml:"roots"`
     ConfigPath string   `toml:"config_path"` // optional; host hub.toml the bridge must read
     Addr       string   `toml:"addr"`        // optional; host hub loopback host:port
+    KeyPath    string   `toml:"key_path"`    // optional; SSH identity file (component 08 §6)
 }
 ```
 
@@ -215,6 +217,7 @@ type Host struct {
     Roots      []string
     ConfigPath string
     Addr       string
+    KeyPath    string
 }
 
 type Registry struct { /* mu sync.RWMutex; hosts map[string]Host; edges ... */ }
@@ -246,8 +249,9 @@ import direction is therefore `hub → hostreg` and nothing else — no cycle an
 type mismatch. `LoadConfig` validates by converting `cfg.Hosts` into
 `[]hostreg.Host` and calling `hostreg.New` on that throwaway list
 (`validateHostConfigs`), and the hub converts the same way, field for field
-  (`Name`, `SSH`, `User`, `EvenerPath`, `ConfigPath`, `Addr`, `Roots` — see
-  "`config_path` / `addr`"), when it builds the live registry at
+  (`Name`, `SSH`, `User`, `EvenerPath`, `ConfigPath`, `Addr`, `Roots`,
+  `KeyPath` — see
+  "`config_path` / `addr`" and `key_path`), when it builds the live registry at
 startup. That conversion is the only place the two types meet.
 
 `All()` is the hook surface: component 05 iterates it to `appsource.Registry.Add`

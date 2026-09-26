@@ -705,8 +705,15 @@ migration path is one-time and lossless, and its order is its crash-safety
 story: (1) `hub.toml` is rewritten once with the merged set and the banner —
 atomically, directory synced, so the merged state is durable first; (2) the
 retired sidecar is renamed aside (`hub.hosts.json.migrated` beside it) rather
-than deleted and the directory synced, so the retirement is durable before
-anything can act on the merged state. The retired split made a live name in
+than deleted and the directory synced. The same atomic write as the merged set
+records a machine-managed marker in `hub.toml` — `legacy_sidecar_migrated` —
+and the marker, not the rename's durability alone, is what makes the retirement
+authoritative: the filesystem's directory-sync tolerance (§6 file posture) means
+a rename can be lost to a power failure, but the marker and every later mutation
+live in the one file, so a survivor of one proves the other survived. A boot that
+finds `hub.hosts.json` again with the marker present therefore ignores it as
+stale — logged, never merged, and mutations stay live — so a name the UI removed
+after a completed migration cannot come back on such a filesystem either. The retired split made a live name in
 both files a hard startup error, so the collision rule here is the migration's
 own: a name `hub.toml` already declares wins and the sidecar's duplicate is
 dropped. While an unmigrated sidecar remains, mutations are refused — no
@@ -729,8 +736,9 @@ SSH identity file the shipped Add/Edit dialog collects and `sshconn` dials
 with), so a UI host with a key path round-trips through a rewrite; component
 03's schema carries the field. `hub.toml` also carries the per-host records the
 sibling specs define there: the crash-fencing spec's bootstrap-attempt fence and
-`helperInstalled` flag, the tombstone/generation records of §15, and this
-section's receipts, remnants, and markers. Config-path retention: the hub
+`helperInstalled` flag, the tombstone/generation records of §15, this section's
+receipts, remnants, and markers, and the `legacy_sidecar_migrated` marker a
+completed migration records. Config-path retention: the hub
 supports `--config` paths (`cmd/evener-hub/main.go:203` —
 `deps.loadConfig(opts.configPath, opts.configExplicit)`), but neither the runtime `Config` nor
 `WebConfig` retains the selected path, so the registry carries the canonical config
@@ -2001,7 +2009,9 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   `concurrent-edit` configuration error), the machine-managed banner, an
   in-place rewrite that preserves every pre-existing host entry and every
   non-host key the file carries, the one-time
-  `hub.toml` migration (entries and every machine-managed record survive), the boot-time hard-error duplicate,
+  `hub.toml` migration (entries and every machine-managed record survive, the
+  marker is recorded, and a sidecar that reappears with the marker present is
+  ignored as stale and never re-merged), the boot-time hard-error duplicate,
   swap-failure compensation (prior `hub.toml` bytes restored, runtime reverted,
   retry re-applies cleanly), and the corrupt/schema-invalid `hub.toml` boot hard
   error, the host-admin controller live-set tests (forwarded requests reach
