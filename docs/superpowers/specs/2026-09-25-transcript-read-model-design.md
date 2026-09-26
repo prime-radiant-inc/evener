@@ -564,7 +564,11 @@ thread's history over it.
 not a well-formed entry — does not fail the thread. It is quarantined: the
 entry projects as its own turn, with turn ID `turn_unreadable_<ordinal>`
 (`internal/transcriptindex/build.go`), holding one visible "unreadable entry"
-item naming its ordinal, and the thread's history continues past it, live and on
+item naming its ordinal. A line that does not decode carries no readable
+format marker, and quarantine takes precedence over the legacy rules for it:
+it never gets a `turn_<entryIndex>` ID or joins a legacy group, and it closes
+any open legacy group, so a legacy entry after it starts a new turn. The
+entry projects this way and the thread's history continues past it, live and on
 reload alike. Quarantine applies only to a decode failure, never to a builder
 error over an entry that did decode; a builder error goes through the rebuild
 and failed-state path above instead, so a failure that a whole-file rebuild
@@ -574,7 +578,11 @@ entry never triggers a resync, a rebuild, or the failed-history state.
 A history read of a failed thread first attempts recovery: it rebuilds inside
 the thread's projection serialization, the same rebuild the goroutine runs.
 If that succeeds, the thread is un-failed, its epoch bumps, one resync is
-pushed, and the read returns data at the new epoch. If it fails, the read
+pushed, and the read returns data at the new epoch. Un-failing the thread
+restores live projection. The append hook enqueues recorded entries again once
+the failed state clears. The drain goroutine is woken, and projects every entry
+recorded after the rebuild's boundary (`server/thread_history.go`,
+`recoverForRead`). If it fails, the read
 returns the error `ErrorTranscriptHistoryFailed`, which names the entry
 ordinal that fails to project, and pushes nothing. The response carries no
 items and no snapshot identity, and it carries the boot generation and epoch
