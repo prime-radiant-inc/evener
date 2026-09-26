@@ -342,10 +342,6 @@ async function fillPrompt(user: ReturnType<typeof userEvent.setup>, text: string
   await enterText(user, promptField(), text);
 }
 
-/** Waits for the mount-time catalogs to land. The Advanced-options toggle is
- * the sentinel because it renders unconditionally and is not itself one of the
- * awaited catalogs' outputs - unlike the harness select, which now lives INSIDE
- * that collapsed panel and so isn't in the tree at rest. */
 // The pane debounces its catalog, slash-catalog and plugin-preview loads by
 // 250ms. Fake timers own that clock, and the stubbed `jest` global lets Testing
 // Library's findBy/waitFor polls advance it, so each debounce costs a poll
@@ -357,8 +353,20 @@ function setupUser() {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 }
 
+/** Lets the hub answers the pane is waiting on land inside act: the mount-time
+ * catalogs, or whatever a host, directory or route change just requested. The
+ * fake client answers on microtasks, and an async act keeps collecting React
+ * work until a real macrotask passes with none left. Testing Library cannot do
+ * this for us here: under these fake timers its post-wait "drain" is a
+ * synchronous fake-clock tick, so answers still in flight when a findBy or
+ * waitFor returns would commit outside act. Call it straight after a
+ * synchronous action (render, fireEvent, a sync act) so no await sits between
+ * the action and the flush. Debounced loads still need their clock advanced
+ * first. The Advanced-options toggle is the sentinel that the form rendered;
+ * it renders unconditionally. */
 async function settled(): Promise<void> {
-  await screen.findByRole("button", { name: "Advanced options" });
+  await act(async () => {});
+  screen.getByRole("button", { name: "Advanced options" });
 }
 
 async function visitSpawnURL(url: string): Promise<void> {
@@ -946,6 +954,7 @@ test("stale-model sweep snapshots the current draft on provider refresh after na
   );
   connectionStore.getState().connect(fake);
   renderSpawn(fake);
+  await settled();
   await waitFor(() => expect(fake.calls.some((c) => c.method === "model/list")).toBe(true));
   await visitSpawnURL("/new?dir=/tmp/review-b");
   expect(modelValue().textContent).toBe("openai/retired");
@@ -1424,7 +1433,8 @@ test("connection handoff shows the actual instance models and preserves draft un
   await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Team local" }));
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  await settled();
   await user.click(await screen.findByRole("button", { name: "Continue" }));
   // The completed connection hands off to the picker, which reopens scoped to
   // the connected instance: its models are offered, the unrelated provider's
@@ -1512,7 +1522,8 @@ test("fresh guided connection waits for Continue and explicit model choice witho
   });
   await user.click(await screen.findByRole("button", { name: "OpenAI" }));
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  await settled();
   const next = await screen.findByRole("button", { name: "Continue" });
   expect(screen.queryByRole("option", { name: /Server choice/ })).toBeNull();
   expect(modelValue().textContent).not.toBe("openai/from-server");
@@ -1596,7 +1607,8 @@ test("closing the handoff without choosing requires an explicit model before Sta
   });
   await user.click(await screen.findByRole("button", { name: "OpenAI" }));
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  await settled();
   await user.click(await screen.findByRole("button", { name: "Continue" }));
   await screen.findByRole("option", { name: /Server choice/ });
   await user.keyboard("{Escape}");
@@ -2869,6 +2881,7 @@ test("Welcome preserves URL-prefilled setup fields when routing to Spawn", async
   await waitFor(() => expect(window.location.pathname).toBe("/new"));
   welcome.unmount();
   renderSpawn(client);
+  await settled();
   await waitFor(() =>
     expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("fix it"),
   );
@@ -2879,6 +2892,7 @@ test("Welcome preserves URL-prefilled setup fields when routing to Spawn", async
 test("prefills the prompt and working dir from ?dir=/?prompt=", async () => {
   window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp&prompt=fix%20it");
   renderSpawn(readyClient());
+  await settled();
 
   await waitFor(() =>
     expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("fix it"),
@@ -2900,6 +2914,7 @@ test("prefills the prompt and working dir from ?dir=/?prompt=", async () => {
 test("kata 11ee: a second ?dir= navigation while already mounted still prefills the working dir", async () => {
   window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
   renderSpawn(readyClient());
+  await settled();
   await waitFor(() => expectWorkingDir("/home/me/app"));
 
   act(() => {
@@ -2908,6 +2923,7 @@ test("kata 11ee: a second ?dir= navigation while already mounted still prefills 
   });
 
   await waitFor(() => expectWorkingDir("/home/other"));
+  await settled();
 });
 
 // Same defect class as the ?dir= case above - readUrlPrefill's ?prompt= entry
@@ -3983,7 +3999,8 @@ test("an Advanced-options model override after onboarding satisfies the requirem
   });
   await user.click(await screen.findByRole("button", { name: "OpenAI" }));
   await user.type(screen.getByLabelText("API key"), "fixture-only-key");
-  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save and check" }));
+  await settled();
   await user.click(await screen.findByRole("button", { name: "Continue" }));
   await screen.findByRole("option", { name: /Server choice/ });
   await user.keyboard("{Escape}");
@@ -4124,6 +4141,7 @@ test("a model response from before a credential refresh cannot discard the saved
   });
   connectionStore.getState().connect(client);
   renderSpawn(client);
+  await settled();
   await waitFor(() => expect(modelTrigger().textContent).toContain("openai/gpt-5"));
   expect(pending.length).toBeGreaterThan(0);
   refreshed = true;
@@ -5068,9 +5086,10 @@ test.each(["desktop", "mobile"])("%s directory picker follows route directory ch
       : screen.getByLabelText(/^Working directory:/, { selector: "button:not(#spawn-cwd)" }),
   );
   const input = await screen.findByRole("textbox", { name: "Path" });
+  await settled();
   await user.clear(input);
   await user.type(input, "/uncommitted");
-  act(() => {
+  await act(async () => {
     window.history.pushState({}, "", "/new?dir=%2Fhome%2Fother");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
@@ -5738,7 +5757,7 @@ test("a /model value from the previous cwd does not validate after switching dir
 
   await waitFor(() => expect(screen.getByText(/\/model: unknown value "openai\/gpt-5"/)).toBeTruthy());
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
-  otherCatalog.resolve();
+  await act(async () => otherCatalog.resolve());
 });
 
 test("a /reasoning-effort value from the previous cwd does not validate after switching directories", async () => {
@@ -5790,7 +5809,7 @@ test("a /reasoning-effort value from the previous cwd does not validate after sw
 
   await waitFor(() => expect(screen.getByText(/\/reasoning-effort: unknown value "high"/)).toBeTruthy());
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
-  otherCatalog.resolve();
+  await act(async () => otherCatalog.resolve());
 });
 
 test("a model picked after a failed background load validates for /model", async () => {
@@ -6319,6 +6338,7 @@ test("selecting an already-online remote host issues no attach call", async () =
   await settled();
 
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
 
   // The selection still moves the draft - and so the launch target - while
   // issuing no attach call at all.
@@ -6379,6 +6399,7 @@ test("changing the host select issues no attach call", async () => {
 
   // An online selection moves the draft without an attach.
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
   await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
   expect(attachCalls(fake)).toEqual([]);
 
@@ -6391,6 +6412,7 @@ test("changing the host select issues no attach call", async () => {
 
   // The Connect button still attaches the offline host.
   fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
+  await settled();
   await waitFor(() =>
     expect(
       fake.calls.some(
@@ -6420,6 +6442,7 @@ test("an offline host offers an enabled Connect action that attaches it", async 
   const connect = screen.getByRole("button", { name: "Connect offline-host" }) as HTMLButtonElement;
   expect(connect.disabled).toBe(false);
   fireEvent.click(connect);
+  await settled();
 
   await waitFor(() =>
     expect(
@@ -6768,6 +6791,7 @@ test("a remote host submission is not blocked by missing controller-local provid
   connectionStore.getState().connect(fake);
   window.history.pushState({}, "", "/new?dir=/tmp/remote-providers");
   renderSpawn(fake);
+  await settled();
 
   // Local: the controller's missing provider disables Start and explains why.
   await screen.findByRole("button", { name: "Connect provider" });
@@ -6775,11 +6799,13 @@ test("a remote host submission is not blocked by missing controller-local provid
 
   // Remote: that same controller-local state must not block the launch.
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
   await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 
   // Switching back restores the local block.
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
+  await settled();
   await screen.findByRole("button", { name: "Connect provider" });
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 });
@@ -6837,10 +6863,12 @@ test("a remote launch the selected host cannot serve reports that host's own fai
   connectionStore.getState().connect(fake);
   window.history.pushState({}, "", "/new?dir=/tmp/remote-providers-fail");
   renderSpawn(fake);
+  await settled();
 
   // Starts blocked by the CONTROLLER's missing provider check (local target).
   await screen.findByRole("button", { name: "Connect provider" });
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
   await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
 
   await fillPrompt(user, "run remotely");
@@ -7084,6 +7112,7 @@ test("a controller-catalog fallback model is retired when the target becomes rem
   // Switching to a remote host retires it: it is the controller's model, not
   // the selected host's.
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
   await waitFor(() => expect(modelTrigger().textContent).toContain("(default)"));
   expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
 
@@ -7285,6 +7314,7 @@ test("a controller-catalog fallback model is still retired after a pane remount"
   expect(modelTrigger().textContent).toContain(MODEL_A_FALLBACK);
 
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
   await waitFor(() => expect(modelTrigger().textContent).toContain("(default)"));
   expect(modelTrigger().textContent).not.toContain("claude-sonnet-4-5");
 
@@ -7462,6 +7492,7 @@ test("the picker creates a folder on the selected host, never on the controller"
   );
   await user.click(screen.getByRole("button", { name: "New folder" }));
   await user.type(screen.getByRole("textbox", { name: "Folder name" }), "child{Enter}");
+  await settled();
 
   // Nothing was created on the controller...
   expect(fake.calls.some((call) => call.method === "evener/dirs/create")).toBe(false);
@@ -8090,7 +8121,7 @@ test("a selected remote host's wrapped config notification reloads the pane mode
   await waitFor(() => expect(paneLoads()).toBeGreaterThan(0));
   const before = paneLoads();
 
-  act(() =>
+  await act(async () =>
     fake.emitNotification({
       method: "evener/host/notification",
       params: { host: "buildbox", method: "evener/auth/updated", params: {} },
