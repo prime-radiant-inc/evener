@@ -38,6 +38,7 @@ import {
   spliceSlashCommand,
   type ThreadModel,
 } from "@evener/appwire-client";
+import { ownPendingSend } from "@evener/appwire-client/state/mutation";
 import {
   type FormEvent,
   memo,
@@ -97,13 +98,7 @@ import {
   readDraftRevision,
   writeComposerDraft,
 } from "./draft";
-import {
-  type PendingTurnEntry,
-  pendingTurnEntries,
-  QueueStrip,
-  submitWithPendingTracking,
-  usePendingTurnEntries,
-} from "./queue";
+import { pendingTurnEntries, QueueStrip, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   discardRecoveryPendingTurn,
   refreshPendingTurnsProjection,
@@ -852,40 +847,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // refused client-side (before any durable write) when a selection is staged
   // and the target never advertised that it consumes skill items.
   const skillInputSupported = model.capabilities.skillInput === true;
-  // A turn/start THIS COMPOSER already submitted, before any status frame for
-  // it has come back. Without it a fast second message is composed while the
-  // thread still reads idle, routed to turn/start, and refused by the daemon
-  // with Conflict("turn is already active") - see tier 6 in
-  // deriveSendQueueAvailability.
-  //
-  // Someone else's pending send is excluded deliberately, and tier 6 does not
-  // work without that. usePendingTurnEntries also surfaces
-  // model.pendingMutations, which is the DAEMON's session-wide mutation
-  // projection: it covers every client on the session, reducer.ts writes it only
-  // at hydrate, and no notification ever refreshes it. Feeding it to a routing
-  // decision would reroute this composer on another tab's or the TUI's in-flight
-  // send, from a snapshot that may be arbitrarily old - exactly the "daemon's
-  // state arriving late" that tier 6's own justification rests on not being.
-  //
-  // The question is whose send it is, which is what fromThisClient answers. It
-  // is deliberately not entry.source: that names the projection describing the
-  // row, and a hydrate landing mid-send re-describes THIS client's own
-  // unsettled send as "authoritative" (pendingReconcile's own doc comment).
-  // Reading routing off the presentation source therefore lost tier 6 for the
-  // sender at exactly the moment the daemon confirmed it had the send - the
-  // next message went to turn/start and bounced.
-  //
-  // blockedUnknown counts too: it is this client's own send whose response was
-  // lost, so the turn may already be running. Dropping it dropped tier 6 for
-  // exactly the uncertain window, and the next message bounced on the turn
-  // that send had applied.
-  //
-  // A canceled row does not count: Stop wrote its cancellation before dispatch
-  // (stop-cancellation-outbox §4), so it is provably not in flight and no turn
-  // can be running because of it. Counting it parked the next message in queue
-  // mode behind a turn that never started.
-  const ownPendingSend = (entries: readonly PendingTurnEntry[]) =>
-    entries.some((entry) => entry.fromThisClient && entry.state !== "canceled");
+  // Tier 6: see ownPendingSend in @evener/appwire-client/state/mutation.
   const hasPendingSend = ownPendingSend(pendingSendEntries);
   // The Send/Queue availability of a model and this client's pending send: read
   // at render for the button and its tooltip, and again at submit from the

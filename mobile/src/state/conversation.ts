@@ -20,7 +20,7 @@
 // refresh path (triggered by the store-owned drain scheduler, not timers).
 
 import { create } from "zustand";
-import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
+import { ownPendingSend, reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import type {
   MutationAttachmentRef,
   MutationPersistenceSnapshot,
@@ -30,6 +30,7 @@ import {
   applyNotification,
   configFingerprint,
   copyItemTextPresence,
+  deriveSendQueueAvailability,
   foldWarningParams,
   isStaleCursorError,
   isActiveItem,
@@ -465,6 +466,25 @@ function requireControl(
         `Action "${action}" is not available for this thread`,
     );
   }
+}
+
+// The queue's precondition: a running turn, or this client's own send that
+// the session has not reflected yet (deriveSendQueueAvailability's tier 6).
+// The durable outbox accepts a send before the hub answers, so a second
+// message composed in that window waits behind the first; as a turn/start it
+// would be refused as a turn already running.
+function requireQueue(
+  conv: MobileConversation,
+  pending: readonly PendingTurnEntry[] | null | undefined,
+): void {
+  const availability = deriveSendQueueAvailability({
+    statusType: conv.status.type,
+    capabilities: conv.capabilities,
+    hasPendingSend: ownPendingSend(pending),
+  });
+  // Every state that refuses a queue here also refuses it in sessionControls,
+  // so requireControl throws with that control's own reason.
+  if (!availability.canQueue) requireControl(conv, "queue", "queue");
 }
 
 // Exported so this module's own test file and any other reader can bound a
@@ -4298,7 +4318,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
       async queue(service, input) {
         const state = get();
         if (state.conversation === null) return;
-        requireControl(state.conversation, "queue", "queue");
+        requireQueue(state.conversation, state.pendingMutations);
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
         if (opBinding === null) return;
