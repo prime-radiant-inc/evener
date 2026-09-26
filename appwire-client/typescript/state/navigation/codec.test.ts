@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 // filesystem read would resolve against whichever working directory the
 // consumer's test runner uses, and package-test-files.mjs refuses one.
 import timestampFixture from "../../../../cmd/evener-hub/testdata/navigation/timestamps.json?raw";
+import valueRecordsFixture from "../../../../cmd/evener-hub/testdata/navigation/value-records.json?raw";
 import type { NavigationSnapshot } from "../../types.gen";
 import {
   decodeNavigationResponse,
@@ -25,6 +26,10 @@ const key = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
 const base = { generationId: "g", revision: 1, etag: "tag-1" };
 const privateValues = ["private-generation", "private-body-value", "private-child", "private-owner"];
 const timestampFixtures = JSON.parse(timestampFixture) as Array<{ value: string; valid: boolean }>;
+const valueRecords = JSON.parse(valueRecordsFixture) as Record<
+  "session" | "project" | "pin_section" | "manifest" | "location",
+  Record<string, unknown>
+>;
 
 const entityKey = (resource: ResourceKey, digit: string) =>
   `${navigationViewScope(resource)}/entity/${digit.repeat(64)}`;
@@ -1193,4 +1198,88 @@ test("codec rejects an armed omitted count above the omitted watch total", () =>
   expect(statusFor(undefined, 0)).toBe("snapshot");
   // An absent total is zero, not unknown: the Go schema rejects this shape too.
   expect(() => statusFor(undefined, 1)).toThrow();
+});
+
+// cmd/evener-hub/navigation_value_records_test.go keeps this fixture naming
+// every wire field of every navigation value record. Decoding it must keep all
+// of them: a field the hub sends that the codec does not list would be dropped
+// without a sound, and this is the test that hears it.
+test("codec keeps every field the hub's value records carry", () => {
+  const live: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
+  const session = entityKey(live, "1");
+  const liveDecoded = decodedSnapshot(live, {
+    metadata: { generation_id: "g", revision: 1, offset: 0, limit: 50, remaining: 0, truncated: false },
+    entities: [{ key: session, kind: "session", value: valueRecords.session }],
+    containers: [
+      {
+        key: navigationRootContainerKey(live, "sessions"),
+        owner: { kind: "resource_root", slot: "sessions" },
+        children: [session],
+      },
+      {
+        key: navigationOwnedContainerKey(session, "children"),
+        owner: { kind: "entity", entityKey: session, slot: "children" },
+        children: [],
+      },
+    ],
+  });
+  expect(liveDecoded.snapshot.entities[0]?.value).toEqual(valueRecords.session);
+
+  const catalog: ResourceKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 100 };
+  const project = entityKey(catalog, "3");
+  const catalogDecoded = decodedSnapshot(catalog, {
+    metadata: { generation_id: "g", revision: 1, offset: 0, limit: 100, remaining: 0 },
+    entities: [{ key: project, kind: "project", value: valueRecords.project }],
+    containers: [
+      {
+        key: navigationRootContainerKey(catalog, "projects"),
+        owner: { kind: "resource_root", slot: "projects" },
+        children: [project],
+      },
+    ],
+  });
+  expect(catalogDecoded.snapshot.entities[0]?.value).toEqual(valueRecords.project);
+
+  const pins: ResourceKey = { kind: "pin_catalog", offset: 0, limit: 100 };
+  const pin = entityKey(pins, "2");
+  const pinsDecoded = decodedSnapshot(pins, {
+    metadata: { generation_id: "g", revision: 1, offset: 0, limit: 100, remaining: 0 },
+    entities: [{ key: pin, kind: "pin_section", value: valueRecords.pin_section }],
+    containers: [
+      {
+        key: navigationRootContainerKey(pins, "pin_sections"),
+        owner: { kind: "resource_root", slot: "pin_sections" },
+        children: [pin],
+      },
+    ],
+  });
+  expect(pinsDecoded.snapshot.entities[0]?.value).toEqual(valueRecords.pin_section);
+
+  const manifest: ResourceKey = { kind: "manifest" };
+  const manifestDecoded = decodedSnapshot(manifest, {
+    metadata: valueRecords.manifest,
+    entities: [],
+    containers: [
+      {
+        key: navigationRootContainerKey(manifest, "manifest"),
+        owner: { kind: "resource_root", slot: "manifest" },
+        children: [],
+      },
+    ],
+  });
+  expect(manifestDecoded.snapshot.metadata).toEqual(valueRecords.manifest);
+
+  const location: ResourceKey = { kind: "location", ref: String(valueRecords.location.ref) };
+  const locationDecoded = decodedSnapshot(location, {
+    metadata: valueRecords.location,
+    entities: [],
+    containers: [
+      {
+        key: navigationRootContainerKey(location, "session"),
+        owner: { kind: "resource_root", slot: "session" },
+        children: [],
+      },
+    ],
+  });
+  expect(locationDecoded.snapshot.metadata).toEqual(valueRecords.location);
 });
