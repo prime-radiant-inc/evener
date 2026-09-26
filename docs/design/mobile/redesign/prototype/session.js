@@ -193,9 +193,12 @@
     EV.S.focusComposer = sid;
     EV.update();
   };
+  // A fork or an aside starts as a copy of s. Its usage, context and links
+  // are its own, so what it does never shows up on s.
+  const copySession = (s, props) => Object.assign({}, s, { usage: { ...s.usage }, ctx: { ...s.ctx }, urls: (s.urls || []).slice() }, props);
   EV.fork = function (s, text) {
     const id = "s-fork-" + Date.now();
-    const ns = Object.assign({}, s, { id, title: s.title + " (fork)", state: "idle", unseen: false, category: null, updatedAt: Date.now(), startedAt: Date.now(), subs: null, usage: { ...s.usage }, ctx: { ...s.ctx }, urls: (s.urls || []).slice() });
+    const ns = copySession(s, { id, title: s.title + " (fork)", state: "idle", unseen: false, category: null, updatedAt: Date.now(), startedAt: Date.now(), subs: null });
     EV.S.sessions.push(ns);
     EV.S.transcripts[id] = (EV.S.transcripts[s.id] || []).filter((x) => x.t !== "ask" && x.t !== "appr").slice(0, 3).concat([{ t: "sys", text: "Forked from “" + s.title + "”" }]);
     EV.S.drafts[id] = text || "";
@@ -229,6 +232,19 @@
     EV.update();
   };
 
+  // A steer shows as a ghost until the agent's next step, then lands in the
+  // transcript and runs onLand.
+  EV.steer = function (s, text, onLand) {
+    const S = EV.S;
+    S.steering[s.id] = { text, at: Date.now() };
+    EV.later(2200, () => {
+      if (!S.steering[s.id]) return;
+      delete S.steering[s.id];
+      EV.addItem(s.id, { t: "user", text, kind: "steer" });
+      if (onLand) onLand();
+      EV.update();
+    });
+  };
   EV.sendMessage = function (s, text, mode, kind) {
     const S = EV.S;
     text = text.trim();
@@ -254,16 +270,11 @@
         EV.log("send", { sessionId: s.id, mode: "queue", text, images: imgs });
         EV.toast("Queued for when this turn ends");
       } else {
-        S.steering[s.id] = { text, at: Date.now() };
-        EV.log("send", { sessionId: s.id, mode: "steer", text, images: imgs });
-        EV.later(2200, () => {
-          if (!S.steering[s.id]) return;
-          delete S.steering[s.id];
-          EV.addItem(s.id, { t: "user", text, kind: "steer" });
+        EV.steer(s, text, () => {
           s.updatedAt = Date.now();
-          EV.update();
           EV.laterInTurn(s, 2600, () => { EV.addItem(s.id, { t: "agent", md: "Got it. Adjusting course: " + text.charAt(0).toLowerCase() + text.slice(1).replace(/[.!]?$/, ".") }); s.updatedAt = Date.now(); });
         });
+        EV.log("send", { sessionId: s.id, mode: "steer", text, images: imgs });
       }
       S.prefs.hintUses++;
       EV.update();
@@ -518,7 +529,7 @@
     const steer = S.steering[s.id];
     return html`${steer ? html`<div class="u-msg ghost"><div class="u-bubble">${steer.text}</div><div class="u-cap">Steering · arrives at the next step</div></div>` : null}
       ${q.map((m) => html`<div class="u-msg ghost" key=${m.id}><div class="u-bubble">${m.text}</div><div class="u-cap">Queued · sends when this turn ends</div>
-        <div class="ghost-row"><button class="mini-btn" onClick=${() => { S.queue[s.id] = q.filter((x) => x !== m); S.steering[s.id] = { text: m.text, at: Date.now() }; EV.log("queue_promote", { sessionId: s.id }); EV.update(); EV.later(2200, () => { if (S.steering[s.id]) { delete S.steering[s.id]; EV.addItem(s.id, { t: "user", text: m.text, kind: "steer" }); EV.update(); } }); }}>Steer now</button>
+        <div class="ghost-row"><button class="mini-btn" onClick=${() => { S.queue[s.id] = q.filter((x) => x !== m); EV.steer(s, m.text); EV.log("queue_promote", { sessionId: s.id }); EV.update(); }}>Steer now</button>
         <button class="mini-btn" onClick=${() => { S.queue[s.id] = q.filter((x) => x !== m); S.drafts[s.id] = m.text; S.focusComposer = s.id; EV.log("queue_edit", { sessionId: s.id }); EV.update(); }}>Edit</button>
         <button class="mini-btn danger" onClick=${() => { S.queue[s.id] = q.filter((x) => x !== m); EV.log("queue_cancel", { sessionId: s.id }); EV.toast("Removed from queue"); EV.update(); }}>Cancel</button></div></div>`)}`;
   }
@@ -840,8 +851,8 @@
   const noteTimers = {};
   const NOTE_DELAY = 10000;
   const agentIdle = (s) => s.state === "idle" || s.state === "yourmove";
-  function saveNote(s, S) {
-    if (EV.S !== S) return;
+  function saveNote(s) {
+    const S = EV.S;
     const text = S.noteDrafts[s.id];
     if (text == null) return;
     const woke = agentIdle(s);
@@ -871,14 +882,14 @@
     if (opts && opts.now) {
       clearTimeout(noteTimers[s.id]);
       EV.log("note_leave", { sessionId: s.id, text: draft, how: "close" });
-      saveNote(s, S);
+      saveNote(s);
       return;
     }
     // The field can blur more than once before the save lands; one leave.
     if (S.noteState[s.id] === "pending") return;
     S.noteState[s.id] = "pending";
     EV.log("note_leave", { sessionId: s.id, text: draft, how: "blur" });
-    noteTimers[s.id] = EV.later(NOTE_DELAY, () => saveNote(s, S));
+    noteTimers[s.id] = EV.later(NOTE_DELAY, () => saveNote(s));
     EV.update();
   };
   EV.focusNote = function (s) {
@@ -1016,7 +1027,7 @@
     const [txt, setTxt] = useState("");
     const go = () => {
       const id = "s-aside-" + Date.now();
-      EV.S.sessions.push(Object.assign({}, s, { id, title: "Aside: " + txt.trim().split(/\s+/).slice(0, 5).join(" "), state: "working", activity: "Thinking", category: null, subs: null, updatedAt: Date.now(), startedAt: Date.now(), unseen: false, tasks: null, goal: null, notes: null, attachments: [], usage: { ...s.usage }, ctx: { ...s.ctx }, urls: (s.urls || []).slice() }));
+      EV.S.sessions.push(copySession(s, { id, title: "Aside: " + txt.trim().split(/\s+/).slice(0, 5).join(" "), state: "working", activity: "Thinking", category: null, subs: null, updatedAt: Date.now(), startedAt: Date.now(), unseen: false, tasks: null, goal: null, notes: null, attachments: [] }));
       EV.S.transcripts[id] = [{ t: "sys", text: "Aside from “" + s.title + "” with the same setup" }, { t: "user", text: txt.trim() }, { t: "think", live: true }];
       EV.log("aside", { from: s.id, to: id, text: txt.trim() });
       EV.closeAllSheets();

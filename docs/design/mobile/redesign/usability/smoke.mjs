@@ -161,6 +161,8 @@ async function runChecks(page, scheme) {
   // Real UI flows, by tapping, asserted against the action log.
   const tapRole = async (role, name) => { const loc = page.getByRole(role, { name, exact: false }).first(); await loc.waitFor({ timeout: 4000 }); await loc.tap(); await sleep(250); };
   const tap = async (text) => { const loc = page.getByText(text, { exact: true }).first(); await loc.waitFor({ timeout: 4000 }); await loc.tap(); await sleep(250); };
+  // Types into the session's composer, then taps one of its buttons: Send, Steer or Queue.
+  const compose = async (text, button) => { await page.locator('textarea[aria-label="Message"]').tap(); await page.keyboard.type(text); await page.getByRole('button', { name: button, exact: true }).tap(); await sleep(250); };
   // A finger held down long enough for a long-press, then lifted.
   const holdAt = async (x, y) => {
     const cdp = await page.context().newCDPSession(page);
@@ -182,8 +184,7 @@ async function runChecks(page, scheme) {
     await ev(page, `window.__proto.trigger('question')`); await sleep(400);
     if (await page.locator('.dock [aria-checked="true"]').count()) throw new Error('the question asked again arrives with the last answer selected');
     await tapRole('button', 'Collapse question');
-    await page.locator('textarea[aria-label="Message"]').tap(); await page.keyboard.type('Keychain, with a file fallback');
-    await page.getByRole('button', { name: 'Send', exact: true }).tap(); await sleep(300);
+    await compose('Keychain, with a file fallback', 'Send');
     await logHas(page, 'answer', (e) => e.how === 'typed');
     await ev(page, `window.__proto.trigger('question')`); await sleep(400);
     if (await page.locator('.dock-min').count()) throw new Error('the question asked again arrives collapsed');
@@ -198,8 +199,7 @@ async function runChecks(page, scheme) {
   });
   await check(S('flow-stop-silences-the-reply'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-deslop')`); await sleep(400);
-    await page.locator('textarea[aria-label="Message"]').tap(); await page.keyboard.type('Tighten the install section');
-    await page.getByRole('button', { name: 'Send', exact: true }).tap(); await sleep(300);
+    await compose('Tighten the install section', 'Send');
     await tapRole('button', 'Stop this turn'); await sleep(3600);
     const last = await ev(page, `(() => { const tr = EV.S.transcripts['s-deslop']; return tr[tr.length - 1]; })()`);
     if (!last || last.text !== 'Stopped by you') throw new Error('the agent replied after you stopped the turn: ' + JSON.stringify(last));
@@ -208,8 +208,7 @@ async function runChecks(page, scheme) {
   // task before may land in the fresh transcript or action log.
   await check(S('flow-reset-drops-pending-work'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-tasklist')`); await sleep(400);
-    await page.locator('textarea[aria-label="Message"]').tap(); await page.keyboard.type('Also cover the empty state');
-    await page.getByRole('button', { name: 'Steer', exact: true }).tap(); await sleep(100);
+    await compose('Also cover the empty state', 'Steer');
     await ev(page, `EV.reconnectHost('paradise-park')`);
     await reset(page); await sleep(2600);
     const leaked = await ev(page, `({ steers: EV.S.transcripts['s-tasklist'].filter((x) => x.kind === 'steer').map((x) => x.text), log: window.__proto.log.map((e) => e.type).filter((t) => t !== 'reset'), toast: EV.S.toast && EV.S.toast.text })`);
@@ -229,11 +228,9 @@ async function runChecks(page, scheme) {
   });
   await check(S('flow-steer-and-queue'), page, async () => {
     await reset(page); await ev(page, `EV.openSession('s-tasklist')`); await sleep(400);
-    await page.locator('textarea[aria-label="Message"]').tap(); await page.keyboard.type('Also cover the empty state');
-    await page.getByRole('button', { name: 'Queue', exact: true }).tap(); await sleep(250);
+    await compose('Also cover the empty state', 'Queue');
     await logHas(page, 'send', (e) => e.mode === 'queue');
-    await page.locator('textarea[aria-label="Message"]').tap(); await page.keyboard.type('Stop and switch to the Tasks panel');
-    await page.getByRole('button', { name: 'Steer', exact: true }).tap(); await sleep(250);
+    await compose('Stop and switch to the Tasks panel', 'Steer');
     await logHas(page, 'send', (e) => e.mode === 'steer');
   });
   await check(S('flow-row-tap-and-next'), page, async () => {
