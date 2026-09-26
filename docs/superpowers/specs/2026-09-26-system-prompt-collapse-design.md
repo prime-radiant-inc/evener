@@ -18,9 +18,9 @@ that check how the prompt is assembled without pinning any of its wording.
 
 1. **Part 1, this document.** Collapse the infrastructure. The rendered prompt
    changes in exactly two places (see "Intended prompt changes").
-2. **Part 2.** Rewrite the prose in the new template. It starts by turning the
-   behaviors listed under "Behaviors for part 2" into live probes and recording
-   a baseline before any prose changes.
+2. **Part 2.** Rewrite the prose in the new template. It starts by recording
+   baseline transcripts for a fixed set of tasks before any prose changes (see
+   "Evaluating part 2").
 3. **Part 3.** Rewrite the bundled role prompts (`internal/bundled/agents/`,
    `internal/bundled/plugins/coordinator-workflow/agents/`). Issue #2401, the
    prose-pinning tests on those files, belongs to this part.
@@ -49,6 +49,10 @@ Jesse made these on 2026-09-26.
 6. **Tests cover machinery and agent behavior, never prose.** This follows
    `docs/developing-evener/testing.md` ("Prompt Prose Is Not a Test Oracle").
    Obsolete tests and prose assertions are both deleted; none is ported.
+7. **Part 2 is judged by reading transcripts** from a fixed set of tasks that
+   Bot chooses. There is no terminal-bench run and no tool-fluency probe
+   campaign: the prompt will change substantially after part 1 lands, and
+   neither has the statistical power or the pass/fail checks to judge prose.
 
 ## Current state
 
@@ -296,12 +300,24 @@ PR description includes the scratch test's source, the commands, and the diff:
 - PR 2 shows the two intended changes and nothing else.
 - PR 3 shows no difference at all.
 
-### Behaviors for part 2
+### Evaluating part 2
 
-The deleted prose tests each pointed at a behavior someone cared about. Part 2
-turns these into live, opt-in probes in `tools/tool-fluency`, which already runs
-probes across models, providers, and roles, and records a baseline before the
-prose changes:
+Part 2's goal is less slop in what the agent writes and thinks, and only reading
+can judge that. At the start of part 2, Bot picks five to eight real tasks and
+records baseline transcripts for them on one fixed model and settings. Each
+rewrite PR reruns the same tasks, and the transcripts are read side by side:
+the agent's messages, its thinking, and what it did.
+
+The task set mixes root and delegate work, and debugging, implementation,
+research and explanation, and one ambiguous request that should lead to
+`ask_user`. That task runs in an interactive session and ends at the question,
+which is what gets read; the rest run headless. Each task is small enough to
+finish in one session and runs against a self-contained fixture, so reruns
+start from the same state. Every behavior below that a small task can exercise
+gets at least one task, and the task list says which task covers which.
+
+The deleted prose tests each pointed at a behavior someone cared about. They
+become the reading checklist, alongside the style problems the rewrite targets:
 
 1. A gate that timed out, failed to launch, hit a sandbox denial, or never ran
    is reported as incomplete verification, with its evidence.
@@ -312,8 +328,6 @@ prose changes:
    failure only after one known-good smoke case passes on each participant.
 4. Once the evidence supports one falsifiable hypothesis, the agent stops
    surveying code and runs the smallest test that could refute it.
-   (`tools/tool-fluency/probes-nbcf/diagnostic_fix.seeded_config_path.yaml`
-   already probes this.)
 5. After two incomplete implement, review, and fix cycles on one task, the
    agent stops and reports, reslices, or asks for direction.
 6. When a long or delegated task changes phase, the agent sends a checkpoint:
