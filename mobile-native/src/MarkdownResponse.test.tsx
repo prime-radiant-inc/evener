@@ -38,11 +38,13 @@ it("sets agent prose in Source Serif 4 at 17/26 and headings in the system font"
 	expect(s.paragraph).toMatchObject({ fontFamily: "SourceSerif4-Regular", fontSize: 17, lineHeight: 26, color: "#252521" });
 	expect(s.list).toMatchObject({ fontFamily: "SourceSerif4-Regular" });
 	expect(s.list).toMatchObject({ markerFontWeight: "normal" });
+	expect(s.blockquote).toMatchObject({ fontFamily: "SourceSerif4-Regular" });
 	expect(s.h1).toMatchObject({ fontSize: 20, fontWeight: "600" });
 	expect(s.h1.fontFamily).toBeUndefined();
 	expect(s.h2).toMatchObject({ fontSize: 17, fontWeight: "600" });
 	expect(s.h3).toMatchObject({ fontSize: 15, fontWeight: "600" });
 	expect(s.codeBlock).toMatchObject({ fontFamily: "Menlo" });
+	expect(s.code).toMatchObject({ fontFamily: "Menlo" });
 });
 
 it("uses the dimmer prose ink in dark mode", () => {

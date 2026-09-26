@@ -1,4 +1,4 @@
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { Action, Copy, useColors } from "./ui";
 import { render, renderHook } from "./renderNative.testkit";
 
@@ -13,6 +13,12 @@ vi.mock("react-native", async () => ({
 	useColorScheme: () => mode.scheme,
 	useWindowDimensions: () => ({ fontScale: mode.fontScale, scale: 2, width: 390, height: 844 }),
 }));
+
+// The Dynamic Type case below sets a non-default fontScale; reset it so a
+// later test never inherits it.
+afterEach(() => {
+	mode.fontScale = 1;
+});
 
 it("maps the existing color keys onto the spec's light palette", () => {
 	mode.scheme = "light";
