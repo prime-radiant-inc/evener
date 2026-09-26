@@ -1150,6 +1150,7 @@ func TestResolvedSessionMetaNilDeps(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestProjectToolResultsForTranscriptNoProjection(t *testing.T) {
+	t.Parallel()
 	calls := []llm.ToolCallData{{Name: "read_file", Arguments: json.RawMessage(`{}`)}}
 	results := []tool.ExecResult{{ToolName: "read_file", Output: `{"content":"hello"}`}}
 	parts := []llm.ContentPart{{ToolResult: &llm.ToolResultData{Content: "original"}}}
@@ -2765,6 +2766,7 @@ func TestParseRetainedReadArgsOffsetZero(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestParseReadSessionTranscriptArgsExpandTurnValid(t *testing.T) {
+	t.Parallel()
 	expand := 2
 	parsed, err := parseReadSessionTranscriptArgs(map[string]any{"expand_turn": float64(2)})
 	if err != nil {

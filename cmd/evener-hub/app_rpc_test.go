@@ -591,6 +591,10 @@ func (*metadataErrorRemoteImageRPCSource) EnrichThreadFileBackedImages() bool { 
 // not have (404, or another session's bytes on an id collision). Metadata only
 // supplies the session id and CWD the local stamp/file-backed pass needs, so a
 // failed metadata read must not skip the neutralization that does not need them.
+// A source that translates its own payload (RemoteHubSource) has already
+// rewritten its stamped routes onto the host-qualified controller form by the
+// time this pass runs; the pass still strips a bare-session route no translator
+// left behind.
 func TestListItemTurnsNeutralizesRemoteImageRoutesWithoutMetadata(t *testing.T) {
 	const external = "https://images.example.test/plot.png"
 	route := "/s/remote-session/images/" + strings.Repeat("a", 64)
@@ -12661,6 +12665,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	expected := []string{
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
+		appwire.MethodEvenerSessionImage,
 		appwire.MethodThreadUnsubscribe,
 		appwire.MethodThreadTurnsList,
 		appwire.MethodEvenerSubagentPreview,
