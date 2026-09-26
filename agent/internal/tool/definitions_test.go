@@ -3,6 +3,7 @@ package tool
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,6 +32,12 @@ func required(t *testing.T, def llm.ToolDefinition, name string, want []string) 
 			t.Fatalf("%s missing required property %q", name, param)
 		}
 	}
+}
+
+// descriptionMentions asserts desc carries n at a word boundary, so a longer
+// number containing the same digits (1000 vs 100) cannot satisfy the pin.
+func descriptionMentions(desc string, n int) bool {
+	return regexp.MustCompile(`\b` + strconv.Itoa(n) + `\b`).MatchString(desc)
 }
 
 func containsString(values []string, want string) bool {
@@ -965,7 +972,7 @@ func TestDefGrepMaxResultsParam(t *testing.T) {
 	if !strings.Contains(desc, "Maximum number") {
 		t.Errorf("max_results description should state the results cap, got: %q", desc)
 	}
-	if !strings.Contains(desc, strconv.Itoa(execenv.DefaultGrepMaxResults)) {
+	if !descriptionMentions(desc, execenv.DefaultGrepMaxResults) {
 		t.Errorf("max_results description should document the default of %d, got: %q", execenv.DefaultGrepMaxResults, desc)
 	}
 }
@@ -995,7 +1002,7 @@ func TestDefModelListBoundsMatchContract(t *testing.T) {
 			t.Errorf("model_list %s maximum = %v (%T), want the enforced bound %d", tc.param, prop["maximum"], prop["maximum"], tc.deflt)
 		}
 		desc, _ := prop["description"].(string)
-		if !strings.Contains(desc, strconv.Itoa(tc.deflt)) {
+		if !descriptionMentions(desc, tc.deflt) {
 			t.Errorf("model_list %s description should document the default of %d, got: %q", tc.param, tc.deflt, desc)
 		}
 	}

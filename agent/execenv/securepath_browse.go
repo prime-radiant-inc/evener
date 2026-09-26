@@ -112,6 +112,13 @@ func (a *grepAccum) feed(relPath string, data []byte) (stop bool) {
 			}
 			return false // once recorded, move to the next file
 		case "count":
+			// The cap counts entries like files_with_matches does: once
+			// maxResults files hold a count row, the walk stops, so the
+			// rendered count output has at most maxResults rows — the same
+			// first-N truncation the ripgrep path applies to rg --count.
+			if _, seen := a.fileCounts[relPath]; !seen && len(a.fileCounts) >= a.maxResults {
+				return true
+			}
 			a.fileCounts[relPath]++
 		default: // "content" or ""
 			if a.contextLines > 0 {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,6 +28,12 @@ func TestSessionRegisteredToolsDocumentParameters(t *testing.T) {
 	}
 }
 
+// descriptionMentions asserts desc carries n at a word boundary, so a longer
+// number containing the same digits (10000 vs 1000) cannot satisfy the pin.
+func descriptionMentions(desc string, n int) bool {
+	return regexp.MustCompile(`\b` + strconv.Itoa(n) + `\b`).MatchString(desc)
+}
+
 // TestDefListDirLimitProseMatchesEnforcedDefault pins list_dir's advertised
 // default limit to the constant the handler enforces (roborev round 2 caught
 // the prose saying 500 where the code says 1000): a model sizing an explicit
@@ -42,7 +49,7 @@ func TestDefListDirLimitProseMatchesEnforcedDefault(t *testing.T) {
 		t.Fatalf("list_dir missing limit property; got properties: %v", props)
 	}
 	desc, _ := limit["description"].(string)
-	if !strings.Contains(desc, strconv.Itoa(defaultListDirLimit)) {
+	if !descriptionMentions(desc, defaultListDirLimit) {
 		t.Errorf("list_dir limit description should state the enforced default of %d, got: %q", defaultListDirLimit, desc)
 	}
 }
