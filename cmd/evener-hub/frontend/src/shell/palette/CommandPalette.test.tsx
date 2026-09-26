@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
 import { WireError } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../../panes/session/composer/composerFocus";
@@ -532,27 +532,6 @@ test("typing after /help leaves the help panel and returns to a real command lis
 
 // --- search mode ---
 
-test("search mode renders Live and Past sections from AppWire with highlighting", async () => {
-  const user = userEvent.setup();
-  scriptSearch({
-    live: [
-      { id: "local:a", ref: "local:local:a", title: "frobnitz worker", project: "proj", state: "active", age: "now" },
-    ],
-    past: [{ id: "p1", ref: "local:p1", title: "old frobnitz run", project: "old", state: "ended", age: "2h" }],
-  });
-
-  render(<CommandPalette />);
-  act(() => openPalette());
-  await user.type(screen.getByRole("combobox"), "frobnitz");
-
-  await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
-  expect(screen.getByText("Past · 1")).toBeTruthy();
-  const live = screen.getAllByRole("option").find((o) => o.textContent?.includes("frobnitz worker"));
-  expect(live).toBeTruthy();
-  // The matched substring is wrapped in <mark> (§2.3 highlighting).
-  expect(within(live as HTMLElement).getByText("frobnitz").tagName).toBe("MARK");
-});
-
 test("in-session search scans the focused ThreadModel's turns", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });
@@ -607,32 +586,66 @@ test('typing past a bare "?" leaves the help view and resumes filtering, same as
   expect(screen.queryByText("Keyboard shortcuts")).toBeNull();
 });
 
-// --- search-result navigation ---
+// --- remote search results ---
 
-// Typed against the real SearchResult, not Record<string, unknown>: `ref` is
-// required now (see search.ts), and a fixture omitting it would be describing
-// a response the hub cannot produce.
-async function searchAndClick(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
-  scriptSearch({ live: [result], past: [] });
-  render(<CommandPalette />);
-  act(() => openPalette());
-  await user.type(screen.getByRole("combobox"), term);
-  await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
-  const row = screen.getAllByRole("option").find((o) => o.textContent?.includes(term));
-  await user.click(row as HTMLElement);
-}
+// Remote search waits out the palette's search debounce. Fake timers own that
+// clock, and the stubbed `jest` global lets Testing Library's waitFor polls
+// advance it, so the debounce costs a poll rather than real time.
+describe("remote search results", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
-// One ref form, and the type is what enforces it: a hit with no ref is not a
-// state this code can be in, so there is no runtime fallback to test. The hub
-// sets Ref at both construction sites and its field carries no omitempty.
-test("a search result is opened by its qualified ref", async () => {
-  const user = userEvent.setup();
-  await searchAndClick(
-    user,
-    { id: "bare123", ref: "local:qualified", title: "reffuls", project: "p", state: "active", age: "now" },
-    "reffuls",
-  );
-  expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:qualified");
+  test("search mode renders Live and Past sections from AppWire with highlighting", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearch({
+      live: [
+        { id: "local:a", ref: "local:local:a", title: "frobnitz worker", project: "proj", state: "active", age: "now" },
+      ],
+      past: [{ id: "p1", ref: "local:p1", title: "old frobnitz run", project: "old", state: "ended", age: "2h" }],
+    });
+
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "frobnitz");
+
+    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
+    expect(screen.getByText("Past · 1")).toBeTruthy();
+    const live = screen.getAllByRole("option").find((o) => o.textContent?.includes("frobnitz worker"));
+    expect(live).toBeTruthy();
+    // The matched substring is wrapped in <mark> (§2.3 highlighting).
+    expect(within(live as HTMLElement).getByText("frobnitz").tagName).toBe("MARK");
+  });
+
+  // Typed against the real SearchResult, not Record<string, unknown>: `ref` is
+  // required now (see search.ts), and a fixture omitting it would be describing
+  // a response the hub cannot produce.
+  async function searchAndClick(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
+    scriptSearch({ live: [result], past: [] });
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), term);
+    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
+    const row = screen.getAllByRole("option").find((o) => o.textContent?.includes(term));
+    await user.click(row as HTMLElement);
+  }
+
+  // One ref form, and the type is what enforces it: a hit with no ref is not a
+  // state this code can be in, so there is no runtime fallback to test. The hub
+  // sets Ref at both construction sites and its field carries no omitempty.
+  test("a search result is opened by its qualified ref", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await searchAndClick(
+      user,
+      { id: "bare123", ref: "local:qualified", title: "reffuls", project: "p", state: "active", age: "now" },
+      "reffuls",
+    );
+    expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:qualified");
+  });
 });
 
 // --- keyboard navigation ---
