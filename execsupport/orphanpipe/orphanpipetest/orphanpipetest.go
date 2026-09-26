@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // awaitTripwire is how long Await lets a call run before concluding it is

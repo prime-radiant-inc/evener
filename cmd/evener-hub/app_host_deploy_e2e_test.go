@@ -17,8 +17,8 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/e2ecap"
-	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 

@@ -18,8 +18,8 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/remoteinstall"
-	"primeradiant.com/evener/internal/shellquote"
 )
 
 // TestBuildLdflagsStampsControllerBuildinfo proves the deployed binary is

@@ -27,8 +27,8 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/llm"
 )
 

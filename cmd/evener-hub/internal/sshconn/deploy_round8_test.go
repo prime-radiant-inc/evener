@@ -13,7 +13,7 @@ import (
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // TestRound8PushDeployReturnsResolvedTarget pins the round-eight High that the

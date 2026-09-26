@@ -24,9 +24,9 @@ import (
 	"primeradiant.com/evener/agent/internal/tool/repair"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/envvars"
-	"primeradiant.com/evener/internal/orphanpipe"
-	"primeradiant.com/evener/internal/procgroup"
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/orphanpipe"
+	"primeradiant.com/evener/execsupport/procgroup"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // EnvVarPolicy controls which environment variables are inherited by child processes.
@@ -3052,7 +3052,7 @@ func filteredEnvFrom(extra map[string]string, inherited []string) []string {
 // POSIX shell. It is the argv-discipline helper used to assemble shell command
 // strings (spec §2 "name validation": "Do not hand-build shell command
 // strings"), so on that path a worktree name or path cannot inject a shell
-// metacharacter. The quoting itself lives in internal/shellquote so the whole
+// metacharacter. The quoting itself lives in execsupport/shellquote so the whole
 // product shares one implementation; this name is kept for its callers, and
 // each argument is rendered with shellquote.Literal.
 //

@@ -26,9 +26,9 @@ import (
 	"syscall"
 	"time"
 
+	baseprocgroup "primeradiant.com/evener/execsupport/procgroup"
 	"primeradiant.com/evener/internal/devtool/procgroup"
 	"primeradiant.com/evener/internal/devtool/scratch"
-	baseprocgroup "primeradiant.com/evener/internal/procgroup"
 )
 
 // frontendDir is where the web checks run, relative to the repository root the

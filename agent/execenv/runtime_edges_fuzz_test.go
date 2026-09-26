@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"primeradiant.com/evener/agent/sandbox"
-	"primeradiant.com/evener/internal/procgroup"
+	"primeradiant.com/evener/execsupport/procgroup"
 )
 
 // FuzzRuntimeBoundaryEdges drives deterministic error paths at the process,

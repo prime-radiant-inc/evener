@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"primeradiant.com/evener/internal/procgroup"
+	"primeradiant.com/evener/execsupport/procgroup"
 )
 
 // A command expression's output is a credential: it is cached in memory

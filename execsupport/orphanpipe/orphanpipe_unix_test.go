@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/internal/orphanpipe"
-	"primeradiant.com/evener/internal/orphanpipe/orphanpipetest"
+	"primeradiant.com/evener/execsupport/orphanpipe"
+	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest"
 )
 
 type captured struct {
