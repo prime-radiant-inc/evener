@@ -14,17 +14,10 @@ import { type RailHostModule, resetRailHostLoaderForTests } from "./railHostChun
 // fetch dynamically imported module". Replacing the loader is that failure
 // with no network involved; the real 1605-line Rail tree never loads here.
 //
-// A hoisted vi.mock("./railHostChunk", ...) here would swap the module in the
-// shared registry - under isolate:false that registry is shared by every file
-// in the worker, and whichever file happens to instantiate index.tsx FIRST in
-// the whole worker's lifetime permanently fixes its closure over loadRailHost
-// to whatever was in effect at that moment (DockRegion.test.tsx's own comment
-// on the same hazard). vi.spyOn on the namespace import below instead MUTATES
-// the shared railHostChunk module object's own `loadRailHost` property in
-// place - Vite's module-runner gives named imports a live getter into that
-// same object, so index.tsx's calls see the spy's current implementation
-// regardless of when it was instantiated, and mockRestore() in afterEach
-// cleanly hands the real function back for whatever file runs next.
+// vi.spyOn on the namespace import replaces the loader in place (see
+// DockRegion.test.tsx's own comment on this recipe), so each test can script
+// its own loader; beforeEach points the spy back at the real one so no test's
+// override reaches the next.
 const realLoadRailHost = railHostChunk.loadRailHost;
 const loadRailHost = vi.spyOn(railHostChunk, "loadRailHost");
 
@@ -56,12 +49,6 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  // Whichever override the LAST test set (mockRejectedValue/mockResolvedValue/
-  // mockResolvedValueOnce...) would otherwise still be armed on this shared
-  // spy for the next file in the worker that calls the real loadRailHost -
-  // see this file's own comment on the vi.spyOn call above.
-  loadRailHost.mockReset();
-  loadRailHost.mockImplementation(realLoadRailHost);
   vi.unstubAllGlobals();
 });
 

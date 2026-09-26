@@ -9,7 +9,6 @@ import { navigationRootContainerKey, type ResourceKey } from "@evener/appwire-cl
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest } from "@evener/appwire-client/testing/navigation";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
@@ -152,12 +151,6 @@ beforeEach(() => {
   resetNotificationsForTests();
   resetNavigationStoreForTests();
   resetLeaderForTests();
-  // baseTitle() (notifications/title.ts) reads workspaceStore's focused pane
-  // - workspaceStore is a module singleton shared with every other file in
-  // the worker, so this file's own "no focused pane -> 'evener hub'" title
-  // assertions need a pristine workspace regardless of what an earlier file
-  // left focused.
-  resetWorkspaceStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
   resetPrefsStoreForTests();

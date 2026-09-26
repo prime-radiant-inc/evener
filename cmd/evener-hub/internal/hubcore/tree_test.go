@@ -2114,6 +2114,17 @@ func fuzzScenarioLiveTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	}
 }
 
+// fuzzScenarioLiveTier_LiveOnlyLeafCarriesApprovalPending: a live session the
+// past index has not caught up with is built as a meta-less leaf, and that
+// builder carries the approval too.
+func fuzzScenarioLiveTier_LiveOnlyLeafCarriesApprovalPending(t *testing.T) {
+	live := []LiveEntry{{PID: 1, SessionID: "01NOMETA", Status: appwire.ThreadStatusActive, PendingEscalation: true}}
+	tree := buildTree(nil, live)
+	if len(tree.Live) != 1 || !tree.Live[0].ApprovalPending {
+		t.Fatalf("Live = %+v, want the meta-less leaf carrying ApprovalPending", tree.Live)
+	}
+}
+
 // TestProjectTier_CarriesAskPendingFromLiveEntry guards against the
 // per-project TreeNode builder silently dropping AskPending: the same
 // ask-pending session rendered under its project (Current tier) must carry

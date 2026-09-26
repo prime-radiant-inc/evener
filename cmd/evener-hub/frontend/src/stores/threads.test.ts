@@ -360,32 +360,11 @@ beforeEach(async () => {
   await deleteMutationDatabase();
 });
 
-afterEach(async () => {
+afterEach(() => {
   cleanup();
   restoreHydrationRetryScheduler?.();
   restoreHydrationRetryScheduler = null;
   vi.restoreAllMocks();
-  // The beforeEach above only resets threadsStore BEFORE each test. Many
-  // tests here call ensureThread()/watchThread() directly (not through a
-  // mounted pane's own unmount lifecycle), so nothing ever calls
-  // releaseThread/releaseWatchedThread for them - without this, the LAST
-  // test's tracked/pinned refs stay refcounted after this file finishes, and
-  // under isolate:false every later file's own connectionStore.connect()
-  // re-triggers rewireClient, which re-issues a stray thread/read against
-  // whatever client that later file just connected.
-  resetThreadsStoreForTests();
-  resetSubagentModuleStoreForTests();
-  // The beforeEach above only clears the GLOBAL "evener-mutation-outbox"
-  // IndexedDB database (installed once, for the worker's life, by this
-  // file's own `import "fake-indexeddb/auto"") before EACH of THIS file's
-  // own tests - it never runs again after the LAST test. A test here that
-  // exercises the real default getMutationRuntime() path (no
-  // setMutationStorageForTests override) writes into that same global
-  // database, and under isolate:false it stays there for whichever file
-  // runs next in this worker, resurfacing as a stray pinned/discovered
-  // mutation ref the moment that later file's own code calls
-  // getMutationRuntime() and rediscovers the leftover record.
-  await deleteMutationDatabase();
 });
 
 describe("FakeClient", () => {
@@ -2725,9 +2704,8 @@ describe("useThreadsStore.ensureThread", () => {
   // alone: stores/navigation/store.ts, stores/extensions.ts, and stores/credentials.ts
   // each independently run this exact same reactive-wiring pattern against
   // connectionStore, so `fake.onNotification`/`fake.onReady` also get called
-  // once per OTHER such store whose module happens to already be loaded in
-  // this worker (e.g. via an earlier file's real App render pulling in
-  // tree.ts) - a real, correct fact about this composition, not a leak.
+  // once per OTHER such store whose module this file's imports happen to
+  // load - a real, correct fact about this composition, not a leak.
   //
   // What THIS test owns proving is narrower: that connecting a client wires
   // threads.ts's OWN handler exactly once, and that wiring never happens

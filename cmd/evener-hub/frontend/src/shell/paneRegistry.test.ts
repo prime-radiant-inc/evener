@@ -21,8 +21,8 @@ function fixtureDescriptor<P>(
 
 // paneRegistry.ts is a shared module singleton, not fresh per test - each
 // test below registers over a real PaneTypeId (doc/spawn/session), so this
-// restores whatever was there before that test ran, keeping the leak from
-// reaching whichever file runs next in the same worker.
+// restores whatever was there before that test ran, keeping one test's
+// fixture descriptor from reaching the next test.
 let restorePane: (() => void) | undefined;
 
 afterEach(() => {
@@ -40,13 +40,11 @@ test("registerPane makes a descriptor retrievable by paneFor via its id", () => 
 
 test("paneFor throws a clear error for an id that was never registered", () => {
   // Every real PaneTypeId ("session"/"transcript"/"doc"/"spawn"/"settings"/
-  // "welcome") gets registered by its own production module at import time -
-  // under isolate:false, registry is a module singleton shared by every file
-  // in the worker, so by the time this file runs, some earlier file has
-  // already transitively imported and registered all six. An id outside the
-  // closed union (cast past the type check, simulating a corrupted/impossible
-  // id) is the only one guaranteed to stay unregistered regardless of run
-  // order.
+  // "welcome") gets registered by its own production module at import time,
+  // and other tests here register over them. An id outside the closed union
+  // (cast past the type check, simulating a corrupted/impossible id) is the
+  // only one guaranteed to stay unregistered whatever this file imports and
+  // whichever tests ran first.
   expect(() => paneFor("not-a-real-pane-type" as PaneTypeId)).toThrow(/not-a-real-pane-type/);
 });
 
