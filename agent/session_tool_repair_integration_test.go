@@ -70,6 +70,7 @@ func drainToolCallStartEvents(sess *Session) <-chan []events.ToolCallStartData {
 // must also be empty for invalid-JSON originals, matching reload which skips
 // intent extraction when RawArguments is set.
 func TestExecTool_RepairableMalformedArgsPreserveOriginalInEvents(t *testing.T) {
+	t.Parallel()
 	const originalArgs = `{file_path: "/x", intent: "editing"}` // bare keys -- repairable
 	s := newSession(t, withoutGitSnapshot())
 	s.stateDir = t.TempDir()
@@ -172,6 +173,7 @@ func TestExecTool_InvalidJSONWithValidLeadingMemberDivergesIntent(t *testing.T) 
 // both paths suppress intent consistently. This test pins the live safety
 // suppression (no intent) that the fix preserves.
 func TestExecTool_OversizedValidJSONSuppressesIntent(t *testing.T) {
+	t.Parallel()
 	// Valid JSON object but over the 2 MiB MaxToolArgumentBytes limit.
 	large := strings.Repeat("x", 2*1024*1024+10)
 	originalArgs := []byte(`{"intent":"a","bar":"` + large + `"}`)
@@ -223,6 +225,7 @@ func TestExecTool_OversizedValidJSONSuppressesIntent(t *testing.T) {
 // path compacts and HTML-escapes valid JSON (json.Marshal of json.RawMessage),
 // so the live ArgumentsJSON must too -- emitting raw original bytes diverges.
 func TestExecTool_ValidNoncanonicalArgsCanonicalizeLikeTranscript(t *testing.T) {
+	t.Parallel()
 	// Valid JSON with extra whitespace and HTML-sensitive chars: < > &.
 	const originalArgs = `{  "intent" : "b<c & d" , "x" : 1  }`
 	// The canonical form is compact + HTML-escaped. Hard-coded (not computed
@@ -325,6 +328,7 @@ func TestSession_RepairsAliasedArgAndEmitsEvent(t *testing.T) {
 // denies the (already-healed) call, since repair happens before the hook
 // block runs.
 func TestSession_RepairedThenDeniedCallStillEmitsRepairedEvent(t *testing.T) {
+	t.Parallel()
 	aliasedCall := llm.ToolCallData{ID: "call1", Name: "widget", Arguments: json.RawMessage(`{"path":"/x"}`)}
 	comm := communicateCall("c1", "done")
 	f := &fakeAdapter{
@@ -390,6 +394,7 @@ func TestSession_RepairedThenDeniedCallStillEmitsRepairedEvent(t *testing.T) {
 // synthetic ProjectTurn construction: the transcript is written by the real
 // session and read back from disk.
 func TestExecTool_RejectedCommunicateLiveVsReload(t *testing.T) {
+	t.Parallel()
 	// Trailing comma is unrepairable by RepairJSON (it deliberately does not fix
 	// trailing commas), so prepareToolCall sets PrevalErr → execTool returns a
 	// PrevalOnly error result without calling the communicate Exec function.

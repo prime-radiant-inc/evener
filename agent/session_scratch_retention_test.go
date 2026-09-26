@@ -106,6 +106,7 @@ func scratchConsumerFor(t *testing.T, manifest sandbox.ScratchManifest, sessionI
 // identity and owns B. Collapsing E0 and E1 onto one binding would leave one of
 // the two scratches without an owning slot, so it could not restore (plan 654).
 func TestRetirementRootWorktreeMoveKeepsPerEnvironmentBindings(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	root := r.s
@@ -211,6 +212,7 @@ func TestRetirementRootWorktreeMoveKeepsPerEnvironmentBindings(t *testing.T) {
 // registers under THAT environment's binding id rather than a fabricated
 // child-owned one, and the binding's owner is not renamed to the child.
 func TestRetirementSharedChildUsesTheSharedEnvironmentsBinding(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	defer root.Close()
@@ -267,6 +269,7 @@ func TestRetirementSharedChildUsesTheSharedEnvironmentsBinding(t *testing.T) {
 // manifest already clear of A's owning slot there proves the transition was
 // persisted before that release, not after.
 func TestRetirementRootWorktreeExitKeepsParkedIdentityAndMintedSlot(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	root := r.s
@@ -512,6 +515,7 @@ func TestRetirementResumedWorktreeKeepsBindingIdentityAcrossBackswap(t *testing.
 // the swap completes and re-registers roles. A crash or refusal in that window
 // must not leave the manifest without them.
 func TestRetirementSwapStagePreservesRecordedRoles(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	root := r.s
@@ -567,6 +571,7 @@ func TestRetirementSwapStagePreservesRecordedRoles(t *testing.T) {
 // cold consumer is reacquired by prepareRetainedScratch and adopted by the
 // consumer's binding at its original absolute path with its bytes intact.
 func TestRetirementColdDelegateScratchManifest(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	defer root.Close()
@@ -648,6 +653,7 @@ func TestRetirementColdDelegateScratchManifest(t *testing.T) {
 // publishes its retention manifest and binding at construction, so the
 // primitives are not inert in production.
 func TestRetirementLiveSessionMintsScratchManifest(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	defer root.Close()
@@ -677,6 +683,7 @@ func TestRetirementLiveSessionMintsScratchManifest(t *testing.T) {
 // is restored, and sending to the SAME cold delegate restores that child's real
 // environment at the artifact's original absolute path.
 func TestRetirementAgedScratchRestoresAtOriginalPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root1 := newQueuePersistTestSession(t, dir)
 	rootID := root1.ID()
@@ -786,6 +793,7 @@ func TestRetirementAgedScratchRestoresAtOriginalPath(t *testing.T) {
 // restored, and must find its original directory (not a fresh replacement),
 // with the stored slot record preserved.
 func TestRetirementRootScratchRestoresAtOriginalPath(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root1 := newQueuePersistTestSession(t, dir)
 	rootID := root1.ID()
@@ -881,6 +889,7 @@ func TestRetirementRootScratchRestoresAtOriginalPath(t *testing.T) {
 // binding is E1 and whose parent-shared environment is E0 records E0 for the
 // shared role, so Task 6 can resolve each role to its exact binding.
 func TestRetirementConsumerRolesRecordEachBinding(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root := newQueuePersistTestSession(t, dir)
 	defer root.Close()
@@ -1285,6 +1294,7 @@ func TestRetirementResumedWorktreePinsTheActiveClone(t *testing.T) {
 // persistence error instead of trusting a manifest that diverged from the live
 // environments.
 func TestRetirementSwapPublicationFailureIsSticky(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	root := r.s
@@ -1956,6 +1966,7 @@ func TestResumedRootAdoptionReprovisionsWhenTheClaimTurnsContended(t *testing.T)
 // empty directory while its retained allocation, artifacts and all, stayed
 // unattributed in the pool.
 func TestRetirementResumedUnsandboxedRootKeepsRetainedScratch(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	root1 := newQueuePersistTestSession(t, dir)
 	env1, ok := root1.env.(*execenv.LocalExecutionEnvironment)

@@ -13,6 +13,7 @@ import (
 )
 
 func TestSteerKindReachesTheInjectedEvent(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.SteerKind("nudge", events.SteeringKindCompactNudge)
 	msgs := s.drainSteeringForTurn()
@@ -29,6 +30,7 @@ func TestSteerKindReachesTheInjectedEvent(t *testing.T) {
 }
 
 func TestSteerLeavesKindEmpty(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.Steer("no kind here")
 	msgs := s.drainSteeringForTurn()
@@ -41,6 +43,7 @@ func TestSteerLeavesKindEmpty(t *testing.T) {
 }
 
 func TestConsumeSteeringMessagePersistsKindOnTheTurn(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	s.consumeSteeringMessage(steeringMessage{Text: "x", Kind: events.SteeringKindLoopDetected})
 	last := s.history[len(s.history)-1]

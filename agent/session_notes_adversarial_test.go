@@ -18,6 +18,7 @@ import (
 )
 
 func TestBarePercentFilenamePreserved(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	path := filepath.Join(root, "report%23final.md")
 	if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
@@ -35,6 +36,7 @@ func TestBarePercentFilenamePreserved(t *testing.T) {
 }
 
 func TestCanonicalURLLiteralPercentControls(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, name := range []string{"report%2Ffinal.md", "report%25final.md"} {
 		t.Run(name, func(t *testing.T) {
@@ -54,6 +56,7 @@ func TestCanonicalURLLiteralPercentControls(t *testing.T) {
 }
 
 func TestCanonicalURLEncodedTraversalControls(t *testing.T) {
+	t.Parallel()
 	parent := t.TempDir()
 	root := filepath.Join(parent, "scope")
 	if err := os.Mkdir(root, 0700); err != nil {
@@ -99,6 +102,7 @@ func (fs *notesRenameFailureFS) Rename(old, newPath string) error {
 }
 
 func TestNotesMetadataFailureCannotEscapeAutosave(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{"agent-note", "url-add", "url-remove", "url-rpc-remove"} {
 		t.Run(operation, func(t *testing.T) {
 			s := newNotesToolSession(t)

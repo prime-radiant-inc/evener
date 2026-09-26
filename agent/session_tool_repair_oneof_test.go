@@ -25,6 +25,7 @@ import (
 // would launch the delegate with the caller's network request ignored. The
 // prevalidation layer refuses it with guidance to use the sandbox enum.
 func TestPrepareToolCall_DelegateLegacySandboxNetDropped(t *testing.T) {
+	t.Parallel()
 	def := tool.DefDelegateWithSandbox([]string{"subagent"}, tool.DelegateSandboxSchema{
 		Available:   true,
 		Modes:       []string{"off", "read-only", "workspace-write", "restricted"},
@@ -57,6 +58,7 @@ func TestPrepareToolCall_DelegateLegacySandboxNetDropped(t *testing.T) {
 
 // Test: the schema has no oneOf constraint — sandbox_net is not a property.
 func TestDelegateSandboxSchemaNoOneOfOrSandboxNet(t *testing.T) {
+	t.Parallel()
 	def := tool.DefDelegateWithSandbox([]string{"subagent"}, tool.DelegateSandboxSchema{
 		Available:   true,
 		Modes:       []string{"off", "read-only", "workspace-write", "restricted"},
@@ -89,6 +91,7 @@ func TestDelegateSandboxSchemaNoOneOfOrSandboxNet(t *testing.T) {
 // Test: the handler rejects sandbox="off+nonet" (off has no network
 // confinement) with a clear error naming the sandbox field.
 func TestExecTool_DelegateOffPlusNonetRejectedByHandler(t *testing.T) {
+	t.Parallel()
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true})
 	if err := registerStableDelegateTool(s.reg, s); err != nil {
 		t.Fatalf("register delegate tool: %v", err)

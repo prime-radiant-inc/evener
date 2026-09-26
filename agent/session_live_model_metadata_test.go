@@ -34,6 +34,7 @@ func (a *liveModelMetadataAdapter) LiveModels(ctx context.Context) ([]registry.M
 // Every session-owned enumeration must forward the session policy while retaining
 // its independent caller enumeration deadline.
 func TestSessionListingsForwardIdlePolicy(t *testing.T) {
+	t.Parallel()
 	adapter := &liveModelMetadataAdapter{models: []registry.Model{{ID: "gpt-5.4"}, {ID: "gpt-5.5"}}}
 	adapter.name = "openai"
 	client := registryClient(t, map[string]registry.Provider{"openai": {Base: "openai", APIKey: "k"}}, adapter)
