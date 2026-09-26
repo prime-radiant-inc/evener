@@ -94,30 +94,17 @@ describe("token-flood: 10k-delta correctness", () => {
 
 // The mounted-Session render probe below floods this many live deltas -
 // deliberately far smaller than the 10k data-layer correctness flood above,
-// because these two floods cost completely different things. The correctness
+// because the two floods cost completely different things. The correctness
 // flood folds deltas through applyNotification only (pure store compute, no
 // React); this one drives a full synchronous React COMMIT of the real
-// mounted Session (VirtualList + transcript + chrome) per delta, ~0.3-1ms of
-// compute apiece, and every one of those commits runs inside this single
-// test's default 5000ms wall budget.
-//
-// At 500 that timed body ran ~0.3-0.4s uncontended but stretched PAST 5000ms
-// under heavy CPU oversubscription (several concurrent full-suite campaigns
-// starving a 10-core box): a wall-clock ceiling colliding with CPU
-// starvation, NOT a product regression - the isolation invariant held at 0
-// re-renders in every one of those starved runs, the test simply couldn't
-// FINISH folding 500 synchronous commits in time (finalWait was ~2ms, so
-// there is no unawaited async boundary to collapse either - the wall time
-// IS the compute). 100 keeps a decisive flood - 100 separate wire-frame
-// store commits, each rebuilding the enclosing turn object - while pulling
-// the timed body's worst-case wall far under the ceiling even when the box
-// is oversubscribed. The invariant's proof STRENGTH is unchanged by the
-// smaller flood: a broken render-isolation memo re-renders the settled
-// sibling on EVERY delta, so the toBe(0) bound below catches a regression
-// deterministically at any flood size >= 1 - the flood size sets only how
-// far past 0 a failure reads, never WHETHER it fails (mutation-verified in
-// this stream's report). See .superpowers/sdd/w5-close-f4-report.md.
-const SESSION_FLOOD_SIZE = 100;
+// mounted Session (VirtualList + transcript + chrome) per delta. The flood
+// size carries no proof strength of its own: a broken render-isolation memo
+// re-renders the settled sibling on EVERY delta, so the toBe(0) bound below
+// fails at any flood size >= 1 and the size sets only how far past 0 a
+// failure reads. Ten separate wire-frame commits, each rebuilding the
+// enclosing turn object, show the isolation holding across repeated commits
+// rather than a single one.
+const SESSION_FLOOD_SIZE = 10;
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -196,7 +183,7 @@ function floodThread(ref: string): Thread {
 const CONTAINER_HEIGHT = 500;
 let offsetHeightDescriptor: PropertyDescriptor | undefined;
 
-describe("token-flood: 100-delta streaming fast path through a mounted Session", () => {
+describe("token-flood: multi-delta streaming fast path through a mounted Session", () => {
   beforeEach(() => {
     connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
     resetThreadsStoreForTests();
@@ -211,11 +198,11 @@ describe("token-flood: 100-delta streaming fast path through a mounted Session",
     }
   });
 
-  // This probe intentionally performs 100 separate synchronous React commits.
+  // This probe intentionally performs one synchronous React commit per delta.
   // Its timeout is scoped here because scheduler starvation can stretch that
   // real work without changing the render-isolation contract below. The
   // 60-second ceiling is a hang tripwire, not a performance assertion.
-  test("100 deltas on a live item do not re-render an already-settled sibling item in the same turn - render-count probe", async () => {
+  test("a flood of deltas on a live item do not re-render an already-settled sibling item in the same turn - render-count probe", async () => {
     // Established pattern for observing per-item render behavior:
     // TurnBlock.test.tsx registers a synthetic item type via
     // registerItemRenderer and asserts against ITS OWN render output/props

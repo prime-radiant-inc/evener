@@ -68,7 +68,6 @@ import { type InputAttachment, threadsStore, useThreadsStore } from "../../../st
 import {
   Button,
   ConfirmDialog,
-  chordLabel,
   Dropzone,
   IconButton,
   PromptCard,
@@ -88,6 +87,7 @@ import { runBuiltinCommand } from "./builtinCommand";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
+import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
 import {
   clearDraft,
   clearPersistedDraft,
@@ -219,11 +219,6 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // as terminal, so it is matched here too rather than leaving the two modules
 // disagreeing about the same word.
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
-
-// Why a Steer press is refused while the local recovery fence stands: the
-// explicit Resume action is the only thing that clears it, so the refusal
-// names that path instead of a generic unavailability.
-const STEER_RECOVERY_FENCED_REASON = "Steer isn't available until this session is resumed";
 
 // The local recovery fence lives in stores/liveControls.ts (one predicate for
 // every surface that owes it - this module's availability/card/Steer gates and
@@ -975,16 +970,8 @@ export function Composer({ ref, focused }: ComposerProps) {
       ended,
     });
   }
-  // Send keeps ONE label in every state. While a turn runs it queues rather
-  // than sending now, but that is a change of TIMING, not of verb - a label
-  // that flips to "Queue" made the same button mean two different things
-  // depending on when you looked, and Steer beside it is what now carries
-  // "act on this turn immediately". The tooltip says which timing applies,
-  // and the strip's queue depth is what shows the effect.
-  const submitChord: string[] = enterToSend ? ["Enter"] : ["Mod", "Enter"];
-  const submitTooltip = availability.canQueue
-    ? `Queue until the agent stops · ${chordLabel(submitChord)}`
-    : `Send now · ${chordLabel(submitChord)}`;
+  // The strip's queue depth is what shows the effect of a queued Send.
+  const submitTooltip = submitTooltipLabel({ canQueue: availability.canQueue, enterToSend });
   const canCompose = availability.canSend || availability.canQueue;
   // Whether the follow-up card renders at all is the capability's call, for the
   // same reason the substitution above is: gating it on the table renders no
@@ -1788,15 +1775,7 @@ export function Composer({ ref, focused }: ComposerProps) {
                         </Button>
                       </Tooltip>
                       {showSteer && (
-                        <Tooltip
-                          label={
-                            steerRecoveryFenced
-                              ? STEER_RECOVERY_FENCED_REASON
-                              : enterToSend
-                                ? "Interrupt and redirect now"
-                                : `Interrupt and redirect now · ${chordLabel(["Shift", "Enter"])}`
-                          }
-                        >
+                        <Tooltip label={steerTooltipLabel({ recoveryFenced: steerRecoveryFenced, enterToSend })}>
                           <Button
                             variant="primary"
                             size="xs"

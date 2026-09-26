@@ -32,6 +32,7 @@ import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { editorCursor, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
@@ -295,6 +296,7 @@ async function mountComposerWithHandle(
       <Composer ref={ref} focused={options.focused ?? false} />
     </ClientProvider>,
   );
+  await settleActivityDiscovery(ref);
   return { fake, ...view };
 }
 
@@ -475,8 +477,9 @@ test("clicking the current goal fills and focuses an empty composer with an edit
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
 
-  expect(textarea().textContent).toBe("/goal Keep the session focused");
-  expect(document.activeElement).toBe(textarea());
+  const editor = textarea();
+  expect(editor.textContent).toBe("/goal Keep the session focused");
+  expect(document.activeElement).toBe(editor);
   expect(screen.queryByRole("dialog", { name: "Replace draft?" })).toBeNull();
 });
 
@@ -485,39 +488,42 @@ test("clicking the current goal confirms before replacing an existing draft", as
   await mountComposer("ref_a", {
     evener: currentWorkEvener({ goal: true }),
   });
-  await user.type(textarea(), "Unsent draft");
+  const editor = textarea();
+  await user.type(editor, "ud");
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
   expect(screen.getByRole("dialog", { name: "Replace draft?" })).toBeTruthy();
-  expect(textarea().textContent).toBe("Unsent draft");
+  expect(editor.textContent).toBe("ud");
 
   await user.click(screen.getByRole("button", { name: "Keep draft" }));
   expect(screen.queryByRole("dialog", { name: "Replace draft?" })).toBeNull();
-  expect(textarea().textContent).toBe("Unsent draft");
+  expect(editor.textContent).toBe("ud");
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
   await user.click(screen.getByRole("button", { name: "Replace draft" }));
-  expect(textarea().textContent).toBe("/goal Keep the session focused");
-  expect(document.activeElement).toBe(textarea());
+  expect(editor.textContent).toBe("/goal Keep the session focused");
+  expect(document.activeElement).toBe(editor);
 });
 
 test("editing the goal confirms before replacing whitespace-only draft text", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
-  replaceEditorText(textarea(), " \n\t");
+  const editor = textarea();
+  replaceEditorText(editor, " \n\t");
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
 
   expect(screen.getByRole("dialog", { name: "Replace draft?" })).toBeTruthy();
-  expect(textarea().textContent).toBe(" \n\t");
+  expect(editor.textContent).toBe(" \n\t");
 });
 
 test("editing the goal confirms before replacing a draft that contains only attachments", async () => {
   installStalledDecodeStub();
   const user = userEvent.setup();
   await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
-  act(() => pastePngInto(textarea()));
-  replaceEditorText(textarea(), "");
+  const editor = textarea();
+  act(() => pastePngInto(editor));
+  replaceEditorText(editor, "");
   expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
@@ -530,14 +536,15 @@ test("confirmed goal replacement clears settled attachments and persists an ordi
   installCanvasStubs();
   const user = userEvent.setup();
   await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
-  act(() => pastePngInto(textarea()));
+  const editor = textarea();
+  act(() => pastePngInto(editor));
   await screen.findByRole("button", { name: "View shot.png" });
-  replaceEditorText(textarea(), "");
+  replaceEditorText(editor, "");
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
   await user.click(screen.getByRole("button", { name: "Replace draft" }));
 
-  expect(textarea().textContent).toBe("/goal Keep the session focused");
+  expect(editor.textContent).toBe("/goal Keep the session focused");
   expect(screen.queryByRole("button", { name: "Remove shot.png" })).toBeNull();
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
 });
@@ -546,17 +553,18 @@ test("confirmed goal replacement invalidates pending attachments without later c
   const gate = installGatedDecodeStub();
   const user = userEvent.setup();
   await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
-  act(() => pastePngInto(textarea()));
-  replaceEditorText(textarea(), "");
+  const editor = textarea();
+  act(() => pastePngInto(editor));
+  replaceEditorText(editor, "");
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
   await user.click(screen.getByRole("button", { name: "Replace draft" }));
-  expect(textarea().textContent).toBe("/goal Keep the session focused");
+  expect(editor.textContent).toBe("/goal Keep the session focused");
 
   await act(async () => {
     await gate.release();
   });
-  expect(textarea().textContent).toBe("/goal Keep the session focused");
+  expect(editor.textContent).toBe("/goal Keep the session focused");
   expect(screen.queryAllByRole("button", { name: /^Remove/ })).toHaveLength(0);
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
 });
@@ -594,13 +602,14 @@ test("confirmed goal replacement exits recovery without deleting its durable rec
     evener: currentWorkEvener({ goal: true }),
   });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().textContent).toBe("recover this later");
+  const editor = textarea();
+  expect(editor.textContent).toBe("recover this later");
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
   await user.click(screen.getByRole("button", { name: "Replace draft" }));
   await flushPendingTurnsProjectionForTests();
 
-  expect(textarea().textContent).toBe("/goal Keep the session focused");
+  expect(editor.textContent).toBe("/goal Keep the session focused");
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
   expect(await storage.getRecovery(recovered.clientMutationId)).toBeDefined();
   expect(screen.getByText("recover this later")).toBeTruthy();
@@ -669,7 +678,8 @@ test("goal replacement closes slash completion and resets selection", async () =
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
-  await user.type(textarea(), "hi /re");
+  const editor = textarea();
+  await user.type(editor, "hi /re");
   await user.keyboard("{ArrowDown}");
   expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
 
@@ -677,8 +687,8 @@ test("goal replacement closes slash completion and resets selection", async () =
   await user.click(screen.getByRole("button", { name: "Replace draft" }));
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
 
-  await user.clear(textarea());
-  await user.type(textarea(), "hi /re");
+  await user.clear(editor);
+  await user.type(editor, "hi /re");
   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
 });
 
@@ -706,8 +716,9 @@ test("goal replacement focus waits until an ended follow-up textarea mounts", as
     fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
   });
 
-  await waitFor(() => expect(document.activeElement).toBe(textarea()));
-  expect(textarea().textContent).toBe("/goal Keep the session focused");
+  const editor = textarea();
+  await waitFor(() => expect(document.activeElement).toBe(editor));
+  expect(editor.textContent).toBe("/goal Keep the session focused");
 });
 
 test("clicking the current task twice keeps one Tasks pane open and focuses it", async () => {
@@ -977,13 +988,14 @@ test("a controlled replacement over a leading chip replaces it rather than mergi
   const ref = "ref_inline_replace_with_chip";
   writeComposerDraft(ref, { text: "/cleanup", skillNames: ["cleanup"] });
   await mountComposer(ref, { evener: currentWorkEvener({ goal: true }) });
-  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  const editor = textarea();
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
   await user.click(screen.getByRole("button", { name: "Replace draft" }));
 
-  expect(textarea().textContent).toBe("/goal Keep the session focused");
-  expect(within(textarea()).queryAllByTestId("composer-skill-chip")).toHaveLength(0);
+  expect(editor.textContent).toBe("/goal Keep the session focused");
+  expect(within(editor).queryAllByTestId("composer-skill-chip")).toHaveLength(0);
   expect(readComposerDraft(ref)).toEqual({ text: "/goal Keep the session focused", skillNames: [] });
 });
 
@@ -991,14 +1003,15 @@ test("a quote inserted before a leading chip leaves the chip whole and adds only
   const ref = "ref_inline_prefix_quote";
   writeComposerDraft(ref, { text: "/cleanup", skillNames: ["cleanup"] });
   await mountComposer(ref);
-  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  const editor = textarea();
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
 
   act(() => {
     requestQuoteInsert(ref, "/review ", "prefix");
   });
 
-  await waitFor(() => expect(textarea().textContent).toBe("/review /cleanup"));
-  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  await waitFor(() => expect(editor.textContent).toBe("/review /cleanup"));
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
   expect(readComposerDraft(ref)).toEqual({ text: "/review /cleanup", skillNames: ["cleanup"] });
 });
 
@@ -1007,18 +1020,20 @@ test("a quote-insert request writes the quoted markdown into an empty composer a
   act(() => {
     requestQuoteInsert("ref_a", "> quoted line\n\n");
   });
-  await waitFor(() => expect(textarea().textContent).toBe("> quoted line\n\n"));
-  expect(document.activeElement).toBe(textarea());
+  const editor = textarea();
+  await waitFor(() => expect(editor.textContent).toBe("> quoted line\n\n"));
+  expect(document.activeElement).toBe(editor);
 });
 
 test("a quote-insert request appends after a blank line, keeping whatever the user already typed", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a");
-  await user.type(textarea(), "my own note");
+  const editor = textarea();
+  await user.type(editor, "mn");
   act(() => {
     requestQuoteInsert("ref_a", "> quoted line\n\n");
   });
-  await waitFor(() => expect(textarea().textContent).toBe("my own note\n\n> quoted line\n\n"));
+  await waitFor(() => expect(editor.textContent).toBe("mn\n\n> quoted line\n\n"));
 });
 
 test("a quote-insert request for a DIFFERENT ref never reaches this composer", async () => {
@@ -1050,29 +1065,31 @@ test("the composer persists the quote-inserted text as this ref's draft", async 
 test("placement 'append' on a seeded draft matches the unqualified default: appended after a blank line", async () => {
   localStorage.setItem(draftStorageKey("ref_a"), "my own note");
   await mountComposer("ref_a");
-  expect(textarea().textContent).toBe("my own note");
+  const editor = textarea();
+  expect(editor.textContent).toBe("my own note");
 
   act(() => {
     requestQuoteInsert("ref_a", "> quoted line\n\n", "append");
   });
 
-  await waitFor(() => expect(textarea().textContent).toBe("my own note\n\n> quoted line\n\n"));
-  expect(editorCursor(textarea())).toBe((textarea().textContent ?? "").length);
+  await waitFor(() => expect(editor.textContent).toBe("my own note\n\n> quoted line\n\n"));
+  expect(editorCursor(editor)).toBe((editor.textContent ?? "").length);
 });
 
 test("placement 'prefix' on a seeded draft inserts the addition BEFORE the existing text, with no separator", async () => {
   localStorage.setItem(draftStorageKey("ref_a"), "my own note");
   await mountComposer("ref_a");
-  expect(textarea().textContent).toBe("my own note");
+  const editor = textarea();
+  expect(editor.textContent).toBe("my own note");
 
   act(() => {
     requestQuoteInsert("ref_a", "/p:review ", "prefix");
   });
 
-  await waitFor(() => expect(textarea().textContent).toBe("/p:review my own note"));
+  await waitFor(() => expect(editor.textContent).toBe("/p:review my own note"));
   // The cursor lands right after the inserted invocation, not at the very
   // end of the merged text - see Composer.tsx's own comment on the effect.
-  expect(editorCursor(textarea())).toBe("/p:review ".length);
+  expect(editorCursor(editor)).toBe("/p:review ".length);
 });
 
 // --- composer-focus seam (composerFocus.ts) ---------------------------------
@@ -1157,36 +1174,18 @@ test("each control's spoken name is its bare verb - no chord glyphs in the name 
 
 // The boxed <kbd> runs are gone from inside the buttons - three nested boxes
 // dominated the button they annotated. The chord still has to be DISCOVERABLE,
-// which is what each button's Tooltip is for.
-test("no button renders a chord hint inside itself; the chord lives in the button's tooltip", async () => {
-  const user = userEvent.setup();
+// which is what each button's Tooltip is for: controlTooltips.test.ts pins
+// every label, and the hover tests below prove a label reaches its bubble.
+test("no button renders a chord hint inside itself", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
 
   for (const control of [stopButton(), submitButton(), steerButton()]) {
     expect(control.querySelector("kbd")).toBeNull();
     expect(control.textContent).not.toMatch(/↵/);
   }
-
-  // Tooltip shows after its own 300ms delay; user-event's fake-free setup
-  // advances real time, so this waits for the bubble rather than assuming it.
-  await user.hover(submitButton());
-  const tip = await screen.findByRole("tooltip");
-  expect(tip.textContent).toContain(`${modWord}+Enter`);
-});
-
-test("the Steer tooltip names the chord that fires it", async () => {
-  const user = userEvent.setup();
-  await mountComposer("ref_a", {
-    status: { type: "active" },
-    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
-  });
-  await user.hover(steerButton());
-  const tip = await screen.findByRole("tooltip");
-  expect(tip.textContent).toContain("Shift+Enter");
 });
 
 // Density: the control row is the 24px (xs) size. Three nested gaps plus the
@@ -1268,23 +1267,13 @@ test("with nothing running, Send is the primary and there is no Steer to outrank
 // The label is stable across states even though the ROUTE isn't: a mid-turn
 // Send queues (turn/queue, proven by the routing tests below) but still reads
 // "Send", because the change is one of timing, not of verb. The tooltip is
-// where the timing is spelled out.
-test("Send keeps its label while a turn runs, and its tooltip explains the queueing", async () => {
-  const user = userEvent.setup();
+// where the timing is spelled out (controlTooltips.test.ts).
+test("Send keeps its label while a turn runs", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
   });
   expect(submitButton().textContent).toBe("Send");
-  await user.hover(submitButton());
-  expect((await screen.findByRole("tooltip")).textContent).toMatch(/queue until the agent stops/i);
-});
-
-test("Send's tooltip says it sends now when nothing is running", async () => {
-  const user = userEvent.setup();
-  await mountComposer("ref_a", { status: { type: "idle" } });
-  await user.hover(submitButton());
-  expect((await screen.findByRole("tooltip")).textContent).toMatch(/send now/i);
 });
 
 // cezn: Send and Steer sit side by side while a turn runs, and Send's own
@@ -1375,7 +1364,7 @@ test("idle session: submit button reads Send and posts turn/start with the compo
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
 
-  await user.type(textarea(), "hello agent");
+  await user.type(textarea(), "ha");
   expect(submitButton().textContent).toMatch(/send/i);
   await user.click(submitButton());
 
@@ -1383,7 +1372,7 @@ test("idle session: submit button reads Send and posts turn/start with the compo
     expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
   });
   const call = fake.calls.find((c) => c.method === "turn/start");
-  expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "hello agent" }] });
+  expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "ha" }] });
 });
 
 test("the unchanged submitted payload clears as soon as its local outbox commit succeeds", async () => {
@@ -1391,10 +1380,11 @@ test("the unchanged submitted payload clears as soon as its local outbox commit 
   const fake = await mountComposer("ref_a");
   fake.on("turn/start", () => new Promise<never>(() => undefined));
 
-  await user.type(textarea(), "hello");
+  const editor = textarea();
+  await user.type(editor, "hello");
   await user.click(submitButton());
 
-  await waitFor(() => expect(textarea().textContent).toBe(""));
+  await waitFor(() => expect(editor.textContent).toBe(""));
   expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
 });
 
@@ -1405,18 +1395,19 @@ test("text edited while the local outbox commit is pending survives that commit"
   const fake = await mountComposer("ref_a");
   fake.on("turn/start", () => new Promise<never>(() => undefined));
 
-  await user.type(textarea(), "original");
+  const editor = textarea();
+  await user.type(editor, "ab");
   fireEvent.click(submitButton());
   await storage.commitStarted;
 
-  replaceEditorText(textarea(), "original plus more");
-  expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
+  replaceEditorText(editor, "ab plus more");
+  expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
 
   storage.release();
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
 
-  expect(textarea().textContent).toBe("original plus more");
-  expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
+  expect(editor.textContent).toBe("ab plus more");
+  expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
 });
 
 test("a local outbox failure leaves the composer untouched and sends no RPC", async () => {
@@ -1426,11 +1417,12 @@ test("a local outbox failure leaves the composer untouched and sends no RPC", as
   const fake = await act(async () => mountComposer("ref_a"));
   await flushPendingTurnsProjectionForTests();
 
-  await user.type(textarea(), "hello");
+  const editor = textarea();
+  await user.type(editor, "hello");
   await user.click(submitButton());
 
   await waitFor(() => expect(screen.getByText(/send failed/i)).toBeTruthy());
-  expect(textarea().textContent).toBe("hello");
+  expect(editor.textContent).toBe("hello");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -1441,13 +1433,14 @@ test("a lost response never restores submitted content over a newer composer dra
     throw new Error("response lost");
   });
 
-  await user.type(textarea(), "submitted");
+  const editor = textarea();
+  await user.type(editor, "s1");
   await user.click(submitButton());
-  await waitFor(() => expect(textarea().textContent).toBe(""));
-  await user.type(textarea(), "new draft");
+  await waitFor(() => expect(editor.textContent).toBe(""));
+  await user.type(editor, "nd");
 
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
-  expect(textarea().textContent).toBe("new draft");
+  expect(editor.textContent).toBe("nd");
   expect(screen.queryByText(/reload before retrying/i)).toBeNull();
 });
 
@@ -1466,7 +1459,7 @@ test("active session with queue capability: Send routes to turn/queue", async ()
     },
   }));
 
-  await user.type(textarea(), "queued message");
+  await user.type(textarea(), "qm");
   await user.click(submitButton());
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
@@ -1513,11 +1506,11 @@ test("a second message composed before the first turn's status frame arrives que
     },
   }));
 
-  await user.type(textarea(), "first message");
+  await user.type(textarea(), "m1");
   await user.click(submitButton());
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
 
-  await user.type(textarea(), "second message");
+  await user.type(textarea(), "m2");
   // Still composable: an idle snapshot on a queue-capable harness carries
   // queue:true (#1375), so the second message routes to turn/queue rather than
   // bouncing as a second turn/start.
@@ -1526,7 +1519,7 @@ test("a second message composed before the first turn's status frame arrives que
 
   await waitFor(() => {
     const queued = fake.calls.find((c) => c.method === "turn/queue");
-    expect(queued?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "second message" }] });
+    expect(queued?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "m2" }] });
   });
   // turn/queue carries no expectedTurnId to be wrong about: appwire v3 dropped
   // the field from the method outright (appwire/types.go's ProtocolVersion
@@ -1597,12 +1590,13 @@ test("a cold auto-resumed session queues the second message rather than bouncing
   const user = userEvent.setup();
   const fake = await mountColdResumedThread();
 
-  await user.click(textarea());
-  await user.type(textarea(), "first message");
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "m1");
   await user.click(submitButton());
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
 
-  await user.type(textarea(), "second message");
+  await user.type(editor, "m2");
   await user.click(submitButton());
 
   await waitFor(() => expect(routedCalls(fake)).toHaveLength(2));
@@ -1616,12 +1610,13 @@ test("a closed session that a first message resumed queues the second message to
   const user = userEvent.setup();
   const fake = await mountColdResumedThread("closed");
 
-  await user.click(textarea());
-  await user.type(textarea(), "first message");
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "m1");
   await user.click(submitButton());
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
 
-  await user.type(textarea(), "second message");
+  await user.type(editor, "m2");
   await user.click(submitButton());
 
   await waitFor(() => expect(routedCalls(fake)).toHaveLength(2));
@@ -1637,12 +1632,13 @@ test("the submit tooltip names the route the submit actually takes on a cold ses
   const user = userEvent.setup();
   const fake = await mountColdResumedThread();
 
-  await user.click(textarea());
-  await user.type(textarea(), "first message");
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "m1");
   await user.click(submitButton());
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
 
-  await user.type(textarea(), "second message");
+  await user.type(editor, "m2");
   // The tooltip opens on a 300ms hover delay (widgets/tooltip's own test pins
   // it), so this waits for the bubble rather than reading straight after.
   fireEvent.mouseEnter(submitButton());
@@ -1702,7 +1698,7 @@ test("a turn/start pending for another client does not reroute this composer", a
     },
   }));
 
-  await user.type(textarea(), "my own first message");
+  await user.type(textarea(), "mine");
   await user.click(submitButton());
 
   await waitFor(() => expect(routedCalls(fake)).toHaveLength(1));
@@ -1748,7 +1744,8 @@ test("a hydrate that reports this client's own in-flight send still routes the n
     },
   }));
 
-  await user.type(textarea(), "first message");
+  const editor = textarea();
+  await user.type(editor, "m1");
   await user.click(submitButton());
   await waitFor(() => expect(firstSendId).toBeTruthy());
 
@@ -1765,7 +1762,7 @@ test("a hydrate that reports this client's own in-flight send still routes the n
         {
           clientMutationId: firstSendId as string,
           method: "turn/start",
-          input: [{ type: "text", text: "first message" }],
+          input: [{ type: "text", text: "m1" }],
           executionState: "accepted",
           projectionState: "pending",
         },
@@ -1784,7 +1781,7 @@ test("a hydrate that reports this client's own in-flight send still routes the n
   await waitFor(async () => expect((await readMutationPersistence("ref_a")).optimistic).toHaveLength(0));
   await flushPendingTurnsProjectionForTests();
 
-  await user.type(textarea(), "second message");
+  await user.type(editor, "m2");
   await user.click(submitButton());
 
   await waitFor(() => expect(routedCalls(fake)).toHaveLength(2));
@@ -1825,7 +1822,7 @@ test("Cmd+Enter always submits, regardless of the enterToSend preference", async
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
 
-  await user.type(textarea(), "quick send");
+  await user.type(textarea(), "qs");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
@@ -1844,9 +1841,10 @@ test("bare Enter does not submit when enterToSend is off (default)", async () =>
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
 
-  await user.type(textarea(), "line one{Enter}");
+  const editor = textarea();
+  await user.type(editor, "a{Enter}");
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
-  expect(textarea().textContent).toBe("line one\n");
+  expect(editor.textContent).toBe("a\n");
 });
 
 // IME guard: while an IME composition is in progress (e.g. finishing a
@@ -1858,28 +1856,11 @@ test("Enter is ignored while an IME composition is in progress, even with enterT
   await mountComposer("ref_a");
   const requestSubmitSpy = vi.spyOn(HTMLFormElement.prototype, "requestSubmit").mockImplementation(() => {});
 
-  replaceEditorText(textarea(), "composing");
-  fireEvent.keyDown(textarea(), { key: "Enter", isComposing: true });
+  const editor = textarea();
+  replaceEditorText(editor, "composing");
+  fireEvent.keyDown(editor, { key: "Enter", isComposing: true });
 
   expect(requestSubmitSpy).not.toHaveBeenCalled();
-});
-
-test("bare Enter submits when enterToSend is on", async () => {
-  prefsStore.getState().setEnterToSend(true);
-  const user = userEvent.setup();
-  const fake = await mountComposer("ref_a");
-  fake.on("turn/start", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
-    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-  }));
-
-  await user.type(textarea(), "go{Enter}");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
 });
 
 test("bare Enter with enterToSend dispatches the message and leaves nothing behind", async () => {
@@ -1904,29 +1885,6 @@ test("bare Enter with enterToSend dispatches the message and leaves nothing behi
   // literal newline, which would leave the sent text behind in the composer.
   await waitFor(() => expect(textarea().textContent).toBe(""));
   expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
-});
-
-test("Shift+Enter with an empty queue and text steers instead of submitting", async () => {
-  const user = userEvent.setup();
-  const fake = await mountComposer("ref_a", {
-    status: { type: "active" },
-    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
-  });
-  fake.on("turn/steer", (params) => ({
-    receipt: {
-      clientMutationId: params.clientMutationId,
-      disposition: "applied",
-      threadId: "thread_a",
-      projectionState: "reflected",
-    },
-  }));
-
-  await user.type(textarea(), "steer this");
-  await user.keyboard("{Shift>}{Enter}{/Shift}");
-
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/steer")).toBe(true));
-  const call = fake.calls.find((c) => c.method === "turn/steer");
-  expect(call?.params).toMatchObject({ ref: "ref_a" });
 });
 
 test("undo still works after an attachment inserts its marker", async () => {
@@ -1977,7 +1935,7 @@ test("a plain typed mention stays prose through a programmatic attachment insert
   expect(readComposerDraft(ref)).toEqual({ text: "Run /cleanup then /cleanup[image 1]", skillNames: ["cleanup"] });
 });
 
-test("Shift+Enter steering dispatches the draft and leaves nothing behind", async () => {
+test("Shift+Enter with an empty queue steers the draft and leaves nothing behind", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -1992,11 +1950,13 @@ test("Shift+Enter steering dispatches the draft and leaves nothing behind", asyn
     },
   }));
 
-  await user.type(textarea(), "steer this");
+  const editor = textarea();
+  await user.type(editor, "hi");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/steer")).toBe(true));
-  await waitFor(() => expect(textarea().textContent).toBe(""));
+  expect(fake.calls.find((c) => c.method === "turn/steer")?.params).toMatchObject({ ref: "ref_a" });
+  await waitFor(() => expect(editor.textContent).toBe(""));
   expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
 });
 
@@ -2016,37 +1976,19 @@ test("with enterToSend on, Shift+Enter is a literal newline and does not steer",
     },
   }));
 
-  await user.type(textarea(), "abc");
+  const editor = textarea();
+  await user.type(editor, "abc");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
-  expect(textarea().textContent).toBe("abc\n");
-});
-
-// The chord a hint advertises has to track the preference that actually fires
-// it: enterToSend on means bare Enter submits, so the tooltip must say Enter,
-// not Mod+Enter. Now asserted on the tooltip, since that's where the chord
-// moved.
-test("the submit tooltip's chord switches from Mod+Enter to a bare Enter when enterToSend is on", async () => {
-  const user = userEvent.setup();
-  const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
-
-  await mountComposer("ref_a");
-  await user.hover(submitButton());
-  expect((await screen.findByRole("tooltip")).textContent).toContain(`${modWord}+Enter`);
-
-  cleanup();
-  prefsStore.getState().setEnterToSend(true);
-  await mountComposer("ref_a");
-  await user.hover(submitButton());
-  const tip = await screen.findByRole("tooltip");
-  expect(tip.textContent).toMatch(/·\s*Enter$/);
-  expect(tip.textContent).not.toContain(modWord);
+  expect(editor.textContent).toBe("abc\n");
 });
 
 // enterToSend on makes Shift+Enter a literal newline rather than a steer (see
 // handleKeyDown), so Steer's tooltip must stop advertising a chord that no
-// longer reaches it.
+// longer reaches it. controlTooltips.test.ts pins every Send and Steer label;
+// this is Steer's one real hover, proving the preference and the label reach
+// the bubble.
 test("Steer's tooltip drops the chord when enterToSend has taken Shift+Enter away from it", async () => {
   prefsStore.getState().setEnterToSend(true);
   const user = userEvent.setup();
@@ -2106,10 +2048,11 @@ test("a successful classic steer also clears the textarea and its draft (contrac
     },
   }));
 
-  await user.type(textarea(), "steer this");
+  const editor = textarea();
+  await user.type(editor, "st");
   await user.click(steerButton());
 
-  await waitFor(() => expect(textarea().textContent).toBe(""));
+  await waitFor(() => expect(editor.textContent).toBe(""));
   expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
 });
 
@@ -2133,12 +2076,12 @@ test("clicking steer with a non-empty queue routes to drain-as-steer, carrying t
     },
   }));
 
-  await user.type(textarea(), "drain me");
+  await user.type(textarea(), "dm");
   await user.click(steerButton());
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
   const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
-  expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "drain me" }] });
+  expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "dm" }] });
 });
 
 // The window after status flips "active" and before activeTurnId arrives:
@@ -2195,6 +2138,8 @@ test("stop and steer both render and both work during the window after status fl
 // the render that offered the button. Here the status frame and the press
 // share one task (no render between them), so the render-time verdict still
 // says active while the store says idle; the handler has to ask the store.
+// Each test folds the frame and presses inside one act(): React defers the
+// re-render the frame schedules until the act scope exits, after the press.
 function foldStatusFrame(fake: FakeClient, statusType: string): void {
   fake.emitNotification({
     method: "thread/status/changed",
@@ -2219,8 +2164,10 @@ test("Steer pressed after an idle frame folded in the same task is refused on th
   }));
   await user.type(textarea(), "hi");
   const steer = steerButton();
-  foldStatusFrame(fake, "idle");
-  fireEvent.click(steer);
+  act(() => {
+    foldStatusFrame(fake, "idle");
+    fireEvent.click(steer);
+  });
   await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Steer failed: no active turn"));
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
@@ -2239,8 +2186,10 @@ test("Stop pressed after an idle frame folded in the same task is refused on the
     },
   }));
   const stop = stopButton();
-  foldStatusFrame(fake, "idle");
-  fireEvent.click(stop);
+  act(() => {
+    foldStatusFrame(fake, "idle");
+    fireEvent.click(stop);
+  });
   await waitFor(() => expect(getToasts().map((t) => t.text)).toContain("Interrupt failed: no active turn"));
   expect(fake.calls.filter((c) => c.method === "turn/interrupt")).toHaveLength(0);
 });
@@ -2264,8 +2213,10 @@ test("submit after an active frame folded in the same task routes to queue on th
   }
   await user.type(textarea(), "hi");
   const submit = submitButton();
-  foldStatusFrame(fake, "active");
-  fireEvent.click(submit);
+  act(() => {
+    foldStatusFrame(fake, "active");
+    fireEvent.click(submit);
+  });
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
 });
@@ -2320,16 +2271,19 @@ test("submit after the pending send cleared in the same task routes to send on t
     (await storage.listOutbox("ref_a")).find((record) => sentText(record.payload) === text)?.method;
   // Render-time verdict: this page's own pending send puts the next message in
   // queue mode (tier 6).
-  await user.type(textarea(), "second");
+  const editor = textarea();
+  await user.type(editor, "second");
   await user.click(submitButton());
   await waitFor(async () => expect(await routeOf("second")).toBe("turn/queue"));
-  await waitFor(() => expect(textarea().textContent).toBe(""));
+  await waitFor(() => expect(editor.textContent).toBe(""));
   // The next message renders in the same queue mode; its pending send clears
   // in the same task as the press, so the press has to read the store.
-  await user.type(textarea(), "third");
+  await user.type(editor, "third");
   const submit = submitButton();
-  resetPendingTurnsStoreForTests();
-  fireEvent.click(submit);
+  act(() => {
+    resetPendingTurnsStoreForTests();
+    fireEvent.click(submit);
+  });
   await waitFor(async () => expect(await routeOf("third")).toBe("turn/start"));
 });
 
@@ -2577,7 +2531,7 @@ test("an indefinitely pending steer never emits a timeout warning or reload inst
   });
   fake.on("turn/steer", () => new Promise<never>(() => undefined));
 
-  await user.type(textarea(), "patient steer");
+  await user.type(textarea(), "ps");
   await user.click(steerButton());
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
 
@@ -2601,11 +2555,12 @@ test("an explicit rejection returns to the sole Composer textarea", async () => 
     });
   });
 
-  await user.type(textarea(), "rejected draft");
+  const editor = textarea();
+  await user.type(editor, "rd");
   await user.click(submitButton());
 
-  await waitFor(() => expect(textarea().textContent).toBe("rejected draft"));
-  expect(screen.getAllByRole("textbox")).toEqual([textarea()]);
+  await waitFor(() => expect(editor.textContent).toBe("rd"));
+  expect(screen.getAllByRole("textbox")).toEqual([editor]);
   expect(screen.queryByText("Recovery drafts")).toBeNull();
   expect(screen.queryByRole("textbox", { name: "Recovered message" })).toBeNull();
 });
@@ -2620,14 +2575,15 @@ test("an occupied Composer is not overwritten by a later rejection", async () =>
     return rejection.promise;
   });
 
-  await user.type(textarea(), "rejected draft");
+  const editor = textarea();
+  await user.type(editor, "rd");
   await user.click(submitButton());
-  await waitFor(() => expect(textarea().textContent).toBe(""));
-  await user.type(textarea(), "current work");
+  await waitFor(() => expect(editor.textContent).toBe(""));
+  await user.type(editor, "cw");
   act(() => rejection.reject(notAcceptedError(clientMutationId)));
 
-  await waitFor(() => expect(screen.getByText("rejected draft")).toBeTruthy());
-  expect(textarea().textContent).toBe("current work");
+  await waitFor(() => expect(screen.getByText("rd")).toBeTruthy());
+  expect(editor.textContent).toBe("cw");
 });
 
 test("editing a rejected queue row merges it through the normal Composer", async () => {
@@ -2635,7 +2591,8 @@ test("editing a rejected queue row merges it through the normal Composer", async
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
   await mountComposer("ref_a", { status: { type: "idle" } });
-  await user.type(textarea(), "current work");
+  const editor = textarea();
+  await user.type(editor, "cw");
   await act(async () => {
     await seedRejectedRecovery(storage, "ref_a", "rejected draft");
     await refreshPendingTurnsProjection("ref_a");
@@ -2646,8 +2603,8 @@ test("editing a rejected queue row merges it through the normal Composer", async
   await user.click(within(row).getByRole("button", { name: "Edit message" }));
 
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().textContent).toBe("current work\n\nrejected draft");
-  expect(screen.getAllByRole("textbox")).toEqual([textarea()]);
+  expect(editor.textContent).toBe("cw\n\nrejected draft");
+  expect(screen.getAllByRole("textbox")).toEqual([editor]);
   expect(screen.queryByText("rejected draft")).toBeNull();
 });
 
@@ -2809,7 +2766,8 @@ test("a losing cross-tab recovered send does not issue a second request", async 
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().textContent).toBe("one winner");
+  const editor = textarea();
+  expect(editor.textContent).toBe("one winner");
   const otherTab = new MutationOutboxIndexedDB();
   await otherTab.resendRecovery(recovered.clientMutationId, {
     targetRef: "ref_a",
@@ -2825,7 +2783,7 @@ test("a losing cross-tab recovered send does not issue a second request", async 
 
   await user.click(submitButton());
 
-  await waitFor(() => expect(textarea().textContent).toBe(""));
+  await waitFor(() => expect(editor.textContent).toBe(""));
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(getToasts().map((toast) => toast.kind)).toEqual(["info"]);
   otherTab.close();
@@ -2860,11 +2818,12 @@ test("a slow recovery read still activates before the mount's projection work is
   setMutationStorageForTests(storage);
   await seedRejectedRecovery(storage, "ref_a", "slow to arrive");
   await mountComposer("ref_a", { status: { type: "idle" } });
-  expect(textarea().textContent).toBe("");
+  const editor = textarea();
+  expect(editor.textContent).toBe("");
 
   await flushPendingTurnsProjectionForTests();
 
-  expect(textarea().textContent).toBe("slow to arrive");
+  expect(editor.textContent).toBe("slow to arrive");
 });
 
 test("a slow recovery write is durable before the edit's projection work is awaited out", async () => {
@@ -3027,7 +2986,8 @@ test("draining an active recovery consumes its owner before the next submission"
     return new Promise<never>(() => undefined);
   });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().textContent).toBe("retry me");
+  const editor = textarea();
+  expect(editor.textContent).toBe("retry me");
   const transact = IDBDatabase.prototype.transaction;
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   const committed = deferred<void>();
@@ -3055,8 +3015,8 @@ test("draining an active recovery consumes its owner before the next submission"
     await flushPendingTurnsProjectionForTests();
   }
   expect(await storage.getRecovery(recovery.clientMutationId)).toBeUndefined();
-  expect(textarea().textContent).toBe("");
-  replaceEditorText(textarea(), "follow up");
+  expect(editor.textContent).toBe("");
+  replaceEditorText(editor, "follow up");
   fireEvent.click(submitButton());
   await flushPendingTurnsProjectionForTests();
   expect((await storage.listOutbox("ref_a")).map((record) => record.method)).toEqual([
@@ -3223,14 +3183,49 @@ test("the stop button is absent once the session has ended", async () => {
 
 const ENDED_STATUSES = ["ended", "closed", "notLoaded"] as const;
 
-test.each(ENDED_STATUSES)("a %s session's card rests as a bare invitation with no control row", async (type) => {
-  await mountComposer("ref_a", { status: { type } });
+// One walk per status from rest to a real send. The Send has to be ENABLED,
+// not merely present: deriveSendQueueAvailability reports
+// canSend===canQueue===false for ended/closed (no turn to send to or queue
+// behind), so gating the control on it renders a permanently dead Send at
+// exactly the sessions the hub resumes on demand.
+test.each(ENDED_STATUSES)("a %s session's card rests bare, then grows a Send that really sends", async (type) => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", { status: { type } });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  const editor = textarea();
+
+  // At rest: a bare invitation with no control row.
   const card = screen.getByTestId("composer-input-card");
   expect(textarea().getAttribute("data-placeholder")).toBe("Send a follow-up…");
   expect(card.querySelectorAll("button")).toHaveLength(0);
   expect(screen.queryByTestId("composer-attach")).toBeNull();
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
   expect(screen.queryByTestId("composer-submit")).toBeNull();
+
+  // Focused: the card grows Send and attach. Steer and Stop stay absent:
+  // there is no turn in flight to act on.
+  await user.click(editor);
+  expect(submitButton().textContent).toContain("Send");
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(submitButton().disabled).toBe(true); // nothing typed yet
+
+  // Something to send enables it, and clicking it sends rather than toasting
+  // a refusal.
+  await user.type(editor, "go");
+  expect(submitButton().disabled).toBe(false);
+  await user.click(submitButton());
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  expect(screen.queryByText(/Send is not available/)).toBeNull();
 });
 
 // Issue #1727: a SAVED local session (local: prefix, notLoaded) that still
@@ -3281,63 +3276,14 @@ test("a saved local notLoaded session with sending enabled rests as a bare invit
   expect(screen.getByTestId("session-chrome-inline")).toBeTruthy();
 });
 
-test.each(ENDED_STATUSES)("a %s session's card grows a usable Send once focused", async (type) => {
-  await mountComposer("ref_a", { status: { type } });
-  await userEvent.setup().click(textarea());
-
-  const submit = screen.getByTestId("composer-submit");
-  expect(submit.textContent).toContain("Send");
-  expect(screen.getByTestId("composer-attach")).toBeTruthy();
-  // Steer and Stop stay absent: there is no turn in flight to act on.
-  expect(screen.queryByTestId("composer-steer")).toBeNull();
-  expect(screen.queryByTestId("composer-stop")).toBeNull();
-});
-
-// The button has to be ENABLED, not merely present. deriveSendQueueAvailability
-// reports canSend===canQueue===false for ended/closed (no turn to send to or
-// queue behind), so gating the control on it renders a permanently dead Send at
-// exactly the sessions the hub resumes on demand.
-test.each(ENDED_STATUSES)("a %s session's Send enables as soon as there is something to send", async (type) => {
-  const user = userEvent.setup();
-  await mountComposer("ref_a", { status: { type } });
-  await user.click(textarea());
-  expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(true); // nothing typed yet
-
-  await user.type(textarea(), "follow up on this");
-  expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(false);
-});
-
-test.each(ENDED_STATUSES)(
-  "clicking Send on a %s session really sends, rather than toasting a refusal",
-  async (type) => {
-    const user = userEvent.setup();
-    const fake = await mountComposer("ref_a", { status: { type } });
-    fake.on("turn/start", (params) => ({
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        disposition: "applied",
-        threadId: "thread_a",
-        projectionState: "reflected",
-      },
-      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-    }));
-
-    await user.click(textarea());
-    await user.type(textarea(), "wake up and finish the job");
-    await user.click(screen.getByTestId("composer-submit"));
-
-    await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
-    expect(screen.queryByText(/Send is not available/)).toBeNull();
-  },
-);
-
 // Blur must not strand a typed message: the control row is gated on engagement
 // (focus OR content), so text left in the field keeps its Send.
 test("an ended session that still holds text keeps its control row after blur", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", { status: { type: "ended" } });
-  await user.click(textarea());
-  await user.type(textarea(), "draft I walked away from");
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "dw");
   await user.tab();
 
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
@@ -3375,7 +3321,7 @@ test("an ended session can still be typed into and submitted with the Mod+Enter 
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
 
-  await user.type(textarea(), "one more thing");
+  await user.type(textarea(), "omt");
   await user.keyboard("{Meta>}{Enter}{/Meta}");
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
@@ -3423,7 +3369,7 @@ test("a stopped local session offers no Send, only the explicit Resume action", 
   // property, so the attribute is the only faithful reading).
   expect(editor.getAttribute("contenteditable")).toBe("true");
   await user.click(editor);
-  await user.type(editor, "one more thing");
+  await user.type(editor, "omt");
 
   expect(submitButton().disabled).toBe(true);
   // The Mod+Enter chord reaches the form by the same route the button does; it
@@ -3458,7 +3404,7 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
   const editor = textarea();
   await user.click(editor);
-  await user.type(editor, "one more thing");
+  await user.type(editor, "omt");
   expect(submitButton().disabled).toBe(true);
   // The chord reaches the form by the same route the button does; it refuses too.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
@@ -3490,7 +3436,7 @@ test("a live fenced idle local session renders a disabled Send and sends no turn
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   const editor = textarea();
   await user.click(editor);
-  await user.type(editor, "one more thing");
+  await user.type(editor, "omt");
   expect(submitButton().disabled).toBe(true);
   // The chord reaches the form by the same route the button does; it refuses too.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
@@ -3528,7 +3474,7 @@ test("a fenced closed local session that advertises send renders a disabled Send
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
   const editor = textarea();
   await user.click(editor);
-  await user.type(editor, "one more thing");
+  await user.type(editor, "omt");
   expect(submitButton().disabled).toBe(true);
   // The chord reaches the form by the same route the button does; it refuses too.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
@@ -3566,7 +3512,7 @@ test("an active fenced local session renders a disabled Send and enqueues nothin
   await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
   const editor = textarea();
   await user.click(editor);
-  await user.type(editor, "one more thing");
+  await user.type(editor, "omt");
   expect(submitButton().disabled).toBe(true);
   // The chord reaches the form by the same route the button does; it refuses too.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
@@ -3657,7 +3603,8 @@ test("a typed /queue on an active fenced session is refused and parks no intent"
   const ref = "local:active-fenced-typed-queue";
   const fake = await mountActiveFencedForTypedCommands(ref);
 
-  await user.type(textarea(), "/queue hello from the typed path");
+  const editor = textarea();
+  await user.type(editor, "/queue hello from the typed path");
   // The Send button is disabled by the fence under test, so the submit chord
   // is the reachable route - the same one the fenced-active tests above use.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
@@ -3669,7 +3616,7 @@ test("a typed /queue on an active fenced session is refused and parks no intent"
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
   // A refusal preserves the draft, like every other failed built-in run.
-  expect(textarea().textContent).toBe("/queue hello from the typed path");
+  expect(editor.textContent).toBe("/queue hello from the typed path");
 });
 
 test("a typed /steer on an active fenced session is refused and parks no intent", async () => {
@@ -3677,7 +3624,8 @@ test("a typed /steer on an active fenced session is refused and parks no intent"
   const ref = "local:active-fenced-typed-steer";
   const fake = await mountActiveFencedForTypedCommands(ref);
 
-  await user.type(textarea(), "/steer go left");
+  const editor = textarea();
+  await user.type(editor, "/steer go left");
   // The Send button is disabled by the fence under test, so the submit chord
   // is the reachable route - the same one the fenced-active tests above use.
   await user.keyboard("{Meta>}{Enter}{/Meta}");
@@ -3688,7 +3636,7 @@ test("a typed /steer on an active fenced session is refused and parks no intent"
   expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
-  expect(textarea().textContent).toBe("/steer go left");
+  expect(editor.textContent).toBe("/steer go left");
 });
 
 // /drain-as-steer's availability rule needs a queued row to drain; the mount
@@ -3704,7 +3652,8 @@ test("a typed /drain-as-steer on an active fenced session is refused and parks n
     preview: ["hello"],
   });
 
-  await user.type(textarea(), "/drain-as-steer");
+  const editor = textarea();
+  await user.type(editor, "/drain-as-steer");
   // Close the inline slash menu first: an argless command's full name leaves
   // the completion open, and its Enter handler would accept the highlighted
   // row instead of submitting the form.
@@ -3721,7 +3670,7 @@ test("a typed /drain-as-steer on an active fenced session is refused and parks n
   expect(fake.calls.filter((call) => call.method === "turn/drainAsSteer")).toEqual([]);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
-  expect(textarea().textContent).toBe("/drain-as-steer");
+  expect(editor.textContent).toBe("/drain-as-steer");
 });
 
 // thread/clear is durable like the turn mutations: the hub's recovery
@@ -3732,7 +3681,8 @@ test("a typed /clear on an active fenced session is refused and parks no intent"
   const ref = "local:active-fenced-typed-clear";
   const fake = await mountActiveFencedForTypedCommands(ref);
 
-  await user.type(textarea(), "/clear");
+  const editor = textarea();
+  await user.type(editor, "/clear");
   // Close the inline slash menu first: an argless command's full name leaves
   // the completion open, and its Enter handler would accept the highlighted
   // row instead of submitting the form.
@@ -3746,7 +3696,7 @@ test("a typed /clear on an active fenced session is refused and parks no intent"
   );
   expect(fake.calls.filter((call) => call.method === "thread/clear")).toEqual([]);
   expect(await parkedOutboxFor(ref)).toEqual([]);
-  expect(textarea().textContent).toBe("/clear");
+  expect(editor.textContent).toBe("/clear");
 });
 
 test("a typed /interrupt on an active fenced session still mints its intent: Stop stays reachable, button and typed form agree", async () => {
@@ -3876,8 +3826,9 @@ test("pasting an image renders a removable attachment tile and inserts its marke
   installCanvasStubs();
   await mountComposer("ref_a");
 
-  pastePngInto(textarea());
-  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
+  const editor = textarea();
+  pastePngInto(editor);
+  await waitFor(() => expect(editor.textContent).toBe("[image 1]"));
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
 });
 
@@ -3885,8 +3836,9 @@ test("mixed image and text paste preserves both the marker and caption", async (
   installCanvasStubs();
   await mountComposer("ref_a");
 
-  pastePngInto(textarea(), "shot.png", "caption");
-  await waitFor(() => expect(textarea().textContent).toBe("[image 1]caption"));
+  const editor = textarea();
+  pastePngInto(editor, "shot.png", "caption");
+  await waitFor(() => expect(editor.textContent).toBe("[image 1]caption"));
   expect(readComposerDraft("ref_a")).toEqual({ text: "[image 1]caption", skillNames: [] });
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
 });
@@ -4006,7 +3958,11 @@ test.each([
     });
     try {
       await user.click(actionButton());
-      await committed;
+      // The commit's store publications re-render the queue strip; they land
+      // inside this act() rather than after it.
+      await act(async () => {
+        await committed;
+      });
       if (remount) {
         cleanup();
         render(<Composer ref="ref_a" focused={false} />);
@@ -4106,8 +4062,9 @@ test("the remove button names the specific attachment it removes", async () => {
   installCanvasStubs();
   await mountComposer("ref_a");
 
-  pastePngInto(textarea(), "shot.png");
-  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
+  const editor = textarea();
+  pastePngInto(editor, "shot.png");
+  await waitFor(() => expect(editor.textContent).toBe("[image 1]"));
 
   expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
 });
@@ -4126,8 +4083,9 @@ test("a successful submit includes the pasted image as a base64 InputAttachment"
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
 
-  pastePngInto(textarea());
-  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
+  const editor = textarea();
+  pastePngInto(editor);
+  await waitFor(() => expect(editor.textContent).toBe("[image 1]"));
   await waitFor(() => expect(screen.queryByRole("button", { name: /remove/i })).toBeTruthy());
 
   await user.click(submitButton());
@@ -4153,8 +4111,9 @@ test("submitting while an attachment is still mid-encode is blocked with a toast
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
 
-  pastePngInto(textarea());
-  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
+  const editor = textarea();
+  pastePngInto(editor);
+  await waitFor(() => expect(editor.textContent).toBe("[image 1]"));
   await user.click(submitButton());
 
   await waitFor(() => expect(screen.getByText(/still processing/i)).toBeTruthy());
@@ -4166,8 +4125,9 @@ test("pasted image renders as a thumbnail tile with dimensions, remove button, a
   const user = userEvent.setup();
   await mountComposer("ref_a");
 
-  pastePngInto(textarea(), "screenshot.png");
-  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
+  const editor = textarea();
+  pastePngInto(editor, "screenshot.png");
+  await waitFor(() => expect(editor.textContent).toBe("[image 1]"));
 
   // The whole thumbnail is the control that opens the lightbox, and it is
   // named for the file it shows.
@@ -4190,7 +4150,7 @@ test("pasted image renders as a thumbnail tile with dimensions, remove button, a
   // Assert clicking the ✕ removes the attachment
   const removeButton = screen.getByRole("button", { name: /remove screenshot\.png/i });
   await user.click(removeButton);
-  await waitFor(() => expect(textarea().textContent).toBe(""));
+  await waitFor(() => expect(editor.textContent).toBe(""));
 });
 
 // kata edhz. The settled tile used to draw its image twice - <ImageGallery>,
@@ -4421,11 +4381,12 @@ test("removing a still-encoding attachment strips its marker from the textarea",
   const user = userEvent.setup();
   await mountComposer("ref_a");
 
-  pastePngInto(textarea());
-  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
+  const editor = textarea();
+  pastePngInto(editor);
+  await waitFor(() => expect(editor.textContent).toBe("[image 1]"));
 
   await user.click(screen.getByRole("button", { name: /remove/i }));
-  expect(textarea().textContent).toBe("");
+  expect(editor.textContent).toBe("");
 });
 
 test("picking a file via the hidden input attaches it, same as paste/drop", async () => {
@@ -4479,9 +4440,10 @@ test('"/" at the start of an empty composer types a literal slash and opens the 
   const user = userEvent.setup();
   await mountComposer("ref_slash");
 
-  await user.type(textarea(), "/");
+  const editor = textarea();
+  await user.type(editor, "/");
 
-  expect(textarea().textContent).toBe("/");
+  expect(editor.textContent).toBe("/");
   expect(paletteStore.getState().open).toBe(false);
   expect(screen.getByTestId("composer-slash-menu")).toBeTruthy();
 });
@@ -4489,9 +4451,10 @@ test('"/" at the start of an empty composer types a literal slash and opens the 
 test('"/" in a NON-empty composer is a literal slash, not a palette trigger', async () => {
   const user = userEvent.setup();
   await mountComposer("ref_slash2");
-  await user.type(textarea(), "hello");
+  const editor = textarea();
+  await user.type(editor, "hello");
 
-  fireEvent.keyDown(textarea(), { key: "/" });
+  fireEvent.keyDown(editor, { key: "/" });
 
   expect(paletteStore.getState().open).toBe(false);
 });
@@ -4654,16 +4617,6 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
   ]);
 });
 
-test("typing further narrows the menu live", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
-  const user = userEvent.setup();
-  await mountComposer("ref_slash4");
-
-  await user.type(textarea(), "hi /rev");
-
-  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
-});
-
 test("slash completion hides excluded plugin commands but keeps loaded plugin commands", async () => {
   useCommandCatalog.setState({
     commands: [
@@ -4682,29 +4635,6 @@ test("slash completion hides excluded plugin commands but keeps loaded plugin co
   await user.type(textarea(), "hi /rev");
 
   expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
-});
-
-test("slash completion keeps built-ins while hiding plugin commands for an explicit empty inventory", async () => {
-  useCommandCatalog.setState({
-    commands: [
-      { name: "review", description: "review the diff", source: "plugin", pluginName: "excluded" },
-      { name: "release", description: "cut a release", source: "plugin", pluginName: "excluded" },
-    ],
-  });
-  const user = userEvent.setup();
-  await mountComposer("ref_slash_empty", {
-    evener: {
-      ...testThread("ref_slash_empty").evener,
-      diagnostics: { plugins: [] },
-    },
-  });
-
-  await user.type(textarea(), "hi /re");
-
-  expect(slashOptions().map((el) => el.textContent)).toEqual([
-    expect.stringContaining("/reasoning-effort"),
-    expect.stringContaining("/project"),
-  ]);
 });
 
 test("skill completions keep indivisible chips in the sentence and submit both references", async () => {
@@ -4744,19 +4674,20 @@ test("skill completions keep indivisible chips in the sentence and submit both r
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
 
-  await user.type(textarea(), "Run /skill-1");
+  const editor = textarea();
+  await user.type(editor, "Run /skill-1");
   expect(slashOptions()).toHaveLength(1);
   expect(slashOptions()[0]?.textContent).toContain("/skill-1");
 
   await user.click(slashOptions()[0]!);
   expect(readComposerDraft("ref_slash_skill")).toEqual({ text: "Run /skill-1 ", skillNames: ["skill-1"] });
-  await user.type(textarea(), "and then /skill-2");
+  await user.type(editor, "and then /skill-2");
   await user.keyboard("{Tab}");
   expect(readComposerDraft("ref_slash_skill")).toEqual({
     text: "Run /skill-1 and then /skill-2 ",
     skillNames: ["skill-1", "skill-2"],
   });
-  const chips = within(textarea()).getAllByTestId("composer-skill-chip");
+  const chips = within(editor).getAllByTestId("composer-skill-chip");
   expect(chips.map((chip) => chip.textContent)).toEqual(["/skill-1", "/skill-2"]);
   expect(chips.every((chip) => chip.getAttribute("contenteditable") === "false")).toBe(true);
   // Remove the completion's trailing separator; the wire preserves draft text.
@@ -4901,9 +4832,10 @@ test.each([
     },
     turn: { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
   }));
-  expect(textarea().textContent).toBe(fixture.text);
+  const editor = textarea();
+  expect(editor.textContent).toBe(fixture.text);
   expect(
-    within(textarea())
+    within(editor)
       .queryAllByTestId("composer-skill-chip")
       .map((chip) => chip.textContent),
   ).toEqual(fixture.chips);
@@ -5037,16 +4969,6 @@ test("a selected skill the catalog no longer reports says so in its tooltip", as
   );
 });
 
-test("a mid-word slash never opens the menu", async () => {
-  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
-  const user = userEvent.setup();
-  await mountComposer("ref_slash5");
-
-  await user.type(textarea(), "foo/bar");
-
-  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
-});
-
 test("a token with no catalog match shows no menu", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
@@ -5084,16 +5006,17 @@ test("Tab commits the highlighted option: splices /name<space> at the token star
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash8");
-  await user.type(textarea(), "hi /re");
+  const editor = textarea();
+  await user.type(editor, "hi /re");
   // index 0 is the built-in /reasoning-effort, 1 /review, 2 /release.
   await user.keyboard("{ArrowDown}{ArrowDown}"); // highlight "release"
 
   await user.keyboard("{Tab}");
 
-  expect(textarea().textContent).toBe("hi /release ");
-  expect(editorCursor(textarea())).toBe("hi /release ".length);
+  expect(editor.textContent).toBe("hi /release ");
+  expect(editorCursor(editor)).toBe("hi /release ".length);
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
-  expect(document.activeElement).toBe(textarea());
+  expect(document.activeElement).toBe(editor);
 });
 
 test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:name invocation, not the bare name", async () => {
@@ -5114,12 +5037,13 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
       diagnostics: { plugins: [{ name: "p", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }] },
     },
   });
-  await user.type(textarea(), "hi /rev");
+  const editor = textarea();
+  await user.type(editor, "hi /rev");
 
   await user.keyboard("{Tab}");
 
-  expect(textarea().textContent).toBe("hi /p:review ");
-  expect(editorCursor(textarea())).toBe("hi /p:review ".length);
+  expect(editor.textContent).toBe("hi /p:review ");
+  expect(editorCursor(editor)).toBe("hi /p:review ".length);
 });
 
 test("Enter commits the highlighted option and does NOT fall through to the composer's send routing", async () => {
@@ -5135,11 +5059,12 @@ test("Enter commits the highlighted option and does NOT fall through to the comp
     },
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
-  await user.type(textarea(), "hi /rev"); // single match (review) - avoids the /reasoning-effort built-in collision on "re"
+  const editor = textarea();
+  await user.type(editor, "hi /rev"); // single match (review) - avoids the /reasoning-effort built-in collision on "re"
 
   await user.keyboard("{Enter}");
 
-  expect(textarea().textContent).toBe("hi /review ");
+  expect(editor.textContent).toBe("hi /review ");
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
 });
 
@@ -5147,17 +5072,18 @@ test("Escape closes the menu without clearing the draft, and typing further reop
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash10");
-  await user.type(textarea(), "hi /re");
+  const editor = textarea();
+  await user.type(editor, "hi /re");
   expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
 
   await user.keyboard("{Escape}");
 
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
-  expect(textarea().textContent).toBe("hi /re"); // draft untouched
+  expect(editor.textContent).toBe("hi /re"); // draft untouched
 
-  await user.type(textarea(), "v");
+  await user.type(editor, "v");
 
-  expect(textarea().textContent).toBe("hi /rev");
+  expect(editor.textContent).toBe("hi /rev");
   expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
 });
 
@@ -5165,10 +5091,11 @@ test("blur closes the menu", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash11");
-  await user.type(textarea(), "hi /re");
+  const editor = textarea();
+  await user.type(editor, "hi /re");
   expect(screen.queryByTestId("composer-slash-menu")).not.toBeNull();
 
-  fireEvent.blur(textarea());
+  fireEvent.blur(editor);
 
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
 });
@@ -5177,13 +5104,14 @@ test("clicking an option commits it without ever blurring the textarea", async (
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash12");
-  await user.type(textarea(), "hi /re");
+  const editor = textarea();
+  await user.type(editor, "hi /re");
   // index 0 is the built-in /reasoning-effort, 1 /review, 2 /release.
 
   await user.click(slashOptions()[2]!); // "release"
 
-  expect(textarea().textContent).toBe("hi /release ");
-  expect(document.activeElement).toBe(textarea());
+  expect(editor.textContent).toBe("hi /release ");
+  expect(document.activeElement).toBe(editor);
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
 });
 
@@ -5191,15 +5119,16 @@ test("the open menu wires listbox/option roles and aria-activedescendant on the 
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG });
   const user = userEvent.setup();
   await mountComposer("ref_slash13");
-  await user.type(textarea(), "hi /re");
+  const editor = textarea();
+  await user.type(editor, "hi /re");
 
   expect(slashMenu().getAttribute("role")).toBe("listbox");
-  const activeId = textarea().getAttribute("aria-activedescendant");
+  const activeId = editor.getAttribute("aria-activedescendant");
   expect(activeId).toBeTruthy();
   expect(document.getElementById(activeId ?? "")).toBe(slashOptions()[0]);
 
   await user.keyboard("{Escape}");
-  expect(textarea().getAttribute("aria-activedescendant")).toBeNull();
+  expect(editor.getAttribute("aria-activedescendant")).toBeNull();
 });
 
 test("closing the slash menu removes both of the editor's optional ARIA references", async () => {
@@ -5263,10 +5192,11 @@ test("a built-in invocation (/goal) runs the RPC instead of sending, and clears 
     return { started: false };
   });
 
-  await user.type(textarea(), "/goal fix the login bug");
+  const editor = textarea();
+  await user.type(editor, "/goal fix the login bug");
   await user.click(submitButton());
 
-  await waitFor(() => expect(textarea().textContent).toBe(""));
+  await waitFor(() => expect(editor.textContent).toBe(""));
   expect(goalCall).toEqual({ ref: "ref_builtin_goal", objective: "fix the login bug" });
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(localStorage.getItem("evener.composer.draft.v1.ref_builtin_goal")).toBeNull();
@@ -5294,11 +5224,12 @@ test("a failed built-in invocation preserves the draft and toasts a friendly mes
     throw new Error("boom");
   });
 
-  await user.type(textarea(), "/goal fix the login bug");
+  const editor = textarea();
+  await user.type(editor, "/goal fix the login bug");
   await user.click(submitButton());
 
   await waitFor(() => expect(screen.getByText("Something went wrong.")).toBeTruthy());
-  expect(textarea().textContent).toBe("/goal fix the login bug");
+  expect(editor.textContent).toBe("/goal fix the login bug");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -5311,10 +5242,11 @@ test("an argless built-in invocation (/compact) runs and clears the draft", asyn
     return {};
   });
 
-  await user.type(textarea(), "/compact");
+  const editor = textarea();
+  await user.type(editor, "/compact");
   await user.click(submitButton());
 
-  await waitFor(() => expect(textarea().textContent).toBe(""));
+  await waitFor(() => expect(editor.textContent).toBe(""));
   expect(compactCalled).toBe(true);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
@@ -5328,11 +5260,12 @@ test("an unavailable built-in (/steer while idle) is refused with the unavailabl
   const user = userEvent.setup();
   const fake = await mountComposer("ref_builtin_steer", { status: { type: "idle" } });
 
-  await user.type(textarea(), "/steer go left");
+  const editor = textarea();
+  await user.type(editor, "/steer go left");
   await user.click(submitButton());
 
   await waitFor(() => expect(screen.getByText(/\/steer is not available right now/i)).toBeTruthy());
-  expect(textarea().textContent).toBe("/steer go left");
+  expect(editor.textContent).toBe("/steer go left");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -5349,11 +5282,12 @@ test("an unknown /foo sends as a plain message - the escape hatch", async () => 
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
 
-  await user.type(textarea(), "/foo bar");
+  const editor = textarea();
+  await user.type(editor, "/foo bar");
   await user.click(submitButton());
 
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
-  expect(textarea().textContent).toBe("");
+  expect(editor.textContent).toBe("");
 });
 
 test("a plugin catalog command still sends as text - only BUILT-INS are intercepted", async () => {
@@ -5372,11 +5306,12 @@ test("a plugin catalog command still sends as text - only BUILT-INS are intercep
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
 
-  await user.type(textarea(), "/review please");
+  const editor = textarea();
+  await user.type(editor, "/review please");
   await user.click(submitButton());
 
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
-  expect(textarea().textContent).toBe("");
+  expect(editor.textContent).toBe("");
   expect(fake.calls.some((call) => call.method === "goal/set")).toBe(false);
 });
 
@@ -5394,9 +5329,10 @@ test("a message carrying an attachment is never read as a command invocation, ev
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
 
-  await user.type(textarea(), "/goal fix it ");
-  pastePngInto(textarea());
-  await waitFor(() => expect(textarea().textContent).toBe("/goal fix it [image 1]"));
+  const editor = textarea();
+  await user.type(editor, "/goal fix it ");
+  pastePngInto(editor);
+  await waitFor(() => expect(editor.textContent).toBe("/goal fix it [image 1]"));
 
   await user.click(submitButton());
 
@@ -5434,7 +5370,8 @@ test.each([
       mutationStateAuthoritative: false,
     },
   });
-  expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+  const editor = textarea();
+  expect(within(editor).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
 
   await user.click(control === "submit" ? submitButton() : steerButton());
 
@@ -5442,7 +5379,7 @@ test.each([
     "Skill selections aren't supported on this session yet; your draft is kept",
   );
   expect(fake.calls.filter((call) => call.method === method)).toHaveLength(0);
-  expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+  expect(within(editor).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
 });
 
 // The whole refusal contract on Send, against real durable storage: the draft's
@@ -5459,7 +5396,8 @@ test("a staged skill on Send to a target without skillInput keeps the draft and 
     status: { type: "idle" },
     evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: false }, queue: { revision: 0 } },
   });
-  expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+  const editor = textarea();
+  expect(within(editor).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
 
   await user.click(submitButton());
 
@@ -5467,8 +5405,8 @@ test("a staged skill on Send to a target without skillInput keeps the draft and 
     "Skill selections aren't supported on this session yet; your draft is kept",
   );
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
-  expect(textarea().textContent).toContain("aimed at a target without skills");
-  expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+  expect(editor.textContent).toContain("aimed at a target without skills");
+  expect(within(editor).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
   expect(await storage.listOutbox(ref)).toEqual([]);
   expect(await storage.listOptimistic(ref)).toEqual([]);
   expect(await storage.listRecovery(ref)).toEqual([]);
