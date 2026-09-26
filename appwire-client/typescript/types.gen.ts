@@ -2063,6 +2063,17 @@ export interface NavigationSessionSummary {
   live: boolean;
   ask_pending?: boolean;
   dormant?: boolean;
+  /**
+   * Offline marks a row folded into the merged list from a source that is
+   * currently unreachable: its last-known rows stay visible, but they are not
+   * live and cannot serve host-targeted actions until the source reattaches.
+   * It is keyed off the row's source identity (HostID), never the row's own
+   * state, and is never set for the controller's own local rows.
+   *
+   * It sits BESIDE Dormant rather than reusing it: Dormant means the session
+   * has never run, and an offline row that ran must not read as "Not started".
+   */
+  offline?: boolean;
   updated_at?: string;
   more_subagents?: number;
   omitted_descendants?: number;
