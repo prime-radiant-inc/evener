@@ -69,7 +69,7 @@ evener_path = "/usr/local/bin/evener"    # optional; remote binary path
 roots       = ["/Users/jesse/src"]       # optional; remote working roots
 config_path = "/etc/evener/hub.toml"     # optional; the host's hub.toml
 addr        = "127.0.0.1:9180"           # optional; the host hub's loopback address
-key_path    = "/home/jesse/.ssh/id_m4"    # optional; SSH identity file (absolute recommended; passed verbatim)
+key_path    = "/home/jesse/.ssh/id_m4"    # optional; SSH identity file (absolute; relative values are refused)
 ```
 
 - `name` → `appwire.Ref.SourceID`; refs surface as `name:<sessionID>`
@@ -90,15 +90,15 @@ key_path    = "/home/jesse/.ssh/id_m4"    # optional; SSH identity file (absolut
   rewrite (component 08, §6). Shape rules, matching the shipped behavior: it is
   optional, trimmed, and empty-after-trim is absent (`hostreg.Normalize` trims;
   `validateHostConfigs` then validates the normalized value, so a padded value
-  never reaches a consumer untrimmed). Validation is shape-only — a trim/empty
-  check, no path check: an absolute path is what a client should store, and a
-  relative value is not refused; the hub performs no `~` or environment
-  expansion, so the value travels to ssh verbatim as `["-i", key_path]` before
-  the `--` destination terminator (component 04, §"SSH channel argv") and a
-  relative value resolves against the hub process's working directory when ssh
-  opens it at dial time. Like `evener_path`, a key file that does not exist (or
-  a relative path that resolves nowhere) surfaces at dial time as ssh's own
-  failure, not as a load-time refusal. A rewrite round-trips the
+  never reaches a consumer untrimmed). Validation requires an absolute path: a
+  relative or `~`-prefixed value is refused with `hostreg.ErrInvalidKeyPath`,
+  nothing stored, because the hub performs no `~` or environment expansion and
+  the value travels to ssh verbatim as `["-i", key_path]` before the `--`
+  destination terminator (component 04, §"SSH channel argv") — a relative path
+  would otherwise resolve against whatever working directory the hub happened
+  to launch with, not a stable base. Unlike `evener_path`, a key file that does
+  not exist surfaces at dial time as ssh's own failure, not as a load-time
+  refusal (its shape is validated at load). A rewrite round-trips the
   field (component 08's rewrite tests pin it).
 - **`config_path` / `addr` — the connection parameters both halves must
   agree on (corrected contract).** The bridge resolves the host hub's address

@@ -379,10 +379,13 @@ installed, and the new identity's own row still adopts it).
   `ErrAmbiguousSSHUser` → `user` (the field that made the destination
   ambiguous, and the message says so); `ErrEmptyRoot` → `roots`;
   `ErrInvalidName` and `ErrReservedName` → `name` (add only); `ErrHostCycle` →
-  the entry as a whole. Anything else is a form-level message.
-- Refusals commit nothing. A `hub.toml` name, an unknown or tombstone-only
-  name, a validation refusal and a failed durable write all leave the file and
-  the live set exactly as they were.
+  the entry as a whole; `ErrInvalidKeyPath` → `keyPath`. Anything else is a
+  form-level message.
+- Refusals commit nothing. A name unknown to the file or present solely as a
+  tombstone, a validation refusal and a failed durable write all leave the file
+  and the live set exactly as they were. (Every `hub.toml` host is
+  live-editable — the storage decision retired the edit-the-file refusal; see
+  the note at the top.)
 - A failed live phase rolls `hub.toml` back to the live snapshot and returns
   the error.
 

@@ -735,16 +735,27 @@ merged write was lost to the directory-sync tolerance, from the `.migrated`
 aside (the rename never mutates bytes) — a lost rename can never strand the
 sidecar's entries outside the read. A name that collides with `hub.toml` —
 possible through the operator's own hand edit — resolves through the collision
-arms below (byte-identical dropped, differing refused loudly); there is no
+arms below (identical after normalization dropped, differing refused loudly);
+there is no
 "already merged" state to skip and no path that silently drops a differing
-entry. The set-aside rename either already landed or is retried. Field
-conversion is a carry, not a translation: the retired sidecar's JSON used the
+entry. The set-aside rename either already landed or is retried. The
+`.migrated` archive is durable state, not debris: a boot that finds it with the
+marker absent re-merges it (and logs what it did), and only a completed
+migration's marker retires it for good; a boot with no `hub.toml` at all is a
+fresh hub and never imports the archive, so an operator resetting the hub to a
+clean slate deletes `hub.toml` and `hub.hosts.json.migrated` together — a reset
+that leaves the archive can be re-imported once a new `hub.toml` lacks the
+marker. Field conversion is a carry, not a translation: the retired sidecar's JSON used the
 same snake_case names as the file's TOML tables for every stored field (`name`,
 `ssh`, `user`, `evener_path`, `config_path`, `addr`, `roots`, `key_path`), so
 the migration is field-for-field — `address`/`keyPath` are the AppWire
-spellings and were never the sidecar's. A collision with a name `hub.toml`
+spellings and were never the sidecar's, and a hand-authored file using them is
+refused loudly at validation (the entry has no `ssh`), never silently
+discarded: the operator converts it. A collision with a name `hub.toml`
 already declares has two arms, neither of which loses data silently: a
-byte-identical duplicate is dropped in the file's favor (the retired merge's
+field-for-field identical duplicate (normalized values equal — the comparison
+is over values, never serialized bytes, since the sidecar is JSON and the file
+is TOML) is dropped in the file's favor (the retired merge's
 precedence — nothing is lost), while a *differing* duplicate is refused loudly,
 both files staying untouched and mutations refused until the operator resolves
 the duplicate, because the retired merge's silent drop would discard the
@@ -754,7 +765,8 @@ before the sidecar's entries are folded in or the operator fixes the file. A
 crash before the marker lands cannot have acted on the merged state yet. The
 legacy sidecar format the migration reads is the one that shipped: a JSON
 object whose only record is the `hosts` entry array (`loadLegacyHostSidecar`
-in `cmd/evener-hub/app_host_manage.go`). The pre-decision revision of this spec
+in `cmd/evener-hub/app_host_manage.go` — the migration's reader, added beside
+the shipped `loadHostSidecar`). The pre-decision revision of this spec
 also sketched a records-bearing sidecar (tombstones, generations, presence
 epochs, receipts, remnants, markers); that shape never shipped, and the
 migration refuses it rather than translating it or silently stripping it: a
@@ -785,7 +797,10 @@ plus the fingerprint it staged against), `[pending_mutation."<name>"]` and
 `[finalizing_mutation."<name>"]` (the §5 staged-receipt marker and finalizing
 claim: `staged_at`, `swap_started`, `teardown_started`, runtime phase, and the
 attempt token), `[generations."<name>"]` (the per-name generation high-water
-mark), `[tombstones."<name>"]` (the §15 tombstone records),
+mark), `[commit_markers."<name>"]` (the mirrored-generation commit marker the
+deploy-pipeline spec §4 boot rule reconciles: the name, the `hub.toml`
+generation, and the store-mirror generation), `[tombstones."<name>"]` (the §15
+tombstone records),
 `[mutation_receipts."<scoped-key>"]` (the §5/§6 receipts, keyed by the
 five-part scoped receipt key in mutation-id / name / kind / generation /
 incarnation-id order), `[pruned_receipts."<scoped-key>"]` (the §6 pruned
@@ -804,7 +819,12 @@ record lives, not what it holds. A rewrite re-emits every reserved key the
 mutation does not own unchanged (it writes only `hosts` and the records the
 mutation itself updates in that same atomic write — the update rule above), so
 a record this build does not recognize round-trips rather than being dropped,
-and a reserved key never carries operator data.
+and a reserved key never carries operator data. Reserved keys are machine-owned:
+a file that already holds operator data under a reserved name — a value the
+machine record does not decode as — is refused loudly before any rewrite,
+nothing overwritten or reinterpreted, and the operator resolves the collision
+by renaming their key; unknown keys outside the reserved set are preserved as
+data.
 
 Fingerprint semantics: the **host-set fingerprint** is a canonical hash over
 the file's validated effective host entries, the same entries the registry
