@@ -441,7 +441,7 @@ Opened from the Subagents chip or a subagent row in the transcript.
 [All 55] [■ Failed 2] [■ Running 32] [■ Done 21]
 
 FAILED · 2
-✕  Fix race in tree settle                   6m ago
+✕  Fix race in tree settle                       6m
    Failed: go test exited 1 (3 times)
    ⑂ fix-settle-race · 1.2M tokens
 RUNNING · 32
