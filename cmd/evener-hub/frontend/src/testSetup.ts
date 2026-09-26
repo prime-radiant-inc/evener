@@ -1,3 +1,4 @@
+import * as React from "react";
 import { afterAll, beforeAll } from "vitest";
 
 // Every test file must get its own VM context: stores, pane registrations and
@@ -30,4 +31,24 @@ afterAll(() => {
   } else {
     reactEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
   }
+});
+
+// React's development build captures an owner stack for every JSX element it
+// creates - an Error() plus a console.createTask - up to 10,000 a second. That
+// was 7% of the suite's CPU, and it buys only richer component stacks in React
+// warnings, which no test reads. React has no switch for it, so the counter
+// that caps it is pinned at the cap: every element takes the shared "unknown
+// owner" stack instead. If a React upgrade drops the counter, this throws
+// rather than silently losing the saving; update or delete this block then.
+const reactInternals = (React as unknown as Record<string, Record<string, unknown> | undefined>)
+  .__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+if (reactInternals === undefined || !("recentlyCreatedOwnerStacks" in reactInternals)) {
+  throw new Error(
+    "React no longer exposes recentlyCreatedOwnerStacks; update or remove the owner-stack cap in testSetup.ts.",
+  );
+}
+Object.defineProperty(reactInternals, "recentlyCreatedOwnerStacks", {
+  get: () => 10_000,
+  set: () => {},
+  configurable: true,
 });
