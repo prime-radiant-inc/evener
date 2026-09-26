@@ -21,9 +21,13 @@ export interface HubConnection {
 
 /** How long the connection waits before trying again after `failures`
  * attempts in a row closed without reaching ready (spec 14): at once, then
- * 1, 2, 4, 8 and 16 seconds, then every 30 seconds. */
+ * 1, 2, 4, 8 and 16 seconds, then every 30 seconds. A non-finite input (NaN,
+ * +/-Infinity) waits at once rather than throwing or scheduling a NaN/Infinity
+ * timeout, and a fractional input counts only its whole failures. */
 export function reconnectDelay(failures: number): number {
-	return failures <= 0 ? 0 : Math.min(1000 * 2 ** (failures - 1), 30_000);
+	if (!Number.isFinite(failures)) return 0;
+	const wholeFailures = Math.floor(failures);
+	return wholeFailures <= 0 ? 0 : Math.min(1000 * 2 ** (wholeFailures - 1), 30_000);
 }
 
 /** The one HubProfiles method this hook needs; HubProfiles itself satisfies
@@ -186,8 +190,12 @@ export function useHubConnection(
 				? "connecting"
 				: "idle";
 	// A connection that closed for a reason a retry can fix tries again on its
-	// own while the app is in front (spec 14), so no screen needs a Reconnect
+	// own while the app is in front (spec 14), so the Board needs no Reconnect
 	// button. A protocol mismatch (fatal) is left alone: retrying can't fix it.
+	// `attempt` is a dependency though the body never reads it: a caller-driven
+	// manual retry must cancel a pending auto-retry timer at once, the same as
+	// any other generation change, rather than wait for the reconnect it starts
+	// to itself move `state` off "closed".
 	useEffect(() => {
 		if (state !== "closed" || fatal || !activeId || !activeOrigin || !foreground) return;
 		const timer = setTimeout(() => {
@@ -195,6 +203,6 @@ export function useHubConnection(
 			setRetry((value) => value + 1);
 		}, reconnectDelay(failures.current));
 		return () => clearTimeout(timer);
-	}, [state, fatal, activeId, activeOrigin, foreground]);
+	}, [state, fatal, activeId, activeOrigin, foreground, attempt]);
 	return { client, state, fatal };
 }
