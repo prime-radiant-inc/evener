@@ -362,31 +362,73 @@ func TestHubSessionImageRefusals(t *testing.T) {
 	})
 }
 
-// A transcript can hold an over-bound record after the one that carries the
-// requested image — a huge later tool result, for example. The bounded read
-// refuses a record it cannot decode, but that refusal is about what it would
-// have to read next, not about an answer it already found: the image is served.
-func TestHubSessionImageServesAMatchBeforeAnOverBoundTail(t *testing.T) {
+// A transcript can hold over-bound records around the one that carries the
+// requested image — a huge tool result before it, or after. The bounded read
+// refuses a record it cannot decode without materializing it, but ReadLine
+// consumes that record whole, so the scan resumes at the next one: images
+// before and after an over-bound record are still served.
+func TestHubSessionImageSkipsOverBoundRecordsAroundTheMatch(t *testing.T) {
 	tail := bytes.Repeat([]byte{0x89, 'P', 'N', 'G'}, 12*1024*1024/4)
 	assertOverRecordBound(t, tail)
 	past := seedSessionImageSession(t, "", sessionImageTestPNG, "image/png",
 		sessionImageTurnFixture{image: tail, storedMediaType: "image/png"})
-	srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past})
-	defer srv.Close()
+	// Same fixture, with the over-bound record first and the match second.
+	head := seedSessionImageSession(t, "", tail, "image/png")
+	if err := appendSessionImageTurn(t, head, sessionImageTestPNG, "image/png"); err != nil {
+		t.Fatal(err)
+	}
 
-	resp, err := requestSessionImage(t, srv, appwire.SessionImageParams{
-		SessionID: sessionImageTestSession,
-		SHA:       imageSha(sessionImageTestPNG),
-	})
+	for name, index := range map[string]*hubcore.PastIndex{
+		"match before the over-bound record": past,
+		"match after the over-bound record":  head,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: index})
+			defer srv.Close()
+
+			resp, err := requestSessionImage(t, srv, appwire.SessionImageParams{
+				SessionID: sessionImageTestSession,
+				SHA:       imageSha(sessionImageTestPNG),
+			})
+			if err != nil {
+				t.Fatalf("evener/session/image: %v", err)
+			}
+			if !bytes.Equal(resp.Data, sessionImageTestPNG) {
+				t.Fatalf("Data = %q, want the matched image's bytes", resp.Data)
+			}
+			if resp.SHA != imageSha(sessionImageTestPNG) || resp.MediaType != "image/png" {
+				t.Fatalf("SHA/MediaType = %q/%q, want the matched image's own", resp.SHA, resp.MediaType)
+			}
+		})
+	}
+}
+
+// appendSessionImageTurn adds one tool-result image turn to a session fixture's
+// transcript, for tests that need an over-bound record on a particular side of
+// the match.
+func appendSessionImageTurn(t *testing.T, past *hubcore.PastIndex, image []byte, storedMediaType string) error {
+	t.Helper()
+	entry, ok := past.Find(sessionImageTestSession)
+	if !ok {
+		t.Fatalf("fixture session %q is not indexed", sessionImageTestSession)
+	}
+	w, err := transcript.OpenWriter(pastTranscriptPath(entry))
 	if err != nil {
-		t.Fatalf("evener/session/image: %v", err)
+		return err
 	}
-	if !bytes.Equal(resp.Data, sessionImageTestPNG) {
-		t.Fatalf("Data = %q, want the matched image's bytes", resp.Data)
+	if err := w.Append(schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_tail", Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_tail", Name: "screenshot", Content: "captured",
+				ImageData: image, ImageMediaType: storedMediaType,
+			},
+		}}},
+	}); err != nil {
+		return err
 	}
-	if resp.SHA != imageSha(sessionImageTestPNG) || resp.MediaType != "image/png" {
-		t.Fatalf("SHA/MediaType = %q/%q, want the matched image's own", resp.SHA, resp.MediaType)
-	}
+	return w.Close()
 }
 
 // assertOverRecordBound fails unless an image of this size encodes past the
