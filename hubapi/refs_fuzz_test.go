@@ -67,8 +67,9 @@ func coverClient(t *testing.T) {
 		_ = RollupRank(state)
 		_ = StateWord(state, false)
 		_ = StateWord(state, true)
-		_ = NeedsYouBand(state, false)
-		_ = NeedsYouBand(state, true)
+		_ = NeedsYouBand(state, false, false)
+		_ = NeedsYouBand(state, true, false)
+		_ = NeedsYouBand(state, false, true)
 	}
 
 	if _, err := NewClient("http://%", nil); err == nil {

@@ -82,17 +82,21 @@ func StateWord(state string, askPending bool) string {
 }
 
 // NeedsYouBand ranks a needs-you row into one of three ordering bands:
-// errored (2, "broken beats blocked"), ask-pending (1, "blocked beats
-// your-move"), or your-move (0, a generic settle). Callers sort NeedsYou
-// rows by this band descending, then by recency within a band. Meaningful
-// only for the needs-you tier (errored/awaiting/warning states); callers
-// outside that tier should not invoke it. askPending is ignored when state
-// is "errored" (errored always wins regardless).
-func NeedsYouBand(state string, askPending bool) int {
+// errored (2, "broken beats blocked"), blocked on a person's answer (1: a
+// question or an approval, "blocked beats your-move"), or your-move (0, a
+// generic settle). Callers sort NeedsYou rows by this band descending, then
+// by recency within a band. Meaningful only for the needs-you tier
+// (errored/awaiting/warning states, plus sessions a pending approval
+// promotes); callers outside that tier should not invoke it. An approval
+// blocks mid-turn, so its session still reports "active" and only
+// approvalPending can place it; pass false where the caller has no approval
+// information. Both flags are ignored when state is "errored" (errored
+// always wins regardless).
+func NeedsYouBand(state string, askPending, approvalPending bool) int {
 	switch {
 	case state == "errored":
 		return 2
-	case askPending:
+	case askPending || approvalPending:
 		return 1
 	default:
 		return 0

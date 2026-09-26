@@ -85,6 +85,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioLiveTier_CarriesAskPendingFromLiveEntry,
 		fuzzScenarioLiveTier_LiveOnlyLeafCarriesApprovalPending,
 		fuzzScenarioNeedsYou_AdmitsErroredAndWarning_RanksErroredFirst,
+		fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand,
 		fuzzScenarioNeedsYou_ArchivedLiveAwaitingExcluded,
 		fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove,
 		fuzzScenarioNeedsYou_CarriesAskPendingFromLiveEntry,

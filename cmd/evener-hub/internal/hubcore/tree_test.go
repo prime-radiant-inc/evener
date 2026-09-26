@@ -2171,6 +2171,38 @@ func fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T)
 	}
 }
 
+// fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand pins the spec's one
+// ordering (principle 1, section 7.1): failed first, then the sessions blocked
+// on a person's answer, questions and approvals together and oldest waiting
+// first, then your-move. The approval's session keeps reporting "active" (the
+// escalation blocks mid-turn), so only its ApprovalPending can place it.
+func fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01OLD_YOURMOVE", UpdatedAt: now.Add(-4 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ASK", UpdatedAt: now.Add(-1 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01APPROVAL", UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ERR", UpdatedAt: now.Add(-3 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01OLD_YOURMOVE", Status: appwire.ThreadStatusAwaiting},
+		{PID: 2, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+		{PID: 3, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{PID: 4, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
+	}
+	tree := buildTree(metas, live)
+	got := make([]string, 0, len(tree.NeedsYou))
+	for _, node := range tree.NeedsYou {
+		got = append(got, node.ID)
+	}
+	// The approval waits longer than the question, so it leads their shared
+	// band; in the lowest band it would trail even the older your-move row.
+	want := []string{"01ERR", "01APPROVAL", "01ASK", "01OLD_YOURMOVE"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("band order = %v, want %v", got, want)
+	}
+}
+
 // fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary is the
 // wave-6 wire-honesty regression: attention.go's AttentionSummary already
 // promoted a live, top-level, active session with a pending sandbox-

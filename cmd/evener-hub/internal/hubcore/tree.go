@@ -1588,16 +1588,17 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		needsYou = append(needsYou, node)
 	}
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
-	// errored (broken beats blocked) > ask-pending (blocked beats your-move) >
-	// your-move (a generic amber settle). AttentionRank isn't used here — it
-	// would also separate plain awaiting from warning, which both belong in
-	// the your-move band unless ask-pending.
+	// errored (broken beats blocked) > blocked on a question or an approval
+	// (blocked beats your-move) > your-move (a generic amber settle).
+	// AttentionRank isn't used here — it would also separate plain awaiting
+	// from warning, which both belong in the your-move band unless blocked.
 	sort.SliceStable(needsYou, func(i, j int) bool {
-		bi, bj := hubapi.NeedsYouBand(needsYou[i].State, needsYou[i].AskPending), hubapi.NeedsYouBand(needsYou[j].State, needsYou[j].AskPending)
+		a, b := &needsYou[i], &needsYou[j]
+		bi, bj := hubapi.NeedsYouBand(a.State, a.AskPending, a.ApprovalPending), hubapi.NeedsYouBand(b.State, b.AskPending, b.ApprovalPending)
 		if bi != bj {
 			return bi > bj
 		}
-		return needsYou[i].UpdatedAt.Before(needsYou[j].UpdatedAt)
+		return a.UpdatedAt.Before(b.UpdatedAt)
 	})
 
 	// Live already excludes archived sessions (the filter right after the

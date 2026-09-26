@@ -77,19 +77,24 @@ func TestStateWord(t *testing.T) {
 
 func TestNeedsYouBand(t *testing.T) {
 	cases := []struct {
-		state      string
-		askPending bool
-		want       int
+		state           string
+		askPending      bool
+		approvalPending bool
+		want            int
 	}{
-		{"errored", false, 2},
-		{"errored", true, 2}, // errored always outranks ask-pending
-		{"awaiting", true, 1},
-		{"awaiting", false, 0},
-		{"warning", false, 0},
+		{"errored", false, false, 2},
+		{"errored", true, false, 2}, // errored always outranks ask-pending
+		{"errored", false, true, 2}, // ...and a pending approval
+		{"awaiting", true, false, 1},
+		// An approval blocks mid-turn, so its session still reports "active";
+		// it waits on a person the way a question does and shares its band.
+		{"active", false, true, 1},
+		{"awaiting", false, false, 0},
+		{"warning", false, false, 0},
 	}
 	for _, c := range cases {
-		if got := NeedsYouBand(c.state, c.askPending); got != c.want {
-			t.Errorf("NeedsYouBand(%q, %v) = %d, want %d", c.state, c.askPending, got, c.want)
+		if got := NeedsYouBand(c.state, c.askPending, c.approvalPending); got != c.want {
+			t.Errorf("NeedsYouBand(%q, %v, %v) = %d, want %d", c.state, c.askPending, c.approvalPending, got, c.want)
 		}
 	}
 }
