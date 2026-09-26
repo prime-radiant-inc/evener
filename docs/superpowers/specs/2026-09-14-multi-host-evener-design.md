@@ -72,7 +72,8 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   navigation for the whole hub), and the operator's own config is now the only
   bound. Do not implement the cap without a new decision. (Component 03 §Scope
   carries the same record.)
-- **Restart identity pin: verify-then-signal accepted (Jesse, 2026-09-26).** The
+- **Restart identity pin: verify-then-signal accepted; the ad hoc restart path
+  is kept (Jesse, 2026-09-26).** The
   guarded verify-then-signal posture stands, supervisor-preferred (restart by
   systemd unit or launchd label where one is identified and safely restartable)
   with the guarded ad hoc path for a supervisorless hub **or where the
@@ -84,12 +85,11 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   is acknowledged, **not** closed, and no host-side restart-identity pin helper
   is planned — a `pidfd` is unreachable through the component's only host
   interface, `ssh <dest> <command>` (the crash-fencing `evener-fence` lease
-  wrapper is a fencing helper, not a restart-identity pin). The shipped manager
-  still refuses every supervisorless restart (`restartHub` returns `ErrRestart`
-  and never calls `restartBare`), so this record is a required **code delta**:
-  make the guarded ad hoc path the supervisorless branch, add the at-signal
-  re-read, and keep the unverified-target refusal. (The [04]
-  tracked-follow-up entry carries the same record.)
+  wrapper is a fencing helper, not a restart-identity pin). Shipped and restored
+  by #2450 reversing #2410: `restartHub` runs the guarded ad hoc path for the
+  supervisorless branch (`restartBare` → `waitHealthy` → `clearPendingRestart`);
+  the at-signal re-read is not implemented and the unverified-target refusal
+  stands. (The [04] tracked-follow-up entry carries the same record.)
 - **Remote side**: a full `evener hub` per host.
 - **Transport**: AppWire JSON-RPC over an SSH channel on stdin/stdout. No HTTP
   port exposed beyond the host's loopback.
@@ -447,8 +447,9 @@ implementing — several have landed without their entry being re-marked.
   `--addr` (e.g. in `Description=`/`Environment=`) or merely contains
   `evener`/`hub` is not a match. Several matches refuse with `ErrRestart` (no
   signal, no relaunch); when none matches it is the supervisorless branch, whose
-  restart runs the guarded verify-then-signal ad hoc path and whose only
-  no-supervisor launch is the cold-bootstrap **start** (component 04,
+  restart runs the guarded verify-then-signal ad hoc path (restored 2026-09-26,
+  §2 Decisions), and the cold-bootstrap **start** is the only no-supervisor
+  launch that does not first signal an identified listener (component 04,
   §"Stop/restart mechanics" check 5);
   **a candidate hub definition whose effective address cannot be
   resolved refuses with `ErrRestart` and starts nothing** rather than risking a
@@ -474,13 +475,13 @@ implementing — several have landed without their entry being re-marked.
   stands, never a fallback to a bare unguarded `kill`: an identity field that
   cannot be re-read refuses `ErrRestart` with no signal, while a supervisor label
   outside the bare-safe set is never interpolated into the remote shell and
-  falls through to the guarded ad hoc restart (design §2). The shipped manager still refuses the supervisorless branch
-  (`restartHub` returns `ErrRestart` without calling `restartBare`), and
-  `restartBare` — which validates at identification time, not at signal time —
-  is unreachable from production; making the guarded ad hoc path the
-  supervisorless branch and adding the at-signal re-read is the required
-  contract (implementation status, component 04 check 5), and the residual
-  window is the accepted one. Mirrors component-04 acceptance criterion 20.
+  falls through to the guarded ad hoc restart (design §2). Shipped and restored
+  (2026-09-26, #2450 reversing #2410): `restartHub` runs the guarded ad hoc path
+  for the supervisorless branch (`restartBare` → `waitHealthy` →
+  `clearPendingRestart`), which validates at identification time; the at-signal
+  re-read is not implemented, and the residual window is the accepted one
+  (implementation status, component 04 check 5). Mirrors component-04 acceptance
+  criterion 20.
 - **[05/06] remote-originated `thread/start` resolution (round 17; landed,
   `1e4018fa5d`)** — at the **receiving** hub, `hubThreadStart`
   (`app_threadlifecycle.go`) and the request-context `origin` plumbing
@@ -542,18 +543,17 @@ implementing — several have landed without their entry being re-marked.
   and acceptance criterion 13. Scope: `cmd/evener-hub/internal/hostreg`
   validation plus `sshconn/version.go` and `sshconn/preflight.go`.
 - **[04] supervisorless restart via verify-then-signal (round 19; widened round
-  22; reversed 2026-09-26)** — round 19 read the round-17 atomic-identity pin
+  22; reversed and restored 2026-09-26)** — round 19 read the round-17 atomic-identity pin
   as unimplementable (a `pidfd` must be opened and signaled by a process on the
   host, and this component's only host interface is `ssh <dest> <command>`),
   concluding that a supervisorless hub must refuse `ErrRestart` with no signal
   and that a restart-capable deployment must be supervised. **That conclusion is
-  reversed by the 2026-09-26 decision above — a code delta, not a documentation
-  change:** the shipped `restartHub` (`sshconn/version.go`) still refuses the
-  supervisorless branch with `ErrRestart` and never calls `restartBare`, and
-  `restartBare` is unreachable from production (its only callers are its unit
-  tests). The delta is to make the guarded ad hoc path the supervisorless
-  branch, add the at-signal re-read (component 04 check 5), and keep the
-  unverified-target refusal; supervisor preference and the accepted residual
+  reversed by the 2026-09-26 decision above and the capability is restored:**
+  `restartHub` (`sshconn/version.go`) now runs the guarded ad hoc path for the
+  supervisorless branch (`restartBare` → `waitHealthy` → `clearPendingRestart`),
+  shipped by #2450 reversing #2410; the at-signal re-read (component 04 check 5)
+  remains pending and the unverified-target refusal stands. Supervisor
+  preference and the accepted residual
   window stand as stated in the [04] item above. The **start** of a stopped hub
   (last-known-state bootstrap, no PID to signal) is unaffected and
   keeps its detached launch. Scope: `sshconn/version.go` (`restartBare` / the
@@ -593,7 +593,7 @@ implementing — several have landed without their entry being re-marked.
   a fall-through to
   the ad hoc launch, while an identified launchd label that fails the bare-safe
   gate is never interpolated into the remote shell and falls through to the
-  guarded ad hoc restart (design §2). When
+  guarded ad hoc restart (design §2, restored 2026-09-26). When
   **no** candidate definition matches, a supervisorless *restart* runs the
   guarded verify-then-signal ad hoc path (design §2), and the ad hoc *launch*
   is the cold-bootstrap **start**. Scope:
