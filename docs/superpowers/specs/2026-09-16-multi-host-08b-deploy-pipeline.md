@@ -651,7 +651,7 @@ form converts at write time) and stay display-only. A wall-clock rollback that s
 later record with an earlier `createdAt` can never move it before the cursor, because
 `createdAt` is not part of the order.
 
-Cursor envelope: the cursor is a versioned base64url JSON envelope `{v: 2, pos: [id],
+Cursor envelope: the cursor is a versioned base64url JSON envelope `{v: 2, pos: id,
 compactSeq: number,
 bounds: {[host]: [generation, incarnationId, presenceEpoch] | "absent"},
 quarantineEpoch: number}`. It encodes the last row's durable sequence position
