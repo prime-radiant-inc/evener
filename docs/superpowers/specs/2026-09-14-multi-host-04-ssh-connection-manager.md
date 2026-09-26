@@ -1845,7 +1845,10 @@ with the remote hub and its daemons still running.
     shell. A label outside the bare-safe set is never interpolated into the
     remote shell and **falls through to the guarded ad hoc restart instead of
     refusing** — the accepted outcome (design §2 "Restart identity pin:
-    verify-then-signal accepted", Jesse 2026-09-26).
+    verify-then-signal accepted", Jesse 2026-09-26). The fall-through is
+    required work, not shipped behavior: the shipped `restartHub` refuses this
+    label case too (implementation status, check 5), on the same branch that
+    must be wired to the guarded ad hoc path.
 20. Restart safety is hardened against the identification/signal PID-reuse
     window by a **guarded verify-then-signal**: the pid, recovered argv (with
     `--config`/`--addr` agreeing with the entry's configured `config_path`/

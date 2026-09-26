@@ -147,6 +147,12 @@ This table is the only place the three-document split is defined.
 | Pipeline tests (§12 of the pipeline spec) | — | ships | — |
 | Fencing tests (§10 of the fencing spec) | — | — | ships |
 
+Note on the `add`/`update`/`remove` rows: slices 1–2 already registered those
+handlers (the host-edit slice records the deviation), so the pipeline PR
+**replaces** their shipped registration and response shape with the union
+catalog + regenerated client; `teardown-retry`/`teardown-recover` are the two
+registered there for the first time.
+
 The pipeline stacks on the registry; fencing stacks on the pipeline.
 The router-vs-catalog test pins registration both ways
 (`cmd/evener-hub/appwire_catalog_test.go` — routed-but-uncataloged fails
@@ -261,9 +267,13 @@ a channel or touch a supervisor.
 
 `evener/host/list` and `evener/host/status` are hub-side handlers registered
 like every other hub method (the router-vs-catalog test pins registration);
-`add`/`update`/`remove`/`teardown-retry`/`teardown-recover` behavior ships
-here behind private hand-written request/response types with no router or
-catalog registration, with their handlers registering in the pipeline PR. All seven are
+`add`/`update`/`remove` behavior ships here, and the shipped slices already
+register those handlers (the host-edit slice records it); `teardown-retry`/
+`teardown-recover` behavior ships behind private hand-written request/response
+types with no router or catalog registration. The pipeline PR **replaces**
+`add`/`update`/`remove`'s shipped registration and response shape with the union
+catalog + regenerated client, and registers the two teardown mutations for the
+first time. All seven are
 classified as mutations where they mutate, admission-gated like the hub's other
 settings mutations, origin-guarded per §3, with catalog entries and regenerated
 clients per the §2 table and the exact shapes in §11.
@@ -1583,8 +1593,11 @@ mutable module state.
 - `cmd/evener-hub/app_host_manage.go` (exists — it already registers
   `list`/`status`/`add`/`update`/`remove`; extend it) — the `list`/`status`
   handlers
-  with router registration, catalog entries, and regenerated client, plus the
-  `add`/`update`/`remove`/`teardown-retry`/`teardown-recover` behavior behind
+  with router registration, catalog entries, and regenerated client. The
+  shipped slices already register `add`/`update`/`remove`, so the pipeline PR
+  **replaces** their registration and response shape with the union catalog +
+  regenerated client rather than registering them fresh; only
+  `teardown-retry`/`teardown-recover` ship behind
   private hand-written request/response types with no router or catalog
   registration (their handlers register in the pipeline PR),
   mutation classification (`plan` is a mutation — it mints
@@ -1751,8 +1764,8 @@ failed teardown's generation-specific handles are completed through
 operator-escalation backstop: an open remnant older than the owner-set
 remnant-escalation bound (a multiple of the cleared-marker TTL, default ships
 in the implementing PR) surfaces an operator-escalation signal on the remnant
-(`teardown-retry` responses and `list` tombstone rows carry the escalation
-age), and the operator resolves it out-of-band (manual teardown of the pinned
+(`teardown-retry` responses and `list` rows — live or tombstone — carry the
+escalation age), and the operator resolves it out-of-band (manual teardown of the pinned
 target, then a forced clearance through the authenticated `evener/host/teardown-recover` recovery mutation (§6); the
 gate still never auto-purges an open remnant — the bound escalates, never
 silently drops, so storage cannot pin forever without a visible operator
