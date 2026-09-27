@@ -80,7 +80,7 @@ Every Medium-or-higher finding RoboRev raised on Tasks 10, 12 and 13 across part
 | 5 | Host grouping duplicated a multi-source project's sessions and misreported their ended state | Rows sit under their own host (the shared `sessionGroupHostId`); a project's pages are read once and shared by its copies | Task 10.4 |
 | 5 (Low) | The Organize by storage shape wasn't stated | Its own key (ruling 13) | Task 10.3 |
 
-The design also closes gaps the review didn't reach: two `NavigationActions` on one screen settle each other's journal entries mid-flight (ruling 16); the organization journal can confirm only a local session's archive (ruling 20); a Stop must write its cancel before the dispatch gate opens, or a never-sent message goes out first (ruling 17); a touch cancelled as a drag begins must not release the list in between (Task 13.1); and removing the Projects link rows would leave a project's Pin to top and Archive project unreachable (ruling 15).
+The design also closes gaps the review didn't reach: two `NavigationActions` on one screen settle each other's journal entries mid-flight (ruling 16); the organization journal could confirm only a local session's archive, and now reads another host's row by its ref (ruling 20); a Stop must write its cancel before the dispatch gate opens, or a never-sent message goes out first (ruling 17); a touch cancelled as a drag begins must not release the list in between (Task 13.1); and removing the Projects link rows would leave a project's Pin to top and Archive project unreachable (ruling 15).
 
 ## Rulings
 
@@ -95,9 +95,11 @@ Part 1's rulings 1-10 stand; these continue the numbering.
 17. **Stop from the Board is the Session's Stop:** a durable `turn/interrupt` through `NativeMutationRuntime.submit`, whose `enqueueInterruptAndCancel` cancels the session's never-sent rows and bumps its stop epoch in the interrupt's own write. The Board registers the target as a Session screen does, reads the thread as the Session's projection read does (bounded, and without the subscription the Board doesn't hold), and checks `sessionControls(…).stop` as `requireControl` does. It enqueues the interrupt before it opens the dispatch gate, so the cancel lands before anything on that session can send, as when you tap Stop in a session. It keeps the registration until the interrupt has left `submitting`, the connection drops, or the Board goes away. An interrupt still waiting then is delivered like any durable Stop: by the session when it is next opened, or by phase 6's flush. A read that shows nothing to stop sends nothing.
 18. **Pin from a row opens `PinAssignment`** with `{ hubId, ref, title }`, exactly as the Session's menu does and phase 3 keeps. Select mode's Pin, which that screen can't do for several sessions, goes through the Board's organization journal after a category picker.
 19. **Shut down and Rename are the Session's direct requests,** gated by the row's own facts as the web's rail gates them (`RailRow.tsx:512-513`): Shut down while `live && !offline && state !== "restartRequired"`, after a confirmation; Rename while the hub marks the row `rename: true`.
-20. **Archive and Unarchive act on this hub's own top-level sessions** (`host_id === "local"`, a ref of the shape `localSessionId` accepts naming the row's `session_id`, and not a subagent, fork or cluster): the only ones the organization journal can confirm, since `readOrganizationNavigation` reads `local:<id>` alone (`organizationNavigation.ts:30-35`), and the rule `ProjectsScreen` applies (`ProjectsScreen.tsx:749-757`). Question 1 asks about other hosts.
-21. **The Board's actions that write to the hub show only while connected** (principle 2; phase 6's Task 16 plans the same rule). Stop needs a fresh read to fence its interrupt, and an organization change taken offline fails at once and leaves the journal unresolved. Mark as read and unread are this phone's own and stay. Offline, the leading swipe reveals nothing and the trailing swipe shows only More. Question 2 (phase 6's Question 3) asks whether to queue them instead.
-22. **The list holds still** while a finger is on it, while it scrolls or glides, while a scroll the app started animates, while a row's swipe actions are open, while the long-press menu is open, and while select mode is on (Question 3). Held, rows keep their places and membership and show fresh content; departures, arrivals and moves all apply together when it settles. A fold you tap applies on settle too, 100ms after your finger lifts.
+20. **Archive and Unarchive act on every top-level session, on this hub or another host** (Jesse, 2026-09-26: "phone should archive sessions on other hosts: yes."). Not a subagent, fork or cluster.
+    - This hub's session is archived by its bare `session_id` (its ref must be one `localSessionId` accepts naming that id, the rule `ProjectsScreen` applies, `ProjectsScreen.tsx:749-757`); another host's by its ref. That is the identity the web rail sends and the hub reads the decision back under (`archiveSessionIdentity`, `cmd/evener-hub/frontend/src/shell/rail/Rail.tsx:974-976`).
+    - The organization journal confirms either by reading that row's `location` by its ref. Until this part, `readOrganizationNavigation` read `local:<id>` alone (`organizationNavigation.ts:30-35`); Task 12.3 teaches it another host's ref, in about 20 lines and a test.
+21. **The Board's actions that write to the hub show only while connected** (principle 2; phase 6's Task 16 plans the same rule). Stop needs a fresh read to fence its interrupt, and an organization change taken offline fails at once and leaves the journal unresolved. Mark as read and unread are this phone's own and stay. Offline, the leading swipe reveals nothing and the trailing swipe shows only More. This is the interim: Jesse answered on 2026-09-26 that Board actions taken offline are held and sent when the connection returns ("board actions while offline: hold em"), with a held Stop naming its turn and dropped if that turn ended first (spec 7.5). Phase 6 builds that hold; until it lands, this ruling stands.
+22. **The list holds still** while a finger is on it, while it scrolls or glides, while a scroll the app started animates, while a row's swipe actions are open, while the long-press menu is open, and while select mode is on (Jesse agreed on 2026-09-26 that select mode holds it until Done or an action). Held, rows keep their places and membership and show fresh content; departures, arrivals and moves all apply together when it settles. A fold you tap applies on settle too, 100ms after your finger lifts.
 23. **Reduce Motion** (spec 16.6): rows change places without the spring. The amber wash stays: it is a fade, not motion, spec 16.6 lists what Reduce Motion changes and the wash isn't on the list, and with rows jumping it is the only cue for where a row landed. Reduce Motion is read live (`AccessibilityInfo`, `reduceMotionChanged`), not only at launch.
 24. **"Blue-gray" (spec 7.3's Archive action) is `inkMid`:** the palette has no blue-gray, and it allows four hues (spec 16.1). The swipe fills are in the Global Constraints.
 25. **The toast is phase 3's `src/Toast.tsx`** (phase 3 Task 1, "A shared toast", in `docs/superpowers/plans/2026-09-26-iphone-redesign-phase3-session.md` on main). It lands here first, as that task writes it, since phase 2 lands before phase 3; phase 3's Task 1 then finds it on main, as its ruling 27 anticipated.
@@ -121,12 +123,7 @@ Part 1's rulings 1-10 stand; these continue the numbering.
 
 ## Questions for Jesse
 
-1. **Archive for sessions on other hosts.** The hub archives a remote session by its ref (the web does, `cmd/evener-hub/frontend/src/shell/rail/actions.ts:265-285`), but the phone's organization journal can only confirm a local session's archive (`organizationNavigation.ts:30-35`), so a lost reply for a remote one would leave the journal stuck. Should the phone archive remote-host sessions?
-   *Recommendation:* yes, in a small follow-up: `readOrganizationNavigation` reads the remote row's `location` by its ref (about 20 lines and a test). Until then remote rows have no Archive swipe or menu item (ruling 20).
-2. **Board actions taken offline.** This is phase 6's Question 3 (PR #2511); one answer covers both. Spec 7.5 says they "go to the outbox", but only the four turn kinds have a durable outbox. Organization changes use a one-slot journal that fails at once offline, and a Stop queued offline would stop whatever turn is running when it lands.
-   *Recommendation:* those actions don't show while offline (ruling 21, which this plan builds); a durable queue for them is its own later piece of work.
-3. **Should select mode hold the list?** Spec 7.3 holds it under a finger and while it scrolls. In select mode you choose rows by where they sit, and a session entering Needs you would move them between your taps.
-   *Recommendation:* hold it until Done or an action (ruling 22). Rows still show fresh marks and text while held.
+None open. Jesse answered this part's three on 2026-09-26: the phone archives sessions on other hosts (ruling 20, built in Task 12.3); Board actions taken offline are held and sent on reconnect, which phase 6 builds, so ruling 21 is the interim; and select mode holds the list until Done or an action (ruling 22).
 
 ## Review Focus
 
@@ -154,7 +151,7 @@ Part 1's table put Task 10 in PR 3 beside Task 9, and Tasks 11-13 in PR 4. Part 
 - **PR 6 lands first.** It runs in its own lane, C, beside everything else, and every PR that builds or opens a sheet waits for it: PR 4b here, and phase 3's PRs 2, 4, 5, 6 and 10 (the phase 3 plan's table says so). Its numbers only continue this phase's; its place in the order is first.
 - PR 6 edits `ConversationScreen` in `screens.tsx` (the Tasks sheet, and asking whether the screen is in front), where phase 3's lanes A and C are working. The edits are small and spread out; whichever PR lands second merges `origin/main` and keeps both. A phase 3 PR that adds a focus check to `ConversationScreen` after PR 6 lands uses `useScreenInFront` or `screenInFront` (Task 18.2), never `useIsFocused` or `navigation.isFocused()`.
 
-- Part 1 still says Projects and Archived open today's screens "until PR 3" (its PR 2 introduction and Task 7 requirement 5) and lists projects, hosts, test runs and archived under PR 3, and row actions, select mode and list stability under PR 4, in its closing "PRs 3, 5 and 4" section. Since part 2 moved those tasks here, read that PR 3 as PRs 3a and 3b (PR 3b draws the sections and removes the link rows, Task 10.6 requirement 9) and that PR 4 as PRs 4a to 4c.
+- Part 1's PR 2 introduction, Task 7's requirement 5 and its closing "PRs 3 to 5" section point at part 2 and at these PRs: PR 3b draws Projects, Test runs and Archived and removes the link rows (Task 10.6 requirement 9), and PRs 4a to 4c carry row actions, select mode and list stability.
 - PR 3a touches none of Task 9's files (it adds pure modules and changes `projectBrowser.ts`, `boardMemory.ts` and the web rail), so it can run beside PR 3 when a lane is free.
 - PR 3a and part 2's PR 5 (lane A) both edit `boardMemory.ts`'s `forgetBoard` and its forget tests: Task 10.3 adds the Organize by key, part 2's Task 15 the recent-searches key. The second to land merges `origin/main` and keeps every key.
 - Part 2's Task 15 commit that wires search's project tap waits for PR 3b. Part 2 calls the thing it scrolls "Task 10's `ProjectsSection`"; in this design it is `revealProject(projectKey)` inside `BoardScreen` (Task 10.6), which unfolds and scrolls through `projectRevealTarget` (Task 10.4).
@@ -2063,7 +2060,7 @@ git commit -m "feat(native): project data reads any catalog and the archived tie
 **Interfaces:**
 - Produces:
   - `type OrganizeBy = "project-host" | "host-project"`
-  - `class OrganizeByPreference`: constructor `(storage: BoardStorage, hubId: string)`, `get(): OrganizeBy`, `set(value: OrganizeBy): void`
+  - `class OrganizeByPreference`: constructor `(storage: SyncStringStorage, hubId: string)` (`src/syncStringStorage.ts`, which `boardMemory.ts` and its test already import, #2536), `get(): OrganizeBy`, `set(value: OrganizeBy): void`
   - `organizeByPreference(hubId: string): OrganizeByPreference` (per-hub singleton, from `nativeBoardMemory.ts`)
   - `forgetBoard(storage, hubId)` also removes `evener.native.board-organize.${hubId}`.
 
@@ -2104,7 +2101,7 @@ describe("the Organize by choice", () => {
 	});
 
 	it("keeps working in memory when storage throws", () => {
-		const broken: BoardStorage = {
+		const broken: SyncStringStorage = {
 			getItemSync: () => {
 				throw new Error("disk");
 			},
@@ -2178,7 +2175,7 @@ export class OrganizeByPreference {
 	private value: OrganizeBy;
 
 	constructor(
-		private readonly storage: BoardStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
 		// Unreadable storage, or a value this build doesn't know, reads as the default.
@@ -4023,10 +4020,12 @@ git commit -m "feat(native): Stop from the Board goes through the durable runtim
 
 **Files:**
 - Create: `mobile-native/src/board/rowActions.ts` and `mobile-native/src/board/swipeEdge.ts`
-- Test: `mobile-native/src/board/rowActions.test.ts` and `mobile-native/src/board/swipeEdge.test.ts`
+- Modify: `mobile-native/src/organizationNavigation.ts`: it confirms another host's session archive by that row's ref (ruling 20; the code is below)
+- Test: `mobile-native/src/board/rowActions.test.ts`, `mobile-native/src/board/swipeEdge.test.ts` and `mobile-native/src/organizationNavigation.test.ts`
 
 **Interfaces:**
 - Consumes: `ClassifiedRow` and `BoardState` (part 1 Task 2); `NavigationActions`; `organizationFree` (Task 10.5).
+- Changes: `readOrganizationNavigation` (`organizationNavigation.ts:18-123`) takes a session archive whose `id` is another host's ref, as well as this hub's bare session id, and reads that row's `location` by the ref.
 - Produces:
   - `type RowAction = "pin" | "markRead" | "markUnread" | "stop" | "shutDown" | "archive" | "unarchive" | "rename"`
   - `interface RowActionContext { connected: boolean; organizationReady: boolean; archived: boolean }`
@@ -4097,8 +4096,8 @@ describe("the long-press menu per state (spec 7.3)", () => {
 		["one seen since", row({ state: "idle" }), "idle", online, ["pin", "markUnread", "shutDown", "archive"]],
 		["one asking a question", row({ state: "awaiting", ask_pending: true }), "question", online, ["pin", "shutDown", "archive"]],
 		["one needing a restart", row({ state: "restartRequired" }), "restartNeeded", online, ["pin", "archive"]],
-		["one working on another host", row({ ...remote }), "working", online, ["pin", "stop", "shutDown"]],
-		["one on an offline host", row({ ...remote, offline: true, live: false }), "shutDown", online, ["pin"]],
+		["one working on another host", row({ ...remote }), "working", online, ["pin", "stop", "shutDown", "archive"]],
+		["one on an offline host", row({ ...remote, offline: true, live: false }), "shutDown", online, ["pin", "archive"]],
 		["a fork", row({ kind: "fork" }), "working", online, ["stop", "shutDown"]],
 		["one in an archived tier", row({ state: "ended", live: false }), "shutDown", { ...online, archived: true }, ["pin", "unarchive"]],
 		["one while a change is unresolved", row({ rename: true }), "working", { ...online, organizationReady: false }, ["pin", "stop", "shutDown", "rename"]],
@@ -4114,7 +4113,7 @@ describe("swipes (spec 7.3)", () => {
 	it.each([
 		["a working session of this hub", row(), "working", online, { leading: "archive", trailing: ["stop", "pin", "more"] }],
 		["a finished one", row({ state: "awaiting" }), "finished", online, { leading: "archive", trailing: ["pin", "more"] }],
-		["one working on another host", row({ ...remote }), "working", online, { leading: null, trailing: ["stop", "pin", "more"] }],
+		["one working on another host", row({ ...remote }), "working", online, { leading: "archive", trailing: ["stop", "pin", "more"] }],
 		["one in an archived tier", row({ state: "ended", live: false }), "shutDown", { ...online, archived: true }, { leading: "unarchive", trailing: ["pin", "more"] }],
 		["any row offline", row(), "working", { ...online, connected: false }, { leading: null, trailing: ["more"] }],
 	] as const)("%s", (_name, summary, state, context, expected) => {
@@ -4123,9 +4122,10 @@ describe("swipes (spec 7.3)", () => {
 });
 
 describe("archiving (rulings 16 and 20)", () => {
-	it("archives only this hub's own top-level sessions, which the journal can confirm", () => {
+	it("archives a top-level session of this hub by its id and one of another host by its ref", () => {
 		expect(archiveTarget(row())).toEqual({ kind: "session", id: SESSION_ID });
-		expect(archiveTarget(row({ ...remote }))).toBeNull();
+		expect(archiveTarget(row({ ...remote }))).toEqual({ kind: "session", id: "paradise-park:x" });
+		expect(archiveTarget(row({ ...remote, kind: "subagent" }))).toBeNull();
 		expect(archiveTarget(row({ ref: "cluster:abc" }))).toBeNull();
 		expect(archiveTarget(row({ ref: "local:not-a-session", session_id: "not-a-session" }))).toBeNull();
 		for (const kind of ["subagent", "fork", "cluster"]) expect(archiveTarget(row({ kind }))).toBeNull();
@@ -4238,10 +4238,71 @@ describe("the Session's direct requests (ruling 19)", () => {
 });
 ```
 
+`mobile-native/src/organizationNavigation.test.ts` changes (full code). After `const id = "034Kc9793pXlhHyCRXdeAk";`, add:
+
+```ts
+const remote = "paradise-park:x";
+```
+
+In `fixture()`, the `location` answer serves another host's row when asked for it:
+
+```ts
+			if (params.resource === "location")
+				body = {
+					session:
+						params.ref === remote
+							? { ref: remote, session_id: "x", host_id: "paradise-park" }
+							: { ref: `local:${id}`, session_id: id },
+					tier: archived ? "archived" : "recent",
+					project_key: "p",
+				};
+```
+
+The last test's rejected archive becomes one whose id names no session at all, since another host's ref is now checked:
+
+```ts
+it("rejects unrelated recovery, an archive id that names no session, and obsolete scope", async () => {
+	const f = fixture();
+	for (const operation of [
+		{ kind: "unpin", params: { sessionRef: `local:${id}` } },
+		{
+			kind: "archive",
+			params: { kind: "session", id: "not-a-session", archived: true },
+		},
+	] as const)
+```
+
+(the rest of that test is unchanged), and a new test follows it:
+
+```ts
+it("checks another host's session archive by reading that row's location by its ref (ruling 20)", async () => {
+	const f = fixture();
+	const archive = (sessionId: string): NavigationActionCheckpoint => ({
+		id: "session",
+		operation: {
+			kind: "archive",
+			params: { kind: "session", id: sessionId, archived: true },
+		},
+		receipt: null,
+	});
+	expect(
+		await readOrganizationNavigation(f.client, archive(remote), () => true),
+	).toMatchObject({ state: "archived", settled: false });
+	expect(
+		f.calls.some(
+			(c) => c.params.resource === "location" && c.params.ref === remote,
+		),
+	).toBe(true);
+	await expect(
+		readOrganizationNavigation(f.client, archive("elsewhere:y"), () => true),
+	).rejects.toThrow("This session's current organization could not be confirmed.");
+});
+```
+
 - [ ] **Step 2: Run them and watch them fail**
 
-Run: `cd mobile-native && npx vitest run src/board/rowActions.test.ts src/board/swipeEdge.test.ts`
-Expected: FAIL: the modules don't exist.
+Run: `cd mobile-native && npx vitest run src/board/rowActions.test.ts src/board/swipeEdge.test.ts src/organizationNavigation.test.ts`
+Expected: FAIL: the modules don't exist, and the new organization test finds another host's archive refused ("Only local session archive changes can be checked here.").
 
 - [ ] **Step 3: Implement**
 
@@ -4310,13 +4371,16 @@ export function isTopLevel(row: NavigationSessionSummary): boolean {
 	return !NESTED.has(row.kind);
 }
 
-/** The archive change for a row, or null when the organization journal can't
- * confirm one: only this hub's own top-level sessions (ruling 20), the rule
- * ProjectsScreen applies (ProjectsScreen.tsx:749-757), with the ref shape
- * readOrganizationNavigation checks (`localSessionId`). */
+/** The archive change for a row, or null for one the organization journal
+ * can't confirm (ruling 20): a subagent, fork or cluster, or a row of this hub
+ * whose ref doesn't name its own session. This hub's session goes by its bare
+ * id, the rule ProjectsScreen applies (ProjectsScreen.tsx:749-757), and another
+ * host's by its ref, as the web's rail sends it (archiveSessionIdentity);
+ * readOrganizationNavigation reads either back by that row's location. */
 export function archiveTarget(row: NavigationSessionSummary): Omit<ArchiveParams, "archived"> | null {
-	if (!isTopLevel(row) || row.host_id !== "local" || localSessionId(row.ref) !== row.session_id) return null;
-	return { kind: "session", id: row.session_id };
+	if (!isTopLevel(row)) return null;
+	if (row.host_id !== "local") return { kind: "session", id: row.ref };
+	return localSessionId(row.ref) === row.session_id ? { kind: "session", id: row.session_id } : null;
 }
 
 /** The long-press menu, in spec 7.3's order. Copy link waits for a session
@@ -4410,15 +4474,65 @@ export async function renameSession(client: ConversationClientLike, ref: string,
 }
 ```
 
+`mobile-native/src/organizationNavigation.ts` changes (full code). After the imports, add:
+
+```ts
+/** The ref a session archive's location is read under. This hub's session is
+ * archived by its bare id and another host's by its ref (ruling 20, the web
+ * rail's archiveSessionIdentity); anything else can't be checked. A ref's two
+ * parts follow the hub's own rule (appwire/refs.go). */
+function archivedSessionRef(id: string): string | null {
+	if (localSessionId(`local:${id}`)) return `local:${id}`;
+	return /^(?!local:)[A-Za-z0-9._~-]+:[A-Za-z0-9._~-]+$/.test(id) ? id : null;
+}
+```
+
+In `readOrganizationNavigation`, the check before the read becomes:
+
+```ts
+	const { params } = operation;
+	const sessionRef =
+		operation.kind === "archive" && params.kind === "session"
+			? archivedSessionRef(params.id)
+			: undefined;
+	if (sessionRef === null)
+		throw Error("This session's archive change can't be checked here.");
+```
+
+and the session branch reads the location by that ref:
+
+```ts
+	if (operation.kind === "archive" && sessionRef !== undefined) {
+		const ref = sessionRef;
+		const local = ref.startsWith("local:");
+		const response = await navigation.read({ resource: "location", ref });
+		const location = response.data as NavigationSessionLocation | null;
+		if (
+			!location ||
+			location.ref !== ref ||
+			location.session?.ref !== ref ||
+			// This hub's row names its session by id; another host's row is
+			// that host's, which its ref already names.
+			(local
+				? location.session.session_id !== params.id ||
+					location.session.host_id !== "local"
+				: location.session.host_id === "local") ||
+			!location.top_level ||
+			!["current", "recent", "archived"].includes(location.tier ?? "")
+		)
+```
+
+The rest of the function, from the `throw Error("This session's current organization could not be confirmed.")` on, is unchanged.
+
 - [ ] **Step 4: Run them and watch them pass, then type-check**
 
-Run: `cd mobile-native && npx vitest run src/board/rowActions.test.ts src/board/swipeEdge.test.ts && npm run check`
+Run: `cd mobile-native && npx vitest run src/board/rowActions.test.ts src/board/swipeEdge.test.ts src/organizationNavigation.test.ts && npm run check`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mobile-native/src/board/rowActions.ts mobile-native/src/board/rowActions.test.ts mobile-native/src/board/swipeEdge.ts mobile-native/src/board/swipeEdge.test.ts
+git add mobile-native/src/board/rowActions.ts mobile-native/src/board/rowActions.test.ts mobile-native/src/board/swipeEdge.ts mobile-native/src/board/swipeEdge.test.ts mobile-native/src/organizationNavigation.ts mobile-native/src/organizationNavigation.test.ts
 git commit -m "feat(native): what each Board row can do, and the path each change takes to the hub"
 ```
 
@@ -4735,15 +4849,15 @@ export function SwipeRow({ leading, trailing = [], onActiveChange, children }: S
 **Requirements (spec 7.3 and 14; rulings 16-21):**
 1. **Every session row** (Live's bands, pinned categories, Projects, Test runs, Archived) sits in a `SwipeRow`. Its context is `{ connected: state === "ready" && activeProfile?.id === hubId, organizationReady: organization.ready, archived }`, where `archived` is the `ProjectTreeItem` session's `archived` (false elsewhere).
 2. **Swipe actions** from `swipeActions(item, context)`: Archive or Unarchive (`archivebox`, fill `inkMid`), Stop (`stop.fill`, fill `inkHi`), Pin (`pin.fill`, fill `inkMid`). Leave out its `"more"` until Task 12.7 brings the menu More opens; until then the trailing side ends at Pin. The same actions reach VoiceOver through `swipeAccessibility`, spread on `BoardRow`.
-3. **Archive and Unarchive:** `archiveSession(organization.actions, archiveTarget(row), archived)`. Confirmed: the toast "Archived" (or "Unarchived") with the action "Undo", which runs the opposite change the same way. Not confirmed: call `organization.actions.reconcile()` once and show no failure text; the row then shows wherever the hub has it. While `archivingSessionId(organization.state)` is the row's `session_id`, every copy of the row renders `dimmed` (opacity 0.5, `accessibilityState.busy`).
+3. **Archive and Unarchive:** `archiveSession(organization.actions, archiveTarget(row), archived)`. Confirmed: the toast "Archived" (or "Unarchived") with the action "Undo", which runs the opposite change the same way. Not confirmed: call `organization.actions.reconcile()` once and show no failure text; the row then shows wherever the hub has it. While `archivingSessionId(organization.state)` is the row's archive id (`archiveTarget(row)?.id`: its `session_id` on this hub, its ref on another host), every copy of the row renders `dimmed` (opacity 0.5, `accessibilityState.busy`).
 4. **Stop:** `stops.stop(client, row.ref)` with one `BoardStops(getNativeMutationRuntime, hubId)` per hub (`releaseAll()` when the client changes, `dispose()` on unmount). "stopped": the toast "Stopped" (spec 8.3). "notWorking": the toast "Nothing to stop: its turn had already ended." "unavailable": the toast "Couldn't stop “<title>”. Open it to stop it there."
 5. **Pin:** `navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title })`.
 6. **The toast** sits 10pt above the bottom toolbar (phase 3's `Toast`, one at a time).
 7. **Offline** (ruling 21) comes from the context: the leading swipe reveals nothing and the trailing swipe reveals nothing (More arrives with Task 12.7).
 
 - [ ] **Step 1: Write the failing tests** (part 1's `BoardScreen.test.tsx` harness; add `vi.mock("react-native-gesture-handler/ReanimatedSwipeable", …gestureHandlerModuleMock())`, and an `expo-sqlite` mock whose `openDatabaseSync` returns `openSqliteSyncDouble().port`, as `ConversationScreen.recovery.test.tsx` does; local rows use real session ids, such as `organizationTestUtils.ts`'s `SESSION_ID`, since `archiveTarget` checks their shape):
-  - a working local row's swipeable has a leading Archive and trailing Stop and Pin; a finished one has no Stop; a row on paradise-park has no leading action;
-  - a full leading swipe on a local row sends `evener/archive/set` `{ kind: "session", id, archived: true }`; the row renders dimmed while the answer is pending; once confirmed, the toast reads "Archived" with "Undo", and Undo sends `archived: false`;
+  - a working local row's swipeable has a leading Archive and trailing Stop and Pin; a finished one has no Stop; a row on paradise-park has a leading Archive too (ruling 20);
+  - a full leading swipe on a local row sends `evener/archive/set` `{ kind: "session", id, archived: true }`, and on a paradise-park row `{ kind: "session", id: <its ref>, archived: true }`; the row renders dimmed while the answer is pending; once confirmed, the toast reads "Archived" with "Undo", and Undo sends `archived: false`;
   - Stop from the trailing swipe sends `thread/read` and then `turn/interrupt` through the real runtime, and the toast reads "Stopped";
   - Pin navigates to `PinAssignment` with `{ hubId, ref, title }`;
   - with the connection `"reconnecting"`, no row has a leading or trailing action;
@@ -5779,7 +5893,7 @@ it("applies each action to the sessions it can act on, once each", () => {
 		],
 		online,
 	);
-	expect(refs(actions.archive)).toEqual([local("a"), local("b")]);
+	expect(refs(actions.archive)).toEqual([local("a"), local("b"), "paradise-park:c"]);
 	expect(refs(actions.pin)).toEqual([local("a"), local("b"), "paradise-park:c", local("e")]);
 	expect(refs(actions.markRead)).toEqual([local("a"), "paradise-park:c", local("d")]);
 });
@@ -5835,9 +5949,9 @@ export interface SelectionActions {
 }
 
 /** Each session once, however many sections it was chosen in. Archive takes
- * this hub's own top-level sessions not already archived (ruling 20) and Pin
- * top-level sessions, both only while connected with the journal free
- * (ruling 21); Mark as read takes the finished ones. */
+ * top-level sessions not already archived, on this hub or another host
+ * (ruling 20), and Pin top-level sessions, both only while connected with the
+ * journal free (ruling 21); Mark as read takes the finished ones. */
 export function selectionActions(
 	selected: readonly SelectedRow[],
 	context: { connected: boolean; organizationReady: boolean },
@@ -5893,5 +6007,5 @@ Open PR 4c: "feat(native): select mode, and a Board that holds still (phase 2, P
   - Long-press menu with a preview card and no "Open" item: Tasks 12.6 and 12.7, with the row menu a half-height sheet (ruling 28); its actions: Task 12.3; Copy link waits (ruling 27).
   - The list never reorders under a finger or while scrolling; changes apply on settle; the 250ms spring; the amber wash: Tasks 13.1-13.3.
 - **7.4:** search's project hit lands through `projectRevealTarget` (Task 10.4) and `revealProject` (Task 10.6); part 2's Task 15 wires the tap.
-- **14:** an archived row dims until confirmed (Task 12.5); offline Board actions: ruling 21 and Question 2.
+- **14:** an archived row dims until confirmed (Task 12.5); offline Board actions: ruling 21, the interim until phase 6 holds them and sends them on reconnect (Jesse's answer).
 - **16.1, 16.5, 16.6:** the Global Constraints' swipe fills and symbols; `ROW_MOVE` and the wash (Task 13.3); Reduce Motion (ruling 23, Task 13.2).

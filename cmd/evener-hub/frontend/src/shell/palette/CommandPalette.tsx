@@ -132,7 +132,9 @@ const HELP_ROWS: HelpRow[] = [
 // used to be a second, hand-duplicated copy of the exact same switch).
 // Pulsing alive/attention/danger dots read as "live" for
 // active/awaiting/errored, the exact set the legacy pulsed
-// (search.js:1007-1009); past rows are always "ended" (neutral).
+// (search.js:1007-1009); past rows are always "ended" (neutral). The state
+// first goes through the rail's displayState, so a hit blocked on an
+// approval (still "active" on the wire) gets the rail's needs-you dot.
 
 // A single navigable row in the results list.
 type PaletteItem =
@@ -1000,7 +1002,19 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
   // (§2.3, search.js:994-1013).
   return (
     <>
-      <StatusDot state={cadenceStateFor(item.result.state)} />
+      {/* SearchResult has no `kind`, so every hit is passed as a "session":
+          displayState's turn-ended-subagent rule, which presents such a
+          subagent as idle in the rail, never applies to a search hit. */}
+      <StatusDot
+        state={cadenceStateFor(
+          displayState({
+            kind: "session",
+            state: item.result.state,
+            ask_pending: item.result.askPending,
+            approval_pending: item.result.approvalPending,
+          }),
+        )}
+      />
       <span className={CLASS.title}>
         <Highlighted parts={highlightParts(item.result.title, query)} />
       </span>
