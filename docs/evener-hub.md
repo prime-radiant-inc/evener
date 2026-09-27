@@ -402,7 +402,10 @@ flags name a different build to push, and a third disables deploying:
   the executable's main package from its buildinfo and refuses any other Go
   program before anything is pushed, so a stray binary cannot replace the
   host's `evener`. This path needs no Go toolchain and no source tree on the
-  controller.
+  controller. A controller built from a dirty tree refuses a named artifact: its
+  `<sha>-dirty` version is not an identity (every dirty tree at that commit
+  reports it), so the artifact cannot be proven to be the controller's build —
+  see the dirty-tree note below.
 - `-build-source <path>` — an evener checkout's module root. The hub
   cross-compiles the host's target on the controller, so this path needs Go and
   the source there; it refuses a dirty tree, an ignored-but-compiled `.go` file,
@@ -430,12 +433,13 @@ verified, then a single `mv` into place — so a failed or interrupted deploy
 never leaves a partial binary. The `-build-source` path stamps the controller's
 build identity in-process, so the installed binary's `launch-check` version is
 exactly the controller's; a `-deploy-binary` artifact instead carries whatever
-identity the operator built. The hub's own executable is the one artifact whose
+identity the operator built. The hub's own executable is the one source whose
 identity is true by construction — it IS the controller's build — so a hub built
-from a dirty tree may deploy its own executable, or a named artifact whose
-identity the post-deploy check still verifies, while compiling a checkout from a
-dirty tree stays refused: no checkout can be proven to reproduce a
-`<sha>-dirty` build. That difference is checked where it can be seen:
+from a dirty tree may still deploy its own executable, while compiling a
+checkout or naming an artifact is refused from one: no checkout can be proven to
+reproduce a `<sha>-dirty` build, and a `<sha>-dirty` label cannot tell a named
+artifact apart from a foreign dirty build at the same commit. That difference is
+checked where it can be seen:
 after a deploy the controller re-reads the launch contract on the host, and if
 the host still reports a build other than the controller's it refuses terminally
 instead of attaching — the artifact was not built from the controller's tree, and

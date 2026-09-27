@@ -396,9 +396,19 @@ default case (no `evener_path`) always resolves to the installer's own
    difference is reported instead (Evidence, criterion 5).
 6. A dirty controller refuses the push path and the installer fallback, each
    message naming the remedy. **Amended 2026-09-27:** it refuses a SOURCE push
-   (a `-build-source` compile, or an undeclared cross-compile seam); a declared
-   binary artifact — the hub's own executable, or `-deploy-binary` — is
-   deployable from a dirty controller, since its bytes are the build.
+   (a `-build-source` compile, or an undeclared cross-compile seam) **and** a
+   named artifact (`-deploy-binary`), because neither can be proven to
+   reproduce or match a `<sha>-dirty` build (the label is shared by every dirty
+   tree at that commit). Only the own-executable default is exempt — those bytes
+   ARE the controller's build — declared to sshconn as `Options.OwnExecutable`
+   and pinned by `TestDirtyControllerDeploysItsOwnExecutable`,
+   `TestDirtyControllerRefusesANamedBuildBinary`,
+   `TestDirtyControllerRefusesABuildSource` and
+   `TestCleanControllerDeploysANamedBuildBinary` (a clean controller still
+   deploys a named artifact). The residual the exemption accepts — the
+   executable file replaced under a running hub — is documented at the
+   exemption (`sshconn/deploy.go`) and at the hub's default seam
+   (`deploy_flags.go`).
 7. Per D4: the amended snapshot rule is the asserted one — the installer path is
    admitted for a snapshot controller, the post-install identity check is what
    confirms the build, and a controller whose commit the tag has moved past is
@@ -458,6 +468,17 @@ coverage.
    `TestRunMainNoDeployWiresAndLogsNone` and
    `TestParseHubOptionsDefaultNeverFiresForANonEvenerExecutable`; the
    refusal-side pins above remain for the non-evener and `-no-deploy` cases.
+   **Amended 2026-09-27 (review):** the remedy is per-state — the unwired text
+   leads with the flags that state can act on (`hubDeployHelpUnwired`), and
+   `TestRunMainPassesDeployHelpToTheSSHManager` pins both texts through the
+   seam; a defaulted source's refusals name the hub's own executable and its
+   own exits rather than `-deploy-binary`
+   (`TestOwnExecutableSeamRefusalNamesTheDefaultNotAFlag`). The default's
+   identity is pinned from three sides: the seam at its default against this
+   package's test binary (`TestDefaultDeploySourceHonestyWithThisTestBinarysIdentity`),
+   the packaging fact that the hub has no executable of its own
+   (`TestTheHubBinaryIsTheEvenerRuntime`), and a booted real hub
+   (`TestDefaultDeploySourceIsTheHubExecutableE2E`).
 5. **Pinned.** The attach: `TestDevControllerWithoutADeployPathAttaches` (a dev
    controller with no deploy path attaches to a host running another build),
    with `TestEnsureAttachesToAnotherBuildWhenProtocolMatches` (a stamped
