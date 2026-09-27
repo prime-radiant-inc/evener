@@ -3,6 +3,7 @@ import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import type { ReactElement } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
+import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
 import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, whyLine } from "./attention";
 import { StateMark } from "./StateMark";
@@ -65,6 +66,27 @@ export function BoardRows({
 				</View>
 			))}
 		</>
+	);
+}
+
+/** The type of the Board's section headers (spec 7.1): 13pt semibold,
+ * inkMid, 0.4 letter-spacing. */
+export const bandHeaderText = (palette: Palette, scale: number) => ({
+	fontSize: 13 * scale,
+	fontWeight: "600" as const,
+	letterSpacing: 0.4,
+	color: palette.inkMid,
+});
+
+/** A fold's chevron at a header's trailing edge: right while folded, turned
+ * down while open. */
+export function FoldChevron({ folded }: { folded: boolean }): ReactElement {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ transform: [{ rotate: folded ? "0deg" : "90deg" }] }}>
+			<SymbolView name="chevron.right" size={13 * scale} tintColor={palette.inkLow} />
+		</View>
 	);
 }
 

@@ -45,7 +45,7 @@ import {
 	usualPlace,
 } from "./attention";
 import type { SeenMarkers } from "./boardMemory";
-import { BoardRows, type RowContext } from "./BoardRow";
+import { bandHeaderText, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { foldedSections, seenMarkers } from "./nativeBoardMemory";
@@ -769,10 +769,7 @@ function BandHeader({ text }: { text: string }) {
 				paddingTop: 22,
 				paddingBottom: 6,
 				paddingHorizontal: 16,
-				fontSize: 13 * scale,
-				fontWeight: "600",
-				letterSpacing: 0.4,
-				color: palette.inkMid,
+				...bandHeaderText(palette, scale),
 			}}
 		>
 			{text}
@@ -802,9 +799,7 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 			<Text testID="band-header" allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 15 * scale, color: palette.inkMid }}>
 				{`Idle · ${count}`}
 			</Text>
-			<View style={{ transform: [{ rotate: folded ? "0deg" : "90deg" }] }}>
-				<SymbolView name="chevron.right" size={13 * scale} tintColor={palette.inkLow} />
-			</View>
+			<FoldChevron folded={folded} />
 		</Pressable>
 	);
 }

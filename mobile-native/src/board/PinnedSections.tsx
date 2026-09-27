@@ -4,7 +4,7 @@ import { useReducer } from "react";
 import { type LayoutChangeEvent, Platform, Pressable, Text, View } from "react-native";
 import { useColors, useTextScale } from "../ui";
 import { type ClassifiedRow, sectionLabel } from "./attention";
-import { BoardRows, type RowContext } from "./BoardRow";
+import { bandHeaderText, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
 import { foldedSections } from "./nativeBoardMemory";
 
 const EMPTY_HINT = "Touch and hold a session and choose Pin to category.";
@@ -55,12 +55,7 @@ export function PinnedSection({
 }: PinnedSectionProps) {
 	const { palette } = useColors();
 	const scale = useTextScale();
-	const headerText = {
-		fontSize: 13 * scale,
-		fontWeight: "600" as const,
-		letterSpacing: 0.4,
-		color: palette.inkMid,
-	};
+	const headerText = bandHeaderText(palette, scale);
 	let body = null;
 	if (!folded && page?.loaded)
 		body = page.rows.length ? (
@@ -112,9 +107,7 @@ export function PinnedSection({
 						{` · ${section.count}`}
 					</Text>
 					<View style={{ flex: 1, alignItems: "flex-end" }}>
-						<View style={{ transform: [{ rotate: folded ? "0deg" : "90deg" }] }}>
-							<SymbolView name="chevron.right" size={13 * scale} tintColor={palette.inkLow} />
-						</View>
+						<FoldChevron folded={folded} />
 					</View>
 				</Pressable>
 				{onMenu ? (
