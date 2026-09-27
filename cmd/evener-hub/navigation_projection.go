@@ -1006,13 +1006,11 @@ func (p navigationProjection) PinCatalogPage(offset uint32, limit int) hubapi.Na
 	start, end := navigationRange(len(p.pinSections), offset, limit)
 	rows := make(hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor], 0, end-start)
 	for _, section := range p.pinSections[start:end] {
-		candidate := hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: truncateNavigationRunes(section.name, maxNavigationLabelRunes), Count: section.memberCount}
-		response := hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: append(append(hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor](nil), rows...), candidate), Remaining: len(p.pinSections) - start - len(rows) - 1}
-		if !navigationJSONFits(response, maxNavigationCatalogBytes) {
-			break
-		}
-		rows = append(rows, candidate)
+		rows = append(rows, hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: truncateNavigationRunes(section.name, maxNavigationLabelRunes), Count: section.memberCount})
 	}
+	rows = rows[:navigationCatalogRowsThatFit(rows, func(kept int) any {
+		return hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor]{}, Remaining: len(p.pinSections) - start - kept}
+	})]
 	return hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: rows, Remaining: len(p.pinSections) - start - len(rows)}
 }
 
@@ -1025,15 +1023,40 @@ func (p navigationProjection) CatalogPage(kind navigationResourceKind, offset ui
 	start, end := navigationRange(len(projects), offset, limit)
 	rows := make(hubapi.NavigationArray[hubapi.NavigationProjectSummary], 0, end-start)
 	for _, project := range projects[start:end] {
-		candidate := p.projectSummary(project)
-		response := hubapi.NavigationProjectCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Projects: append(append(hubapi.NavigationArray[hubapi.NavigationProjectSummary](nil), rows...), candidate), Remaining: len(projects) - start - len(rows) - 1}
-		if !navigationJSONFits(response, maxNavigationCatalogBytes) {
-			break
-		}
-		rows = append(rows, candidate)
+		rows = append(rows, p.projectSummary(project))
 	}
+	rows = rows[:navigationCatalogRowsThatFit(rows, func(kept int) any {
+		return hubapi.NavigationProjectCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Projects: hubapi.NavigationArray[hubapi.NavigationProjectSummary]{}, Remaining: len(projects) - start - kept}
+	})]
 	remaining := len(projects) - start - len(rows)
 	return hubapi.NavigationProjectCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Projects: rows, Remaining: remaining}, nil
+}
+
+// navigationCatalogRowsThatFit returns how many leading rows a catalog page
+// keeps: the page takes rows in order until the next one would carry it past
+// maxNavigationCatalogBytes. emptyPage returns the page with no rows and the
+// remaining count for kept rows.
+//
+// A page's encoding is its empty page with the rows spliced into the empty
+// array: encoding/json encodes each slice element on its own and joins them
+// with commas, and the NavigationArray wrapper's own json.Marshal output passes
+// through the outer encode byte for byte. So a page with kept rows is exactly
+// len(empty page) + the rows' encoded lengths + kept-1 commas, and each row is
+// encoded once rather than once per page it appears in.
+func navigationCatalogRowsThatFit[T any](rows []T, emptyPage func(kept int) any) int {
+	rowBytes := 0
+	for index, row := range rows {
+		kept := index + 1
+		rowBytes += navigationEncodedSize(row)
+		pageBytes := navigationEncodedSize(emptyPage(kept))
+		// A row or page that cannot be encoded fits no budget
+		// (navigationEncodedSize is math.MaxInt), and the sum must not wrap.
+		if rowBytes > maxNavigationCatalogBytes || pageBytes > maxNavigationCatalogBytes ||
+			pageBytes+rowBytes+kept-1 > maxNavigationCatalogBytes {
+			return index
+		}
+	}
+	return len(rows)
 }
 
 func (p navigationProjection) Project(key string) (hubapi.NavigationProjectResource, bool) {

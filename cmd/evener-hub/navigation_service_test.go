@@ -649,6 +649,93 @@ func navigationMaxFieldSectionNodes(now time.Time) []hubcore.TreeNode {
 	return rows
 }
 
+// TestNavigationCatalogPagesEncodeEachRowOnce pins the encode work of filling
+// a catalog page to its byte budget: each row is encoded once, plus a small
+// envelope per row, so the page costs about one page of bytes rather than one
+// whole-page encode per row admitted.
+func TestNavigationCatalogPagesEncodeEachRowOnce(t *testing.T) {
+	service := newTestNavigationService(t, navigationBudgetTestSource(time.Unix(1_700_000_000, 0).UTC()))
+	_, _, projection, err := service.versionedCore(t.Context(), navigationResourceKey{Kind: navigationResourceManifest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedBytes := 0
+	originalMarshal := navigationEnvelopeMarshal
+	navigationEnvelopeMarshal = func(value any) ([]byte, error) {
+		encoded, err := json.Marshal(value)
+		encodedBytes += len(encoded)
+		return encoded, err
+	}
+	defer func() { navigationEnvelopeMarshal = originalMarshal }()
+
+	for name, page := range map[string]func() (any, error){
+		"pin catalog": func() (any, error) { return projection.PinCatalogPage(0, maxNavigationCatalogRows), nil },
+		"projects": func() (any, error) {
+			return projection.CatalogPage(navigationResourceProjects, 0, maxNavigationCatalogRows)
+		},
+	} {
+		encodedBytes = 0
+		catalog, err := page()
+		if err != nil {
+			t.Fatal(err)
+		}
+		pageBytes, err := json.Marshal(catalog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pageBytes) < maxNavigationCatalogBytes/2 {
+			t.Fatalf("%s page is %d bytes; the fixture must fill the %d-byte budget", name, len(pageBytes), maxNavigationCatalogBytes)
+		}
+		if encodedBytes > 2*len(pageBytes) {
+			t.Errorf("%s encoded %d bytes to build a %d-byte page, want at most %d", name, encodedBytes, len(pageBytes), 2*len(pageBytes))
+		}
+	}
+}
+
+// TestNavigationCatalogPageSizeIsEmptyPagePlusRows pins the premise
+// navigationCatalogRowsThatFit sizes pages by: a catalog page encodes to its
+// empty page plus each row's own encoding plus a comma between rows, for rows
+// with escaped, multibyte, and nested-array fields alike.
+func TestNavigationCatalogPageSizeIsEmptyPagePlusRows(t *testing.T) {
+	rows := hubapi.NavigationArray[hubapi.NavigationProjectSummary]{
+		{Key: "a", Name: "<b>&\"quoted\"\u2028😀", WorkingDir: `C:\work`, Sources: hubapi.NavigationArray[string]{"local", "host<1>"}, SessionCount: 3},
+		{Key: "b", Name: "", RollupLive: 9_007_199_254_740_991, Favorite: true},
+		{Key: "c", Name: strings.Repeat("😀", maxNavigationLabelRunes)},
+	}
+	for kept := range len(rows) + 1 {
+		page := hubapi.NavigationProjectCatalog{GenerationID: "g<&>", Revision: 7, Projects: rows[:kept], Remaining: 12_345 - kept}
+		empty := page
+		empty.Projects = hubapi.NavigationArray[hubapi.NavigationProjectSummary]{}
+		want := len(mustJSON(empty)) + max(kept-1, 0)
+		for _, row := range rows[:kept] {
+			want += len(mustJSON(row))
+		}
+		if got := len(mustJSON(page)); got != want {
+			t.Fatalf("%d rows: page encodes to %d bytes, empty page plus rows is %d", kept, got, want)
+		}
+	}
+}
+
+func BenchmarkNavigationCatalogPages(b *testing.B) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	service := newNavigationService(navigationServiceConfig{
+		Source:     navigationBudgetTestSource(now),
+		Generation: func() (string, error) { return "00112233445566778899aabbccddeeff", nil },
+		Now:        func() time.Time { return now },
+	})
+	_, _, projection, err := service.versionedCore(b.Context(), navigationResourceKey{Kind: navigationResourceManifest})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		projection.PinCatalogPage(0, maxNavigationCatalogRows)
+		if _, err := projection.CatalogPage(navigationResourceProjects, 0, maxNavigationCatalogRows); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestNavigationReadV2ExactSerializedBudgetsByFamily(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := navigationBudgetTestSource(now)
