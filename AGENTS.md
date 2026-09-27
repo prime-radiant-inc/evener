@@ -84,9 +84,10 @@ check `[ -L node_modules ]` yourself first; don't rely on the script to catch
 it for you. The same
 symlink risk applies to `appwire-client/typescript` (no preflight script owns its
 install; `make test-api-package` runs `npm run qualification` directly) and
-to `mobile-native` (`native-preflight.sh` checks the install's freshness and
-health but never runs `npm ci` itself, precisely to avoid this — it fails
-loudly and names the command instead). Never run `npm ci` through a
+to `mobile-native` (`native-preflight.sh` refuses a symlinked install
+outright — the bundler resolves no module through one, whatever the lockfiles
+say — and never runs `npm ci` itself; it fails loudly and names the command
+instead). Never run `npm ci` through a
 symlinked `node_modules` in any of the three.
 
 ## Importing the AppWire TypeScript package
