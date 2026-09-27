@@ -5717,7 +5717,7 @@ git commit -m "feat(native): who else needs you, and the Live order, from inside
 **Requirements (spec 6, 8.1, 8.3, 13.2):**
 1. **The fleet.**
    - One `createBoardController()` per screen. `setClient(client)` whenever the connection's client changes, `pause()` on blur, `resume()` on focus, and `dispose()` on unmount.
-   - `bands = liveBands(snapshot.live.rows, snapshot.needsYou.rows, seenMarkers(hubId).isSeen)`. Re-render through the controller's and the seen markers' `subscribe`.
+   - `const markers = seenMarkers(hubId); bands = liveBands(snapshot.live.rows, snapshot.needsYou.rows, (row) => markers.isSeen(row))`. Never pass the bare `markers.isSeen` reference: it reads `this`, so a detached reference throws at runtime. Re-render through the controller's and the seen markers' `subscribe`.
 2. **Back.** A custom `headerLeft`, `BackButton`: `chevron.left` in `accentInk`, then, when `othersNeedingYou(bands, ref).length > 0`, the count in `attentionInk` semibold with tabular figures.
    - The accessibility label is "Back" or "Back, 4 others need you". Pressing calls `navigation.goBack()`.
    - The interactive swipe-back gesture must still work: check it in the simulator.
@@ -5739,6 +5739,7 @@ git commit -m "feat(native): who else needs you, and the Live order, from inside
     - The capsule opens the failed one with `navigation.push(... openedBy: "next")`.
     - With `route.params.openedBy === "next"`, it calls `navigation.replace`.
     - With a pending question on this session, there is no capsule.
+    - Uses the real `seenMarkers(hubId)` (never a stub for `isSeen`), so a detached-`this` regression throws at once: the render must not throw, and a session already marked seen still classifies as Idle, not Finished.
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/BackButton.test.tsx src/session/NextCapsule.test.tsx src/ConversationScreen.send.test.tsx src/location.test.ts`
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them and watch them pass**, then `npm run check`. Build Release in the simulator against a hub with two sessions that need you. Next through both: Back returns to where you started, and the swipe-back gesture works.
