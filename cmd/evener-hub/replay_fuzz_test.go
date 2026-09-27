@@ -111,19 +111,20 @@ func canonicalEntry(t *testing.T, e transcript.Entry) (transcript.Entry, []byte)
 	return canon, b
 }
 
-// hasKnownClosingCallIDEchoDivergence identifies one deliberately excluded
-// product divergence. A CallID-scoped live communicate commits its preview even
-// when its message repeats assistant text, while close-time reload suppresses
-// that echo. Tracked production follow-up: "hub: CallID communicate echo renders
-// twice live but once after reload" (proposed in the #2267 fix-round report).
+// knownClosingCallIDEchoes identifies one deliberately excluded product
+// divergence. A CallID-scoped live communicate commits its preview even when its
+// message repeats assistant text, while close-time reload suppresses that echo.
+// Tracked production follow-up: "hub: CallID communicate echo renders twice live
+// but once after reload" (proposed in the #2267 fix-round report).
 //
-// Keep synthesizeLiveEvents faithful and exclude only that input shape here. The
-// reload registry remembers the last individual raw-nonempty text part (not
+// Keep synthesizeLiveEvents faithful; the caller removes only the extra live item
+// with the matching CallID and still compares every other item. The reload
+// registry remembers the last individual raw-nonempty text part (not
 // Message.Text's concatenation); a later whitespace-only part therefore resets
 // the trimmed value to empty. This detector deliberately mirrors that rule.
-func hasKnownClosingCallIDEchoDivergence(turn schema.Turn) bool {
+func knownClosingCallIDEchoes(turn schema.Turn) map[string]string {
 	if turn.Kind != schema.TurnAssistant {
-		return false
+		return nil
 	}
 	lastAssistantText := ""
 	for _, part := range turn.Message.Content {
@@ -132,8 +133,9 @@ func hasKnownClosingCallIDEchoDivergence(turn schema.Turn) bool {
 		}
 	}
 	if lastAssistantText == "" {
-		return false
+		return nil
 	}
+	echoes := make(map[string]string)
 	for _, part := range turn.Message.Content {
 		if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != "communicate" || part.ToolCall.ID == "" {
 			continue
@@ -142,10 +144,26 @@ func hasKnownClosingCallIDEchoDivergence(turn schema.Turn) bool {
 		normalized := apptranscript.NormalizeCommunicateArguments(repaired)
 		message := apptranscript.CommunicateMessageFromArguments(normalized)
 		if message != "" && apptranscript.EchoesAssistantText(lastAssistantText, message) {
-			return true
+			echoes[part.ToolCall.ID] = message
 		}
 	}
-	return false
+	return echoes
+}
+
+func excludeKnownClosingCallIDEchoes(turn schema.Turn, items []appwire.ThreadItem) []appwire.ThreadItem {
+	echoes := knownClosingCallIDEchoes(turn)
+	if len(echoes) == 0 {
+		return items
+	}
+	out := make([]appwire.ThreadItem, 0, len(items))
+	for _, item := range items {
+		message, known := echoes[item.CallID]
+		if known && item.Type == "agentMessage" && strings.TrimSpace(item.Text) == strings.TrimSpace(message) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func TestClosingCallIDEchoDivergenceExclusionIsNarrow(t *testing.T) {
@@ -176,8 +194,8 @@ func TestClosingCallIDEchoDivergenceExclusionIsNarrow(t *testing.T) {
 				ID: tc.callID, Name: "communicate", Arguments: arguments,
 			}})
 			turn := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}}
-			if got := hasKnownClosingCallIDEchoDivergence(turn); got != tc.want {
-				t.Fatalf("hasKnownClosingCallIDEchoDivergence() = %v, want %v", got, tc.want)
+			if got := len(knownClosingCallIDEchoes(turn)) > 0; got != tc.want {
+				t.Fatalf("knownClosingCallIDEchoes() matched = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -350,9 +368,6 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 		return
 	}
 	canon, canonBytes := canonicalEntry(t, e)
-	if hasKnownClosingCallIDEchoDivergence(canon.Turn) {
-		return
-	}
 
 	liveEvents, supported := synthesizeLiveEvents(canon.Turn, true)
 	if !supported {
@@ -365,7 +380,11 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 	for _, ev := range liveEvents {
 		notes = append(notes, proj.Project(ev)...)
 	}
-	live := normalizeMetamorphic(foldLiveItems(notes))
+	// Exclude only the known product divergence's extra CallID-scoped live item.
+	// Keeping the reload item untouched is load-bearing: the echo-dedup mutation
+	// must still redden this oracle by adding the duplicate on reload.
+	liveItems := excludeKnownClosingCallIDEchoes(canon.Turn, foldLiveItems(notes))
+	live := normalizeMetamorphic(liveItems)
 
 	// Reload side: the hub's own full saved-transcript projection path. Unlike a
 	// direct ProjectTurn call, this closes the projection by flushing any
