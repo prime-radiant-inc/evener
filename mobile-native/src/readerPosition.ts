@@ -1,4 +1,4 @@
-import type { TimelineRow } from "./timeline";
+import { rowTurnId, type RunStep, type TimelineRow } from "./timeline";
 
 export interface ReaderAnchor {
 	hubId: string;
@@ -8,6 +8,10 @@ export interface ReaderAnchor {
 	itemPosition?: { entry: number; item: number };
 	withinItemOffset: number;
 	touchedAt: number;
+	// The latest turn id loaded when this anchor was captured (ruling 31),
+	// so opening the session can tell whether a newer reply arrived since.
+	// Absent on an anchor saved before this field existed.
+	turnsSeen?: string;
 }
 
 export interface ReaderStorage {
@@ -66,15 +70,18 @@ function valid(value: unknown): value is ReaderAnchor {
 		Number.isFinite(v.withinItemOffset) &&
 		v.withinItemOffset >= 0 &&
 		typeof v.touchedAt === "number" &&
-		Number.isFinite(v.touchedAt)
+		Number.isFinite(v.touchedAt) &&
+		(v.turnsSeen === undefined || typeof v.turnsSeen === "string")
 	);
 }
 export function readerKey(row: TimelineRow): string {
-	if (row.kind === "details") return row.id;
+	if (row.kind === "details" || row.kind === "time") return row.id;
 	return row.transcriptKey ?? row.id;
 }
 export function readerPosition(row: TimelineRow) {
-	return row.kind === "details" ? row.entries[0]?.position : row.position;
+	if (row.kind === "details") return row.entries[0]?.position;
+	if (row.kind === "time") return undefined;
+	return row.position;
 }
 export function comparePosition(
 	a?: { entry: number; item: number },
@@ -85,22 +92,62 @@ export function comparePosition(
 	if (!b) return -1;
 	return a.entry - b.entry || a.item - b.item;
 }
+function matchesStep(step: RunStep, anchor: ReaderAnchor): boolean {
+	return (
+		(step.transcriptKey ?? step.id) === anchor.itemKey ||
+		(anchor.itemPosition !== undefined &&
+			step.position !== undefined &&
+			comparePosition(step.position, anchor.itemPosition) === 0)
+	);
+}
+
 export function resolveReaderAnchor(
 	anchor: ReaderAnchor,
 	rows: readonly TimelineRow[],
 ): number | null {
 	const exact = rows.findIndex((row) => readerKey(row) === anchor.itemKey);
 	if (exact >= 0) return exact;
-	if (!anchor.itemPosition) return null;
-	let best = -1;
-	for (let i = 0; i < rows.length; i += 1) {
-		const candidate = readerPosition(rows[i]);
-		if (candidate && comparePosition(candidate, anchor.itemPosition) === 0) {
-			best = i;
-			break;
+	if (anchor.itemPosition) {
+		const itemPosition = anchor.itemPosition;
+		const byPosition = rows.findIndex((row) => {
+			const candidate = readerPosition(row);
+			return candidate !== undefined && comparePosition(candidate, itemPosition) === 0;
+		});
+		if (byPosition >= 0) return byPosition;
+	}
+	// A position saved on a step that now sits inside a folded run resolves to
+	// the run (Review Focus 4).
+	const inRun = rows.findIndex(
+		(row) => row.kind === "run" && row.steps.some((step) => matchesStep(step, anchor)),
+	);
+	return inRun >= 0 ? inRun : null;
+}
+
+export type OpeningTarget = { kind: "live" } | { kind: "anchor" } | { kind: "row"; index: number };
+
+/** Where a session opens (spec 7.3, ruling 31). While a question or approval
+ * waits: the live end, where the dock is. After a reply that finished since
+ * you last reached the end: the start of that reply. Otherwise where you left
+ * off, and failing that the live end. Turn ids, never clocks, decide what is
+ * newer. */
+export function openingTarget(
+	anchor: ReaderAnchor | null,
+	rows: readonly TimelineRow[],
+	turnIds: readonly string[],
+	askPending: boolean,
+): OpeningTarget {
+	if (askPending) return { kind: "live" };
+	if (anchor?.turnsSeen) {
+		const seen = turnIds.indexOf(anchor.turnsSeen);
+		const newer = seen === -1 ? undefined : turnIds[seen + 1];
+		if (newer !== undefined) {
+			const index = rows.findIndex(
+				(row) => rowTurnId(row) === newer && row.kind !== "user" && row.kind !== "time",
+			);
+			if (index !== -1) return { kind: "row", index };
 		}
 	}
-	return best >= 0 ? best : null;
+	return anchor ? { kind: "anchor" } : { kind: "live" };
 }
 export function isReaderAnchorLoaded(
 	anchor: ReaderAnchor,
@@ -133,6 +180,7 @@ export function captureReaderAnchor(
 	measurements: readonly ReaderMeasurement[],
 	touchedAt: number,
 	conversationInstance?: string,
+	turnsSeen?: string,
 ): ReaderAnchor | null {
 	const measurement = measurements.find(
 		(candidate) => candidate.key === readerKey(row),
@@ -149,6 +197,7 @@ export function captureReaderAnchor(
 			Math.max(0, contentOffset - measurement.y),
 		),
 		touchedAt,
+		...(turnsSeen ? { turnsSeen } : {}),
 	};
 }
 export type ReaderRestoreCommand =

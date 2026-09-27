@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { ActionSheetIOS, Alert, Platform, Pressable, View } from "react-native";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
+import { runSummary, runSummaryText, timeMarkerText } from "./session/transcriptRows";
 import { TranscriptImages } from "./TranscriptImages";
 import {
 	isCriticalNotice,
@@ -245,6 +246,15 @@ export function TimelineItem({
 					) : null}
 				</>
 			);
+			break;
+		// Placeholder: Task 24 styles the collapsed run line. This renders the
+		// same summary text plainly.
+		case "run":
+			content = <Copy muted>{runSummaryText(runSummary(item.steps))}</Copy>;
+			break;
+		case "time":
+			// Placeholder: Task 24 injects the live clock; this reads "now" once, at render.
+			content = <Copy muted>{timeMarkerText(item.at, Date.now())}</Copy>;
 			break;
 	}
 	return (
