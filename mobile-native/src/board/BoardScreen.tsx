@@ -7,16 +7,7 @@ import {
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
-import {
-	type ReactNode,
-	useCallback,
-	useEffect,
-	useMemo,
-	useReducer,
-	useRef,
-	useState,
-	useSyncExternalStore,
-} from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
 	ActionSheetIOS,
 	Alert,
@@ -55,11 +46,11 @@ import {
 	usualPlace,
 } from "./attention";
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
-import { bandHeaderText, BoardRow, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
+import { bandHeaderText, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { foldedSections, organizeByPreference, seenMarkers } from "./nativeBoardMemory";
-import { PinnedSection, useCategoryFolds } from "./PinnedSections";
+import { PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
 import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
 import {
 	expandedProjectKeys,
@@ -162,9 +153,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const categoryMenu = pinnedCategoryMenu(organization, () => board.getSnapshot().pins.rows);
 	const projectSections = useProjectSections(hubId);
 	const [organizeBy, setOrganizeBy] = useState(() => organizeByPreference(hubId).get());
-	// Every fold inside the project sections persists in FoldedSections,
-	// which has no subscribers: a toggle redraws the Board itself.
-	const [, redrawProjectFolds] = useReducer((revision: number) => revision + 1, 0);
+	// Every fold inside the project sections, by its ProjectTreeItem fold.
+	const { isFolded, setFolded } = useBoardFolds(hubId);
 
 	const [idleFolded, setIdleFolded] = useState(() => foldedSections(hubId).isFolded("idle", true));
 	const foldIdle = (folded: boolean) => {
@@ -303,11 +293,6 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		organizeByPreference(hubId).set(next);
 		setOrganizeBy(next);
 	};
-	const isFolded = (fold: string, byDefault: boolean) => foldedSections(hubId).isFolded(fold, byDefault);
-	const setFolded = (fold: string, folded: boolean) => {
-		foldedSections(hubId).setFolded(fold, folded);
-		redrawProjectFolds();
-	};
 	// A host's live count needs every Live and Needs you row (ruling 12).
 	const hostLiveCount = liveCountsByHost(
 		[...snapshot.live.rows, ...snapshot.needsYou.rows],
@@ -396,17 +381,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		if (item.kind === "session")
 			return (
 				<View key={item.key} style={{ marginLeft: 16 * item.depth }}>
-					<BoardRow
-						item={{ row: item.row, state: boardState(item.row, false, markers.isSeen(item.row)) }}
-						variant="quiet"
-						moving={false}
-						connected={connected}
-						usual={usual}
-						hostLabel={hostLabel}
-						hasDraft={draftRefs.has(item.row.ref)}
-						now={now}
-						onOpen={openSession}
-					/>
+					{rows([{ row: item.row, state: boardState(item.row, false, markers.isSeen(item.row)) }], "quiet", false)}
 				</View>
 			);
 		if (item.kind === "more" || item.kind === "moreProjects")
