@@ -166,6 +166,9 @@ type probeFile struct {
 	Expect  expectSpec        `yaml:"expect"`
 	Metrics metricsSpec       `yaml:"metrics"`
 	Skip    map[string]string `yaml:"skip,omitempty"`
+	// Reference is a shell script that solves the task. Only the offline
+	// task test runs it, to prove the checks can pass; the runner ignores it.
+	Reference string `yaml:"reference,omitempty"`
 }
 
 // metricsSpec is the validated form of a probe manifest's `metrics:` block
