@@ -320,3 +320,48 @@ func TestProbeEpochPostRenameFailureReturnsTheLandedRow(t *testing.T) {
 		t.Fatalf("reloaded epoch = %+v/%v, want the landed %+v", row, ok, epoch)
 	}
 }
+
+// TestGuardEpochPostRenameFailureAdmitsTheLandedRow pins the second landed-write
+// signal the hub branches on: a guard-epoch write whose rename landed but whose
+// directory sync failed reports a RenameLanded error while the store has
+// adopted the admitted epoch, so the serving hub can admit and log instead of
+// refusing a host whose durable state already holds the epoch.
+func TestGuardEpochPostRenameFailureAdmitsTheLandedRow(t *testing.T) {
+	path := StorePath(t.TempDir())
+	var syncErr error
+	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(_ afero.Fs, dir string) error {
+		if dir != filepath.Dir(path) {
+			return nil
+		}
+		return syncErr
+	}})
+	if err != nil {
+		t.Fatalf("openFS: %v", err)
+	}
+	syncErr = errors.New("directory sync fault")
+	err = store.AdmitGuardEpoch(GuardEpoch{BootID: "boot-1", OpSeq: 5})
+	if err == nil {
+		t.Fatal("an admission whose directory sync failed reported success")
+	}
+	if !RenameLanded(err) {
+		t.Fatalf("the post-rename failure is not distinguishable: %v", err)
+	}
+	if stored, ok := store.GuardEpoch(); !ok || stored != (GuardEpoch{BootID: "boot-1", OpSeq: 5}) {
+		t.Fatalf("memory did not adopt the landed admission: %+v/%v", stored, ok)
+	}
+	// The row is the file's contents: a fresh load carries it, and a replay of
+	// the same epoch is a no-op rather than a stale refusal.
+	if err := forgetStore(path); err != nil {
+		t.Fatalf("forgetStore: %v", err)
+	}
+	reopened, err := openFS(afero.NewOsFs(), path, storeFaults{})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if stored, ok := reopened.GuardEpoch(); !ok || stored.OpSeq != 5 {
+		t.Fatalf("reloaded guard epoch = %+v/%v, want the landed one", stored, ok)
+	}
+	if err := reopened.AdmitGuardEpoch(GuardEpoch{BootID: "boot-1", OpSeq: 5}); err != nil {
+		t.Fatalf("replaying the landed epoch: %v", err)
+	}
+}

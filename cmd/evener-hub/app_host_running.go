@@ -153,6 +153,14 @@ func (m *hubHostManager) admitPresentedEpoch(epoch appwire.FencingEpoch) error {
 		return nil
 	case errors.Is(err, hostops.ErrStaleGuardEpoch):
 		return appwire.Unavailable(fmt.Sprintf("evener/host/running: stale fencing epoch refused without probing: %v", err))
+	case hostops.RenameLanded(err):
+		// The rename landed and the store adopted the row, so the guard epoch is
+		// durable and memory agrees — only its directory sync failed. Same
+		// posture as the plan's probe-epoch persist and the mint's token write
+		// (both branch on RenameLanded): admit and log, never refuse a host
+		// whose durable state already holds the presented epoch.
+		m.logf("evener/host/running: the guard epoch's directory sync failed after its rename landed; the epoch is durable: %v", err)
+		return nil
 	default:
 		return appwire.Unavailable(fmt.Sprintf("evener/host/running: the presented fencing epoch could not be persisted: %v", err))
 	}
