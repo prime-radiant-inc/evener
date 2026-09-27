@@ -133,16 +133,22 @@ function placeholder(out: ProjectTreeItem[], prefix: string, pages: ProjectPages
 	out.push(failed ? { kind: "failed", key: `${prefix}/failed`, depth } : { kind: "loading", key: `${prefix}/loading`, depth });
 }
 
-/** Today's and Recent's captions and rows, of one host or of every host. */
+/** Today's and Recent's captions and rows, of one host or of every host. A
+ * session the hub lists in both tiers (it crossed the 24-hour line between the
+ * two reads) shows once, under Today, as projectBrowser's `sessions` does. */
 function activeItems(out: ProjectTreeItem[], prefix: string, pages: ProjectPages, hostId: string | null, depth: number): void {
+	const shown = new Set<string>();
 	for (const [tier, label] of [
 		["current", "Today"],
 		["recent", "Recent"],
 	] as const) {
-		const rows = pages[tier].rows.filter(onHost(hostId));
+		const rows = pages[tier].rows.filter((row) => onHost(hostId)(row) && !shown.has(row.ref));
 		if (rows.length === 0) continue;
 		out.push({ kind: "tier", key: `${prefix}/tier:${tier}`, depth, label });
-		for (const row of rows) out.push({ kind: "session", key: `${prefix}/${tier}/${row.ref}`, depth, row, archived: false });
+		for (const row of rows) {
+			shown.add(row.ref);
+			out.push({ kind: "session", key: `${prefix}/${tier}/${row.ref}`, depth, row, archived: false });
+		}
 	}
 }
 
@@ -252,7 +258,11 @@ function hostFirst(out: ProjectTreeItem[], input: ProjectTreeInput): void {
 			}
 			activeItems(out, prefix, pages, host.id, 2);
 			if (canonical) moreItems(out, prefix, pages, project.key, 2);
-			archivedItems(out, input, prefix, copyFold, pages, host.id, 2, project.key, canonical);
+			// The archived group's more row goes on the first copy with archived
+			// rows loaded, so it never sits alone in a copy with nothing archived
+			// (the web anchors its overflow on a host with rows for the same reason).
+			const archivedCarrier = canonicalHostId(hostIds, pages.archived.rows, input.sources) === host.id;
+			archivedItems(out, input, prefix, copyFold, pages, host.id, 2, project.key, archivedCarrier);
 		}
 	}
 }

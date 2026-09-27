@@ -208,6 +208,23 @@ describe("organized by host (spec 7.1, ruling 11)", () => {
 			"      paradise-park:y",
 		]);
 	});
+	it("puts the archived group's more row on a host that has archived rows", () => {
+		const list = items({
+			projects: [evener],
+			pages: new Map([["evener", pages([session("local:a")], [], [session("paradise-park:y", "paradise-park")], { archived: 40 })]]),
+		});
+		expect(outline(list)).toEqual([
+			"host this host",
+			"  project evener · 3 live",
+			"    Today",
+			"    local:a",
+			"host paradise-park",
+			"  project evener",
+			"    Archived",
+			"      paradise-park:y",
+			"      40 more archived",
+		]);
+	});
 });
 
 describe("organized by project (spec 7.1)", () => {
@@ -269,6 +286,12 @@ describe("organized by project (spec 7.1)", () => {
 				}),
 			),
 		).toEqual(["project docs", "  Today", "  local:d", "  20 more current", "  3 more recent", "  Archived", "    local:o", "    40 more archived"]);
+	});
+	it("shows a session the hub lists in both Today and Recent once, under Today", () => {
+		const both = session("local:a");
+		expect(
+			outline(items({ sources: [LOCAL], projects: [project("docs")], pages: new Map([["docs", pages([both], [both, session("local:b")])]]) })),
+		).toEqual(["project docs", "  Today", "  local:a", "  Recent", "  local:b"]);
 	});
 });
 
@@ -390,8 +413,6 @@ describe("keeping rows through a reconnect (part 1 Review Focus 1)", () => {
 		return {
 			projects: { ...pageState([], catalogLoaded), rows: catalogLoaded ? [project("a")] : [] },
 			groups,
-			loading: !catalogLoaded,
-			error: null,
 		};
 	}
 	const retained: ProjectsView = {

@@ -29,8 +29,6 @@ export interface ProjectBrowserSnapshot {
 		NavigationPages<NavigationProjectSummary>["getSnapshot"]
 	>;
 	groups: ProjectBrowserGroup[];
-	loading: boolean;
-	error: string | null;
 }
 export interface ProjectBrowserController {
 	getSnapshot(): ProjectBrowserSnapshot;
@@ -73,8 +71,6 @@ export function createProjectBrowserController(
 		50,
 	);
 	const groups = new Map<string, Group>();
-	let loading = false;
-	let error: string | null = null;
 	let disposed = false;
 	let paused = false;
 	let epoch = 0;
@@ -85,8 +81,6 @@ export function createProjectBrowserController(
 	let cachedSnapshot: ProjectBrowserSnapshot = {
 		projects: catalog.getSnapshot(),
 		groups: [],
-		loading: false,
-		error: null,
 	};
 	const rebuildSnapshot = () => {
 		const projectSnapshot = catalog.getSnapshot();
@@ -114,8 +108,6 @@ export function createProjectBrowserController(
 					},
 				];
 			}),
-			loading,
-			error,
 		};
 	};
 	const publish = () => {
@@ -166,8 +158,6 @@ export function createProjectBrowserController(
 			),
 		);
 		if (disposed || currentEpoch !== epoch) return;
-		if (tierPages(group).some((page) => page.getSnapshot().error))
-			error = "Could not load sessions for this project. Retry to try again.";
 		publish();
 	};
 	const controller: ProjectBrowserController = {
@@ -183,8 +173,6 @@ export function createProjectBrowserController(
 				catalog.getSnapshot().loaded
 			)
 				return;
-			loading = true;
-			error = null;
 			if (!catalogWatchStarted) {
 				unwatchCatalog = catalog.watch();
 				catalogWatchStarted = true;
@@ -192,8 +180,6 @@ export function createProjectBrowserController(
 			const currentEpoch = epoch;
 			await catalog.refresh();
 			if (disposed || currentEpoch !== epoch) return;
-			error = catalog.getSnapshot().error;
-			loading = false;
 			publish();
 		},
 		async expand(key) {
@@ -202,7 +188,6 @@ export function createProjectBrowserController(
 			if (!project) return;
 			const group = groupFor(project);
 			group.expanded = true;
-			error = null;
 			publish();
 			await loadExpanded(key);
 		},
@@ -257,7 +242,6 @@ export function createProjectBrowserController(
 		},
 		async retry(projectKey, tier) {
 			if (disposed) return;
-			error = null;
 			if (projectKey) {
 				const group = groups.get(projectKey);
 				if (!group?.expanded) return;
@@ -289,8 +273,6 @@ export function createProjectBrowserController(
 		},
 		async refresh() {
 			if (disposed) return;
-			error = null;
-			loading = true;
 			await catalog.refresh();
 			if (disposed) return;
 			await Promise.all(
@@ -298,7 +280,6 @@ export function createProjectBrowserController(
 					.filter((group) => group.expanded)
 					.map((group) => loadExpanded(group.project.key, true)),
 			);
-			loading = false;
 			publish();
 		},
 		pause() {
