@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/bucketref"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
@@ -220,16 +221,16 @@ func symlinkErrorDeep(path, root string) error {
 // (PR #2163). Refs for grammar-incompatible bucket names are suppressed at
 // emission time by refFor, not here.
 //
-// Symlink policy: enumerateBuckets skips symlinked bucket dirs, a deliberate
-// agent-side divergence from the doctor's globBuckets, which follows symlinks
-// (its isDir helper uses os.Stat). The doctor is an operator forensic tool
-// that must see everything on disk; the agent's model-facing read paths hold
-// the higher bar — a symlink under projects/ could point outside the state
-// root and expose transcripts from elsewhere, so the agent never follows
-// them. The doctor's symlink policy is a separate concern.
-// The doctor intentionally still follows symlinks per #2275 ("this is a user
-// tool. allow symlinked buckets.") — do not "harmonize" the two sides
-// without the owner.
+// Symlink policy: enumerateBuckets skips symlinked bucket dirs via
+// bucketref.EnumerateBuckets(…, WithSymlinkPolicy(RefuseSymlinks)) — a
+// deliberate agent-side divergence from the doctor's globBuckets, which calls
+// the same shared enumeration with FollowSymlinks. The doctor is an operator
+// forensic tool that must see everything on disk; the agent's model-facing
+// read paths hold the higher bar — a symlink under projects/ could point
+// outside the state root and expose transcripts from elsewhere, so the agent
+// never follows them. The doctor intentionally still follows symlinks per
+// #2275 ("this is a user tool. allow symlinked buckets.") — do not
+// "harmonize" the two sides without the owner.
 func enumerateBuckets(stateHome string) ([]string, error) {
 	// Validate the glob pattern for well-formedness BEFORE the prefix
 	// not-exists shortcut below. A stateHome containing unmatched glob
@@ -241,6 +242,7 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 	// it detects the same ErrBadPattern without touching the filesystem
 	// (it cannot follow a symlinked prefix the way Glob would).
 	pattern := filepath.Join(stateHome, "evener", "projects", "*")
+	projects := filepath.Join(stateHome, "evener", "projects")
 	if _, err := filepath.Match(pattern, ""); err != nil {
 		return nil, fmt.Errorf("glob project buckets: %w", err)
 	}
@@ -254,7 +256,7 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 	// prefix at all.
 	for _, prefix := range []string{
 		filepath.Join(stateHome, "evener"),
-		filepath.Join(stateHome, "evener", "projects"),
+		projects,
 	} {
 		info, lerr := os.Lstat(prefix)
 		if lerr != nil {
@@ -271,29 +273,21 @@ func enumerateBuckets(stateHome string) ([]string, error) {
 			return nil, errSymlinkedLayoutPrefix // symlinked prefix → refuse to enumerate
 		}
 	}
-	matches, err := transcriptBucketGlob(pattern)
+	// Delegate the glob+filter core to the shared enumeration, passing the
+	// package-level glob variable at call time so test overrides of
+	// transcriptBucketGlob keep working. RefuseSymlinks preserves the
+	// Lstat+skip filter that lived here: the shared core Lstats each match,
+	// skips symlinks, skips non-dirs, and skips per-entry stat errors (which
+	// this loop also did). The prefix guards and sentinel above stay here.
+	buckets, err := bucketref.EnumerateBuckets(projects,
+		bucketref.WithGlob(transcriptBucketGlob),
+		bucketref.WithSymlinkPolicy(bucketref.RefuseSymlinks))
 	if err != nil {
-		return nil, fmt.Errorf("glob project buckets: %w", err)
+		return nil, err // already wrapped "glob project buckets: …" by the shared core
 	}
-	// Filter to directories only. The symlink check MUST come first and
-	// MUST use Lstat (not Stat): Stat follows the symlink, clears
-	// ModeSymlink, and would let the symlink through. With Lstat, a symlink
-	// reports ModeSymlink and is skipped here; a regular file reports neither
-	// ModeSymlink nor IsDir and is skipped by the IsDir check. Mirrors
-	// locateLocalJob's entry.Type()&os.ModeSymlink guard.
-	dirs := make([]string, 0, len(matches))
-	for _, m := range matches {
-		info, statErr := os.Lstat(m)
-		if statErr != nil {
-			continue
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			continue
-		}
-		if !info.IsDir() {
-			continue
-		}
-		dirs = append(dirs, m)
+	dirs := make([]string, 0, len(buckets))
+	for _, b := range buckets {
+		dirs = append(dirs, b.Dir)
 	}
 	return dirs, nil
 }
@@ -382,15 +376,10 @@ func ambiguityCandidates(selector string, currentFound bool, otherMatches []stri
 // refFor from #2163. Such sessions stay locatable by bare id (the enumeration
 // no longer filters them out) and addressable by explicit local: refs, but no
 // proj: ref is emitted for a name read_transcript / find_session_transcripts
-// would reject.
+// would reject. Delegates to bucketref.RefFor so the agent and the doctor
+// share one ref-formatting implementation.
 func refFor(projectID, sessionID string) string {
-	if projectID == "" {
-		return encodeRef("", sessionID)
-	}
-	if identifier.ValidateProjectID(projectID) != nil {
-		return ""
-	}
-	return encodeRef(projectID, sessionID)
+	return bucketref.RefFor(projectID, sessionID)
 }
 
 // stateHomeFor returns the stateHome for a bucket state dir via the shared
