@@ -28,6 +28,13 @@ recommended server name is `hub`, so the session sees tools named
 `hub__list_sessions`, `hub__start_session`, `hub__send_message`,
 `hub__wait_for_activity`, and so on.
 
+The launch-config layers also accept an `[[mcps]]` entry, but that shape
+carries only `name`, `command`, and `args` — no environment — so a server
+wired that way has no way to receive `EVENER_HUB_RPC_URL` or
+`EVENER_HUB_TOKEN` and must live on the defaults below (loopback hub, token
+file in the default state root). The `.mcp.json` route, which passes `env`,
+is the one that lets you point a session at a non-default hub.
+
 Build it first (`make test-hub-mcp` also does this):
 
 ```bash
