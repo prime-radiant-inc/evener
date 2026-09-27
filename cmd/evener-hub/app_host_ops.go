@@ -572,7 +572,10 @@ func (m *hubHostManager) mintPlannedToken(name string, in planMintInputs) (appwi
 		RunningHealthy:     token.RunningHealthy,
 	}
 	if token.ProcessStartTime != nil {
-		plan.RunningProcessStartTime = token.ProcessStartTime.Format(time.RFC3339)
+		// The same sub-second precision the probe carried: the plan re-renders
+		// the value a deploy will compare after the restart, and a truncated
+		// string cannot distinguish two incarnations started in one second.
+		plan.RunningProcessStartTime = token.ProcessStartTime.Format(time.RFC3339Nano)
 	}
 	return appwire.HostPlanResult{HostPlanPlanned: &appwire.HostPlanPlanned{
 		Outcome: appwire.HostPlanOutcomePlanned,

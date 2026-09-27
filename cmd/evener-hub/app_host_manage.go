@@ -1835,10 +1835,13 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 // the same per-host gate the attach paths and RemoveHost coordinate on, so a
 // remove/re-add of a name can never interleave with an in-flight attach for
 // it; without one (tests, embedders) the registry's own Add is the whole
-// story, since nothing can be mid-attach through this hub.
+// story, since nothing can be mid-attach through this hub. The manager's
+// acquisition is try-acquire, so a name whose gate is held arrives here as the
+// typed busy refusal — mapped to §11's envelope, never a raw internal error —
+// and this call never waits on a gate while the mutation mutex is held.
 func (m *hubHostManager) addHostToRegistry(entry hostreg.Host) error {
 	if m.cfg.manager != nil {
-		return m.cfg.manager.AddHost(entry)
+		return hostBusyWireError(m.cfg.manager.AddHost(entry))
 	}
 	return m.cfg.hosts.Add(entry)
 }

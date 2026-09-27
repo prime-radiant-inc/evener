@@ -186,3 +186,37 @@ func TestTryAcquireRefusesAnEmptyHost(t *testing.T) {
 		t.Fatal("TryAcquire accepted an empty host name")
 	}
 }
+
+// TestAddHostRefusesAHeldGateRatherThanWaiting pins AddHost's try-acquire: the
+// hub's Add calls it while holding the process-wide mutation mutex, so it must
+// fail fast with the typed busy refusal instead of parking on a gate the
+// pipeline took first (the one reverse-order wait that could close a deadlock
+// cycle with a plan).
+func TestAddHostRefusesAHeldGateRatherThanWaiting(t *testing.T) {
+	host := hostreg.Host{Name: "beta", SSH: "beta.example"}
+	reg := testRegistry(t)
+	m := newTestManager(t, reg, &fakeRunner{}, Options{})
+
+	release, err := m.TryAcquire("beta", hostops.Holder{Kind: hostops.HolderPlan})
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	err = m.AddHost(host)
+	var busy *hostops.BusyError
+	if !errors.As(err, &busy) {
+		t.Fatalf("AddHost against a held gate = %T (%v), want *hostops.BusyError", err, err)
+	}
+	if busy.Holder.Kind != hostops.HolderPlan {
+		t.Fatalf("busy holder = %+v, want the plan holder", busy.Holder)
+	}
+	if _, ok := reg.Get("beta"); ok {
+		t.Fatal("an add refused by a held gate inserted the entry anyway")
+	}
+	release()
+	if err := m.AddHost(host); err != nil {
+		t.Fatalf("AddHost after the release: %v", err)
+	}
+	if _, ok := reg.Get("beta"); !ok {
+		t.Fatal("the add did not register the entry once the gate was free")
+	}
+}

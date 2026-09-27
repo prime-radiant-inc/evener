@@ -817,3 +817,39 @@ func TestOpenHostOpsStoreReapsProbeEpochs(t *testing.T) {
 		t.Fatalf("the next epoch's opSeq = %d, want above the reaped epoch's 3", next.OpSeq)
 	}
 }
+
+// TestHostPlanCarriesTheProbedProcessStartTimePrecisely pins the plan's
+// runningProcessStartTime as the same-clock restart proof it feeds: the value
+// the probe carried survives to the wire at RFC3339Nano precision, so a deploy
+// comparing the pre- and post-restart instants can tell two incarnations
+// started within one second apart.
+func TestHostPlanCarriesTheProbedProcessStartTimePrecisely(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{planTestHost()})), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	start := time.Date(2026, 9, 27, 12, 0, 0, 123456789, time.UTC)
+	seams := planSeams{
+		probe: func(context.Context, hostreg.Host, *appwire.Client, appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
+			probe := planTestProbe()
+			probe.ProcessStartTime = &start
+			return probe, nil
+		},
+	}
+	m, _, _ := planTestManager(t, configPath, []hostreg.Host{planTestHost()}, seams)
+	result, err := m.Plan(context.Background(), appwire.HostPlanParams{Name: "m4"})
+	if err != nil || result.HostPlanPlanned == nil {
+		t.Fatalf("Plan = %+v/%v, want the planned arm", result, err)
+	}
+	got := result.Plan.RunningProcessStartTime
+	if got != "2026-09-27T12:00:00.123456789Z" {
+		t.Fatalf("runningProcessStartTime = %q, want the nanosecond-precise RFC3339 form", got)
+	}
+	parsed, err := time.Parse(time.RFC3339, got)
+	if err != nil {
+		t.Fatalf("time.Parse(%q): %v", got, err)
+	}
+	if !parsed.Equal(start) {
+		t.Fatalf("parsed runningProcessStartTime = %v, want %v", parsed, start)
+	}
+}

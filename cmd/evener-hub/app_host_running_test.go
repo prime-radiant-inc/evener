@@ -445,3 +445,42 @@ func TestHostRunningSerializesAdmissionAndProbe(t *testing.T) {
 		t.Fatalf("final guard epoch = %+v, want the second call's", stored)
 	}
 }
+
+// TestHostRunningProcessStartTimeKeepsSubSecondPrecision pins §10's
+// processStartTime as the same-clock restart proof it feeds: RFC3339Nano, so
+// two hub incarnations started within the same wall-clock second are still
+// distinguishable, and the value parses back to the exact instant.
+func TestHostRunningProcessStartTimeKeepsSubSecondPrecision(t *testing.T) {
+	start := time.Date(2026, 9, 27, 12, 0, 0, 123456789, time.UTC)
+	m := runningTestManager(t, hostRunningConfig{
+		freeSpace:  func(string) (uint64, error) { return 1 << 40, nil },
+		writeProbe: func(string) error { return nil },
+	})
+	m.cfg.running.processStart = start
+
+	first, err := m.HostRunning(bridgeCtx(), appwire.HostRunningParams{FencingEpoch: appwire.FencingEpoch{BootID: "boot-1", OpSeq: 1}})
+	if err != nil {
+		t.Fatalf("HostRunning: %v", err)
+	}
+	if first.ProcessStartTime != "2026-09-27T12:00:00.123456789Z" {
+		t.Fatalf("processStartTime = %q, want the nanosecond-precise RFC3339 form", first.ProcessStartTime)
+	}
+	parsed, err := time.Parse(time.RFC3339, first.ProcessStartTime)
+	if err != nil {
+		t.Fatalf("time.Parse(%q): %v", first.ProcessStartTime, err)
+	}
+	if !parsed.Equal(start) {
+		t.Fatalf("parsed processStartTime = %v, want %v", parsed, start)
+	}
+
+	// Two incarnations in the same second: a truncated string would make the
+	// replacement indistinguishable from no restart at all.
+	m.cfg.running.processStart = start.Add(time.Nanosecond)
+	second, err := m.HostRunning(bridgeCtx(), appwire.HostRunningParams{FencingEpoch: appwire.FencingEpoch{BootID: "boot-1", OpSeq: 2}})
+	if err != nil {
+		t.Fatalf("second HostRunning: %v", err)
+	}
+	if second.ProcessStartTime == first.ProcessStartTime {
+		t.Fatalf("two incarnations in one second render identically (%q)", second.ProcessStartTime)
+	}
+}

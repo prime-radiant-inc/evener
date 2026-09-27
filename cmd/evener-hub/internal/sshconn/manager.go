@@ -1236,7 +1236,10 @@ func (m *Manager) RemoveHost(name string) error {
 // Validation and normalization are the registry's own (Registry.Add), so this
 // inserts exactly what hostreg would; only the locking discipline is added. A
 // nil registry is an error rather than a silent no-op — an add that committed
-// nothing must not report success.
+// nothing must not report success. The gate acquisition is try-acquire and
+// answers the typed busy error when the name's gate is held (see the note at
+// the acquisition): the hub's Add calls this inside the mutation mutex, and
+// nothing may wait on a gate while holding that mutex.
 func (m *Manager) AddHost(entry hostreg.Host) error {
 	if m.reg == nil {
 		return errors.New("sshconn: AddHost with no registry")
@@ -1247,7 +1250,14 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 	name := strings.TrimSpace(entry.Name)
 	lock := m.hostLock(name)
 	defer m.releaseHostLock(name)
-	lock.Lock()
+	// Try-acquire, never wait (deploy pipeline 08b §5's acquisition rule): the
+	// hub's Add calls this while holding the process-wide mutation mutex, and
+	// the pipeline takes the gate *before* that mutex — so a blocking
+	// acquisition here would be the one reverse-order wait that can close a
+	// deadlock cycle with a plan. A held gate is the typed busy refusal instead.
+	if !lock.TryLock() {
+		return hostops.Busy(name, lock.holderOf())
+	}
 	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "add"})
 	defer lock.Unlock()
 	return m.reg.Add(entry)

@@ -118,7 +118,13 @@ func (m *hubHostManager) HostRunning(ctx context.Context, params appwire.HostRun
 		Healthy:       m.runningHealthy(),
 	}
 	if !m.cfg.running.processStart.IsZero() {
-		response.ProcessStartTime = m.cfg.running.processStart.UTC().Format(time.RFC3339)
+		// RFC3339Nano, not RFC3339: this instant is the sole same-clock proof
+		// that a restart replaced the process (deploy pipeline 08b §6's
+		// process-instance verification, §10's absent-when-unknown field), and a
+		// second-resolution string makes two incarnations started within the same
+		// second indistinguishable. The Nano form is still RFC3339-conformant, and
+		// Go's time.Parse(time.RFC3339, …) accepts its fractional seconds.
+		response.ProcessStartTime = m.cfg.running.processStart.UTC().Format(time.RFC3339Nano)
 	}
 	return response, nil
 }
