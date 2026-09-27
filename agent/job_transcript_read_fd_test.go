@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -146,19 +145,19 @@ func TestOpenJobOutputFileRefusesNonRegularLeaf(t *testing.T) {
 			}
 
 			type result struct {
-				r   io.ReadCloser
+				f   *os.File
 				err error
 			}
 			done := make(chan result, 1)
 			go func() {
-				r, err := openJobOutputFile(path, "")
-				done <- result{r: r, err: err}
+				f, err := openJobOutputFile(path)
+				done <- result{f: f, err: err}
 			}()
 			select {
 			case got := <-done:
 				if got.err == nil {
-					if got.r != nil {
-						_ = got.r.Close()
+					if got.f != nil {
+						_ = got.f.Close()
 					}
 					t.Fatal("openJobOutputFile accepted a non-regular leaf")
 				}
@@ -171,6 +170,91 @@ func TestOpenJobOutputFileRefusesNonRegularLeaf(t *testing.T) {
 					}
 				}
 				t.Fatal("openJobOutputFile blocked on a FIFO")
+			}
+		})
+	}
+}
+
+func TestOpenJobOutputFileRefusesRegularReplacementDuringOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "output.log")
+	if err := os.WriteFile(path, []byte("original\n"), 0o600); err != nil {
+		t.Fatalf("write original: %v", err)
+	}
+
+	originalLstat := lstatJobOutputFile
+	t.Cleanup(func() { lstatJobOutputFile = originalLstat })
+	lstatJobOutputFile = func(name string) (os.FileInfo, error) {
+		info, err := originalLstat(name)
+		if err != nil || name != path {
+			return info, err
+		}
+		replacement := path + ".replacement"
+		if err := os.WriteFile(replacement, []byte("replacement\n"), 0o600); err != nil {
+			return nil, err
+		}
+		if err := os.Rename(replacement, path); err != nil {
+			return nil, err
+		}
+		return info, nil
+	}
+
+	f, err := openJobOutputFile(path)
+	if f != nil {
+		_ = f.Close()
+	}
+	if err == nil {
+		t.Fatal("openJobOutputFile accepted a regular replacement between Lstat and open")
+	}
+}
+
+func TestReadLocalJobOutputSnapshotsRetryWithFreshDescriptor(t *testing.T) {
+	for _, api := range []string{"snapshot", "window"} {
+		t.Run(api, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "output.log")
+			output, err := jobstore.CreateOutputNoSync(path, 4)
+			if err != nil {
+				t.Fatalf("create output: %v", err)
+			}
+			t.Cleanup(func() { _ = output.Close() })
+			if _, err := output.Append([]byte("AAAA")); err != nil {
+				t.Fatalf("append original: %v", err)
+			}
+			stale, err := os.Open(path)
+			if err != nil {
+				t.Fatalf("open pre-prune output: %v", err)
+			}
+			if _, err := output.Append([]byte("BBBB")); err != nil {
+				_ = stale.Close()
+				t.Fatalf("append replacement: %v", err)
+			}
+
+			originalOpen := openJobOutputFile
+			t.Cleanup(func() { openJobOutputFile = originalOpen })
+			opens := 0
+			openJobOutputFile = func(name string) (*os.File, error) {
+				opens++
+				if opens == 1 {
+					return stale, nil
+				}
+				return originalOpen(name)
+			}
+
+			var content []byte
+			if api == "snapshot" {
+				got, err := readLocalJobOutputSnapshot(path, 4, false)
+				if err != nil {
+					t.Fatalf("readLocalJobOutputSnapshot: %v", err)
+				}
+				content = got.Content
+			} else {
+				got, err := readLocalJobOutputWindowSnapshot(path, output.RetainedStart(), 4)
+				if err != nil {
+					t.Fatalf("readLocalJobOutputWindowSnapshot: %v", err)
+				}
+				content = got.Content
+			}
+			if opens != 2 || string(content) != "BBBB" {
+				t.Fatalf("opens=%d content=%q, want two opens and post-prune bytes", opens, content)
 			}
 		})
 	}

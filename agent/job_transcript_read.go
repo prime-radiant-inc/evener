@@ -30,37 +30,62 @@ var openLocalJobProjectDirectory = func(path string) (localJobProjectDirectory, 
 	return os.Open(path)
 }
 
-var openJobOutputFile = func(path, root string) (io.ReadCloser, error) {
-	if root != "" {
-		return execenv.OpenRegularBeneathRoot(path, root)
+var lstatJobOutputFile = os.Lstat
+
+var openJobOutputFile = func(path string) (*os.File, error) {
+	before, err := lstatJobOutputFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat job output before open: %w", err)
 	}
-	return execenv.OpenRegularNoFollow(path)
+	if !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("job output %q is not a regular file", path)
+	}
+	f, err := execenv.OpenRegularNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	after, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("stat opened job output: %w", err)
+	}
+	if !os.SameFile(before, after) {
+		_ = f.Close()
+		return nil, fmt.Errorf("job output %q changed between validation and open", path)
+	}
+	return f, nil
 }
 
 var readLocalJobOutputSnapshot = func(path string, maxBytes int, fromHead bool) (jobstore.OutputSnapshot, error) {
-	opened, err := openJobOutputFile(path, "")
-	if err != nil {
-		return jobstore.OutputSnapshot{}, err
+	for attempt := range 2 {
+		f, err := openJobOutputFile(path)
+		if err != nil {
+			return jobstore.OutputSnapshot{}, err
+		}
+		snapshot, readErr := jobstore.ReadOutputSnapshotFromFile(path, f, maxBytes, fromHead)
+		_ = f.Close()
+		if errors.Is(readErr, jobstore.ErrOutputChangedDuringRead) && attempt == 0 {
+			continue
+		}
+		return snapshot, readErr
 	}
-	defer func() { _ = opened.Close() }()
-	f, ok := opened.(*os.File)
-	if !ok {
-		return jobstore.OutputSnapshot{}, fmt.Errorf("open job output %q: opener returned %T, want *os.File", path, opened)
-	}
-	return jobstore.ReadOutputSnapshotFromFile(path, f, maxBytes, fromHead)
+	panic("unreachable")
 }
 
 var readLocalJobOutputWindowSnapshot = func(path string, offset int64, maxBytes int) (jobstore.OutputWindowSnapshot, error) {
-	opened, err := openJobOutputFile(path, "")
-	if err != nil {
-		return jobstore.OutputWindowSnapshot{}, err
+	for attempt := range 2 {
+		f, err := openJobOutputFile(path)
+		if err != nil {
+			return jobstore.OutputWindowSnapshot{}, err
+		}
+		snapshot, readErr := jobstore.ReadOutputWindowSnapshotFromFile(path, f, offset, maxBytes)
+		_ = f.Close()
+		if errors.Is(readErr, jobstore.ErrOutputChangedDuringRead) && attempt == 0 {
+			continue
+		}
+		return snapshot, readErr
 	}
-	defer func() { _ = opened.Close() }()
-	f, ok := opened.(*os.File)
-	if !ok {
-		return jobstore.OutputWindowSnapshot{}, fmt.Errorf("open job output %q: opener returned %T, want *os.File", path, opened)
-	}
-	return jobstore.ReadOutputWindowSnapshotFromFile(path, f, offset, maxBytes)
+	panic("unreachable")
 }
 
 func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
@@ -284,14 +309,16 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	if !outInfo.Mode().IsRegular() {
 		return localJobRetainedTarget{}, fmt.Errorf("read local job %q: output is not a regular file", jobID)
 	}
-	// Downstream output reads open the leaf once with OpenRegularNoFollow and
-	// pass that descriptor to jobstore. O_NOFOLLOW refuses an in-window leaf
-	// symlink, the descriptor's regular-file check refuses a FIFO or directory,
-	// and the descriptor pins the inode for every stat and content read. This
-	// closes the documented leaf-swap window. As with round 13's rootless
-	// transcript fallback, an intermediate directory can still be swapped after
-	// symlinkErrorDeep's pre-walk and before the open; that residual is accepted
-	// here and remains mitigated by the pre-walk of every component.
+	// Downstream output reads narrow the leaf window with their own
+	// Lstat→OpenRegularNoFollow→SameFile check, then pass that descriptor to
+	// jobstore. The frozen path-only read seams cannot carry outInfo to that
+	// wrapper, so a regular-to-regular replacement after this locator Lstat but
+	// before the wrapper Lstat is accepted as the wrapper's baseline. That
+	// residual is explicit and accepted because changing those seam signatures
+	// would break the fixed injection boundary; replacements during the wrapper's
+	// own Lstat/open interval are refused. An intermediate directory can likewise
+	// still be swapped after symlinkErrorDeep's pre-walk and before the wrapper
+	// Lstat; the pre-walk of every component remains its mitigation.
 	return localJobRetainedTarget{
 		JobID:      jobID,
 		Record:     location.Record,
