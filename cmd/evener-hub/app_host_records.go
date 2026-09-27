@@ -2,7 +2,9 @@ package hub
 
 import (
 	"fmt"
+	"unicode/utf8"
 
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
@@ -68,17 +70,25 @@ func completeIdentity(entry hostreg.Host) bool {
 	return entry.Generation != 0 && entry.IncarnationID != "" && entry.PresenceEpoch != 0
 }
 
+// validIncarnationID reports whether an incarnation id is one every layer of
+// this series accepts: non-empty, valid UTF-8, and within spec 08 §1's bound —
+// the same bound the operation store's boundary schema enforces, so a value the
+// file accepts can never make the mirror's batch write refuse.
+func validIncarnationID(id string) bool {
+	return id != "" && len(id) <= hostops.MaxIncarnationIDBytes && utf8.ValidString(id)
+}
+
 // complete reports whether the record carries an identity: the zero value is
 // the absence default (a host the file carries no record for), and no writer of
 // these records emits a partial one.
 func (r HostRecord) complete() bool {
-	return r.IncarnationID != "" && r.PresenceEpoch != 0
+	return validIncarnationID(r.IncarnationID) && r.PresenceEpoch != 0
 }
 
 // complete reports whether the high-water triple carries an identity. Its
 // shape is the three-field triple, so a missing any field is not a mark.
 func (g HostGeneration) complete() bool {
-	return g.Generation != 0 && g.IncarnationID != "" && g.PresenceEpoch != 0
+	return g.Generation != 0 && validIncarnationID(g.IncarnationID) && g.PresenceEpoch != 0
 }
 
 // stampedEntry applies a stamped identity to entry, the shape the durable-first
@@ -100,24 +110,18 @@ func hostGenerationFor(entry hostreg.Host) HostGeneration {
 }
 
 // resolveHostIdentity maps the records a hub.toml file carries onto the
-// registry entry for one live host: the generation the file persisted (the
-// boot load restores it; spec §15), and the incarnation id plus presence epoch
-// from the live record, falling back to the high-water triple for a file that
-// carries only one of the two records. Absent records leave the zero values,
-// which the registry's boot load mints per spec §15.
+// registry entry for one live host: the generation the file persisted (the boot
+// load restores it; spec §15) and the live record's incarnation id and presence
+// epoch. The [generations] record is a *high-water* mark, not a live identity:
+// it restores the generation and seeds the counters (hostHighWaterMarks), but
+// its incarnation id and epoch describe a removed incarnation and must never be
+// inherited by a live name. A name with no live record is a new incarnation —
+// spec §15: the boot "mints a fresh incarnation id for every hub.toml host name
+// with no persisted incarnation" — minted at load, with its epoch advanced past
+// whatever the mark retained.
 func resolveHostIdentity(name string, records map[string]HostRecord, generations map[string]HostGeneration) (generation uint64, incarnationID string, presenceEpoch uint64) {
 	record := records[name]
-	mark := generations[name]
-	generation = mark.Generation
-	incarnationID = record.IncarnationID
-	if incarnationID == "" {
-		incarnationID = mark.IncarnationID
-	}
-	presenceEpoch = record.PresenceEpoch
-	if presenceEpoch == 0 {
-		presenceEpoch = mark.PresenceEpoch
-	}
-	return generation, incarnationID, presenceEpoch
+	return generations[name].Generation, record.IncarnationID, record.PresenceEpoch
 }
 
 // hostHighWaterMarks maps the file's [generations] records onto the registry's
@@ -260,11 +264,19 @@ func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater ma
 func validateHostRecords(records map[string]HostRecord, generations map[string]HostGeneration) error {
 	for name, record := range records {
 		if !record.complete() {
+			if record.IncarnationID != "" && !validIncarnationID(record.IncarnationID) {
+				return fmt.Errorf("host_records[%q] carries an incarnation id of %d bytes, over the %d-byte bound (or not valid UTF-8)",
+					name, len(record.IncarnationID), hostops.MaxIncarnationIDBytes)
+			}
 			return fmt.Errorf("host_records[%q] carries an incomplete record (%q, %d)", name, record.IncarnationID, record.PresenceEpoch)
 		}
 	}
 	for name, mark := range generations {
 		if !mark.complete() {
+			if mark.IncarnationID != "" && !validIncarnationID(mark.IncarnationID) {
+				return fmt.Errorf("generations[%q] carries an incarnation id of %d bytes, over the %d-byte bound (or not valid UTF-8)",
+					name, len(mark.IncarnationID), hostops.MaxIncarnationIDBytes)
+			}
 			return fmt.Errorf("generations[%q] carries an incomplete high-water triple (%d, %q, %d)",
 				name, mark.Generation, mark.IncarnationID, mark.PresenceEpoch)
 		}

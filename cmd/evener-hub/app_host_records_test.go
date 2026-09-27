@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
 // readHostFileBytes returns path's bytes, failing the test when unreadable.
@@ -59,6 +60,110 @@ func highWaterFor(t *testing.T, path, name string) HostGeneration {
 		t.Fatalf("hub.toml %s carries no generations entry for %q", path, name)
 	}
 	return record
+}
+
+// TestHubTOMLGenerationsMarkIsNotALiveIdentity pins roborev round 2's High
+// finding: a live host whose [host_records] entry is missing must be loaded as a
+// new incarnation — the [generations] mark restores the generation and seeds
+// the counters, but the removed incarnation's id and epoch are never inherited
+// (spec §15: the boot "mints a fresh incarnation id for every hub.toml host
+// name with no persisted incarnation").
+func TestHubTOMLGenerationsMarkIsNotALiveIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	doc := "[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n" +
+		"\n[generations.alpha]\ngeneration = 7\nincarnation_id = \"old-incarnation\"\npresence_epoch = 5\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), hostHighWaterMarks(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	loaded, ok := hosts.Get("alpha")
+	if !ok {
+		t.Fatal("the live host vanished")
+	}
+	if loaded.IncarnationID == "old-incarnation" {
+		t.Fatal("the live host inherited the removed incarnation's id from the high-water mark")
+	}
+	if loaded.Generation != 7 {
+		t.Fatalf("generation = %d, want the persisted mark 7 restored", loaded.Generation)
+	}
+	if loaded.PresenceEpoch <= 5 {
+		t.Fatalf("presence epoch = %d, want one advanced past the mark's 5", loaded.PresenceEpoch)
+	}
+	// The boot write records the fresh pair in the canonical shape.
+	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(string, ...any) {})
+	live := liveRecord(t, path, "alpha")
+	if live.IncarnationID != loaded.IncarnationID || live.PresenceEpoch != loaded.PresenceEpoch {
+		t.Fatalf("host_records[alpha] = %+v, want the fresh pair (%s, %d)", live, loaded.IncarnationID, loaded.PresenceEpoch)
+	}
+}
+
+// TestHubTOMLRefusesAnOverLongIncarnationID pins roborev round 2's bound
+// finding: the incarnation-id bound spec 08 §1 sets is the same bound the
+// operation store's boundary schema enforces, so a file that carries an
+// over-long id is refused at load — loudly, naming the host — rather than
+// loading and then making the mirror's batch write refuse for every host.
+func TestHubTOMLRefusesAnOverLongIncarnationID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	long := strings.Repeat("i", 129)
+	doc := "[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n" +
+		"\n[host_records.alpha]\nincarnation_id = \"" + long + "\"\npresence_epoch = 1\n" +
+		"\n[generations.alpha]\ngeneration = 1\nincarnation_id = \"" + long + "\"\npresence_epoch = 1\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil {
+		t.Fatal("a hub.toml with a 129-byte incarnation id loaded, want the bound refusal")
+	}
+	if !strings.Contains(err.Error(), "alpha") || !strings.Contains(err.Error(), "129") {
+		t.Fatalf("refusal %q does not name the host and the bound", err)
+	}
+}
+
+// TestBoundaryMirrorPrunesARolledBackAdd pins roborev round 2's mirror-pruning
+// finding: an add whose durable write lands and whose live insert then fails is
+// compensated back to the pre-add file contents, and the boundary the failed
+// write mirrored is pruned in that same compensation — the mirror never keeps a
+// boundary for a host hub.toml no longer records.
+func TestBoundaryMirrorPrunesARolledBackAdd(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	ops, err := hostops.Open(hostops.StorePath(filepath.Join(dir, "state")))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	// A foreign boundary the failed add does not own must survive the prune.
+	if err := ops.MirrorBoundaries(map[string]hostops.Boundary{
+		"foreign": {Generation: 2, IncarnationID: "inc-foreign", PresenceEpoch: 1},
+	}, nil); err != nil {
+		t.Fatalf("seed the foreign boundary: %v", err)
+	}
+	// A manager with no registry: its AddHost refuses after the durable write,
+	// which is exactly the compensated-add window.
+	manager := sshconn.New(nil, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{RemoteHostOpsStore: ops}, path, nil, nil)
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "gone", Address: "g.example"}}); err == nil {
+		t.Fatal("Add over a manager with no registry succeeded, want the live-insert refusal")
+	}
+	if _, ok := ops.Boundary("gone"); ok {
+		t.Fatal("the compensated add left a boundary for a name hub.toml no longer carries")
+	}
+	if _, ok := ops.Boundary("foreign"); !ok {
+		t.Fatal("the prune dropped a boundary the write did not own")
+	}
 }
 
 // TestHostRegistryBootMintsAboveRetainedMarks pins roborev round 1's first

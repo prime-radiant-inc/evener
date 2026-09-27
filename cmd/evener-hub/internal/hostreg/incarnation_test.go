@@ -113,6 +113,60 @@ func TestPresenceEpochAdvancesExactlyOncePerPresenceEvent(t *testing.T) {
 	}
 }
 
+// TestRegistryMintsRatherThanTrustingAForgedIdentity pins roborev round 2's
+// provenance finding: Add and Update honor only the identity a pending Stamp
+// minted for the entry — three non-zero fields are not proof — so a hand-built
+// entry can never choose its generation, incarnation id, or presence epoch.
+func TestRegistryMintsRatherThanTrustingAForgedIdentity(t *testing.T) {
+	r, err := New(nil)
+	if err != nil {
+		t.Fatalf("New(nil): %v", err)
+	}
+	forged := Host{Name: "a", SSH: "a.example", Generation: 99, IncarnationID: "forged-inc", PresenceEpoch: 42}
+	if err := r.Add(forged); err != nil {
+		t.Fatalf("Add(a): %v", err)
+	}
+	minted, _ := r.Get("a")
+	if minted.Generation == forged.Generation || minted.IncarnationID == forged.IncarnationID || minted.PresenceEpoch == forged.PresenceEpoch {
+		t.Fatalf("Add adopted a forged identity: %+v", minted)
+	}
+	if minted.Generation != 1 || minted.PresenceEpoch != 1 {
+		t.Fatalf("Add(a) = %+v, want the fresh (1, minted, 1) identity", minted)
+	}
+
+	// A stamped entry still applies exactly the stamp Stamp minted.
+	stamp, err := r.Stamp(Host{Name: "b", SSH: "b.example"})
+	if err != nil {
+		t.Fatalf("Stamp(b): %v", err)
+	}
+	stamped := Host{
+		Name: "b", SSH: "b.example",
+		Generation: stamp.Generation, IncarnationID: stamp.IncarnationID, PresenceEpoch: stamp.PresenceEpoch,
+	}
+	if err := r.Add(stamped); err != nil {
+		t.Fatalf("Add(b stamped): %v", err)
+	}
+	b, _ := r.Get("b")
+	if b.Generation != stamp.Generation || b.IncarnationID != stamp.IncarnationID || b.PresenceEpoch != stamp.PresenceEpoch {
+		t.Fatalf("the stamped insert = %+v, want the stamp %+v", b, stamp)
+	}
+
+	// An update forged to look stamped is ignored too: generation, incarnation
+	// id, and presence epoch all stay the live entry's plus the update's own
+	// generation bump.
+	forgedUpdate := Host{Name: "a", SSH: "a2.example", Generation: 500, IncarnationID: "forged-again", PresenceEpoch: 7}
+	if err := r.Update(forgedUpdate); err != nil {
+		t.Fatalf("Update(a): %v", err)
+	}
+	updated, _ := r.Get("a")
+	if updated.Generation == 500 || updated.IncarnationID != minted.IncarnationID || updated.PresenceEpoch != minted.PresenceEpoch {
+		t.Fatalf("Update adopted a forged identity: %+v, want generation 2 and the live pair", updated)
+	}
+	if updated.Generation <= minted.Generation {
+		t.Fatalf("updated generation = %d, want an advance past the live %d", updated.Generation, minted.Generation)
+	}
+}
+
 // TestSeedHighWaterRaisesTheCountersOnly pins the boot seeding rule: the marks
 // a hub.toml file retains for names with no live entry raise the registry's
 // counters — the registry-wide generation and the name's presence epoch — so a

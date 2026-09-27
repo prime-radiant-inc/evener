@@ -1812,7 +1812,7 @@ func (m *hubHostManager) persistHostsMarked(entries, known []hostreg.Host, migra
 	// and the two files cannot be one write, so the mirror is written last and
 	// a failure here leaves it behind the file rather than unwinding the
 	// commit. See mirrorBoundaries.
-	m.mirrorBoundaries(entries, highWater)
+	m.mirrorBoundaries(entries, known, highWater)
 	return nil
 }
 
@@ -1830,7 +1830,7 @@ func (m *hubHostManager) persistHostsMarked(entries, known []hostreg.Host, migra
 // forward. That pass, and the cursor validation that reads the mirror, belong
 // to later slices; until they land the mirror trails the file and nothing
 // reads it.
-func (m *hubHostManager) mirrorBoundaries(entries []hostreg.Host, highWater map[string]HostGeneration) {
+func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, highWater map[string]HostGeneration) {
 	if m.cfg.ops == nil || strings.TrimSpace(m.cfg.configPath) == "" {
 		return
 	}
@@ -1846,10 +1846,30 @@ func (m *hubHostManager) mirrorBoundaries(entries []hostreg.Host, highWater map[
 			PresenceEpoch: mark.PresenceEpoch,
 		}
 	}
-	if len(boundaries) == 0 {
+	// The write owns the records of the names it carries and its pre-mutation
+	// snapshot names — the same ownership rule the record tables use. A boundary
+	// under an owned name this write carries no record for (a compensated add,
+	// a name the live registry dropped while the write ran) is pruned in the
+	// same atomic write, so the mirror never keeps a boundary for a host
+	// hub.toml no longer records.
+	owned := make(map[string]struct{}, len(known)+len(entries))
+	for _, e := range known {
+		owned[e.Name] = struct{}{}
+	}
+	for _, e := range entries {
+		owned[e.Name] = struct{}{}
+	}
+	var remove []string
+	for name := range owned {
+		if _, carried := boundaries[name]; !carried {
+			remove = append(remove, name)
+		}
+	}
+	slices.Sort(remove)
+	if len(boundaries) == 0 && len(remove) == 0 {
 		return
 	}
-	if err := m.cfg.ops.MirrorBoundaries(boundaries); err != nil {
+	if err := m.cfg.ops.MirrorBoundaries(boundaries, remove); err != nil {
 		m.logf("host boundary records not mirrored: %v", err)
 	}
 }

@@ -10,6 +10,43 @@ import (
 	"github.com/spf13/afero"
 )
 
+// TestBoundaryMirrorPrunesNamesTheWriteNoLongerCarries pins the removal half of
+// the mirror's write: names passed in remove lose their boundary in the same
+// atomic write that applies the updates, so a compensated add — or any write
+// that stops carrying a name — cannot leave a boundary for a host hub.toml no
+// longer records. Pruning a name with no boundary is a no-op.
+func TestBoundaryMirrorPrunesNamesTheWriteNoLongerCarries(t *testing.T) {
+	store, path := openTestStore(t)
+	if err := store.MirrorBoundaries(map[string]Boundary{
+		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 2},
+		"h2": {Generation: 3, IncarnationID: "inc-h2", PresenceEpoch: 1},
+	}, nil); err != nil {
+		t.Fatalf("MirrorBoundaries(h1, h2): %v", err)
+	}
+	if err := store.MirrorBoundaries(map[string]Boundary{
+		"h3": {Generation: 4, IncarnationID: "inc-h3", PresenceEpoch: 1},
+	}, []string{"h1"}); err != nil {
+		t.Fatalf("MirrorBoundaries(h3, remove h1): %v", err)
+	}
+	if _, ok := store.Boundary("h1"); ok {
+		t.Fatal("the pruned name kept its boundary")
+	}
+	all := store.Boundaries()
+	if len(all) != 2 || all["h2"].IncarnationID != "inc-h2" || all["h3"].IncarnationID != "inc-h3" {
+		t.Fatalf("Boundaries() = %v, want h2 and h3 with h1 pruned", all)
+	}
+	reopened := reopenFresh(t, path)
+	if _, ok := reopened.Boundary("h1"); ok {
+		t.Fatal("the pruned boundary survived the reload")
+	}
+	if _, ok := reopened.Boundary("h3"); !ok {
+		t.Fatal("the upserted boundary did not survive the reload")
+	}
+	if err := store.MirrorBoundaries(nil, []string{"absent"}); err != nil {
+		t.Fatalf("pruning a name with no boundary = %v, want a no-op", err)
+	}
+}
+
 // TestBoundaryMirrorLandsAndSurvivesReload pins the substrate the registry's
 // per-host boundary record stands on (registry spec 08 §7: "one record per host
 // name — {generation, incarnationId, presenceEpoch} — written in the same
@@ -23,7 +60,7 @@ func TestBoundaryMirrorLandsAndSurvivesReload(t *testing.T) {
 		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 2},
 		"h2": {Generation: 3, IncarnationID: "inc-h2", PresenceEpoch: 1},
 	}
-	if err := store.MirrorBoundaries(want); err != nil {
+	if err := store.MirrorBoundaries(want, nil); err != nil {
 		t.Fatalf("MirrorBoundaries: %v", err)
 	}
 	got, ok := store.Boundary("h1")
@@ -50,12 +87,12 @@ func TestBoundaryMirrorIsAnUpsert(t *testing.T) {
 	store, _ := openTestStore(t)
 	if err := store.MirrorBoundaries(map[string]Boundary{
 		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 1},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("MirrorBoundaries(h1): %v", err)
 	}
 	if err := store.MirrorBoundaries(map[string]Boundary{
 		"h2": {Generation: 4, IncarnationID: "inc-h2", PresenceEpoch: 5},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("MirrorBoundaries(h2): %v", err)
 	}
 	all := store.Boundaries()
@@ -68,7 +105,7 @@ func TestBoundaryMirrorIsAnUpsert(t *testing.T) {
 	// A later mirror for one name advances that name alone.
 	if err := store.MirrorBoundaries(map[string]Boundary{
 		"h1": {Generation: 8, IncarnationID: "inc-h1", PresenceEpoch: 2},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("MirrorBoundaries(h1 again): %v", err)
 	}
 	all = store.Boundaries()
@@ -102,7 +139,7 @@ func TestBoundaryMirrorIsOneWriteForEveryNameItCarries(t *testing.T) {
 		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 1},
 		"h2": {Generation: 3, IncarnationID: "inc-h2", PresenceEpoch: 2},
 	}
-	if err := store.MirrorBoundaries(batch); err == nil {
+	if err := store.MirrorBoundaries(batch, nil); err == nil {
 		t.Fatal("MirrorBoundaries whose rename never landed reported success")
 	}
 	if got := store.Boundaries(); len(got) != 0 {
@@ -119,7 +156,7 @@ func TestBoundaryMirrorIsOneWriteForEveryNameItCarries(t *testing.T) {
 	// landed one even though the directory sync behind it failed — memory must
 	// follow the file for every name in the batch, never stay behind it.
 	blockRename = false
-	if err := store.MirrorBoundaries(map[string]Boundary{"h1": batch["h1"]}); err != nil {
+	if err := store.MirrorBoundaries(map[string]Boundary{"h1": batch["h1"]}, nil); err != nil {
 		t.Fatalf("MirrorBoundaries(h1) once the fault cleared: %v", err)
 	}
 	store.faults.syncDir = func(_ afero.Fs, dir string) error {
@@ -130,7 +167,7 @@ func TestBoundaryMirrorIsOneWriteForEveryNameItCarries(t *testing.T) {
 		}
 		return errors.New("directory sync fault")
 	}
-	err = store.MirrorBoundaries(map[string]Boundary{"h2": batch["h2"]})
+	err = store.MirrorBoundaries(map[string]Boundary{"h2": batch["h2"]}, nil)
 	if err == nil || !RenameLanded(err) {
 		t.Fatalf("post-rename mirror failure = %v, want a RenameLanded error", err)
 	}
@@ -170,7 +207,7 @@ func TestBoundaryMirrorPreservesTheStoresRecords(t *testing.T) {
 	record := createTestRecord(t, store, "h1")
 	if err := store.MirrorBoundaries(map[string]Boundary{
 		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 1},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("MirrorBoundaries: %v", err)
 	}
 	reopened := reopenFresh(t, path)
@@ -246,7 +283,7 @@ func TestBoundaryMirrorRefusesWhatNoWriterEmits(t *testing.T) {
 	for name, batch := range cases {
 		t.Run(name, func(t *testing.T) {
 			store, path := openTestStore(t)
-			if err := store.MirrorBoundaries(batch); err == nil {
+			if err := store.MirrorBoundaries(batch, nil); err == nil {
 				t.Fatalf("MirrorBoundaries(%s) succeeded, want a refusal", name)
 			}
 			if got := store.Boundaries(); len(got) != 0 {

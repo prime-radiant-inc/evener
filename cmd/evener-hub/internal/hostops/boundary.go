@@ -53,11 +53,8 @@ var ErrInvalidBoundary = errors.New("hostops: invalid boundary record")
 // validateBoundary checks one mirrored triple against the schema. name is the
 // host name the record is keyed by.
 func validateBoundary(name string, boundary Boundary) error {
-	if name == "" {
-		return fmt.Errorf("%w: empty host name", ErrInvalidBoundary)
-	}
-	if !utf8.ValidString(name) {
-		return fmt.Errorf("%w: host name is not valid UTF-8", ErrInvalidBoundary)
+	if err := validateBoundaryName(name); err != nil {
+		return err
 	}
 	if boundary.IncarnationID == "" {
 		return fmt.Errorf("%w: boundary for %q carries no incarnation id", ErrInvalidBoundary, name)
@@ -74,6 +71,19 @@ func validateBoundary(name string, boundary Boundary) error {
 	}
 	if boundary.PresenceEpoch == 0 {
 		return fmt.Errorf("%w: boundary for %q pins no presence epoch", ErrInvalidBoundary, name)
+	}
+	return nil
+}
+
+// validateBoundaryName checks the host-name half of the schema, shared by the
+// upsert and the removal paths: an empty or non-UTF-8 name is not a name any
+// writer of these records emits.
+func validateBoundaryName(name string) error {
+	if name == "" {
+		return fmt.Errorf("%w: empty host name", ErrInvalidBoundary)
+	}
+	if !utf8.ValidString(name) {
+		return fmt.Errorf("%w: host name is not valid UTF-8", ErrInvalidBoundary)
 	}
 	return nil
 }
@@ -100,23 +110,24 @@ func (s *Store) Boundaries() map[string]Boundary {
 	return maps.Clone(s.cell.state.Boundaries)
 }
 
-// MirrorBoundaries persists every boundary record in updates in one atomic
-// store write, the same discipline Create and Transition use: the store mutex
-// across the read-modify-write, a temp file fsynced and renamed over the store,
-// then the containing directory fsynced. Each name's record is an upsert —
-// names not carried by updates keep the value they had — so one host's mirror
-// write can never drop another host's boundary.
+// MirrorBoundaries persists every boundary record in updates and drops every
+// name in remove, in one atomic store write, the same discipline Create and
+// Transition use: the store mutex across the read-modify-write, a temp file
+// fsynced and renamed over the store, then the containing directory fsynced.
+// Names neither carried by updates nor named by remove keep the value they had,
+// so one host's mirror write can never drop another host's boundary.
 //
-// One call is one write for every name it carries: a fault before the rename
+// One call is one write for every name it touches: a fault before the rename
 // lands none of them, and the store's in-memory state follows the file, so the
 // mirror can never hold a name the file does not (see RenameLanded for the
 // post-rename failure case, which returns the boundary records the write
-// committed).
+// committed). A name in remove that has no boundary is a no-op, and a call that
+// changes nothing — no updates and no removals — writes nothing.
 //
 // A refusal — an empty name, an empty or oversized incarnation id, a zero
 // generation or presence epoch, a value that is not valid UTF-8 — leaves the
 // store untouched and persists nothing.
-func (s *Store) MirrorBoundaries(updates map[string]Boundary) error {
+func (s *Store) MirrorBoundaries(updates map[string]Boundary, remove []string) error {
 	if s == nil {
 		return errors.New("hostops: store is not configured")
 	}
@@ -125,9 +136,14 @@ func (s *Store) MirrorBoundaries(updates map[string]Boundary) error {
 			return err
 		}
 	}
+	for _, name := range remove {
+		if err := validateBoundaryName(name); err != nil {
+			return err
+		}
+	}
 	s.cell.mu.Lock()
 	defer s.cell.mu.Unlock()
-	if len(updates) == 0 {
+	if len(updates) == 0 && len(remove) == 0 {
 		// Nothing to mirror is not a write: the store file must not be created
 		// (or rewritten) for a call that changes no value.
 		return nil
@@ -137,6 +153,9 @@ func (s *Store) MirrorBoundaries(updates map[string]Boundary) error {
 		next.Boundaries = make(map[string]Boundary, len(updates))
 	}
 	maps.Copy(next.Boundaries, updates)
+	for _, name := range remove {
+		delete(next.Boundaries, name)
+	}
 	if _, err := s.commitLocked(next); err != nil {
 		// A refusal before the rename wrote nothing; a post-rename failure is a
 		// landed write whose committed state memory adopted (commitLocked), so

@@ -229,6 +229,13 @@ type Registry struct {
 	// name by definition: the epoch is per-host state the file persists per
 	// name, and the map's size is bounded by the names the process has seen.
 	presence map[string]uint64
+	// pending holds the identity Stamp minted for a name whose mutation has not
+	// been applied yet, one per name: Add and Update consume it only when the
+	// entry carries exactly it (consumeStampLocked), which is what proves the
+	// identity came from this registry's Stamp rather than from a caller. The
+	// map is bounded by the names a mutation was stamped for, and each entry is
+	// replaced by the name's next stamp or consumed by its insert/edit.
+	pending map[string]Identity
 }
 
 // New validates every entry and builds a registry. Entries are added in order,
@@ -312,7 +319,12 @@ func (r *Registry) seedLocked(entry Host) error {
 		entry.IncarnationID = incarnation
 	}
 	if entry.PresenceEpoch == 0 {
-		entry.PresenceEpoch = 1
+		// A boot-loaded host with no persisted pair is a new incarnation, and
+		// its first presence value advances past whatever the file's mark for
+		// the name retained (the marks seed the counter before this runs), so
+		// the name never records a value the file already recorded — not even
+		// the removed incarnation's epoch.
+		entry.PresenceEpoch = r.nextPresenceLocked(entry.Name)
 	}
 	if entry.PresenceEpoch > r.presence[entry.Name] {
 		r.presence[entry.Name] = entry.PresenceEpoch
@@ -374,7 +386,35 @@ func (r *Registry) Stamp(entry Host) (Identity, error) {
 	if identity.PresenceEpoch > r.presence[entry.Name] {
 		r.presence[entry.Name] = identity.PresenceEpoch
 	}
+	if r.pending == nil {
+		r.pending = map[string]Identity{}
+	}
+	r.pending[entry.Name] = identity
 	return identity, nil
+}
+
+// consumeStampLocked returns the identity a pending Stamp minted for entry's
+// name, when entry carries exactly that identity, and clears it; otherwise it
+// reports false and clears nothing. It is the provenance check the durable-first
+// insert and edit paths rely on: the only way a caller can hold an identity that
+// matches a pending stamp is to have received it from Stamp, so Add and Update
+// mint rather than trust a caller-supplied generation, incarnation id or
+// presence epoch — a hand-built entry that merely carries three non-zero values
+// proves nothing. A stamp whose mutation never landed stays pending and a later
+// mutation of the same name may consume it, which is correct: that identity was
+// minted and never persisted. Callers hold r.mu.
+func (r *Registry) consumeStampLocked(entry Host) (Identity, bool) {
+	pending, ok := r.pending[entry.Name]
+	if !ok {
+		return Identity{}, false
+	}
+	if entry.Generation != pending.Generation ||
+		entry.IncarnationID != pending.IncarnationID ||
+		entry.PresenceEpoch != pending.PresenceEpoch {
+		return Identity{}, false
+	}
+	delete(r.pending, entry.Name)
+	return pending, true
 }
 
 // Add validates entry and inserts it. It is AddWithUpstreams with no upstreams;
@@ -418,19 +458,22 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	return nil
 }
 
-// insertLocked gives entry its identity and stores it: the identity the caller
-// stamped through Stamp when the entry carries a complete one, or a fresh
-// mint — the next registry generation, a freshly minted incarnation id, and
-// the name's presence epoch advanced by one — otherwise. Callers hold r.mu, so
-// advancing the counters and exposing the entry remain one atomic operation.
+// insertLocked gives entry its identity and stores it: the identity a pending
+// Stamp minted for it, when the entry carries exactly that identity (see
+// consumeStampLocked), or a fresh mint — the next registry generation, a
+// freshly minted incarnation id, and the name's presence epoch advanced by one
+// — otherwise. Callers hold r.mu, so advancing the counters and exposing the
+// entry remain one atomic operation.
 func (r *Registry) insertLocked(entry Host) error {
-	if !hasStampedIdentity(entry) {
-		identity, err := r.mintIdentityLocked(entry.Name)
+	identity, stamped := r.consumeStampLocked(entry)
+	if !stamped {
+		minted, err := r.mintIdentityLocked(entry.Name)
 		if err != nil {
 			return err
 		}
-		entry.Generation, entry.IncarnationID, entry.PresenceEpoch = identity.Generation, identity.IncarnationID, identity.PresenceEpoch
+		identity = minted
 	}
+	entry.Generation, entry.IncarnationID, entry.PresenceEpoch = identity.Generation, identity.IncarnationID, identity.PresenceEpoch
 	if entry.Generation > r.gen {
 		r.gen = entry.Generation
 	}
@@ -475,11 +518,16 @@ func (r *Registry) Update(entry Host) error {
 	// re-add, so it never rotates a never-reused id — and the presence epoch is
 	// preserved for the same reason.
 	live := r.hosts[entry.Name]
-	// A supplied generation counts only when it advances past the live entry's:
-	// that is a stamp from Stamp (the counter's next value). Anything else —
-	// zero, or a copy of the live entry's own value — mints, so an update
-	// always advances the generation.
-	if entry.Generation <= live.Generation {
+	// The generation is the one thing an edit advances, and only a stamp from
+	// this registry may name it: a supplied generation counts when the entry
+	// carries exactly a pending stamp and that value still advances past the
+	// live entry's. Everything else — zero, a copy of the live entry's value, or
+	// a hand-built number — mints, so an update always advances the generation
+	// and never adopts a caller's.
+	identity, stamped := r.consumeStampLocked(entry)
+	if stamped && identity.Generation > live.Generation {
+		entry.Generation = identity.Generation
+	} else {
 		entry.Generation = r.nextGenerationLocked()
 	}
 	if entry.Generation > r.gen {
@@ -513,14 +561,6 @@ func (r *Registry) mintIdentityLocked(name string) (Identity, error) {
 // nextGenerationLocked is the one place the registry's next generation comes
 // from: the counter's next value. Callers hold r.mu.
 func (r *Registry) nextGenerationLocked() uint64 { return r.gen + 1 }
-
-// hasStampedIdentity reports whether entry carries a complete identity — the
-// shape Stamp produces and the durable-first add path records before the insert
-// lands. An incomplete identity (any zero field) is no stamp: Add mints a fresh
-// one rather than trusting a half-supplied value.
-func hasStampedIdentity(entry Host) bool {
-	return entry.Generation != 0 && entry.IncarnationID != "" && entry.PresenceEpoch != 0
-}
 
 // HighWater is one name's retained high-water record: the presence epoch the
 // name's last presence event reached and the greatest generation it carried. A
