@@ -7,7 +7,10 @@ import type {
 } from "@evener/appwire-client";
 import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { createProjectBrowserController } from "./projectBrowser";
+import {
+	createProjectBrowserController,
+	type ProjectSessionTier,
+} from "./projectBrowser";
 
 function boundary() {
 	const requests: Array<{
@@ -32,6 +35,7 @@ function boundary() {
 	};
 	return { client, requests, listeners };
 }
+type Pending = ReturnType<typeof boundary>["requests"][number];
 function response(params: NavigationReadParams, data: unknown, revision = 1) {
 	return wireV2(
 		{
@@ -58,89 +62,106 @@ const session = (ref: string) => ({
 	live: false,
 	children: [],
 });
+type Row = ReturnType<typeof session>;
+/** Answers one project's tier reads, each with its own rows and remaining. */
+function answerTiers(
+	pending: readonly (Pending | undefined)[],
+	rows: Partial<Record<ProjectSessionTier, Row[]>> = {},
+	remaining: Partial<Record<ProjectSessionTier, number>> = {},
+	revision = 1,
+) {
+	for (const request of pending) {
+		if (!request) continue;
+		const tier = request.params.tier as ProjectSessionTier;
+		request.resolve(
+			response(
+				request.params,
+				{
+					key: request.params.projectKey,
+					tier,
+					sessions: rows[tier] ?? [],
+					remaining: remaining[tier] ?? 0,
+					truncated: false,
+				},
+				revision,
+			),
+		);
+	}
+}
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+const label = (request: Pending | undefined) =>
+	`${request?.params.projectKey ?? "catalog"}:${request?.params.tier ?? ""}`;
 
 describe("project browser", () => {
-	it("loads projects first and fetches sessions only for the initially expanded project", async () => {
+	it("reads the catalog it is made for, the projects catalog by default", () => {
+		for (const catalog of [undefined, "projects", "archived_projects", "test_runs"] as const) {
+			const { client, requests } = boundary();
+			const controller = createProjectBrowserController(client, catalog);
+			void controller.initialLoad();
+			expect(requests.map((request) => [request.params.resource, request.params.catalog])).toEqual([
+				["catalog", catalog ?? "projects"],
+			]);
+			controller.dispose();
+		}
+	});
+
+	it("loads the catalog alone, and a project's three tiers once it is expanded", async () => {
 		const { client, requests, listeners } = boundary();
 		const controller = createProjectBrowserController(client);
 		expect(listeners.size).toBe(0);
 		const loading = controller.initialLoad();
 		expect(listeners.size).toBe(1);
-		expect(requests).toHaveLength(1);
-		expect(requests[0]?.params.resource).toBe("catalog");
 		requests[0]?.resolve(
-			response(requests[0].params, {
-				projects: [project("a"), project("b")],
-				remaining: 0,
-			}),
-		);
-		await tick();
-		expect(
-			requests.map(
-				(request) =>
-					`${request.params.projectKey ?? "catalog"}:${request.params.tier ?? ""}`,
-			),
-		).toEqual(["catalog:", "a:current", "a:recent"]);
-		requests[1]?.resolve(
-			response(requests[1].params, {
-				key: "a",
-				tier: "current",
-				sessions: [session("a1")],
-				remaining: 0,
-				truncated: false,
-			}),
-		);
-		requests[2]?.resolve(
-			response(requests[2].params, {
-				key: "a",
-				tier: "recent",
-				sessions: [session("a2")],
-				remaining: 0,
-				truncated: false,
-			}),
+			response(requests[0].params, { projects: [project("a"), project("b")], remaining: 0 }),
 		);
 		await loading;
-		expect(listeners.size).toBe(3);
-		expect(
-			controller
-				.getSnapshot()
-				.groups.map((group) => [group.project.key, group.expanded]),
-		).toEqual([["a", true]]);
-		expect(
-			controller.getSnapshot().groups[0]?.sessions.map((row) => row.ref),
-		).toEqual(["a1", "a2"]);
+		expect(requests).toHaveLength(1);
+		expect(controller.getSnapshot().groups).toEqual([]);
+		const expanding = controller.expand("a");
+		expect(requests.map(label)).toEqual(["catalog:", "a:current", "a:recent", "a:archived"]);
+		answerTiers(requests.slice(1), {
+			current: [session("a1")],
+			recent: [session("a2")],
+			archived: [session("a0")],
+		});
+		await expanding;
+		const group = controller.getSnapshot().groups[0];
+		expect(group?.expanded).toBe(true);
+		expect(group?.sessions.map((row) => row.ref)).toEqual(["a1", "a2"]);
+		expect(group?.archived.rows.map((row) => row.ref)).toEqual(["a0"]);
+		expect(listeners.size).toBe(4);
 		controller.dispose();
 		expect(listeners.size).toBe(0);
+	});
+
+	it("collapse keeps a project's rows and stops it loading more", async () => {
+		const { client, requests } = boundary();
+		const controller = createProjectBrowserController(client);
+		const loading = controller.initialLoad();
+		requests[0]?.resolve(response(requests[0].params, { projects: [project("a")], remaining: 0 }));
+		await loading;
+		const expanding = controller.expand("a");
+		answerTiers(requests.slice(1), { current: [session("a1")] }, { current: 5 });
+		await expanding;
+		controller.collapse("a");
+		await controller.loadMoreSessions("a", "current");
+		expect(requests).toHaveLength(4);
+		expect(controller.getSnapshot().groups[0]).toMatchObject({
+			expanded: false,
+			current: { rows: [{ ref: "a1" }] },
+		});
+		controller.dispose();
 	});
 
 	it("deduplicates equal session refs between current and recent tiers", async () => {
 		const { client, requests } = boundary();
 		const controller = createProjectBrowserController(client);
 		const loading = controller.initialLoad();
-		requests[0]?.resolve(
-			response(requests[0].params, { projects: [project("a")], remaining: 0 }),
-		);
-		await tick();
-		requests[1]?.resolve(
-			response(requests[1].params, {
-				key: "a",
-				tier: "current",
-				sessions: [session("same")],
-				remaining: 0,
-				truncated: false,
-			}),
-		);
-		requests[2]?.resolve(
-			response(requests[2].params, {
-				key: "a",
-				tier: "recent",
-				sessions: [session("same")],
-				remaining: 0,
-				truncated: false,
-			}),
-		);
+		requests[0]?.resolve(response(requests[0].params, { projects: [project("a")], remaining: 0 }));
 		await loading;
+		const expanding = controller.expand("a");
+		answerTiers(requests.slice(1), { current: [session("same")], recent: [session("same")] });
+		await expanding;
 		expect(controller.getSnapshot().groups[0]?.sessions).toHaveLength(1);
 		controller.dispose();
 	});
@@ -150,12 +171,7 @@ describe("project browser", () => {
 		const controller = createProjectBrowserController(client);
 		const loading = controller.initialLoad();
 		controller.dispose();
-		requests[0]?.resolve(
-			response(requests[0].params, {
-				projects: [project("late")],
-				remaining: 0,
-			}),
-		);
+		requests[0]?.resolve(response(requests[0].params, { projects: [project("late")], remaining: 0 }));
 		await loading;
 		const disposedSnapshot = controller.getSnapshot();
 		expect(controller.getSnapshot()).toBe(disposedSnapshot);
@@ -167,54 +183,34 @@ describe("project browser", () => {
 		const { client, requests } = boundary();
 		const controller = createProjectBrowserController(client);
 		const loading = controller.initialLoad();
-		requests[0]?.resolve(
-			response(requests[0].params, { projects: [project("a")], remaining: 0 }),
-		);
-		await tick();
-		requests[1]?.resolve(
-			response(requests[1].params, {
-				key: "a",
-				tier: "current",
-				sessions: Array.from({ length: 20 }, (_, i) => session(`s${i}`)),
-				remaining: 5,
-				truncated: false,
-			}),
-		);
-		requests[2]?.resolve(
-			response(requests[2].params, {
-				key: "a",
-				tier: "recent",
-				sessions: [],
-				remaining: 0,
-				truncated: false,
-			}),
-		);
+		requests[0]?.resolve(response(requests[0].params, { projects: [project("a")], remaining: 0 }));
 		await loading;
+		const expanding = controller.expand("a");
+		answerTiers(
+			requests.slice(1),
+			{ current: Array.from({ length: 20 }, (_, i) => session(`s${i}`)) },
+			{ current: 5 },
+		);
+		await expanding;
 		const more = controller.loadMoreSessions("a", "current");
 		const duplicate = controller.loadMoreSessions("a", "current");
 		await tick();
-		expect(requests).toHaveLength(4);
-		requests[3]?.reject(new Error("page unavailable"));
+		expect(requests).toHaveLength(5);
+		requests[4]?.reject(new Error("page unavailable"));
 		await Promise.all([more, duplicate]);
 		expect(controller.getSnapshot().groups[0]?.sessions).toHaveLength(20);
 		await controller.loadMoreSessions("a", "current");
-		expect(requests).toHaveLength(4);
+		expect(requests).toHaveLength(5);
 		const retry = controller.retry("a", "current");
 		await tick();
-		expect(requests).toHaveLength(5);
-		expect(requests[4]?.params.offset).toBe(20);
-		expect(requests[4]?.params.limit).toBe(20);
-		requests[4]?.resolve(
-			response(requests[4].params, {
+		expect(requests).toHaveLength(6);
+		expect(requests[5]?.params.offset).toBe(20);
+		expect(requests[5]?.params.limit).toBe(20);
+		requests[5]?.resolve(
+			response(requests[5].params, {
 				key: "a",
 				tier: "current",
-				sessions: [
-					session("s20"),
-					session("s21"),
-					session("s22"),
-					session("s23"),
-					session("s24"),
-				],
+				sessions: ["s20", "s21", "s22", "s23", "s24"].map(session),
 				remaining: 0,
 				truncated: false,
 			}),
@@ -228,101 +224,50 @@ describe("project browser", () => {
 		const { client, requests, listeners } = boundary();
 		const controller = createProjectBrowserController(client);
 		const loading = controller.initialLoad();
-		requests[0]?.resolve(
-			response(requests[0].params, { projects: [project("a")], remaining: 0 }),
-		);
-		await tick();
-		requests[1]?.resolve(
-			response(requests[1].params, {
-				key: "a",
-				tier: "current",
-				sessions: [session("a1")],
-				remaining: 0,
-				truncated: false,
-			}),
-		);
-		requests[2]?.resolve(
-			response(requests[2].params, {
-				key: "a",
-				tier: "recent",
-				sessions: [],
-				remaining: 0,
-				truncated: false,
-			}),
-		);
+		requests[0]?.resolve(response(requests[0].params, { projects: [project("a")], remaining: 0 }));
 		await loading;
+		const expanding = controller.expand("a");
+		answerTiers(requests.slice(1), { current: [session("a1")] });
+		await expanding;
 		const invalidate = (target: NavigationInvalidationTarget, sequence = 1) => {
 			for (const listener of listeners)
 				listener({
 					method: "evener/navigation/invalidated",
-					params: {
-						generationId: "generation-test",
-						sequence,
-						targets: [target],
-					},
+					params: { generationId: "generation-test", sequence, targets: [target] },
 				});
 		};
 		return { controller, requests, invalidate };
 	}
 
-	it("re-reads an invalidated project's sessions without a refresh call", async () => {
+	it("re-reads an invalidated project's three tiers without a refresh call", async () => {
 		const { controller, requests, invalidate } = await loadedProject();
 		invalidate({ kind: "project", projectKey: "a", revision: 2 });
-		expect(requests).toHaveLength(5);
-		expect(
-			requests.slice(3).map((r) => [r.params.tier, r.params.offset]),
-		).toEqual([
+		expect(requests).toHaveLength(7);
+		expect(requests.slice(4).map((r) => [r.params.tier, r.params.offset])).toEqual([
 			["current", 0],
 			["recent", 0],
+			["archived", 0],
 		]);
 		expect(controller.getSnapshot().groups[0]?.current).toMatchObject({
 			stale: true,
 			loading: true,
 			rows: [{ ref: "a1" }],
 		});
-		requests[3]?.resolve(
-			response(
-				requests[3].params,
-				{
-					key: "a",
-					tier: "current",
-					sessions: [session("a1"), session("a3")],
-					remaining: 0,
-					truncated: false,
-				},
-				2,
-			),
-		);
-		requests[4]?.resolve(
-			response(
-				requests[4].params,
-				{
-					key: "a",
-					tier: "recent",
-					sessions: [],
-					remaining: 0,
-					truncated: false,
-				},
-				2,
-			),
-		);
+		answerTiers(requests.slice(4), { current: [session("a1"), session("a3")] }, {}, 2);
 		await tick();
 		expect(controller.getSnapshot().groups[0]?.current).toMatchObject({
 			stale: false,
 			loading: false,
 			error: null,
 		});
-		expect(
-			controller.getSnapshot().groups[0]?.sessions.map((row) => row.ref),
-		).toEqual(["a1", "a3"]);
+		expect(controller.getSnapshot().groups[0]?.sessions.map((row) => row.ref)).toEqual(["a1", "a3"]);
 		controller.dispose();
 	});
 
 	it("retries a session page whose re-read failed by reading it again from the top", async () => {
 		const { controller, requests, invalidate } = await loadedProject();
 		invalidate({ kind: "project", projectKey: "a", revision: 2 });
-		requests[3]?.reject(new Error("offline"));
-		requests[4]?.reject(new Error("offline"));
+		for (const request of requests.slice(4)) request.reject(new Error("offline"));
 		await tick();
 		expect(controller.getSnapshot().groups[0]?.current).toMatchObject({
 			stale: true,
@@ -330,21 +275,9 @@ describe("project browser", () => {
 		});
 		const retry = controller.retry("a", "current");
 		await tick();
-		expect(requests).toHaveLength(6);
-		expect(requests[5]?.params).toMatchObject({ tier: "current", offset: 0 });
-		requests[5]?.resolve(
-			response(
-				requests[5].params,
-				{
-					key: "a",
-					tier: "current",
-					sessions: [session("a9")],
-					remaining: 0,
-					truncated: false,
-				},
-				2,
-			),
-		);
+		expect(requests).toHaveLength(8);
+		expect(requests[7]?.params).toMatchObject({ tier: "current", offset: 0 });
+		answerTiers(requests.slice(7), { current: [session("a9")] }, {}, 2);
 		await retry;
 		expect(controller.getSnapshot().groups[0]?.current).toMatchObject({
 			stale: false,
@@ -357,35 +290,20 @@ describe("project browser", () => {
 	it("retries a project catalog whose re-read failed by reading it again from the top", async () => {
 		const { controller, requests, invalidate } = await loadedProject();
 		invalidate({ kind: "catalog", catalog: "projects", revision: 2 });
-		expect(requests).toHaveLength(4);
-		requests[3]?.reject(new Error("offline"));
+		expect(requests).toHaveLength(5);
+		requests[4]?.reject(new Error("offline"));
 		await tick();
-		expect(controller.getSnapshot().projects).toMatchObject({
-			stale: true,
-			error: "offline",
-		});
+		expect(controller.getSnapshot().projects).toMatchObject({ stale: true, error: "offline" });
 		const retry = controller.retry();
 		await tick();
-		expect(requests).toHaveLength(5);
-		expect(requests[4]?.params).toMatchObject({
-			resource: "catalog",
-			offset: 0,
-		});
-		requests[4]?.resolve(
-			response(
-				requests[4].params,
-				{ projects: [project("a"), project("b")], remaining: 0 },
-				2,
-			),
+		expect(requests).toHaveLength(6);
+		expect(requests[5]?.params).toMatchObject({ resource: "catalog", offset: 0 });
+		requests[5]?.resolve(
+			response(requests[5].params, { projects: [project("a"), project("b")], remaining: 0 }, 2),
 		);
 		await retry;
-		expect(controller.getSnapshot().projects).toMatchObject({
-			stale: false,
-			error: null,
-		});
-		expect(
-			controller.getSnapshot().projects.rows.map((row) => row.key),
-		).toEqual(["a", "b"]);
+		expect(controller.getSnapshot().projects).toMatchObject({ stale: false, error: null });
+		expect(controller.getSnapshot().projects.rows.map((row) => row.key)).toEqual(["a", "b"]);
 		controller.dispose();
 	});
 
@@ -393,10 +311,10 @@ describe("project browser", () => {
 		const { controller, requests, invalidate } = await loadedProject();
 		controller.pause();
 		invalidate({ kind: "project", projectKey: "a", revision: 2 });
-		expect(requests).toHaveLength(3);
+		expect(requests).toHaveLength(4);
 		expect(controller.getSnapshot().groups[0]?.current.stale).toBe(true);
 		controller.resume();
-		expect(requests).toHaveLength(5);
+		expect(requests).toHaveLength(7);
 		controller.dispose();
 	});
 
@@ -404,9 +322,7 @@ describe("project browser", () => {
 		const { client, requests } = boundary();
 		const controller = createProjectBrowserController(client);
 		const loading = controller.initialLoad();
-		requests[0]?.resolve(
-			response(requests[0].params, { projects: [], remaining: 0 }),
-		);
+		requests[0]?.resolve(response(requests[0].params, { projects: [], remaining: 0 }));
 		await loading;
 		await controller.initialLoad();
 		expect(requests).toHaveLength(1);

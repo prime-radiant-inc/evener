@@ -5,12 +5,23 @@ import type {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NavigationPages } from "./navigationPages";
 
-export type ProjectSessionTier = "current" | "recent";
+/** The hub's three project catalogs, one per Board section: Projects,
+ * Archived and Test runs. */
+export type ProjectCatalog = "projects" | "archived_projects" | "test_runs";
+/** A project's session tiers: current (the last 24 hours, the Board's
+ * "Today"), recent, and archived. */
+export type ProjectSessionTier = "current" | "recent" | "archived";
+const TIERS: readonly ProjectSessionTier[] = ["current", "recent", "archived"];
+type PageSnapshot = ReturnType<
+	NavigationPages<NavigationSessionSummary>["getSnapshot"]
+>;
 export interface ProjectBrowserGroup {
 	project: NavigationProjectSummary;
 	expanded: boolean;
-	current: ReturnType<NavigationPages<NavigationSessionSummary>["getSnapshot"]>;
-	recent: ReturnType<NavigationPages<NavigationSessionSummary>["getSnapshot"]>;
+	current: PageSnapshot;
+	recent: PageSnapshot;
+	archived: PageSnapshot;
+	/** The current and recent rows, without duplicates. */
 	sessions: NavigationSessionSummary[];
 }
 export interface ProjectBrowserSnapshot {
@@ -24,8 +35,11 @@ export interface ProjectBrowserSnapshot {
 export interface ProjectBrowserController {
 	getSnapshot(): ProjectBrowserSnapshot;
 	subscribe(listener: () => void): () => void;
+	/** Reads the catalog. A project's sessions load once it is expanded. */
 	initialLoad(): Promise<void>;
 	expand(projectKey: string): Promise<void>;
+	/** The project's rows are no longer shown; its loaded pages stay. */
+	collapse(projectKey: string): void;
 	toggle(projectKey: string): Promise<void>;
 	loadMoreProjects(): Promise<void>;
 	loadMoreSessions(projectKey: string, tier: ProjectSessionTier): Promise<void>;
@@ -38,29 +52,27 @@ export interface ProjectBrowserController {
 }
 
 type Page = NavigationPages<NavigationSessionSummary>;
+type Group = {
+	project: NavigationProjectSummary;
+	expanded: boolean;
+} & Record<ProjectSessionTier, Page>;
 const projectKey = (row: NavigationProjectSummary) => row.key;
 const sessionKey = (row: NavigationSessionSummary) => row.ref;
+const tierPages = (group: Group) => TIERS.map((tier) => group[tier]);
 
 export function createProjectBrowserController(
 	client: ConversationClientLike,
+	catalogName: ProjectCatalog = "projects",
 ): ProjectBrowserController {
 	const listeners = new Set<() => void>();
 	const catalog = new NavigationPages<NavigationProjectSummary>(
 		client,
-		{ resource: "catalog", catalog: "projects" },
+		{ resource: "catalog", catalog: catalogName },
 		"projects",
 		projectKey,
 		50,
 	);
-	const groups = new Map<
-		string,
-		{
-			project: NavigationProjectSummary;
-			expanded: boolean;
-			current: Page;
-			recent: Page;
-		}
-	>();
+	const groups = new Map<string, Group>();
 	let loading = false;
 	let error: string | null = null;
 	let disposed = false;
@@ -83,11 +95,10 @@ export function createProjectBrowserController(
 			groups: projectSnapshot.rows.flatMap((project) => {
 				const group = groups.get(project.key);
 				if (!group) return [];
+				const current = group.current.getSnapshot();
+				const recent = group.recent.getSnapshot();
 				const seen = new Set<string>();
-				const sessions = [
-					...group.current.getSnapshot().rows,
-					...group.recent.getSnapshot().rows,
-				].filter((row) => {
+				const sessions = [...current.rows, ...recent.rows].filter((row) => {
 					if (seen.has(row.ref)) return false;
 					seen.add(row.ref);
 					return true;
@@ -96,8 +107,9 @@ export function createProjectBrowserController(
 					{
 						project,
 						expanded: group.expanded,
-						current: group.current.getSnapshot(),
-						recent: group.recent.getSnapshot(),
+						current,
+						recent,
+						archived: group.archived.getSnapshot(),
 						sessions,
 					},
 				];
@@ -113,59 +125,48 @@ export function createProjectBrowserController(
 	};
 	const eachPage = (visit: (page: Page | typeof catalog) => void) => {
 		visit(catalog);
-		for (const group of groups.values()) {
-			visit(group.current);
-			visit(group.recent);
-		}
+		for (const group of groups.values())
+			for (const page of tierPages(group)) visit(page);
 	};
-	const pageFor = (
-		project: NavigationProjectSummary,
-		tier: ProjectSessionTier,
-	) => {
+	const groupFor = (project: NavigationProjectSummary): Group => {
 		const existing = groups.get(project.key);
-		if (existing) return existing[tier];
-		const make = (pageTier: ProjectSessionTier) =>
+		if (existing) return existing;
+		const make = (tier: ProjectSessionTier) =>
 			new NavigationPages<NavigationSessionSummary>(
 				client,
-				{ resource: "project_page", projectKey: project.key, tier: pageTier },
+				{ resource: "project_page", projectKey: project.key, tier },
 				"sessions",
 				sessionKey,
 				20,
 			);
-		const group = {
+		const group: Group = {
 			project,
 			expanded: false,
 			current: make("current"),
 			recent: make("recent"),
+			archived: make("archived"),
 		};
 		groups.set(project.key, group);
-		for (const page of [group.current, group.recent]) {
+		for (const page of tierPages(group)) {
 			unsubs.add(page.subscribe(publish));
 			unsubs.add(page.watch());
 			if (paused) page.cancel();
 		}
-		return group[tier];
-	};
-	const groupFor = (project: NavigationProjectSummary) => {
-		pageFor(project, "current");
-		const group = groups.get(project.key);
-		if (!group) throw new Error("Could not create project group.");
 		return group;
 	};
 	const loadExpanded = async (key: string, force = false) => {
 		const group = groups.get(key);
 		if (!group || disposed || !group.expanded) return;
 		const currentEpoch = epoch;
-		const loads = ([group.current, group.recent] as Page[]).map((page) =>
-			force
-				? page.refresh()
-				: page.getSnapshot().loaded
-					? Promise.resolve()
-					: page.refresh(),
+		await Promise.all(
+			tierPages(group).map((page) =>
+				force || !page.getSnapshot().loaded
+					? page.refresh()
+					: Promise.resolve(),
+			),
 		);
-		await Promise.all(loads);
 		if (disposed || currentEpoch !== epoch) return;
-		if ([group.current, group.recent].some((page) => page.getSnapshot().error))
+		if (tierPages(group).some((page) => page.getSnapshot().error))
 			error = "Could not load sessions for this project. Retry to try again.";
 		publish();
 	};
@@ -191,18 +192,7 @@ export function createProjectBrowserController(
 			const currentEpoch = epoch;
 			await catalog.refresh();
 			if (disposed || currentEpoch !== epoch) return;
-			if (catalog.getSnapshot().error) {
-				error = catalog.getSnapshot().error;
-				loading = false;
-				publish();
-				return;
-			}
-			const first = catalog.getSnapshot().rows[0];
-			if (first) {
-				const group = groupFor(first);
-				group.expanded = true;
-				await loadExpanded(first.key);
-			}
+			error = catalog.getSnapshot().error;
 			loading = false;
 			publish();
 		},
@@ -216,14 +206,15 @@ export function createProjectBrowserController(
 			publish();
 			await loadExpanded(key);
 		},
-		async toggle(key) {
+		collapse(key) {
 			const group = groups.get(key);
-			if (group?.expanded) {
-				group.expanded = false;
-				publish();
-				return;
-			}
-			await controller.expand(key);
+			if (!group?.expanded) return;
+			group.expanded = false;
+			publish();
+		},
+		async toggle(key) {
+			if (groups.get(key)?.expanded) controller.collapse(key);
+			else await controller.expand(key);
 		},
 		async loadMoreProjects() {
 			if (
@@ -270,7 +261,7 @@ export function createProjectBrowserController(
 			if (projectKey) {
 				const group = groups.get(projectKey);
 				if (!group?.expanded) return;
-				const pages = tier ? [group[tier]] : [group.current, group.recent];
+				const pages = tier ? [group[tier]] : tierPages(group);
 				await Promise.all(
 					pages.map((page) => {
 						const state = page.getSnapshot();
