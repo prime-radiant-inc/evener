@@ -393,6 +393,109 @@ func TestCovBuildDashboardRows(t *testing.T) {
 	}
 }
 
+// TestBuildDashboardRows_SubagentAttentionCappedAtActive: issue #2558,
+// mirroring the hub's #2557 fix. A subagent thread resting in an attention
+// state (errored, here) must not raise its project's dashboard row past the
+// coordinator's own idle state — only a top-level session's own state can
+// turn the row red. The subagent's failure still shows on its own row.
+func TestBuildDashboardRows_SubagentAttentionCappedAtActive(t *testing.T) {
+	threads := []appwire.Thread{
+		{
+			ID: "01COORD", SessionID: "01COORD", CWD: "/repo/evener", Source: "local",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener: appwire.EvenerThread{Ref: "local:01COORD"},
+		},
+		{
+			ID: "01SUB", SessionID: "01SUB", CWD: "/repo/evener", Source: "local",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError},
+			Evener: appwire.EvenerThread{Ref: "local:01SUB", Kind: "subagent", ParentRef: "local:01COORD"},
+		},
+	}
+	rows := buildDashboardRows(hubTreeFromThreads(threads))
+	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "idle" {
+		t.Errorf("project row state = %q, want idle (the errored subagent must not turn the row red)", got)
+	}
+}
+
+// TestBuildDashboardRows_ActiveSubagentKeepsProjectRowActive complements the
+// above: a subagent that is genuinely working (not merely resting in an
+// attention state) does keep the project's row active.
+func TestBuildDashboardRows_ActiveSubagentKeepsProjectRowActive(t *testing.T) {
+	threads := []appwire.Thread{
+		{
+			ID: "01COORD2", SessionID: "01COORD2", CWD: "/repo/evener", Source: "local",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener: appwire.EvenerThread{Ref: "local:01COORD2"},
+		},
+		{
+			ID: "01SUB2", SessionID: "01SUB2", CWD: "/repo/evener", Source: "local",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+			Evener: appwire.EvenerThread{Ref: "local:01SUB2", Kind: "subagent", ParentRef: "local:01COORD2"},
+		},
+	}
+	rows := buildDashboardRows(hubTreeFromThreads(threads))
+	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "active" {
+		t.Errorf("project row state = %q, want active (the subagent is genuinely working)", got)
+	}
+}
+
+// TestBuildDashboardRows_CoordinatorErrorStillRedProjectRow: only a
+// top-level session's own state can turn a project row red — a coordinator
+// that is itself errored must still do so.
+func TestBuildDashboardRows_CoordinatorErrorStillRedProjectRow(t *testing.T) {
+	threads := []appwire.Thread{
+		{
+			ID: "01FAILEDCOORD", SessionID: "01FAILEDCOORD", CWD: "/repo/evener", Source: "local",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError},
+			Evener: appwire.EvenerThread{Ref: "local:01FAILEDCOORD"},
+		},
+	}
+	rows := buildDashboardRows(hubTreeFromThreads(threads))
+	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "errored" {
+		t.Errorf("project row state = %q, want errored (the coordinator itself failed)", got)
+	}
+}
+
+// TestBuildDashboardRows_SubagentSeenBeforeCoordinatorStaysCapped guards the
+// root cause behind the bug above: hubTreeFromThreads seeds a new project's
+// hubTreeProject.RollupState from whichever thread it encounters first for
+// that project, which can be the subagent rather than its coordinator
+// depending on wire order. The cap must hold there too, not only in
+// buildDashboardRows's fold, or a subagent thread that happens to arrive
+// before its coordinator would seed the rollup with its own uncapped
+// attention state.
+func TestBuildDashboardRows_SubagentSeenBeforeCoordinatorStaysCapped(t *testing.T) {
+	threads := []appwire.Thread{
+		{
+			ID: "01SUB3", SessionID: "01SUB3", CWD: "/repo/evener", Source: "local",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError},
+			Evener: appwire.EvenerThread{Ref: "local:01SUB3", Kind: "subagent", ParentRef: "local:01COORD3"},
+		},
+		{
+			ID: "01COORD3", SessionID: "01COORD3", CWD: "/repo/evener", Source: "local",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener: appwire.EvenerThread{Ref: "local:01COORD3"},
+		},
+	}
+	rows := buildDashboardRows(hubTreeFromThreads(threads))
+	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "idle" {
+		t.Errorf("project row state = %q, want idle (the subagent arrived first on the wire but must still not seed an attention rollup)", got)
+	}
+}
+
+// dashboardProjectRowState returns the state of the hubRowProject row whose
+// title matches, failing the test if no such row exists.
+func dashboardProjectRowState(t *testing.T, rows []hubRow, title string) string {
+	t.Helper()
+	for _, row := range rows {
+		if row.kind == hubRowProject && row.title == title {
+			return row.state
+		}
+	}
+	t.Fatalf("no project row titled %q in %#v", title, rows)
+	return ""
+}
+
 // TestCovBuildProjectRows exercises project row building.
 func TestCovBuildProjectRows(t *testing.T) {
 	// With live and recent sessions.

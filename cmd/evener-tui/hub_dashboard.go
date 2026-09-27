@@ -50,6 +50,39 @@ func (m hubModel) projectKeyForSession() (string, bool) {
 	return "", false
 }
 
+// subagentRollupContribution reports the state a node contributes toward its
+// project's dashboard rollup, and whether it contributes at all. A top-level
+// session's own state always counts in full. A subagent thread (Evener.Kind
+// == "subagent" marks a delegate at any depth, so a nested delegate of a
+// delegate is caught the same way) contributes only when it is literally
+// active; every other subagent state, including every attention state,
+// contributes nothing — it can never turn a project row red or, short of
+// that, even register as "working". This mirrors the hub's #2557 rollup fix
+// for issue #2558: "the coordinator row should only be red if the
+// coordinator failed." A subagent's own failure still shows on its own row.
+func subagentRollupContribution(n hubTreeNode) (state string, ok bool) {
+	if !n.IsSubagent {
+		return n.State, true
+	}
+	if stateLabel(n.State) == "active" {
+		return n.State, true
+	}
+	return "", false
+}
+
+// subagentRollupSeed is subagentRollupContribution's state, or "" (the
+// neutral, lowest-ranked value) when the node contributes nothing. Used to
+// seed a dashboard rollup (hubTreeProject.RollupState, or a fresh
+// dashboardGroup) from a single node before anything has folded into it, so
+// a subagent that arrives first on the wire can't seed the rollup with an
+// attention state its own contribution rule would otherwise never allow.
+func subagentRollupSeed(n hubTreeNode) string {
+	if state, ok := subagentRollupContribution(n); ok {
+		return state
+	}
+	return ""
+}
+
 func buildDashboardRows(tree hubTreeResponse) []hubRow {
 	type dashboardGroup struct {
 		key        string
@@ -124,10 +157,12 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			createdAt:   n.CreatedAt,
 			updatedAt:   n.UpdatedAt,
 		}
-		group := ensureGroup(groupKey, projectKey, project, n.State)
+		group := ensureGroup(groupKey, projectKey, project, subagentRollupSeed(n))
 		group.sessions = append(group.sessions, row)
-		if attentionRankLabel(n.State) > attentionRankLabel(group.state) {
-			group.state = stateLabel(n.State)
+		if contribution, ok := subagentRollupContribution(n); ok {
+			if attentionRankLabel(contribution) > attentionRankLabel(group.state) {
+				group.state = stateLabel(contribution)
+			}
 		}
 		if recency := rowRecency(row); recency > group.updatedAt {
 			group.updatedAt = recency
