@@ -1491,6 +1491,16 @@ func TestHostManageListStatusSerializeWithCommit(t *testing.T) {
 	}
 }
 
+// TestHostEntryFieldMapsInvalidKeyPath pins the inline field mapping for the
+// absolute-path rule: a relative key path must land on the dialog's keyPath
+// control, not fall through to a form-level banner.
+func TestHostEntryFieldMapsInvalidKeyPath(t *testing.T) {
+	err := fmt.Errorf("%w: host %q key_path %q must be an absolute path", hostreg.ErrInvalidKeyPath, "m4", "keys/id_m4")
+	if got := hostEntryField(err); got != "keyPath" {
+		t.Fatalf("hostEntryField(ErrInvalidKeyPath) = %q, want keyPath", got)
+	}
+}
+
 // TestHostManageTransientProbeFailureKeepsLastKnownFacts pins the round-5 M1
 // finding: an attached row's handshake or facts read can fail transiently
 // while the channel stays up, and the failed read must not overwrite the

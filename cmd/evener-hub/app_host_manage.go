@@ -23,8 +23,10 @@ import (
 )
 
 // hostOriginHubTOML is the HostRow origin marker. The storage decision (registry
-// spec 08 §6/§19) made hub.toml the machine-managed file every host lives in, so
-// every row reports it; the wire field is retained with one value.
+// spec 08 §6/§19, decided 2026-09-26; the spec-correction PR rewrites §6/§19
+// from the sidecar design this tree still shows) made hub.toml the
+// machine-managed file every host lives in, so every row reports it; the wire
+// field is retained with one value.
 const hostOriginHubTOML = "hub.toml"
 
 // hostTOMLBanner is the machine-managed banner every rewrite writes at the top
@@ -1142,7 +1144,8 @@ func (m *hubHostManager) hostOnline(host string) bool {
 // start from this, so the removal response carries exactly the entry it removed
 // instead of a hand-picked subset that can silently drift from the wire shape.
 // The origin marker is set here because it is one value: every host lives in
-// the machine-managed hub.toml (registry spec 08 §6/§19).
+// the machine-managed hub.toml (registry spec 08 §6/§19, decided 2026-09-26;
+// the spec-correction PR carries the §6/§19 rewrite).
 func hostEntryRow(host hostreg.Host) appwire.HostRow {
 	return appwire.HostRow{
 		Name:       host.Name,
@@ -1391,6 +1394,10 @@ func hostEntryField(err error) string {
 		return "user"
 	case errors.Is(err, hostreg.ErrEmptyRoot):
 		return "roots"
+	case errors.Is(err, hostreg.ErrInvalidKeyPath):
+		// The path the dialog's key input holds: a relative value is refused
+		// with the message on that control.
+		return "keyPath"
 	case errors.Is(err, ErrHostAddr):
 		return "addr"
 	case errors.Is(err, hostreg.ErrInvalidName), errors.Is(err, hostreg.ErrReservedName):
@@ -1742,7 +1749,8 @@ func (m *hubHostManager) Status(ctx context.Context, params appwire.HostStatusPa
 // registry entry, and its channel all go, and the name is gone until
 // re-added. Every live host is removable — hub.toml is the machine-managed
 // store the hub writes, so there is no file-declared class to protect
-// (registry spec 08 §6/§19); unknown names are InvalidParams; a removal
+// (registry spec 08 §6/§19, decided 2026-09-26; the spec-correction PR carries
+// the rewrite); unknown names are InvalidParams; a removal
 // already in flight for the name is a Conflict.
 //
 // The removal runs in three phases. The commit phase holds the mutation
