@@ -114,84 +114,22 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bandOf(state)).toBe(band);
 	});
 
-	it("puts failures first, oldest first, then questions and approvals, then warnings and restart-needed", () => {
+	it("sorts Needs you by failed, then question or approval, then warning or restart-needed, then oldest first", () => {
+		// Every row is newer than each row in the bands below it, ages interleave
+		// within a band, and the rows arrive newest first: age order, arrival
+		// order and any merged or split band would each give a different sequence.
 		const live = [
-			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(30) }),
-			row("f-new", { state: "errored", updated_at: at(20) }),
-			row("w-old", { state: "warning", updated_at: at(5) }),
-			row("f-old", { state: "errored", updated_at: at(10) }),
+			row("f-new", { state: "errored", updated_at: at(8) }),
+			row("f-old", { state: "errored", updated_at: at(7) }),
+			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(6) }),
+			row("a", { state: "active", approval_pending: true, updated_at: at(5) }),
+			row("q-old", { state: "awaiting", ask_pending: true, updated_at: at(4) }),
+			row("w-new", { state: "warning", updated_at: at(3) }),
+			row("r", { state: "restartRequired", updated_at: at(2) }),
+			row("w-old", { state: "warning", updated_at: at(1) }),
 		];
-		const bands = liveBands(live, [], never);
-		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["f-old", "f-new", "q-new", "w-old"]);
-	});
-
-	describe("Needs you order: failed, then question/approval, then warning/restart-needed (Jesse's ruling 2026-09-27; mirrors hubapi.NeedsYouBand)", () => {
-		it.each([
-			[
-				"a failed session leads over a newer question",
-				[
-					row("q", { state: "awaiting", ask_pending: true, updated_at: at(30) }),
-					row("f", { state: "errored", updated_at: at(10) }),
-				],
-				["f", "q"],
-			],
-			[
-				"a failed session leads over a newer approval",
-				[
-					row("a", { state: "active", approval_pending: true, updated_at: at(30) }),
-					row("f", { state: "errored", updated_at: at(10) }),
-				],
-				["f", "a"],
-			],
-			[
-				"a failed session leads over a newer warning",
-				[row("w", { state: "warning", updated_at: at(30) }), row("f", { state: "errored", updated_at: at(10) })],
-				["f", "w"],
-			],
-			[
-				"a failed session leads over a newer restart-needed",
-				[
-					row("r", { state: "restartRequired", updated_at: at(30) }),
-					row("f", { state: "errored", updated_at: at(10) }),
-				],
-				["f", "r"],
-			],
-			[
-				"a warning never outranks an older question",
-				[
-					row("w", { state: "warning", updated_at: at(5) }),
-					row("q", { state: "awaiting", ask_pending: true, updated_at: at(30) }),
-				],
-				["q", "w"],
-			],
-			[
-				"an approval outranks an older restart-needed",
-				[
-					row("r", { state: "restartRequired", updated_at: at(5) }),
-					row("a", { state: "active", approval_pending: true, updated_at: at(30) }),
-				],
-				["a", "r"],
-			],
-			[
-				"a question and an approval share a band, oldest first",
-				[
-					row("a", { state: "active", approval_pending: true, updated_at: at(30) }),
-					row("q", { state: "awaiting", ask_pending: true, updated_at: at(10) }),
-				],
-				["q", "a"],
-			],
-			[
-				"a warning and a restart-needed share a band, oldest first",
-				[
-					row("r", { state: "restartRequired", updated_at: at(30) }),
-					row("w", { state: "warning", updated_at: at(10) }),
-				],
-				["w", "r"],
-			],
-		] as const)("%s", (_name, live, expected) => {
-			const bands = liveBands(live, [], never);
-			expect(bands.needsYou.map((item) => item.row.ref)).toEqual(expected);
-		});
+		const needsYou = liveBands(live, [], never).needsYou.map((item) => item.row.ref);
+		expect(needsYou).toEqual(["f-old", "f-new", "q-old", "a", "q-new", "w-old", "r", "w-new"]);
 	});
 
 	it("orders Finished and Idle newest first and keeps the hub's order for Working", () => {

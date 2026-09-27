@@ -175,7 +175,7 @@ Select                                                      ✎
 - **Continue reading (only when present).** Leaving a plan or document before its end leaves one row under the notices for two hours: "Continue reading · 62%" and the document's title. Tapping it reopens the document at the same position, inside its session. This is the way back after an interruption.
 - **Live summary.** One line counts the Live bands: "4 need you · 4 finished · ▂▅▇ 9 working · 3 idle", with the Needs you count in amber ink and the fleet pulse meter (the whole fleet's activity, section 16.4; gray while the connection is down) before "working", where its label says what it measures. Each count jumps to its band (Idle unfolds). It shows when at least two bands have sessions, so the first screen always says what's working even when Needs you fills it (a first-glance participant found no sign of working sessions without it).
 - **Live** holds every live, unarchived top-level session, in four bands:
-  - Needs you: failed first, then questions and approvals, then warnings and restart-needed; oldest waiting first within each band.
+  - Needs you: failed first, then questions and approvals, then warnings and restart-needed; oldest waiting first within each band (Jesse, 2026-09-27).
   - Finished: sessions whose turn ended, newest first. A blue dot marks the ones you haven't opened since.
   - Working: stable order by start time, newest first. Sessions that "may be stuck" float to the top of this band.
   - Idle: finished sessions you have already seen, collapsed by default, most recent first.
