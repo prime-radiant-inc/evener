@@ -79,6 +79,7 @@ vi.mock("@react-navigation/native", async () => {
 		useIsFocused: () => true,
 	};
 });
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),

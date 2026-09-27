@@ -134,6 +134,7 @@ export function Copy({
 	numberOfLines,
 	ellipsizeMode,
 	variant = "ui",
+	selectable = true,
 }: {
 	children: ReactNode;
 	muted?: boolean;
@@ -141,13 +142,14 @@ export function Copy({
 	numberOfLines?: number;
 	ellipsizeMode?: TextProps["ellipsizeMode"];
 	variant?: "ui" | "yourMessage";
+	selectable?: boolean;
 }) {
 	const colors = useColors();
 	const { fontScale } = useWindowDimensions();
 	const textScale = Platform.OS === "ios" ? fontScale : 1;
 	return (
 		<Text
-			selectable
+			selectable={selectable}
 			allowFontScaling={Platform.OS !== "ios"}
 			accessibilityLabel={label}
 			numberOfLines={numberOfLines}

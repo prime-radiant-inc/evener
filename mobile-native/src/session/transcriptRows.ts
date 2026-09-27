@@ -287,10 +287,20 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 	};
 }
 
-/** The run's line as one string: its accessibility label, and what tests read. */
-export function runSummaryText(summary: RunSummary): string {
+/** The run line's opening: "12 steps · 8m". */
+export function runHeadText(summary: RunSummary): string {
 	const head = [`${summary.steps} ${summary.steps === 1 ? "step" : "steps"}`];
 	if (summary.durationMs !== undefined) head.push(compactDuration(summary.durationMs));
-	const parts = summary.parts.map((part) => (part.failed > 0 ? `${part.text} (${part.failed} failed)` : part.text));
-	return [...head, parts.join(", ")].join(" · ");
+	return head.join(" · ");
+}
+
+/** What follows a part's text: " (2 failed)", or nothing. */
+export function runPartFailedText(part: RunPart): string {
+	return part.failed > 0 ? ` (${part.failed} failed)` : "";
+}
+
+/** The run's line as one string: its accessibility label, and what tests read. */
+export function runSummaryText(summary: RunSummary): string {
+	const parts = summary.parts.map((part) => `${part.text}${runPartFailedText(part)}`);
+	return [runHeadText(summary), parts.join(", ")].join(" · ");
 }

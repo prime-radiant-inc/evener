@@ -33,7 +33,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
 	type AskBatch,
 	buildComposerInput,
+	formatQuoteBlock,
 	humanizeState,
+	mergeDraftText,
 	parseSlashToken,
 	spliceSlashCommand,
 	type TranscriptDisplayConfigV1,
@@ -118,6 +120,7 @@ import {
 import { RosterSearch } from "./rosterSearch";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
+import { liveRunId, sessionRows } from "./session/transcriptRows";
 import { SessionControls } from "./sessionControls";
 import { localSessionId } from "./sessionDeletionResult";
 import { TasksSheet } from "./TasksSheet";
@@ -1398,9 +1401,24 @@ export function ConversationScreen({
 		[conversation, displayConfig],
 	);
 	const timelineRows = useMemo(
-		() => groupTimeline(presentation.items),
-		[presentation.items],
+		() =>
+			sessionRows(groupTimeline(presentation.items), conversation?.turns ?? []),
+		[presentation.items, conversation?.turns],
 	);
+	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
+	function quote(text: string) {
+		const quoted = formatQuoteBlock(text);
+		if (quoted === "") return;
+		const merged = mergeDraftText(document.getSnapshot().record.draft, quoted);
+		document.edit(merged);
+		setComposerSelection({ start: merged.length, end: merged.length });
+		requestAnimationFrame(() => {
+			composerInput.current?.setNativeProps({
+				selection: { start: merged.length, end: merged.length },
+			});
+			composerInput.current?.focus();
+		});
+	}
 	useEffect(() => {
 		appliedReaderRestore.current = null;
 		readerRestoreAttempts.current.reset();
@@ -2161,6 +2179,9 @@ export function ConversationScreen({
 								setLayoutRevision((revision) => revision + 1);
 							}}
 							data={timelineRows}
+							// The live run changes when a turn starts or ends, without the
+							// rows changing; its row must re-render to fold or unfold.
+							extraData={liveRun}
 							ListFooterComponent={
 								presentation.usage ? (
 									<TranscriptUsage {...presentation.usage} />
@@ -2191,6 +2212,8 @@ export function ConversationScreen({
 										forkDisabled={
 											!connected || !focused || snapshot.status !== "open"
 										}
+										quote={quote}
+										live={item.id === liveRun}
 									/>
 								</View>
 							)}
