@@ -53,15 +53,15 @@ export function useProjectSections(hubId: string): Record<ProjectSection, Projec
 		},
 		[controllers],
 	);
+	// Out of view, the browsers pause. Nothing asks you to refresh: back in
+	// view on a ready connection, they resume and read again whatever never
+	// landed.
 	useEffect(() => {
-		for (const controller of Object.values(controllers ?? {}))
+		const browsers = Object.values(controllers ?? {});
+		for (const controller of browsers)
 			if (focused) controller.resume();
 			else controller.pause();
-	}, [controllers, focused]);
-	// Nothing asks you to refresh: back in view on a ready connection, read
-	// again whatever never landed.
-	useEffect(() => {
-		if (focused) for (const controller of Object.values(controllers ?? {})) readWhatNeverLanded(controller);
+		if (focused) for (const controller of browsers) readWhatNeverLanded(controller);
 	}, [controllers, focused]);
 
 	const views: Record<ProjectSection, ProjectsView> = {
