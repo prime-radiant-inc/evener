@@ -73,6 +73,11 @@ const (
 	// 3's re-plan refusal, which compares the age against the token-bound bound
 	// and never against a re-read owner knob.
 	StaleBindingFactsAge StaleBinding = "facts-age"
+	// StaleBindingPrunedGeneration is the operation-store dedup path's stale
+	// refusal: the request's intended (generation, incarnation id) pair is older
+	// than the registry's current pair and matches no retained record (§4, §11's
+	// `pruned-generation` value).
+	StaleBindingPrunedGeneration StaleBinding = "pruned-generation"
 )
 
 // StaleEntryError reports a token whose binding no longer matches the values a

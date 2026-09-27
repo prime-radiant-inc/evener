@@ -72,6 +72,51 @@ func TestGateTryAcquireRendersTheBusyClasses(t *testing.T) {
 	}
 }
 
+// TestHoldAsPublishesThePromotedHolder pins §5's holder publication for the
+// deploy/restart paths: the gate is acquired before the operation's record
+// exists, so the pre-record window renders the typed transient form; once the
+// consume-and-create write lands, the holder is updated and the busy refusal
+// names the record id the open/wait-able reference resolves through. A
+// promotion of a free gate refuses: there is no hold to update.
+func TestHoldAsPublishesThePromotedHolder(t *testing.T) {
+	gate := NewGate()
+	release, err := gate.TryAcquire("m4", Holder{Kind: HolderOperation})
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+
+	// The pre-record window: an operation holder with no record id yet renders
+	// the transient form, never an invented operation reference.
+	_, err = gate.TryAcquire("m4", Holder{Kind: HolderPlan})
+	var busy *BusyError
+	if !errors.As(err, &busy) {
+		t.Fatalf("pre-record busy = %T (%v), want *BusyError", err, err)
+	}
+	if busy.Holder.OperationID != "" {
+		t.Fatalf("pre-record holder = %+v, want no operation id", busy.Holder)
+	}
+
+	// The promotion: the record exists, so contenders name it.
+	if err := gate.HoldAs("m4", Holder{Kind: HolderOperation, OperationID: "00000000000000000042"}); err != nil {
+		t.Fatalf("HoldAs: %v", err)
+	}
+	_, err = gate.TryAcquire("m4", Holder{Kind: HolderPlan})
+	if !errors.As(err, &busy) {
+		t.Fatalf("post-promotion busy = %T (%v), want *BusyError", err, err)
+	}
+	if busy.Holder.Kind != HolderOperation || busy.Holder.OperationID != "00000000000000000042" {
+		t.Fatalf("post-promotion holder = %+v, want the promoted operation", busy.Holder)
+	}
+	if !strings.Contains(busy.Error(), "00000000000000000042") {
+		t.Fatalf("post-promotion prose %q does not name the operation", busy.Error())
+	}
+
+	release()
+	if err := gate.HoldAs("m4", Holder{Kind: HolderOperation, OperationID: "1"}); !errors.Is(err, ErrGateNotHeld) {
+		t.Fatalf("HoldAs on a free gate = %v, want ErrGateNotHeld", err)
+	}
+}
+
 // TestGateSerializesPerHostNotAcrossHosts pins the gate's scope: one host's
 // held gate refuses only that host, and a different host's gate is free.
 func TestGateSerializesPerHostNotAcrossHosts(t *testing.T) {
