@@ -123,6 +123,24 @@ describe("ActivityPoll (S5)", () => {
 		expect(poll.activity("local:a")).toBeUndefined();
 	});
 
+	it("notifies subscribers when a method-not-found answer confirms the hub doesn't support it", async () => {
+		const fake = client();
+		fake.on("evener/activity/read", () => {
+			throw new WireError("no such method", -32601);
+		});
+		const poll = new ActivityPoll(fake);
+		const listener = vi.fn();
+		poll.subscribe(listener);
+		poll.start();
+		await vi.advanceTimersByTimeAsync(0);
+		// A caller relying on the revision to know when to stop asking (a
+		// force-rerender tick that should give up once .supported turns
+		// false, say) needs a notification here too, not only on a landed
+		// read: nothing else would ever tell it the poll gave up for good.
+		expect(listener).toHaveBeenCalledTimes(1);
+		expect(poll.getRevision()).toBe(1);
+	});
+
 	it("retries on any other error at the next tick, without giving up", async () => {
 		const fake = client();
 		let calls = 0;

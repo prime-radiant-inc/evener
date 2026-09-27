@@ -1051,10 +1051,11 @@ it("stops retrying a failed first read when it unmounts", async () => {
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
-	// The row-age ticker, the retry, and S5's activity poll (which reads this
-	// hub as too old to support it after its first attempt, but still ticks
-	// to recheck staleness for as long as the Board is in front and ready).
-	expect(vi.getTimerCount()).toBe(3);
+	// The row-age ticker and the retry: S5's activity poll already tried and
+	// failed with method-not-found (this fleet carries no activity fixture),
+	// so its own recheck tick stopped too - an old hub never gets re-rendered
+	// every 10 seconds forever for a feature it will never support.
+	expect(vi.getTimerCount()).toBe(2);
 	act(() => tree.unmount());
 	expect(vi.getTimerCount()).toBe(0);
 	await advance(60_000);
@@ -1070,12 +1071,10 @@ it("schedules no retry while the Board is out of view", async () => {
 	expect(liveReads(fake)).toEqual([0]);
 	setFocused(false);
 	await settle();
-	// S5's activity poll follows useScreenInFront (navigation state alone),
-	// not useIsFocused, so toggling this mock's focus flag with the
-	// navigation stack unchanged leaves its recheck tick running - real
-	// navigation can't produce that combination (useScreenInFront's own
-	// doc comment), only this test's decoupled mock can.
-	expect(vi.getTimerCount()).toBe(1);
+	// This fleet carries no activity fixture, so S5's poll already gave up
+	// with method-not-found during mount and stopped its own recheck tick -
+	// it was never a factor here regardless of focus.
+	expect(vi.getTimerCount()).toBe(0);
 	await advance(60_000);
 	expect(liveReads(fake)).toEqual([0]);
 	act(() => tree.unmount());
@@ -1567,6 +1566,10 @@ it("keeps every working row as it was before S5 on a hub that has no activity re
 	expect(meterIn(building).props.perMinute).toBeUndefined();
 	expect(textsIn(building)).toContain("Waiting on 1 subagent");
 	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Working");
+	// method-not-found stops the poll's own recheck tick too, so an old hub
+	// doesn't get the Board re-rendered every ACTIVITY_POLL_MS forever for a
+	// feature it will never support: only the row-age ticker is left.
+	expect(vi.getTimerCount()).toBe(1);
 	await advance(ACTIVITY_POLL_MS * 3);
 	expect(fake.activityReads).toHaveLength(1);
 	act(() => tree.unmount());

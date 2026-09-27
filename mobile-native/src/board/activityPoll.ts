@@ -102,6 +102,11 @@ export class ActivityPoll {
 			if (error instanceof WireError && error.code === CODE_METHOD_NOT_FOUND) {
 				this.unsupported = true;
 				this.stop();
+				// A caller that keys off the revision to know when to stop
+				// asking (a force-rerender tick that should give up once
+				// .supported turns false) needs a notification here too:
+				// nothing else would ever tell it the poll gave up for good.
+				this.notify();
 			}
 			return;
 		}
@@ -114,6 +119,10 @@ export class ActivityPoll {
 		}
 		this.bySession = new Map(sessions.map((session) => [session.ref, session]));
 		this.lastReadAt = this.now();
+		this.notify();
+	}
+
+	private notify(): void {
 		this.revision++;
 		for (const listener of [...this.listeners]) listener();
 	}

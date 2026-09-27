@@ -548,7 +548,11 @@ const noRevision = () => 0;
  * reveal it needs its own nudge to be noticed, since activityRevision only
  * changes when a read actually lands: the tick below re-renders at the same
  * cadence polling itself runs on, comfortably ahead of the two-interval
- * staleness bound. */
+ * staleness bound. It stops for good once the poll confirms the hub doesn't
+ * support S5 at all (ActivityPoll notifies on that transition too, same as a
+ * landed read, so this re-renders and re-checks `supported` right then): an
+ * old hub must not get the Board re-rendered every ACTIVITY_POLL_MS forever
+ * for a feature it will never answer. */
 function useActivityPoll(client: ConversationClientLike | null, connected: boolean, inFront: boolean) {
 	const poll = useMemo(() => (client ? new ActivityPoll(client) : null), [client]);
 	const revision = useSyncExternalStore(poll?.subscribe ?? noSubscription, poll?.getRevision ?? noRevision);
@@ -558,11 +562,12 @@ function useActivityPoll(client: ConversationClientLike | null, connected: boole
 		return () => poll.stop();
 	}, [poll, connected, inFront]);
 	const [, forceTick] = useReducer((n: number) => n + 1, 0);
+	const supported = poll?.supported ?? false;
 	useEffect(() => {
-		if (!connected || !inFront) return;
+		if (!connected || !inFront || !supported) return;
 		const timer = setInterval(forceTick, ACTIVITY_POLL_MS);
 		return () => clearInterval(timer);
-	}, [connected, inFront]);
+	}, [connected, inFront, supported]);
 	const msSinceRead = poll?.msSinceRead() ?? null;
 	const reading = connected && isFreshRead(msSinceRead) ? poll : null;
 	const activityOf = useCallback((ref: string) => reading?.activity(ref), [reading]);
