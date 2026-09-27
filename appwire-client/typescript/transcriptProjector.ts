@@ -127,7 +127,12 @@ const KNOWN_EVENT_KINDS = new Set([
 const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 const TURN_TIMING_EVENT_KIND = "round_timings";
 const HOOK_EVENT_KIND = "hook_completed";
-const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error", "tool_repair"]);
+// The one system event critical at every level: a persisted turn failure is
+// the row a reader hunts for (SystemNoticeItem's FailureLine renders it;
+// systemGrouping.ts keeps it out of runs). A tool-repair notice left this set
+// for the informationalNotices gate below.
+const CRITICAL_SYSTEM_EVENT_KINDS = new Set(["error"]);
+const TOOL_REPAIR_EVENT_KIND = "tool_repair";
 
 // ask_user is the current interaction tool. The other names are protocol/tool
 // vocabulary used by compatible clients; matching exact names keeps this typed
@@ -243,9 +248,24 @@ function criticalEntry(
 
 type Decision = "item" | "intent" | "critical" | "thinking" | "hidden";
 
-function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1): Decision {
+// A tool-repair notice (EventToolCallRepaired on the hub wire): the repair
+// already succeeded by the time the notice exists, so it is informational
+// the same way a coded context-budget warning is - quiet detail, not an
+// actionable failure. Classification is by the typed wire eventKind, never
+// the notice's prose.
+function isToolRepairNotice(item: ItemModel): boolean {
+  return item.type === "systemMessage" && item.eventKind === TOOL_REPAIR_EVENT_KIND;
+}
+
+function systemDecision(item: ItemModel, config: TranscriptDisplayConfigV1, vector: ContentVector): Decision {
   const eventKind = item.eventKind;
   if (eventKind === undefined || eventKind === "" || !KNOWN_EVENT_KINDS.has(eventKind)) return "item";
+
+  // A repair notice shows only where informationalNoticesVisible says the
+  // level is high verbosity, exactly like an informational warning; where it
+  // does show, the systemMessage renderer already gives it the quiet
+  // one-liner every lifecycle notice gets (SystemNoticeItem's plain line).
+  if (isToolRepairNotice(item)) return informationalNoticesVisible(vector) ? "critical" : "hidden";
 
   if (CRITICAL_SYSTEM_EVENT_KINDS.has(eventKind)) return "critical";
 
@@ -303,7 +323,7 @@ function decisionFor(
     return hasFailureStatus(item) || isTerminalTurn(turn) ? "critical" : "hidden";
   }
 
-  if (item.type === "systemMessage") return systemDecision(item, config);
+  if (item.type === "systemMessage") return systemDecision(item, config, vector);
 
   // These live item types are always actionable/attention-worthy. Keeping the
   // check by type also makes warnings and steering independent of their prose.
@@ -357,14 +377,16 @@ function terminalFallbackEntry(
   const sourceIndex = sourceIndexByItem.get(sourceItem);
   if (sourceIndex === undefined) return undefined;
   // The fallback exists so a terminal turn never renders empty - but it
-  // must not resurrect an informational warning decisionFor just hid (a
-  // failed turn whose only item is a context-budget notice). The trade
-  // holds only where a failure end cap will actually render, which both
-  // this gate and the renderer decide by isTurnError (the web's
-  // TurnFailureEndCap renders from asTurnError, the same narrowing). An
-  // errorless or malformed-error terminal turn renders no end cap, so its
-  // fallback keeps the never-empty guarantee.
-  if (isInformationalWarning(sourceItem) && !informationalNoticesVisible(vector) && isTurnError(turn.error)) {
+  // must not resurrect an informational notice decisionFor just hid (a
+  // failed turn whose only item is a context-budget warning or a
+  // tool-repair notice). The trade holds only where a failure end cap will
+  // actually render, which both this gate and the renderer decide by
+  // isTurnError (the web's TurnFailureEndCap renders from asTurnError, the
+  // same narrowing). An errorless or malformed-error terminal turn renders
+  // no end cap, so its fallback keeps the never-empty guarantee.
+  const hiddenInformationalNotice =
+    (isInformationalWarning(sourceItem) || isToolRepairNotice(sourceItem)) && !informationalNoticesVisible(vector);
+  if (hiddenInformationalNotice && isTurnError(turn.error)) {
     return undefined;
   }
   return criticalEntry(sourceItem, turn.id, sourceIndex, redactsReasoning(sourceItem, vector));

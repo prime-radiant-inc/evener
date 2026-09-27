@@ -1668,6 +1668,10 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 	}
 
 	for i, t := range historyTurns {
+		if t.Kind.TranscriptOnly() {
+			// Never sent to the model, and interrupts no tool round.
+			continue
+		}
 		inFlight := scope.active() && i >= scope.InFlightFrom
 		switch t.Kind {
 		case schema.TurnSteering:

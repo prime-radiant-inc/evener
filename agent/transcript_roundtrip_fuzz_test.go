@@ -9,19 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 )
-
-// entriesOf wraps turns back into transcript entries, so a resumed history can be
-// fed through ResumeHistory a second time for the idempotence check.
-func entriesOf(turns []schema.Turn) []transcript.Entry {
-	entries := make([]transcript.Entry, len(turns))
-	for i, turn := range turns {
-		entries[i] = transcript.Entry{Kind: "entry", Seq: i, Turn: turn}
-	}
-	return entries
-}
 
 // FuzzTranscriptReplay drives the transcript write/read and resume-replay seam
 // (transcript.Writer + readTranscript/readTranscriptFull + ResumeHistory). Input
