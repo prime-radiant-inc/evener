@@ -4,7 +4,6 @@
 import { type NavigationSessionSummary, type SessionSeenMark, WireError } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import type { SyncStringStorage } from "../syncStringStorage";
 import { SeenMarkers } from "./boardMemory";
 import { BoardSeen, forgetHubSeenMarks, HubSeenMarks, hubSeenMarks } from "./hubSeen";
 
@@ -58,6 +57,22 @@ function setup() {
 	const calls: Call[] = [];
 	return { calls, client: fakeClient("a", calls), marks: new HubSeenMarks() };
 }
+/** setup(), plus the device's own markers with an epoch a minute before T,
+ * and the Board's seen state over both paths. */
+function board() {
+	const { calls, client, marks } = setup();
+	const values = new Map<string, string>();
+	const markers = new SeenMarkers(
+		{
+			getItemSync: (key) => values.get(key) ?? null,
+			setItemSync: (key, value) => void values.set(key, value),
+			removeItemSync: (key) => void values.delete(key),
+		},
+		"hub",
+	);
+	markers.adoptEpoch([{ updated_at: iso(T - 60_000) }]);
+	return { markers, calls, client, seen: new BoardSeen(markers, marks) };
+}
 
 describe("which path decides a row", () => {
 	it("leaves a row without turn_ended_at to the device, and follows the hub's unseen for one with it", () => {
@@ -70,15 +85,8 @@ describe("which path decides a row", () => {
 	});
 
 	it("ignores the device's markers for a hub row, and uses them for any other", () => {
-		const storage: SyncStringStorage = {
-			getItemSync: () => null,
-			setItemSync: () => {},
-			removeItemSync: () => {},
-		};
-		const markers = new SeenMarkers(storage, "hub");
-		markers.adoptEpoch([{ updated_at: iso(T - 60_000) }]);
+		const { markers, seen } = board();
 		markers.markUnread("unseen-here");
-		const seen = new BoardSeen(markers, new HubSeenMarks());
 		// The device says unread; the hub says seen, and wins.
 		expect(seen.isSeen(ended("unseen-here", T, false))).toBe(true);
 		// The device's epoch says seen; the hub says unseen, and wins.
@@ -379,22 +387,6 @@ describe("one controller per hub", () => {
 });
 
 describe("the Board's marks", () => {
-	function board() {
-		const values = new Map<string, string>();
-		const markers = new SeenMarkers(
-			{
-				getItemSync: (key) => values.get(key) ?? null,
-				setItemSync: (key, value) => void values.set(key, value),
-				removeItemSync: (key) => void values.delete(key),
-			},
-			"hub",
-		);
-		markers.adoptEpoch([{ updated_at: iso(T - 60_000) }]);
-		const calls: Call[] = [];
-		const hub = new HubSeenMarks();
-		return { markers, hub, calls, client: fakeClient("a", calls), seen: new BoardSeen(markers, hub) };
-	}
-
 	it("marks a row read the way opening it does: a hub row through its turn end, any other with the device's marker", () => {
 		const { markers, calls, client, seen } = board();
 		seen.markRead(client, [ended("hub", T, true)]);
