@@ -25,6 +25,7 @@ import { drafts } from "./nativeDrafts";
 import { locations } from "./nativeLocation";
 import { removeOrganizationData } from "./nativeOrganization";
 import { readerPositions } from "./nativeReaderPosition";
+import { forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 
 const repository = new HubProfiles(SecureStore);
 interface Connection {
@@ -137,6 +138,7 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 					readerPositions.removeHub(hubId);
 					removeOrganizationData(hubId);
 					forgetBoardForHub(hubId);
+					forgetDetailLevelsForHub(hubId);
 				},
 			}),
 		[selection],
