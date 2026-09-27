@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-09-08T22:22:11-07:00",
-  "title": "Design System: Evener Native Project Browser",
+  "generatedAt": "2026-09-26T19:43:58-07:00",
+  "title": "Design System: Evener Native Board",
   "extensions": {
     "colorMeta": {
       "light-background": { "role": "neutral", "displayName": "Paper background", "canonical": "#FAF9F6" },
@@ -10,9 +10,9 @@
       "dark-accent": { "role": "primary", "displayName": "Night accent", "canonical": "#459EFF" }
     },
     "typographyMeta": {
-      "project-header": { "displayName": "Project header", "purpose": "Project names in the expandable browser." },
-      "session-title": { "displayName": "Session title", "purpose": "Readable session rows in the browser." },
-      "metadata": { "displayName": "Metadata", "purpose": "Counts and subordinate state explanations." }
+      "board-title": { "displayName": "Board title", "purpose": "A row's title, in Live and every section." },
+      "why-line": { "displayName": "Why line", "purpose": "The state word and reason, the working activity, or the finished excerpt." },
+      "band-header": { "displayName": "Band header", "purpose": "NEEDS YOU, FINISHED and WORKING section labels." }
     },
     "breakpoints": [],
     "shadows": [],
@@ -22,40 +22,39 @@
   },
   "components": [
     {
-      "name": "Project header",
+      "name": "Board row",
       "kind": "custom",
-      "refersTo": "project-header",
-      "description": "Illustrative documentation preview translated from the native expandable project header.",
-      "html": "<div class=\"ds-project-header\"><button class=\"ds-project-toggle\" aria-expanded=\"true\"><span class=\"ds-chevron\"></span><span>Research</span><small>4</small></button><button class=\"ds-project-more\" aria-label=\"Open Research project details\">•••</button></div>",
-      "css": ".ds-project-header{display:flex;align-items:center;margin:16px 20px 0;border-bottom:1px solid #DDDCD4}.ds-project-toggle{display:flex;align-items:center;gap:12px;flex:1;min-height:52px;padding:0;border:0;background:transparent;color:#252521;font:600 19px/23px system-ui}.ds-project-toggle small{margin-left:auto;color:#5F5F57;font:400 13px/19px system-ui}.ds-project-more{min-width:44px;min-height:44px;border:0;background:transparent;color:#5F5F57;font-size:16px}.ds-project-toggle:focus-visible,.ds-project-more:focus-visible{outline:2px solid #0064C2;outline-offset:2px}"
+      "refersTo": "board-row",
+      "description": "Illustrative documentation preview translated from a Needs You row (signal variant) on the Board.",
+      "html": "<div class=\"ds-board-row\"><span class=\"ds-mark ds-mark--failed\" aria-hidden=\"true\">&#10005;</span><div class=\"ds-board-row-body\"><div class=\"ds-board-row-title-line\"><span class=\"ds-board-row-title\">Fix Endless Provider Retry Loop</span><span class=\"ds-board-row-age\">2m</span></div><p class=\"ds-why-line\"><strong class=\"ds-why-word\">Failed</strong> · codex-jesse-fsck.com sign-in expired (401)</p></div></div>",
+      "css": ".ds-board-row{display:flex;align-items:flex-start;column-gap:10px;padding:11px 16px 12px;min-height:64px;background:#FAF9F6}.ds-mark{width:28px;flex:none;text-align:center;font:700 16px system-ui;line-height:22px;color:#E3474C}.ds-board-row-body{flex:1;min-width:0}.ds-board-row-title-line{display:flex;align-items:baseline;column-gap:8px}.ds-board-row-title{flex:1;font:600 17px/22px system-ui;color:#252521}.ds-board-row-age{font:400 13px system-ui;color:#6D6D64;font-variant-numeric:tabular-nums}.ds-why-line{margin:2px 0 0;font:400 15px/20px system-ui;color:#252521}.ds-why-word{color:#C51D23}"
     },
     {
-      "name": "Session row",
+      "name": "Band header",
       "kind": "custom",
-      "refersTo": "session-row",
-      "description": "Illustrative documentation preview translated from the native open session row.",
-      "html": "<button class=\"ds-session-row\"><span>Build the release checklist</span><small>Working</small></button>",
-      "css": ".ds-session-row{display:flex;flex-direction:column;align-items:flex-start;gap:4px;width:calc(100% - 60px);min-height:68px;margin-left:40px;padding:12px 20px 12px 0;border:0;border-bottom:1px solid #DDDCD4;background:transparent;color:#252521;text-align:left;font:400 17px/23px system-ui}.ds-session-row small{color:#5F5F57;font:400 13px/19px system-ui}.ds-session-row:focus-visible{outline:2px solid #0064C2;outline-offset:-2px}"
+      "refersTo": "band-header",
+      "description": "Illustrative documentation preview translated from a Board band header.",
+      "html": "<div class=\"ds-band-header\">NEEDS YOU · 4</div>",
+      "css": ".ds-band-header{margin:22px 0 6px;padding:0 16px;font:600 13px system-ui;letter-spacing:.4px;color:#5F5F57}"
     },
     {
-      "name": "Search field",
-      "kind": "input",
-      "refersTo": "search-field",
-      "description": "Illustrative documentation preview translated from the native keyboard search controls.",
-      "html": "<label class=\"ds-search\"><input aria-label=\"Search sessions\" placeholder=\"Search sessions\"><button>Search</button><button>Clear</button></label>",
-      "css": ".ds-search{display:flex;align-items:center;gap:8px;padding:0 20px 8px}.ds-search input{flex:1;min-width:0;min-height:48px;padding:12px;border:1px solid #DDDCD4;border-radius:9px;background:#F4F3EE;color:#252521;font:400 17px/25px system-ui}.ds-search button{min-width:44px;min-height:44px;padding:8px;border:0;background:transparent;color:#0064C2;font:600 16px/20px system-ui}.ds-search input:focus-visible,.ds-search button:focus-visible{outline:2px solid #0064C2;outline-offset:2px}"
+      "name": "Chip",
+      "kind": "custom",
+      "refersTo": "chip",
+      "description": "Illustrative documentation preview translated from the Board's Live section chip, with its Needs You badge.",
+      "html": "<div class=\"ds-chip\"><span class=\"ds-chip-name\">Live</span><span class=\"ds-chip-count\">20</span><span class=\"ds-chip-badge\">4</span></div>",
+      "css": ".ds-chip{display:inline-flex;align-items:center;column-gap:6px;min-height:32px;padding:0 12px;border-radius:16px;border:.5px solid #DDDCD4;background:#FCFBF8}.ds-chip-name{font:600 14px system-ui;color:#252521}.ds-chip-count{font:500 14px system-ui;color:#6D6D64;font-variant-numeric:tabular-nums}.ds-chip-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:#F59E0B;color:#252521;font:700 11px system-ui;font-variant-numeric:tabular-nums}"
     }
   ],
   "narrative": {
-    "northStar": "The project first work surface",
-    "overview": "This is a narrow record of the shipped native Sessions browser. Projects provide orientation, sessions remain the work items, and conversation content stays the visual center. The browser uses native navigation, SF system typography, semantic light and dark surfaces, and touch sized controls.\n\nThe main Sessions surface is one expandable scrolling hierarchy. A dedicated Project route is a separate detail surface and may use its own current, recent and archived tabs. These are distinct navigation contracts.",
-    "keyCharacteristics": ["Project headers first; nested session rows remain in the same scroll surface.", "Quiet idle rows, with state text reserved for active work and decisions.", "Native actions, guarded paging, retained browser state, and explicit recovery."],
+    "northStar": "Attention is the product",
+    "overview": "This records the shipped Board, the native iPhone app's home. It replaces the project-first Sessions browser: every live session is ordered by who needs you, then the user's own organization follows. The Board uses native navigation, SF Pro typography, semantic light and dark surfaces, and touch sized controls.\n\nThe Board is one native scrolling list: Live's bands, then pinned categories, Projects and Archived as plain section rows that open their own screens until a later PR brings them inline.",
+    "keyCharacteristics": ["Every live session in one list, ordered by who needs you, then finished, then working, then idle.", "Calm: a control appears only when it can act, and nothing moves unless its data moved.", "Native actions, an automatic connection, and per-device state for what you've seen and which sections you folded."],
     "rules": [
       { "name": "The Quiet Idle Rule", "body": "Omit idle status noise from session rows; reserve state text for working, questions, warnings, and failures.", "section": "colors" },
-      { "name": "The Two Level Rule", "body": "Cap nested session indentation at two levels so the title retains reading width.", "section": "typography" },
-      { "name": "The Flat Browser Rule", "body": "Use background, surface, spacing, and sparse borders to convey structure; do not add decorative elevation to ordinary rows.", "section": "elevation" }
+      { "name": "The Flat Board Rule", "body": "Use background, surface, spacing, and sparse hairlines to convey structure; do not add decorative elevation to ordinary rows.", "section": "elevation" }
     ],
-    "dos": ["Do lead the main Sessions surface with projects and expand sessions in place.", "Do load the first project initially and lazy-load other project groups.", "Do preserve browser and conversation reading state across navigation.", "Do keep capability affordances mounted and disable them during unavailable or refreshing states.", "Do use human readable state copy and explicit stale/error recovery."],
-    "donts": ["Don't describe the main expandable browser as the dedicated Project route's tabbed detail view.", "Don't wrap every ordinary row in a rounded card or add decorative shadows.", "Don't imply that local warmed transport measurements establish phone or real-network performance.", "Don't make status, counts, paths, or internal IDs compete with the session title."]
+    "dos": ["Do order every live session by who needs you, then finished, then working, then idle.", "Do keep a control mounted and disabled, rather than hiding it, while it can't act.", "Do use human readable state words, and copy that says exactly what happened.", "Do persist each section's collapsed state per device."],
+    "donts": ["Don't show a Reconnect or a Refresh control anywhere on the Board, or offer pull-to-refresh: a control appears only when it can act.", "Don't move or animate a row unless its underlying data moved.", "Don't give a hue more than its one job: only the state word takes a hue, and the reason stays in ink.", "Don't wrap every ordinary row in a rounded card or add decorative shadows."]
   }
 }
