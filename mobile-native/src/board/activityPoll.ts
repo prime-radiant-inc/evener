@@ -15,8 +15,23 @@ import type { AppwireClientLike, SessionActivity } from "@evener/appwire-client"
 import { decodeActivityRead, WireError } from "@evener/appwire-client";
 
 export const ACTIVITY_POLL_MS = 10_000;
+// A read that's aged past two poll intervals is treated as no read at all
+// (S5's stale-read rule): a hub that reports ready but has stopped actually
+// delivering reads (the failure mode this exists for) must not read as
+// "quiet" or "stuck" from staleness alone. Two intervals, not one, gives a
+// single missed tick room to self-heal on the very next one before the row
+// falls back.
+export const STALE_AFTER_MS = 2 * ACTIVITY_POLL_MS;
 
 const CODE_METHOD_NOT_FOUND = -32601;
+
+/** Whether a read taken `msSinceRead` milliseconds ago (null: never landed)
+ * is still trustworthy. The row's why line, its meter and the Working order
+ * all gate through this one check, so they can't disagree about whether a
+ * read is too old to use. */
+export function isFreshRead(msSinceRead: number | null): boolean {
+	return msSinceRead !== null && msSinceRead < STALE_AFTER_MS;
+}
 
 export class ActivityPoll {
 	private bySession = new Map<string, SessionActivity>();

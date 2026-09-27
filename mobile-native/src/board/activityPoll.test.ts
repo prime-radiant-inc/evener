@@ -2,7 +2,7 @@ import type { ActivityReadParams, ActivityReadResponse } from "@evener/appwire-c
 import { WireError } from "@evener/appwire-client";
 import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ACTIVITY_POLL_MS, ActivityPoll } from "./activityPoll";
+import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead, STALE_AFTER_MS } from "./activityPoll";
 
 const minutes = [0, 0, 1, 4, 9, 2, 0];
 const activityA = { ref: "local:a", minutes, runningSubagents: 0 };
@@ -163,5 +163,17 @@ describe("ActivityPoll (S5)", () => {
 		expect(poll.msSinceRead()).toBe(0);
 		now += 5_000;
 		expect(poll.msSinceRead()).toBe(5_000);
+	});
+
+	it("STALE_AFTER_MS is two poll intervals", () => {
+		expect(STALE_AFTER_MS).toBe(2 * ACTIVITY_POLL_MS);
+	});
+
+	it("isFreshRead trusts a read under two poll intervals old, and never one that's never landed", () => {
+		expect(isFreshRead(null)).toBe(false);
+		expect(isFreshRead(0)).toBe(true);
+		expect(isFreshRead(STALE_AFTER_MS - 1)).toBe(true);
+		expect(isFreshRead(STALE_AFTER_MS)).toBe(false);
+		expect(isFreshRead(STALE_AFTER_MS + 1)).toBe(false);
 	});
 });
