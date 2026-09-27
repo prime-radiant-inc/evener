@@ -65,7 +65,6 @@ import {
 	expandedProjectKeys,
 	grouping,
 	liveCountsByHost,
-	morePagesToLoad,
 	type ProjectSection,
 	type ProjectTreeItem,
 	projectTreeItems,
@@ -217,9 +216,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// Within about a screen of the end of Live, read its next page. Layout
 	// checks too, so a first page too short to scroll keeps reading.
 	const viewport = useRef({ offset: 0, height: 0 });
-	// The project sections' "more" rows on screen (a tier's sessions, or the
-	// catalog's projects), and where each was last laid out inside its section.
-	const visibleMoreRows = useRef<{ section: ProjectSection; item: MoreItem }[]>([]);
+	// Where each of the project sections' "more" rows (a tier's sessions, or
+	// the catalog's projects) was last laid out inside its section.
 	const moreFrames = useRef(new Map<string, { y: number; height: number }>());
 	const readMoreLiveIfNear = () => {
 		const page = board.getSnapshot().live;
@@ -363,11 +361,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			if (controller) showExpanded(controller, expandedProjectKeys(itemsOf(section)));
 		}
 	});
-	// The "more" rows at least half on screen read their next page (checked
-	// on scroll and on layout, as Live's paging is).
-	visibleMoreRows.current = shownSections.flatMap(({ section, items }) =>
-		items.flatMap((item) => (item.kind === "more" || item.kind === "moreProjects" ? [{ section, item }] : [])),
-	);
+	// A "more" row reads its next page when pressed, and once at least half of
+	// it is on screen (checked on scroll and on layout, as Live's paging is).
 	const readMore = (section: ProjectSection, item: MoreItem) => {
 		const controller = projectSections[section].controller;
 		if (item.kind === "moreProjects") void controller?.loadMoreProjects();
@@ -376,20 +371,17 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const readVisibleMore = () => {
 		const { offset, height } = viewport.current;
 		if (height === 0) return;
-		for (const section of PROJECT_SECTIONS) {
+		for (const { section, items } of shownSections) {
 			const top = offsets.current[section];
 			if (top === undefined) continue;
-			const visible = visibleMoreRows.current.filter((more) => {
-				const frame = moreFrames.current.get(more.item.key);
-				if (more.section !== section || !frame) return false;
+			for (const item of items) {
+				if (item.kind !== "more" && item.kind !== "moreProjects") continue;
+				const frame = moreFrames.current.get(item.key);
+				if (!frame) continue;
 				const start = top + frame.y;
 				const shown = Math.min(start + frame.height, offset + height) - Math.max(start, offset);
-				return shown >= frame.height / 2;
-			});
-			for (const page of morePagesToLoad(visible.map((more) => more.item)))
-				void projectSections[section].controller?.loadMoreSessions(page.projectKey, page.tier);
-			const moreProjects = visible.find((more) => more.item.kind === "moreProjects");
-			if (moreProjects) readMore(section, moreProjects.item);
+				if (shown >= frame.height / 2) readMore(section, item);
+			}
 		}
 	};
 	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
