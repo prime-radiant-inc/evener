@@ -29,7 +29,7 @@
 - **Targeted tests only.** Run each task's own tests and the gates it names. CI runs the full matrix; never run `make test-web`, `make test-native` or `make lint` locally.
 - **Tests are deterministic.** Clocks are injected, no sleeps, and every new test is shown failing before its code lands. Fakes only at real boundaries.
 - **Size.** Each PR stays under about 800 changed lines of production code; the estimates below are well under. Landing follows the roadmap: a regular PR, CI green at the head, the RoboRev comment read, /simplify run, then an admin squash merge.
-- **Copy.** Wire names may use the codebase's words (delegate, escalation). User-facing copy ("Quiet 4m", "May be stuck · no updates for 12m", "2 subagents failed") belongs to the phone and web lanes and follows spec section 5.
+- **Copy.** Wire names may use the codebase's words (delegate, escalation). User-facing copy ("Quiet 4m", "May be stuck · no updates for 12m", the Subagents chip's "55 · 2 failed") belongs to the phone and web lanes and follows spec section 5.
 
 ## Rulings
 
@@ -67,10 +67,14 @@ Decisions the spec leaves open, with the reason for each.
 22. **Live roots only.** Ended sessions carry no tally: it would cost a delegate journal fold per row, and an ended session's row is a quiet one-line row. Rows carry `subagents` only when the tree has at least one subagent.
 23. **Remote parity for S3 and S4 rides the remote hub's list rows,** the pattern PR 5 (#2513) set for questions and approvals: the remote hub's `thread/list` root rows carry `subagents` and `lastTurnEndedAt`, and the controller reads them. Both change only on real events, so the 30-second remote walk does not churn.
 
+**Jesse's answers (2026-09-26)**
+
+24. **A failed subagent never marks its coordinator's Board row** (the first question: "no. the coordinator row should only be red if the coordinator failed."). The Board row is red only when the coordinator itself failed, and its last line never shows subagent failures (spec 7.2 and 13.2). The tally is unchanged: `subagents.failed` still counts a subagent whose latest run failed (spec 9's rule, ruling 21), and it feeds only the session's Subagents chip and its Subagents list, which agree with each other.
+25. **Retirement stays as it is** (the second question, whether a Finished session nobody has opened should hold off the daemon's idle retirement: "no."). The hub retires a daemon after an hour of proven inactivity (`daemon_idle_timeout`, default `1h`, `cmd/evener-hub/config.go:105`). A session whose turn finished while you were away then leaves the Live band, and its blue dot with it, although its marker still says unseen; it stays one tap away in its project and resumes with its marker intact. If testers miss finished work, the follow-up is a Board band for recently retired unseen sessions, read from the past index, not a longer-lived daemon.
+
 ## Questions for Jesse
 
-1. **Should a failed subagent count as failed on its coordinator's row for the rest of the session?** Spec 9 defines "failed" by how a subagent's latest run ended, so a subagent that failed and was never resumed keeps the row's red "2 subagents failed" for the session's whole life, even after the coordinator spawned a replacement that succeeded. I recommend yes, as the spec defines it: the row, the Subagents chip and the Subagents list must agree, and a coordinator that resumes a failed subagent moves it back to running and then done. The alternative (count a failure only until the coordinator has read its report) would need the phone to explain why the Subagents list shows failures the row does not.
-2. **Should a Finished session nobody has opened hold off the daemon's idle retirement?** The hub retires a daemon after an hour of proven inactivity (`daemon_idle_timeout`, default `1h`, `cmd/evener-hub/config.go:105`). A session whose turn finished while you were away then leaves the Live band, and its blue dot with it, although its marker still says unseen. I recommend leaving retirement as it is in this lane: the phone's fallback behaves the same today, the session stays one tap away in its project and resumes with its marker intact, and holding daemons for unread results trades memory on the host for a signal the Board could show another way. If testers miss finished work, the follow-up is a Board band for recently retired unseen sessions, read from the past index, not a longer-lived daemon.
+None open: Jesse answered both on 2026-09-26 (rulings 24 and 25).
 
 ## Review Focus
 
@@ -116,7 +120,7 @@ This lane changes `mobile-native/` only through the shared package. When each hu
 - Order Finished and Idle newest first by `turn_ended_at`, falling back to `updated_at`.
 
 **S3 (after PR 19).**
-- When a row carries `subagents`, the last line's "2 subagents failed" comes from `subagents.failed`, and the Subagents chip's strip and counts come from `running`, `failed` and `done`. Without it, the children fallback stays.
+- When a row carries `subagents`, the session's Subagents chip takes its strip and counts from `running`, `failed` and `done`. The Board row shows no subagent failures (ruling 24). Without it, the children fallback stays.
 
 **Known limits.**
 - A NeedsYou row carries no workspace ref (the NeedsYou builder in `hubcore/tree.go:1563-1574` sets none), so after a `thread/clear` its ref is the new session's ID while the session's Live row keeps the workspace ref. Its `unseen` is keyed by that ref, so after a clear it can disagree with the Live row's. The Board reads Finished from the Live band and Question and Approval outrank it, so the Board is not affected; a client that joins the two bands by ref sees two refs for one session, as it does today.
