@@ -142,6 +142,25 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bands.idle.map((item) => item.row.ref)).toEqual(["seen-new", "seen-old"]);
 	});
 
+	it("floats a may-be-stuck session to the top of Working when isStuck is given (spec 7.1, S5)", () => {
+		const live = [
+			row("work-a", { state: "active", updated_at: at(1) }),
+			row("work-b-stuck", { state: "active", updated_at: at(2) }),
+			row("work-c", { state: "active", updated_at: at(3) }),
+			row("work-d-stuck", { state: "active", updated_at: at(4) }),
+		];
+		const isStuck = (r: NavigationSessionSummary) => r.ref.endsWith("-stuck");
+		const bands = liveBands(live, [], () => false, isStuck);
+		// Both stuck rows float up, keeping their own relative (hub) order;
+		// the rest keep theirs too.
+		expect(bands.working.map((item) => item.row.ref)).toEqual(["work-b-stuck", "work-d-stuck", "work-a", "work-c"]);
+	});
+
+	it("keeps the hub's order for Working when isStuck is omitted, same as before S5", () => {
+		const live = [row("work-a", { state: "active", updated_at: at(1) }), row("work-b", { state: "active", updated_at: at(2) })];
+		expect(liveBands(live, [], () => false).working.map((item) => item.row.ref)).toEqual(["work-a", "work-b"]);
+	});
+
 	it("sorts a row with a missing or unreadable updated_at as the oldest", () => {
 		const live = [
 			row("done-dated", { state: "awaiting", updated_at: at(10) }),

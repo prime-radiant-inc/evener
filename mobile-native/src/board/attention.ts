@@ -142,15 +142,26 @@ function needsYouOrder(a: ClassifiedRow, b: ClassifiedRow): number {
 	const rank = (item: ClassifiedRow) => (item.state === "failed" ? 0 : 1);
 	return rank(a) - rank(b) || oldestFirst(a, b);
 }
+// Stuck first, else keep relative order: Array.prototype.sort is stable, so a
+// comparator that only distinguishes stuck from not leaves the hub's own
+// order (ruling 10) untouched within each group (spec 7.1, S5).
+function workingOrder(isStuck: (row: NavigationSessionSummary) => boolean) {
+	return (a: ClassifiedRow, b: ClassifiedRow): number => Number(isStuck(b.row)) - Number(isStuck(a.row));
+}
 
 /** Splits Live into the spec's four bands. Rows from the needs_you section
  * join when Live's loaded pages don't hold them yet, so a session that needs
  * you is never hidden behind "load more"; a row in both keeps its Live copy,
- * which carries children. Working keeps the hub's Live order (ruling 10). */
+ * which carries children. Working keeps the hub's Live order (ruling 10),
+ * except a row isStuck marks (S5's quietState "stuck", from the activity
+ * poll), which floats to the top of the band (spec 7.1). isStuck is optional
+ * because the poll's data isn't always at hand (an older hub, or before the
+ * first read): omitting it leaves Working exactly as it read before S5. */
 export function liveBands(
 	live: readonly NavigationSessionSummary[],
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
+	isStuck?: (row: NavigationSessionSummary) => boolean,
 ): LiveBands {
 	const classify = rowClassifier(needsYouSection, isSeen);
 	const rows = new Map<string, NavigationSessionSummary>();
@@ -165,6 +176,7 @@ export function liveBands(
 	bands.needsYou.sort(needsYouOrder);
 	bands.finished.sort(newestFirst);
 	bands.idle.sort(newestFirst);
+	if (isStuck) bands.working.sort(workingOrder(isStuck));
 	return bands;
 }
 
