@@ -219,7 +219,7 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
     - Hub and New session stay `presentation: "modal"` routes, each holding its own nested stack (ruling 1). The pickers and detail pages inside push within the sheet, so they need no detents of their own.
     - A provider's and a plugin's detail sheets, and sign-in, stay RN `Modal` page sheets over their lists (ruling 9), because their mutation gates, fences and sign-in flows live with the list.
     - Presenting a formSheet route dismisses any other presented view controller (phase 2's ruling 28), so nothing inside Hub or New session opens one. "New session like this" (Task 25) opens New session from the session's ⋯ menu, a native menu, not from a sheet.
-    - A relaunch skips only formSheet routes (`routeToSave`, phase 2's Task 18.1), so with Hub or New session open it reopens the Board under it, as it does today.
+    - A relaunch skips only formSheet routes (`routeToSave`, phase 2's Task 18.1). With Hub or New session open, it reopens the Board, as it does today (`locationForRoute` gives both `{ hubId }`).
     - Phase 3's model sheet is a session sheet that reads its session's host. New session's model picker (Task 21) reuses its list, never the route.
 
 ## Questions for Jesse
