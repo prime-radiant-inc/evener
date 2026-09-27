@@ -1645,6 +1645,42 @@ it("reads an unfolded project's pages once, reads nothing to fold it, and rememb
 	act(() => again.unmount());
 });
 
+it("classifies a project's session rows by the hub's seen marker too (S4)", async () => {
+	const id = hubId();
+	deviceDisagrees(id);
+	const fake = hub({
+		...hubFleet,
+		catalogs: { projects: [evenerProject()] },
+		projectPages: {
+			"evener:current": [
+				// The device holds an unread mark for this ref; the hub says seen.
+				session("local:hub-seen", {
+					title: "Project hub seen",
+					live: false,
+					updated_at: minutesAgo(6),
+					turn_ended_at: minutesAgo(6),
+					unseen: false,
+				}),
+				// The device's epoch covers this one; the hub says unseen.
+				session("local:project-unseen", {
+					title: "Project hub unseen",
+					live: false,
+					updated_at: minutesAgo(90),
+					turn_ended_at: minutesAgo(90),
+					unseen: true,
+				}),
+			],
+		},
+	});
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	pressLabel(tree, "evener");
+	await settle();
+	expect(stateOf(tree, "Project hub seen")).toBe("Idle");
+	expect(stateOf(tree, "Project hub unseen")).toBe("Finished");
+	act(() => tree.unmount());
+});
+
 it("starts Test runs and Archived folded, reading neither catalog until it is unfolded", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);

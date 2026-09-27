@@ -386,7 +386,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		if (item.kind === "session")
 			return (
 				<View key={item.key} style={{ marginLeft: 16 * item.depth }}>
-					{rows([{ row: item.row, state: boardState(item.row, false, markers.isSeen(item.row)) }], "quiet", false)}
+					{rows([{ row: item.row, state: boardState(item.row, false, seen.isSeen(item.row)) }], "quiet", false)}
 				</View>
 			);
 		if (item.kind === "more" || item.kind === "moreProjects")
