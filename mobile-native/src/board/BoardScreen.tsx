@@ -37,10 +37,12 @@ import {
 	usualPlace,
 } from "./attention";
 import type { SeenMarkers } from "./boardMemory";
+import { BoardNotices, NoticeRow } from "./BoardNotices";
 import { BoardRow, TITLE_INSET } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { foldedSections, seenMarkers } from "./nativeBoardMemory";
+import { notices } from "./notices";
 import { PulseMeter } from "./PulseMeter";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
@@ -118,6 +120,18 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	const usual = useMemo(() => usualPlace(snapshot.live.rows), [snapshot.live.rows]);
 	const sources = snapshot.manifest?.sources;
+	// An offline host counts its sessions on the Live and Needs you pages
+	// loaded so far; pinned categories join when the Board loads them.
+	const hubNotices = useMemo(
+		() =>
+			notices({
+				auth: snapshot.auth,
+				sources: sources ?? [],
+				plugins: snapshot.plugins,
+				loadedRows: [...snapshot.live.rows, ...snapshot.needsYou.rows],
+			}),
+		[snapshot.auth, sources, snapshot.plugins, snapshot.live.rows, snapshot.needsYou.rows],
+	);
 	const hostLabel = useMemo(() => {
 		const labels = new Map((sources ?? []).map((source) => [source.id, source.label]));
 		return (hostId: string) => labels.get(hostId) ?? hostId;
@@ -296,7 +310,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 						onContentSizeChange={readMoreLiveIfNear}
 						scrollEventThrottle={100}
 					>
-						{fatal ? <Notice text={INCOMPATIBLE} /> : null}
+						{fatal ? <NoticeRow text={INCOMPATIBLE} /> : null}
+						<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
 						<View
 							testID="live-block"
 							onLayout={(event) => {
@@ -812,37 +827,6 @@ function EmptyBoard({ disabled, onNewSession }: { disabled: boolean; onNewSessio
 			<Action tone="primary" disabled={disabled} onPress={onNewSession}>
 				New session
 			</Action>
-		</View>
-	);
-}
-
-/** A hub-level notice on the page, like a row: the mark says it needs you. */
-function Notice({ text }: { text: string }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<View
-			style={{
-				marginTop: 4,
-				marginHorizontal: 16,
-				paddingTop: 8,
-				paddingBottom: 10,
-				flexDirection: "row",
-				alignItems: "center",
-				columnGap: 10,
-				borderBottomWidth: 0.5,
-				borderColor: palette.edge,
-			}}
-		>
-			<View style={{ width: 22, alignItems: "center" }}>
-				<SymbolView name="exclamationmark.triangle.fill" size={17 * scale} tintColor={palette.attention} />
-			</View>
-			<Text
-				allowFontScaling={Platform.OS !== "ios"}
-				style={{ flex: 1, fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkHi }}
-			>
-				{text}
-			</Text>
 		</View>
 	);
 }

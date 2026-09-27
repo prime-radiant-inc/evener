@@ -4,10 +4,12 @@
 // kv-store.
 import type {
 	AnyNotification,
+	AuthStatusResponse,
 	ConnectionState,
 	NavigationInvalidationTarget,
 	NavigationReadParams,
 	NavigationSessionSummary,
+	PluginEntry,
 } from "@evener/appwire-client";
 import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
@@ -137,6 +139,11 @@ interface Fleet {
 	manifest: ReturnType<typeof manifest>;
 	/** Sessions only search finds: the Board doesn't list them. */
 	searchOnly?: NavigationSessionSummary[];
+	/** What evener/auth/list and evener/plugin/list answer; none by default. */
+	auth?: AuthStatusResponse[];
+	plugins?: PluginEntry[];
+	/** Whether evener/auth/list and evener/plugin/list fail. */
+	listsFail?: boolean;
 }
 const fleet: Fleet = {
 	// The ask is in the hub's needs_you section only: bands union it.
@@ -153,14 +160,16 @@ const fleet: Fleet = {
 	}),
 };
 
-/** A hub that answers navigation reads by params; `hold` keeps a read
- * unanswered until the test releases it, and `fail` rejects it. */
+/** A hub that answers navigation reads by params, and the sign-in and plugin
+ * lists from the fleet; `hold` keeps a navigation read unanswered until the
+ * test releases it, and `fail` rejects it. */
 function hub(
 	shape: Fleet,
 	hold: (params: NavigationReadParams) => boolean = () => false,
 	fail: (params: NavigationReadParams) => boolean = () => false,
 ) {
 	const requests: NavigationReadParams[] = [];
+	const lists: string[] = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
 	const held: Array<() => void> = [];
 	const answer = (params: NavigationReadParams) => {
@@ -198,6 +207,13 @@ function hub(
 					} as never);
 					return;
 				}
+				if (method === "evener/auth/list" || method === "evener/plugin/list") {
+					lists.push(method);
+					if (shape.listsFail) reject(new Error("request timed out"));
+					else if (method === "evener/auth/list") resolve({ providers: shape.auth ?? [] } as never);
+					else resolve({ plugins: shape.plugins ?? [] } as never);
+					return;
+				}
 				if (method !== "evener/navigation/read") throw new Error(`unexpected ${method}`);
 				const read = params as NavigationReadParams;
 				requests.push(read);
@@ -226,6 +242,10 @@ function hub(
 	return {
 		client,
 		requests,
+		lists,
+		authUpdated: () => {
+			for (const listener of listeners) listener({ method: "evener/auth/updated", params: {} } as AnyNotification);
+		},
 		invalidate: (sequence: number, targets: NavigationInvalidationTarget[]) => {
 			for (const listener of listeners)
 				listener({
@@ -759,8 +779,8 @@ it("stops retrying a failed first read when it unmounts", async () => {
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
-	// The row-age ticker and the retry.
-	expect(vi.getTimerCount()).toBe(2);
+	// The row-age ticker, the plugin poll and the retry.
+	expect(vi.getTimerCount()).toBe(3);
 	act(() => tree.unmount());
 	expect(vi.getTimerCount()).toBe(0);
 	await advance(60_000);
@@ -1041,5 +1061,129 @@ it("reads nothing while blurred, and on refocus catches up and re-reads drafts",
 	await settle();
 	expect(manifestReads()).toBe(2);
 	expect(draftTags(rowTitled(tree, "Build docs"))).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+const signIn = (provider: string, needsLogin: boolean): AuthStatusResponse => ({
+	provider,
+	supported: true,
+	signedIn: !needsLogin,
+	activeSource: "oauth",
+	hasStoredOAuth: true,
+	needsLogin,
+});
+const plugin = (name: string, broken: boolean): PluginEntry => ({
+	plugin: name,
+	marketplace: "evener",
+	version: "1.0.0",
+	enabled: true,
+	autoUpgrade: false,
+	broken,
+	installPath: `/plugins/${name}`,
+	installedAt: 0,
+	lastUpdated: 0,
+});
+const noticeTexts = (tree: ReactTestRenderer) =>
+	tree.root.findAll((node) => node.props.testID === "notice").map(joinedText);
+/** A fleet with a host offline: one of its sessions is in Live and Needs you
+ * both, and one only in Live. */
+const troubledFleet = (): Fleet => {
+	const stuck = session("studio:stuck", { host_id: "studio", title: "Stuck", state: "errored" });
+	const quiet = session("studio:quiet", { host_id: "studio", title: "Quiet" });
+	return {
+		...fleet,
+		live: [[failing, working, stuck, quiet]],
+		needsYou: [failing, stuck],
+		manifest: manifest({
+			sources: [
+				{ id: "local", label: "Laptop", kind: "local", online: true },
+				{ id: "studio", label: "Studio Mac", kind: "ssh", online: false },
+			],
+			sections: { live: { count: 4 }, needs_you: { count: 2 }, pin_sections: { count: 2 } },
+			catalogs: { projects: { count: 4 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+		}),
+		auth: [signIn("anthropic", false), signIn("openai", true)],
+		plugins: [plugin("superpowers", true), plugin("elements-of-style", false)],
+	};
+};
+
+it("shows the hub's notices under the chips, above Live, after Update needed, and opens each one's screen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(troubledFleet()).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(noticeTexts(tree)).toEqual([
+		"openai sign-in expiredSign in",
+		"Studio Mac is offline · 2 sessionsDetails",
+		"superpowers is brokenPlugins",
+	]);
+	// The notices sit in the scroller, before the Live block.
+	const scroller = tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
+	const order = scroller.findAll((node) => node.props.testID === "notice" || node.props.testID === "live-block");
+	expect(order.map((node) => node.props.testID)).toEqual(["notice", "notice", "notice", "live-block"]);
+	pressLabel(tree, "Sign in, openai sign-in expired");
+	expect(nav.navigate).toHaveBeenLastCalledWith("Providers", { hubId: id });
+	pressLabel(tree, "Details, Studio Mac is offline · 2 sessions");
+	expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
+	pressLabel(tree, "Plugins, superpowers is broken");
+	expect(nav.navigate).toHaveBeenLastCalledWith("Plugins", { hubId: id });
+	// Update needed comes first.
+	connect(id, null, "closed", { fatal: true });
+	rerender(tree, nav);
+	expect(noticeTexts(tree)[0]).toBe(INCOMPATIBLE_TEXT);
+	expect(noticeTexts(tree)).toHaveLength(4);
+	act(() => tree.unmount());
+});
+
+it("drops a sign-in notice once an auth update says it's resolved", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape = troubledFleet();
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(noticeTexts(tree)).toContain("openai sign-in expiredSign in");
+	shape.auth = [signIn("anthropic", false), signIn("openai", false)];
+	fake.authUpdated();
+	await settle();
+	expect(noticeTexts(tree)).not.toContain("openai sign-in expiredSign in");
+	expect(noticeTexts(tree)).toHaveLength(2);
+	act(() => tree.unmount());
+});
+
+it("reads the plugins again every 5 minutes while in view, and not while blurred", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape = troubledFleet();
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const pluginReads = () => fake.lists.filter((method) => method === "evener/plugin/list").length;
+	expect(pluginReads()).toBe(1);
+	shape.plugins = [plugin("superpowers", false)];
+	await advance(5 * 60_000);
+	expect(pluginReads()).toBe(2);
+	expect(noticeTexts(tree)).not.toContain("superpowers is brokenPlugins");
+	setFocused(false);
+	await advance(15 * 60_000);
+	expect(pluginReads()).toBe(2);
+	setFocused(true);
+	await settle();
+	expect(pluginReads()).toBe(3);
+	act(() => tree.unmount());
+});
+
+it("says nothing when the sign-in and plugin reads fail, and doesn't retry the Board over them", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...troubledFleet(), listsFail: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(noticeTexts(tree)).toEqual(["Studio Mac is offline · 2 sessionsDetails"]);
+	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
+	const reads = fake.requests.length;
+	await advance(60_000);
+	expect(fake.requests).toHaveLength(reads);
 	act(() => tree.unmount());
 });

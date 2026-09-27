@@ -1,8 +1,10 @@
 import type {
+	AuthStatusResponse,
 	NavigationInvalidatedPayload,
 	NavigationManifest,
 	NavigationPinSectionDescriptor,
 	NavigationSessionSummary,
+	PluginEntry,
 } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
@@ -31,6 +33,10 @@ export interface BoardSnapshot {
 	 * or the manifest) is out. */
 	reading: boolean;
 	error: string | null;
+	/** The hub's providers, for the sign-in notices. */
+	auth: AuthStatusResponse[];
+	/** The hub's plugins, for the broken-plugin notices. */
+	plugins: PluginEntry[];
 }
 export interface BoardController {
 	getSnapshot(): BoardSnapshot;
@@ -49,6 +55,9 @@ const PAGE_LIMIT = 50;
 const PIN_CATALOG_LIMIT = 100;
 const MANIFEST_PARAMS = { resource: "manifest", representationVersion: 2 };
 const MANIFEST_KEY = navigationParamsToResourceKey(MANIFEST_PARAMS);
+/** evener/plugin/updated fires only on mutations, so a plugin that breaks on
+ * its own shows up on this poll (ruling 8). */
+const PLUGIN_POLL = 5 * 60_000;
 
 interface ManifestState {
 	manifest: NavigationManifest | null;
@@ -191,11 +200,16 @@ class ManifestReader {
 }
 
 interface Readers {
+	client: ConversationClientLike;
 	live: NavigationPages<NavigationSessionSummary>;
 	needsYou: NavigationPages<NavigationSessionSummary>;
 	pins: NavigationPages<NavigationPinSectionDescriptor>;
 	manifest: ManifestReader;
 	stop: Array<() => void>;
+	/** The latest read of each notice list, so an older answer that lands
+	 * after a newer one is dropped. */
+	noticeReads: { auth: number; plugins: number };
+	pluginPoll: ReturnType<typeof setInterval> | null;
 }
 /** What the Board showed when its last connection went away, per reader,
  * until the current connection's read of that reader lands. */
@@ -249,6 +263,10 @@ export function createBoardController(): BoardController {
 	let loaded = false;
 	let paused = false;
 	let disposed = false;
+	// The notice lists outlive a connection: each keeps what it last read
+	// until the current connection's read of it lands.
+	let auth: AuthStatusResponse[] = [];
+	let plugins: PluginEntry[] = [];
 
 	const build = (): BoardSnapshot => ({
 		manifest: readers?.manifest.state.loaded
@@ -275,6 +293,8 @@ export function createBoardController(): BoardController {
 				readers.pins.getSnapshot().error ??
 				readers.manifest.state.error)
 			: null,
+		auth,
+		plugins,
 	});
 	let snapshot = build();
 	// A reader republishes on cancel() with nothing changed, and every fresh
@@ -331,6 +351,58 @@ export function createBoardController(): BoardController {
 
 	const pages = (bound: Readers) => [bound.live, bound.needsYou, bound.pins];
 
+	/** Reads one of the lists the notices come from. These reads stand apart
+	 * from the Board's navigation reads: a failure keeps the last list and
+	 * says nothing, so it never counts as the Board's error, holds up first
+	 * run or starts the rebind retry. The next focus, auth update or poll
+	 * tries it again. */
+	const readNoticeList = <T,>(
+		bound: Readers,
+		list: keyof Readers["noticeReads"],
+		read: () => Promise<T>,
+		land: (value: T) => void,
+	) => {
+		if (paused) return;
+		const request = ++bound.noticeReads[list];
+		read().then(
+			(value) => {
+				if (readers !== bound || request !== bound.noticeReads[list]) return;
+				land(value);
+				publish();
+			},
+			() => {},
+		);
+	};
+	const readAuth = (bound: Readers) =>
+		readNoticeList(
+			bound,
+			"auth",
+			() => bound.client.request("evener/auth/list", {}),
+			(result) => {
+				auth = result.providers;
+			},
+		);
+	const readPlugins = (bound: Readers) =>
+		readNoticeList(
+			bound,
+			"plugins",
+			() => bound.client.request("evener/plugin/list", {}),
+			(result) => {
+				plugins = result.plugins;
+			},
+		);
+	const stopPluginPoll = (bound: Readers) => {
+		if (bound.pluginPoll !== null) clearInterval(bound.pluginPoll);
+		bound.pluginPoll = null;
+	};
+	/** Reads both notice lists and polls the plugins from now on. */
+	const readNoticeLists = (bound: Readers) => {
+		readAuth(bound);
+		readPlugins(bound);
+		stopPluginPoll(bound);
+		bound.pluginPoll = setInterval(() => readPlugins(bound), PLUGIN_POLL);
+	};
+
 	const connect = (client: ConversationClientLike): Readers => {
 		const section = (name: "live" | "needs_you") =>
 			new NavigationPages<NavigationSessionSummary>(
@@ -341,6 +413,7 @@ export function createBoardController(): BoardController {
 				PAGE_LIMIT,
 			);
 		const bound: Readers = {
+			client,
 			live: section("live"),
 			needsYou: section("needs_you"),
 			pins: new NavigationPages<NavigationPinSectionDescriptor>(
@@ -352,6 +425,8 @@ export function createBoardController(): BoardController {
 			),
 			manifest: new ManifestReader(client, publish),
 			stop: [],
+			noticeReads: { auth: 0, plugins: 0 },
+			pluginPoll: null,
 		};
 		bound.stop.push(
 			bound.live.subscribe(publish),
@@ -365,13 +440,19 @@ export function createBoardController(): BoardController {
 			}),
 		);
 		for (const page of pages(bound)) bound.stop.push(page.watch());
-		bound.stop.push(bound.manifest.watch());
+		bound.stop.push(
+			bound.manifest.watch(),
+			client.onNotification((event) => {
+				if (event.method === "evener/auth/updated") readAuth(bound);
+			}),
+		);
 		if (paused) {
 			for (const page of pages(bound)) page.cancel();
 			bound.manifest.pause();
 		} else {
 			for (const page of pages(bound)) void page.refresh();
 			bound.manifest.read();
+			readNoticeLists(bound);
 		}
 		return bound;
 	};
@@ -383,6 +464,7 @@ export function createBoardController(): BoardController {
 		for (const stop of bound.stop) stop();
 		for (const page of pages(bound)) page.cancel();
 		bound.manifest.dispose();
+		stopPluginPoll(bound);
 	};
 
 	return {
@@ -415,6 +497,7 @@ export function createBoardController(): BoardController {
 			if (!readers) return;
 			for (const page of pages(readers)) page.cancel();
 			readers.manifest.pause();
+			stopPluginPoll(readers);
 		},
 		resume() {
 			paused = false;
@@ -437,6 +520,7 @@ export function createBoardController(): BoardController {
 			readers.manifest.resume();
 			fill(readers.needsYou);
 			fill(readers.pins);
+			readNoticeLists(readers);
 		},
 		dispose() {
 			if (disposed) return;
