@@ -119,6 +119,20 @@ function dayKey(at: number, timeZone?: string): string {
 	return formattersFor(timeZone).dayKey.format(at);
 }
 
+// An instant's calendar date in the zone, as a count of days since the Unix
+// epoch. Reads year/month/day as numbers off the cached day formatter's own
+// parts and turns them into a UTC-midnight instant (Date.UTC), so two of
+// these subtract to a whole number of calendar days regardless of a DST
+// change between them. Subtracting the instants' raw milliseconds and
+// re-formatting the result can land a wall-clock hour off instead (fix
+// round 1, finding 1: "yesterday" read as a weekday the day after a
+// spring-forward).
+function dayNumber(at: number, timeZone: string | undefined): number {
+	const parts = formattersFor(timeZone).dayKey.formatToParts(at);
+	const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((candidate) => candidate.type === type)?.value);
+	return Date.UTC(value("year"), value("month") - 1, value("day")) / 86_400_000;
+}
+
 function timeMarker(
 	turns: readonly TurnTimes[],
 	byId: ReadonlyMap<string, number>,
@@ -148,10 +162,13 @@ function clockText(at: number, timeZone?: string): string {
 export function timeMarkerText(at: number, now: number, timeZone?: string): string {
 	const formatters = formattersFor(timeZone);
 	const clock = clockText(at, timeZone);
-	const day = dayKey(at, timeZone);
-	if (day === dayKey(now, timeZone)) return `Today ${clock}`;
-	if (day === dayKey(now - 86_400_000, timeZone)) return `Yesterday ${clock}`;
-	if (now - at < 6 * 86_400_000) return `${formatters.weekday.format(at)} ${clock}`;
+	// Whole calendar days between the two dates in the zone, never a raw
+	// millisecond span: 0 is today, 1 is yesterday, 2-6 is the short weekday,
+	// anything else (older, or a future `at` from clock skew) is a date.
+	const daysAgo = dayNumber(now, timeZone) - dayNumber(at, timeZone);
+	if (daysAgo === 0) return `Today ${clock}`;
+	if (daysAgo === 1) return `Yesterday ${clock}`;
+	if (daysAgo >= 2 && daysAgo <= 6) return `${formatters.weekday.format(at)} ${clock}`;
 	return `${formatters.monthDay.format(at)}, ${clock}`;
 }
 
@@ -230,8 +247,8 @@ const isNumber = (value: number | undefined): value is number => value !== undef
 // How long the run took: from its first step's start to its last step's end,
 // only when EVERY step carries both clock times. A settled step at a compact
 // detail level carries no clock times at all (Jesse's summary-only ruling), so
-// reading a duration from only some of a run's steps — say, just its failed
-// ones — would understate the run rather than say nothing.
+// reading a duration from only some of a run's steps (say, just its failed
+// ones) would understate the run rather than say nothing.
 function runDuration(steps: readonly RunStep[]): number | undefined {
 	if (steps.length === 0) return undefined;
 	const starts = steps.map((step) => step.detail.startedAtMs);

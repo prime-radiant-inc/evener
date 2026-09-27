@@ -139,6 +139,23 @@ describe("time markers", () => {
 		expect(timeMarkerText(Date.UTC(2026, 8, 22, 9, 3), now, "UTC")).toBe("Tue 9:03 AM");
 		expect(timeMarkerText(Date.UTC(2026, 8, 12, 9, 3), now, "UTC")).toBe("Sep 12, 9:03 AM");
 	});
+
+	// Fix round 1, finding 1: "Yesterday" has to be the zone's previous
+	// calendar date, not "24 hours ago"; those disagree across a DST change.
+	it("counts calendar days, so Yesterday survives a DST change", () => {
+		// America/New_York's 2026 DST began 2026-03-08 at 2 AM local, so that
+		// day has only 23 wall-clock hours: subtracting a flat 24h from "now"
+		// (00:30 local on March 9) lands on March 7, not March 8.
+		expect(
+			timeMarkerText(Date.UTC(2026, 2, 8, 13, 3), Date.UTC(2026, 2, 9, 4, 30), "America/New_York"),
+		).toBe("Yesterday 9:03 AM");
+	});
+
+	it("keeps the weekday window to whole calendar days", () => {
+		const now = Date.UTC(2026, 8, 26, 18, 0);
+		expect(timeMarkerText(Date.UTC(2026, 8, 20, 17, 0), now, "UTC")).toBe("Sun 5:00 PM");
+		expect(timeMarkerText(Date.UTC(2026, 8, 19, 20, 0), now, "UTC")).toBe("Sep 19, 8:00 PM");
+	});
 });
 
 describe("the live run (for Task 24)", () => {

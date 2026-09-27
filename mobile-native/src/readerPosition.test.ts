@@ -669,6 +669,21 @@ describe("where a session opens (spec 7.3, ruling 31)", () => {
 	it("opens at the start of a reply that finished since you last reached the end", () => {
 		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rows, turnIds, false)).toEqual({ kind: "row", index: 4 });
 	});
+	// Fix round 1, finding 2 (no code change; pinning intended behavior): the
+	// "unread result" (spec 7.3) starts with the agent's first row, runs
+	// included, so a newer turn whose agent side opens with a run opens there,
+	// not at the assistant reply that follows it.
+	it("opens at a run when a newer turn's agent side starts with one", () => {
+		const rowsWithRun: TimelineRow[] = [
+			{ kind: "user", id: "u1", text: "one", turnId: "turn_1" },
+			{ kind: "assistant", id: "a1", markdown: "one", streaming: false, turnId: "turn_1" },
+			{ kind: "time", id: "time:turn_2", turnId: "turn_2", at: 0 },
+			{ kind: "user", id: "u2", text: "two", turnId: "turn_2" },
+			{ kind: "run", id: "run:a", steps: [], turnId: "turn_2" },
+			{ kind: "assistant", id: "a2", markdown: "two", streaming: false, turnId: "turn_2" },
+		];
+		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rowsWithRun, turnIds, false)).toEqual({ kind: "row", index: 4 });
+	});
 	it("opens where you left off when nothing is newer, or the seen turn isn't loaded", () => {
 		expect(openingTarget(anchor({ turnsSeen: "turn_2" }), rows, turnIds, false)).toEqual({ kind: "anchor" });
 		expect(openingTarget(anchor({ turnsSeen: "turn_0" }), rows, turnIds, false)).toEqual({ kind: "anchor" });
