@@ -28,16 +28,15 @@ const consoleGuard = guardConsoleOutput(console);
 // after it reports these instead of the guard throwing them: vitest runs a
 // file's afterEach hooks in one loop, so a throw from one hook skips the rest,
 // and the unmount and the check must still run for that test.
-let actScopeFailures: unknown[] = [];
+const actScopeFailures: unknown[] = [];
 
 // Registered first, so it runs last of all: it fails the test on what it left
 // behind, which is an act() scope it left open, errors from work that ran in
 // that scope, and console output.
 function failOnTestLeftovers() {
+  const failures = actScopeFailures.splice(0);
   const unexpectedOutput = consoleGuard.takeUnexpectedOutput();
-  const failures =
-    unexpectedOutput === undefined ? actScopeFailures : [...actScopeFailures, new Error(unexpectedOutput)];
-  actScopeFailures = [];
+  if (unexpectedOutput !== undefined) failures.push(new Error(unexpectedOutput));
   if (failures.length === 1) throw failures[0];
   // Vitest reports each error an AggregateError holds as a failure of its own.
   if (failures.length > 1) throw new AggregateError(failures);
