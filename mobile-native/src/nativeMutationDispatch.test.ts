@@ -321,10 +321,12 @@ test("the durable submitter refuses while no host is live and delegates once one
 		input: [{ type: "text" as const, text: "x" }],
 	};
 	// No host: a submission must be refused, not durably accepted, because
-	// nothing would dispatch it.
+	// nothing would dispatch it. Calm copy (spec principle 2): it says what
+	// happened, never asks the person to reconnect - the app does that on its
+	// own - so the exact text is pinned here.
 	const refused = createDurableSubmitter(() => null);
 	await expect(refused.submit(request)).rejects.toThrow(
-		"Durable sending is unavailable",
+		new Error("Durable sending is unavailable right now."),
 	);
 
 	// A live host delegates to the runtime and enqueues durably.
