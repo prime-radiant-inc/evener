@@ -43,15 +43,18 @@ export function notices(input: {
 			sourceId: source.id,
 		});
 	}
-	for (const { plugin, marketplace, broken } of input.plugins)
-		if (broken)
-			result.push({
-				// Two marketplaces can each ship a plugin of the same name.
-				key: `plugin:${plugin}@${marketplace}`,
-				kind: "plugin",
-				text: `${plugin} is broken`,
-				action: "Plugins",
-				pluginId: plugin,
-			});
+	// Two marketplaces can each ship a plugin of the same name: such plugins
+	// name their marketplace too.
+	const broken = input.plugins.filter((entry) => entry.broken);
+	for (const { plugin, marketplace } of broken) {
+		const shared = broken.filter((other) => other.plugin === plugin).length > 1;
+		result.push({
+			key: `plugin:${plugin}@${marketplace}`,
+			kind: "plugin",
+			text: `${shared ? `${plugin} from ${marketplace}` : plugin} is broken`,
+			action: "Plugins",
+			pluginId: plugin,
+		});
+	}
 	return result;
 }

@@ -106,6 +106,11 @@ it("keeps two broken plugins of one name from different marketplaces apart", () 
 		plugins: [plugin("superpowers", true), { ...plugin("superpowers", true), marketplace: "community" }],
 	});
 	expect(found.map((notice) => notice.key)).toEqual(["plugin:superpowers@evener", "plugin:superpowers@community"]);
+	// Their names alone would read the same, so each names its marketplace.
+	expect(found.map((notice) => notice.text)).toEqual([
+		"superpowers from evener is broken",
+		"superpowers from community is broken",
+	]);
 });
 
 it("lists sign-ins, then hosts, then plugins", () => {
