@@ -277,3 +277,25 @@ func TestIsRunningHandlerAbsentKeepsOtherWireErrorsOut(t *testing.T) {
 		}
 	}
 }
+
+// TestProbeHostRunningReportsACanceledCallerNotATimeout pins the failure
+// classification's boundary: a caller whose own context ended is reported as
+// canceled — never as a probe timeout, which names the remote's deadline.
+func TestProbeHostRunningReportsACanceledCallerNotATimeout(t *testing.T) {
+	manager, host, client := probeTestManager(t, func(appwire.HostRunningParams) (appwire.HostRunningResponse, appwire.WireError) {
+		return appwire.HostRunningResponse{BuildRevision: "v1.2.3", Healthy: true}, appwire.WireError{}
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := probeHostRunning(ctx, manager, host, client,
+		appwire.FencingEpoch{BootID: "boot-1", OpSeq: 1}, time.Second)
+	if err == nil {
+		t.Fatal("the probe succeeded with a canceled caller context")
+	}
+	if strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("a canceled caller was reported as a timeout: %v", err)
+	}
+	if !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("probe error %q does not name the cancellation", err)
+	}
+}

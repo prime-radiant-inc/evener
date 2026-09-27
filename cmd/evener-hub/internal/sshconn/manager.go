@@ -2398,9 +2398,14 @@ type hostLockEntry struct {
 //
 // The holder is written by whoever holds the mutex, after acquiring it, and
 // cleared by Unlock before the mutex is released, so a contender that fails
-// TryLock can never read a stale holder for a free gate. It is an atomic
-// pointer rather than a field under the manager mutex so Unlock stays a
-// lock-free operation, exactly as the plain sync.Mutex it replaces was.
+// TryLock can never read a stale holder for a free gate — a free gate always
+// reads the zero Holder. It is an atomic pointer rather than a field under the
+// manager mutex so Unlock stays a lock-free operation, exactly as the plain
+// sync.Mutex it replaces was. The holder is published as the acquisition's very
+// next step (see TryAcquire and each holdAs call site): the one instant between
+// a successful TryLock and the store is not observable as a holder, so a
+// contender landing exactly there reads the zero Holder and gets the safe
+// generic transient form, never a wrong operation id.
 type hostLockGate struct {
 	mu     sync.Mutex
 	holder atomic.Pointer[hostops.Holder]

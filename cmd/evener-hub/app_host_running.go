@@ -100,6 +100,15 @@ func (m *hubHostManager) HostRunning(ctx context.Context, params appwire.HostRun
 	if err := guardAttachedProbeSession(ctx); err != nil {
 		return appwire.HostRunningResponse{}, err
 	}
+	// The admission-plus-probe window is serialized on this hub: the guard row
+	// is hub-wide (v1 admits one calling controller), so a second call must not
+	// advance the admitted epoch while the first is still probing with the
+	// epoch it admitted. FENCING BOUNDARY: the fencing slice's per-host remote
+	// lease and guard-file compare-and-advance replace this mutex; until then
+	// this is the serialization that keeps "persisted before the write half"
+	// true for the probe that actually runs.
+	m.cfg.runningProbeMu.Lock()
+	defer m.cfg.runningProbeMu.Unlock()
 	epoch := params.FencingEpoch
 	if err := m.admitPresentedEpoch(epoch); err != nil {
 		return appwire.HostRunningResponse{}, err

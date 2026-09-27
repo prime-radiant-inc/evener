@@ -12,11 +12,14 @@ package hub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -359,4 +362,86 @@ func dialHubRPCWithHeaders(t *testing.T, hub *httptest.Server, header http.Heade
 	client := appwire.NewClient(transport)
 	client.Start(context.Background())
 	return client
+}
+
+// TestHostRunningSerializesAdmissionAndProbe pins the serving hub's
+// serialization of §10's admission-plus-probe window: while one call's write
+// probe is in flight, a second call cannot advance the admitted epoch (it
+// waits on the hub's probe mutex), so the first probe always runs under the
+// epoch it admitted — never under one a concurrent call advanced.
+func TestHostRunningSerializesAdmissionAndProbe(t *testing.T) {
+	var m *hubHostManager
+	var mu sync.Mutex
+	var order []string
+	aProbeEntered := make(chan struct{})
+	releaseA := make(chan struct{})
+	probeCalls := 0
+	m = runningTestManager(t, hostRunningConfig{
+		freeSpace: func(string) (uint64, error) { return 1 << 40, nil },
+		writeProbe: func(string) error {
+			mu.Lock()
+			probeCalls++
+			call := probeCalls
+			mu.Unlock()
+			stored, _ := m.cfg.ops.GuardEpoch()
+			if call == 1 {
+				mu.Lock()
+				order = append(order, fmt.Sprintf("a-probe@%d", stored.OpSeq))
+				mu.Unlock()
+				close(aProbeEntered)
+				<-releaseA
+				mu.Lock()
+				order = append(order, "a-probe-done")
+				mu.Unlock()
+				return nil
+			}
+			mu.Lock()
+			order = append(order, fmt.Sprintf("b-probe@%d", stored.OpSeq))
+			mu.Unlock()
+			return nil
+		},
+	})
+
+	aDone := make(chan error, 1)
+	go func() {
+		_, err := m.HostRunning(bridgeCtx(), appwire.HostRunningParams{FencingEpoch: appwire.FencingEpoch{BootID: "boot-1", OpSeq: 5}})
+		aDone <- err
+	}()
+	<-aProbeEntered
+
+	bDone := make(chan error, 1)
+	go func() {
+		_, err := m.HostRunning(bridgeCtx(), appwire.HostRunningParams{FencingEpoch: appwire.FencingEpoch{BootID: "boot-1", OpSeq: 6}})
+		bDone <- err
+	}()
+	// The second call cannot complete while the first call's probe is parked:
+	// poll long enough that a missing serialization would have let it through.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		select {
+		case err := <-bDone:
+			t.Fatalf("the second call completed while the first call's probe was in flight: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		runtime.Gosched()
+	}
+	close(releaseA)
+	if err := <-aDone; err != nil {
+		t.Fatalf("first HostRunning: %v", err)
+	}
+	if err := <-bDone; err != nil {
+		t.Fatalf("second HostRunning: %v", err)
+	}
+	if len(order) != 3 {
+		t.Fatalf("probe order = %v, want the first probe's two marks and the second's one", order)
+	}
+	if order[0] != "a-probe@5" || order[1] != "a-probe-done" || order[2] != "b-probe@6" {
+		t.Fatalf("probe order = %v, want a-probe@5, a-probe-done, b-probe@6", order)
+	}
+	if stored, _ := m.cfg.ops.GuardEpoch(); stored.OpSeq != 6 {
+		t.Fatalf("final guard epoch = %+v, want the second call's", stored)
+	}
 }

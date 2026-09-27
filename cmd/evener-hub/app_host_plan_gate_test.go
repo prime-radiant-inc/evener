@@ -364,3 +364,23 @@ func TestHostPlanProbeTimeoutLeavesNothingHeld(t *testing.T) {
 		t.Fatal("a timed-out plan minted a token")
 	}
 }
+
+// TestHostPlanRefusesAnOperationHolderWithoutARecordID pins §11's operation
+// class's fallback: an operation holder that carries no record id cannot name
+// an open/wait-able reference, so the refusal is the typed transient form —
+// never a `host-busy-operation` with an empty operationId a client could not
+// resolve.
+func TestHostPlanRefusesAnOperationHolderWithoutARecordID(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{planTestHost()})), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	m, _, _ := planTestManager(t, configPath, []hostreg.Host{planTestHost()}, planSeams{})
+	release, err := planTestGate(t, m).TryAcquire("m4", hostops.Holder{Kind: hostops.HolderOperation})
+	if err != nil {
+		t.Fatalf("holding the gate: %v", err)
+	}
+	defer release()
+	err = errOf(m.Plan(context.Background(), appwire.HostPlanParams{Name: "m4"}))
+	wantBusy(t, err, hostops.HolderPlan, "")
+}

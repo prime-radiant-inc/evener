@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // The per-host gate (deploy pipeline 08b §5). One gate exists per host name,
@@ -114,12 +115,22 @@ type ProcessGate struct {
 
 // gateHost is one host's gate cell: the gate mutex itself, the live-user
 // reference count that keeps the cell alive while anyone holds or acquires it,
-// and the current holder. holder and refs are guarded by the owning
-// ProcessGate's mu; mu is the gate.
+// and the current holder. refs is guarded by the owning ProcessGate's mu; mu is
+// the gate, and holder is published atomically so the contended read never
+// needs the map lock.
 type gateHost struct {
 	mu     sync.Mutex
 	refs   int
-	holder Holder
+	holder atomic.Pointer[Holder]
+}
+
+// holderOf returns the gate's current holder, or the zero Holder while the
+// gate is free or its holder has not been published yet.
+func (e *gateHost) holderOf() Holder {
+	if holder := e.holder.Load(); holder != nil {
+		return *holder
+	}
+	return Holder{}
 }
 
 // NewGate builds an empty standalone gate.
@@ -144,24 +155,21 @@ func (g *ProcessGate) TryAcquire(host string, holder Holder) (func(), error) {
 	g.mu.Unlock()
 
 	if !entry.mu.TryLock() {
-		g.mu.Lock()
-		held := entry.holder
-		g.mu.Unlock()
+		held := entry.holderOf()
 		g.dropRef(name, entry)
 		return nil, Busy(name, held)
 	}
-	g.mu.Lock()
-	entry.holder = holder
-	g.mu.Unlock()
+	// The holder is published as the acquisition's very next step: a contender
+	// that fails TryLock in the instant before the store reads the zero Holder
+	// and gets the safe generic transient form, never a wrong operation id.
+	entry.holder.Store(&holder)
 
 	// The release is idempotent: a double release must not double-unlock, and a
 	// caller that defers it on a path that also calls it explicitly stays safe.
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			g.mu.Lock()
-			entry.holder = Holder{}
-			g.mu.Unlock()
+			entry.holder.Store(nil)
 			entry.mu.Unlock()
 			g.dropRef(name, entry)
 		})

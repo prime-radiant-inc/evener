@@ -337,7 +337,12 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 		target:         target,
 		epoch:          epoch,
 		sequenceBefore: sequenceBefore,
-		attached:       attached,
+		// The attachment state the gate resolved, never the pre-gate read: the
+		// planned response and every under-gate refusal report what holds at the
+		// fence. (The early `!attachedNow` return below means this is always a
+		// true answer here, but it is now derived from the gate's own observation
+		// rather than an older one.)
+		attached: attachedNow,
 	})
 	if err == nil && result.HostPlanPlanned != nil {
 		// The mint's own atomic write superseded the epoch; nothing is left to
@@ -405,13 +410,16 @@ func (m *hubHostManager) acquireHostGate(name string, holder hostops.Holder) (fu
 
 // hostBusyWireError maps the gate's typed busy refusal onto §11's envelope:
 // `host-busy-operation` with the operation record id for an operation holder,
-// `host-busy-transient` with no operation reference for every other class.
+// `host-busy-transient` with no operation reference for every other class. An
+// operation holder that carries no record id (a caller bug) renders the
+// transient form rather than an `operationId` no open/wait reference could
+// resolve — the same fallback BusyError.Error() takes.
 func hostBusyWireError(err error) error {
 	var busy *hostops.BusyError
 	if !errors.As(err, &busy) {
 		return err
 	}
-	if busy.Holder.Kind == hostops.HolderOperation {
+	if busy.Holder.Kind == hostops.HolderOperation && strings.TrimSpace(busy.Holder.OperationID) != "" {
 		return appwire.HostBusyOperation(busy.Holder.OperationID, busy.Error())
 	}
 	return appwire.HostBusyTransient(busy.Error())

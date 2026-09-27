@@ -59,10 +59,16 @@ func probeHostRunning(ctx context.Context, manager *sshconn.Manager, host hostre
 		if isRunningHandlerAbsent(err) {
 			return hubcore.HostRuntimeProbe{}, fmt.Errorf("%w (evener/host/running answered: %w)", PlanHandlerAbsentError{}, err)
 		}
-		if probeCtx.Err() != nil {
+		// The caller's own context ending and the probe's deadline are different
+		// failures: a canceled caller must not be told the remote timed out.
+		switch {
+		case errors.Is(probeCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil:
 			return hubcore.HostRuntimeProbe{}, fmt.Errorf("probing host %q's running state timed out after %s: %w", host.Name, timeout, err)
+		case ctx.Err() != nil:
+			return hubcore.HostRuntimeProbe{}, fmt.Errorf("probing host %q's running state was canceled: %w", host.Name, err)
+		default:
+			return hubcore.HostRuntimeProbe{}, fmt.Errorf("probing host %q's running state failed: %w", host.Name, err)
 		}
-		return hubcore.HostRuntimeProbe{}, fmt.Errorf("probing host %q's running state failed: %w", host.Name, err)
 	}
 	probe := hubcore.HostRuntimeProbe{Version: response.BuildRevision, RunningHealthy: response.Healthy}
 	if response.ProcessStartTime != "" {
