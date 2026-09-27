@@ -4291,8 +4291,14 @@ type HostEntry struct {
 // slice already matches instead of reshaping it a second time. The handler
 // validates exactly like hub.toml loading, writes the machine-managed hub.toml,
 // and refuses a name the live set already holds.
+//
+// MutationID, when set, is the client's idempotency key (registry spec 08 §1,
+// §4): opaque, non-empty, at most 128 bytes. A keyless add skips dedup and is
+// non-retryable as a continuation (§5); a keyed replay returns the recorded
+// receipt instead of adding a second time.
 type HostAddParams struct {
-	Entry HostEntry `json:"entry"`
+	Entry      HostEntry `json:"entry"`
+	MutationID string    `json:"mutationId,omitempty"`
 }
 
 // HostUpdateParams is the evener/host/update payload (component 08 slice 2): the
@@ -4300,9 +4306,20 @@ type HostAddParams struct {
 // is the immutable target — it identifies which host to edit, and nothing in the
 // request can rename one. Every live host is editable; unknown names are
 // InvalidParams.
+//
+// MutationID, ExpectedGeneration, and ExpectedIncarnationID are the guarded
+// mutation's idempotency key and (generation, incarnation id) guard (registry
+// spec 08 §4, §11): all three are required together, and a request missing any
+// is a validation refusal before the dedup lookup. The pair is checked against
+// the target's current pair under the mutation lock; a mismatch on either is
+// the typed `stale-entry` refusal committing nothing. A keyed replay returns
+// the recorded receipt without re-applying.
 type HostUpdateParams struct {
-	Name  string    `json:"name"`
-	Entry HostEntry `json:"entry"`
+	Name                  string    `json:"name"`
+	Entry                 HostEntry `json:"entry"`
+	MutationID            string    `json:"mutationId"`
+	ExpectedGeneration    uint64    `json:"expectedGeneration"`
+	ExpectedIncarnationID string    `json:"expectedIncarnationId"`
 }
 
 // HostUpdateResponse is evener/host/update's result: the updated row, which the
@@ -4323,24 +4340,32 @@ type HostUpdateResponse struct {
 // any were recorded.
 // Optional entry fields and facts stay absent — never null — when unknown.
 type HostRow struct {
-	Name          string   `json:"name"`
-	Address       string   `json:"address,omitempty"`
-	User          string   `json:"user,omitempty"`
-	KeyPath       string   `json:"keyPath,omitempty"`
-	EvenerPath    string   `json:"evenerPath,omitempty"`
-	ConfigPath    string   `json:"configPath,omitempty"`
-	Addr          string   `json:"addr,omitempty"`
-	Roots         []string `json:"roots,omitempty"`
-	Origin        string   `json:"origin"`
-	Attached      bool     `json:"attached"`
-	ServerName    string   `json:"serverName,omitempty"`
-	ServerVersion string   `json:"serverVersion,omitempty"`
-	HubVersion    string   `json:"hubVersion,omitempty"`
-	OS            string   `json:"os,omitempty"`
-	Arch          string   `json:"arch,omitempty"`
-	LastAttachErr string   `json:"lastAttachError,omitempty"`
-	MidAttach     bool     `json:"midAttach"`
-	Removed       bool     `json:"removed"`
+	Name       string   `json:"name"`
+	Address    string   `json:"address,omitempty"`
+	User       string   `json:"user,omitempty"`
+	KeyPath    string   `json:"keyPath,omitempty"`
+	EvenerPath string   `json:"evenerPath,omitempty"`
+	ConfigPath string   `json:"configPath,omitempty"`
+	Addr       string   `json:"addr,omitempty"`
+	Roots      []string `json:"roots,omitempty"`
+	Origin     string   `json:"origin"`
+	// Generation and IncarnationID are the live entry's current
+	// (generation, incarnation id) pair — the guarded-mutation identity
+	// `update`/`remove` require back as expectedGeneration /
+	// expectedIncarnationId (registry spec 08 §1, §11). The UI echoes both
+	// values from the list/status row it holds. Tombstone rows carry the
+	// removed entry's pair (S11).
+	Generation    uint64 `json:"generation"`
+	IncarnationID string `json:"incarnationId"`
+	Attached      bool   `json:"attached"`
+	ServerName    string `json:"serverName,omitempty"`
+	ServerVersion string `json:"serverVersion,omitempty"`
+	HubVersion    string `json:"hubVersion,omitempty"`
+	OS            string `json:"os,omitempty"`
+	Arch          string `json:"arch,omitempty"`
+	LastAttachErr string `json:"lastAttachError,omitempty"`
+	MidAttach     bool   `json:"midAttach"`
+	Removed       bool   `json:"removed"`
 }
 
 // HostListResponse is evener/host/list's result (component 08 slice 1): every
@@ -4368,8 +4393,17 @@ type HostStatusResponse struct {
 // the component-03 source ID of one live host, any of which is removable here;
 // unknown names are InvalidParams. Removing an
 // attached host stops its supervisor and drops its channel.
+//
+// MutationID, ExpectedGeneration, and ExpectedIncarnationID carry the same
+// guarded-mutation contract as HostUpdateParams (registry spec 08 §4, §11):
+// all three required together, presence validated before the dedup lookup, the
+// pair checked under the mutation lock with the typed `stale-entry` refusal on
+// a mismatch, and a keyed replay returning the recorded receipt.
 type HostRemoveParams struct {
-	Name string `json:"name"`
+	Name                  string `json:"name"`
+	MutationID            string `json:"mutationId"`
+	ExpectedGeneration    uint64 `json:"expectedGeneration"`
+	ExpectedIncarnationID string `json:"expectedIncarnationId"`
 }
 
 // HostRemoveResponse is evener/host/remove's result (component 08 slice 1):

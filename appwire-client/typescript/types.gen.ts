@@ -1039,6 +1039,7 @@ export interface HarnessListResponse {
 
 export interface HostAddParams {
   entry: HostEntry;
+  mutationId?: string;
 }
 
 export interface HostAttachParams {
@@ -1157,6 +1158,9 @@ export interface HostPushCredentialsResponse {
 
 export interface HostRemoveParams {
   name: string;
+  mutationId: string;
+  expectedGeneration: number;
+  expectedIncarnationId: string;
 }
 
 export interface HostRemoveResponse {
@@ -1192,6 +1196,16 @@ export interface HostRow {
   addr?: string;
   roots?: string[];
   origin: string;
+  /**
+   * Generation and IncarnationID are the live entry's current
+   * (generation, incarnation id) pair — the guarded-mutation identity
+   * `update`/`remove` require back as expectedGeneration /
+   * expectedIncarnationId (registry spec 08 §1, §11). The UI echoes both
+   * values from the list/status row it holds. Tombstone rows carry the
+   * removed entry's pair (S11).
+   */
+  generation: number;
+  incarnationId: string;
   attached: boolean;
   serverName?: string;
   serverVersion?: string;
@@ -1224,6 +1238,9 @@ export interface HostStatusResponse {
 export interface HostUpdateParams {
   name: string;
   entry: HostEntry;
+  mutationId: string;
+  expectedGeneration: number;
+  expectedIncarnationId: string;
 }
 
 export interface HostUpdateResponse {

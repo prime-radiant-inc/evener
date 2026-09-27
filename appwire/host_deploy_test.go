@@ -116,6 +116,7 @@ func TestDeployPipelineRefusalsPairDiscriminatorWithCode(t *testing.T) {
 		{"token-superseded", TokenSuperseded("newer mint"), ErrorTokenSuperseded, CodeConflict, []string{"evenerErrorInfo"}},
 		{"token-expired", TokenExpired("deadline passed"), ErrorTokenExpired, CodeConflict, []string{"evenerErrorInfo"}},
 		{"conflicting-operation-id", ConflictingOperationID("used up"), ErrorConflictingOperationID, CodeConflict, []string{"evenerErrorInfo"}},
+		{"conflicting-mutation-id", ConflictingMutationID("used up"), ErrorConflictingMutationID, CodeConflict, []string{"evenerErrorInfo"}},
 		{"host-detached", HostDetached("no channel"), ErrorHostDetached, CodeUnavailable, []string{"evenerErrorInfo"}},
 		{"probe-failed", ProbeFailed("m4", ProbeFailureTimedOut, "timed out"), ErrorProbeFailed, CodeUnavailable,
 			[]string{"evenerErrorInfo", "host", "failure"}},
