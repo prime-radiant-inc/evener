@@ -52,6 +52,7 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 					StructuredResult: json.RawMessage(`{"result":true}`),
 					Warnings:         []string{"warning"},
 				}},
+				TurnSlots: &EvenerTurnSlots{InUse: 1, Cap: 2, Jobs: 3, Drives: 4},
 			},
 			Queue: QueueState{
 				Preview:           []string{"preview"},
@@ -68,6 +69,7 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 			SessionURLs:           []SessionURL{{ID: "u1", URL: "https://x.test/"}},
 			Usage:                 &EvenerUsage{TotalTokens: 15},
 			FailedToolCalls:       &failedToolCalls,
+			Subagents:             &SubagentTally{Running: 1, Failed: 2, Done: 3},
 			ReasoningEffortLevels: []string{"low", "high"},
 			PendingEscalations:    []SandboxEscalationRequested{{EscalationID: "esc"}},
 		},
@@ -77,10 +79,10 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 	if !reflect.DeepEqual(original, clone) {
 		t.Fatal("clone changed values while copying")
 	}
-	if clone.GitInfo == original.GitInfo || clone.Turns[0].StartedAt == original.Turns[0].StartedAt || clone.Turns[0].Usage == original.Turns[0].Usage || clone.Turns[0].Error.Cause == original.Turns[0].Error.Cause || clone.Turns[0].Items[0].StartedAt == original.Turns[0].Items[0].StartedAt || clone.Turns[0].Items[0].Position == original.Turns[0].Items[0].Position || clone.Evener.Tasks == original.Evener.Tasks || clone.Evener.Goal == original.Evener.Goal || clone.Evener.Usage == original.Evener.Usage || clone.Evener.FailedToolCalls == original.Evener.FailedToolCalls {
+	if clone.GitInfo == original.GitInfo || clone.Turns[0].StartedAt == original.Turns[0].StartedAt || clone.Turns[0].Usage == original.Turns[0].Usage || clone.Turns[0].Error.Cause == original.Turns[0].Error.Cause || clone.Turns[0].Items[0].StartedAt == original.Turns[0].Items[0].StartedAt || clone.Turns[0].Items[0].Position == original.Turns[0].Items[0].Position || clone.Evener.Tasks == original.Evener.Tasks || clone.Evener.Goal == original.Evener.Goal || clone.Evener.Usage == original.Evener.Usage || clone.Evener.FailedToolCalls == original.Evener.FailedToolCalls || clone.Evener.Subagents == original.Evener.Subagents {
 		t.Fatal("top-level nested pointers were shared")
 	}
-	if clone.Evener.Diagnostics.Jobs[0].Resumable == original.Evener.Diagnostics.Jobs[0].Resumable || clone.Evener.Diagnostics.Jobs[0].ExitCode == original.Evener.Diagnostics.Jobs[0].ExitCode || clone.Evener.Diagnostics.Delegates[0].RunningForMS == original.Evener.Diagnostics.Delegates[0].RunningForMS || clone.Evener.Diagnostics.Delegates[0].Usage == original.Evener.Diagnostics.Delegates[0].Usage || clone.Evener.Diagnostics.Delegates[0].Worktree == original.Evener.Diagnostics.Delegates[0].Worktree {
+	if clone.Evener.Diagnostics.Jobs[0].Resumable == original.Evener.Diagnostics.Jobs[0].Resumable || clone.Evener.Diagnostics.Jobs[0].ExitCode == original.Evener.Diagnostics.Jobs[0].ExitCode || clone.Evener.Diagnostics.Delegates[0].RunningForMS == original.Evener.Diagnostics.Delegates[0].RunningForMS || clone.Evener.Diagnostics.Delegates[0].Usage == original.Evener.Diagnostics.Delegates[0].Usage || clone.Evener.Diagnostics.Delegates[0].Worktree == original.Evener.Diagnostics.Delegates[0].Worktree || clone.Evener.Diagnostics.TurnSlots == original.Evener.Diagnostics.TurnSlots {
 		t.Fatal("nested mutable pointers were shared")
 	}
 
@@ -102,6 +104,7 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 	clone.Evener.Diagnostics.Delegates[0].Worktree.Branch = "changed"
 	clone.Evener.Diagnostics.Delegates[0].Message[0] = '['
 	clone.Evener.Diagnostics.Delegates[0].Warnings[0] = "changed"
+	clone.Evener.Diagnostics.TurnSlots.InUse = 110
 	clone.Evener.Queue.Preview[0] = "changed"
 	clone.Evener.PendingMutations[0].Input[0].Data[0] = 'X'
 	clone.Evener.PendingMutations[0].Input[0].Metadata["pending"] = "changed"
@@ -110,6 +113,7 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 	clone.Evener.SessionURLs[0].URL = "mutated"
 	*clone.Evener.Usage = EvenerUsage{TotalTokens: 105}
 	*clone.Evener.FailedToolCalls = 106
+	*clone.Evener.Subagents = SubagentTally{Failed: 9}
 
 	if original.Status.ActiveFlags[0] != "active" || original.GitInfo.Branch != "main" || *original.Turns[0].StartedAt != 1 || original.Turns[0].Usage.InputTokens != 13 {
 		t.Fatal("thread state was changed through its clone")
@@ -117,10 +121,10 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 	if string(original.Turns[0].Error.CodexErrorInfo.(json.RawMessage)) != `{"kind":"provider"}` || original.Turns[0].Error.Cause.Status != 500 || original.Turns[0].Items[0].Images[0].Data[0] != 'i' || original.Turns[0].Items[0].Images[0].Metadata["key"] != "value" || original.Turns[0].Items[0].OutputImages[0].Name != "output" || *original.Turns[0].Items[0].StartedAt != 4 || original.Turns[0].Items[0].Position.Entry != 8 || original.Turns[0].Items[0].Raw[0] != '{' {
 		t.Fatal("turn or item state was changed through its clone")
 	}
-	if *original.Evener.Diagnostics.Jobs[0].Resumable != true || *original.Evener.Diagnostics.Jobs[0].ExitCode != 8 || *original.Evener.Diagnostics.Delegates[0].RunningForMS != 9 || original.Evener.Diagnostics.Delegates[0].Worktree.Branch != "feature" || string(original.Evener.Diagnostics.Delegates[0].Message) != `{"message":true}` || original.Evener.Diagnostics.Delegates[0].Warnings[0] != "warning" {
+	if *original.Evener.Diagnostics.Jobs[0].Resumable != true || *original.Evener.Diagnostics.Jobs[0].ExitCode != 8 || *original.Evener.Diagnostics.Delegates[0].RunningForMS != 9 || original.Evener.Diagnostics.Delegates[0].Worktree.Branch != "feature" || string(original.Evener.Diagnostics.Delegates[0].Message) != `{"message":true}` || original.Evener.Diagnostics.Delegates[0].Warnings[0] != "warning" || original.Evener.Diagnostics.TurnSlots.InUse != 1 {
 		t.Fatal("diagnostic state was changed through its clone")
 	}
-	if original.Evener.Queue.Preview[0] != "preview" || original.Evener.PendingMutations[0].Input[0].Data[0] != 'p' || original.Evener.PendingMutations[0].Input[0].Metadata["pending"] != "value" || original.Evener.Tasks.Total != 2 || original.Evener.Goal.Status != "active" || original.Evener.SessionURLs[0].URL != "https://x.test/" || original.Evener.Usage.TotalTokens != 15 || *original.Evener.FailedToolCalls != 12 {
+	if original.Evener.Queue.Preview[0] != "preview" || original.Evener.PendingMutations[0].Input[0].Data[0] != 'p' || original.Evener.PendingMutations[0].Input[0].Metadata["pending"] != "value" || original.Evener.Tasks.Total != 2 || original.Evener.Goal.Status != "active" || original.Evener.SessionURLs[0].URL != "https://x.test/" || original.Evener.Usage.TotalTokens != 15 || *original.Evener.FailedToolCalls != 12 || original.Evener.Subagents.Failed != 2 {
 		t.Fatal("evener state was changed through its clone")
 	}
 }
