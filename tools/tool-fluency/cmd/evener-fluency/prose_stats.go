@@ -248,7 +248,7 @@ func per1k(n, words int) float64 {
 // to_user (what the root sent the user) or all (every session's prose).
 func renderProseTable(w io.Writer, stats []proseStats, channel string) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "LABEL\tMODEL\tRUNS\tPASSED\tTASKS ALL PASSED\tMSGS/RUN\tMEDIAN MSG WORDS\tWORDS\tEM DASH/1K\tX-NOT-Y/1K\tBOLD LABEL/1K\tHEADER/1K\tARROW/1K\tSHOUT/1K\tIDS/1K\tPROSE ERRORS")
+	_, _ = fmt.Fprintln(tw, "LABEL\tMODEL\tRUNS\tPASSED\tTASKS ALL PASSED\tMSGS/RUN\tMEDIAN MSG WORDS\tWORDS\tEM DASH/1K\tX-NOT-Y/1K\tBOLD LABEL/1K\tHEADER/1K\tARROW/1K\tSHOUT/1K\tIDS/1K\tPROSE ERRORS")
 	for _, s := range stats {
 		c := s.ToUser
 		if channel == "all" {
@@ -258,7 +258,7 @@ func renderProseTable(w io.Writer, stats []proseStats, channel string) error {
 		if s.Runs > 0 {
 			msgsPerRun = float64(s.Messages) / float64(s.Runs)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d/%d\t%.1f\t%d\t%d\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%d\n",
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d/%d\t%.1f\t%d\t%d\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%d\n",
 			s.Label, s.Model, s.Runs, s.Passed, s.TasksAllPassed, s.Tasks, msgsPerRun, s.MedianMessageWords, c.Words,
 			per1k(c.EmDashes, c.Words), per1k(c.Contrastive, c.Words), per1k(c.BoldLabels, c.Words),
 			per1k(c.Headers, c.Words), per1k(c.Arrows, c.Words), per1k(c.Shouting, c.Words),
@@ -298,7 +298,7 @@ func runProseStats(args []string) error {
 // runProseCount counts the prose in files, such as prompt sections.
 func runProseCount(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: evener-fluency prose-count FILE...")
+		return errors.New("usage: evener-fluency prose-count FILE [FILE ...]")
 	}
 	for _, path := range args {
 		data, err := os.ReadFile(path)
