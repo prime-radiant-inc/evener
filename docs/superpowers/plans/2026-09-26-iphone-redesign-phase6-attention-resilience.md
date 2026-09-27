@@ -333,16 +333,20 @@ export class ConnectionClock {
 	observe(next: ConnectionObservation, now: number): ConnectionTimes {
 		const last = this.last;
 		this.last = next;
-		const sameHub = last !== null && last.hubId === next.hubId;
+		const liveInFront = next.live && next.foreground;
 		let { downSince, lastLiveAt } = this.times;
-		// The data stops being live when the connection drops or the app
-		// leaves the front, whichever the provider reports first: it closes
-		// the connection in the background.
-		const wasLive = sameHub && last.live && last.foreground;
-		if (!sameHub) lastLiveAt = null;
-		else if (wasLive && !(next.live && next.foreground)) lastLiveAt = now;
-		if (next.live || !next.foreground) downSince = null;
-		else if (!sameHub || !last.foreground || downSince === null) downSince = now;
+		if (last === null || last.hubId !== next.hubId) {
+			// A new hub, or the first observation: nothing of it was live yet.
+			lastLiveAt = null;
+			downSince = next.live || !next.foreground ? null : now;
+		} else {
+			// The data stops being live when the connection drops or the app
+			// leaves the front, whichever the provider reports first: it closes
+			// the connection in the background.
+			if (last.live && last.foreground && !liveInFront) lastLiveAt = now;
+			if (next.live || !next.foreground) downSince = null;
+			else if (!last.foreground || downSince === null) downSince = now;
+		}
 		this.times = { downSince, lastLiveAt };
 		return this.times;
 	}
@@ -765,7 +769,9 @@ Expected: FAIL: `storage.discardUndelivered is not a function` (and the same for
 	// dispatch ahead of the interrupt whose Stop canceled it (the row never
 	// left the phone, so moving it is safe). The barrier is the press's
 	// stop-epoch capture: a Stop that committed after it outranks the press,
-	// and the row stays canceled. The web adapter's releaseCanceled, plus the
+	// and the row stays canceled. A canceled row was never attempted (a Stop
+	// cancels only rows with attempted = 0, enqueueInterruptAndCancel), so it
+	// goes back exactly as it was. The web adapter's releaseCanceled, plus the
 	// move.
 	async releaseCanceled(clientMutationId: string, targetRef: string, barrier: MutationStopBarrier): Promise<boolean> {
 		return this.transaction("mutation_outbox_release_canceled", () => {
@@ -799,9 +805,10 @@ and after `discardRecovery`:
 	// so the target is dispatched again (the dispatcher still checks its gate).
 	async discardUndelivered(clientMutationId: string, targetRef: string): Promise<boolean> {
 		const discarded = await this.storage.discardUndelivered(clientMutationId, targetRef);
+		if (!discarded) return false;
 		this.#notifyStorageChange([targetRef]);
-		if (discarded) void this.#dispatcher.dispatchTargets([targetRef]).catch(() => undefined);
-		return discarded;
+		void this.#dispatcher.dispatchTargets([targetRef]).catch(() => undefined);
+		return true;
 	}
 
 	// Send now on your own message a Stop held before it left the phone. The
@@ -816,9 +823,10 @@ and after `discardRecovery`:
 		const barrier: MutationStopBarrier = { stopEpoch: await this.storage.readStopEpoch(targetRef) };
 		await this.start();
 		const released = await this.storage.releaseCanceled(clientMutationId, targetRef, barrier);
+		if (!released) return false;
 		this.#notifyStorageChange([targetRef]);
-		if (released) void this.#dispatcher.dispatchTargets([targetRef]).catch(() => undefined);
-		return released;
+		void this.#dispatcher.dispatchTargets([targetRef]).catch(() => undefined);
+		return true;
 	}
 ```
 
@@ -925,6 +933,9 @@ export function ghosts(
 ): Ghost[] {
 	// Another client's rows aren't yours to watch.
 	const own = (pending ?? []).filter((entry) => entry.fromThisClient);
+	// A steer the hub accepted or claimed is already on the hub, so its caption
+	// doesn't depend on this phone's connection. One still submitting falls
+	// through to "sending" below.
 	const steering = (entry: PendingTurnEntry) =>
 		STEERS.has(entry.method) && (entry.state === "accepted" || entry.state === "claimed");
 	// Check needs the hub; Discard never does (spec principle 2: a control
