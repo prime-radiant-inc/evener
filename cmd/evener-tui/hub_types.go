@@ -29,6 +29,7 @@ type hubTreeNode struct {
 	Title       string
 	Project     string
 	State       string
+	IsSubagent  bool // a delegate thread at any depth (thread.Evener.Kind == "subagent")
 	AskPending  bool
 	Model       string
 	Age         string
@@ -209,7 +210,7 @@ func hubTreeFromThreads(threads []appwire.Thread) hubTreeResponse {
 		if !ok {
 			idx = len(out.Projects)
 			projectIndexes[identity] = idx
-			out.Projects = append(out.Projects, hubTreeProject{Key: thread.ProjectID, Name: projectName, WorkingDir: workingDir, RollupState: node.State, identity: identity})
+			out.Projects = append(out.Projects, hubTreeProject{Key: thread.ProjectID, Name: projectName, WorkingDir: workingDir, RollupState: rollupContribution(node.State, node.IsSubagent), identity: identity})
 		}
 		out.Projects[idx].Sessions = append(out.Projects[idx].Sessions, node)
 	}
@@ -239,6 +240,7 @@ func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
 		Title:       title,
 		Project:     project,
 		State:       thread.Status.Type,
+		IsSubagent:  thread.Evener.Kind == "subagent",
 		AskPending:  thread.Evener.AskPending,
 		Model:       hubThreadModelLabel(thread),
 		RowID:       "project:" + ref,
