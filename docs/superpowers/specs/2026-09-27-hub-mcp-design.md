@@ -228,3 +228,65 @@ scope (frontend `src/` + the SDK) is unchanged.
 - The MCP never writes to disk, spawns nothing, and talks only to the
   hub URL it was given. All input comes from the MCP client (the
   session's daemon) and the hub.
+
+## Post-critique revisions (2026-09-27)
+
+A four-lens critique of the first-pass operator documentation found unsafe
+wiring advice, an overclaim the code broke, and missing caveats. The
+decisions above are the historical record; the revisions below supersede
+them where they conflict. Code and documentation changed together.
+
+- **Wiring.** The operator doc now makes the per-launch/per-session entry
+  the primary recipe and moves the global `~/.config/evener/mcp.json`
+  route behind an explicit warning naming both hazards: it hands the
+  full-hub tool set to every session on the machine (including sessions
+  working in untrusted repos), and the project layer (`.evener/mcp.json`)
+  is model-writable, loads with no approval gate, and only refuses
+  `$(command)` expansion — so a bare stdio entry pointing at the server's
+  dist wires full-hub power into a session zero-config.
+- **Tokens.** `EVENER_HUB_TOKEN` in a mcp.json `env` map is
+  session-readable (the global config is not masked from session reads);
+  the token-file default is now the stated recommendation for that reason.
+- **Spawner-token collision** (found by the e2e gate, live). The hub
+  injects its internal spawner token into every spawned session's env as
+  `EVENER_HUB_TOKEN` (envvars/envvars.go: "per-hub bearer token passed
+  to spawned evener serve daemons") — a bearer for the hub's dials to
+  the daemon that the hub's own `/rpc` refuses (server/server.go
+  authorizes only the auth-token file value). A wiring inside a
+  hub-spawned session therefore sets `EVENER_HUB_TOKEN` to the empty
+  string so the token-file default wins; the operator doc and the e2e
+  harness both carry that recipe, and the gate asserts its mcp.json
+  contains no token. The product-side fix — stop overloading the name,
+  or accept the spawner token on `/rpc` — is follow-up work outside
+  this server.
+- **The honest wait (D7).** `wait_for_activity` no longer reports a quiet
+  timeout when something is wrong. Waits disclose events skipped past the
+  return limit, ring-buffer eviction gaps, how many sessions are actually
+  watched, subscribe failures, and an unreachable hub (as an error). The
+  cursor is `<epoch>:<seq>`; a `since` from a foreign epoch restarts from
+  now and says so. `list_sessions` no longer subscribes the rows it
+  lists; `get_session`, `read_transcript`, `start_session`, and named
+  refs in a wait do.
+- **Surface (D6).** Added `list_models` (discover model strings for
+  `start_session`) and `rename_session`; `resume_session` may follow
+  (wire support still being verified). Session states print with the
+  wire's own vocabulary (`idle`, `active`, `awaiting`, `warning`,
+  `systemError`, `closed`, `notLoaded`, `restartRequired`). Tool
+  descriptions now carry an untrusted-content warning: session content is
+  untrusted data from the repos those sessions read, and transcripts and
+  search span every project on the hub and may contain other projects'
+  secrets.
+- **Scoping knobs.** `EVENER_HUB_MCP_READONLY=1` registers only the read
+  tools; `EVENER_HUB_MCP_PROJECT=<absolute path>` narrows list/search rows
+  and session tools to one project and refuses out-of-scope refs.
+- **`max_subagent_depth`.** Unset uses the hub default (2); the minimum
+  is 1; the field cannot express "no subagents."
+- **Session-facing honesty.** `start_session` guidance now points to
+  `list_sessions` first when a start's outcome is unknown;
+  `stop_session` with `force` resolves identity first and echoes the
+  name/cwd of what it stopped.
+- **Build caveat.** Preflight's `npm ci` executes dependency lifecycle
+  scripts at dev time, and the dist runs from a checkout; the operator
+  doc says so.
+
+The revised operator documentation is `docs/evener-hub-mcp.md`.
