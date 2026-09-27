@@ -696,6 +696,29 @@ func TestNavigationCatalogPagesEncodeEachRowOnce(t *testing.T) {
 // navigationCatalogRowsThatFit sizes pages by: a catalog page encodes to its
 // empty page plus each row's own encoding plus a comma between rows, for rows
 // with escaped, multibyte, and nested-array fields alike.
+// unencodableNavigationRow is a catalog row whose encoding always fails.
+type unencodableNavigationRow struct{ encodable bool }
+
+func (row unencodableNavigationRow) MarshalJSON() ([]byte, error) {
+	if row.encodable {
+		return []byte(`{"row":1}`), nil
+	}
+	return nil, errors.New("row cannot be encoded")
+}
+
+// TestNavigationCatalogRowsThatFitStopsAtAnUnencodableRow pins that a row
+// which cannot be encoded fits no budget, even after rows that did fit: its
+// size must never be added into the running total, where it would wrap.
+func TestNavigationCatalogRowsThatFitStopsAtAnUnencodableRow(t *testing.T) {
+	rows := []unencodableNavigationRow{{encodable: true}, {encodable: false}, {encodable: true}}
+	emptyPage := func(kept int) any {
+		return hubapi.NavigationProjectCatalog{GenerationID: "g", Revision: 1, Projects: hubapi.NavigationArray[hubapi.NavigationProjectSummary]{}, Remaining: len(rows) - kept}
+	}
+	if got := navigationCatalogRowsThatFit(rows, emptyPage); got != 1 {
+		t.Fatalf("kept %d rows, want 1: the unencodable second row must end the page", got)
+	}
+}
+
 func TestNavigationCatalogPageSizeIsEmptyPagePlusRows(t *testing.T) {
 	rows := hubapi.NavigationArray[hubapi.NavigationProjectSummary]{
 		{Key: "a", Name: "<b>&\"quoted\"\u2028😀", WorkingDir: `C:\work`, Sources: hubapi.NavigationArray[string]{"local", "host<1>"}, SessionCount: 3},

@@ -1047,12 +1047,17 @@ func navigationCatalogRowsThatFit[T any](rows []T, emptyPage func(kept int) any)
 	rowBytes := 0
 	for index, row := range rows {
 		kept := index + 1
-		rowBytes += navigationEncodedSize(row)
-		pageBytes := navigationEncodedSize(emptyPage(kept))
 		// A row or page that cannot be encoded fits no budget
-		// (navigationEncodedSize is math.MaxInt), and the sum must not wrap.
-		if rowBytes > maxNavigationCatalogBytes || pageBytes > maxNavigationCatalogBytes ||
-			pageBytes+rowBytes+kept-1 > maxNavigationCatalogBytes {
+		// (navigationEncodedSize is math.MaxInt). Each size is checked against
+		// the room left before it is added, so rowBytes and pageBytes stay
+		// within the budget and no sum below can wrap.
+		size := navigationEncodedSize(row)
+		if size > maxNavigationCatalogBytes-rowBytes {
+			return index
+		}
+		rowBytes += size
+		pageBytes := navigationEncodedSize(emptyPage(kept))
+		if pageBytes > maxNavigationCatalogBytes || pageBytes+rowBytes+kept-1 > maxNavigationCatalogBytes {
 			return index
 		}
 	}
