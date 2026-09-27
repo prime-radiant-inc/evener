@@ -637,14 +637,13 @@ describe("remote search results", () => {
   // Typed against the real SearchResult, not Record<string, unknown>: `ref` is
   // required now (see search.ts), and a fixture omitting it would be describing
   // a response the hub cannot produce.
-  async function searchAndClick(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
+  async function searchLiveRow(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
     scriptSearch({ live: [result], past: [] });
     render(<CommandPalette />);
     act(() => openPalette());
     await user.type(screen.getByRole("combobox"), term);
     await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
-    const row = screen.getAllByRole("option").find((o) => o.textContent?.includes(term));
-    await user.click(row as HTMLElement);
+    return screen.getAllByRole("option").find((o) => o.textContent?.includes(term)) as HTMLElement;
   }
 
   // One ref form, and the type is what enforces it: a hit with no ref is not a
@@ -652,12 +651,34 @@ describe("remote search results", () => {
   // sets Ref at both construction sites and its field carries no omitempty.
   test("a search result is opened by its qualified ref", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-    await searchAndClick(
+    const row = await searchLiveRow(
       user,
       { id: "bare123", ref: "local:qualified", title: "reffuls", project: "p", state: "active", age: "now" },
       "reffuls",
     );
+    await user.click(row);
     expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:qualified");
+  });
+
+  // An approval blocks its turn mid-tool, so the result's wire state stays
+  // "active": the dot must read approval_pending, not the state alone, the
+  // same rule #2560 gave the rail's needs-you dot (#2567).
+  test("a live search result waiting on an approval shows a needs-you dot, not a working one", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const live = await searchLiveRow(
+      user,
+      {
+        id: "local:a",
+        ref: "local:local:a",
+        title: "frobnitz worker",
+        project: "proj",
+        state: "active",
+        age: "now",
+        approvalPending: true,
+      },
+      "frobnitz",
+    );
+    expect(within(live).getByRole("img", { name: "Needs you" })).toBeTruthy();
   });
 });
 

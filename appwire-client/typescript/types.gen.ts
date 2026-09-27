@@ -2527,6 +2527,16 @@ export interface SearchResult {
   state: string;
   age: string;
   ref: string;
+  /**
+   * AskPending and ApprovalPending carry the flags a navigation row does: a
+   * live session is waiting on an answer to an ask_user question, or on a
+   * person to allow or deny a sandbox escalation (M7). State keeps its real
+   * value ("active" while an escalation blocks mid-turn), so a pending
+   * approval shows only in ApprovalPending. A past (ended) result carries
+   * neither. Additive: an older hub omits both, decoding as false.
+   */
+  askPending?: boolean;
+  approvalPending?: boolean;
 }
 
 export interface ServerInfo {
