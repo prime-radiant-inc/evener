@@ -8,6 +8,8 @@ import type {
 	NavigationInvalidationTarget,
 	NavigationReadParams,
 	NavigationSessionSummary,
+	SessionSeenMark,
+	SessionSeenSetParams,
 } from "@evener/appwire-client";
 import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
@@ -17,6 +19,7 @@ import type { ConversationClientLike } from "../../../mobile/src/services/conver
 import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
 import { BoardScreen } from "./BoardScreen";
 import { PulseMeter } from "./PulseMeter";
+import { hubSeenMarks } from "./hubSeen";
 import { seenMarkers } from "./nativeBoardMemory";
 
 const harness = vi.hoisted(() => ({
@@ -170,7 +173,8 @@ const fleet: Fleet = {
  * unanswered until the test releases it, and `fail` rejects it. It accepts
  * every category rename and delete (`mutations` records them), unless
  * `refuse` says to reject one, and `holdChanges` keeps them unanswered
- * until `release`. */
+ * until `release`. It accepts every seen mark, and `seen` records each
+ * call's marks. */
 function hub(
 	shape: Fleet,
 	hold: (params: NavigationReadParams) => boolean = () => false,
@@ -179,6 +183,7 @@ function hub(
 ) {
 	const requests: NavigationReadParams[] = [];
 	const mutations: Array<{ method: string; params: unknown }> = [];
+	const seen: SessionSeenMark[][] = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
 	const held: Array<() => void> = [];
 	const answer = (params: NavigationReadParams) => {
@@ -213,6 +218,11 @@ function hub(
 							: resolve({ ok: true, navigation: { generation_id: "generation-test", targets: [] } } as never);
 					if (holdChanges) held.push(respond);
 					else respond();
+					return;
+				}
+				if (method === "evener/session/seen/set") {
+					seen.push((params as SessionSeenSetParams).sessions);
+					resolve({ ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } } as never);
 					return;
 				}
 				if (method === "thread/list") {
@@ -260,6 +270,7 @@ function hub(
 		client,
 		requests,
 		mutations,
+		seen,
 		invalidate: (sequence: number, targets: NavigationInvalidationTarget[]) => {
 			for (const listener of listeners)
 				listener({
@@ -750,6 +761,133 @@ it("opens a session after marking it seen", async () => {
 	expect(seenMarkers(id).isSeen(finished)).toBe(true);
 	// Seen, the session leaves Finished for the folded Idle band.
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "WORKING · 1", "Idle · 3"]);
+	act(() => tree.unmount());
+});
+
+// Rows the hub decides (S4): each carries its turn end, and the hub says
+// whether it is unseen. The device's markers say the opposite of the hub for
+// both: its epoch covers the first, and it holds an unread mark for the second.
+const hubUnseen = session("local:hub-unseen", {
+	title: "Hub unseen",
+	updated_at: minutesAgo(90),
+	turn_ended_at: minutesAgo(90),
+	unseen: true,
+});
+const hubSeen = session("local:hub-seen", {
+	title: "Hub seen",
+	updated_at: minutesAgo(6),
+	turn_ended_at: minutesAgo(6),
+	unseen: false,
+});
+const pinnedUnseen = session("local:pinned-unseen", {
+	title: "Pinned unseen",
+	live: true,
+	updated_at: minutesAgo(80),
+	turn_ended_at: minutesAgo(80),
+	unseen: true,
+});
+const hubFleet: Fleet = {
+	...fleet,
+	live: [[failing, working, hubUnseen, hubSeen, finished]],
+	pinned: { ...fleet.pinned, "pins-1": [pinnedUnseen, keptNote] },
+};
+/** A device an hour past first run that marked Hub seen unread itself. */
+function deviceDisagrees(hub: string) {
+	harness.kv.set(
+		`evener.native.seen.${hub}`,
+		JSON.stringify({ adopted: true, epoch: minutesAgo(60), sessions: { "local:hub-seen": { unread: true } } }),
+	);
+}
+const stateOf = (tree: ReactTestRenderer, title: string) => rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
+
+it("takes Finished or Idle from the hub for a row that carries its turn end, whatever the device's markers say", async () => {
+	const id = hubId();
+	deviceDisagrees(id);
+	const fake = hub(hubFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	pressLabel(tree, "Idle, 1 session");
+	expect(stateOf(tree, "Hub unseen")).toBe("Finished");
+	expect(stateOf(tree, "Hub seen")).toBe("Idle");
+	// A row without a turn end still follows the device: updated since its epoch.
+	expect(stateOf(tree, "Ship it")).toBe("Finished");
+	// The categories classify the same way.
+	expect(stateOf(tree, "Pinned unseen")).toBe("Finished");
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 2", "WORKING · 1", "Idle · 1"]);
+	expect(fake.seen).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("marks a hub row seen through its turn end when you open it, and clears its dot at once", async () => {
+	const id = hubId();
+	deviceDisagrees(id);
+	const shape = { ...hubFleet };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	act(() => rowTitled(tree, "Hub unseen").props.onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:hub-unseen", title: "Hub unseen" });
+	// The hub's rows still say unseen; the pending mark wins until they catch up.
+	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
+	await settle();
+	expect(fake.seen).toEqual([[{ ref: "local:hub-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
+	// The device's own markers are not touched for a hub row.
+	expect(JSON.parse(harness.kv.get(`evener.native.seen.${id}`) ?? "{}").sessions).toEqual({
+		"local:hub-seen": { unread: true },
+	});
+	// Opening it again, now from Idle, costs no request.
+	pressLabel(tree, "Idle, 2 sessions");
+	expect(stateOf(tree, "Hub unseen")).toBe("Idle");
+	act(() => rowTitled(tree, "Hub unseen").props.onPress());
+	await settle();
+	expect(fake.seen).toHaveLength(1);
+	// Opening a pinned hub row marks it the same way.
+	act(() => rowTitled(tree, "Pinned unseen").props.onPress());
+	await settle();
+	expect(stateOf(tree, "Pinned unseen")).toBe("Idle");
+	expect(fake.seen.at(-1)).toEqual([{ ref: "local:pinned-unseen", seenThrough: Date.parse(minutesAgo(80)) }]);
+	// The hub's rows catch up, and the pending mark goes: a later unseen for
+	// the same turn would show again.
+	shape.live = [[failing, working, { ...hubUnseen, unseen: false }, hubSeen, finished]];
+	// This fake hub answers every read at revision 1, so the change names none.
+	act(() => fake.invalidate(1, [{ kind: "section", section: "live" }]));
+	await settle();
+	expect(hubSeenMarks(id).isSeenOnHub(hubUnseen)).toBe(false);
+	expect(hubSeenMarks(id).isSeenOnHub(pinnedUnseen)).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("marks a row without a turn end on the device, and sends the hub nothing", async () => {
+	const id = hubId();
+	deviceDisagrees(id);
+	const fake = hub(hubFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	act(() => rowTitled(tree, "Ship it").props.onPress());
+	await settle();
+	expect(seenMarkers(id).isSeen(finished)).toBe(true);
+	expect(fake.seen).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("sends a mark made while the connection was down once it's ready again", async () => {
+	const id = hubId();
+	deviceDisagrees(id);
+	const fake = hub(hubFleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	connect(id, null, "reconnecting");
+	rerender(tree, nav);
+	act(() => rowTitled(tree, "Hub unseen").props.onPress());
+	await settle();
+	expect(bandHeaders(tree)).toContain("FINISHED · 1");
+	expect(fake.seen).toEqual([]);
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(fake.seen).toEqual([[{ ref: "local:hub-unseen", seenThrough: Date.parse(minutesAgo(90)) }]]);
 	act(() => tree.unmount());
 });
 
