@@ -8,13 +8,16 @@ import type {
 	NavigationInvalidationTarget,
 	NavigationReadParams,
 	NavigationSessionSummary,
+	SessionActivity,
 } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
+import { ACTIVITY_POLL_MS } from "./activityPoll";
 import { BoardScreen } from "./BoardScreen";
 import { PulseMeter } from "./PulseMeter";
 import { seenMarkers } from "./nativeBoardMemory";
@@ -24,6 +27,8 @@ const harness = vi.hoisted(() => ({
 	kv: new Map<string, string>(),
 	drafts: new Map<string, Set<string>>(),
 	focused: true,
+	/** The navigator's stack, for whether only sheets cover the Board. */
+	stack: { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] },
 	focusListeners: new Set<(focused: boolean) => void>(),
 	actionSheet: vi.fn(),
 	prompt: vi.fn(),
@@ -64,6 +69,7 @@ vi.mock("@react-navigation/native", async () => {
 			useEffect(() => (focused ? effect() : undefined), [focused, effect]);
 		},
 		useIsFocused,
+		useNavigationState: <T,>(select: (state: typeof harness.stack) => T) => select(harness.stack),
 	};
 });
 vi.mock("expo-sqlite/kv-store", () => ({
@@ -83,12 +89,14 @@ vi.mock("../ConnectionProvider", () => ({
 const INCOMPATIBLE_TEXT =
 	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
 const NOW = Date.UTC(2026, 8, 26, 12, 0);
+const MINUTE = 60_000;
 const minutesAgo = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
 
 beforeEach(() => {
 	vi.useFakeTimers();
 	vi.setSystemTime(NOW);
 	harness.focused = true;
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
 });
 function setFocused(focused: boolean) {
 	harness.focused = focused;
@@ -146,6 +154,9 @@ interface Fleet {
 	manifest: ReturnType<typeof manifest>;
 	/** Sessions only search finds: the Board doesn't list them. */
 	searchOnly?: NavigationSessionSummary[];
+	/** What evener/activity/read answers (S5): absent, the hub predates S5
+	 * and answers method-not-found; null, the read fails as a timeout would. */
+	activity?: SessionActivity[] | null;
 }
 const keptNote = session("local:kept", { title: "Kept note", live: false, updated_at: minutesAgo(600) });
 const oldPlan = session("local:plan", { title: "Old plan", live: false, updated_at: minutesAgo(900) });
@@ -178,6 +189,7 @@ function hub(
 	{ holdChanges = false, refuse = false } = {},
 ) {
 	const requests: NavigationReadParams[] = [];
+	const activityReads: unknown[] = [];
 	const mutations: Array<{ method: string; params: unknown }> = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
 	const held: Array<() => void> = [];
@@ -231,6 +243,13 @@ function hub(
 					} as never);
 					return;
 				}
+				if (method === "evener/activity/read") {
+					activityReads.push(params);
+					if (shape.activity) resolve({ sessions: shape.activity } as never);
+					else if (shape.activity === null) reject(new Error("request timed out"));
+					else reject(new WireError("no such method", -32601));
+					return;
+				}
 				if (method !== "evener/navigation/read") throw new Error(`unexpected ${method}`);
 				const read = params as NavigationReadParams;
 				requests.push(read);
@@ -259,6 +278,7 @@ function hub(
 	return {
 		client,
 		requests,
+		activityReads,
 		mutations,
 		invalidate: (sequence: number, targets: NavigationInvalidationTarget[]) => {
 			for (const listener of listeners)
@@ -1313,5 +1333,117 @@ it("reads nothing while blurred, and on refocus catches up and re-reads drafts",
 	await settle();
 	expect(manifestReads()).toBe(2);
 	expect(draftTags(rowTitled(tree, "Build docs"))).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+const sheetOverBoard = {
+	index: 1,
+	routes: [
+		{ key: "Sessions", name: "Sessions" },
+		{ key: "tasks", name: "TasksSheet" },
+	],
+};
+const screenOverBoard = {
+	index: 1,
+	routes: [
+		{ key: "Sessions", name: "Sessions" },
+		{ key: "conversation", name: "Conversation" },
+	],
+};
+
+it("polls activity while the Board is in front and connected, a sheet over it included, and stops otherwise", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, activity: [] });
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	// The Board reads every live session: no refs.
+	expect(fake.activityReads).toEqual([{}]);
+	await advance(ACTIVITY_POLL_MS);
+	expect(fake.activityReads).toHaveLength(2);
+
+	harness.stack = sheetOverBoard;
+	setFocused(false);
+	await advance(ACTIVITY_POLL_MS);
+	expect(fake.activityReads).toHaveLength(3);
+
+	harness.stack = screenOverBoard;
+	rerender(tree, nav);
+	await advance(ACTIVITY_POLL_MS * 3);
+	expect(fake.activityReads).toHaveLength(3);
+
+	harness.stack = { index: 0, routes: [{ key: "Sessions", name: "Sessions" }] };
+	setFocused(true);
+	expect(fake.activityReads).toHaveLength(4);
+
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	await advance(ACTIVITY_POLL_MS * 3);
+	expect(fake.activityReads).toHaveLength(4);
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	expect(fake.activityReads).toHaveLength(5);
+
+	act(() => tree.unmount());
+	await advance(ACTIVITY_POLL_MS * 3);
+	expect(fake.activityReads).toHaveLength(5);
+});
+
+const migrating = session("local:migrate", { title: "Migrate schema", state: "active", updated_at: minutesAgo(1) });
+const tidying = session("local:tidy", { title: "Tidy imports", state: "active", updated_at: minutesAgo(1) });
+const busyFleet: Fleet = {
+	...fleet,
+	live: [[failing, { ...working, children: [session("local:child", { state: "active" })] }, tidying, migrating, finished]],
+};
+const workingTitles = (tree: ReactTestRenderer) =>
+	tree.root
+		.findAll((node) => ["Build docs", "Tidy imports", "Migrate schema"].some((title) => isRowTitled(title)(node)))
+		.map((node) => node.props.accessibilityLabel.split(", ")[0]);
+const meterIn = (row: ReactTestInstance) => row.findByType(PulseMeter);
+
+it("shows each working row's activity read: its meter, the hub's subagent tally, Quiet, and May be stuck first", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [
+			{ ref: "local:work", minutes: [2, 4, 8], runningSubagents: 3 },
+			{ ref: "local:tidy", minutes: [1, 0, 0], runningSubagents: 0, quietForMs: 4 * MINUTE },
+			{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 11 * MINUTE },
+		],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(workingTitles(tree)).toEqual(["Migrate schema", "Build docs", "Tidy imports"]);
+	const building = rowTitled(tree, "Build docs");
+	expect(meterIn(building).props.perMinute).toEqual([2, 4, 8]);
+	expect(textsIn(building)).toContain("Waiting on 3 subagents");
+	expect(textsIn(building)).not.toContain("Waiting on 1 subagent");
+	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Quiet 4m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("May be stuck · no updates for 11m");
+
+	// A failed read keeps the last one, and quiet time keeps counting from it.
+	shape.activity = null;
+	await advance(2 * MINUTE);
+	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Quiet 6m");
+	expect(meterIn(rowTitled(tree, "Build docs")).props.perMinute).toEqual([2, 4, 8]);
+	act(() => tree.unmount());
+});
+
+it("keeps every working row as it was before S5 on a hub that has no activity read, and stops asking", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(busyFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+	const building = rowTitled(tree, "Build docs");
+	expect(meterIn(building).props.perMinute).toBeUndefined();
+	expect(textsIn(building)).toContain("Waiting on 1 subagent");
+	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Working");
+	await advance(ACTIVITY_POLL_MS * 3);
+	expect(fake.activityReads).toHaveLength(1);
 	act(() => tree.unmount());
 });

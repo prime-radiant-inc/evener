@@ -36,6 +36,9 @@ export const TITLE_INSET = 16 + 28 + 10;
 /** What every row in one of the Board's lists shares. */
 export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "now" | "onOpen"> & {
 	draftRefs: ReadonlySet<string>;
+	/** Each session's latest activity read (S5), by ref. */
+	activityOf: (ref: string) => SessionActivity | undefined;
+	msSinceRead: number | null;
 };
 
 function Hairline({ inset = 0 }: { inset?: number }) {
@@ -55,7 +58,7 @@ export function BoardRows({
 	moving: boolean;
 	context: RowContext;
 }): ReactElement {
-	const { draftRefs, ...shared } = context;
+	const { draftRefs, activityOf, ...shared } = context;
 	return (
 		<>
 			{items.map((item, index) => (
@@ -66,6 +69,7 @@ export function BoardRows({
 						variant={variant}
 						moving={moving}
 						hasDraft={draftRefs.has(item.row.ref)}
+						activity={activityOf(item.row.ref)}
 						{...shared}
 					/>
 				</View>

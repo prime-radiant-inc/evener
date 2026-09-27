@@ -2,6 +2,7 @@ import {
 	humanizeState,
 	type NavigationPinSectionDescriptor,
 	type NavigationSessionSummary,
+	quietState,
 } from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -30,6 +31,7 @@ import { reconnectDelay } from "../hubConnection";
 import { drafts } from "../nativeDrafts";
 import { RosterSearch } from "../rosterSearch";
 import type { Routes } from "../screens";
+import { useScreenInFront } from "../sheet/useScreenInFront";
 import { Action, Copy, styles, useColors, useTextScale } from "../ui";
 import { usePinNavigation } from "../usePinNavigation";
 import {
@@ -44,6 +46,7 @@ import {
 	summaryText,
 	usualPlace,
 } from "./attention";
+import { ActivityPoll } from "./activityPoll";
 import type { SeenMarkers } from "./boardMemory";
 import { bandHeaderText, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
@@ -67,18 +70,40 @@ const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 
 /** Home (spec 7.1): every live session ordered by who needs you, then the
  * user's pinned categories, projects and archive. */
-export function BoardScreen({ navigation }: Props) {
+export function BoardScreen({ navigation, route }: Props) {
 	const { activeProfile } = useConnection();
 	const { palette } = useColors();
 	if (!activeProfile) return <View style={{ flex: 1, backgroundColor: palette.page }} />;
-	return <Board key={activeProfile.id} hubId={activeProfile.id} hubName={activeProfile.name} navigation={navigation} />;
+	return (
+		<Board
+			key={activeProfile.id}
+			hubId={activeProfile.id}
+			hubName={activeProfile.name}
+			navigation={navigation}
+			routeKey={route.key}
+		/>
+	);
 }
 
-function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string; navigation: Navigation }) {
+function Board({
+	hubId,
+	hubName,
+	navigation,
+	routeKey,
+}: {
+	hubId: string;
+	hubName: string;
+	navigation: Navigation;
+	routeKey: string;
+}) {
 	const { client, state, fatal } = useConnection();
 	const { palette } = useColors();
 	const connected = state === "ready";
 	const focused = useIsFocused();
+	// Activity keeps polling while only a sheet covers the Board: the sheet
+	// is part of the screen under it.
+	const inFront = useScreenInFront(routeKey);
+	const { poll, revision: activityRevision } = useActivityPoll(client, connected && inFront);
 	const [board] = useState(createBoardController);
 	useEffect(() => () => board.dispose(), [board]);
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
@@ -115,9 +140,19 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	useReadRetry(board, connected && focused ? client : null, snapshot);
 
 	const bands = useMemo(
-		() => liveBands(snapshot.live.rows, snapshot.needsYou.rows, (row) => markers.isSeen(row)),
-		// seenRevision re-runs isSeen after a mark or first run.
-		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision],
+		() =>
+			liveBands(
+				snapshot.live.rows,
+				snapshot.needsYou.rows,
+				(row) => markers.isSeen(row),
+				(row) => {
+					const activity = poll?.activity(row.ref);
+					return activity ? quietState(activity, poll?.msSinceRead() ?? 0)?.state === "stuck" : false;
+				},
+			),
+		// seenRevision re-runs isSeen after a mark or first run, and
+		// activityRevision re-runs isStuck after each activity read.
+		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision, poll, activityRevision],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -244,7 +279,16 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			onPress: () => scrollTo("archived"),
 		});
 
-	const rowContext: RowContext = { connected, usual, hostLabel, now, onOpen: openSession, draftRefs };
+	const rowContext: RowContext = {
+		connected,
+		usual,
+		hostLabel,
+		now,
+		onOpen: openSession,
+		draftRefs,
+		activityOf: (ref) => poll?.activity(ref),
+		msSinceRead: poll?.msSinceRead() ?? null,
+	};
 	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean) => (
 		<BoardRows items={items} variant={variant} moving={moving} context={rowContext} />
 	);
@@ -472,6 +516,24 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
  * that lands, or a new connection, starts the count over; with no client
  * (disconnected or out of view) the hook holds its count and schedules
  * nothing. */
+const noSubscription = () => () => {};
+const noRevision = () => 0;
+
+/** S5's activity for every live session (activityPoll.ts), polled while
+ * `active`. A poll is bound to the client it was made with, so each client
+ * gets a fresh one, and there is none without a client. The revision changes
+ * with each read that lands. */
+function useActivityPoll(client: ConversationClientLike | null, active: boolean) {
+	const poll = useMemo(() => (client ? new ActivityPoll(client) : null), [client]);
+	const revision = useSyncExternalStore(poll?.subscribe ?? noSubscription, poll?.getRevision ?? noRevision);
+	useEffect(() => {
+		if (!poll || !active) return;
+		poll.start();
+		return () => poll.stop();
+	}, [poll, active]);
+	return { poll, revision };
+}
+
 function useReadRetry(
 	board: BoardController,
 	client: ConversationClientLike | null,
