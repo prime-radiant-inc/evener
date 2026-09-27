@@ -7,7 +7,7 @@
 **Architecture:**
 - **Alerts** (part 2). A pure `AlertCenter` (`src/alerts/alertCenter.ts`) decides which banner shows, which alerts wait while you read or type, and which sessions alerted you most recently, with the prototype's tested timing. Pure detectors (`src/alerts/alertEvents.ts`) turn successive navigation reads into alerts. An `AlertsProvider` feeds the center from the app-wide attention data, and `AlertBannerHost` draws the banner just below the nav bar and opens what you tap.
 - **Connection.** A `ConnectionClock` in `ConnectionProvider` measures how long the app has been in front without a live connection, so the Board's toolbar, the Session's connection bar and the sheets read one status (`useConnectionStatusText`), and no text asks you to reconnect or refresh.
-- **Outbox.** The durable mutation runtime stays (roadmap: keep the data layer). Phase 3 put the outbox inline as ghost bubbles and removed the recovery screen; this phase adds what it left: Discard for a lost send, Send now for a message a Stop held, the offline caption, Send while offline, and an app-wide flush that sends what no open session will.
+- **Outbox.** The durable mutation runtime stays (roadmap: keep the data layer). Phase 3 put the outbox inline as ghost bubbles and removed the recovery screen; this phase adds what it left: Discard for a lost send, Send now for a message a Stop held, the offline caption, Send while offline, an app-wide flush that sends what no open session will (part 3), and a hold for Board actions taken offline (part 2).
 
 **Tech Stack:** Expo SDK 57, React Native 0.86.3, React 19, TypeScript, vitest 5 with react-test-renderer (`src/renderNative.testkit.tsx`), `expo-symbols` (phase 2), `expo-haptics`, `expo-sqlite/kv-store`, the durable mutation runtime (`src/nativeMutationRuntime.ts`, `src/mutationOutboxStorage.ts`) over `@evener/appwire-client/state/mutation`, and the `node:sqlite` double (`src/sqliteSync.testkit.ts`) for runtime tests. CocoaPods runs through Bundler 2.7.2 on Ruby 3.3.6.
 
@@ -53,7 +53,7 @@ Decisions this plan makes where the spec is silent or its data doesn't exist yet
 10. **The connection clock counts only time in front.** The app closes its connection in the background (`ConnectionProvider`), so returning never flashes "Offline". "Updated 3m ago" still counts from when the data was last live, background included.
 11. **The offline age is whole minutes, at least 1m** ("updated 1m ago" from the 30-second mark), because the status changes once a minute. `relativeAge` says "now" under a minute, which would read "updated now ago".
 12. **Offline Send is fenced to the session instance the phone last saw,** as an online send is. A session this phone hasn't read since launch has no instance to fence with, so there Send stays disabled offline and the draft stays. That is about the phone's read, not the session's status: a shut-down session (`notLoaded` on the hub) the phone has read resumes on a send, fenced as an online resume is.
-13. **Offline, Send queues whenever the harness can.** By the time the message arrives another turn may have started, which refuses a `turn/start`; the daemon runs a queued message at once on an idle session and holds it behind a running one (`clientMutationQueue`, `agent/session_client_mutation_queue.go`). A shut-down session resumes on a send.
+13. **Offline, Send queues whenever the harness can.** By the time the message arrives another turn may have started, which refuses a `turn/start`; the daemon runs a queued message at once on an idle session and holds it behind a running one (`clientMutationQueue`, `agent/session_client_mutation_queue.go`). So offline routing is the package's table as if a send of this phone's were already pending (`deriveSendQueueAvailability`'s tier 6), which also queues a second message behind a first this phone still holds. A harness that can't queue waits for the connection. A shut-down session resumes on its first message.
 14. **What a waiting message says.** "Sending…" while the connection is live, "Will send when you're back online" while it isn't (the prototype's words, and principle 5: nothing is sending), and Send's label offline says the same.
 15. **"Couldn't confirm this was sent" offers Check only while connected, and Discard always,** since Check needs the hub and Discard doesn't. This covers a lost send, the unconfirmed draft and a record the phone couldn't place.
 16. **A message a Stop held before it left the phone comes back as held,** with "Send now" and "Cancel", like the queue a Stop parks (spec 8.5). Send now moves it to the end of its session's line, behind the Stop that held it, so that Stop can never stop it. The roadmap's phase 6 row, as phase 3 words it, calls these Retry and Discard; the ghost uses spec 8.5's words for a held message.
@@ -67,18 +67,18 @@ Decisions this plan makes where the spec is silent or its data doesn't exist yet
 
 ## Built on earlier phases
 
-Phases 2 to 5 are planned beside this one, so some names below are what those plans say they produce. Tasks 3-11 and 17-20 are in part 2. Before a task that uses one, read the landed code. If it landed under another name or shape, use the landed one and say so in the PR.
+Phases 2 to 5 are planned beside this one, so some names below are what those plans say they produce. Tasks 3-11 and 17-20 are in part 2, and Task 15 in part 3. Before a task that uses one, read the landed code. If it landed under another name or shape, use the landed one and say so in the PR.
 
 | This plan uses | From | Used by |
 |---|---|---|
 | `boardState`, `liveBands`, `whyLine`, `WhyLine`, `LiveBands`, `BoardState` (`src/board/attention.ts`), `StateMark`, `seenMarkers` | phase 2 PR 1 | Tasks 3, 4, 7, 8 |
 | `createBoardController` (`src/board/boardData.ts`), `connectionStatus` (`src/board/connectionStatus.ts`), `BoardScreen`, `BoardToolbar` | phase 2 PR 2 | Tasks 1, 7, 8 |
 | `Notice` and `notices` (`src/board/notices.ts`), `Notices.tsx` | phase 2 part 2 (its Task 14) | Tasks 4, 8 |
-| The Board's offline rule (`rowMenuActions`, its ruling 21), `useBoardOrganization` (its ruling 16) and `BoardStops` (its ruling 17, Task 12.2) | phase 2 part 3 | ruling 18, Task 15 |
+| The Board's offline rule (`rowMenuActions`, its ruling 21), `useBoardOrganization` (its ruling 16) and `BoardStops` (its ruling 17, Task 12.2) | phase 2 part 3 | ruling 18; part 2's PR H; part 3's Task 15 |
 | The demo fleet (`src/dev/demoFleet.ts`, `scripts/demo-hub.mts`) | phase 2 PR B | Task 17 |
 | `useConnectionStatusText()` and the Session's connection bar (its Task 15); `compactDuration` (`src/session/format.ts`) and `sendAction` (its Task 3); `Composer` (its Task 5); `ghosts.ts`, whose parked queue reads the package's `isQueueParked`, and its wiring (its Tasks 7-8); `fleetOrder.ts` (`othersNeedingYou`, `nextSession`), `BackButton` and the Next capsule (its Tasks 32-33); `Toast` | phase 3 | Tasks 1, 2, 10, 11, 13, 14 |
-| Phase 3 left here: Send while offline (ruling 4), every haptic (ruling 5), Next's recent order (ruling 11), the Board's outbox and a Stop-held message's retry (ruling 3) | phase 3 | Tasks 6, 11, 13, 14, 16 |
-| `NativeMutationRuntime.settleTarget` (its Task 2); `ReaderScreen` (`src/reader/ReaderScreen.tsx`, its Task 14) on the `"Reader"` route | phase 4 | Tasks 10, 15 |
+| Phase 3 left here: Send while offline (ruling 4), every haptic (ruling 5), Next's recent order (ruling 11), the Board's outbox and a Stop-held message's retry (ruling 3) | phase 3 | Tasks 6, 11, 13, 14; part 2's PR H |
+| `NativeMutationRuntime.settleTarget` (its Task 2); `ReaderScreen` (`src/reader/ReaderScreen.tsx`, its Task 14) on the `"Reader"` route | phase 4 | Tasks 10 (part 2) and 15 (part 3) |
 | The grouped-list pieces (`src/sheet/Grouped.tsx`, its Task 1); `useConnectionStatusLine`, `SheetStatus` and `INCOMPATIBLE_VERSIONS` (its Task 2); the Hub sheet (`src/hub/HubSheet.tsx`, `HubHome.tsx`, its Task 3) and its sheet routes `"Hub"` and `"NewSession"`; the "Reconnect" guard and the connection messages (its Task 27); phase 5 left the In-app alerts page here (its ruling 11) | phase 5 | Tasks 1, 2, 8, 9 |
 
 ## Review Focus
@@ -86,7 +86,7 @@ Phases 2 to 5 are planned beside this one, so some names below are what those pl
 1. **A pile of banners when you come back.** Opening the app, switching hubs or returning from the background must not alert about sessions that already needed you; the Board, Back's count and Next already show them. Pinned by Task 4 (the first read is a baseline) and Task 8 (a new client starts a new baseline, and a Needs you section still loading is never the baseline), both in part 2.
 2. **Old news alerting twice.** A host that goes offline and comes back, or a session that alerts twice within a burst, must never produce a second banner or count one session twice. Pinned by Task 4 (offline rows keep their state) and Task 3 (a coalesced banner counts each session once), both in part 2.
 3. **Returning to the app flashes "Offline".** An hour in the background, then a foreground return whose connection takes a second, must show nothing, and "Reconnecting…" only after 2 seconds. Pinned by Task 1 (the clock never counts background time).
-4. **A message sent offline is lost, sent twice, left waiting, or stopped by its own Stop.** Send while offline, then leave the session or open the Reader from it, relaunch, and come back online: the message goes out exactly once, with no trip back to its session. A message a Stop held, sent again, goes after that Stop. Pinned by Task 14 (the offline admission stores one record, sent once when the connection returns), Task 15 (a fresh process sends it once, and the flush settles for a session screen under the Reader) and Task 12 (Send now moves the row behind its Stop).
+4. **A message sent offline is lost, sent twice, left waiting, or stopped by its own Stop.** Send while offline, then leave the session or open the Reader from it, relaunch, and come back online: the message goes out exactly once, with no trip back to its session. A message a Stop held, sent again, goes after that Stop. Pinned by Task 14 (the offline admission stores one record, sent once when the connection returns), Task 12 (Send now moves the row behind its Stop), and part 3's Task 15 (a fresh process sends it once, and the flush settles for a session screen under the Reader).
 5. **A banner in the way.** A banner never covers the nav bar (Back, the title, the ask dock), never interrupts a sheet or your typing, and never goes away under your finger. Pinned by Task 8 (it sits below the header height, and a sheet route holds it), Task 10 (typing and every `Modal` hold it) and Task 3 (a finger keeps it), all in part 2.
 
 ---
@@ -100,12 +100,13 @@ Phases 2 to 5 are planned beside this one, so some names below are what those pl
 | C: banners on every screen (part 2) | 7-8 | Opus | PR B lands | alerts |
 | D: holds, the In-app alerts page and Next (part 2) | 9-11 | Opus (9-10), Sonnet (11) | PR C lands | alerts |
 | E: your own undelivered messages | 12-13 | Sonnet (12), Opus (13) | the phase starts | outbox |
-| F: Send while offline | 14-15 | Opus (14), Sonnet (15) | PRs A and E land | connection |
+| F: Send while offline | 14 | Opus | PRs A and E land | connection |
 | G: the demo and the screenshots (part 2) | 17-18 | Opus (17), then by hand | PRs D and F land | alerts |
 | H: Board actions held offline (part 2) | 19-20 | Opus | phase 2 part 3's PRs are on main | board |
+| I: what you left behind sends itself (part 3) | 15 | Sonnet | PR F lands | connection |
 
 - Three lanes start together: alerts (PR B), connection (PR A) and outbox (PR E). The outbox lane joins the connection lane at PR F, and that lane joins the alerts lane at PR G. PR H, the Board's hold, runs on its own once phase 2 part 3 is on main.
-- Files two lanes share: `App.tsx` (PR C mounts the alerts, PR F binds the flush) and phase 3's session screen (PRs D, E and F). The second PR to land in either merges `origin/main` before its review.
+- Files two lanes share: `App.tsx` (PR C mounts the alerts, PR I binds the flush) and phase 3's session screen (PRs D, E, F and I). The second PR to land in either merges `origin/main` before its review.
 - Every PR lands under the roadmap's rules: CI green, RoboRev with nothing Medium or higher, /simplify, admin squash merge, Lows in a fast-follow, and decompose after five rounds.
 - PR G, the phase's last, carries Release-simulator screenshots of the alert and offline frames against the demo fleet (part 2's Task 18).
 
@@ -115,7 +116,7 @@ Phases 2 to 5 are planned beside this one, so some names below are what those pl
 
 ### Task 1: One connection clock and one status for every screen
 
-Phase 2 put the status on the Board's toolbar (`connectionStatus` in `src/board/connectionStatus.ts`, phase 2 Task 7). Phase 3 and phase 5 each plan to move its timing into a hook in the same file: `useConnectionStatusText()` for the Session's connection bar (phase 3 Task 15), and `useConnectionStatusLine()` for the sheets' status line (phase 5 Task 2, its ruling 21). If both landed, they are one hook under two names: keep `useConnectionStatusText`, delete `useConnectionStatusLine` and its test file, and point its callers (phase 5's `SheetStatus` and `HubHome`; `grep -rn useConnectionStatusLine mobile-native/src`) at the survivor. What none of them owns is the clock, and it has two traps:
+Phase 2 put the status on the Board's toolbar (`connectionStatus` in `src/board/connectionStatus.ts`, phase 2 Task 7). Phase 3 and phase 5 each plan to move its timing into a hook in the same file: `useConnectionStatusText()` for the Session's connection bar (phase 3 Task 15), and `useConnectionStatusLine()` for the sheets' status line (phase 5 Task 2, its ruling 21). If both landed, they are one hook under two names: keep `useConnectionStatusText`, delete `useConnectionStatusLine` and its test file, and point its callers (phase 5's `SheetStatus`, `HubHome` and `BoardToolbar`, which its Task 2 rewired; `grep -rn useConnectionStatusLine mobile-native/src`) at the survivor. What none of them owns is the clock, and it has two traps:
 - The time down is tracked where the hook is mounted, so a screen that appears while the phone is offline starts from zero, and a return from the background can count the background as time down and flash "Offline".
 - `relativeAge` says "now" under a minute, so the status can read "updated now ago".
 
@@ -123,7 +124,7 @@ This task moves the clock into `ConnectionProvider`, where it sees the foregroun
 
 **Files:**
 - Create: `mobile-native/src/connectionClock.ts`
-- Modify: `mobile-native/src/board/connectionStatus.ts` (replace its content as below; `useConnectionStatusText` keeps its name, so phase 2's toolbar and phase 3's bar need no change), `mobile-native/src/sheet/SheetStatus.tsx` and `mobile-native/src/hub/HubHome.tsx` (phase 5 Tasks 2 and 3: call `useConnectionStatusText` where they called `useConnectionStatusLine`), `mobile-native/src/ConnectionProvider.tsx` (the clock, and `downSince` and `lastLiveAt` on the context) and `mobile-native/src/renderNative.testkit.tsx` (`screenConnection` adds `downSince: null` and `lastLiveAt: null`)
+- Modify: `mobile-native/src/board/connectionStatus.ts` (replace its content as below; `useConnectionStatusText` keeps its name, so phase 3's bar needs no change), `mobile-native/src/board/BoardToolbar.tsx`, `mobile-native/src/sheet/SheetStatus.tsx` and `mobile-native/src/hub/HubHome.tsx` (phase 5 Tasks 2 and 3: call `useConnectionStatusText` where they called `useConnectionStatusLine`), `mobile-native/src/ConnectionProvider.tsx` (the clock, and `downSince` and `lastLiveAt` on the context) and `mobile-native/src/renderNative.testkit.tsx` (`screenConnection` adds `downSince: null` and `lastLiveAt: null`)
 - Test: `mobile-native/src/connectionClock.test.ts` and `mobile-native/src/board/connectionStatus.test.ts` (replace the timing tests phase 3 moved there); delete phase 5's `src/board/connectionStatusLine.test.tsx` with its hook, since the new hook tests cover its cases; update any screen test that drove the clock through its own mounted hook to set `downSince` and `lastLiveAt` on its mocked connection instead, and phase 5's `SheetStatus.test.tsx` mock to name `useConnectionStatusText`
 
 **Interfaces:**
@@ -483,17 +484,20 @@ Phase 5 also gives spec 14's version sentence one home, `INCOMPATIBLE_VERSIONS` 
 //
 // It reads string literals, template text and JSX text through the
 // TypeScript parser, so comments, identifiers and import paths never trip
-// it. Text handed to console.* is for developers, and is skipped.
+// it. Text handed to console.* is for developers, and is skipped. It covers
+// the phone's own code and the shared mobile code it runs (mobile/src), whose
+// errors the phone shows.
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { expect, it } from "vitest";
 
-const SRC = fileURLToPath(new URL(".", import.meta.url));
+const REPO = fileURLToPath(new URL("../..", import.meta.url));
+const ROOTS = ["mobile-native/src", "mobile/src"].map((root) => path.join(REPO, root));
 const FORBIDDEN = /\breconnect\b|\brefresh\b|\bpull down to retry\b/i;
 // Task 14 deletes this refusal ("Reconnect and try again.") and this entry.
-const ALLOWED = new Set(["nativeMutationHost.ts"]);
+const ALLOWED = new Set(["mobile-native/src/nativeMutationHost.ts"]);
 
 function productionFiles(dir: string): string[] {
 	return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -550,10 +554,10 @@ it("reads the text a person sees, and nothing else", () => {
 });
 
 it("no text a person can read asks them to reconnect or refresh", () => {
-	const offenders = productionFiles(SRC)
-		.filter((file) => !ALLOWED.has(path.relative(SRC, file)))
+	const offenders = ROOTS.flatMap(productionFiles)
+		.filter((file) => !ALLOWED.has(path.relative(REPO, file)))
 		.flatMap((file) =>
-			asks(file, readFileSync(file, "utf8")).map((text) => `${path.relative(SRC, file)}: ${text.trim()}`),
+			asks(file, readFileSync(file, "utf8")).map((text) => `${path.relative(REPO, file)}: ${text.trim()}`),
 		);
 	expect(offenders).toEqual([]);
 });
@@ -562,7 +566,7 @@ it("no text a person can read asks them to reconnect or refresh", () => {
 - [ ] **Step 2: Run it and read the list**
 
 Run: `cd mobile-native && npx vitest run src/calmCopy.test.ts`
-Expected: FAIL. The self-check passes, and the audit lists each offending string by file: this task's worklist, whose length goes in the PR description. On main at `d0c0211be` it held 101 strings in 43 files. Phases 2 to 5 replace the screens behind most of them (phase 3 rewrites `approvalControls.ts`'s). The shared navigation messages are the likeliest to remain: `navigationActions.ts` (6), `navigationPages.ts` (5), `navigationReadback.ts` (4), `pinNavigation.ts` (4), `organizationNavigation.ts` (2), and one each in `navigationReveal.ts` and `sessionDeletionNavigation.ts`.
+Expected: FAIL. The self-check passes, and the audit lists each offending string by file: this task's worklist, whose length goes in the PR description. On main at `c074010bb` it held 103 strings in 45 files, two of them in `mobile/src`. Phases 2 to 5 replace the screens behind most of them (phase 3 rewrites `approvalControls.ts`'s). The shared navigation messages are the likeliest to remain: `navigationActions.ts` (6), `navigationPages.ts` (5), `navigationReadback.ts` (4), `pinNavigation.ts` (4), `organizationNavigation.ts` (2), and one each in `navigationReveal.ts` and `sessionDeletionNavigation.ts`.
 
 - [ ] **Step 3: Implement** requirement 1, then work through the list under requirements 2 and 4, one file at a time, running that file's own tests after each.
 
@@ -582,9 +586,9 @@ Open PR A: "feat(native): one connection clock, and no text asks you to reconnec
 
 ---
 
-## PRs B, C, D, G and H: in part 2
+## PRs B, C, D, G, H and I: in parts 2 and 3
 
-The alerts, the phase's screenshots and the Board's hold, PRs B, C, D, G and H (Tasks 3-11 and 17-20), are in part 2, `docs/superpowers/plans/2026-09-26-iphone-redesign-phase6-attention-resilience-part2.md`, which lands in its own PR. After five review rounds on this PR the alert center (Task 3) still had findings open, so it and everything built on it moved out; part 2 opens with those findings. This part's Goal, Architecture, Global Constraints, Rulings, Questions and Review Focus bind part 2's tasks, and the task numbers continue there.
+The alerts, the phase's screenshots and the Board's hold, PRs B, C, D, G and H (Tasks 3-11 and 17-20), are in part 2, `docs/superpowers/plans/2026-09-26-iphone-redesign-phase6-attention-resilience-part2.md`. After five review rounds on this PR the alert center (Task 3) still had findings open, so it and everything built on it moved out; the Board's hold joined it when Jesse answered the offline question (ruling 18). The outbox's flush, PR I (Task 15), is in part 3, `docs/superpowers/plans/2026-09-26-iphone-redesign-phase6-attention-resilience-part3.md`, after its own review rounds here. Neither file is in this PR's branch; each lands in its own PR and opens with the findings it carries. This part's Goal, Architecture, Global Constraints, Rulings, Questions and Review Focus bind both, and the task numbers continue there.
 
 ---
 
@@ -787,6 +791,11 @@ and after `discardRecovery`:
 	// stop epoch is read at the press, before any other await, like submit's
 	// barrier: a Stop landing after the press keeps the row held.
 	async releaseCanceled(clientMutationId: string, targetRef: string): Promise<boolean> {
+		// The press-time half of the stop barrier, captured as submit's is:
+		// readStopEpoch's body is synchronous (mutationOutboxStorage.ts:290-292),
+		// so the epoch is read inside this call, before any other event runs. A
+		// Stop that lands during start() then moves the epoch past it, and
+		// storage refuses the release.
 		const barrier: MutationStopBarrier = { stopEpoch: await this.storage.readStopEpoch(targetRef) };
 		await this.start();
 		const released = await this.storage.releaseCanceled(clientMutationId, targetRef, barrier);
@@ -959,7 +968,7 @@ Open PR E: "feat(native): Discard and Send now for your own undelivered messages
 
 ## PR F: Send while offline
 
-Phase 3 disables Send while offline (its ruling 4): the durable submitter refuses without a live host (`createDurableSubmitter`, `nativeMutationHost.ts:44-55`), and the store only admits a message through a bound service (`captureOperationBinding`, `mobile/src/state/conversation.ts:1177-1195`). Spec 8.5 says Send "holds the message in the outbox and sends it when the connection returns". The runtime already keeps a message admitted while disconnected and sends it once its target is registered and read (the test "submit durably records while disconnected and dispatches after readiness", `nativeMutationRuntime.test.ts:800-828`). This PR admits it, and sends what you left in sessions you've since closed.
+Phase 3 disables Send while offline (its ruling 4): the durable submitter refuses without a live host (`createDurableSubmitter`, `nativeMutationHost.ts:44-55`), and the store only admits a message through a bound service (`captureOperationBinding`, `mobile/src/state/conversation.ts:1177-1195`). Spec 8.5 says Send "holds the message in the outbox and sends it when the connection returns". The runtime already keeps a message admitted while disconnected and sends it once its target is registered and read (the test "submit durably records while disconnected and dispatches after readiness", `nativeMutationRuntime.test.ts:800-828`). This PR admits it. A message left in a session you have since closed goes when you open it again, or with part 3's flush (PR I) as soon as the connection returns.
 
 ### Task 14: Send while offline
 
@@ -971,14 +980,14 @@ Phase 3 disables Send while offline (its ruling 4): the durable submitter refuse
 - Test: `mobile-native/src/ConversationScreen.offline.test.tsx` (create, on the harness of `ConversationScreen.send.test.tsx`)
 
 **Interfaces:**
-- Consumes: phase 3's `sendAction`, `SendSource`, `SendAction`, `composerPlaceholder` and `sendLabel`; `getNativeMutationRuntime().submit` and `nativeMutationTargetKey`; `buildComposerInput` from `@evener/appwire-client`.
+- Consumes: phase 3's `sendAction`, `SendSource`, `SendAction`, `composerPlaceholder` and `sendLabel`; `deriveSendQueueAvailability` and `buildComposerInput` from `@evener/appwire-client`, and `ownPendingSend` from `@evener/appwire-client/state/mutation` (phase 3 Task 2); `getNativeMutationRuntime().submit` and `nativeMutationTargetKey`.
 - Produces:
   - `sendAction(conversation, pendingMutations, connected)` keeps its signature. Offline it returns the action the message will take when it arrives, instead of `"none"`.
   - `sendLabel(action, questionPending, connected = true)`.
   - `interface OfflineTarget { hubId: string; ref: string; threadId: string; instanceId?: string | null }` and `offlineRequest(target: OfflineTarget, action: "send" | "queue" | "resume", input: InputItem[]): ConversationMutationRequest`, from `src/outbox/offlineSend.ts`.
 
 **Requirements (spec 8.5 and 14; rulings 12 to 14):**
-1. **Routing offline.** A message waits in the outbox, and by the time it arrives another turn may have started, where `turn/start` is refused. So offline, Send queues whenever the harness can: the daemon runs a queued message at once on an idle session (`clientMutationQueue` wakes it, `agent/session_client_mutation_queue.go:107-190`) and holds it behind a running one. A shut-down session resumes on a send. A paused session, one that needs a restart, and one whose harness takes neither stay `"none"`.
+1. **Routing offline.** A message waits in the outbox, and by the time it arrives another turn may have started, where `turn/start` is refused. So offline, Send routes by the package's table as if a send of this phone's were already pending (`deriveSendQueueAvailability` with `hasPendingSend: true`, its tier 6): it queues whenever the harness can, and the daemon runs a queued message at once on an idle session (`clientMutationQueue` wakes it, `agent/session_client_mutation_queue.go:107-190`) and holds it behind a running one. A message after one this phone still holds queues behind it, as online. The first message to a shut-down session resumes it. A paused session, one that needs a restart, and one whose harness can't queue stay `"none"`, and the draft stays.
 2. **What Send admits offline.** When the screen isn't connected and the phone has read the session since launch (`store.getState().conversation` is set), Send is enabled on the same draft conditions as online, minus `ready`. It runs `document.submit(async (text, images) => …)`, which submits `offlineRequest({ hubId, ref, threadId, instanceId }, action, buildComposerInput(text, images))` to `getNativeMutationRuntime()`, and returns `true`. Its haptic comes with part 2's Task 6. The ghost shows at once through the durable pending rows the screen already follows (phase 3 Task 8).
 3. **Never read.** A session this phone hasn't read since launch (`store.getState().conversation` is unset) has no instance to fence with (ruling 12), so its Send stays disabled offline, and the draft stays. `sendAction` is never asked there. A thread whose hub status is `notLoaded` is a shut-down session the phone did read, and routes to `"resume"`.
 4. **Words.** The placeholder is `composerPlaceholder` of the connected routing, so it describes the session rather than the outbox. Send's accessibility label offline is "Send when you're back online", or "Send answer when you're back online" while a question is pending.
@@ -987,26 +996,34 @@ Phase 3 disables Send while offline (its ruling 4): the durable submitter refuse
 
 - [ ] **Step 1: Write the failing tests**
 
-In phase 3's `sendAction.test.ts`, delete the first line of "does nothing offline, while paused, or where the harness can't take it" (`sendAction(session("idle"), [], false)`), rename the test "does nothing while paused, or where the harness can't take it", and add:
+In phase 3's `sendAction.test.ts`, delete the first line of "does nothing offline, while paused, or where the harness can't take it" (`sendAction(session("idle"), [], false)`), rename the test "does nothing while paused, or where the harness can't take it", and add (`pendingSend`, `caps` and `session` are that file's helpers):
 
 ```ts
 describe("Send while offline (phase 6)", () => {
-	it("queues whenever the harness can, so a turn that started meanwhile never refuses it", () => {
-		expect(sendAction(session("idle"), [], false)).toBe("queue");
-		expect(sendAction(session("active"), [], false)).toBe("queue");
-		expect(sendAction(session("awaiting"), [], false)).toBe("queue");
+	it.each([
+		["idle", "queue"],
+		["awaiting", "queue"],
+		["systemError", "queue"],
+		["active", "queue"],
+		["notLoaded", "resume"],
+		["ended", "resume"],
+		["closed", "resume"],
+		["restartRequired", "none"],
+	] as const)("%s → %s: it queues where a turn may be running by the time it arrives", (type, expected) => {
+		expect(sendAction(session(type), [], false)).toBe(expected);
 	});
 
-	it("sends to resume a shut-down session, or where the harness can't queue", () => {
-		expect(sendAction(session("notLoaded"), [], false)).toBe("resume");
-		expect(sendAction(session("idle", { capabilities: caps({ queue: false }) }), [], false)).toBe("send");
+	it("queues a message behind one this phone still holds, a shut-down session's first included", () => {
+		expect(sendAction(session("ended"), [pendingSend()], false)).toBe("queue");
+		expect(sendAction(session("notLoaded"), [pendingSend({ state: "blockedUnknown" })], false)).toBe("queue");
+		expect(sendAction(session("idle"), [pendingSend()], false)).toBe("queue");
 	});
 
-	it("does nothing for a paused session, one that needs a restart, or one that takes nothing", () => {
+	it("waits for the connection where the harness can't queue, and while paused", () => {
+		expect(sendAction(session("idle", { capabilities: caps({ queue: false }) }), [], false)).toBe("none");
+		expect(sendAction(session("active", { capabilities: caps({ queue: false }) }), [], false)).toBe("none");
 		expect(sendAction(session("idle", { resumeRequired: true }), [], false)).toBe("none");
-		expect(sendAction(session("restartRequired"), [], false)).toBe("none");
 		expect(sendAction(session("ended", { capabilities: caps({ send: false }) }), [], false)).toBe("none");
-		expect(sendAction(session("idle", { capabilities: caps({ queue: false, send: false }) }), [], false)).toBe("none");
 	});
 
 	it("says Send waits for the connection", () => {
@@ -1066,23 +1083,26 @@ export function sendAction(
 	connected: boolean,
 ): SendAction {
 	if (conversation.resumeRequired) return "none";
-	if (!connected) return offlineAction(conversation);
+	if (!connected) return offlineAction(conversation, ownPendingSend(pendingMutations));
 	const status = conversation.status.type;
 	// … the rest of phase 3's body, unchanged …
 }
 
-/** Offline, a message waits in the phone's outbox (spec 8.5), and by the
- * time it arrives another turn may have started, which refuses a turn/start.
- * So it queues whenever the harness can: the daemon runs a queued message at
- * once on an idle session and holds it behind a running one
- * (agent/session_client_mutation_queue.go, clientMutationQueue). A shut-down
- * session resumes on a send. */
-function offlineAction(conversation: SendSource): SendAction {
+/** Offline, a message waits in the phone's outbox (spec 8.5, ruling 13).
+ * By the time it arrives a turn may be running, so it goes as if a send of
+ * this phone's were already pending, the package's tier 6: it queues where
+ * the harness can, and waits for the connection where it can't. The one
+ * exception is the first message to a shut-down session, which resumes it;
+ * a message after it queues behind it. */
+function offlineAction(conversation: SendSource, pendingSend: boolean): SendAction {
 	const status = conversation.status.type;
-	if (status === "restartRequired") return "none";
-	if (ENDED.has(status)) return conversation.capabilities.send ? "resume" : "none";
-	if (conversation.capabilities.queue) return "queue";
-	return conversation.capabilities.send ? "send" : "none";
+	if (ENDED.has(status) && !pendingSend) return conversation.capabilities.send ? "resume" : "none";
+	const availability = deriveSendQueueAvailability({
+		statusType: status,
+		capabilities: conversation.capabilities,
+		hasPendingSend: true,
+	});
+	return availability.canQueue ? "queue" : "none";
 }
 ```
 
@@ -1144,558 +1164,6 @@ Expected: PASS. Build Release in the simulator, turn the Mac's network off, send
 ```bash
 git add mobile-native/src/session/sendAction.ts mobile-native/src/session/sendAction.test.ts mobile-native/src/outbox/offlineSend.ts mobile-native/src/outbox/offlineSend.test.ts mobile-native/src/ConversationScreen.offline.test.tsx mobile-native/src/screens.tsx mobile-native/src/nativeMutationHost.ts mobile-native/src/calmCopy.test.ts
 git commit -m "feat(native): Send while offline keeps the message and sends it when the connection returns"
-```
-
-### Task 15: What you left behind sends itself
-
-A message sent offline in a session you then left waits in the outbox with no screen to send it: only an open session screen registers its target (`createNativeMutationHost`, `nativeMutationHost.ts:57-108`). So does anything admitted for a session no screen holds, such as a review sent from a Reader opened from the Board (phase 4's `submitSessionMessage` settles only a registered target), or a Board Stop whose connection dropped before `BoardStops` let its target go (phase 2 part 3's Task 12.2). The web sends every target with waiting records on each ready connection (`handleReady`, `cmd/evener-hub/frontend/src/stores/threads.ts:2702-2767`). This task does the same, and also looks again whenever a record lands for a target nobody holds. It reuses phase 4's `settleTarget` (phase 4 Task 2), which releases a registered target with a read that leaves the connection's subscription alone. That also covers a session screen under the Reader or a subagent: it keeps its target but doesn't read while covered (phase 4 Task 2), so on a ready connection the flush settles its target for it when something on it waits to be sent.
-
-A target nobody holds is settled whatever its records hold, as `handleReady` reads every stored target. The read is how the phone confirms a send whose answer was lost: a record the hub's read reflects is settled (`reconcileIdentities`), and one the hub proves it never received goes back to the outbox to send (`restoreProvenAbsent`, `mutationOutboxStorage.ts:492`). Spec 14 shows "Couldn't confirm this was sent" only when "delivery can't be confirmed after reconnecting".
-
-**Files:**
-- Create: `mobile-native/src/outbox/outboxFlush.ts`, `mobile-native/src/outbox/nativeOutboxFlush.ts` and `mobile-native/src/outbox/outboxFlush.test.ts`
-- Modify: `mobile-native/src/nativeMutationRuntime.ts` (`targetClient`, beside `registerTarget`)
-- Modify: `mobile-native/App.tsx` (bind the flush to the connection) and the session screen's durable-host effect (`screens.tsx:1035-1059`: flush after its host lets go)
-
-**Interfaces:**
-- Consumes: `NativeMutationRuntime.settleTarget(hubId, targetRef, client)` (phase 4 Task 2), `registerTarget`, `start`, `subscribeStorage`, `storage.listTargetRefs` and `storage.listOutbox`.
-- Produces:
-  - `NativeMutationRuntime.targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined`: the client that holds the target, or undefined
-  - `parseTargetKey(key: string): { hubId: string; ref: string } | null`
-  - `class OutboxFlush`: constructor `(runtime: () => FlushRuntime)`; `bind(hubId: string | null, client: AppwireClientLike | null)`, `flush(): Promise<void>`, `dispose()`
-  - `outboxFlush`, the app's one instance, from `nativeOutboxFlush.ts`
-
-- [ ] **Step 1: Write the failing tests**
-
-```ts
-// mobile-native/src/outbox/outboxFlush.test.ts
-import type { ThreadReadResponse } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { afterEach, expect, it, vi } from "vitest";
-import { NativeMutationRuntime, type NativeMutationRequest } from "../nativeMutationRuntime";
-import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.testkit";
-import { OutboxFlush, parseTargetKey } from "./outboxFlush";
-
-vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-crypto", () => ({ randomUUID: () => "test-uuid", getRandomValues: (array: Uint8Array) => array }));
-
-let database: SqliteDoubleDatabase | undefined;
-afterEach(() => {
-	database?.close();
-	database = undefined;
-});
-
-function runtime(): NativeMutationRuntime {
-	const opened = openSqliteSyncDouble();
-	database = opened.database;
-	let next = 0;
-	return new NativeMutationRuntime(opened.port, { createMutationId: () => `mutation-${++next}` });
-}
-
-const message = (over: Partial<NativeMutationRequest> = {}): NativeMutationRequest => ({
-	kind: "send",
-	hubId: "hub-1",
-	targetRef: "ref-1",
-	threadId: "thread-1",
-	instanceId: "instance-1",
-	input: [{ type: "text", text: "sent on the train" }],
-	...over,
-});
-
-function applied(params: unknown): never {
-	const { clientMutationId } = params as { clientMutationId: string };
-	return {
-		receipt: { clientMutationId, disposition: "applied", threadId: "thread-1", turnId: "turn-1", projectionState: "pending" },
-		turn: { id: "turn-1" },
-	} as never;
-}
-
-function read(ref: string): ThreadReadResponse {
-	return {
-		thread: {
-			id: "thread-1",
-			status: { type: "idle" },
-			evener: { ref, capabilities: {}, queue: { clientMutationIds: [] }, mutationStateAuthoritative: true },
-		},
-	} as unknown as ThreadReadResponse;
-}
-
-function methods(client: FakeClient): string[] {
-	return client.calls.map((call) => call.method);
-}
-
-it("sends a message kept while offline once the connection returns, even after a relaunch", async () => {
-	const opened = openSqliteSyncDouble();
-	database = opened.database;
-	const beforeRelaunch = new NativeMutationRuntime(opened.port, { createMutationId: () => "mutation-1" });
-	await beforeRelaunch.submit(message());
-	await beforeRelaunch.stop();
-	// A fresh process: the runtime is new and not started; the message is on disk.
-	const outbox = new NativeMutationRuntime(opened.port, { createMutationId: () => "mutation-2" });
-	const client = new FakeClient("ready");
-	client.on("thread/read", () => read("ref-1"));
-	client.on("turn/start", applied);
-	const flush = new OutboxFlush(() => outbox);
-
-	flush.bind("hub-1", client);
-
-	await vi.waitFor(() => expect(methods(client)).toEqual(["thread/read", "turn/start"]));
-	expect(client.calls[0]?.params).toEqual({ ref: "ref-1", includeTurns: true, itemsView: "fragment", itemLimit: 40 });
-	expect((client.calls[1]?.params as { clientMutationId: string }).clientMutationId).toBe("mutation-1");
-	await vi.waitFor(() => expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined());
-	flush.dispose();
-	await outbox.stop();
-});
-
-it("never takes a session a screen holds", async () => {
-	const outbox = runtime();
-	const screen = new FakeClient("ready");
-	outbox.registerTarget("hub-1", "ref-1", screen);
-	await outbox.submit(message());
-	const client = new FakeClient("ready");
-	const flush = new OutboxFlush(() => outbox);
-
-	flush.bind("hub-1", client);
-	await flush.flush();
-
-	expect(methods(client)).toEqual([]);
-	flush.dispose();
-	await outbox.stop();
-});
-
-it("settles for a session screen that isn't reading, and leaves the target the screen's", async () => {
-	const outbox = runtime();
-	const client = new FakeClient("ready");
-	client.on("thread/read", () => read("ref-1"));
-	client.on("turn/start", applied);
-	// A session screen under the Reader: registered with the connection's
-	// client, blocked since the reconnect, and not reading while blurred.
-	const unregister = outbox.registerTarget("hub-1", "ref-1", client);
-	await outbox.submit(message());
-	const flush = new OutboxFlush(() => outbox);
-
-	flush.bind("hub-1", client);
-
-	await vi.waitFor(() => expect(methods(client)).toEqual(["thread/read", "turn/start"]));
-	flush.dispose();
-	expect(outbox.targetClient("hub-1", "ref-1")).toBe(client);
-	unregister();
-	await outbox.stop();
-});
-
-it("reads nothing for a session screen with nothing waiting to send", async () => {
-	const outbox = runtime();
-	const client = new FakeClient("ready");
-	const unregister = outbox.registerTarget("hub-1", "ref-1", client);
-	await outbox.submit(message());
-	// Its one message couldn't be confirmed, so it waits for you in its session.
-	await outbox.storage.markUnknown("mutation-1", "blockedUnknown");
-	const flush = new OutboxFlush(() => outbox);
-
-	flush.bind("hub-1", client);
-	await flush.flush();
-
-	expect(methods(client)).toEqual([]);
-	flush.dispose();
-	unregister();
-	await outbox.stop();
-});
-
-it("sends what another screen admits for a session no screen has open", async () => {
-	const outbox = runtime();
-	const client = new FakeClient("ready");
-	client.on("thread/read", () => read("ref-1"));
-	client.on("turn/start", applied);
-	const flush = new OutboxFlush(() => outbox);
-	flush.bind("hub-1", client);
-	await flush.flush();
-	expect(methods(client)).toEqual([]);
-
-	await outbox.submit(message());
-
-	await vi.waitFor(() => expect(methods(client)).toEqual(["thread/read", "turn/start"]));
-	flush.dispose();
-	await outbox.stop();
-});
-
-it("keeps a message it can't settle, and lets its session go", async () => {
-	const outbox = runtime();
-	await outbox.submit(message());
-	const client = new FakeClient("ready");
-	client.on("thread/read", () => Promise.reject(new Error("offline")));
-	client.on("turn/start", applied);
-	const flush = new OutboxFlush(() => outbox);
-
-	flush.bind("hub-1", client);
-	await flush.flush();
-
-	await vi.waitFor(() => expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined());
-	expect(methods(client)).not.toContain("turn/start");
-	expect((await outbox.storage.getOutbox("mutation-1"))?.state).toBe("submitting");
-	flush.dispose();
-	await outbox.stop();
-});
-
-it("lets go of a target it can't settle, and still sends the others", async () => {
-	const outbox = runtime();
-	await outbox.submit(message({ targetRef: "ref-1" }));
-	await outbox.submit(message({ targetRef: "ref-2" }));
-	const client = new FakeClient("ready");
-	// ref-1's answer is malformed, so settling it throws.
-	client.on("thread/read", (params) => ((params as { ref: string }).ref === "ref-1" ? ({} as never) : read("ref-2")));
-	client.on("turn/start", applied);
-	const flush = new OutboxFlush(() => outbox);
-
-	flush.bind("hub-1", client);
-
-	await vi.waitFor(() => expect(methods(client)).toContain("turn/start"));
-	expect((client.calls.find((call) => call.method === "turn/start")?.params as { ref: string }).ref).toBe("ref-2");
-	expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined();
-	flush.dispose();
-	await outbox.stop();
-});
-
-it("looks again for a record that landed while a settle it then lost was in flight", async () => {
-	const outbox = runtime();
-	await outbox.submit(message());
-	const client = new FakeClient("ready");
-	const firstRead: { reject?: (error: Error) => void } = {};
-	let reads = 0;
-	client.on("thread/read", () => {
-		reads += 1;
-		if (reads > 1) return read("ref-1");
-		return new Promise<never>((_resolve, reject) => {
-			firstRead.reject = reject;
-		});
-	});
-	client.on("turn/start", applied);
-	const flush = new OutboxFlush(() => outbox);
-	flush.bind("hub-1", client);
-	await vi.waitFor(() => expect(firstRead.reject).toBeDefined());
-
-	await outbox.submit(message({ input: [{ type: "text", text: "and this one" }] }));
-	firstRead.reject?.(new Error("the connection dropped the answer"));
-
-	await vi.waitFor(() => expect(methods(client).filter((method) => method === "turn/start")).toHaveLength(2));
-	flush.dispose();
-	await outbox.stop();
-});
-
-it("never uses a read an older connection started, nor lets it touch the new one's", async () => {
-	const outbox = runtime();
-	await outbox.submit(message());
-	const held = (client: FakeClient) => {
-		const read: { answer?: (response: ThreadReadResponse) => void } = {};
-		client.on(
-			"thread/read",
-			() =>
-				new Promise<ThreadReadResponse>((resolve) => {
-					read.answer = resolve;
-				}),
-		);
-		client.on("turn/start", applied);
-		return read;
-	};
-	const old = new FakeClient("ready");
-	const oldRead = held(old);
-	const fresh = new FakeClient("ready");
-	const freshRead = held(fresh);
-	const flush = new OutboxFlush(() => outbox);
-	flush.bind("hub-1", old);
-	await vi.waitFor(() => expect(oldRead.answer).toBeDefined());
-	flush.bind("hub-1", fresh);
-	await vi.waitFor(() => expect(freshRead.answer).toBeDefined());
-
-	// The old read answers late, while the new connection's own read is out.
-	// The runtime calls it stale, and the old settle leaves the new claim be.
-	oldRead.answer?.(read("ref-1"));
-	await new Promise((resolve) => setTimeout(resolve, 0));
-	freshRead.answer?.(read("ref-1"));
-
-	await vi.waitFor(() => expect(methods(fresh)).toEqual(["thread/read", "turn/start"]));
-	expect(methods(old)).toEqual(["thread/read"]);
-	flush.dispose();
-	await outbox.stop();
-});
-
-it("sends only the active hub's messages, and nothing while the connection isn't ready", async () => {
-	const outbox = runtime();
-	await outbox.submit(message({ hubId: "hub-2" }));
-	const client = new FakeClient("ready");
-	const flush = new OutboxFlush(() => outbox);
-	flush.bind("hub-1", client);
-	await flush.flush();
-	expect(methods(client)).toEqual([]);
-
-	const connecting = new FakeClient("connecting");
-	flush.bind("hub-2", connecting);
-	await flush.flush();
-	expect(methods(connecting)).toEqual([]);
-	flush.dispose();
-	await outbox.stop();
-});
-
-it("lets every session go when the connection drops", async () => {
-	const outbox = runtime();
-	await outbox.submit(message());
-	const client = new FakeClient("ready");
-	client.on("thread/read", () => new Promise<never>(() => {}));
-	const flush = new OutboxFlush(() => outbox);
-	flush.bind("hub-1", client);
-	await vi.waitFor(() => expect(outbox.targetClient("hub-1", "ref-1")).toBe(client));
-
-	flush.bind("hub-1", null);
-
-	expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined();
-	flush.dispose();
-	await outbox.stop();
-});
-
-it("reads the hub and ref out of a composite target key", () => {
-	expect(parseTargetKey(JSON.stringify(["hub-1", "local:thread-1"]))).toEqual({ hubId: "hub-1", ref: "local:thread-1" });
-	expect(parseTargetKey("local:thread-1")).toBeNull();
-	expect(parseTargetKey(JSON.stringify(["hub-1"]))).toBeNull();
-});
-```
-
-The first test fails without the flush's `runtime.start()`: a fresh runtime dispatches nothing until started (`#getClient`, `nativeMutationRuntime.ts:140-149`). The second fails if the flush registers over a screen's target, the third without settling a covered screen's target, the fourth when that settling ignores whether anything waits, the fifth without the storage watch, the seventh when one target's failure stops the rest, the eighth when a record that landed during a settle that then failed is left behind, and the ninth when a late answer to an older connection's read lets go of the new connection's claim.
-
-- [ ] **Step 2: Run them and watch them fail**
-
-Run: `cd mobile-native && npx vitest run src/outbox/outboxFlush.test.ts`
-Expected: FAIL: `Cannot find module './outboxFlush'`.
-
-- [ ] **Step 3: Implement**
-
-In `nativeMutationRuntime.ts`, before `beginAuthoritativeRead`:
-
-```ts
-	/** The client a session screen, or the flush, registered this target
-	 * with; undefined while nobody holds it. */
-	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined {
-		return this.#targets.get(nativeMutationTargetKey(hubId, targetRef))?.client;
-	}
-```
-
-```ts
-// mobile-native/src/outbox/outboxFlush.ts
-// Sends what no open session is sending (spec 8.5's offline row, ruling 17):
-// a message the phone kept while offline, in a session you have since left,
-// goes out when the connection returns, as the web's handleReady does
-// (cmd/evener-hub/frontend/src/stores/threads.ts); so does anything admitted
-// for a session no screen holds, such as a review sent from a Reader opened
-// from the Board. The flush takes only targets nobody has registered,
-// settles each with a read that leaves the connection's subscription alone
-// (NativeMutationRuntime.settleTarget), and lets each go once nothing on it
-// is waiting to be sent.
-// A session screen owns its own target; the flush only settles one that has
-// something waiting, for a screen under the Reader or a subagent, which
-// doesn't read while it's covered.
-import type { AppwireClientLike } from "@evener/appwire-client";
-
-export type SettleResult = "open" | "reconciled" | "blocked" | "stale" | "unregistered";
-
-/** The slice of NativeMutationRuntime the flush uses. */
-export interface FlushRuntime {
-	readonly storage: {
-		listTargetRefs(): Promise<string[]>;
-		listOutbox(targetRef: string): Promise<readonly { state: string }[]>;
-	};
-	start(): Promise<void>;
-	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined;
-	registerTarget(hubId: string, targetRef: string, client: AppwireClientLike | null): () => void;
-	settleTarget(hubId: string, targetRef: string, client: AppwireClientLike): Promise<SettleResult>;
-	subscribeStorage(listener: (targetRefs: readonly string[]) => void): () => void;
-}
-
-/** The hub and ref a composite target key names (nativeMutationTargetKey),
- * or null for a key of any other shape. */
-export function parseTargetKey(key: string): { hubId: string; ref: string } | null {
-	try {
-		const value: unknown = JSON.parse(key);
-		if (Array.isArray(value) && value.length === 2 && typeof value[0] === "string" && typeof value[1] === "string")
-			return { hubId: value[0], ref: value[1] };
-	} catch {
-		// Not a composite key: not the flush's to send.
-	}
-	return null;
-}
-
-export class OutboxFlush {
-	private hubId: string | null = null;
-	private client: AppwireClientLike | null = null;
-	private generation = 0;
-	private readonly owned = new Map<string, () => void>();
-	/** Targets the flush holds whose records changed while it held them. */
-	private readonly touched = new Set<string>();
-	private unsubscribe: (() => void) | null = null;
-
-	/** `runtime` is read at the first ready connection: a message kept from an
-	 * earlier launch can only be found in the mutations database. */
-	constructor(private readonly runtime: () => FlushRuntime) {}
-
-	/** The active hub and its client while it is ready, else nulls. A new
-	 * client flushes, and watches for work no screen will send; losing it lets
-	 * every target go. */
-	bind(hubId: string | null, client: AppwireClientLike | null): void {
-		if (hubId === this.hubId && client === this.client) return;
-		this.releaseAll();
-		this.touched.clear();
-		this.unsubscribe?.();
-		this.unsubscribe = null;
-		this.hubId = hubId;
-		this.client = client;
-		this.generation += 1;
-		if (hubId === null || client === null) return;
-		const runtime = this.runtime();
-		this.unsubscribe = runtime.subscribeStorage((keys) => this.changed(runtime, keys));
-		void this.flush().catch(() => undefined);
-	}
-
-	/** Looks again, for a session screen that let go of its target while the
-	 * connection was live. */
-	async flush(): Promise<void> {
-		const { hubId, client, generation } = this;
-		if (hubId === null || client === null || client.state !== "ready") return;
-		const runtime = this.runtime();
-		// A fresh runtime dispatches nothing until started.
-		await runtime.start();
-		for (const key of await runtime.storage.listTargetRefs()) {
-			if (generation !== this.generation) return;
-			const target = parseTargetKey(key);
-			// settle() claims a target before its first await, so a second flush
-			// running beside this one finds it owned and skips it.
-			if (target === null || target.hubId !== hubId || this.owned.has(key)) continue;
-			try {
-				await this.settle(runtime, key, hubId, target.ref, client, generation);
-			} catch {
-				// A read or storage failure leaves this target's records where
-				// they are, for the next ready connection or the next record,
-				// and the other targets still go.
-				this.letGo(key, generation);
-			}
-		}
-	}
-
-	dispose(): void {
-		this.bind(null, null);
-	}
-
-	private async settle(
-		runtime: FlushRuntime,
-		key: string,
-		hubId: string,
-		ref: string,
-		client: AppwireClientLike,
-		generation: number,
-	): Promise<void> {
-		const holder = runtime.targetClient(hubId, ref);
-		if (holder !== undefined) {
-			// A session screen holds this target. Under the Reader or a subagent
-			// it doesn't read, so after a reconnect its waiting message would
-			// wait for a trip back: settle it for the screen, which keeps its
-			// registration. Only a screen on this connection: a target held
-			// with another client is that client's.
-			if (holder === client && (await this.waiting(runtime, key))) await runtime.settleTarget(hubId, ref, client);
-			return;
-		}
-		this.owned.set(key, runtime.registerTarget(hubId, ref, client));
-		this.touched.delete(key);
-		// A read an older connection started can't land here: bind() lets that
-		// connection's claims go, and the runtime answers a read for a
-		// registration that is gone or replaced with "stale", before it
-		// reconciles or dispatches anything (isCurrentRead).
-		const settled = await runtime.settleTarget(hubId, ref, client);
-		if (settled === "reconciled" || settled === "open") await this.releaseIfDone(runtime, key, generation);
-		else this.letGo(key, generation);
-	}
-
-	/** Lets go of a target the flush couldn't settle. A record that landed on
-	 * it meanwhile was left to that settle, so look again for it; a failure
-	 * with nothing new waits for the next record or connection, so a failing
-	 * read never spins. */
-	private letGo(key: string, generation: number): void {
-		if (generation !== this.generation) return;
-		this.release(key, generation);
-		if (this.touched.delete(key)) void this.flush().catch(() => undefined);
-	}
-
-	/** A target the flush holds may be done; a record for one nobody holds is
-	 * work no screen will send. A target a session screen holds stays that
-	 * screen's here: its records come from the screen, or bring their own
-	 * settle (a message sent from a screen above it), and settling it on every
-	 * change would re-read after each unknown outcome and could resend in a
-	 * loop. */
-	private changed(runtime: FlushRuntime, keys: readonly string[]): void {
-		let unclaimed = false;
-		for (const key of keys) {
-			if (this.owned.has(key)) {
-				this.touched.add(key);
-				void this.releaseIfDone(runtime, key, this.generation).catch(() => undefined);
-				continue;
-			}
-			const target = parseTargetKey(key);
-			if (target !== null && target.hubId === this.hubId && runtime.targetClient(target.hubId, target.ref) === undefined)
-				unclaimed = true;
-		}
-		if (unclaimed) void this.flush().catch(() => undefined);
-	}
-
-	/** A target is done once nothing on it is waiting to be sent: what's left
-	 * is settled, or waits for you in its session (a message it couldn't
-	 * confirm, or one a Stop held). */
-	private async releaseIfDone(runtime: FlushRuntime, key: string, generation: number): Promise<void> {
-		if (!(await this.waiting(runtime, key))) this.release(key, generation);
-	}
-
-	private async waiting(runtime: FlushRuntime, key: string): Promise<boolean> {
-		const records = await runtime.storage.listOutbox(key);
-		return records.some((record) => record.state === "submitting");
-	}
-
-	/** Lets go of this connection's claim on a target. Every claim a
-	 * continuation of an earlier connection could reach was already let go
-	 * by bind(), so it must never touch the new connection's. */
-	private release(key: string, generation: number): void {
-		if (generation !== this.generation) return;
-		const release = this.owned.get(key);
-		if (release === undefined) return;
-		this.owned.delete(key);
-		release();
-	}
-
-	private releaseAll(): void {
-		for (const release of this.owned.values()) release();
-		this.owned.clear();
-	}
-}
-```
-
-```ts
-// mobile-native/src/outbox/nativeOutboxFlush.ts
-import { getNativeMutationRuntime } from "../nativeMutationRuntime";
-import { OutboxFlush } from "./outboxFlush";
-
-/** The app's one flush. App.tsx binds it to the connection; a session screen
- * asks it to look again when it lets go of its target. */
-export const outboxFlush = new OutboxFlush(getNativeMutationRuntime);
-```
-
-- [ ] **Step 4: Wire it**
-  - In `App.tsx`'s `Navigation`, bind the flush to the connection: `useEffect(() => { outboxFlush.bind(activeProfile?.id ?? null, state === "ready" ? client : null); }, [activeProfile?.id, state, client]);`, with `client` and `state` from `useConnection()`.
-  - In the session screen's durable-host effect cleanup (`screens.tsx:1055-1058`), after `host.dispose()`, call `void outboxFlush.flush()`: letting go of a target writes nothing to storage, so without it a message still waiting when you leave a session would wait for the next connection.
-  - Screen tests that import `screens.tsx` mock `./outbox/nativeOutboxFlush` to `{ outboxFlush: { flush: async () => {}, bind: () => {} } }`, the way they mock other native singletons.
-
-- [ ] **Step 5: Run the tests and watch them pass**
-
-Run: `cd mobile-native && npx vitest run src/outbox src/nativeMutationRuntime.test.ts src/ConversationScreen.offline.test.tsx && npm run check`
-Expected: PASS. In the simulator: turn the network off, send in one session, go back to the Board, turn the network on, and see the session's turn start without opening it.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add mobile-native/src/outbox/outboxFlush.ts mobile-native/src/outbox/outboxFlush.test.ts mobile-native/src/outbox/nativeOutboxFlush.ts mobile-native/src/nativeMutationRuntime.ts mobile-native/App.tsx mobile-native/src/screens.tsx
-git commit -m "feat(native): messages you left behind send themselves when the connection returns"
 ```
 
 ### The Board's side: part 2 holds it
