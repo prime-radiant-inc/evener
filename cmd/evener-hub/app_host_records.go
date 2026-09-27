@@ -2,6 +2,7 @@ package hub
 
 import (
 	"fmt"
+	"maps"
 	"unicode/utf8"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
@@ -296,4 +297,42 @@ func validateHostRecords(records map[string]HostRecord, generations map[string]H
 		}
 	}
 	return nil
+}
+
+// hubTOMLReceiptTables derives the mutation-receipt tables a rewrite writes:
+// the set the write carries — the store's own receipts, plus a committing
+// mutation's own — with every file receipt for a name this write does not own
+// preserved verbatim, exactly as hubTOMLRecordTables preserves records. The
+// ownership rule is the record tables' one: a name in known or entries is the
+// mutation's to change (a compensation or an un-commit drops the receipt its
+// own commit staged), while a receipt for any other name is the file's data and
+// rides through. known is always the store's non-nil snapshot on the mutation
+// and rollback paths; a nil known is the exact-write sentinel (both other
+// sentinels nil), which writes exactly the given set.
+func hubTOMLReceiptTables(cfg Config, entries, known []hostreg.Host, receipts map[string]HostMutationReceipt) map[string]HostMutationReceipt {
+	out := make(map[string]HostMutationReceipt, len(receipts)+len(cfg.MutationReceipts))
+	maps.Copy(out, receipts)
+	if known == nil {
+		return out
+	}
+	owned := make(map[string]struct{}, len(known)+len(entries))
+	for _, e := range known {
+		owned[e.Name] = struct{}{}
+	}
+	for _, e := range entries {
+		owned[e.Name] = struct{}{}
+	}
+	for key, receipt := range cfg.MutationReceipts {
+		scope, ok := parseHostReceiptScopedKey(key)
+		if !ok {
+			// Unreachable: decodeHubTOMLForRewrite validates the section, so a
+			// key this build cannot parse already refused the write.
+			continue
+		}
+		if _, carried := owned[scope.Name]; carried {
+			continue
+		}
+		out[key] = receipt
+	}
+	return out
 }

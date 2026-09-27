@@ -811,6 +811,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `entry` | `appwire.HostEntry` |  |  |
+| `mutationId` | `string` | yes |  |
 
 
 ### `HostAttachParams`
@@ -970,6 +971,9 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `mutationId` | `string` |  |  |
+| `expectedGeneration` | `uint64` |  |  |
+| `expectedIncarnationId` | `string` |  |  |
 
 
 ### `HostRemoveResponse`
@@ -1020,6 +1024,8 @@ _(no fields)_
 | `addr` | `string` | yes |  |
 | `roots` | `[]string` | yes |  |
 | `origin` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
 | `attached` | `bool` |  |  |
 | `serverName` | `string` | yes |  |
 | `serverVersion` | `string` | yes |  |
@@ -1067,6 +1073,9 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
 | `entry` | `appwire.HostEntry` |  |  |
+| `mutationId` | `string` |  |  |
+| `expectedGeneration` | `uint64` |  |  |
+| `expectedIncarnationId` | `string` |  |  |
 
 
 ### `HostUpdateResponse`

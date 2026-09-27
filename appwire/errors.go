@@ -128,6 +128,13 @@ const (
 	// by a current-generation record of a different host or kind, or by a
 	// current-generation `host-removed` record (deploy pipeline 08b §§4, 11).
 	ErrorConflictingOperationID ErrorInfo = "conflicting-operation-id"
+	// ErrorConflictingMutationID marks a mutationId already used up by a
+	// current-generation receipt of a different host name or mutation kind
+	// (registry spec 08 §5, §11; the operation store's cross-name rule applied
+	// to host mutations). It rides the same AppWire error envelope as
+	// conflicting-operation-id, so a client matches this discriminant, never
+	// the code.
+	ErrorConflictingMutationID ErrorInfo = "conflicting-mutation-id"
 	// ErrorHostDetached marks a deploy refused because the host's channel is
 	// gone — at the gated probe, or at a revalidation under the same gate.
 	// Token unconsumed, no record; the client Connects and re-plans (deploy
@@ -249,6 +256,18 @@ func ConflictingOperationID(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorConflictingOperationID},
+	}
+}
+
+// ConflictingMutationID is §11's `conflicting-mutation-id` refusal: the
+// client's mutationId is already used up by a current-generation receipt of a
+// different host name or mutation kind. It carries the discriminator only —
+// no data — exactly like its operation-id sibling.
+func ConflictingMutationID(message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorConflictingMutationID},
 	}
 }
 

@@ -462,7 +462,7 @@ func TestHubTOMLPresenceEpochAdvancesOncePerMutation(t *testing.T) {
 	}
 
 	entry.Address = "alpha2.example"
-	if _, err := m.Update(context.Background(), appwire.HostUpdateParams{Name: "alpha", Entry: entry}); err != nil {
+	if _, err := m.Update(context.Background(), updateRequest(t, m, "alpha", entry)); err != nil {
 		t.Fatalf("Update(alpha): %v", err)
 	}
 	updated := liveRecord(t, path, "alpha")
@@ -476,7 +476,7 @@ func TestHubTOMLPresenceEpochAdvancesOncePerMutation(t *testing.T) {
 		t.Fatalf("an update did not advance the recorded generation: %+v", mark)
 	}
 
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "alpha"}); err != nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "alpha")); err != nil {
 		t.Fatalf("Remove(alpha): %v", err)
 	}
 	records, _ := readHostRecords(t, path)
@@ -518,7 +518,7 @@ func TestHubTOMLPresenceEpochSurvivesReloadAcrossRemoval(t *testing.T) {
 	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: entry}); err != nil {
 		t.Fatalf("Add(alpha): %v", err)
 	}
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "alpha"}); err != nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "alpha")); err != nil {
 		t.Fatalf("Remove(alpha): %v", err)
 	}
 	removed := highWaterFor(t, path, "alpha")
@@ -632,7 +632,7 @@ func TestBoundaryMirrorFollowsEveryHubTOMLMutation(t *testing.T) {
 		t.Fatalf("mirrored generation = %d, want the file's %d", mirrored.Generation, mark.Generation)
 	}
 
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "alpha"}); err != nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "alpha")); err != nil {
 		t.Fatalf("Remove(alpha): %v", err)
 	}
 	removedMark := highWaterFor(t, path, "alpha")
@@ -696,7 +696,7 @@ func TestHubTOMLKeepsRecordsForNamesTheWriteDoesNotOwn(t *testing.T) {
 
 	// A mutation of alpha must carry beta's records through untouched.
 	entry := appwire.HostEntry{Name: "alpha", Address: "alpha2.example"}
-	if _, err := m.Update(context.Background(), appwire.HostUpdateParams{Name: "alpha", Entry: entry}); err != nil {
+	if _, err := m.Update(context.Background(), updateRequest(t, m, "alpha", entry)); err != nil {
 		t.Fatalf("Update(alpha): %v", err)
 	}
 	records, generations = readHostRecords(t, path)
