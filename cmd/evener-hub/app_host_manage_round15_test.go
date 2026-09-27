@@ -48,10 +48,19 @@ func TestHostManageAddKeepsConcurrentAttachStateRecordedMidCommit(t *testing.T) 
 	// not inherit.
 	m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("stale attach error")})
 
-	// Park the add inside its commit: the store's mutex is held, so
-	// the add blocks at its first store take — the pre-save snapshot — with
-	// the mutation mutex held and nothing exposed yet.
-	m.cfg.store.mu.Lock()
+	// Park the add inside its commit: the seam blocks it in the mutation
+	// critical section — the mutation mutex held and nothing exposed yet. The
+	// seam is used rather than a held store mutex because the commit's own
+	// receipt lookup and remnant fence read the store *before* the lock (spec
+	// 08 §5 orders dedup first), so a held store mutex would park the add
+	// outside the section this test is about.
+	park := make(chan struct{})
+	release := make(chan struct{})
+	m.testOnlyParkInCommit = func(string) {
+		close(park)
+		<-release
+	}
+	defer func() { m.testOnlyParkInCommit = nil }()
 	type addResult struct {
 		row appwire.HostRow
 		err error
@@ -61,23 +70,17 @@ func TestHostManageAddKeepsConcurrentAttachStateRecordedMidCommit(t *testing.T) 
 		row, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s.example"}})
 		addDone <- addResult{row: row, err: err}
 	}()
-
-	// Wait until the add is inside its mutation critical section: from its
-	// first line the commit holds cfg.mu, so a failed TryLock proves it.
-	// A TryLock that still succeeds once the budget is spent means the add
-	// never entered it, and the choreography below is unsound — fail there
-	// rather than proceed.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if !m.cfg.mu.TryLock() {
-			break
-		}
-		m.cfg.mu.Unlock()
-		time.Sleep(100 * time.Microsecond)
+	select {
+	case <-park:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the add never entered its mutation critical section")
 	}
+
+	// The parked add holds the mutation mutex: a failed TryLock proves the
+	// section the assertions below depend on.
 	if m.cfg.mu.TryLock() {
 		m.cfg.mu.Unlock()
-		t.Fatal("the add never entered its mutation critical section")
+		t.Fatal("the parked add does not hold the mutation mutex")
 	}
 
 	// Post-fix the retained-state reset has already run when the add parks
@@ -106,7 +109,7 @@ func TestHostManageAddKeepsConcurrentAttachStateRecordedMidCommit(t *testing.T) 
 	m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventState, State: sshconn.StatePreflighting})
 
 	// Let the commit finish.
-	m.cfg.store.mu.Unlock()
+	close(release)
 	res := <-addDone
 	if res.err != nil {
 		t.Fatalf("Add = %v", res.err)

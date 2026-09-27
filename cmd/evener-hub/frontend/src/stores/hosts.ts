@@ -1,10 +1,4 @@
-import type {
-  AppwireClientLike,
-  HostEntry,
-  HostMutationResult,
-  HostRow,
-  RemovedRow,
-} from "@evener/appwire-client";
+import type { AppwireClientLike, HostEntry, HostMutationResult, HostRow, RemovedRow } from "@evener/appwire-client";
 import { errorText, WireError } from "@evener/appwire-client";
 import { create, useStore } from "zustand";
 import { connectedClientPort, connectionStore } from "./connection";

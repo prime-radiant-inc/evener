@@ -443,60 +443,73 @@ func TestHostManageUpdateMintsOneGenerationWithNoManager(t *testing.T) {
 // TestHostManageUpdateRollsBackWhenTheLivePhaseFails pins criterion 16: a failed
 // live phase leaves the file, the store row, and the live registry describing the
 // old entry, and a retry of the same edit then succeeds.
-func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
+// TestHostManageUpdateCommitsWithRemnantWhenTheLivePhaseFails pins spec 08
+// §6's commit-point rule for an edit: the rebind seam that fails (a manager
+// whose registry cannot hold the host) fails AFTER the commit landed, so the
+// edit is committed — the durable entry is the committed one, the receipt is
+// finalized, and the response is the union's committed-with-teardown-failure
+// arm carrying the seam and the pre-minted remnantId. There is no compensation
+// path back: "Restoring bytes after a teardown cannot rebuild destroyed
+// handles, so compensation covers pre-commit failures only".
+func TestHostManageUpdateCommitsWithRemnantWhenTheLivePhaseFails(t *testing.T) {
 	f := newUpdateFixture(t)
 	// A manager whose registry is a DIFFERENT, empty one: UpdateHost refuses
-	// hostreg.ErrUnknownHost deterministically — the one seam that fails between
-	// the durable save and the live swap.
+	// hostreg.ErrUnknownHost deterministically — the seam that fails once the
+	// durable commit landed.
 	otherReg, err := hostreg.New(nil)
 	if err != nil {
 		t.Fatalf("hostreg.New: %v", err)
 	}
 	manager := sshconn.New(otherReg, sshconn.Options{})
 	t.Cleanup(func() { _ = manager.Close() })
-	// The fixture's own boot seeded "side" into the live registry the commit
-	// reads; wiring the different empty manager only now makes the live phase
-	// fail after that durable commit, which is the rollback seam under test.
 	f.m.cfg.manager = manager
 	before, _ := f.hosts.Get("side")
 
-	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"})); err == nil {
-		t.Fatal("Update over a live seam that refuses succeeded, want the failure")
+	result, err := f.m.UpdateResult(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"}))
+	if err != nil {
+		t.Fatalf("Update = %v, want the committed-with-teardown-failure arm", err)
 	}
-
-	// The live registry, the store row, and the file all still describe the old
-	// entry — identity included: compensation must never re-apply a captured
-	// entry through the registry's minting methods (that would mint a fresh
-	// generation/incarnation here while the restored file kept the old triple).
-	live, ok := f.hosts.Get("side")
-	if !ok || !live.Equal(before) || live.Generation != before.Generation ||
-		live.IncarnationID != before.IncarnationID || live.PresenceEpoch != before.PresenceEpoch {
-		t.Fatalf("live entry after the failed edit = %+v, want %+v", live, before)
+	arm := result.HostMutationTeardownFailure
+	if arm == nil {
+		t.Fatalf("Update = %+v, want the teardown-failure arm", result)
 	}
-	stored := f.m.cfg.store.snapshot()
-	if len(stored) != 1 || stored[0].SSH != "side.example" {
-		t.Fatalf("store rows after the failed edit = %+v, want the old entry", stored)
+	if arm.Seam != "update-host" {
+		t.Fatalf("failure arm seam = %q, want update-host", arm.Seam)
 	}
+	if arm.RemnantID == "" {
+		t.Fatal("the failure arm carries no remnantId")
+	}
+	// The edit committed: the durable file and the store row both describe the
+	// edited entry, and the remnant pins the RETIRED identity the rebind could
+	// not finish tearing down.
 	onDisk, err := LoadConfig(f.configPath)
 	if err != nil {
 		t.Fatalf("reload hub.toml: %v", err)
 	}
-	if len(onDisk.Hosts) != 1 || onDisk.Hosts[0].SSH != "side.example" {
-		t.Fatalf("hub.toml after the failed edit = %+v, want the old entry", onDisk.Hosts)
+	if len(onDisk.Hosts) != 1 || onDisk.Hosts[0].SSH != "edited.example" {
+		t.Fatalf("hub.toml after the committed edit = %+v, want the edited entry", onDisk.Hosts)
 	}
-
-	// The retry lands, from a fresh boot over the same config with a live seam
-	// that works: nothing was half-applied.
-	boot := bootHostManager(t, f.configPath)
-	if _, err := boot.Update(context.Background(), updateRequest(t, boot, "side", appwire.HostEntry{Address: "edited.example"})); err != nil {
-		t.Fatalf("retry after the rollback: %v", err)
+	stored := f.m.cfg.store.snapshot()
+	if len(stored) != 1 || stored[0].SSH != "edited.example" {
+		t.Fatalf("store rows after the committed edit = %+v, want the edited entry", stored)
 	}
-	reloaded, err := LoadConfig(f.configPath)
-	if err != nil {
-		t.Fatalf("reload hub.toml after the retry: %v", err)
+	remnant, ok := f.m.cfg.store.remnantByID(arm.RemnantID)
+	if !ok || !remnant.open() {
+		t.Fatalf("no open remnant %q", arm.RemnantID)
 	}
-	if len(reloaded.Hosts) != 1 || reloaded.Hosts[0].SSH != "edited.example" {
-		t.Fatalf("hub.toml after the retry = %+v, want the edited entry", reloaded.Hosts)
+	if remnant.Generation != before.Generation || remnant.IncarnationID != before.IncarnationID {
+		t.Fatalf("remnant = %+v, want the retired pair %d/%s", remnant, before.Generation, before.IncarnationID)
+	}
+	if remnant.PendingTeardown.Kind != hostTeardownKindUpdate {
+		t.Fatalf("pinned target = %+v, want the update rebind", remnant.PendingTeardown)
+	}
+	// The receipt recorded the committed outcome with the remnant beside it, and
+	// the original mutationId replays that arm rather than re-applying.
+	replay, err := f.m.UpdateResult(context.Background(), updateRequestFor("side", before.Generation, before.IncarnationID, appwire.HostEntry{Address: "edited.example"}))
+	if err == nil {
+		t.Fatalf("a fresh keyed update over the fenced name = %+v, want the remnant-open refusal", replay)
+	} else if data, ok := wireData(err).(appwire.RemnantOpenErrorData); !ok || data.RemnantID != arm.RemnantID {
+		t.Fatalf("refusal = %v, want remnant-open naming %q", err, arm.RemnantID)
 	}
 }
 

@@ -34,10 +34,41 @@ package hub
 // resolvable without the live entry; a remnant never depends on the live
 // registry to execute."
 
+// Boundaries this slice deliberately does not cross (each is recorded where it
+// is felt as well):
+//
+//   - Read-path fingerprint discipline (registry spec 08 §4/§15): `list`'s
+//     changed-entry refusal and the async debounced reconcile are the read
+//     path's own slice. The `concurrent-edit` type is defined here because the
+//     commit path needs it; the read path does not consult it yet.
+//   - Fencing execution (crash-fencing spec §3-§8, slices S17-S21): the fencing
+//     epoch, the remote lease/guard wrapper, kill/wait of superseded epochs,
+//     the guard advance, and `orphan-fenced-busy`. The retry and recover
+//     attempt records persist the epoch fields those slices fill in; the
+//     takeover of a timed-out attempt records its fenced-closed mark without the
+//     kill/wait.
+//   - The store-side compensation record (deploy-pipeline spec §9, S7's
+//     `pendingStoreSync`/`pendingCompensation`): pre-commit compensation stays
+//     the hub.toml rollback (plus the re-read preimage), with no cross-file
+//     intent record.
+//   - `attachUnderGate`'s reservation primitive (S13): the attach fence refusal
+//     is here; the reservation is not.
+//   - The retry/recover UI affordances (S16): the store narrows the union and
+//     never reads a failure arm as success; the buttons and the escalation
+//     display are S16's.
+//   - §11's spelling reshape (`address` -> `ssh`, ...): owed, not done here.
+//   - The `host-removed` operation-store mark path on remove: not built here.
+//
+//	The durable teardown-repair records: the staged-receipt marker one commit's
+//	step-(2) hub.toml write carries, the teardown-remnant records a
+//	committed-with-teardown-failure leaves behind, the typed resolved-remnant
+//	records a clearance records, and the attempt records `teardown-retry` and
+//	`teardown-recover` claim.
+
 import (
+	"errors"
 	"fmt"
 	"maps"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -138,12 +169,6 @@ type HostPendingTeardown struct {
 	Supervisor bool     `toml:"supervisor,omitempty"`
 	Channel    bool     `toml:"channel,omitempty"`
 	FanOuts    []string `toml:"fan_outs,omitempty"`
-}
-
-// empty reports whether the pinned target describes no handle at all — the
-// shape spec §5 calls "where the pinned target is empty the re-run is a no-op".
-func (t HostPendingTeardown) empty() bool {
-	return !t.Supervisor && !t.Channel && len(t.FanOuts) == 0
 }
 
 // HostCleanupHandle is the remnant's durable ownership/remote-cleanup handle
@@ -569,7 +594,7 @@ func (m *hubHostManager) remnantRefusal(name string) error {
 func validateHostStagedReceipts(markers map[string]HostStagedReceipt) error {
 	for name, marker := range markers {
 		if strings.TrimSpace(name) == "" {
-			return fmt.Errorf("staged_receipts carries an entry with an empty host name")
+			return errors.New("staged_receipts carries an entry with an empty host name")
 		}
 		scope, ok := parseHostReceiptScopedKey(marker.Key)
 		if !ok {
@@ -674,7 +699,7 @@ func validateHostTeardownRemnants(remnants map[string]HostTeardownRemnant) error
 // validatePendingTeardown checks one pinned teardown target's shape.
 func validatePendingTeardown(owner string, target HostPendingTeardown) error {
 	if strings.TrimSpace(target.Name) == "" {
-		return fmt.Errorf("pinned teardown target names no host")
+		return errors.New("pinned teardown target names no host")
 	}
 	switch target.Kind {
 	case hostTeardownKindUpdate, hostTeardownKindRemove:
@@ -686,7 +711,7 @@ func validatePendingTeardown(owner string, target HostPendingTeardown) error {
 	}
 	for _, fanOut := range target.FanOuts {
 		if strings.TrimSpace(fanOut) == "" {
-			return fmt.Errorf("pinned teardown target carries an empty fan-out name")
+			return errors.New("pinned teardown target carries an empty fan-out name")
 		}
 	}
 	return nil
@@ -741,7 +766,7 @@ func validateRecoveryAttestationShape(attestation HostRecoveryAttestation) error
 		return fmt.Errorf("attestation statement %q is not %q", attestation.Statement, hostRecoveryStatement)
 	}
 	if strings.TrimSpace(attestation.Operator) == "" {
-		return fmt.Errorf("attestation names no operator")
+		return errors.New("attestation names no operator")
 	}
 	if _, err := time.Parse(time.RFC3339, attestation.ObservedAt); err != nil {
 		return fmt.Errorf("attestation observed_at %q is not an RFC3339 instant: %w", attestation.ObservedAt, err)
@@ -759,14 +784,3 @@ func validRemnantID(id string) bool {
 // ---------------------------------------------------------------------------
 // ordering helpers
 // ---------------------------------------------------------------------------
-
-// sortedRemnantIDs returns the ids in a remnant set, sorted, so every scan that
-// derives a bound walks a deterministic order.
-func sortedRemnantIDs(remnants map[string]HostTeardownRemnant) []string {
-	ids := make([]string, 0, len(remnants))
-	for id := range remnants {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
-}

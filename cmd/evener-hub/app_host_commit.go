@@ -160,34 +160,6 @@ func (m *hubHostManager) stageCommit(plan *hostCommitPlan, now time.Time) error 
 	return nil
 }
 
-// flipSwapStarted runs spec §5's step (3)'s first half: the `swapStarted`
-// intent in its own atomic hub.toml write, under the mutation lock, BEFORE the
-// non-atomic runtime transition begins — "a durable record now exists on both
-// sides of the transition".
-//
-// It is also the fingerprint-discipline checkpoint for the staged-write→flip
-// window: the flip reads the file, and a fingerprint that is not the one the
-// staged write left is an external edit in that window (spec §6 step (4): "the
-// flip itself compares the file it reads against the hash the staged write
-// left: a mismatch is an external edit in the staged-write→flip window, which
-// the flip carries through while recording the preimage it actually wrote
-// from"). The check is bounded: the file is re-read concurrentEditRetries times
-// before the mutation refuses with the typed `concurrent-edit` discriminator
-// naming the expected and observed fingerprints.
-func (m *hubHostManager) flipSwapStarted(plan *hostCommitPlan) error {
-	if err := m.checkOwnFingerprint(plan); err != nil {
-		return err
-	}
-	marker := plan.Marker
-	marker.SwapStarted = true
-	if err := m.persistHosts(plan.Entries, plan.Known, stagedChange(plan, marker)); err != nil {
-		return err
-	}
-	plan.Marker = marker
-	plan.lastFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
-	return nil
-}
-
 // flipRuntimeSwapped runs spec §5's step (3)'s second half: the runtime phase
 // flips to `runtime-swapped` in the same atomic write that flips
 // `teardownStarted`, after the swap landed and before the first teardown
@@ -223,7 +195,7 @@ func (m *hubHostManager) checkOwnFingerprint(plan *hostCommitPlan) error {
 		return nil
 	}
 	var observed string
-	for attempt := 0; attempt < concurrentEditRetries; attempt++ {
+	for attempt := range concurrentEditRetries {
 		if attempt > 0 {
 			time.Sleep(concurrentEditBackoff)
 		}
@@ -257,10 +229,12 @@ func (m *hubHostManager) adoptedPreimage(plan *hostCommitPlan, previous []hostre
 		out = append(out, entry)
 	}
 	adopted, ok := m.hubTOMLFileEntry(plan.Name)
-	if !ok {
-		// The file no longer carries the name, or cannot be read: the
-		// pre-mutation snapshot's copy (if any) is the honest fallback, because
-		// the mutation's own change is being dropped.
+	if !ok || sameEffectiveHostEntryFields(adopted, plan.Entry) {
+		// No foreign edit: either the file no longer carries the name, or it
+		// carries exactly what this mutation staged (its own write landed). In
+		// both cases the pre-mutation snapshot's copy is what the rollback
+		// restores — adopting the file here would resurrect the very change the
+		// compensation exists to drop.
 		for _, entry := range previous {
 			if entry.Name == plan.Name {
 				out = append(out, entry)

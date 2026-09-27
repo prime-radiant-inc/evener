@@ -400,14 +400,6 @@ func (s *hostStore) set(entries []hostreg.Host) {
 	s.entries = entries
 }
 
-// clearHighWater drops name's high-water record: a removal that never
-// committed must not leave one behind. Callers hold hostManagerConfig.mu.
-func (s *hostStore) clearHighWater(name string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.highWater, name)
-}
-
 // setHighWaterMap installs the file's high-water records at boot; the
 // constructor calls it once with the records the file carried. The caller
 // transfers ownership.
@@ -443,15 +435,6 @@ func (s *hostStore) addReceipt(key string, receipt HostMutationReceipt) {
 		s.receipts = map[string]HostMutationReceipt{}
 	}
 	s.receipts[key] = receipt
-}
-
-// dropReceipt removes one receipt: a mutation that un-commits after its commit
-// write landed must leave no receipt behind, in memory or on disk. Callers hold
-// hostManagerConfig.mu.
-func (s *hostStore) dropReceipt(key string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.receipts, key)
 }
 
 // receiptsSnapshot returns a copy of the stored receipt set, keyed by scoped
@@ -535,15 +518,6 @@ func (s *hostStore) installRecords(records hostTOMLRecords) {
 	if records.receipts != nil {
 		s.receipts = records.receipts
 	}
-}
-
-// clearTombstone drops name's tombstone: a removal that un-commits after its
-// commit write landed must leave no tombstone behind, in memory or on disk.
-// Callers hold hostManagerConfig.mu.
-func (s *hostStore) clearTombstone(name string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.tombstones, name)
 }
 
 // poison records err as the reason the durable host set is not fully loaded.
@@ -1296,6 +1270,12 @@ type hubHostManager struct {
 	// instead of racing it (testing.md's "Prove a Wait with a Signal" rule); nil
 	// in production.
 	testOnlyParkPostCommit func(name string)
+	// testOnlyParkInCommit, when non-nil, is called by Add immediately after it
+	// enters its mutation critical section (the mutation lock held, nothing
+	// exposed yet). It exists so a test can park a commit inside that section
+	// deterministically instead of racing it — the testOnlyParkPostCommit
+	// precedent, for the *pre*-commit window. Nil in production.
+	testOnlyParkInCommit func(name string)
 	// testOnlyTeardown, when non-nil, replaces the post-commit teardown the
 	// mutation handlers run (the manager's RemoveHost/UpdateHost, or the
 	// registry's own Remove/Update with no manager wired). It exists so a test
@@ -1500,10 +1480,26 @@ func (m *hubHostManager) breakBootTombstoneCollision(records Config) bool {
 		if _, collides := records.Tombstones[entry.Name]; !collides {
 			continue
 		}
-		if m.remnantGated(entry.Name) {
-			// S12's fenced arm: a live entry must never be minted over an open
-			// remnant. Unreachable while the gated-name source is empty.
-			continue
+		{
+			if remnantID, open := m.openRemnantID(entry.Name); open {
+				// Spec §6's fenced arm: "a boot collision involving a
+				// remnant-gated name leaves the open remnant resumable by
+				// `remnantId`: the boot-collision above-mark bump is forbidden
+				// while a remnant is open for that name — boot excludes the
+				// colliding live entry from the live set as
+				// `blocked-pending-teardown` (never published live) until
+				// `teardown-retry` resolves it, so no live incarnation is ever
+				// created over an open remnant". The name stays in hub.toml and
+				// leaves the live set here; `teardown-retry` resolves the remnant
+				// and the operator's next boot (or re-add) publishes it.
+				m.logf("host %q is blocked-pending-teardown: open remnant %s fences the colliding live entry; resume it through evener/host/teardown-retry", entry.Name, remnantID)
+				m.cfg.store.remove(entry.Name)
+				if err := m.cfg.hosts.Remove(entry.Name); err != nil {
+					m.logf("host %q not excluded from the live set: %v", entry.Name, err)
+				}
+				collided = true
+				continue
+			}
 		}
 		rebased, err := m.cfg.hosts.RebaseBootCollision(entry.Name)
 		if err != nil {
@@ -2276,32 +2272,6 @@ func (m *hubHostManager) dropHostDerivedState(name string) {
 	if m.cfg.forgetLastGoodThreads != nil {
 		m.cfg.forgetLastGoodThreads(name)
 	}
-}
-
-// persistOrCompensate writes entries durably and, when the write's rename
-// already committed before its directory step failed, compensates the live
-// state back with previous — the content the file must hold for the live set
-// and the file to stay in step — before returning the failure. A plain
-// pre-rename refusal wrote nothing and is returned unchanged.
-//
-// change carries the records the mutation this write commits stages beyond the
-// store's own set: its receipt (which rides the same atomic write as the
-// commit, spec 08 §5) and, for a removal, the tombstone its write persists. A
-// compensation drops them with the failed mutation, because nothing the
-// derivation wrote is installed until the write returns success.
-func (m *hubHostManager) persistOrCompensate(entries, previous []hostreg.Host, change hostPersistChange) error {
-	if err := m.persistHosts(entries, previous, change); err != nil {
-		if hubTOMLRenameCommitted(err) {
-			// The rollback restores previous while still carrying hand-added
-			// extras: the union of the before and after sets tells the writer
-			// every name this mutation touched is accounted for, so the extras
-			// are exactly the operator's out-of-band entries and neither the
-			// mutation's own change nor a hand-added neighbour is lost.
-			return m.rollbackHubTOML(previous, unionHosts(previous, entries), err)
-		}
-		return err
-	}
-	return nil
 }
 
 // unionHosts returns a and b's distinct entries by name, in a-then-b order.

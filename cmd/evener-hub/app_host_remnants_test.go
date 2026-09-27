@@ -4,6 +4,7 @@ package hub
 // pending-marker, remnant-gate, adoption, and teardown-repair bullets).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -322,7 +323,6 @@ func TestHostTeardownRecoverRequiresTheAttestation(t *testing.T) {
 	}
 	remnantID := mintRemnantID()
 	remnant := newTeardownRemnant(hostRemnantKindRemove, "remove-host", host, "", m.nowTime())
-	remnantID = mintRemnantID()
 	// The pinned pair is a generation the live set no longer carries.
 	remnant.Generation = host.Generation + 100
 	remnant.IncarnationID = "older-incarnation"
@@ -463,8 +463,8 @@ func TestHostKeylessAddRetryReturnsTheAmbiguousArm(t *testing.T) {
 	if result.HostMutationAmbiguous == nil {
 		t.Fatalf("keyless Add = %+v, want the ambiguous arm", result)
 	}
-	if result.HostMutationAmbiguous.ObservedRow.Name != "side" {
-		t.Fatalf("ambiguous arm row = %+v", result.HostMutationAmbiguous.ObservedRow)
+	if result.ObservedRow.Name != "side" {
+		t.Fatalf("ambiguous arm row = %+v", result.ObservedRow)
 	}
 	// A changed effective field is the stale-entry path, not the ambiguous one:
 	// the keyless retry does not match, and the live-name duplicate refusal is
@@ -529,7 +529,7 @@ func TestHostMutationResultUnionRoundTrips(t *testing.T) {
 			if err != nil {
 				t.Fatalf("re-marshal: %v", err)
 			}
-			if string(again) != string(raw) {
+			if !bytes.Equal(again, raw) {
 				t.Fatalf("round trip changed the shape: %s -> %s", raw, again)
 			}
 			var probe struct {
