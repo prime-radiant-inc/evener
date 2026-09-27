@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -105,6 +106,11 @@ type snapshot struct {
 type storeCell struct {
 	mu    sync.Mutex
 	state snapshot
+	// hasFile records whether a landed write has ever put bytes at the cell's
+	// path, or whether a file was there when the cell was created. It is what
+	// lets a cached open tell a store that was never written from one whose file
+	// has since disappeared.
+	hasFile atomic.Bool
 }
 
 // storeCells holds the process's one cell per store file path. The key is the
@@ -150,6 +156,7 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 		return nil, err
 	}
 	if existing, held := storeCells.Load(key); held {
+		cell := existing.(*storeCell)
 		// A cached cell makes no load, but Open still enforces the path rules a
 		// fresh open enforces, on the same file the handle will write: the handle
 		// must not be handed out for a path that has become a link or a fifo (its
@@ -158,6 +165,15 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 		info, err := lstat(fs, path)
 		switch {
 		case errors.Is(err, os.ErrNotExist):
+			if cell.hasFile.Load() {
+				// The file the cell was built from is gone — removed, or renamed
+				// aside by a quarantine. Serving the records it once held would
+				// answer from a store that no longer exists, and the next write
+				// would put them back; the durable store is what the file says,
+				// and there is no file, so this path starts over.
+				storeCells.Delete(key)
+				return openFS(fs, path, faults)
+			}
 		case err != nil:
 			return nil, fmt.Errorf("hostops: stat store %s: %w", path, err)
 		default:
@@ -168,13 +184,18 @@ func openFS(fs afero.Fs, path string, faults storeFaults) (*Store, error) {
 				return nil, fmt.Errorf("%w: %s has mode %04o", ErrStoreReadableBeyondOwner, path, perm)
 			}
 		}
-		return &Store{path: path, fs: fs, faults: faults, cell: existing.(*storeCell)}, nil
+		return &Store{path: path, fs: fs, faults: faults, cell: cell}, nil
+	}
+	fileExists := true
+	if _, err := lstat(fs, path); errors.Is(err, os.ErrNotExist) {
+		fileExists = false
 	}
 	state, err := loadFS(fs, path)
 	if err != nil {
 		return nil, err
 	}
 	cell := &storeCell{state: state}
+	cell.hasFile.Store(fileExists)
 	// Two racing first opens of one path must adopt one cell, never two.
 	if existing, loaded := storeCells.LoadOrStore(key, cell); loaded {
 		cell = existing.(*storeCell)
@@ -454,6 +475,7 @@ func (s *Store) commitLocked(next snapshot) (landed bool, err error) {
 	landed, err = saveFS(s.fs, s.path, next, s.faults)
 	if landed {
 		s.cell.state = next
+		s.cell.hasFile.Store(true)
 	}
 	return landed, err
 }

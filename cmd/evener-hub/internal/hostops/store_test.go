@@ -1421,3 +1421,59 @@ func TestTransitionRefusesALoneSurrogateInARawField(t *testing.T) {
 	}
 	reopenFresh(t, path)
 }
+
+// TestACachedOpenDoesNotServeAVanishedStoreFile pins the cell's file accounting: a
+// store file removed, or renamed aside by a quarantine, must not keep being served
+// from the cached cell — the durable store is what the file says, and there is no
+// file — and the next write must land a fresh store rather than recreate the
+// deleted one from a stale snapshot.
+func TestACachedOpenDoesNotServeAVanishedStoreFile(t *testing.T) {
+	path := StorePath(t.TempDir())
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	createTestRecord(t, first, "h1")
+	if got := len(first.Records()); got != 1 {
+		t.Fatalf("the first handle holds %d records, want 1", got)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("Remove(%s): %v", path, err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open after the file vanished: %v", err)
+	}
+	if got := len(reopened.Records()); got != 0 {
+		t.Fatalf("a cached open served %d records from a store file that is gone", got)
+	}
+	if got := reopened.Sequence(); got != 0 {
+		t.Fatalf("a cached open served sequence %d from a store file that is gone", got)
+	}
+
+	record := createTestRecord(t, reopened, "h2")
+	if got := len(reopened.Records()); got != 1 || reopened.Records()[0].ID != record.ID {
+		t.Fatalf("the write after the file vanished did not start a fresh store: %+v", reopened.Records())
+	}
+	fresh := reopenFresh(t, path)
+	if got := len(fresh.Records()); got != 1 {
+		t.Fatalf("the fresh store file holds %d records, want 1", got)
+	}
+}
+
+// TestRepeatedOpensOfANeverWrittenStoreStayEmpty pins the other side: a store that
+// was never written has no file, and repeated opens of it are legitimately empty
+// rather than a vanished store.
+func TestRepeatedOpensOfANeverWrittenStoreStayEmpty(t *testing.T) {
+	path := StorePath(t.TempDir())
+	for i := range 3 {
+		store, err := Open(path)
+		if err != nil {
+			t.Fatalf("Open %d: %v", i, err)
+		}
+		if got := len(store.Records()); got != 0 {
+			t.Fatalf("open %d saw %d records in a never-written store", i, got)
+		}
+	}
+}
