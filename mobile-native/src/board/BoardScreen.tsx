@@ -143,6 +143,15 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		markers.markSeen(row);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
 	};
+	// A search result opens like its Board row when the Board lists it, so
+	// it's marked seen with the row's own hub timestamp. A session the Board
+	// doesn't list has no Finished state to clear.
+	const openResult = (result: { ref: string; title: string }) => {
+		const listed = (row: NavigationSessionSummary) => row.ref === result.ref;
+		const row = snapshot.live.rows.find(listed) ?? snapshot.needsYou.rows.find(listed);
+		if (row) openSession(row);
+		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
+	};
 
 	// Where each section starts in the scroller, for the chips and the
 	// summary line to jump to. Bands measure inside the Live block.
@@ -271,7 +280,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
 			{searchOpen ? <SearchField search={search} connected={connected} /> : null}
 			{search.active ? (
-				<SearchResults search={search} connected={connected} hubId={hubId} navigation={navigation} />
+				<SearchResults search={search} connected={connected} onOpen={openResult} />
 			) : (
 				<>
 					{chips.length ? <Chips chips={chips} /> : null}
@@ -924,13 +933,11 @@ function SearchField({ search, connected }: { search: BoardSearch; connected: bo
 function SearchResults({
 	search,
 	connected,
-	hubId,
-	navigation,
+	onOpen,
 }: {
 	search: BoardSearch;
 	connected: boolean;
-	hubId: string;
-	navigation: Navigation;
+	onOpen: (result: { ref: string; title: string }) => void;
 }) {
 	const colors = useColors();
 	const { fontScale } = useWindowDimensions();
@@ -979,7 +986,7 @@ function SearchResults({
 						accessibilityLabel={`Open ${item.title || "Untitled session"}`}
 						accessibilityHint={[...(signals.length ? signals : [stateLabel]), item.project].filter(Boolean).join(". ")}
 						disabled={!connected}
-						onPress={() => navigation.navigate("Conversation", { hubId, ref: item.ref, title: item.title })}
+						onPress={() => onOpen(item)}
 						style={{
 							marginHorizontal: 16,
 							paddingVertical: 13,
