@@ -10,23 +10,31 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
+
+// reviewRunReport is the final message writeReviewRun's agent sends the user,
+// long enough that a preview would cut it.
+const reviewRunReport = "Fixed the weekly totals. tally.Sum started its loop at index 1, so it skipped the first value; it now adds every value, and go test passes."
 
 // writeReviewRun writes one run under base the way a run lays it out: a
 // state directory whose root transcript mentions a file in the work
 // directory, and result.json. It returns the work and state directories.
-// The transcript also names the version label outside any path, as an agent
-// that lists the directories above its work directory would.
+// The transcript opens with the harness's environment turn, names the version
+// label outside any path, as an agent that lists the directories above its
+// work directory would, and ends with reviewRunReport.
 func writeReviewRun(t *testing.T, base string) (workDir, stateDir string) {
 	t.Helper()
 	workDir, stateDir = filepath.Join(base, "work"), filepath.Join(base, "state")
 	writeFluencyMeta(t, stateDir, proseRootID, "", time.Now())
 	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
+		schema.NewTurn(schema.TurnEnvironment, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{textPart("date: 2026-09-27 14:00 PDT")}}),
 		assistantTurn(
 			textPart("I read "+workDir+"/tally/sum.go and found the loop."),
 			fluencyToolCall("read_file", `{"file_path":"`+workDir+`/tally/sum.go"}`),
 		),
 		assistantTurn(textPart("The directory four levels up lists v1-A.")),
+		assistantTurn(fluencyToolCall("communicate", `{"message":"`+reviewRunReport+`","end_turn":true}`)),
 	})
 	res := probeResult{Probe: "prose.bugfix-tally", Model: "lunarouter/m", Repetition: 1, WorkDir: workDir, StateDir: stateDir}
 	data, err := json.Marshal(res)
@@ -68,6 +76,93 @@ func TestWriteReviewPackMasksRunPaths(t *testing.T) {
 	}
 	if !strings.Contains(text, "found the loop") {
 		t.Errorf("packet lost the transcript text:\n%s", text)
+	}
+}
+
+// TestWriteReviewPackShowsWhatTheUserSawAndNoHarnessChrome: a packet carries
+// every message to the user whole, since those are what the reader scores. It
+// leaves out harness chrome that would tell the reader which runs go together,
+// such as the environment turn's date and the session id. Every packet gets
+// the same modification time, so listing packets by time says nothing about
+// versions.
+func TestWriteReviewPackShowsWhatTheUserSawAndNoHarnessChrome(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	for _, rep := range []string{"rep-01", "rep-02"} {
+		writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m", "prose.bugfix-tally", rep))
+	}
+	packets := filepath.Join(t.TempDir(), "packets")
+	key, err := writeReviewPack([]labeledDir{{Label: "v1-A", Dir: filepath.Join(root, "v1-A")}}, packets, root, rand.New(rand.NewPCG(1, 1)))
+	if err != nil {
+		t.Fatalf("writeReviewPack: %v", err)
+	}
+	if len(key) != 2 {
+		t.Fatalf("key = %+v, want two packets", key)
+	}
+	var modTimes []time.Time
+	for _, entry := range key {
+		path := filepath.Join(packets, entry.Packet)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if !strings.Contains(text, reviewRunReport) {
+			t.Errorf("packet cut the message to the user:\n%s", text)
+		}
+		for _, chrome := range []string{"2026-09-27 14:00", proseRootID} {
+			if strings.Contains(text, chrome) {
+				t.Errorf("packet carries harness chrome %q:\n%s", chrome, text)
+			}
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		modTimes = append(modTimes, info.ModTime())
+	}
+	if !modTimes[0].Equal(modTimes[1]) {
+		t.Errorf("packets were modified at %v, want one shared time", modTimes)
+	}
+}
+
+// TestReviewPackRefusesALabelWithoutADigit: review-pack masks the label
+// wherever it appears, so an ordinary word such as "baseline" would be masked
+// in the agents' own writing, and only in that version's packets.
+func TestReviewPackRefusesALabelWithoutADigit(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	writeReviewRun(t, filepath.Join(root, "baseline", "lunarouter-m", "prose.bugfix-tally", "rep-01"))
+	err := run([]string{"review-pack", "--results", "baseline=" + filepath.Join(root, "baseline"), "--mask-root", root,
+		"--packets", filepath.Join(t.TempDir(), "packets"), "--key", filepath.Join(t.TempDir(), "key.json")})
+	if err == nil || !strings.Contains(err.Error(), "digit") {
+		t.Fatalf("review-pack = %v, want a refusal asking for a digit in the label", err)
+	}
+}
+
+// TestReviewPackMasksUnderARelativeMaskRoot: a relative --mask-root still
+// masks the absolute paths a transcript holds. Not parallel: it changes the
+// working directory.
+func TestReviewPackMasksUnderARelativeMaskRoot(t *testing.T) {
+	root := t.TempDir()
+	writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m", "prose.bugfix-tally", "rep-01"))
+	t.Chdir(root)
+	packets := filepath.Join(t.TempDir(), "packets")
+	err := run([]string{"review-pack", "--results", "v1-A=v1-A", "--mask-root", ".",
+		"--packets", packets, "--key", filepath.Join(t.TempDir(), "key.json"), "--seed", "7"})
+	if err != nil {
+		t.Fatalf("review-pack: %v", err)
+	}
+	entries, err := os.ReadDir(packets)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("packets = %v, %v; want one", entries, err)
+	}
+	data, err := os.ReadFile(filepath.Join(packets, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), root) {
+		t.Errorf("packet contains the run root %q:\n%s", root, data)
 	}
 }
 

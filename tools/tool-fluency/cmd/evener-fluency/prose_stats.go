@@ -44,7 +44,7 @@ func extractRunProse(stateDir string) (runProse, error) {
 				p.All = append(p.All, text)
 			}
 			for _, call := range turn.ToolCalls {
-				if !call.IsResult && call.Name != "communicate" {
+				if !isMessageToUser(call) {
 					continue
 				}
 				for _, msg := range resultMessages(call.Arguments) {
@@ -58,6 +58,12 @@ func extractRunProse(stateDir string) (runProse, error) {
 		return nil
 	})
 	return p, err
+}
+
+// isMessageToUser reports whether a tool call carries a message to the user:
+// a call to the session's result tool, or to communicate.
+func isMessageToUser(call doctor.ToolCallSummary) bool {
+	return call.IsResult || call.Name == "communicate"
 }
 
 // resultMessages returns the visible text of one result-tool call: its

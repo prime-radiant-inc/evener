@@ -12,8 +12,10 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/doctor"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 )
 
@@ -31,10 +33,18 @@ type reviewEntry struct {
 // writeReviewPack renders each run's root transcript into packetsDir under a
 // random name, masks everything that would reveal its prompt version, and
 // returns the key. maskRoot is the directory the labeled results live under.
+// Every packet gets the same modification time, so listing the packets by
+// time does not group them by version.
 func writeReviewPack(dirs []labeledDir, packetsDir, maskRoot string, rng *rand.Rand) ([]reviewEntry, error) {
+	for _, d := range dirs {
+		if !strings.ContainsAny(d.Label, "0123456789") {
+			return nil, fmt.Errorf("label %q needs a digit, such as v0 or v1-A: the label is masked wherever it appears, and an ordinary word would be masked in the agents' own writing", d.Label)
+		}
+	}
 	if err := os.MkdirAll(packetsDir, 0o755); err != nil {
 		return nil, err
 	}
+	written := time.Now()
 	used := map[string]bool{}
 	var key []reviewEntry
 	for _, d := range dirs {
@@ -48,14 +58,18 @@ func writeReviewPack(dirs []labeledDir, packetsDir, maskRoot string, rng *rand.R
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", lr.Path, err)
 			}
-			tr, err := runnerReadTranscript(res.StateDir, rootID, doctor.TranscriptOpts{Format: "markdown", TextMax: doctor.TextMaxFull})
+			tr, err := runnerReadTranscript(res.StateDir, rootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", lr.Path, err)
 			}
-			body := maskRunDetails(doctor.RenderTranscript(tr, "markdown"), maskRoot, d.Label)
+			body := maskRunDetails(renderPacket(tr), maskRoot, d.Label)
 			name := uniquePacketName(rng, used)
-			content := fmt.Sprintf("# Task %s\n\n%s\n", res.Probe, body)
-			if err := os.WriteFile(filepath.Join(packetsDir, name), []byte(content), 0o644); err != nil {
+			path := filepath.Join(packetsDir, name)
+			content := fmt.Sprintf("# Task %s\n\n%s", res.Probe, body)
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				return nil, err
+			}
+			if err := os.Chtimes(path, written, written); err != nil {
 				return nil, err
 			}
 			key = append(key, reviewEntry{Packet: name, Label: d.Label, Model: res.Model, Probe: res.Probe, Repetition: res.Repetition, Result: lr.Path})
@@ -65,22 +79,92 @@ func writeReviewPack(dirs []labeledDir, packetsDir, maskRoot string, rng *rand.R
 	return key, nil
 }
 
+// packetSections name the transcript turns a blind reader sees: what the user
+// asked, what the agent said and did, and what its tools returned. Every other
+// turn is harness chrome, and some of it, such as the environment turn's date,
+// would tell the reader which runs go together.
+var packetSections = map[string]string{
+	string(schema.TurnUserInput):   "User",
+	string(schema.TurnSteering):    "User",
+	string(schema.TurnAssistant):   "Agent",
+	string(schema.TurnTool):        "Tool results",
+	string(schema.TurnToolResults): "Tool results",
+}
+
+// packetToolResultMax caps each tool result in a packet. The reader judges
+// the agent's work and writing, and a whole file or test log adds little.
+const packetToolResultMax = 1500
+
+// renderPacket renders a root transcript for a blind read. Every message to
+// the user appears whole, since those messages are what the reader scores.
+// Other tool calls appear as their previews, and tool results are cut short.
+func renderPacket(tr doctor.TranscriptResult) string {
+	var b strings.Builder
+	for _, turn := range tr.Turns {
+		section, ok := packetSections[turn.Kind]
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&b, "## %s\n\n", section)
+		if turn.Text != "" {
+			fmt.Fprintf(&b, "%s\n\n", turn.Text)
+		}
+		for _, call := range turn.ToolCalls {
+			if !isMessageToUser(call) {
+				fmt.Fprintf(&b, "→ %s `%s`\n\n", call.Name, call.ArgPreview)
+				continue
+			}
+			for _, msg := range resultMessages(call.Arguments) {
+				fmt.Fprintf(&b, "⇒ %s\n\n%s\n\n", call.Name, msg)
+			}
+		}
+		for _, result := range turn.ToolResults {
+			status := ""
+			if result.IsError {
+				status = " (error)"
+			}
+			fmt.Fprintf(&b, "← %s%s\n\n%s\n\n", result.Name, status, indentBlock(firstBytes(result.ContentPreview, packetToolResultMax)))
+		}
+	}
+	return b.String()
+}
+
+// firstBytes keeps the start of s, at most n bytes, without splitting a rune.
+func firstBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
+}
+
+// indentBlock indents every line of s by four spaces, a Markdown code block
+// that holds any tool output, backticks included.
+func indentBlock(s string) string {
+	return "    " + strings.ReplaceAll(s, "\n", "\n    ")
+}
+
 // maskRunDetails removes what would reveal a packet's prompt version. Every
 // path under maskRoot becomes <run>: run paths carry the version label, and a
 // truncated argument preview can cut a path anywhere, so the whole path goes.
-// The root's resolved form is masked too, for tools that print resolved
-// paths. The label itself is masked last; pick labels that do not occur in
-// ordinary prose, such as v1-A, so masking cannot change what the agent wrote.
+// The root's absolute and resolved forms are both masked, for tools that print
+// either. The label itself is masked last, as a whole word; writeReviewPack
+// refuses labels without a digit, so masking cannot rewrite an ordinary word.
 func maskRunDetails(text, maskRoot, label string) string {
-	roots := []string{filepath.Clean(maskRoot)}
-	if resolved, err := filepath.EvalSymlinks(maskRoot); err == nil && resolved != roots[0] {
+	if abs, err := filepath.Abs(maskRoot); err == nil {
+		maskRoot = abs
+	}
+	roots := []string{maskRoot}
+	if resolved, err := filepath.EvalSymlinks(maskRoot); err == nil && resolved != maskRoot {
 		roots = append(roots, resolved)
 	}
 	for _, root := range roots {
 		re := regexp.MustCompile(regexp.QuoteMeta(root) + "[^\\s\"'`)\\]]*")
 		text = re.ReplaceAllString(text, "<run>")
 	}
-	return strings.ReplaceAll(text, label, "<version>")
+	return regexp.MustCompile(`\b`+regexp.QuoteMeta(label)+`\b`).ReplaceAllString(text, "<version>")
 }
 
 func uniquePacketName(rng *rand.Rand, used map[string]bool) string {
