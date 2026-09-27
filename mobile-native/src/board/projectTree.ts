@@ -40,7 +40,7 @@ export interface TierPage {
 export type ProjectPages = Record<ProjectSessionTier, TierPage>;
 
 export type ProjectTreeItem =
-	| { kind: "host"; key: string; fold: string; host: HostFacts; liveCount: number | null; folded: boolean }
+	| { kind: "host"; key: string; fold: string; depth: 0; host: HostFacts; liveCount: number | null; folded: boolean }
 	| {
 			kind: "project";
 			key: string;
@@ -50,7 +50,7 @@ export type ProjectTreeItem =
 			liveCount: number | null;
 			folded: boolean;
 	  }
-	| { kind: "branch"; key: string; fold: string; host: HostFacts; folded: boolean }
+	| { kind: "branch"; key: string; fold: string; depth: 1; host: HostFacts; folded: boolean }
 	| { kind: "tier"; key: string; depth: number; label: "Today" | "Recent" }
 	| { kind: "archivedGroup"; key: string; fold: string; depth: number; count: number | null; folded: boolean }
 	| { kind: "session"; key: string; depth: number; row: NavigationSessionSummary; archived: boolean }
@@ -208,7 +208,7 @@ function projectFirst(
 			const branch = branchFold(project.key, host.id);
 			const branchKey = itemKey(input.section, branch);
 			const branchFolded = input.isFolded(branch, true);
-			out.push({ kind: "branch", key: branchKey, fold: branch, host, folded: branchFolded });
+			out.push({ kind: "branch", key: branchKey, fold: branch, depth: 1, host, folded: branchFolded });
 			if (!branchFolded) activeItems(out, branchKey, pages, host.id, 2);
 		}
 	else activeItems(out, prefix, pages, null, 1);
@@ -248,6 +248,7 @@ function hostFirst(out: ProjectTreeItem[], input: ProjectTreeInput): void {
 			kind: "host",
 			key: itemKey(input.section, fold),
 			fold,
+			depth: 0,
 			host,
 			liveCount: host.online ? input.hostLiveCount(host.id) : null,
 			folded,
@@ -337,15 +338,17 @@ export interface ProjectsView {
 
 /** What a section shows: the current connection's reads where they have
  * landed, and the rows shown before until they do, so a reconnect never
- * blanks a section (part 1's Review Focus 1). `retained` is the view shown
- * last; pass null for a new hub. */
+ * blanks a section (part 1's Review Focus 1). Only a tier that loaded is kept,
+ * as boardData keeps pages: a failed first read is never kept, so a retry in
+ * flight reads as loading. `retained` is the view shown last; pass null for a
+ * new hub. */
 export function projectsView(fresh: ProjectBrowserSnapshot, retained: ProjectsView | null): ProjectsView {
 	const before = retained ?? { projects: [], loaded: false, pages: new Map<string, ProjectPages>() };
 	const pages = new Map(before.pages);
 	for (const group of fresh.groups) {
 		const previous = pages.get(group.project.key);
 		const pick = (tier: ProjectSessionTier): TierPage =>
-			group[tier].loaded || !previous ? group[tier] : previous[tier];
+			group[tier].loaded || !previous?.[tier].loaded ? group[tier] : previous[tier];
 		pages.set(group.project.key, { current: pick("current"), recent: pick("recent"), archived: pick("archived") });
 	}
 	return fresh.projects.loaded

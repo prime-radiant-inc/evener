@@ -88,11 +88,11 @@ function outline(list: readonly ProjectTreeItem[]): string[] {
 	return list.map((item) => {
 		switch (item.kind) {
 			case "host":
-				return `host ${item.host.label}${item.host.online ? "" : " (offline)"}${item.liveCount ? ` · ${item.liveCount} live` : ""}`;
+				return `${indent(item.depth)}host ${item.host.label}${item.host.online ? "" : " (offline)"}${item.liveCount ? ` · ${item.liveCount} live` : ""}`;
 			case "project":
 				return `${indent(item.depth)}project ${item.project.key}${item.liveCount ? ` · ${item.liveCount} live` : ""}`;
 			case "branch":
-				return `  branch ${item.host.label}`;
+				return `${indent(item.depth)}branch ${item.host.label}`;
 			case "tier":
 				return `${indent(item.depth)}${item.label}`;
 			case "archivedGroup":
@@ -473,5 +473,32 @@ describe("keeping rows through a reconnect (part 1 Review Focus 1)", () => {
 
 	it("shows a first read as it is when nothing was shown before", () => {
 		expect(projectsView(snapshot(false), null)).toEqual({ projects: [], loaded: false, pages: new Map() });
+	});
+
+	it("never keeps a failed first read, so a retry in flight reads as loading", () => {
+		const failed = { rows: [], remaining: 0, loaded: false, error: "offline" };
+		const shownFailed: ProjectsView = {
+			projects: [project("a")],
+			loaded: true,
+			pages: new Map([["a", { current: failed, recent: failed, archived: failed }]]),
+		};
+		const retrying = projectsView(
+			snapshot(true, [
+				{
+					project: project("a"),
+					expanded: true,
+					current: pageState([], false),
+					recent: pageState([], false),
+					archived: pageState([], false),
+					sessions: [],
+				},
+			]),
+			shownFailed,
+		);
+		expect(retrying.pages.get("a")?.current).toMatchObject({ loaded: false, error: null });
+		expect(outline(items({ organizeBy: "project-host", projects: [project("a")], pages: retrying.pages }))).toEqual([
+			"project a",
+			"  loading",
+		]);
 	});
 });
