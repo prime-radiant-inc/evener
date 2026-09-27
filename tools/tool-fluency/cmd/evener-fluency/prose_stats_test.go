@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,18 +113,7 @@ func TestSummarizeProseGroupsByLabelAndModel(t *testing.T) {
 	stateDir := filepath.Join(dir, "state")
 	writeProseRun(t, stateDir, "Done — see #12.")
 	for rep, status := range map[int]string{1: "passed", 2: "failed"} {
-		res := probeResult{Probe: "prose.bugfix-tally", Model: "m", Repetition: rep, Status: status, StateDir: stateDir}
-		data, err := json.Marshal(res)
-		if err != nil {
-			t.Fatal(err)
-		}
-		path := filepath.Join(dir, "m", "prose.bugfix-tally", fmt.Sprintf("rep-%02d", rep), "result.json")
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, data, 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeFluencyResult(t, dir, probeResult{Probe: "prose.bugfix-tally", Model: "m", Repetition: rep, Status: status, StateDir: stateDir})
 	}
 	stats, err := summarizeProse([]labeledDir{{Label: "baseline", Dir: dir}})
 	if err != nil {
@@ -152,4 +144,113 @@ func TestParseLabeledNeedsBothParts(t *testing.T) {
 	if label, value, err := parseLabeled("v1-A=/tmp/x"); err != nil || label != "v1-A" || value != "/tmp/x" {
 		t.Errorf("parseLabeled = %q, %q, %v", label, value, err)
 	}
+}
+
+func TestProseSubcommandsRejectBadInput(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"prose-count"}, "prose-count FILE"},
+		{[]string{"prose-stats"}, "at least one --results"},
+		{[]string{"prose-stats", "--results", "nolabel"}, "want LABEL=VALUE"},
+		{[]string{"prose-stats", "--results", "a=b", "--channel", "bogus"}, "--channel must be"},
+	} {
+		if err := run(c.args); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("run(%q) = %v, want an error containing %q", c.args, err, c.want)
+		}
+	}
+}
+
+// TestProseCommandsPrintTheirCounts runs both commands through run and reads
+// what they print. It swaps os.Stdout, so it cannot run in parallel.
+func TestProseCommandsPrintTheirCounts(t *testing.T) {
+	dir := t.TempDir()
+	section := filepath.Join(dir, "section.md")
+	if err := os.WriteFile(section, []byte("It works — mostly.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() error { return run([]string{"prose-count", section}) })
+	if want := section + "\twords=3 em_dashes=1 contrastive=0 bold_labels=0 headers=0 arrows=0 shouting=0 opaque_ids=0\n"; out != want {
+		t.Errorf("prose-count printed %q, want %q", out, want)
+	}
+
+	results := filepath.Join(dir, "results")
+	stateDir := filepath.Join(dir, "state")
+	writeProseRun(t, stateDir, "Done — see #12.")
+	writeFluencyResult(t, results, probeResult{Probe: "prose.smoke", Model: "m", Repetition: 1, Status: "passed", StateDir: stateDir})
+	out = captureStdout(t, func() error { return run([]string{"prose-stats", "--results", "v1=" + results, "--json"}) })
+	var stats []proseStats
+	if err := json.Unmarshal([]byte(out), &stats); err != nil {
+		t.Fatalf("prose-stats --json printed %q: %v", out, err)
+	}
+	if len(stats) != 1 || stats[0].Label != "v1" || stats[0].Messages != 1 {
+		t.Errorf("prose-stats --json = %+v, want one v1 row with one message", stats)
+	}
+}
+
+func TestRenderProseTableShowsTheChosenChannel(t *testing.T) {
+	t.Parallel()
+	stats := []proseStats{{
+		Label: "v1", Model: "m", Runs: 1,
+		ToUser: proseCounts{Words: 1000, EmDashes: 5},
+		All:    proseCounts{Words: 2000, EmDashes: 30},
+	}}
+	for channel, want := range map[string]string{"to_user": "5.0", "all": "15.0"} {
+		var buf bytes.Buffer
+		if err := renderProseTable(&buf, stats, channel); err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+		// The data row's columns: label, model, runs, passed, tasks all
+		// passed, messages per run, median message words, words, em dashes
+		// per 1,000 words, and the other rates.
+		row := strings.Fields(lines[len(lines)-1])
+		if len(row) < 9 || row[8] != want {
+			t.Errorf("channel %s: row = %q, want em dashes per 1k = %s", channel, row, want)
+		}
+	}
+}
+
+// writeFluencyResult writes res as dir/<model>/<probe>/rep-NN/result.json.
+func writeFluencyResult(t *testing.T, dir string, res probeResult) {
+	t.Helper()
+	data, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, res.Model, res.Probe, fmt.Sprintf("rep-%02d", res.Repetition), "result.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// captureStdout returns what fn prints to os.Stdout and fails the test when
+// fn returns an error.
+func captureStdout(t *testing.T, fn func() error) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	printed := make(chan []byte)
+	go func() {
+		data, _ := io.ReadAll(r)
+		printed <- data
+	}()
+	stdout := os.Stdout
+	os.Stdout = w
+	runErr := fn()
+	os.Stdout = stdout
+	_ = w.Close()
+	data := <-printed
+	_ = r.Close()
+	if runErr != nil {
+		t.Fatalf("command failed: %v", runErr)
+	}
+	return string(data)
 }
