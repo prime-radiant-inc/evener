@@ -70,6 +70,14 @@ type Config struct {
 	PastResultsPerPage int              `toml:"past_results_per_page"`
 	Providers          []ProviderConfig `toml:"providers"`
 	Hosts              []HostConfig     `toml:"hosts"`
+	// HostRecords and Generations are hub.toml's machine-managed per-host
+	// records (registry spec 08 §6's reserved-key layout). They live beside
+	// [[hosts]], never inside an entry, because they must survive a host edit:
+	// an edit rewrites the entry's configured fields and nothing here. The
+	// zero/absent value is the compatibility default for a file written before
+	// the records existed — see app_host_records.go.
+	HostRecords map[string]HostRecord     `toml:"host_records"`
+	Generations map[string]HostGeneration `toml:"generations"`
 
 	// PluginAutoUpgrade is the global on/off switch for the background plugin
 	// auto-upgrade daemon (design doc §9.1). Defaults to on: the meaningful
@@ -222,6 +230,27 @@ func decodeConfig(name, data string) (Config, error) {
 	}
 	if err := validateHostConfigs(cfg.Hosts); err != nil {
 		return cfg, fmt.Errorf("validate hosts: %w", err)
+	}
+	// The machine records are decoded as plain tables, so a record the hub's
+	// writer never emits — an incomplete one, or a live record disagreeing with
+	// the name's high-water triple — is refused here rather than read as one of
+	// its halves (registry spec 08 §6: a reserved value whose shape this build
+	// cannot decode is refused loudly before any rewrite).
+	if err := validateHostRecords(cfg.HostRecords, cfg.Generations); err != nil {
+		return cfg, fmt.Errorf("validate host records: %w", err)
+	}
+	// Every field of a reserved record must decode: the two tables are decoded
+	// into typed structs and rebuilt on every rewrite, so a field this build does
+	// not know would be silently dropped by the next write. Spec 08 §6 is
+	// explicit that forward preservation is not offered — "a reserved value whose
+	// shape this build cannot decode is refused loudly before any rewrite" — and
+	// a downgrade meeting a newer record must refuse to rewrite rather than
+	// preserve or drop it. Unknown keys outside the reserved set stay the
+	// operator's data and are not this check's business.
+	for _, key := range metadata.Undecoded() {
+		if len(key) > 1 && (key[0] == "host_records" || key[0] == "generations") {
+			return cfg, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
+		}
 	}
 	if err := validateMobileBaseURL(cfg.MobileBaseURL); err != nil {
 		return cfg, fmt.Errorf("validate mobile_base_url: %w", err)

@@ -32,6 +32,7 @@ import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { hoverForTooltip } from "../../../widgets/tooltip/tooltipTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { editorCursor, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -1248,13 +1249,11 @@ test("while a turn runs, Steer is primary and Send is quiet", async () => {
 });
 
 test("with nothing running, Send is the primary, sends now, and there is no Steer to outrank it", async () => {
-  const user = userEvent.setup();
   await mountComposer("ref_a", { status: { type: "idle" } });
   expect(submitButton().className.split(" ")).toContain(buttonStyles.primary);
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   // The idle half of Send's timing reaching its bubble (canQueue false).
-  await user.hover(submitButton());
-  expect((await screen.findByRole("tooltip")).textContent).toMatch(/^Send now · /);
+  expect(hoverForTooltip(submitButton()).textContent).toMatch(/^Send now · /);
 });
 
 // The label is stable across states even though the ROUTE isn't: a mid-turn
@@ -1632,10 +1631,7 @@ test("the submit tooltip names the route the submit actually takes on a cold ses
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
 
   await user.type(editor, "m2");
-  // The tooltip opens on a 300ms hover delay (widgets/tooltip's own test pins
-  // it), so this waits for the bubble rather than reading straight after.
-  fireEvent.mouseEnter(submitButton());
-  const promisedQueue = /queue until the agent stops/i.test((await screen.findByRole("tooltip")).textContent ?? "");
+  const promisedQueue = /queue until the agent stops/i.test(hoverForTooltip(submitButton()).textContent ?? "");
 
   await user.click(submitButton());
   await waitFor(() => expect(routedCalls(fake)).toHaveLength(2));
@@ -1984,20 +1980,18 @@ test("with enterToSend on, Shift+Enter is a literal newline and does not steer",
 // the preference (and, mid-turn, Send's queue timing) reach each bubble.
 test("with enterToSend on, Steer's tooltip drops its chord and Send's names bare Enter", async () => {
   prefsStore.getState().setEnterToSend(true);
-  const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  await user.hover(steerButton());
-  const tip = await screen.findByRole("tooltip");
+  const tip = hoverForTooltip(steerButton());
   expect(tip.textContent).toMatch(/interrupt and redirect now/i);
   expect(tip.textContent).not.toMatch(/Shift/);
 
-  // getByRole throws while two bubbles show, so this waits for Steer's to go.
-  await user.unhover(steerButton());
-  await user.hover(submitButton());
-  await waitFor(() => expect(screen.getByRole("tooltip").textContent).toBe("Queue until the agent stops · Enter"));
+  // Leaving hides Steer's bubble at once. hoverForTooltip reads the tooltip
+  // with getByRole, which throws if two bubbles show.
+  fireEvent.mouseLeave(steerButton());
+  expect(hoverForTooltip(submitButton()).textContent).toBe("Queue until the agent stops · Enter");
 });
 
 // --- steer / drain-as-steer routing -----------------------------------------

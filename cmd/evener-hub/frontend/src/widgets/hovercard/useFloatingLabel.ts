@@ -1,6 +1,6 @@
 import { type FocusEventHandler, type MouseEventHandler, type RefObject, useEffect, useRef, useState } from "react";
 
-const SHOW_DELAY_MS = 300;
+export const SHOW_DELAY_MS = 300;
 
 interface UseFloatingLabelArgs {
   measure: () => void;
