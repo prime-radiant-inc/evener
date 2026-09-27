@@ -160,6 +160,7 @@ type proseStats struct {
 	Model              string      `json:"model"`
 	Runs               int         `json:"runs"`
 	Passed             int         `json:"passed"`
+	Blocked            int         `json:"blocked"` // runs the gateway or harness stopped; they say nothing about the prompt
 	Tasks              int         `json:"tasks"`
 	TasksAllPassed     int         `json:"tasks_all_passed"` // tasks that passed on every run
 	Messages           int         `json:"messages"`         // root result-tool messages
@@ -193,6 +194,8 @@ func summarizeProse(dirs []labeledDir) ([]proseStats, error) {
 			passed := res.Status == "passed"
 			if passed {
 				row.Passed++
+			} else if res.Status != "failed" {
+				row.Blocked++
 			}
 			if prev, seen := taskPasses[k][res.Probe]; !seen {
 				taskPasses[k][res.Probe] = passed
@@ -254,7 +257,7 @@ func per1k(n, words int) float64 {
 // to_user (what the root sent the user) or all (every session's prose).
 func renderProseTable(w io.Writer, stats []proseStats, channel string) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "LABEL\tMODEL\tRUNS\tPASSED\tTASKS ALL PASSED\tMSGS/RUN\tMEDIAN MSG WORDS\tWORDS\tEM DASH/1K\tX-NOT-Y/1K\tBOLD LABEL/1K\tHEADER/1K\tARROW/1K\tSHOUT/1K\tIDS/1K\tPROSE ERRORS")
+	_, _ = fmt.Fprintln(tw, "LABEL\tMODEL\tRUNS\tPASSED\tBLOCKED\tTASKS ALL PASSED\tMSGS/RUN\tMEDIAN MSG WORDS\tWORDS\tEM DASH/1K\tX-NOT-Y/1K\tBOLD LABEL/1K\tHEADER/1K\tARROW/1K\tSHOUT/1K\tIDS/1K\tPROSE ERRORS")
 	for _, s := range stats {
 		c := s.ToUser
 		if channel == "all" {
@@ -264,8 +267,8 @@ func renderProseTable(w io.Writer, stats []proseStats, channel string) error {
 		if s.Runs > 0 {
 			msgsPerRun = float64(s.Messages) / float64(s.Runs)
 		}
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d/%d\t%.1f\t%d\t%d\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%d\n",
-			s.Label, s.Model, s.Runs, s.Passed, s.TasksAllPassed, s.Tasks, msgsPerRun, s.MedianMessageWords, c.Words,
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%d/%d\t%.1f\t%d\t%d\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%.1f\t%d\n",
+			s.Label, s.Model, s.Runs, s.Passed, s.Blocked, s.TasksAllPassed, s.Tasks, msgsPerRun, s.MedianMessageWords, c.Words,
 			per1k(c.EmDashes, c.Words), per1k(c.Contrastive, c.Words), per1k(c.BoldLabels, c.Words),
 			per1k(c.Headers, c.Words), per1k(c.Arrows, c.Words), per1k(c.Shouting, c.Words),
 			per1k(c.OpaqueIDs, c.Words), s.ProseErrors)

@@ -134,6 +134,26 @@ func TestSummarizeProseGroupsByLabelAndModel(t *testing.T) {
 	}
 }
 
+// TestSummarizeProseCountsBlockedRuns: a run the gateway or the harness
+// blocked says nothing about the prompt, so the table shows those runs apart
+// from the passes and failures.
+func TestSummarizeProseCountsBlockedRuns(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	writeProseRun(t, stateDir, "Done.")
+	for rep, status := range map[int]string{1: "passed", 2: "failed", 3: "blocked_infra"} {
+		writeFluencyResult(t, dir, probeResult{Probe: "prose.smoke", Model: "m", Repetition: rep, Status: status, StateDir: stateDir})
+	}
+	stats, err := summarizeProse([]labeledDir{{Label: "v0", Dir: dir}})
+	if err != nil {
+		t.Fatalf("summarizeProse: %v", err)
+	}
+	if len(stats) != 1 || stats[0].Runs != 3 || stats[0].Passed != 1 || stats[0].Blocked != 1 {
+		t.Fatalf("stats = %+v, want 3 runs with 1 passed and 1 blocked", stats)
+	}
+}
+
 func TestParseLabeledNeedsBothParts(t *testing.T) {
 	t.Parallel()
 	for _, bad := range []string{"", "label", "=dir", "label="} {
@@ -203,11 +223,11 @@ func TestRenderProseTableShowsTheChosenChannel(t *testing.T) {
 			t.Fatal(err)
 		}
 		lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-		// The data row's columns: label, model, runs, passed, tasks all
-		// passed, messages per run, median message words, words, em dashes
-		// per 1,000 words, and the other rates.
+		// The data row's columns: label, model, runs, passed, blocked, tasks
+		// all passed, messages per run, median message words, words, em
+		// dashes per 1,000 words, and the other rates.
 		row := strings.Fields(lines[len(lines)-1])
-		if len(row) < 9 || row[8] != want {
+		if len(row) < 10 || row[9] != want {
 			t.Errorf("channel %s: row = %q, want em dashes per 1k = %s", channel, row, want)
 		}
 	}
