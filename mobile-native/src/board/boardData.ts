@@ -305,19 +305,20 @@ export function createBoardController(): BoardController {
 		for (const listener of listeners) listener();
 	};
 
-	/** Needs you must be complete, so keep paging until the hub has no more
-	 * rows. */
-	const fillNeedsYou = () => {
-		if (!readers || paused) return;
-		const page = readers.needsYou.getSnapshot();
+	/** Needs you and the pin catalog must be complete (every session that
+	 * needs you, and every category's row), so keep paging each until the
+	 * hub has no more rows. */
+	const fill = <T,>(page: NavigationPages<T>) => {
+		if (paused) return;
+		const state = page.getSnapshot();
 		if (
-			page.loaded &&
-			!page.loading &&
-			!page.error &&
-			!page.stale &&
-			page.remaining > 0
+			state.loaded &&
+			!state.loading &&
+			!state.error &&
+			!state.stale &&
+			state.remaining > 0
 		)
-			void readers.needsYou.more();
+			void page.more();
 	};
 
 	const pages = (bound: Readers) => [bound.live, bound.needsYou, bound.pins];
@@ -348,9 +349,12 @@ export function createBoardController(): BoardController {
 			bound.live.subscribe(publish),
 			bound.needsYou.subscribe(() => {
 				publish();
-				fillNeedsYou();
+				fill(bound.needsYou);
 			}),
-			bound.pins.subscribe(publish),
+			bound.pins.subscribe(() => {
+				publish();
+				fill(bound.pins);
+			}),
 		);
 		for (const page of pages(bound)) bound.stop.push(page.watch());
 		bound.stop.push(bound.manifest.watch());
@@ -422,7 +426,8 @@ export function createBoardController(): BoardController {
 				if (state.error && !state.stale && !state.loading && state.remaining > 0) void page.more();
 			}
 			readers.manifest.resume();
-			fillNeedsYou();
+			fill(readers.needsYou);
+			fill(readers.pins);
 		},
 		dispose() {
 			if (disposed) return;

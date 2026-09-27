@@ -268,6 +268,22 @@ it("reads every Needs you page, up to 200 rows", async () => {
 	expect(requestsFor(hub, "needs_you")).toHaveLength(2);
 });
 
+it("reads every page of the pin catalog, so every category has its row", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	const categories = (count: number, from = 0) =>
+		Array.from({ length: count }, (_, index) => ({ id: `pins-${from + index}`, name: `Pins ${from + index}`, count: 1 }));
+	answer(hub, "pin_catalog", { pin_sections: categories(100), remaining: 20 });
+	await tick();
+	const second = next(hub, "pin_catalog");
+	expect(second.params.offset).toBe(100);
+	second.resolve(response(second.params, { pin_sections: categories(20, 100), remaining: 0 }));
+	await tick();
+	expect(board.getSnapshot().pins.rows).toHaveLength(120);
+	expect(requestsFor(hub, "pin_catalog")).toHaveLength(2);
+});
+
 it("reads a Needs you page that failed again when the Board resumes", async () => {
 	const hub = boundary();
 	const board = createBoardController();
