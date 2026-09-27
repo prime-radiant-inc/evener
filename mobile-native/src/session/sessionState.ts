@@ -1,0 +1,126 @@
+// What the Session's header says: the nav bar's state line with its still
+// mark (spec 8.1), and the context chips under it. The mark reuses the
+// Board's states (src/board/attention.ts). A session you are looking at is
+// never unread, so a finished one is Idle, with no dot.
+import type { EvenerDelegateInfo, ThreadModel } from "@evener/appwire-client";
+import { projectDelegateEntry } from "../../../mobile/src/services/activity";
+import type { BoardState } from "../board/attention";
+import { compactDuration } from "./format";
+
+export interface SessionStateLine {
+	state: BoardState;
+	text: string;
+}
+
+export type StateSource = Pick<
+	ThreadModel,
+	"status" | "askPending" | "pendingEscalations" | "activeTurnStartedAt" | "turns"
+>;
+
+const SHUT_DOWN = new Set(["notLoaded", "closed", "ended"]);
+
+export function sessionStateLine(session: StateSource, now: number): SessionStateLine {
+	const type = session.status.type;
+	if (type === "systemError") return { state: "failed", text: "Failed" };
+	if (type === "restartRequired") return { state: "restartNeeded", text: "Restart needed" };
+	// A question outranks an approval, as on the Board.
+	if (type === "awaiting" && session.askPending) return { state: "question", text: "Asks a question" };
+	if (session.pendingEscalations.length > 0) return { state: "approval", text: "Asks for approval" };
+	if (type === "warning") return { state: "warning", text: "Warning" };
+	if (type === "active") {
+		const started = timeOf(session.activeTurnStartedAt);
+		return { state: "working", text: started === undefined ? "Working" : `Working · ${compactDuration(now - started)}` };
+	}
+	if (SHUT_DOWN.has(type)) return { state: "shutDown", text: "Shut down" };
+	const finished = lastCompletion(session.turns);
+	return {
+		state: "idle",
+		text: finished === undefined ? "Finished" : `Finished · ${compactDuration(now - finished)} ago`,
+	};
+}
+
+function lastCompletion(turns: StateSource["turns"]): number | undefined {
+	for (let index = turns.length - 1; index >= 0; index -= 1) {
+		const time = timeOf(turns[index]?.completedAt);
+		if (time !== undefined) return time;
+	}
+	return undefined;
+}
+
+function timeOf(value: string | undefined): number | undefined {
+	if (!value) return undefined;
+	const time = Date.parse(value);
+	return Number.isFinite(time) ? time : undefined;
+}
+
+export interface SubagentTally {
+	total: number;
+	running: number;
+	failed: number;
+	done: number;
+}
+
+/** Running, failed or done, as the hub's job counts are (spec 9), over the
+ * subagents this session has loaded: S3's fallback until the hub tallies the
+ * whole tree. */
+export function subagentTally(delegates: readonly EvenerDelegateInfo[] | undefined): SubagentTally {
+	const tally: SubagentTally = { total: 0, running: 0, failed: 0, done: 0 };
+	for (const delegate of delegates ?? []) {
+		tally.total += 1;
+		const tone = projectDelegateEntry(delegate).tone;
+		if (tone === "running") tally.running += 1;
+		else if (tone === "failed") tally.failed += 1;
+		else tally.done += 1;
+	}
+	return tally;
+}
+
+export type ChipKind = "subagents" | "tasks" | "goal" | "queue";
+
+export interface ContextChip {
+	kind: ChipKind;
+	label: string;
+	/** "2 failed", drawn in red ink after the label. */
+	failed?: string;
+	/** Amber: the goal is blocked. */
+	attention: boolean;
+	accessibilityLabel: string;
+}
+
+/** The chips under the nav bar, each only when it has content (spec 8.1).
+ * Files waits for phase 4's Reader (ruling 6). */
+export function contextChips(session: Pick<ThreadModel, "delegates" | "tasks" | "goal" | "queue">): ContextChip[] {
+	const chips: ContextChip[] = [];
+	const subagents = subagentTally(session.delegates);
+	if (subagents.total > 0) {
+		const failed = subagents.failed > 0 ? `${subagents.failed} failed` : undefined;
+		chips.push({
+			kind: "subagents",
+			label: `Subagents ${subagents.total}`,
+			failed,
+			attention: false,
+			accessibilityLabel: failed ? `Subagents, ${subagents.total}, ${failed}` : `Subagents, ${subagents.total}`,
+		});
+	}
+	const tasks = session.tasks;
+	if (tasks && tasks.total > 0)
+		chips.push({
+			kind: "tasks",
+			label: `Tasks ${tasks.done}/${tasks.total}`,
+			attention: false,
+			accessibilityLabel: `Tasks, ${tasks.done} of ${tasks.total} done`,
+		});
+	if (session.goal) {
+		const blocked = session.goal.status === "blocked";
+		chips.push({ kind: "goal", label: "Goal", attention: blocked, accessibilityLabel: blocked ? "Goal, blocked" : "Goal" });
+	}
+	const depth = session.queue?.depth ?? 0;
+	if (depth > 0)
+		chips.push({
+			kind: "queue",
+			label: `Queue ${depth}`,
+			attention: false,
+			accessibilityLabel: `${depth} queued ${depth === 1 ? "message" : "messages"}`,
+		});
+	return chips;
+}
