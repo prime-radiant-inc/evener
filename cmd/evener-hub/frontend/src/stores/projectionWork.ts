@@ -9,11 +9,12 @@ import { createMutationProjectionWorkTracker } from "@evener/appwire-client/stat
 // leaves a test with nothing to await but the work itself: polling its side
 // effects against a fixed window is a race, not an assertion.
 //
-// Production only records: tracking costs a counter increment and one
-// `finally` reaction per operation, and nothing outside a test ever waits on
-// the count, so it changes no production behavior. The stall tripwire and the
-// macrotask yield the tracker settles through are the package's; this binds
-// them to the browser's own timers and a MessageChannel hop.
+// Tracking costs two counter updates and one `finally` reaction per storage
+// transaction. Nothing outside a test reads the count or waits on it, so
+// production behavior is unchanged apart from each storage call settling a
+// microtask or two later. The stall tripwire and the macrotask yield the
+// tracker settles through are the package's; this binds them to the
+// browser's own timers and a MessageChannel hop.
 const projectionWorkTracker = createMutationProjectionWorkTracker({
   setTimeout: (callback, milliseconds) => setTimeout(callback, milliseconds),
   clearTimeout: (timerId) => clearTimeout(timerId),

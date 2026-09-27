@@ -19,11 +19,7 @@ import type {
   MutationOutboxRecord,
   MutationRecoveryRecord,
 } from "../../../../stores/mutationOutbox";
-import {
-  clearProjectionWorkForTests,
-  settleProjectionWorkForTests,
-  trackProjectionWork,
-} from "../../../../stores/projectionWork";
+import { clearProjectionWorkForTests, trackProjectionWork } from "../../../../stores/projectionWork";
 import {
   type ComposerMutationRoute,
   discardRecoveryMutation,
@@ -46,8 +42,9 @@ export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 // (`@evener/appwire-client/state/mutation`); this module is the web's one
 // instance, bound to the browser's thread store, composer-draft storage and
 // client identity through the three ports the core takes. Every durable-read
-// op below (the generation fencing, IndexedDB reads, settle tracking) stays
-// here: it is genuinely web-specific, not part of what moved.
+// op below (the generation fencing and IndexedDB reads) stays here: it is
+// genuinely web-specific, not part of what moved. The work they start is
+// counted by the stores' projection work tracker (stores/projectionWork.ts).
 const threadsPort: PendingTurnsThreadsPort = {
   getThreadModel: (ref) => threadsStore.getState().threads.get(ref),
 };
@@ -71,13 +68,6 @@ const persistencePort: MutationPersistencePort<MutationAttachment> = { read: rea
 // The fire-and-forget refresh port both the commit feed and the submission
 // runner take, bound once here rather than written inline at each site.
 const refreshTarget: (ref?: string) => void = (ref) => void refreshPendingTurnsProjection(ref);
-
-// The projection's durable work - its reads, submissions and recovery actions
-// below, and every mutation-storage transaction - is counted by the stores'
-// projection work tracker (stores/projectionWork.ts).
-export async function settlePendingTurnsProjectionForTests(): Promise<number> {
-  return settleProjectionWorkForTests();
-}
 
 export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
   return trackProjectionWork(readProjectionIntoStore(ref));

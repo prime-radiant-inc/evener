@@ -1,8 +1,8 @@
 // @vitest-environment node
 
 import { IDBFactory } from "fake-indexeddb";
-import { expect, test } from "vitest";
-import { holdIndexedDBEvent } from "./stalledIndexedDB";
+import { afterEach, expect, test, vi } from "vitest";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "./stalledIndexedDB";
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -67,4 +67,56 @@ test("a read released before its success event still settles", async () => {
   const rows = requestResult<unknown[]>(request);
   hold.release();
   expect(await rows).toEqual([]);
+});
+
+function openTwoStores(): Promise<IDBDatabase> {
+  const open = new IDBFactory().open("stalled-indexeddb-write-test", 1);
+  open.addEventListener("upgradeneeded", () => {
+    open.result.createObjectStore("rows", { keyPath: "id" });
+    open.result.createObjectStore("other", { keyPath: "id" });
+  });
+  return requestResult(open);
+}
+
+function completion(transaction: IDBTransaction): { done: Promise<void>; isDone: () => boolean } {
+  let finished = false;
+  const done = new Promise<void>((resolve) => {
+    transaction.addEventListener("complete", () => {
+      finished = true;
+      resolve();
+    });
+  });
+  return { done, isDone: () => finished };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+// The storage's transactions differ by mode and store scope, and a test holds
+// exactly one of them: the first readwrite transaction over the stores it
+// names. A readonly transaction, or a write over other stores, runs to
+// completion while it is held; a later write over the same stores queues
+// behind it, and is not held itself once the first is released.
+test("holdNextWriteTransaction holds only the first readwrite transaction over exactly the named stores", async () => {
+  const database = await openTwoStores();
+  const held = holdNextWriteTransaction(["rows"]);
+
+  const read = completion(database.transaction("rows", "readonly"));
+  const wider = database.transaction(["rows", "other"], "readwrite");
+  wider.objectStore("rows").put({ id: "wider" });
+  const widerDone = completion(wider);
+  const target = database.transaction("rows", "readwrite");
+  target.objectStore("rows").put({ id: "target" });
+  const targetDone = completion(target);
+  const later = database.transaction("rows", "readwrite");
+  later.objectStore("rows").put({ id: "later" });
+  const laterDone = completion(later);
+
+  await held.reached;
+  await Promise.all([read.done, widerDone.done]);
+  expect(targetDone.isDone()).toBe(false);
+
+  held.release();
+  await Promise.all([targetDone.done, laterDone.done]);
 });

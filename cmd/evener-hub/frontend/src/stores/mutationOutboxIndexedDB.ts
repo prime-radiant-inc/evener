@@ -833,7 +833,8 @@ export class MutationOutboxIndexedDB {
   // Every transaction registers with the projection work tracker when it
   // starts, which is what lets a flush wait for durable work whoever began it:
   // a Force stop's cancellation, a queue action, the dispatcher settling a
-  // receipt once its RPC answers. A caller registers nothing of its own.
+  // receipt once its RPC answers. No caller has to register the storage work
+  // itself.
   #transaction<T>(
     stores: string | string[],
     mode: "readonly" | "readwrite",

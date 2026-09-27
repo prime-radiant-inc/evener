@@ -1,9 +1,12 @@
 import { act } from "@testing-library/react";
 
-import { settlePendingTurnsProjectionForTests } from "../pendingTurnsStore";
+import { settleProjectionWorkForTests } from "../../../../../stores/projectionWork";
 
 // The repeat loop every test wants: run rounds until one of them sees no work
-// at all. The bound is a tripwire for a livelock - it throws rather than
+// at all. Each round settles the tracked work inside act, and act's exit is
+// where React runs the effects that work's updates scheduled; an effect can
+// start new work, which the next round settles. So the bound counts those
+// effect cycles, and it is a tripwire for a livelock: it throws rather than
 // letting a test pass on a half-settled projection.
 //
 // The act comes from @testing-library/react, not react: only RTL's wrapper
@@ -16,21 +19,22 @@ import { settlePendingTurnsProjectionForTests } from "../pendingTurnsStore";
 // (stores/projectionWork.ts), and every durable path registers at its source:
 // each transaction the mutation storage runs registers when it starts, and
 // pendingTurnsStore's reads and submissions register from the call that starts
-// them. A round also counts work registered while it runs, so work chained a
-// few microtasks behind an operation that just finished - a receipt write once
-// its RPC answers, a refresh once a commit notifies - keeps the loop going,
-// and only a round that began and ended quiet ends it.
+// them. One round waits out a whole chain of that work, including a step that
+// starts only once the step before it settled - the dispatcher's next read, a
+// receipt write once its RPC answers, a refresh once a commit notifies - and
+// only a round that began and ended quiet ends the loop.
 //
-// It does not wait for anything that is not durable storage work: an RPC in
-// flight (a test holding one open can still flush), a timer (the outbox's
-// discovery interval), or a component's own state. pendingTurnsStore's "a
-// flush cannot settle while ..." tests pin the property for submits and for
-// storage writes begun anywhere, and Composer's pin it for both Stop routes.
+// The storage registers no RPC, so a test holding one open can still flush,
+// except where pendingTurnsStore tracks a whole operation that contains one (a
+// Retry's reconciliation read). Nor does it wait for a timer (the outbox's
+// discovery interval) or a component's own state. pendingTurnsStore's "a flush
+// cannot settle while ..." tests pin the property for submits and for storage
+// writes begun anywhere, and Composer's pin it for both Stop routes.
 export async function flushPendingTurnsProjectionForTests(): Promise<void> {
   for (let round = 0; round < 10; round += 1) {
     let awaited = 0;
     await act(async () => {
-      awaited = await settlePendingTurnsProjectionForTests();
+      awaited = await settleProjectionWorkForTests();
     });
     if (awaited === 0) return;
   }

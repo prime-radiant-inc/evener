@@ -3763,7 +3763,7 @@ test.each<[string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]>
   const flushing = flushPendingTurnsProjectionForTests().then(() => {
     flushResolved = true;
   });
-  // If the press is tracked, the flush cannot return here.
+  // If the write is tracked, the flush cannot return here.
   await outlastEmptyFlushRoundForTests();
   expect(flushResolved).toBe(false);
 
