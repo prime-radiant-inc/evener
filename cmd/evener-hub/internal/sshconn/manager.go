@@ -111,17 +111,25 @@ type Options struct {
 	// BuildBinary is set.
 	BuildSource string
 
-	// BinaryArtifact, when set, records that BuildBinary is a pre-built binary
-	// artifact — a hub's own running executable, or an operator-supplied
-	// -deploy-binary — rather than a compile of a source checkout. It changes
-	// exactly one decision: a dirty controller (a "<sha>-dirty" build) refuses a
-	// SOURCE deploy terminally (errControllerDirty: no checkout can be proven to
-	// reproduce a dirty tree), but a declared artifact IS the bytes themselves,
-	// so publishing it needs no reproduction proof. The artifact's identity is
-	// still judged where it can be: the push re-reads it (evener identity and
-	// host target) before staging, and the on-host launch contract re-read after
-	// the deploy is compared against this controller (errDeployUnstamped).
-	BinaryArtifact bool
+	// OwnExecutable, when set, records that BuildBinary serves this controller's
+	// own executable — the hub's default deploy source, adopted without a flag —
+	// rather than an operator-named artifact or a compile of a checkout. It
+	// changes exactly one decision: a dirty controller (a "<sha>-dirty" build)
+	// refuses every other deploy source terminally (errControllerDirty), because
+	// none of them can be proven to be this controller's build — a checkout
+	// cannot be reproduced, and a "<sha>-dirty" label is not an identity (another
+	// dirty tree at the same commit reports it too, so neither the pre-push
+	// checks nor the post-deploy version comparison could tell an
+	// operator-supplied artifact apart from a foreign one). The controller's own
+	// executable is exempt because the caller declares its bytes ARE this
+	// controller's build; the hub holds that claim up by pinning the adopted
+	// file's size and digest at startup and re-checking them before staging, so a
+	// file replaced under the hub is refused there rather than mislabeled here.
+	// The artifact's identity is still judged where it can be: the push re-reads
+	// it (evener identity and host target) before staging, and the on-host launch
+	// contract re-read after the deploy is compared against this controller
+	// (errDeployUnstamped).
+	OwnExecutable bool
 
 	// DeployDisabled, when set, turns deploying off for this whole Manager: no
 	// push and no installer fallback, so a release or snapshot controller cannot
@@ -1829,14 +1837,14 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 	// deploy is configured the controller installs its own build once per Manager
 	// and then trusts the host for this process's lifetime; with no deploy
 	// configured there is nothing to install and the literal comparison stands.
-	// A DIRTY controller whose deploy source is a source checkout or the installer
-	// fallback cannot install anything (deploy refuses it terminally: see
-	// errControllerDirty), so the force below is what keeps it from attaching to a
-	// host whose code equality cannot prove; that refusal is terminal rather than a
-	// retryable ErrDeploy, so the same forced deploy cannot become an endless
-	// cross-compile. A declared binary artifact (Options.BinaryArtifact) is
-	// installable, and once installed it settles the question for this Manager's
-	// lifetime like any other deploy.
+	// A DIRTY controller whose deploy source is anything but its own executable
+	// cannot install anything (deploy refuses it terminally: see errControllerDirty),
+	// so the force below is what keeps it from attaching to a host whose code
+	// equality cannot prove; that refusal is terminal rather than a retryable
+	// ErrDeploy, so the same forced deploy cannot become an endless cross-compile.
+	// The controller's own executable (Options.OwnExecutable) is installable, and
+	// once installed it settles the question for this Manager's lifetime like any
+	// other deploy.
 	deployPossible := m.canDeploy()
 	devUnverified := UnverifiableVersion(expected) && deployPossible && !m.isDevDeployed(name)
 
@@ -2880,9 +2888,10 @@ func (m *Manager) canBuild() bool {
 // accept this build": a dirty controller with a build source reaches deploy,
 // which refuses it terminally (errControllerDirty) instead of returning false
 // here — returning false would let the decision ladder attach to a host whose
-// code equality the dirty version cannot prove. A dirty controller with a
-// declared binary artifact (Options.BinaryArtifact) is accepted by deploy: the
-// bytes are the build, so there is no reproduction proof to make. And a
+// code equality the dirty version cannot prove. A dirty controller deploying its
+// own executable (Options.OwnExecutable) is accepted by deploy: those bytes are
+// the controller's build by construction, so there is no reproduction proof to
+// make. And a
 // controller with deploying turned off (Options.DeployDisabled) has no deploy
 // path at all, so it is false before even the installer fallback is considered:
 // -no-deploy must not let a release or snapshot controller quietly install a

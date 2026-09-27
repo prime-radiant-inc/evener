@@ -15,11 +15,13 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
-// These tests pin the binary-artifact half of the dirty-controller rule: the
-// hub's own executable (and an operator-supplied -deploy-binary) is declared
-// through Options.BinaryArtifact, and such an artifact IS the build this
-// controller runs, so deploying it from a dirty controller is allowed where
-// compiling a source tree from one is not.
+// These tests pin the dirty-controller rule's one exemption: only this
+// controller's own executable — Options.OwnExecutable, the hub's default deploy
+// source — is installable from a dirty build. A source checkout cannot be
+// reproduced, and an operator-named artifact cannot be told apart from a foreign
+// dirty build ("<sha>-dirty" is every dirty tree at that commit), so both stay
+// refused terminally. Only the dirty controller is restricted: a clean one
+// deploys a named artifact exactly as it always did.
 
 const dirtyControllerVersion = "abc1234-dirty"
 
@@ -40,11 +42,12 @@ func TestDirtyControllerRefusesABuildSource(t *testing.T) {
 	}
 }
 
-// TestDirtyControllerRefusesAnUndeclaredBuildBinary pins the guard on the other
-// side of Options.BinaryArtifact: a BuildBinary that is not declared a binary
-// artifact is an embedder's own compile of the controller's tree — exactly the
-// build a dirty version cannot prove — so the refusal stays, and no build runs.
-func TestDirtyControllerRefusesAnUndeclaredBuildBinary(t *testing.T) {
+// TestDirtyControllerRefusesANamedBuildBinary pins the guard on the other side of
+// Options.OwnExecutable: a BuildBinary that is not declared to be the
+// controller's own executable — an operator's -deploy-binary, or an embedder's
+// own compile — is exactly the build a dirty version cannot prove, so the
+// refusal stays, and no build runs.
+func TestDirtyControllerRefusesANamedBuildBinary(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	builds := 0
 	m := newTestManager(t, testRegistry(t, host), refusingRunner(t), Options{
@@ -64,12 +67,56 @@ func TestDirtyControllerRefusesAnUndeclaredBuildBinary(t *testing.T) {
 	}
 }
 
-// TestDirtyControllerDeploysABinaryArtifact pins the new half: a declared binary
-// artifact — the hub's own executable, or an operator-named -deploy-binary —
-// carries the bytes themselves, so a dirty controller installs it instead of
+// TestCleanControllerDeploysANamedBuildBinary pins the scope of the narrowed
+// rule from the other side: only a DIRTY controller has to refuse a named
+// artifact. With a reproducible version, a named artifact deploys exactly as it
+// did before — the pre-push checks judge its evener identity and host target,
+// and the post-deploy read judges the build the host reports (errDeployUnstamped)
+// — so the rule reads "dirty AND not this controller's own executable", not
+// "artifacts are second-class".
+func TestCleanControllerDeploysANamedBuildBinary(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	var pushed []byte
+	builds := 0
+	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "test -d /opt/evener/bin"):
+			return nil, nil
+		case strings.Contains(joined, "evener_resolve /opt/evener/bin/evener"):
+			return []byte("/opt/evener/bin/evener\n"), nil
+		case strings.Contains(joined, "cat >"):
+			if stdin != nil {
+				pushed, _ = io.ReadAll(stdin)
+			}
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected remote command: %v", argv)
+		}
+	}}
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: "abc1234",
+		BuildBinary: func(_ context.Context, _, _, out string) error {
+			builds++
+			return os.WriteFile(out, []byte("named-artifact-bytes"), 0o755)
+		},
+	})
+
+	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
+	if err != nil {
+		t.Fatalf("a clean controller refused a named binary artifact: %v", err)
+	}
+	if target != "/opt/evener/bin/evener" || builds != 1 || string(pushed) != "named-artifact-bytes" {
+		t.Fatalf("deploy: target=%q builds=%d pushed=%q, want the named artifact pushed to /opt/evener/bin/evener", target, builds, pushed)
+	}
+}
+
+// TestDirtyControllerDeploysItsOwnExecutable pins the exemption: the
+// controller's own executable carries the bytes themselves (the hub holds the
+// file to the bytes it adopted), so a dirty controller installs it instead of
 // refusing. The deploy runs the whole push path (resolve, build seam, atomic
 // pipe) and the staged bytes are what reaches the host.
-func TestDirtyControllerDeploysABinaryArtifact(t *testing.T) {
+func TestDirtyControllerDeploysItsOwnExecutable(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	var pushed []byte
 	builds := 0
@@ -91,7 +138,7 @@ func TestDirtyControllerDeploysABinaryArtifact(t *testing.T) {
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirtyControllerVersion,
-		BinaryArtifact:            true,
+		OwnExecutable:             true,
 		BuildBinary: func(_ context.Context, _, _, out string) error {
 			builds++
 			return os.WriteFile(out, []byte("own-build-bytes"), 0o755)
@@ -100,7 +147,7 @@ func TestDirtyControllerDeploysABinaryArtifact(t *testing.T) {
 
 	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
 	if err != nil {
-		t.Fatalf("deploy of a declared binary artifact from a dirty controller: %v", err)
+		t.Fatalf("deploy of the controller's own executable from a dirty controller: %v", err)
 	}
 	if target != "/opt/evener/bin/evener" {
 		t.Fatalf("resolved target = %q, want /opt/evener/bin/evener", target)
@@ -109,16 +156,16 @@ func TestDirtyControllerDeploysABinaryArtifact(t *testing.T) {
 		t.Fatalf("artifact staging calls = %d, want 1", builds)
 	}
 	if string(pushed) != "own-build-bytes" {
-		t.Fatalf("pushed bytes = %q, want the declared artifact's bytes", pushed)
+		t.Fatalf("pushed bytes = %q, want the own executable's bytes", pushed)
 	}
 }
 
-// TestDirtyControllerArtifactDeployConvergesThroughTheOperation pins the deploy
-// pipeline's own entry point (DeployForOperation, which the hub's deploy worker
-// runs): a dirty controller deploying a declared binary artifact installs it and
+// TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation pins the
+// deploy pipeline's own entry point (DeployForOperation, which the hub's deploy
+// worker runs): a dirty controller deploying its own executable installs it and
 // passes the post-deploy identity read — the artifact reports the controller's
 // own dirty version, so the terminal unstamped-build refusal does not fire.
-func TestDirtyControllerArtifactDeployConvergesThroughTheOperation(t *testing.T) {
+func TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
@@ -142,7 +189,7 @@ func TestDirtyControllerArtifactDeployConvergesThroughTheOperation(t *testing.T)
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirtyControllerVersion,
-		BinaryArtifact:            true,
+		OwnExecutable:             true,
 		BuildBinary:               writeStageBinary,
 	})
 
@@ -220,13 +267,14 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 	}
 }
 
-// TestDirtyControllerArtifactMismatchRefusesUnstamped pins the guard that must
-// survive the dirty relaxation: a declared binary artifact is deployable from a
-// dirty controller because it IS the controller's build — and when the artifact
-// on the host turns out to be a different build after all (the bytes were not
-// this controller's), the post-deploy identity read still refuses terminally
-// (errDeployUnstamped) instead of attaching the host to that build.
-func TestDirtyControllerArtifactMismatchRefusesUnstamped(t *testing.T) {
+// TestDirtyControllerOwnExecutableMismatchRefusesUnstamped pins the guard that
+// must survive the dirty relaxation: the own executable is deployable from a
+// dirty controller because it IS the controller's build — and when the build the
+// host ends up with is a different one after all (nothing in sshconn can prove
+// the bytes, so the check is the host's own report), the post-deploy identity
+// read still refuses terminally (errDeployUnstamped) instead of attaching the
+// host to that build.
+func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	fr := deployRunner(t,
 		func(call int) ([]byte, error) {
@@ -244,7 +292,7 @@ func TestDirtyControllerArtifactMismatchRefusesUnstamped(t *testing.T) {
 	)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: dirtyControllerVersion,
-		BinaryArtifact:            true,
+		OwnExecutable:             true,
 		BuildBinary:               writeStageBinary,
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})

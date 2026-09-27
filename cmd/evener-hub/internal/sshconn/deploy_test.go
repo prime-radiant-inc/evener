@@ -1671,10 +1671,11 @@ func TestDevControllerWithADeployPathForcesTheDeploy(t *testing.T) {
 // a checkout or an undeclared BuildBinary) and the installer fallback each
 // refuse, and each refusal carries a remedy an operator can act on — a clean
 // rebuild for the push path, and the hub's flags for the installer fallback
-// through Options.DeployHelp. A declared binary artifact is the case that does
-// not refuse (TestDirtyControllerDeploysABinaryArtifact). The refusal's type and
-// terminality are pinned by TestRound13DirtyControllerDeployRefusalIsTerminal;
-// this adds the remedy clauses, which is the half the criterion names.
+// through Options.DeployHelp. The controller's own executable is the case that
+// does not refuse (TestDirtyControllerDeploysItsOwnExecutable). The refusal's
+// type and terminality are pinned by
+// TestRound13DirtyControllerDeployRefusalIsTerminal; this adds the remedy
+// clauses, which is the half the criterion names.
 func TestDirtyControllerRefusalsNameTheRemedy(t *testing.T) {
 	const dirty = "abc1234-dirty"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}

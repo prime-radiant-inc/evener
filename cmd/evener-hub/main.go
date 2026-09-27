@@ -148,7 +148,9 @@ type hubOptions struct {
 	noDeploy bool
 	// deployDefault records that deployBinary was not named by the operator: it
 	// is this hub's own executable, adopted by validateDeployFlags. Only the
-	// startup log reads it, to say the source was defaulted rather than given.
+	// startup log and the deploy wiring read it: the log says the source was
+	// defaulted rather than given, and the wiring marks the source as the own
+	// executable (the one source a dirty controller may install).
 	deployDefault bool
 }
 
@@ -512,7 +514,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Logger:         func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
 		BuildBinary:    deploy.buildBinary,
 		BuildSource:    deploy.buildSource,
-		BinaryArtifact: deploy.binaryArtifact,
+		OwnExecutable:  deploy.ownExecutable,
 		DeployDisabled: deploy.disabled,
 		DeployHelp:     deploy.help,
 		OnEvent: func(ev sshconn.Event) {

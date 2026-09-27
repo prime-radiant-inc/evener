@@ -277,18 +277,19 @@ func declaresEvenerModule(dir string) bool {
 }
 
 // errControllerDirty marks a deploy refused because this controller was built
-// from a dirty tree and the configured deploy source needs a reproduction proof
-// it cannot give. Such a build has no reproducible identity: the push path
-// refuses to compile a tree it cannot prove matches this process
-// (verifyBuildRevision), the installer fallback has no published artifact to pin
-// (installerRefFor), and version auto-match cannot prove a host reporting the
-// same "<sha>-dirty" names the same code. A declared binary artifact
-// (Options.BinaryArtifact) is not refused: its bytes are the build — the hub's
-// own executable by construction, an operator's artifact by declaration — and its
-// on-host identity is still judged (errDeployUnstamped). The refusal is terminal
-// rather than ErrDeploy: the same install can never succeed by being retried, and
-// a supervisor that retried it cross-compiled forever while the host was never
-// attached (round thirteen).
+// from a dirty tree and the configured deploy source is not the controller's own
+// executable. Such a build has no reproducible identity: the push path refuses
+// to compile a tree it cannot prove matches this process (verifyBuildRevision),
+// the installer fallback has no published artifact to pin (installerRefFor), and
+// version auto-match cannot tell an operator-named artifact built from another
+// dirty tree at the same commit apart from this controller's build — "<sha>-dirty"
+// is not an identity. Only a source whose bytes ARE this controller's build
+// (Options.OwnExecutable: the hub's own executable, the file this process was
+// started from) is not refused; its on-host identity is still judged
+// (errDeployUnstamped). The
+// refusal is terminal rather than ErrDeploy: the same install can never succeed
+// by being retried, and a supervisor that retried it cross-compiled forever while
+// the host was never attached (round thirteen).
 var errControllerDirty = errors.New("sshconn: controller build is a dirty tree")
 
 // errDeployUnstamped marks a deploy that left the host reporting a build other
@@ -331,20 +332,35 @@ func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight
 	// attaching instead of deploying would silently serve a build version
 	// auto-match cannot verify.
 	//
-	// The refusal is about SOURCE deploys: compiling a checkout requires proving
-	// the checkout reproduces the running "<sha>-dirty" tree, which is exactly what
-	// cannot be done, and the installer fallback has no published artifact to pin
-	// either. A declared binary artifact (Options.BinaryArtifact) needs no such
-	// proof: the hub's own executable IS this controller's build by construction,
-	// and an operator-supplied artifact is still judged on the host after the push
-	// (errDeployUnstamped), so refusing those would only keep a dirty controller
-	// from provisioning hosts with the exact build it runs. Refuse the rest
+	// Only the controller's own executable (Options.OwnExecutable) is exempt, and
+	// it is exempt on identity, not convenience: those bytes ARE the build this
+	// controller runs, so installing them needs no reproduction proof and leaves
+	// nothing for version auto-match to prove. Every other source is refused:
+	// compiling a checkout requires proving it reproduces the running "<sha>-dirty"
+	// tree, which cannot be done; the installer fallback has no published artifact
+	// to pin; and an operator-named artifact cannot be told apart from a foreign
+	// dirty build, because its "<sha>-dirty" label is shared by every dirty tree at
+	// that commit — the pre-push checks pass, and the post-deploy version
+	// comparison (errDeployUnstamped) cannot see the difference either, so the host
+	// would attach on code that is not this controller's.
+	//
+	// The accepted residual for the exempt source: its file is read at deploy
+	// time, so a hub whose executable is replaced under it deploys the
+	// replacement. A cross-commit replacement is caught after the push
+	// (errDeployUnstamped: the host reports a version this controller did not
+	// stamp); a replacement that is itself a dirty build at this controller's own
+	// commit reports the same "<sha>-dirty" and is not detectable. That corner —
+	// a locally built dirty controller whose executable is replaced while it runs
+	// — is accepted rather than closed with hash plumbing: the label could not
+	// distinguish it anyway, the default's whole meaning is "deploy the file at
+	// this process's executable path", and an operator who wants a different
+	// artifact names it for a controller that can verify it. Refuse the rest
 	// terminally, naming the cause: retrying is what turned this refusal into an
 	// endless cross-compile, because every attempt failed as a retryable ErrDeploy
 	// and markDevDeployed was never reached.
-	if version := m.opts.controllerVersion(); isDirtyVersion(version) && !m.opts.BinaryArtifact {
-		return "", fmt.Errorf("%w: host %q: this controller was built from a dirty tree (version %q), so it cannot install its own build (a dirty tree cannot be reproduced from a checkout, and the installer fallback has no published artifact to pin) or prove that a host's build matches it; rebuild the controller from a clean checkout",
-			errControllerDirty, host.Name, version)
+	if version := m.opts.controllerVersion(); isDirtyVersion(version) && !m.opts.OwnExecutable {
+		return "", fmt.Errorf("%w: host %q: this controller was built from a dirty tree (version %q), so it cannot install this build: a checkout cannot be proven to reproduce the dirty tree, the installer fallback has no published artifact to pin, and a named artifact cannot be told apart from a foreign dirty build (a %q version names a commit plus uncommitted changes, not the code); rebuild the controller from a clean checkout, or deploy the controller's own executable — the one source a dirty controller can install",
+			errControllerDirty, host.Name, version, version)
 	}
 	if m.canBuild() {
 		return m.deployPush(ctx, host, facts)

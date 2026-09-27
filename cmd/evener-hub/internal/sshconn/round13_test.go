@@ -30,10 +30,11 @@ import (
 // instead of ErrDeploy: the supervisor stops, the cause is reported, and no
 // build, restart, or attach is attempted. The test drives the decision and the
 // supervisor's own per-iteration path (reconnectOnce), not BuildBinary alone —
-// which is how the round-twelve test missed the loop. The build source here is an
-// undeclared BuildBinary (an embedder's own compile of the controller's tree);
-// a declared binary artifact is deployable from a dirty controller and is pinned
-// by TestDirtyControllerDeploysABinaryArtifact.
+// which is how the round-twelve test missed the loop. The build source here is a
+// BuildBinary that is not the controller's own executable (an embedder's own
+// compile of the controller's tree, or an operator's -deploy-binary); the
+// controller's own executable is deployable from a dirty controller and is
+// pinned by TestDirtyControllerDeploysItsOwnExecutable.
 func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	const dirty = "abc1234-dirty"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}

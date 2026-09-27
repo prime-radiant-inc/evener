@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	stdbuildinfo "debug/buildinfo"
 	"errors"
 	"os"
 	"os/exec"
@@ -483,24 +484,41 @@ func TestRunMainWithoutDeployFlagsStarts(t *testing.T) {
 // captured through the deps seam and the Options it was handed are asserted, so
 // this fails if the hub stops passing the help text even though deployWiring
 // still produces it.
+//
+// Both states are checked because the text is state-dependent: this test binary
+// is not an evener build, so a flagless hub is the unwired state and must get the
+// text that leads with the flags it can act on — while -no-deploy is the state
+// whose way back is exactly the shared text's leading clause.
 func TestRunMainPassesDeployHelpToTheSSHManager(t *testing.T) {
-	_, cfg, deps := newTraceMainTestDeps(t)
-	var got sshconn.Options
-	deps.newSSHManager = func(reg *hostreg.Registry, opts sshconn.Options) *sshconn.Manager {
-		got = opts
-		return sshconn.New(reg, opts)
-	}
-	var stderr bytes.Buffer
-	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
-		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
-	}
-	if got.DeployHelp != hubDeployHelp {
-		t.Fatalf("sshconn.Options.DeployHelp = %q, want the hub's help text %q", got.DeployHelp, hubDeployHelp)
-	}
-	for _, want := range []string{"-deploy-binary", "-build-source"} {
-		if !strings.Contains(got.DeployHelp, want) {
-			t.Fatalf("the wired deploy help %q does not name %s", got.DeployHelp, want)
-		}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "unwired (this test binary is not an evener build)", want: hubDeployHelpUnwired},
+		{name: "disabled with -no-deploy", args: []string{"-no-deploy"}, want: hubDeployHelp},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cfg, deps := newTraceMainTestDeps(t)
+			var got sshconn.Options
+			deps.newSSHManager = func(reg *hostreg.Registry, opts sshconn.Options) *sshconn.Manager {
+				got = opts
+				return sshconn.New(reg, opts)
+			}
+			var stderr bytes.Buffer
+			args := append([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, tc.args...)
+			if err := runMain(args, &stderr, deps); err != nil {
+				t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+			}
+			if got.DeployHelp != tc.want {
+				t.Fatalf("sshconn.Options.DeployHelp = %q, want the hub's text for the %s state: %q", got.DeployHelp, tc.name, tc.want)
+			}
+			for _, want := range []string{"-deploy-binary", "-build-source"} {
+				if !strings.Contains(got.DeployHelp, want) {
+					t.Fatalf("the wired deploy help %q does not name %s", got.DeployHelp, want)
+				}
+			}
+		})
 	}
 }
 
@@ -676,6 +694,115 @@ func TestParseHubOptionsDefaultsDeployBinaryToOwnExecutable(t *testing.T) {
 	}
 }
 
+// TestDefaultDeploySourceHonestyWithThisTestBinarysIdentity pins the state the
+// default leaves for a hub that is not an evener build, from the one identity a
+// unit test can reach without stubbing anything: the seam at its default —
+// hubExecutable is os.Executable, so the executable under test is the binary
+// running this test. That identity is the hub package's own test binary, whose
+// main package is not the evener runtime (observed and pinned below), so the
+// default must not resolve, the deploy stays unwired, and a host that needs a
+// build is refused with the unwired state's remedy. The production side of the
+// same seam — a hub run from ./cmd/evener, the only binary that carries the hub
+// code — is TestDefaultDeploySourceIsTheHubExecutableE2E, which boots the real
+// binary and reads the deploy line it logs; together the two say the default
+// fires for the evener runtime and for nothing else.
+func TestDefaultDeploySourceHonestyWithThisTestBinarysIdentity(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	info, err := stdbuildinfo.ReadFile(exe)
+	if err != nil {
+		t.Fatalf("read buildinfo of this test binary %q: %v", exe, err)
+	}
+	t.Logf("this test binary: %s; main package %q", exe, info.Path)
+	const testBinaryMainPackage = "primeradiant.com/evener/cmd/evener-hub.test"
+	if info.Path != testBinaryMainPackage {
+		t.Fatalf("this test binary's main package = %q, want %q (the non-evener identity the default must refuse)", info.Path, testBinaryMainPackage)
+	}
+	opts, err := parseHubOptions(nil, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("parseHubOptions: %v", err)
+	}
+	if opts.deployBinary != "" || opts.deployDefault {
+		t.Fatalf("a non-evener executable resolved a deploy source: deployBinary=%q deployDefault=%v", opts.deployBinary, opts.deployDefault)
+	}
+	dw := opts.deployWiring()
+	if dw.buildBinary != nil || dw.buildSource != "" || dw.ownExecutable {
+		t.Fatalf("the unwired state still wired a deploy source: %+v", dw)
+	}
+	if dw.help != hubDeployHelpUnwired {
+		t.Fatalf("the unwired state's remedy = %q, want %q (the text whose first clause names an action this hub can take)", dw.help, hubDeployHelpUnwired)
+	}
+}
+
+// TestOwnExecutableSeamRefusalNamesTheDefaultNotAFlag pins the defaulted source's
+// refusal wording: the operator passed no flag, so a refusal must not present
+// -deploy-binary as the source they named. It names the hub's own executable
+// instead, and offers the exits a defaulted source has — -no-deploy, or naming
+// another artifact — rather than leaving a terminal host refusal that reads as if
+// the operator had chosen the file it refuses.
+func TestOwnExecutableSeamRefusalNamesTheDefaultNotAFlag(t *testing.T) {
+	exe := evenerArtifact(t)
+	stubHubExecutable(t, exe, nil)
+	opts, err := parseHubOptions(nil, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("parseHubOptions: %v", err)
+	}
+	goos, goarch := otherTarget(runtime.GOOS, runtime.GOARCH)
+	out := filepath.Join(t.TempDir(), "evener")
+	err = opts.deployWiring().buildBinary(t.Context(), goos, goarch, out)
+	if err == nil {
+		t.Fatalf("the defaulted seam accepted a %s/%s artifact for %s/%s", runtime.GOOS, runtime.GOARCH, goos, goarch)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "this hub's own executable") || !strings.Contains(msg, "default deploy source") {
+		t.Fatalf("refusal does not name the defaulted source: %v", err)
+	}
+	if strings.Contains(msg, deployBinaryFlag+" \"") {
+		t.Fatalf("refusal presents -deploy-binary as the source the operator named: %v", err)
+	}
+	if !strings.Contains(msg, noDeployFlag) {
+		t.Fatalf("refusal does not name the opt-out for the defaulted source: %v", err)
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("out was written despite the target mismatch (stat err = %v)", statErr)
+	}
+}
+
+// TestTheHubBinaryIsTheEvenerRuntime pins the packaging fact the own-executable
+// default rests on: cmd/evener-hub is a library package, not an executable, so
+// the only binary a hub can be run from is the evener runtime — production runs
+// it as `evener hub`, and make build-hub builds the runtime. That is what makes
+// the default's artifact valid: a running hub's os.Executable() is the
+// ./cmd/evener build, whose main package is exactly the evenerMainPackage the
+// artifact check requires. A `package main` landing in cmd/evener-hub would give
+// the hub a second, non-evener executable to be run from — where the default
+// would silently stop firing — so this fails then, by name, rather than leaving
+// that state for production to find.
+func TestTheHubBinaryIsTheEvenerRuntime(t *testing.T) {
+	repoRoot, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatalf("abs repo root: %v", err)
+	}
+	cmd := exec.Command("go", "list", "-f", "{{.Name}}\t{{.ImportPath}}", "./cmd/evener", "./cmd/evener-hub")
+	cmd.Dir = repoRoot
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list ./cmd/evener ./cmd/evener-hub: %v\n%s", err, out)
+	}
+	got := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(got) != 2 {
+		t.Fatalf("go list printed %d lines, want one per package:\n%s", len(got), out)
+	}
+	if want := "main\t" + evenerMainPackage; got[0] != want {
+		t.Fatalf("./cmd/evener = %q, want %q: the hub is run from the evener runtime, so the artifact check must accept its main package", got[0], want)
+	}
+	if want := "hub\tprimeradiant.com/evener/cmd/evener-hub"; got[1] != want {
+		t.Fatalf("./cmd/evener-hub = %q, want %q: a hub executable of its own would never be an accepted deploy artifact, and the own-executable default would silently not fire there", got[1], want)
+	}
+}
+
 // TestParseHubOptionsNoDeployKeepsTheDeployUnwired pins the opt-out: -no-deploy
 // wins over the own-executable default (and over the explicit flags), so no
 // deploy seam is wired even though a deployable default exists — and the
@@ -796,8 +923,11 @@ func TestParseHubOptionsExplicitDeployFlagsOverrideTheOwnExecutableDefault(t *te
 			t.Fatal("the own-executable default fired alongside an explicit -deploy-binary")
 		}
 		dw := opts.deployWiring()
-		if dw.buildBinary == nil || !dw.binaryArtifact {
-			t.Fatalf("explicit -deploy-binary wiring = %+v, want a binary artifact seam", dw)
+		if dw.buildBinary == nil {
+			t.Fatalf("explicit -deploy-binary wiring = %+v, want a build seam", dw)
+		}
+		if dw.ownExecutable {
+			t.Fatal("an explicit -deploy-binary was marked as this hub's own executable, so a dirty controller would install an artifact it cannot verify")
 		}
 	})
 
@@ -814,7 +944,7 @@ func TestParseHubOptionsExplicitDeployFlagsOverrideTheOwnExecutableDefault(t *te
 			t.Fatalf("buildSource = %q, want %q", opts.buildSource, checkout)
 		}
 		dw := opts.deployWiring()
-		if dw.buildSource != checkout || dw.buildBinary != nil || dw.binaryArtifact {
+		if dw.buildSource != checkout || dw.buildBinary != nil || dw.ownExecutable {
 			t.Fatalf("-build-source wiring = %+v, want the source seam and no binary artifact", dw)
 		}
 	})
@@ -845,9 +975,10 @@ func evenerCheckoutFixture(t *testing.T) string {
 
 // TestRunMainWiresAndLogsTheOwnExecutableDeploy pins the default at the seam the
 // hub actually hands sshconn: with no deploy flags the Options carry the
-// own-executable BuildBinary marked as a binary artifact (the fact that lets a
-// dirty controller deploy it, inside sshconn), no BuildSource, and startup logs
-// the defaulted source instead of the old no-deploy-path silence.
+// own-executable BuildBinary marked as the hub's own executable (the fact that
+// lets a dirty controller deploy it, and the only source sshconn exempts), no
+// BuildSource, and startup logs the defaulted source instead of the old
+// no-deploy-path silence.
 func TestRunMainWiresAndLogsTheOwnExecutableDeploy(t *testing.T) {
 	exe := evenerArtifact(t)
 	stubHubExecutable(t, exe, nil)
@@ -871,8 +1002,8 @@ func TestRunMainWiresAndLogsTheOwnExecutableDeploy(t *testing.T) {
 	if got.BuildSource != "" {
 		t.Fatalf("sshconn.Options.BuildSource = %q alongside the own-executable default", got.BuildSource)
 	}
-	if !got.BinaryArtifact {
-		t.Fatal("the own-executable default was not marked as a binary artifact, so a dirty controller would still refuse to install it")
+	if !got.OwnExecutable {
+		t.Fatal("the own-executable default was not marked as the hub's own executable, so a dirty controller would still refuse to install it")
 	}
 	logged := deployPathLogLines(stderr.String())
 	wantLine := "[hub] deploy path: -deploy-binary " + want + " (default: this hub's own executable)"
@@ -920,8 +1051,8 @@ func TestRunMainNoDeployWiresAndLogsNone(t *testing.T) {
 			if err := runMain(args, &stderr, deps); err != nil {
 				t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
 			}
-			if got.BuildBinary != nil || got.BuildSource != "" || got.BinaryArtifact {
-				t.Fatalf("-no-deploy still wired a deploy source: BuildBinary=%v BuildSource=%q BinaryArtifact=%v", got.BuildBinary != nil, got.BuildSource, got.BinaryArtifact)
+			if got.BuildBinary != nil || got.BuildSource != "" || got.OwnExecutable {
+				t.Fatalf("-no-deploy still wired a deploy source: BuildBinary=%v BuildSource=%q OwnExecutable=%v", got.BuildBinary != nil, got.BuildSource, got.OwnExecutable)
 			}
 			if !got.DeployDisabled {
 				t.Fatal("-no-deploy did not tell sshconn deploying is disabled, so the installer fallback could still install on a host")

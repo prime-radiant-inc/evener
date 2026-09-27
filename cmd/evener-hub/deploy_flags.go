@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"debug/buildinfo"
 	"fmt"
@@ -31,26 +32,40 @@ const (
 const evenerMainPackage = "primeradiant.com/evener/cmd/evener"
 
 // verifyDeployArtifactIdentity refuses a Go executable whose main package is not
-// the evener runtime, naming the flag. It is judged from the buildinfo the caller
-// has already read, on both reads of the artifact — where the flag is validated
-// at startup and again on the seam before the push — so a non-evener program can
-// never reach a host and replace its evener; the post-push version comparison
-// then only has to judge the one thing buildinfo cannot: whether a genuine evener
-// artifact was built from this controller's tree.
-func verifyDeployArtifactIdentity(path string, info *buildinfo.BuildInfo) error {
+// the evener runtime. subject names the artifact the way the refusal must — the
+// flag the operator passed, or the defaulted own-executable state — so the
+// message never sends an operator looking for a flag they did not type. It is
+// judged from the buildinfo the caller has already read, on both reads of the
+// artifact — where the flag is validated at startup and again on the seam before
+// the push — so a non-evener program can never reach a host and replace its
+// evener; the post-push version comparison then only has to judge the one thing
+// buildinfo cannot: whether a genuine evener artifact was built from this
+// controller's tree.
+func verifyDeployArtifactIdentity(subject string, info *buildinfo.BuildInfo) error {
 	if info.Path == evenerMainPackage {
 		return nil
 	}
-	return fmt.Errorf("%s %q is not evener: its main package is %q, want %q; supply a pre-built evener for the host's target", deployBinaryFlag, path, info.Path, evenerMainPackage)
+	return fmt.Errorf("%s is not evener: its main package is %q, want %q; supply a pre-built evener for the host's target", subject, info.Path, evenerMainPackage)
 }
 
-// hubDeployHelp is the remedy the sshconn refusals append when no deploy path is
-// configured. It names the hub's own state and flags; sshconn's default ("set
-// Options.BuildSource") names an internal field the operator cannot act on. The
-// default sentence leads because that is how a hub normally has a deploy source —
-// its own executable — so the refusals a -no-deploy or non-evener hub produces
-// tell the operator the shortest way back to a deploy.
-const hubDeployHelp = "run an evener hub without -no-deploy so it deploys its own executable, or set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path> (an evener checkout to cross-compile from)"
+// hubDeployHelp is the remedy the sshconn refusals append when the hub has no
+// deploy source or turned deploying off. It names the hub's own state and flags;
+// sshconn's default ("set Options.BuildSource") names an internal field the
+// operator cannot act on. The default sentence leads because that is how a hub
+// normally has a deploy source — its own executable — so the refusals a
+// -no-deploy hub (or a hub that refused the deploy it had) produces tell the
+// operator the shortest way back to a deploy.
+const hubDeployHelp = "run this hub without -no-deploy so it deploys its own executable, or set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path> (an evener checkout to cross-compile from)"
+
+// hubDeployHelpUnwired is hubDeployHelp for the one state whose first clause
+// names no action it can take: a hub whose own executable is not an evener build
+// (an embedder, a test binary, or any future hub executable that is not the
+// evener runtime) is already running without -no-deploy, so telling it to run
+// without -no-deploy describes where it is. The flags it can act on lead
+// instead. Only a hub that validated no source at all reaches this text — an
+// evener build resolves the own-executable default — so the sentence stating why
+// the default did not fire is true by construction.
+const hubDeployHelpUnwired = "this hub's own executable is not an evener build, so there is nothing it can deploy by default; set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path> (an evener checkout to cross-compile from)"
 
 // deployWiring is the deploy half of sshconn.Options the hub derives from its
 // flags. Constructing it is a pure function of hubOptions, so the precedence
@@ -58,10 +73,13 @@ const hubDeployHelp = "run an evener hub without -no-deploy so it deploys its ow
 type deployWiring struct {
 	buildBinary func(ctx context.Context, goos, goarch, out string) error
 	buildSource string
-	// binaryArtifact records that buildBinary is a pre-built binary artifact
-	// (the hub's own executable, or -deploy-binary) rather than a compile of
-	// buildSource. sshconn's Options.BinaryArtifact carries it.
-	binaryArtifact bool
+	// ownExecutable records that buildBinary serves this hub's own executable,
+	// adopted by the no-flag default, rather than an operator-named artifact.
+	// sshconn's Options.OwnExecutable carries it, and it is the one source the
+	// dirty-controller refusal exempts: these bytes are this hub's build by
+	// construction, where a named artifact's "<sha>-dirty" label cannot prove
+	// anything against a dirty controller.
+	ownExecutable bool
 	// disabled records -no-deploy: the hub wires no source, and sshconn must
 	// refuse every deploy path rather than only the push, so the installer
 	// fallback cannot quietly install a published artifact on a host either.
@@ -86,18 +104,44 @@ type deployWiring struct {
 // wires, so re-trimming here would be a second, divergent reading of the same
 // flag. Production always constructs hubOptions through parseHubOptions.
 func (o hubOptions) deployWiring() deployWiring {
-	dw := deployWiring{help: hubDeployHelp, disabled: o.noDeploy}
+	dw := deployWiring{help: o.deployHelp(), disabled: o.noDeploy}
 	if o.noDeploy {
 		return dw
 	}
 	switch {
 	case o.deployBinary != "":
-		dw.buildBinary = deployBinaryBuild(o.deployBinary)
-		dw.binaryArtifact = true
+		dw.buildBinary = o.deployBinarySeam()
+		dw.ownExecutable = o.deployDefault
 	case o.buildSource != "":
 		dw.buildSource = o.buildSource
 	}
 	return dw
+}
+
+// deployBinarySeam builds the BuildBinary seam for the artifact this hub
+// deploys: the operator's -deploy-binary, or the own executable the no-flag
+// default adopted. Only the defaulted seam is marked as this hub's own build,
+// because only it is one.
+func (o hubOptions) deployBinarySeam() func(ctx context.Context, goos, goarch, out string) error {
+	if o.deployDefault {
+		return ownExecutableBuild(o.deployBinary)
+	}
+	return deployBinaryBuild(o.deployBinary)
+}
+
+// deployHelp picks the remedy the refusals name for the state this hub is in.
+// After validateDeployFlags, a hub that did not set -no-deploy and validated no
+// source at all is the non-evener-executable state — the default resolves for
+// every evener build — and it is the one state the shared text cannot serve: it
+// is already running without -no-deploy, so that clause names no action it can
+// take. Every other state reads the shared text, whose default sentence is
+// exactly the action -no-deploy (and a refusal of a source that IS configured)
+// has a way back to.
+func (o hubOptions) deployHelp() string {
+	if !o.noDeploy && o.deployBinary == "" && o.buildSource == "" {
+		return hubDeployHelpUnwired
+	}
+	return hubDeployHelp
 }
 
 // deployPathLogLine is the one startup line that records the deploy source the
@@ -105,7 +149,8 @@ func (o hubOptions) deployWiring() deployWiring {
 // explicit source won, or -no-deploy disabled deploys — and which named sources
 // an opt-out overrode. It returns "" when there is no deploy source and nothing
 // to say: a non-evener executable (an embedder or test binary) keeps exactly the
-// old silence, and its refusals still name the remedy through hubDeployHelp.
+// old silence, and its refusals still name the remedy through
+// hubDeployHelpUnwired.
 func (o hubOptions) deployPathLogLine() string {
 	if o.noDeploy {
 		line := "[hub] deploy path: " + noDeployFlag + " (deploys disabled)"
@@ -179,8 +224,25 @@ func (o *hubOptions) validateDeployFlags() error {
 // no-flag case was before this default existed. That is deliberate: an embedder
 // or test binary has no evener build to offer, and wiring it would push a
 // non-evener program — or nothing — while claiming a deploy source exists. The
-// refusal such a hub produces still names the remedy (hubDeployHelp), so the
-// state is explicit rather than a silent no-op.
+// refusal such a hub produces still names the remedy (hubDeployHelpUnwired), so
+// the state is explicit rather than a silent no-op.
+//
+// "This hub's own executable" is the evener runtime by packaging, not by
+// assumption: cmd/evener-hub is a library package (package hub — no main func,
+// no executable), and ./cmd/evener links it in behind `evener hub`
+// (cmd/evener/main.go imports it as hubcmd and its command table runs it for
+// both `hub` and `serve`), so every launch path a hub has runs the evener
+// binary, and the binary `make build-hub` builds is ./cmd/evener/. os.Executable()
+// in a running hub is therefore exactly the artifact validateDeployBinary
+// accepts (buildinfo.Path == evenerMainPackage) — the test that boots a real hub
+// and reads the line this resolution logs pins it (deploy_default_e2e_test.go).
+// It is also why the default cannot fire for an embedder or a test binary: their
+// own executable is not that build, and the unwired state is explicit rather
+// than silent — the refusals name the remedy (hubDeployHelpUnwired).
+//
+// The residual the file read leaves open — the executable replaced under a
+// running hub — is documented and accepted where the default's seam reads it
+// (ownExecutableBuild).
 func (o *hubOptions) defaultDeployBinary() {
 	exe, err := hubExecutable()
 	if err != nil || strings.TrimSpace(exe) == "" {
@@ -229,38 +291,93 @@ func validateDeployBinary(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%s %q is not a readable Go executable: %w", deployBinaryFlag, path, err)
 	}
-	if err := verifyDeployArtifactIdentity(path, buildInfo); err != nil {
+	if err := verifyDeployArtifactIdentity(fmt.Sprintf("%s %q", deployBinaryFlag, path), buildInfo); err != nil {
 		return "", err
 	}
 	return abs, nil
 }
 
-// deployBinaryBuild is the Options.BuildBinary seam for an operator-supplied
-// artifact. There is nothing to compile, so the artifact is verified to target
-// goos/goarch and to be evener, then copied to out. Both facts are read from the
-// artifact's own buildinfo, never trusted from the operator, so a wrong-platform
-// artifact — or a Go program that is not evener at all — is refused before the
-// push rather than installed and caught only by the post-push identity check. A
-// stripped or non-Go file is a refusal, not a panic.
-func deployBinaryBuild(path string) func(ctx context.Context, goos, goarch, out string) error {
+// deployArtifact is the binary a deploy stages: the operator's -deploy-binary, or
+// the hub's own executable adopted by the no-flag default.
+type deployArtifact struct {
+	path string
+	// ownExecutable records that path is this hub's own executable, adopted
+	// without a flag. It changes what a refusal says — the defaulted state's own
+	// exits, never a flag the operator did not type — and it is the marker
+	// sshconn's dirty-controller exemption reads (Options.OwnExecutable).
+	ownExecutable bool
+}
+
+// subject names the artifact the way a refusal must: the flag the operator
+// passed with its path, or the defaulted own-executable state. A refusal that
+// named -deploy-binary for a source nobody named would send the operator looking
+// for a flag they never typed.
+func (a deployArtifact) subject() string {
+	if a.ownExecutable {
+		return fmt.Sprintf("this hub's own executable %q (the default deploy source)", a.path)
+	}
+	return fmt.Sprintf("%s %q", deployBinaryFlag, a.path)
+}
+
+// remedy is the clause a refusal of the defaulted artifact appends: the operator
+// passed no flag, so the exits a defaulted source has — turn the default off, or
+// name another artifact — are the ones the message must offer. An explicit
+// artifact's refusals already name their own fix and append nothing.
+func (a deployArtifact) remedy() string {
+	if a.ownExecutable {
+		return fmt.Sprintf("; %s stops deploying this hub's own executable, and %s names a different artifact", noDeployFlag, deployBinaryFlag)
+	}
+	return ""
+}
+
+// ownExecutableBuild is the Options.BuildBinary seam for the defaulted source:
+// the hub's own executable, adopted by validateDeployFlags. It is
+// deployBinaryBuild plus the marker that says these bytes are this hub's own
+// build, which sshconn's dirty-controller rule reads. The file is read at deploy
+// time, so a hub whose executable is replaced under it deploys the replacement:
+// a cross-commit replacement is caught after the push (errDeployUnstamped — the
+// host reports a version this controller did not stamp), and a replacement that
+// is itself a dirty build at this controller's own commit reports the same
+// "<sha>-dirty" and is not detectable. That residual is accepted rather than
+// closed with hash plumbing: such a hub is a locally built dirty controller, and
+// the operator who wants the running build's bytes rather than whatever is on
+// disk already has the exact artifact by passing no flag at all.
+func ownExecutableBuild(path string) func(ctx context.Context, goos, goarch, out string) error {
+	art := deployArtifact{path: path, ownExecutable: true}
 	return func(ctx context.Context, goos, goarch, out string) error {
-		return copyDeployBinary(ctx, path, goos, goarch, out)
+		return copyDeployBinary(ctx, art, goos, goarch, out)
 	}
 }
 
-// copyDeployBinary verifies and stages one operator-supplied artifact. Nothing
-// is written to out until the artifact has been read and its identity and target
-// confirmed, so a refused artifact leaves no partial file for the push to
-// install.
-func copyDeployBinary(ctx context.Context, path, goos, goarch, out string) error {
+// deployBinaryBuild is the Options.BuildBinary seam for an operator-named
+// artifact. There is nothing to compile and no claim to verify beyond the
+// artifact's own: copyDeployBinary checks it targets goos/goarch and is evener,
+// then copies it to out.
+func deployBinaryBuild(path string) func(ctx context.Context, goos, goarch, out string) error {
+	art := deployArtifact{path: path}
+	return func(ctx context.Context, goos, goarch, out string) error {
+		return copyDeployBinary(ctx, art, goos, goarch, out)
+	}
+}
+
+// copyDeployBinary verifies and stages one artifact. Nothing is written to out
+// until the artifact has been read and its identity and target confirmed, and
+// every fact is judged from the bytes of the one read — buildinfo included — so
+// a file swapped between the identity check and the copy cannot be staged under
+// another file's verdict.
+func copyDeployBinary(ctx context.Context, art deployArtifact, goos, goarch, out string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	info, err := buildinfo.ReadFile(path)
+	data, err := os.ReadFile(art.path)
 	if err != nil {
-		return fmt.Errorf("%s %q is not a readable Go executable: %w", deployBinaryFlag, path, err)
+		return fmt.Errorf("%s: %w", art.subject(), err)
 	}
-	if err := verifyDeployArtifactIdentity(path, info); err != nil {
+	info, err := buildinfo.Read(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("%s is not a readable Go executable: %w", art.subject(), err)
+	}
+	if err := verifyDeployArtifactIdentity(art.subject(), info); err != nil {
 		// Terminal, not the retryable ErrDeploy: the artifact is the operator's, so
 		// a non-evener file at that path is a permanent mistake that retrying only
 		// re-reads — the same classification the wrong-target refusal beside it uses.
@@ -273,22 +390,18 @@ func copyDeployBinary(ctx context.Context, path, goos, goarch, out string) error
 		// retrying only re-reads. The message names the flag to fix and both
 		// targets, so the remedy (rebuild for the host, or use -build-source) is
 		// visible without tracing the seam.
-		return fmt.Errorf("%w: %s %q targets %s/%s, but the host needs %s/%s; supply an evener built for %s/%s, or set %s instead",
-			sshconn.ErrDeployArtifactUnusable, deployBinaryFlag, path, gotOS, gotArch, goos, goarch, goos, goarch, buildSourceFlag)
+		return fmt.Errorf("%w: %s targets %s/%s, but the host needs %s/%s; supply an evener built for %s/%s, or set %s instead%s",
+			sshconn.ErrDeployArtifactUnusable, art.subject(), gotOS, gotArch, goos, goarch, goos, goarch, buildSourceFlag, art.remedy())
 	}
-	src, err := os.Stat(path)
+	src, err := os.Stat(art.path)
 	if err != nil {
-		return fmt.Errorf("%s %q: %w", deployBinaryFlag, path, err)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("%s %q: %w", deployBinaryFlag, path, err)
+		return fmt.Errorf("%s: %w", art.subject(), err)
 	}
 	// The host must be able to exec what it receives, so the staged copy always
 	// carries the exec bits — the artifact's own read/write bits are preserved,
 	// but a source without them cannot make the staged file unrunnable.
 	if err := os.WriteFile(out, data, src.Mode().Perm()|0o111); err != nil {
-		return fmt.Errorf("%s %q: write staged binary %q: %w", deployBinaryFlag, path, out, err)
+		return fmt.Errorf("%s: write staged binary %q: %w", art.subject(), out, err)
 	}
 	return nil
 }
