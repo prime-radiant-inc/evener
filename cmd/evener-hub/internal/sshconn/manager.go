@@ -339,7 +339,8 @@ func defaultJitter(d time.Duration) time.Duration {
 type Manager struct {
 	// ensureDeploy is the deploy pipeline's Ensure-deploy recorder (see
 	// SetEnsureDeployHook); nil leaves Ensure-triggered deploys unrecorded.
-	ensureDeploy EnsureDeployHook
+	// It is published atomically because Ensure reads it on its hot path.
+	ensureDeploy atomic.Pointer[EnsureDeployHook]
 	reg          *hostreg.Registry
 	opts         Options
 	runner       Runner
@@ -2671,16 +2672,19 @@ type EnsureDeployHook func(host hostreg.Host) (finish func(err error), err error
 // publication) is constructed after the Manager; the wiring runs before the
 // Manager serves any request. A nil hook clears it.
 func (m *Manager) SetEnsureDeployHook(hook EnsureDeployHook) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.ensureDeploy = hook
+	if hook == nil {
+		m.ensureDeploy.Store(nil)
+		return
+	}
+	m.ensureDeploy.Store(&hook)
 }
 
 // ensureDeployHook returns the wired hook, if any.
 func (m *Manager) ensureDeployHook() EnsureDeployHook {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.ensureDeploy
+	if hook := m.ensureDeploy.Load(); hook != nil {
+		return *hook
+	}
+	return nil
 }
 
 func (m *Manager) currentChannel(name string) *Channel {

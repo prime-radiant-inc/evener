@@ -333,14 +333,7 @@ func (s *Store) ConsumeTokenAndCreateOperation(req OperationCreateRequest) (Reco
 	// the record (§6 step 4: "Consume is delete in that same write, never a
 	// mark").
 	next.Tokens = dropTokenValue(next.Tokens, token.Value)
-	kept := make([]Token, 0, len(next.Tokens))
-	for _, row := range next.Tokens {
-		if row.Host == req.Host && row.expired(effectiveNow, mark) {
-			continue
-		}
-		kept = append(kept, row)
-	}
-	next.Tokens = kept
+	reapHostTokensLocked(&next, req.Host, effectiveNow, mark)
 	if now.After(mark) {
 		// The write observes the clock like every other pass, so a later rollback
 		// can never present a rewound clock as new time.
@@ -485,6 +478,22 @@ func validateOperationCreateRequest(req OperationCreateRequest) error {
 		return fmt.Errorf("%w: an operation needs its pinned (generation, incarnation id) pair", ErrInvalidRecord)
 	}
 	return nil
+}
+
+// FencingEpochValue returns the fencing epoch a record carries as the typed
+// (controller boot id, per-host op sequence) pair the store writes, so a caller
+// never has to decode the record's raw field itself. ok is false for a record
+// this store did not create (the field is empty), which a caller must treat as
+// "no fencible epoch", never as a zero one.
+func (r Record) FencingEpochValue() (GuardEpoch, bool) {
+	if len(r.FencingEpoch) == 0 {
+		return GuardEpoch{}, false
+	}
+	var epoch GuardEpoch
+	if err := json.Unmarshal(r.FencingEpoch, &epoch); err != nil {
+		return GuardEpoch{}, false
+	}
+	return epoch, epoch.BootID != "" && epoch.OpSeq != 0
 }
 
 // AppendProgress appends one timestamped progress entry to the record and

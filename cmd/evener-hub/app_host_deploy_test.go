@@ -96,6 +96,28 @@ func deployWireInfo(t *testing.T, err error) (appwire.ErrorInfo, map[string]json
 	return info, data, wire.Code
 }
 
+// deployTestConfigPath writes a machine-managed hub.toml declaring entries and
+// returns its path: the fixture every operation test's handler fingerprints.
+func deployTestConfigPath(t *testing.T, entries ...hostreg.Host) string {
+	t.Helper()
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := os.WriteFile(configPath, []byte(planTestHubTOML(entries)), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	return configPath
+}
+
+// restartProbeScript scripts the two probes a restart-follows operation makes:
+// the pre-replacement probe (beforeVersion at before) and the post-operation
+// refresh probe (afterVersion at after).
+func restartProbeScript(t *testing.T, beforeVersion, afterVersion string, before, after time.Time) func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
+	t.Helper()
+	return probeScript(t,
+		hubcore.HostRuntimeProbe{Version: beforeVersion, RunningHealthy: true, ProcessStartTime: &before},
+		hubcore.HostRuntimeProbe{Version: afterVersion, RunningHealthy: true, ProcessStartTime: &after},
+	)
+}
+
 // probeScript builds a probe seam that answers the given probes in order and
 // keeps answering the last one: the operation path probes once before the
 // replacement (step 3 for a deploy, the worker's own probe for a restart) and
@@ -122,10 +144,7 @@ func probeScript(t *testing.T, probes ...hubcore.HostRuntimeProbe) func(ctx cont
 func deployProbeScript(t *testing.T) func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
 	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	after := before.Add(time.Minute)
-	return probeScript(t,
-		hubcore.HostRuntimeProbe{Version: "v0.9.0", RunningHealthy: true, ProcessStartTime: &before},
-		hubcore.HostRuntimeProbe{Version: "v1.2.3", RunningHealthy: true, ProcessStartTime: &after},
-	)
+	return restartProbeScript(t, "v0.9.0", "v1.2.3", before, after)
 }
 
 // deploySeams is the test's control over the operation path's seams. Nil
@@ -279,12 +298,8 @@ func waitOperationState(t *testing.T, store *hostops.Store, id string, want host
 // consumed exactly once, the fresh record answers `pending`, the worker runs
 // the deploy and the verified refresh, and the record reaches `complete`.
 func TestHostDeployRunsTheFixedOrderAndCompletes(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{probe: deployProbeScript(t)})
 	token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
 
@@ -318,12 +333,8 @@ func TestHostDeployRunsTheFixedOrderAndCompletes(t *testing.T) {
 // same-key replay returns the existing record with no token validation and no
 // consumption — even when the presented token is unusable.
 func TestHostDeployDedupFirstReturnsTheRecordWithoutConsuming(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{probe: deployProbeScript(t)})
 	token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
 	first, err := m.Deploy(context.Background(), appwire.HostDeployParams{
@@ -350,12 +361,8 @@ func TestHostDeployDedupFirstReturnsTheRecordWithoutConsuming(t *testing.T) {
 // TestHostDeployRefusesTypedTokenErrors pins §11's four token refusals and
 // their class: no record, the token row where one exists untouched.
 func TestHostDeployRefusesTypedTokenErrors(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{probe: deployProbeScript(t)})
 	token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
 
@@ -407,12 +414,8 @@ func TestHostDeployRefusesTypedTokenErrors(t *testing.T) {
 // TestHostDeployRefusesRemnantOpenPastDedup pins §6 step 2's fence: the
 // remnant-open arm fires past the dedup check, and a dedup hit is unaffected.
 func TestHostDeployRefusesRemnantOpenPastDedup(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
 		probe:   deployProbeScript(t),
 		remnant: func(string) (string, bool) { return "remnant-7", true },
@@ -463,12 +466,8 @@ func TestHostDeployRefusesRemnantOpenPastDedup(t *testing.T) {
 // record id; the pre-record window and a plan-held gate render the transient
 // form with no operation reference.
 func TestHostDeployRefusesABusyGate(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{})
 	token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
 
@@ -528,12 +527,8 @@ func TestHostDeployRefusesABusyGate(t *testing.T) {
 // deploy rule: the channel gone at the gated probe is `host-detached`, the
 // token is unconsumed and no record exists.
 func TestHostDeployRefusesDetachedAndLeavesTheToken(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
 		probe: func(context.Context, hostreg.Host, *appwire.Client, appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
 			return hubcore.HostRuntimeProbe{}, fmt.Errorf("%w: no live channel", errHostDetached)
@@ -562,12 +557,8 @@ func TestHostDeployRefusesDetachedAndLeavesTheToken(t *testing.T) {
 // execution-time re-resolution: a probe result that differs from the token's
 // bindings is a typed stale-entry refusal with no record and no consumption.
 func TestHostDeployUnderGateRevalidationRefusesRunningDrift(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
 		probe: func(context.Context, hostreg.Host, *appwire.Client, appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
 			return hubcore.HostRuntimeProbe{Version: "v0.8.0", RunningHealthy: true}, nil
@@ -599,12 +590,8 @@ func TestHostDeployUnderGateRevalidationRefusesRunningDrift(t *testing.T) {
 // TestHostDeployUnderGateRevalidationRefusesFingerprintDrift pins the
 // hub.toml-fingerprint arm: a hand edit between plan and deploy refuses.
 func TestHostDeployUnderGateRevalidationRefusesFingerprintDrift(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{})
 	token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
 	edited := entry
@@ -629,12 +616,8 @@ func TestHostDeployUnderGateRevalidationRefusesFingerprintDrift(t *testing.T) {
 // scan: an operation that finishes while the probe ran refuses the deploy with
 // stale-entry (concurrent-terminal-op), token unconsumed.
 func TestHostDeployRefusesAConcurrentTerminalOperation(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	var store *hostops.Store
 	var m *hubHostManager
 	var otherID string
@@ -689,18 +672,11 @@ func TestHostRestartRunsTheOperationAndCompletes(t *testing.T) {
 	entry := deployTestHost()
 	entry.Generation = 2
 	entry.IncarnationID = "inc-new"
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	after := before.Add(time.Minute)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: probeScript(t,
-			hubcore.HostRuntimeProbe{Version: "v1.2.3", RunningHealthy: true, ProcessStartTime: &before},
-			hubcore.HostRuntimeProbe{Version: "v1.2.3", RunningHealthy: true, ProcessStartTime: &after},
-		),
+		probe: restartProbeScript(t, "v1.2.3", "v1.2.3", before, after),
 	})
 	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
 		Name: entry.Name, OperationID: "op-1", Generation: 2, IncarnationID: "inc-new",
@@ -728,18 +704,11 @@ func TestHostRestartIncarnationPair(t *testing.T) {
 	entry := deployTestHost()
 	entry.Generation = 2
 	entry.IncarnationID = "inc-new"
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	after := before.Add(time.Minute)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: probeScript(t,
-			hubcore.HostRuntimeProbe{Version: "v1.2.3", RunningHealthy: true, ProcessStartTime: &before},
-			hubcore.HostRuntimeProbe{Version: "v1.2.3", RunningHealthy: true, ProcessStartTime: &after},
-		),
+		probe: restartProbeScript(t, "v1.2.3", "v1.2.3", before, after),
 	})
 
 	// The retained record from before the update: pinned to the superseded pair.
@@ -796,12 +765,8 @@ func TestHostRestartIncarnationPair(t *testing.T) {
 // canceling the RPC's context after the record exists neither cancels the
 // worker nor stops it completing.
 func TestHostOperationWorkerSurvivesAClientDisconnect(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	entered := make(chan struct{})
 	proceed := make(chan struct{})
 	var sawCanceled atomic.Bool
@@ -837,12 +802,8 @@ func TestHostOperationWorkerSurvivesAClientDisconnect(t *testing.T) {
 // of §6's worker lifetime: controller shutdown records `interrupted` with the
 // shutdown note and releases the host's gate.
 func TestHostOperationShutdownInterruptsAndReleasesTheGate(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	entered := make(chan struct{})
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
 		deploy: func(ctx context.Context, host hostreg.Host, f sshconn.Preflight) (string, sshconn.Preflight, error) {
@@ -882,12 +843,8 @@ func TestHostOperationShutdownInterruptsAndReleasesTheGate(t *testing.T) {
 // and re-acquired for the post-operation probe; the record completes once the
 // probe proves a new process on an unverifiable revision.
 func TestHostDeployPlannedRestartPinsTheSeamDInterim(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	after := before.Add(90 * time.Second)
 	var releasePointFree atomic.Bool
@@ -895,10 +852,7 @@ func TestHostDeployPlannedRestartPinsTheSeamDInterim(t *testing.T) {
 	var m *hubHostManager
 	var store *hostops.Store
 	m, store, _ = deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: probeScript(t,
-			hubcore.HostRuntimeProbe{Version: "dev", RunningHealthy: true, ProcessStartTime: &before},
-			hubcore.HostRuntimeProbe{Version: "dev", RunningHealthy: true, ProcessStartTime: &after},
-		),
+		probe: restartProbeScript(t, "dev", "dev", before, after),
 		restart: func(context.Context, hostreg.Host, sshconn.Preflight) error {
 			if release, err := m.cfg.gate.TryAcquire(entry.Name, hostops.Holder{Kind: hostops.HolderPlan}); err != nil {
 				restartSawGateHeld.Store(true)
@@ -938,18 +892,11 @@ func TestHostDeployPlannedRestartPinsTheSeamDInterim(t *testing.T) {
 // verification rule: a post-restart probe whose process start time did not
 // change is a recorded failure, never a clean success.
 func TestHostDeployPostRefreshRecordsAnUnverifiableFailureVerbatim(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	same := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: probeScript(t,
-			hubcore.HostRuntimeProbe{Version: "dev", RunningHealthy: true, ProcessStartTime: &same},
-			hubcore.HostRuntimeProbe{Version: "dev", RunningHealthy: true, ProcessStartTime: &same},
-		),
+		probe: restartProbeScript(t, "dev", "dev", same, same),
 	})
 	token := mintDeployToken(t, store, m, entry, "dev", true, "dev")
 	response, err := m.Deploy(context.Background(), appwire.HostDeployParams{
@@ -973,12 +920,8 @@ func TestHostDeployPostRefreshRecordsAnUnverifiableFailureVerbatim(t *testing.T)
 // hold publishes the operation so a contender's refusal names the record id,
 // and the finish records the outcome.
 func TestEnsureTriggeredDeployIsADurableOperationNamingItsRecord(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	m, store, registry := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{})
 	live, ok := registry.Get(entry.Name)
 	if !ok {
@@ -1043,19 +986,12 @@ func TestEnsureTriggeredDeployRefusesWithoutAStore(t *testing.T) {
 // that reports a verifiable revision other than the deployed one is a recorded
 // failure naming the revision that was wanted, never a clean success.
 func TestHostDeployPostRefreshRefusesAVersionMismatch(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	after := before.Add(time.Minute)
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
-		probe: probeScript(t,
-			hubcore.HostRuntimeProbe{Version: "v0.9.0", RunningHealthy: true, ProcessStartTime: &before},
-			hubcore.HostRuntimeProbe{Version: "v9.9.9", RunningHealthy: true, ProcessStartTime: &after},
-		),
+		probe: restartProbeScript(t, "v0.9.0", "v9.9.9", before, after),
 	})
 	token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
 	response, err := m.Deploy(context.Background(), appwire.HostDeployParams{
@@ -1075,20 +1011,13 @@ func TestHostDeployPostRefreshRefusesAVersionMismatch(t *testing.T) {
 // healthy on the controller's revision is not restarted, and the refresh's
 // process-start-time requirement does not apply to it.
 func TestHostDeploySkipsTheRestartWhenTheHostIsCurrent(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "hub.toml")
 	entry := deployTestHost()
-	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
-		t.Fatalf("write hub.toml: %v", err)
-	}
+	configPath := deployTestConfigPath(t, entry)
 	same := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
 	counters := &deployCounters{}
 	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
 		counters: counters,
-		probe: probeScript(t,
-			hubcore.HostRuntimeProbe{Version: "v1.2.3", RunningHealthy: true, ProcessStartTime: &same},
-			hubcore.HostRuntimeProbe{Version: "v1.2.3", RunningHealthy: true, ProcessStartTime: &same},
-		),
+		probe:    restartProbeScript(t, "v1.2.3", "v1.2.3", same, same),
 	})
 	token := mintDeployToken(t, store, m, entry, "v1.2.3", true, "v1.2.3")
 	response, err := m.Deploy(context.Background(), appwire.HostDeployParams{

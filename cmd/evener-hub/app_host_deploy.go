@@ -28,9 +28,6 @@ package hub
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -284,7 +281,7 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	}
 	client, attached := m.attachedClient(entry)
 	if !attached {
-		return hostops.Record{}, m.hostDetachedRefusal(entry.Name)
+		return hostops.Record{}, hostDetachedRefusal(entry.Name)
 	}
 
 	// sequenceBefore is §6 step 3's probe-window position: any terminal
@@ -298,7 +295,7 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	var probe hubcore.HostRuntimeProbe
 	var facts sshconn.Preflight
 	if req.kind == hostops.KindDeploy {
-		epoch, err = m.persistOperationProbeEpoch(entry)
+		epoch, err = m.persistProbeEpoch(entry)
 		switch {
 		case err != nil && !hostops.RenameLanded(err):
 			return hostops.Record{}, appwire.ProbeFailed(entry.Name, appwire.ProbeFailureReadFailed, fmt.Sprintf(
@@ -308,7 +305,7 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 		}
 		probe, err = m.probeForOperation(ctx, entry, client, epoch)
 		if err != nil {
-			m.dropOperationProbeEpoch(entry.Name, epoch)
+			m.dropProbeEpoch(entry.Name, epoch)
 			return hostops.Record{}, m.operationProbeRefusal(entry.Name, err)
 		}
 		// The deployment's own target re-resolution and running-state checks
@@ -316,8 +313,8 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 		// no fresh preflight of its own, §6 step 3).
 		facts, ok = m.attachedFactsFor(entry.Name)
 		if !ok {
-			m.dropOperationProbeEpoch(entry.Name, epoch)
-			return hostops.Record{}, m.hostDetachedRefusal(entry.Name)
+			m.dropProbeEpoch(entry.Name, epoch)
+			return hostops.Record{}, hostDetachedRefusal(entry.Name)
 		}
 	}
 
@@ -325,7 +322,7 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	// resolution above and this gate.
 	if err := m.revalidateUnderGate(entry, req, probe, facts); err != nil {
 		if req.kind == hostops.KindDeploy {
-			m.dropOperationProbeEpoch(entry.Name, epoch)
+			m.dropProbeEpoch(entry.Name, epoch)
 		}
 		return hostops.Record{}, err
 	}
@@ -335,7 +332,7 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	// same check inside its locked read, so nothing can slip between.
 	if id, landed := ops.TerminalOperationSince(entry.Name, sequenceBefore); landed {
 		if req.kind == hostops.KindDeploy {
-			m.dropOperationProbeEpoch(entry.Name, epoch)
+			m.dropProbeEpoch(entry.Name, epoch)
 		}
 		return hostops.Record{}, appwire.StaleEntry(appwire.StaleEntryBindingConcurrentTerminalOp, fmt.Sprintf(
 			"host %q completed operation %q while this operation was being resolved; retry", entry.Name, id))
@@ -410,40 +407,6 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	return created, nil
 }
 
-// persistOperationProbeEpoch writes the operation's durable probe epoch (§6
-// step 3): its own atomic store write, bound to the entry's current pair, with
-// the store assigning the per-host op sequence. A hub with no operation store
-// or no boot id cannot persist one, so it refuses — a probe without a durable
-// epoch is exactly the unfenced write the spec forbids.
-func (m *hubHostManager) persistOperationProbeEpoch(entry hostreg.Host) (hostops.ProbeEpoch, error) {
-	if m.cfg.ops == nil {
-		return hostops.ProbeEpoch{}, errors.New("the host operation store is not configured")
-	}
-	if strings.TrimSpace(m.cfg.bootID) == "" {
-		return hostops.ProbeEpoch{}, errors.New("this hub carries no boot id, so no fencible probe epoch can be bound")
-	}
-	return m.cfg.ops.PersistProbeEpoch(hostops.ProbeEpochRequest{
-		Host:          entry.Name,
-		BootID:        m.cfg.bootID,
-		Generation:    entry.Generation,
-		IncarnationID: entry.IncarnationID,
-	})
-}
-
-// dropOperationProbeEpoch deletes the operation's epoch on a refusal path. The
-// match is exact, so a stale drop can never remove a row another call
-// persisted; a failure is logged, not returned — the row left behind is inert
-// and the next boot's reap deletes it.
-func (m *hubHostManager) dropOperationProbeEpoch(name string, epoch hostops.ProbeEpoch) {
-	if m.cfg.ops == nil || epoch.BootID == "" {
-		return
-	}
-	if err := m.cfg.ops.DropProbeEpoch(name, epoch.BootID, epoch.OpSeq); err != nil {
-		m.logf("host %q: the probe epoch %s/%d could not be dropped after a refused operation: %v",
-			name, epoch.BootID, epoch.OpSeq, err)
-	}
-}
-
 // probeForOperation runs the gated running probe under the caller's held gate,
 // presenting the persisted epoch. It is the plan's gate-aware primitive — the
 // same channel resolution and the same epoch, never a default — so the probe
@@ -462,7 +425,7 @@ func (m *hubHostManager) probeForOperation(ctx context.Context, entry hostreg.Ho
 func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 	switch {
 	case errors.Is(err, errHostDetached):
-		return m.hostDetachedRefusal(name)
+		return hostDetachedRefusal(name)
 	case errors.Is(err, errPlanHandlerAbsent):
 		return appwire.ProbeFailed(name, appwire.ProbeFailureReadFailed, fmt.Sprintf(
 			"host %q's hub predates the deploy pipeline's running probe, so nothing could be probed; upgrade the host's build before deploying: %v", name, err))
@@ -481,7 +444,7 @@ func (m *hubHostManager) operationProbeRefusal(name string, err error) error {
 
 // hostDetachedRefusal is §11's `host-detached`: the channel is gone, the token
 // is unconsumed and no record exists; the client Connects and re-plans.
-func (m *hubHostManager) hostDetachedRefusal(name string) error {
+func hostDetachedRefusal(name string) error {
 	return appwire.HostDetached(fmt.Sprintf(
 		"host %q has no live attached channel, so nothing was probed and nothing was consumed; connect it and re-plan", name))
 }
@@ -510,7 +473,7 @@ func (m *hubHostManager) revalidateUnderGate(entry hostreg.Host, req operationRe
 			"host %q's registration moved while this operation held its gate; retry", entry.Name))
 	}
 	if _, attached := m.attachedClient(entry); !attached {
-		return m.hostDetachedRefusal(entry.Name)
+		return hostDetachedRefusal(entry.Name)
 	}
 	fingerprint, ok := m.hostTOMLFingerprint(entry.Name)
 	if !ok {
@@ -596,12 +559,12 @@ func operationRefusal(name string, err error) error {
 			"host %q: the client operation ID %q is already used by %s operation %s on %q",
 			name, conflict.Record.ClientOperationID, conflict.Record.Kind, conflict.Record.ID, conflict.Record.Host))
 	}
+	if _, ok := errors.AsType[*hostops.StaleEntryError](err); ok {
+		return staleEntryWire(name, err)
+	}
 	if errors.Is(err, hostops.ErrTokenMissing) || errors.Is(err, hostops.ErrTokenMismatched) ||
 		errors.Is(err, hostops.ErrTokenSuperseded) || errors.Is(err, hostops.ErrTokenExpired) {
-		return operationRefusalForTokenPaths(name, err)
-	}
-	if _, ok := errors.AsType[*hostops.StaleEntryError](err); ok {
-		return operationRefusalForTokenPaths(name, err)
+		return tokenRefusalWire(name, err)
 	}
 	if concurrent, ok := errors.AsType[*hostops.ConcurrentTerminalOpError](err); ok {
 		return appwire.StaleEntry(appwire.StaleEntryBindingConcurrentTerminalOp, fmt.Sprintf(
@@ -613,25 +576,16 @@ func operationRefusal(name string, err error) error {
 	return appwire.InternalError(fmt.Sprintf("recording the operation for host %q failed: %v", name, err))
 }
 
-// operationRefusalForTokenPaths routes the refusals the consume write can
-// classify (token and stale-entry values) to their own renderers.
-func operationRefusalForTokenPaths(name string, err error) error {
-	if _, ok := errors.AsType[*hostops.StaleEntryError](err); ok {
-		return staleEntryWire(name, err)
-	}
-	return tokenRefusalWire(name, err)
-}
-
-// epochOf reads a record's fencing epoch back off its raw field. A record this
-// hub created always carries one; a record without one is rendered as the zero
-// epoch, which the probe refuses (never an unfenced write).
+// epochOf renders a record's fencing epoch for the wire. The store owns the
+// epoch's encoding (hostops.Record.FencingEpochValue); a record without a
+// usable epoch reads as the zero epoch, which the probe refuses — never an
+// unfenced write.
 func epochOf(record hostops.Record) appwire.FencingEpoch {
-	var epoch appwire.FencingEpoch
-	if len(record.FencingEpoch) == 0 {
-		return epoch
+	epoch, ok := record.FencingEpochValue()
+	if !ok {
+		return appwire.FencingEpoch{}
 	}
-	_ = json.Unmarshal(record.FencingEpoch, &epoch)
-	return epoch
+	return appwire.FencingEpoch{BootID: epoch.BootID, OpSeq: epoch.OpSeq}
 }
 
 // opWork is everything one operation's worker needs from the handler's
@@ -748,14 +702,13 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 	defer release()
 
 	id := work.record.ID
-	if canceled := m.workerCanceled(ctx); canceled {
-		m.recordInterrupted(id)
+	if m.interruptIfShuttingDown(ctx, id) {
 		return
 	}
-	if _, err := m.cfg.ops.TransitionToState(id, hostops.StateRunning, nil, "operation started"); err != nil {
+	if _, err := m.cfg.ops.TransitionToState(id, hostops.StateRunning, nil, fmt.Sprintf(
+		"%s operation for host %q started", work.record.Kind, work.entry.Name)); err != nil {
 		m.logf("operation %s: could not mark running: %v", id, err)
 	}
-	m.recordProgress(id, fmt.Sprintf("%s operation for host %q started", work.record.Kind, work.entry.Name))
 
 	restartFollows := false
 	// beforeProbe is the pre-replacement running-state the post-operation
@@ -770,8 +723,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		}, work.token.ControllerRevision)
 	}
 
-	if canceled := m.workerCanceled(ctx); canceled {
-		m.recordInterrupted(id)
+	if m.interruptIfShuttingDown(ctx, id) {
 		return
 	}
 	// The irreversible steps, each behind a fresh fingerprint check.
@@ -782,7 +734,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		}
 		facts, ok := m.attachedFactsFor(work.entry.Name)
 		if !ok {
-			m.failOperation(ctx, id, m.hostDetachedRefusal(work.entry.Name))
+			m.failOperation(ctx, id, hostDetachedRefusal(work.entry.Name))
 			return
 		}
 		m.recordProgress(id, "pushing the controller's build")
@@ -801,7 +753,6 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 				m.failOperation(ctx, id, err)
 				return
 			}
-			restartFollows = true
 		}
 	} else {
 		if err := m.checkOperationFingerprint(work.entry, work.fingerprint); err != nil {
@@ -820,7 +771,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		beforeProbe = probe
 		facts, ok := m.attachedFactsFor(work.entry.Name)
 		if !ok {
-			m.failOperation(ctx, id, m.hostDetachedRefusal(work.entry.Name))
+			m.failOperation(ctx, id, hostDetachedRefusal(work.entry.Name))
 			return
 		}
 		if err := m.runRestartStep(ctx, id, work.entry, facts); err != nil {
@@ -829,8 +780,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		}
 		restartFollows = true
 	}
-	if canceled := m.workerCanceled(ctx); canceled {
-		m.recordInterrupted(id)
+	if m.interruptIfShuttingDown(ctx, id) {
 		return
 	}
 
@@ -850,8 +800,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 				"the host did not reattach within the refresh window after the restart, so the post-operation probe could not run"))
 			return
 		}
-		if canceled := m.workerCanceled(ctx); canceled {
-			m.recordInterrupted(id)
+		if m.interruptIfShuttingDown(ctx, id) {
 			return
 		}
 		releaseAgain, err := m.acquireOperationGate(ctx, work.entry.Name)
@@ -869,15 +818,10 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 		m.failOperation(ctx, id, err)
 		return
 	}
-	if canceled := m.workerCanceled(ctx); canceled {
-		m.recordInterrupted(id)
+	if m.interruptIfShuttingDown(ctx, id) {
 		return
 	}
-	if _, err := m.cfg.ops.TransitionToState(id, hostops.StateComplete, &hostops.Result{
-		OK: true, Message: "operation complete",
-	}, "operation complete"); err != nil {
-		m.logf("operation %s: could not mark complete: %v", id, err)
-	}
+	m.recordTerminal(id, hostops.StateComplete, true, "operation complete")
 }
 
 // probeBeforeRestart runs the pre-restart running probe under the worker's held
@@ -888,7 +832,7 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 func (m *hubHostManager) probeBeforeRestart(ctx context.Context, work opWork) (hubcore.HostRuntimeProbe, error) {
 	client, attached := m.attachedClient(work.entry)
 	if !attached {
-		return hubcore.HostRuntimeProbe{}, m.hostDetachedRefusal(work.entry.Name)
+		return hubcore.HostRuntimeProbe{}, hostDetachedRefusal(work.entry.Name)
 	}
 	if m.cfg.planProbe == nil {
 		return hubcore.HostRuntimeProbe{}, errors.New("the pre-restart running probe is not wired")
@@ -1005,39 +949,62 @@ func (m *hubHostManager) awaitOperationReattach(ctx context.Context, entry hostr
 		}
 		return nil, true
 	}
-	deadline := time.Now().Add(m.refreshWindow())
-	for {
-		if client, ok := m.attachedClient(entry); ok {
-			return client, true
-		}
-		if time.Now().After(deadline) || ctx.Err() != nil {
-			return nil, false
-		}
-		select {
-		case <-ctx.Done():
-			return nil, false
-		case <-time.After(250 * time.Millisecond):
-		}
+	if !m.awaitOperationCondition(ctx, func() bool {
+		_, attached := m.attachedClient(entry)
+		return attached
+	}) {
+		return nil, false
 	}
+	client, _ := m.attachedClient(entry)
+	return client, true
 }
 
 // acquireOperationGate re-acquires the host's gate for the post-operation probe
 // after the restart's reattach window, retrying while the supervisor's own
 // reconnect or another holder briefly owns it, bounded by the refresh window.
 func (m *hubHostManager) acquireOperationGate(ctx context.Context, name string) (func(), error) {
+	var release func()
+	var lastErr error
+	acquired := m.awaitOperationCondition(ctx, func() bool {
+		attempted, err := m.cfg.gate.TryAcquire(name, hostops.Holder{Kind: hostops.HolderOperation})
+		if err != nil {
+			lastErr = err
+			return false
+		}
+		release = attempted
+		return true
+	})
+	if !acquired {
+		if lastErr == nil {
+			lastErr = errors.New("the controller's context ended before the host gate was free")
+		}
+		return nil, lastErr
+	}
+	return release, nil
+}
+
+// operationPollInterval is how often the worker re-checks a condition that the
+// manager or the supervisor resolves on its own (a reattached channel, a freed
+// gate) while it waits inside the refresh window.
+const operationPollInterval = 250 * time.Millisecond
+
+// awaitOperationCondition polls check until it reports done, the caller's
+// context ends, or the refresh window expires, and reports whether check ever
+// succeeded. It is the one wait the restart's interim reattach hand-off uses:
+// the existing reconnect owns the reattach, and the worker only waits for it.
+func (m *hubHostManager) awaitOperationCondition(ctx context.Context, check func() bool) bool {
 	deadline := time.Now().Add(m.refreshWindow())
 	for {
-		release, err := m.cfg.gate.TryAcquire(name, hostops.Holder{Kind: hostops.HolderOperation, OperationID: ""})
-		if err == nil {
-			return release, nil
+		if check() {
+			return true
 		}
 		if time.Now().After(deadline) || ctx.Err() != nil {
-			return nil, err
+			return false
 		}
 		select {
 		case <-ctx.Done():
-			return nil, err
-		case <-time.After(250 * time.Millisecond):
+			return false
+		case <-time.After(operationPollInterval):
 		}
 	}
 }
@@ -1050,18 +1017,28 @@ func (m *hubHostManager) refreshWindow() time.Duration {
 	return 4 * hostProbeTimeoutFor(m.cfg.probeTimeout)
 }
 
-// workerCanceled reports whether the controller-lifetime context ended, and
-// names the shutdown in the record.
-func (m *hubHostManager) workerCanceled(ctx context.Context) bool {
-	return ctx.Err() != nil
+// interruptIfShuttingDown reports whether the controller-lifetime context has
+// ended, and — when it has — moves the record to `interrupted` with the
+// shutdown note first. Every worker wait point runs it, so a shutdown can never
+// leave a record pending/running: the operation's outcome is unknown, and the
+// note names why.
+func (m *hubHostManager) interruptIfShuttingDown(ctx context.Context, id string) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	m.recordTerminal(id, hostops.StateInterrupted, false, operationsShutdownNote)
+	return true
 }
 
-// recordInterrupted moves the record to `interrupted` with the shutdown note.
-func (m *hubHostManager) recordInterrupted(id string) {
-	if _, err := m.cfg.ops.TransitionToState(id, hostops.StateInterrupted, &hostops.Result{
-		OK: false, Message: operationsShutdownNote,
-	}, operationsShutdownNote); err != nil {
-		m.logf("operation %s: could not record the shutdown interrupt: %v", id, err)
+// recordTerminal writes one terminal outcome — its state, result and progress
+// line — in one atomic store write, logging a failure to record it. Every
+// terminal path (worker success, worker failure, shutdown, Ensure) goes through
+// here so their records cannot drift apart.
+func (m *hubHostManager) recordTerminal(id string, state hostops.State, ok bool, message string) {
+	if _, err := m.cfg.ops.TransitionToState(id, state, &hostops.Result{
+		OK: ok, Message: message,
+	}, message); err != nil {
+		m.logf("operation %s: could not record its %s outcome %q: %v", id, state, message, err)
 	}
 }
 
@@ -1076,15 +1053,10 @@ func (m *hubHostManager) failOperation(ctx context.Context, id string, err error
 		// phase timeout (those arrive as a deadline error with this context
 		// still live) and never a client disconnect (the worker never runs under
 		// the RPC's context).
-		m.recordInterrupted(id)
+		m.recordTerminal(id, hostops.StateInterrupted, false, operationsShutdownNote)
 		return
 	}
-	message := err.Error()
-	if _, terr := m.cfg.ops.TransitionToState(id, hostops.StateFailed, &hostops.Result{
-		OK: false, Message: message,
-	}, message); terr != nil {
-		m.logf("operation %s: could not record its failure %q: %v", id, message, terr)
-	}
+	m.recordTerminal(id, hostops.StateFailed, false, err.Error())
 }
 
 // recordProgress appends one progress line; a failure to write it is logged,
@@ -1129,7 +1101,6 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (func(error), error) {
 		m.logf("host %q: the Ensure-triggered operation %s could not publish itself as the gate holder: %v",
 			host.Name, record.ID, err)
 	}
-	m.recordProgress(record.ID, "Ensure-triggered deploy started")
 	return func(err error) { m.finishEnsureDeploy(record.ID, err) }, nil
 }
 
@@ -1145,20 +1116,11 @@ func (m *hubHostManager) finishEnsureDeploy(id string, err error) {
 	}
 	switch {
 	case err == nil:
-		if _, terr := m.cfg.ops.TransitionToState(id, hostops.StateComplete, &hostops.Result{
-			OK: true, Message: "Ensure-triggered deploy complete",
-		}, "Ensure-triggered deploy complete"); terr != nil {
-			m.logf("Ensure operation %s: could not mark complete: %v", id, terr)
-		}
+		m.recordTerminal(id, hostops.StateComplete, true, "Ensure-triggered deploy complete")
 	case errors.Is(err, sshconn.ErrManagerClosed), errors.Is(err, context.Canceled):
-		m.recordInterrupted(id)
+		m.recordTerminal(id, hostops.StateInterrupted, false, operationsShutdownNote)
 	default:
-		message := err.Error()
-		if _, terr := m.cfg.ops.TransitionToState(id, hostops.StateFailed, &hostops.Result{
-			OK: false, Message: message,
-		}, message); terr != nil {
-			m.logf("Ensure operation %s: could not record its failure %q: %v", id, message, terr)
-		}
+		m.recordTerminal(id, hostops.StateFailed, false, err.Error())
 	}
 }
 
@@ -1167,9 +1129,12 @@ func (m *hubHostManager) finishEnsureDeploy(id string, err error) {
 // attempt: Ensure retries are new operations, never replays, so the ID is
 // unique rather than idempotent.
 func newEnsureOperationID() (string, error) {
-	nonce := make([]byte, 16)
-	if _, err := rand.Read(nonce); err != nil {
+	// The random half is the running probe's CSPRNG-hex drawing (probeNonce):
+	// one helper for the hub's opaque random tokens, so their entropy source
+	// cannot drift apart.
+	nonce, err := probeNonce()
+	if err != nil {
 		return "", fmt.Errorf("minting the Ensure-triggered deploy's operation id failed: %w", err)
 	}
-	return "ensure-" + hex.EncodeToString(nonce), nil
+	return "ensure-" + nonce, nil
 }
