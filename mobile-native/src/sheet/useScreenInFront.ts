@@ -18,3 +18,18 @@ export function screenInFront(
 ): boolean {
 	return navigation.isFocused() || inFront(navigation.getState(), routeKey);
 }
+
+/** Leaves the screen along with every route over it. A covered screen's own
+ * `goBack()` pops only the top route (StackRouter's POP counts from the
+ * stack's index, not from the screen that asked), so a session under its
+ * sheet would pop the sheet and stay. Does nothing once the screen is no
+ * longer in the stack at or below its index. */
+export function leaveScreen(
+	navigation: { getState(): Parameters<typeof inFront>[0]; pop(count: number): void },
+	routeKey: string,
+): void {
+	const state = navigation.getState();
+	const position = state.routes.findIndex((route) => route.key === routeKey);
+	if (position === -1 || position > state.index) return;
+	navigation.pop(state.index - position + 1);
+}

@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { renderHook } from "../renderNative.testkit";
-import { screenInFront, useScreenInFront } from "./useScreenInFront";
+import { leaveScreen, screenInFront, useScreenInFront } from "./useScreenInFront";
 
 const navigationState = vi.hoisted(() => ({
 	focused: false,
@@ -32,4 +32,16 @@ it("answers the same at the moment of a call", () => {
 	const pushed = { isFocused: () => false, getState: () => ({ index: 1, routes: [session, reader] }) };
 	expect(screenInFront(pushed, "session")).toBe(false);
 	expect(screenInFront({ isFocused: () => true, getState: () => ({ index: 0, routes: [] }) }, "session")).toBe(true);
+});
+
+it("leaves with the sheets over the screen, since a covered screen's goBack pops only its top sheet", () => {
+	const leave = (index: number, routes: { key: string; name: string }[]) => {
+		const pop = vi.fn();
+		leaveScreen({ getState: () => ({ index, routes }), pop }, "session");
+		return pop.mock.calls;
+	};
+	expect(leave(1, [reader, session])).toEqual([[1]]);
+	expect(leave(2, [reader, session, tasks])).toEqual([[2]]);
+	expect(leave(1, [reader, tasks])).toEqual([]);
+	expect(leave(0, [reader, session])).toEqual([]);
 });
