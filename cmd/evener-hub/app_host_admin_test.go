@@ -400,6 +400,11 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 	// recipient's local session state, so a peer hub must not be able to drive
 	// it by forwarding the request.
 	policy := map[string]bool{
+		// The pulse meter read is not an admin RPC: the controller's own
+		// evener/activity/read already asks each attached host for its
+		// sessions (RemoteHubSource.ReadSessionActivity), so the proxy has no
+		// reason to forward it.
+		"evener/activity/read":              false,
 		"evener/archive/set":                false,
 		"evener/auth/apiKey/clear":          true,
 		"evener/auth/apiKey/conditionalSet": true,

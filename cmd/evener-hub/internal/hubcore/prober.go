@@ -167,6 +167,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		Watches:               diagnosticsWatches(root.Evener.Diagnostics),
 		ChildWatches:          childWatches,
 		Tasks:                 root.Evener.Tasks,
+		Activity:              root.Evener.Activity,
 		Subagents:             subagents,
 		OK:                    true,
 	}
