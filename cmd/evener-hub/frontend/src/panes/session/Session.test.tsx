@@ -3786,6 +3786,14 @@ test.each(["model", "compact"])(
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      // Force stop's work runs past the click: the durable cancellation, the
+      // stop RPC (whose handler rejects the pending action), the recovery
+      // obligation, and the refresh after which the dialog closes. Awaiting
+      // the rejection alone would leave the rest to render outside act, so the
+      // test waits for the dialog to close and settles the projection reads
+      // that work started.
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await flushPendingTurnsProjectionForTests();
       await settled;
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       await user.click(screen.getByRole("button", { name: /session actions/i }));
