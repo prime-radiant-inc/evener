@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NavigationSessionSummary } from "@evener/appwire-client";
+import { QUIET_AFTER_MS, STUCK_AFTER_MS } from "@evener/appwire-client";
 import {
 	approvalRefs,
 	bandOf,
@@ -257,6 +258,68 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 		expect(workingActivity(running)).toBe("Running go test ./agent/...");
 		expect(workingActivity(row("s", { state: "active" }))).toBe("Working");
 		expect(whyLine({ row: running, state: "working" })).toEqual({ text: "Running go test ./agent/..." });
+	});
+});
+
+describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
+	const minutes = [0, 0, 0, 0, 0, 0, 0];
+	const working = row("s", { state: "active" });
+
+	it("trusts the activity read's subagent tally over the row's own children", () => {
+		// The row's children say nothing is running, but the activity read
+		// (every depth, S3's eventual replacement for the children guess) says
+		// otherwise - and activity wins.
+		const withChild = row("s", { state: "active", children: [row("c", { state: "active" })] });
+		const activity = { ref: "s", minutes, runningSubagents: 3 };
+		expect(whyLine({ row: withChild, state: "working" }, activity, 0)).toEqual({
+			text: "Waiting on 3 subagents",
+		});
+		expect(whyLine({ row: working, state: "working" }, { ...activity, runningSubagents: 1 }, 0)).toEqual({
+			text: "Waiting on 1 subagent",
+		});
+	});
+
+	it("reads Quiet after three minutes and May be stuck (in the attention tone) after ten", () => {
+		const quiet = { ref: "s", minutes, runningSubagents: 0, quietForMs: QUIET_AFTER_MS };
+		expect(whyLine({ row: working, state: "working" }, quiet, 0)).toEqual({ text: "Quiet 3m" });
+		const stuck = { ref: "s", minutes, runningSubagents: 0, quietForMs: STUCK_AFTER_MS };
+		expect(whyLine({ row: working, state: "working" }, stuck, 0)).toEqual({
+			text: "May be stuck · no updates for 10m",
+			tone: "attention",
+		});
+	});
+
+	it("counts time since the read toward the quiet duration shown", () => {
+		const activity = { ref: "s", minutes, runningSubagents: 0, quietForMs: 2 * 60_000 };
+		expect(whyLine({ row: working, state: "working" }, activity, 60_000)).toEqual({ text: "Quiet 3m" });
+	});
+
+	it("never shows a stuck or quiet label while subagents are running (Jesse's ruling)", () => {
+		const activity = { ref: "s", minutes, runningSubagents: 1, quietForMs: 15 * 60_000 };
+		expect(whyLine({ row: working, state: "working" }, activity, 0)).toEqual({ text: "Waiting on 1 subagent" });
+	});
+
+	it("falls back to the command, or Working, once activity says nothing is running and it isn't quiet yet", () => {
+		const activity = { ref: "s", minutes, runningSubagents: 0 };
+		expect(whyLine({ row: working, state: "working" }, activity, 0)).toEqual({ text: "Working" });
+		const running = row("s", {
+			state: "active",
+			running_jobs: [{ job_id: "j", job_type: "shell", status: "running", command: "go test ./agent/..." }],
+		});
+		expect(whyLine({ row: running, state: "working" }, activity, 0)).toEqual({ text: "Running go test ./agent/..." });
+	});
+
+	it("never lets a stale children-based subagent guess override an activity read of zero", () => {
+		// Without S5 data, this row would read "Waiting on 1 subagent" (children
+		// count) - once a real read says zero are running, that must win.
+		const withChild = row("s", { state: "active", children: [row("c", { state: "active" })] });
+		const activity = { ref: "s", minutes, runningSubagents: 0 };
+		expect(whyLine({ row: withChild, state: "working" }, activity, 0)).toEqual({ text: "Working" });
+	});
+
+	it("keeps the pre-S5 fallback (the row's own children and jobs) when there is no activity read at all", () => {
+		const withChild = row("s", { state: "active", children: [row("c", { state: "active" })] });
+		expect(whyLine({ row: withChild, state: "working" })).toEqual({ text: "Waiting on 1 subagent" });
 	});
 });
 
