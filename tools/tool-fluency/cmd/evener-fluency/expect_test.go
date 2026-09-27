@@ -25,11 +25,13 @@ func TestEvaluateExpectationsReportsFailedChecks(t *testing.T) {
 }
 
 // TestRunCheckStopsAHungCommand: a check that never exits fails as a timeout
-// soon after its deadline, so one bad check cannot stall a run.
+// soon after its deadline, so one bad check cannot stall a run. The command
+// is a chain, as many task checks are: bash cannot exec its last command in
+// place, so a child outlives the kill and keeps the output pipe open.
 func TestRunCheckStopsAHungCommand(t *testing.T) {
 	t.Parallel()
 	start := time.Now()
-	ok, detail := runCheck(t.TempDir(), checkSpec{Name: "hang", Run: "sleep 30"}, 200*time.Millisecond)
+	ok, detail := runCheck(t.TempDir(), checkSpec{Name: "hang", Run: "sleep 30; true"}, 200*time.Millisecond)
 	if ok || !strings.Contains(detail, "timed out") {
 		t.Fatalf("runCheck = %v, %q; want a timeout failure", ok, detail)
 	}
