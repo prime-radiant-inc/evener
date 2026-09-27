@@ -115,8 +115,7 @@ const pinnedFirst = (projects: readonly NavigationProjectSummary[]) =>
 	[...projects].sort((a, b) => Number(!!b.favorite) - Number(!!a.favorite));
 const onHost = (hostId: string | null) => (row: NavigationSessionSummary) =>
 	hostId === null || sessionGroupHostId(row) === hostId;
-const tiersLoaded = (pages: ProjectPages | undefined): pages is ProjectPages =>
-	!!pages && pages.current.loaded && pages.recent.loaded && pages.archived.loaded;
+const activeTiersLoaded = (pages: ProjectPages) => pages.current.loaded && pages.recent.loaded;
 
 export function projectTreeItems(input: ProjectTreeInput): ProjectTreeItem[] {
 	const out: ProjectTreeItem[] = [];
@@ -126,10 +125,10 @@ export function projectTreeItems(input: ProjectTreeInput): ProjectTreeItem[] {
 	return out;
 }
 
-/** One placeholder row until all three tiers have been read once. */
-function placeholder(out: ProjectTreeItem[], prefix: string, pages: ProjectPages | undefined, depth: number): void {
-	const failed =
-		!!pages && [pages.current, pages.recent, pages.archived].some((page) => !page.loaded && page.error !== null);
+/** One placeholder row while the tiers a project's rows wait on haven't been
+ * read once: "failed" when one of those first reads failed. */
+function placeholder(out: ProjectTreeItem[], prefix: string, tiers: readonly TierPage[], depth: number): void {
+	const failed = tiers.some((page) => !page.loaded && page.error !== null);
 	out.push(failed ? { kind: "failed", key: `${prefix}/failed`, depth } : { kind: "loading", key: `${prefix}/loading`, depth });
 }
 
@@ -198,10 +197,11 @@ function projectFirst(
 	out.push({ kind: "project", key: prefix, fold, depth: 0, project, liveCount: projectLiveCount(project), folded });
 	if (folded) return;
 	const pages = input.pages.get(project.key);
-	if (!tiersLoaded(pages)) {
-		placeholder(out, prefix, pages, 1);
+	if (!pages || !activeTiersLoaded(pages)) {
+		placeholder(out, prefix, pages ? [pages.current, pages.recent] : [], 1);
 		return;
 	}
+	const shownBefore = out.length;
 	const hosts = branchByHost ? orderedHosts(activeRows(pages).map(sessionGroupHostId), input.sources) : [];
 	if (hosts.length > 1)
 		for (const host of hosts) {
@@ -213,7 +213,10 @@ function projectFirst(
 		}
 	else activeItems(out, prefix, pages, null, 1);
 	moreItems(out, prefix, pages, project.key, 1);
-	archivedItems(out, input, fold, pages, null, 1, project.key, true);
+	// Today and Recent never wait on the archived page; a project with nothing
+	// to show until it lands shows the archived page's placeholder.
+	if (pages.archived.loaded) archivedItems(out, input, fold, pages, null, 1, project.key, true);
+	else if (out.length === shownBefore) placeholder(out, prefix, [pages.archived], 1);
 }
 
 /** Where a project's copies sit when hosts come first: every host that owns
@@ -265,13 +268,16 @@ function hostFirst(out: ProjectTreeItem[], input: ProjectTreeInput): void {
 				folded: copyFolded,
 			});
 			if (copyFolded) continue;
-			if (!tiersLoaded(pages)) {
-				placeholder(out, prefix, pages, 2);
+			if (!pages || !activeTiersLoaded(pages)) {
+				placeholder(out, prefix, pages ? [pages.current, pages.recent] : [], 2);
 				continue;
 			}
+			const shownBefore = out.length;
 			activeItems(out, prefix, pages, host.id, 2);
 			if (canonical === host.id) moreItems(out, prefix, pages, project.key, 2);
-			archivedItems(out, input, copyFold, pages, host.id, 2, project.key, archivedCarrier === host.id);
+			if (pages.archived.loaded)
+				archivedItems(out, input, copyFold, pages, host.id, 2, project.key, archivedCarrier === host.id);
+			else if (out.length === shownBefore) placeholder(out, prefix, [pages.archived], 2);
 		}
 	}
 }

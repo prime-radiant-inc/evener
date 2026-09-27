@@ -17,6 +17,7 @@ import {
 	projectTreeItems,
 	type ProjectsView,
 	projectsView,
+	type TierPage,
 } from "./projectTree";
 
 const source = (id: string, label = id, online = true): Source => ({
@@ -304,6 +305,35 @@ describe("test runs and archived", () => {
 		expect(
 			outline(items({ section: "test-runs", projects: [project("hub-test-env")], pages: new Map([["hub-test-env", pages([session("local:t")])]]) })),
 		).toEqual(["project hub-test-env", "  Today", "  local:t"]);
+	});
+
+	it("show Today and Recent while the archived page is still loading, or failed", () => {
+		const withArchive = (archived: TierPage) =>
+			new Map([["evener", { ...pages([session("local:a")], [session("local:b")]), archived }]]);
+		for (const [archived, placeholder] of [
+			[{ rows: [], remaining: 0, loaded: false, error: null }, "loading"],
+			[{ rows: [], remaining: 0, loaded: false, error: "offline" }, "failed"],
+		] as const) {
+			expect(outline(items({ organizeBy: "project-host", projects: [evener], pages: withArchive(archived) }))).toEqual([
+				"project evener · 3 live",
+				"  Today",
+				"  local:a",
+				"  Recent",
+				"  local:b",
+			]);
+			// A copy with no rows of its own to show yet waits on the archived page.
+			expect(outline(items({ projects: [evener], pages: withArchive(archived) }))).toEqual([
+				"host this host",
+				"  project evener · 3 live",
+				"    Today",
+				"    local:a",
+				"    Recent",
+				"    local:b",
+				"host paradise-park",
+				"  project evener",
+				`    ${placeholder}`,
+			]);
+		}
 	});
 
 	it("show one placeholder until a project's pages land, and say so when a first read fails", () => {
