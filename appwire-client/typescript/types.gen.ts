@@ -852,6 +852,13 @@ export interface EvenerThread {
    * carries it.
    */
   lastTurnEndedAt?: number;
+  /**
+   * Subagents tallies a live root session's whole delegate tree (S3), read
+   * from the root's delegate controller when the row is listed. It rides
+   * thread/list root rows only, when the tree has at least one subagent, and
+   * never a thread/read snapshot: no notification announces its changes.
+   */
+  subagents?: SubagentTally;
 }
 
 export interface EvenerToolInfo {
@@ -2728,6 +2735,12 @@ export interface SpawnSlashCatalogParams {
 export interface SpawnSlashCatalogResponse {
   commands: CommandDescriptor[];
   skills?: EvenerSkillInfo[];
+}
+
+export interface SubagentTally {
+  running: number;
+  failed: number;
+  done: number;
 }
 
 export interface TaskAggregate {

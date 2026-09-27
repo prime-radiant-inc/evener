@@ -1569,7 +1569,49 @@ func (s *Session) recoverClientMutationFailures(publishEnvironment bool) error {
 			record.Failure == nil {
 			continue
 		}
-		if err := s.recordClientMutationFailure(id, pending, *record.Failure, publishEnvironment); err != nil {
+		// At restore no execution runs: the failed start's entries form its
+		// own execution, which ends failed. Inside a running turn they join it.
+		// A failure whose entries are all recorded has nothing to add, but a
+		// crash may have left its execution open without a completion: that is
+		// completed failed here, not left for a later restart to call
+		// interrupted.
+		items := s.clientMutationTranscriptItems(id, pending.TurnID)
+		idle := s.attachedTranscript().RunningTurnID() == ""
+		own := idle && (!items.User || !items.Failure)
+		// Only peeked here: taking it now, before the record below runs,
+		// would drop it for good if that record fails — closeAbandonedExecutions
+		// can then never close the turn. It is taken below, once the record
+		// that lets this branch complete the turn has actually succeeded.
+		wasOpen := idle && s.hasOpenPendingExecution(pending.TurnID)
+		if own {
+			s.beginExecution(pending.TurnID)
+		}
+		err := s.recordClientMutationFailure(id, pending, *record.Failure, publishEnvironment)
+		switch {
+		case own && err == nil:
+			s.completeExecution(schema.TurnFailed)
+			if wasOpen {
+				// This turn also crashed open once before (closeCrashedExecutions
+				// left the marker at restore) and is completed above, now that
+				// the record it completes over has actually landed:
+				// closeAbandonedExecutions must not find the marker still here
+				// and complete it a second time, interrupted, over the failed
+				// completion just written.
+				s.takeOpenPendingExecution(pending.TurnID)
+			}
+		case wasOpen && err == nil:
+			s.takeOpenPendingExecution(pending.TurnID)
+			rec, completeErr := s.completeTurn(pending.TurnID, schema.TurnFailed)
+			if completeErr != nil {
+				err = fmt.Errorf("complete recovered failed turn: %w", completeErr)
+			}
+			if rec.Recorded {
+				s.mu.Lock()
+				s.clientMutationAppendedTurn = true // restore re-reads what it appended
+				s.mu.Unlock()
+			}
+		}
+		if err != nil {
 			return err
 		}
 	}

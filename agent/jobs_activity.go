@@ -1230,7 +1230,7 @@ func projectStableActivityDelegate(snapshot activitySessionSnapshot, row delegat
 	if row.lastOutcome != nil {
 		delegate.Outcome = string(row.lastOutcome.Status)
 		delegate.Reason = truncateActivityText(row.lastOutcome.Reason, activityMaxDelegateProseRunes)
-		delegate.Terminal = !row.currentRunOpen
+		delegate.Terminal = delegateRunTerminal(row.lastOutcome, row.currentRunOpen)
 		if !row.lastOutcome.EndedAt.IsZero() {
 			delegate.RunEndedAt = row.lastOutcome.EndedAt.UTC().Format(time.RFC3339Nano)
 		}
