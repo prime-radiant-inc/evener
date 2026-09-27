@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -414,6 +415,19 @@ func buildEvener(outDir string) (string, error) {
 	return bin, nil
 }
 
+// decodeProbe decodes one probe manifest strictly: an unknown field is an
+// error, so a misspelled field cannot silently turn a check off. An empty
+// manifest decodes to an empty probe, which loadProbes reports as missing its id.
+func decodeProbe(data []byte) (probeFile, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var probe probeFile
+	if err := dec.Decode(&probe); err != nil && !errors.Is(err, io.EOF) {
+		return probeFile{}, err
+	}
+	return probe, nil
+}
+
 func loadProbes(dir, filter string) ([]probeFile, error) {
 	var probes []probeFile
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -427,8 +441,8 @@ func loadProbes(dir, filter string) ([]probeFile, error) {
 		if err != nil {
 			return err
 		}
-		var probe probeFile
-		if err := yaml.Unmarshal(data, &probe); err != nil {
+		probe, err := decodeProbe(data)
+		if err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
 		if probe.ID == "" {

@@ -1,16 +1,14 @@
 package main
 
 import (
-	"bytes"
 	"go/format"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // promptEvalTasksDir holds the prompt rewrite's evaluation tasks.
@@ -43,21 +41,8 @@ func TestPromptEvalTasks(t *testing.T) {
 			if strings.TrimSpace(probe.Prompt) == "" {
 				t.Fatal("empty prompt")
 			}
-			// An agent that formats the tree must leave the fixture as it was,
-			// or a check such as "tests unchanged" fails for a reason that has
-			// nothing to do with the prompt.
-			for _, files := range []map[string]string{probe.Fixture.Files, probe.Fixture.Untracked} {
-				for name, content := range files {
-					if !strings.HasSuffix(name, ".go") {
-						continue
-					}
-					formatted, err := format.Source([]byte(content))
-					if err != nil {
-						t.Errorf("fixture %s does not parse: %v", name, err)
-					} else if string(formatted) != content {
-						t.Errorf("fixture %s is not gofmt-formatted", name)
-					}
-				}
+			if bad := unformattedFixtureFiles(probe.Fixture); len(bad) > 0 {
+				t.Errorf("fixture Go files %v do not parse or are not gofmt-formatted, so an agent that formats the tree would change them", bad)
 			}
 			for _, c := range probe.Expect.Checks {
 				if c.Name == "" || c.Run == "" {
@@ -101,13 +86,69 @@ func decodeTaskStrict(t *testing.T, path string) probeFile {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	var probe probeFile
-	if err := dec.Decode(&probe); err != nil {
+	probe, err := decodeProbe(data)
+	if err != nil {
 		t.Fatalf("decode %s: %v", path, err)
 	}
 	return probe
+}
+
+// unformattedFixtureFiles names the fixture's Go files that do not parse or
+// that gofmt would change. An agent that formats the tree must leave the
+// fixture as it was, or a check such as "tests unchanged" fails for a reason
+// that has nothing to do with the prompt.
+func unformattedFixtureFiles(fixture fixtureSpec) []string {
+	var bad []string
+	for _, files := range []map[string]string{fixture.Files, fixture.Untracked} {
+		for name, content := range files {
+			if !strings.HasSuffix(name, ".go") {
+				continue
+			}
+			if formatted, err := format.Source([]byte(content)); err != nil || string(formatted) != content {
+				bad = append(bad, name)
+			}
+		}
+	}
+	slices.Sort(bad)
+	return bad
+}
+
+func TestUnformattedFixtureFilesFindsSpacesAndParseErrors(t *testing.T) {
+	t.Parallel()
+	got := unformattedFixtureFiles(fixtureSpec{
+		Files: map[string]string{
+			"spaces.go": "package a\n\nfunc F() {\n    return\n}\n",
+			"broken.go": "package b\n\nfunc {\n",
+			"fine.go":   "package c\n",
+			"notes.txt": "  not Go\n",
+		},
+		Untracked: map[string]string{"loose.go": "package d\n\nfunc   G() {}\n"},
+	})
+	if want := []string{"broken.go", "loose.go", "spaces.go"}; !slices.Equal(got, want) {
+		t.Errorf("unformattedFixtureFiles = %v, want %v", got, want)
+	}
+}
+
+// TestShippedProbesDecodeStrictly: the runner refuses unknown fields, so every
+// probe manifest in the repository has to decode strictly.
+func TestShippedProbesDecodeStrictly(t *testing.T) {
+	t.Parallel()
+	probes, err := loadProbes(filepath.Join("..", "..", "probes"), "all")
+	if err != nil || len(probes) == 0 {
+		t.Fatalf("loadProbes = %d probes, %v", len(probes), err)
+	}
+}
+
+// TestLoadProbesRefusesAMisspelledField: the runner decodes every manifest
+// strictly, including the copies a lab runs from, so a misspelled field
+// cannot silently turn a check off.
+func TestLoadProbesRefusesAMisspelledField(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "task.yaml"), "schema: 1\nid: prose.x\nprompt: p\nexpect:\n  allow_tool_error: true\n")
+	if _, err := loadProbes(dir, "all"); err == nil || !strings.Contains(err.Error(), "allow_tool_error") {
+		t.Fatalf("loadProbes = %v, want an error naming the misspelled field", err)
+	}
 }
 
 func failingChecks(workDir string, checks []checkSpec) []string {
