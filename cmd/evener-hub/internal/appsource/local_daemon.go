@@ -94,6 +94,11 @@ type LocalDaemonEntry struct {
 	// and the fallback takes over.
 	Capabilities      appwire.ThreadCapabilities
 	CapabilitiesKnown bool
+	// Subagents mirrors hubcore.LiveEntry.Subagents: the root's whole-tree
+	// subagent tally (S3). threadFromEntry carries it into
+	// appwire.EvenerThread.Subagents when the tree has a subagent. A read-only
+	// alias has none.
+	Subagents appwire.SubagentTally
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -1148,6 +1153,9 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
 		},
 		Status: appwire.ThreadStatus{Type: status},
+	}
+	if tally := item.Subagents; !item.ReadOnlyAlias && tally != (appwire.SubagentTally{}) {
+		thread.Evener.Subagents = &tally
 	}
 	if status == appwire.ThreadStatusRestartRequired {
 		// A restart-required session cannot act, but its saved notes are still
