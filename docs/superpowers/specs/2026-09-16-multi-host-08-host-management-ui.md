@@ -753,9 +753,13 @@ the archive is re-imported by design, never silently. Field conversion is a carr
 same snake_case names as the file's TOML tables for every stored field (`name`,
 `ssh`, `user`, `evener_path`, `config_path`, `addr`, `roots`, `key_path`), so
 the migration is field-for-field — `address`/`keyPath` are the AppWire
-spellings and were never the sidecar's, and a hand-authored file using them is
-refused loudly at validation (the entry has no `ssh`), never silently
-discarded: the operator converts it. A collision with a name `hub.toml`
+spellings and were never the sidecar's. A hand-authored file using them is not
+the shipped shape, and the two spellings fail differently: `address` without
+`ssh` is refused loudly at validation (the entry has no `ssh`), while an
+unrecognized entry key such as `keyPath` is not schema at all — the reader
+ignores it, so that value does not migrate, and a file carrying it must be
+converted (absolute `key_path`) before migration if the key path matters. The
+shipped writer never emitted either spelling. A collision with a name `hub.toml`
 already declares has two arms, neither of which loses data silently: a
 field-for-field identical duplicate (normalized values equal — the comparison
 is over values, never serialized bytes, since the sidecar is JSON and the file
@@ -1209,17 +1213,20 @@ phase (deploy-pipeline spec §5) with the lock released across the teardowns and
 persist the committed receipt plus real remnant (verifying the claim's attempt
 token still owns the marker); (4) if the swap itself fails, compensate fully
 before responding: restore the prior `hub.toml` bytes from the stash (atomic
-rename) only while the file still holds the bytes the mutation last wrote it —
-the compensation keeps the whole-document content hash of every write the
-mutation itself makes (the step-(2) staged write, then the step-(3) `swapStarted`
-flip) and compares the current file against the latest of those hashes, so the
-mutation's own marker writes never read as external edits, and only a document
-carrying something the mutation did not write makes the restore skip itself: the
-mutation adopts the re-read file and reconciles the runtime to the reconciled
-set instead, reporting the swap failure with the typed `concurrent-edit`
-discriminator naming the expected and observed hashes, and the edit is never
-erased — while in the restore case the runtime reverts to the previous set;
-then report exactly which step failed. Compensation runs in persisted phases, tracked in the
+rename) only while the file still holds the bytes the mutation last wrote it and
+no foreign edit was observed at any write the mutation made — the compensation
+keeps the whole-document content hash of every write the mutation itself makes
+(the step-(2) staged write, then the step-(3) `swapStarted` flip), and the flip
+itself compares the file it reads against the hash the staged write left: a
+mismatch is an external edit in the staged-write→flip window, which the flip
+carries through while recording the preimage it actually wrote from, so the
+compensation adopts the re-read file and reconciles the runtime to the
+reconciled set instead of restoring over it, reporting the swap failure with
+the typed `concurrent-edit` discriminator naming the expected and observed
+hashes — the mutation's own marker writes never read as external edits, and no
+window's edit is erased (the staged-write→flip window is detected at the flip
+and named the same way as the others) — while in the restore case the runtime
+reverts to the previous set; then report exactly which step failed. Compensation runs in persisted phases, tracked in the
 store-side compensation record (deploy-pipeline spec §9 pins the phase field)
 — which the `hub.toml` restore cannot touch — never on `hub.toml`
 staged-receipt marker: the committer persists that record with the stash
