@@ -59,9 +59,8 @@ import { bandHeaderText, BoardRow, BoardRows, FoldChevron, type RowContext } fro
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { foldedSections, organizeByPreference, seenMarkers } from "./nativeBoardMemory";
-import { organizationFree } from "./organizationCheck";
 import { PinnedSection, useCategoryFolds } from "./PinnedSections";
-import { PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
+import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
 import {
 	expandedProjectKeys,
 	grouping,
@@ -72,9 +71,9 @@ import {
 	projectTreeItems,
 	SECTION_FOLDS,
 } from "./projectTree";
-import { projectName, ProjectTreeRow } from "./ProjectTreeRow";
+import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTreeRow";
 import { PulseMeter } from "./PulseMeter";
-import { type BoardOrganization, useBoardOrganization } from "./useBoardOrganization";
+import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
 import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
@@ -91,10 +90,6 @@ const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 };
 /** A row that reads a section's next page: a tier's sessions or the catalog's projects. */
 type MoreItem = Extract<ProjectTreeItem, { kind: "more" | "moreProjects" }>;
-const ORGANIZE_BY_LABELS: Record<OrganizeBy, string> = {
-	"project-host": "Project, then host",
-	"host-project": "Host, then project",
-};
 
 /** Home (spec 7.1): every live session ordered by who needs you, then the
  * user's pinned categories, projects and archive. */
@@ -306,8 +301,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// Projects (or Hosts), Test runs and Archived, after the pinned categories.
 	const hostSources = sources ?? [];
 	const projectGrouping = grouping(hostSources, organizeBy);
-	const flipOrganizeBy = () => {
-		const next = organizeBy === "project-host" ? "host-project" : "project-host";
+	const chooseOrganizeBy = (next: OrganizeBy) => {
 		organizeByPreference(hubId).set(next);
 		setOrganizeBy(next);
 	};
@@ -535,7 +529,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 									onToggle={() => setFolded(SECTION_FOLDS[section].fold, !folded)}
 									organize={
 										section === "projects" && projectGrouping !== "flat"
-											? { by: organizeBy, onFlip: flipOrganizeBy }
+											? { by: organizeBy, onChange: chooseOrganizeBy }
 											: null
 									}
 								/>
@@ -548,14 +542,6 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			<BoardToolbar state={state} fatal={fatal} newSessionDisabled={!connected} onNewSession={newSession} />
 		</View>
 	);
-}
-
-/** Whether an organization change can go out now: the Board's binding
- * still holds and the journal is free. Checked again at every press, since
- * the connection or the journal may have moved while a sheet or an alert was
- * up. */
-function organizationOpen(organization: BoardOrganization): boolean {
-	return organization.isCurrent() && !!organization.actions && organizationFree(organization.actions.getSnapshot());
 }
 
 /** Rename and Delete for the pinned categories (spec 7.1), through the
@@ -658,13 +644,6 @@ function openProjectMenu(
 		...actions.map((action) => ({ text: PROJECT_MENU_LABELS[action], onPress: () => act(action) })),
 		{ text: "Cancel", style: "cancel" },
 	]);
-}
-
-/** The organization journal holds a change to this project, on its way or unresolved. */
-function journalHoldsProject(organization: BoardOrganization, projectKey: string): boolean {
-	const operation = organization.state?.recovery?.operation;
-	if (operation?.kind === "favorite") return operation.params.id === projectKey;
-	return operation?.kind === "archive" && operation.params.kind === "project" && operation.params.id === projectKey;
 }
 
 /** The drafts saved on this device for a hub's sessions, or none when the
@@ -1050,80 +1029,6 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 			</Text>
 			<FoldChevron folded={folded} />
 		</Pressable>
-	);
-}
-
-/** A project section's header (spec 7.1), in the band headers' style with a
- * fold chevron. The Projects header carries Organize by at its trailing edge
- * once the hub has a second host. */
-function ProjectSectionHeader({
-	title,
-	label,
-	folded,
-	onToggle,
-	organize,
-}: {
-	title: string;
-	label: string;
-	folded: boolean;
-	onToggle: () => void;
-	organize: { by: OrganizeBy; onFlip: () => void } | null;
-}) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	const other: OrganizeBy = organize?.by === "project-host" ? "host-project" : "project-host";
-	return (
-		<View style={{ flexDirection: "row", alignItems: "center" }}>
-			<Pressable
-				accessibilityRole="button"
-				accessibilityLabel={label}
-				accessibilityState={{ expanded: !folded }}
-				onPress={onToggle}
-				style={({ pressed }) => ({
-					flex: 1,
-					minHeight: 44,
-					paddingLeft: 16,
-					paddingRight: organize ? 8 : 16,
-					flexDirection: "row",
-					alignItems: "center",
-					columnGap: 8,
-					backgroundColor: pressed ? palette.pressed : palette.page,
-				})}
-			>
-				<Text
-					testID="project-section-header"
-					allowFontScaling={Platform.OS !== "ios"}
-					numberOfLines={1}
-					style={{ ...bandHeaderText(palette, scale), flexShrink: 1 }}
-				>
-					{title}
-				</Text>
-				<View style={{ flex: 1, alignItems: "flex-end" }}>
-					<FoldChevron folded={folded} />
-				</View>
-			</Pressable>
-			{organize ? (
-				<Pressable
-					accessibilityRole="button"
-					accessibilityLabel={`Organize by: ${ORGANIZE_BY_LABELS[organize.by]}`}
-					accessibilityHint={`Changes to ${ORGANIZE_BY_LABELS[other]}`}
-					onPress={organize.onFlip}
-					style={({ pressed }) => ({
-						minHeight: 44,
-						paddingHorizontal: 16,
-						flexDirection: "row",
-						alignItems: "center",
-						columnGap: 4,
-						opacity: pressed ? 0.6 : 1,
-					})}
-				>
-					<SymbolView name="arrow.left.arrow.right" size={13 * scale} tintColor={palette.accentInk} />
-					<Text allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 13 * scale, color: palette.accentInk }}>
-						{ORGANIZE_BY_LABELS[organize.by]}
-					</Text>
-				</Pressable>
-			) : null}
-		</View>
 	);
 }
 

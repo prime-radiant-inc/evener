@@ -98,3 +98,10 @@ export function useBoardOrganization(hubId: string): BoardOrganization {
 		isCurrent,
 	};
 }
+
+/** Whether an organization change can go out now: the binding still holds
+ * and the journal is free. A menu checks again at every press, since the
+ * connection or the journal may have moved while a sheet or an alert was up. */
+export function organizationOpen(organization: BoardOrganization): boolean {
+	return organization.isCurrent() && !!organization.actions && organizationFree(organization.actions.getSnapshot());
+}
