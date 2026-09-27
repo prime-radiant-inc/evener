@@ -234,6 +234,11 @@ function hub(
 							reject(new Error("request timed out"));
 							return;
 						}
+						if (method === "evener/archive/set") {
+							const change = params as { id: string; archived: boolean };
+							for (const catalog of Object.values(shape.catalogs ?? {}))
+								for (const project of catalog ?? []) if (project.key === change.id) project.is_archived = change.archived;
+						}
 						if (method === "evener/favorite/set") {
 							const change = params as { id: string; favorited: boolean };
 							for (const catalog of Object.values(shape.catalogs ?? {}))
@@ -437,7 +442,7 @@ function confirmDelete(tree: ReactTestRenderer, name: string) {
 it("shows chips for the sections that have sessions, and each pinned category inline with its sessions", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	connect(id, hub(fleet).client, "ready");
+	connect(id, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
 	expect(chipLabels(tree)).toEqual(["Live, 5 sessions, 2 need you", "Mine, 3 sessions", "Projects, 4 projects"]);
@@ -1863,5 +1868,43 @@ it("reads the catalog's next page once its more projects row is at least half on
 	await settle();
 	expect(projectCatalogPages(fake)).toEqual([0, 50]);
 	expect(projectRows(tree, "project-69")).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("archives a project from its long-press menu, dimming it until the hub confirms", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, { holdChanges: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	act(() => projectRows(tree, "evener")[0].props.onLongPress());
+	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
+	expect(sheet.options).toEqual(["Pin to top", "Archive project", "Cancel"]);
+	act(() => choose(1));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{
+			method: "evener/archive/set",
+			params: { kind: "project", id: "evener", workingDir: "/home/jesse/git/evener", archived: true },
+		},
+	]);
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
+	expect(menuLabels(tree)).toEqual([]);
+	fake.release();
+	await settle();
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
+	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
+	expect(fake.mutations).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("drops the Projects chip once the projects catalog loads empty, as the section goes", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	// The manifest counts 4 projects, but the catalog comes back empty.
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	expect(sectionHeaders(tree)).toEqual([]);
+	expect(chipLabels(tree)).toEqual(["Live, 5 sessions, 2 need you", "Mine, 3 sessions"]);
 	act(() => tree.unmount());
 });

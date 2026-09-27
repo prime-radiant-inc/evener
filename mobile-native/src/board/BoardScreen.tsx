@@ -244,6 +244,10 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// Every category keeps its section; only the chips hide empty ones.
 	const pins = snapshot.pins.rows;
 	const projects = manifest?.catalogs.projects.count ?? 0;
+	// Projects shows while the manifest counts projects, until its catalog
+	// loads empty; the chip follows the section.
+	const projectsShown =
+		projects > 0 && !(projectSections.projects.view.loaded && projectSections.projects.view.projects.length === 0);
 	const archived = manifest?.catalogs.archived_projects.count ?? 0;
 	const chips: ChipProps[] = [];
 	const liveChipCount = manifest?.sections.live.count ?? liveTotal;
@@ -269,7 +273,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 				scrollTo(`pin:${pin.id}`);
 			},
 		});
-	if (projects > 0)
+	if (projectsShown)
 		chips.push({
 			key: "projects",
 			name: "Projects",
@@ -325,9 +329,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		projects: {
 			title: projectGrouping === "host-project" ? "HOSTS" : "PROJECTS",
 			label: projectGrouping === "host-project" ? "Hosts" : "Projects",
-			shown:
-				projects > 0 &&
-				!(projectSections.projects.view.loaded && projectSections.projects.view.projects.length === 0),
+			shown: projectsShown,
 		},
 		"test-runs": { title: `Test runs · ${testRuns}`, label: sectionLabel("Test runs", testRuns, "project"), shown: testRuns > 0 },
 		archived: { title: `ARCHIVED · ${archived}`, label: sectionLabel("Archived", archived, "project"), shown: archived > 0 },
