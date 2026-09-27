@@ -2513,17 +2513,12 @@ export interface SearchResult {
   age: string;
   ref: string;
   /**
-   * AskPending and ApprovalPending mirror a live session's navigation-row
-   * flags (computed from the same hubcore.LiveEntry.PendingAsk /
-   * PendingEscalation navigation rows read, not a second derivation), so a
-   * session found by search shows the same needs-you mark it shows in the
-   * rail (#2567). Both are always false/absent for a past (ended) result: a
-   * session that has ended has no live ask or escalation left to be
-   * pending. Additive: an older client reading a payload without these
-   * keys sees no information, the same as an absent field elsewhere.
-   * camelCase, not the navigation summary's snake_case: SearchResult lives
-   * in package appwire, which tagliatelle's json-casing override (.golangci.yml)
-   * forces to camelCase, unlike hubapi where NavigationSessionSummary lives.
+   * AskPending and ApprovalPending carry the flags a navigation row does: a
+   * live session is waiting on an answer to an ask_user question, or on a
+   * person to allow or deny a sandbox escalation (M7). State keeps its real
+   * value ("active" while an escalation blocks mid-turn), so a pending
+   * approval shows only in ApprovalPending. A past (ended) result carries
+   * neither. Additive: an older hub omits both, decoding as false.
    */
   askPending?: boolean;
   approvalPending?: boolean;
