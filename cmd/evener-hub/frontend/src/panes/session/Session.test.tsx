@@ -11,6 +11,7 @@ import type {
 } from "@evener/appwire-client";
 import { AppwireClient, makeTranscriptDisplayConfig, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -2602,6 +2603,24 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
   try {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+    // The hydrated session dispatches the seeded steer at once, and the steer
+    // stays held while the daemon has not answered: the test holds that
+    // answer, then gives it to make the departure.
+    const steerSent = deferred<() => void>();
+    fake.on("turn/steer", (params) => {
+      return new Promise((resolve) => {
+        steerSent.resolve(() =>
+          resolve({
+            receipt: {
+              clientMutationId: params.clientMutationId,
+              disposition: "applied",
+              threadId: "thr_ref_a",
+              projectionState: "reflected",
+            },
+          }),
+        );
+      });
+    });
 
     render(
       <ClientProvider client={fake}>
@@ -2613,13 +2632,11 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
     });
     await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
     expect(Math.max(...epochs)).toBe(1); // arrival bumped it exactly once
-    // A departure: Stop-cancel the ref's unattempted rows through the same
-    // real write every Stop path makes (PendingChips.test.tsx's shape).
+    // A departure: the daemon acknowledges the steer, and settling that
+    // receipt removes the row.
+    const answerSteer = await act(() => steerSent.promise);
     await act(async () => {
-      const storage = new MutationOutboxIndexedDB();
-      await storage.cancelUnattempted("ref_a");
-      storage.close();
-      await refreshPendingTurnsProjection("ref_a");
+      answerSteer();
       await flushPendingTurnsProjectionForTests();
     });
     await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());
