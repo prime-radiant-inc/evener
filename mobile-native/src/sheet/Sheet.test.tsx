@@ -68,9 +68,7 @@ describe("closing a sheet (spec 6)", () => {
 		expect(alertRequests).toEqual([]);
 
 		// A stale `finishing` flag would still read true here, bypassing the
-		// prompt for a swipe that never called finish(). It must not: the flag
-		// is a one-shot bypass for the finish that set it, not a standing
-		// license to skip every later dismissal on the same mounted sheet.
+		// prompt for a swipe that never called finish().
 		act(() => guard.onPrevent?.({ data: { action: swipeDown } }));
 		expect(alertRequests).toHaveLength(1);
 
