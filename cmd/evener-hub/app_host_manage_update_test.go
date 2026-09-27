@@ -491,9 +491,12 @@ func TestHostManageUpdateRollsBackWhenTheLivePhaseFails(t *testing.T) {
 	}
 
 	// The live registry, the store row, and the file all still describe the old
-	// entry.
+	// entry — identity included: compensation must never re-apply a captured
+	// entry through the registry's minting methods (that would mint a fresh
+	// generation/incarnation here while the restored file kept the old triple).
 	live, ok := f.hosts.Get("side")
-	if !ok || !live.Equal(before) || live.Generation != before.Generation {
+	if !ok || !live.Equal(before) || live.Generation != before.Generation ||
+		live.IncarnationID != before.IncarnationID || live.PresenceEpoch != before.PresenceEpoch {
 		t.Fatalf("live entry after the failed edit = %+v, want %+v", live, before)
 	}
 	stored := f.m.cfg.store.snapshot()

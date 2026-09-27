@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
@@ -432,8 +433,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	hostEntries := hostRegistryEntries(cfg)
 	// Config loading already validated these through hostreg.New; build the
 	// real registry used by the SSH manager and handle the (impossible) error
-	// like any other startup failure.
-	hostRegistry, err := hostreg.New(hostEntries)
+	// like any other startup failure. The file's retained high-water marks seed
+	// the counters first, so a hub.toml host with no persisted record is minted
+	// above every mark the file carries (registry spec 08 §1) rather than below
+	// a mark another name retained.
+	hostRegistry, err := hostreg.NewSeeded(hostEntries, hostHighWaterMarks(cfg))
 	if err != nil {
 		_ = hubListener.Close()
 		return fmt.Errorf("validate hosts: %w", err)
@@ -558,6 +562,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteHostRegistry:   hostRegistry,
 		RemoteHostSSHManager: sshManager,
 		RemoteHostConfigPath: opts.configPath,
+		RemoteHostOpsStore:   openHostOpsStore(hubStateRoot, stderr),
 		RemoteHostClient: func(ctx context.Context, host string) (*appwire.Client, error) {
 			ch, err := sshManager.Ensure(ctx, host)
 			if err != nil {
@@ -761,6 +766,23 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	return nil
 }
 
+// openHostOpsStore opens the hub's operation store — the file the
+// host-management surface mirrors per-host boundary records into — beside the
+// hub's other durable stores. A store that cannot be opened (a corrupt file,
+// an unreadable one) is logged and left unwired rather than refusing startup:
+// the mirror is a copy of hub.toml's machine records and never their authority,
+// and the custody-first quarantine a corrupt store file earns belongs to the
+// crash-fencing slice. Until then this is the interim posture: the hub serves,
+// and host mutations commit without mirroring.
+func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
+	store, err := hostops.Open(hostops.StorePath(stateRoot))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store not opened, host boundary records will not be mirrored: %v\n", err)
+		return nil
+	}
+	return store
+}
+
 // hostRegistryEntries maps the validated [[hosts]] entries onto the host
 // registry's values. runMain hands the result to hostreg.New (the registry
 // sshconn consumes) and to the web config's RemoteHosts (one source per host),
@@ -768,9 +790,17 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // either consumer sees it: every field belongs here, including the host's
 // non-default locations (EvenerPath, ConfigPath, Addr) that keep the SSH
 // manager attaching with the host's own hub.toml and probing its own listener.
+//
+// It is also where the file's machine records join the entry: the persisted
+// (generation, incarnation id, presence epoch) triple is restored onto the
+// entry, so the boot load keeps the identity the file recorded instead of
+// minting a new one (registry spec 08 §15: "The boot load restores persisted
+// generations before the store serves any request"). A file that carries no
+// record leaves the zeros hostreg.New fills at load.
 func hostRegistryEntries(cfg Config) []hostreg.Host {
 	entries := make([]hostreg.Host, 0, len(cfg.Hosts))
 	for _, h := range cfg.Hosts {
+		generation, incarnation, epoch := resolveHostIdentity(h.Name, cfg.HostRecords, cfg.Generations)
 		entries = append(entries, hostreg.Host{
 			Name:       h.Name,
 			SSH:        h.SSH,
@@ -780,6 +810,11 @@ func hostRegistryEntries(cfg Config) []hostreg.Host {
 			Addr:       h.Addr,
 			Roots:      h.Roots,
 			KeyPath:    h.KeyPath,
+			// Generation, IncarnationID and PresenceEpoch: the persisted
+			// identity, when the file carries one.
+			Generation:    generation,
+			IncarnationID: incarnation,
+			PresenceEpoch: epoch,
 		})
 	}
 	return entries
