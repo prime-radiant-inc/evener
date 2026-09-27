@@ -40,7 +40,10 @@ import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
 import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
-import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
+import {
+  flushPendingTurnsProjectionForTests,
+  outlastEmptyFlushRoundForTests,
+} from "./queue/testing/flushPendingTurnsProjection";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
 
@@ -3777,11 +3780,8 @@ test.each<[string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]>
   const flushing = flushPendingTurnsProjectionForTests().then(() => {
     flushResolved = true;
   });
-  // Give the flush every chance to finish early: more macrotask hops than its
-  // own settle round takes. If the press is tracked, it cannot return here.
-  for (let hop = 0; hop < 5; hop += 1) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
+  // If the press is tracked, the flush cannot return here.
+  await outlastEmptyFlushRoundForTests();
   expect(flushResolved).toBe(false);
 
   storage.release();

@@ -48,3 +48,13 @@ export async function flushPendingTurnsProjectionForTests(): Promise<void> {
   }
   throw new Error("pending-turns projection never settled");
 }
+
+// Gives a flush every chance to finish early: more macrotask hops than one of
+// its rounds takes to return when it finds nothing outstanding. So a flush
+// still pending afterwards is waiting on work registered with
+// trackProjectionWork.
+export async function outlastEmptyFlushRoundForTests(): Promise<void> {
+  for (let hop = 0; hop < 5; hop += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+}
