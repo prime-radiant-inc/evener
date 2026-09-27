@@ -176,7 +176,23 @@ const THREAD: Thread = {
 };
 
 const fake = new FakeClient("ready");
-fake.on("thread/read", () => ({ thread: THREAD }) satisfies ThreadReadResponse);
+// The read's identity must match the history/updated notifications
+// appendLargeTurns emits below (same bootGeneration/epoch/incarnation): a
+// mismatch reads as a newer generation and invalidates the thread, so the
+// appended turns would never merge (kata read this the hard way once).
+const BOOT_GENERATION = "1";
+const EPOCH = 1;
+const INCARNATION = "inc-1";
+fake.on(
+  "thread/read",
+  () =>
+    ({
+      thread: THREAD,
+      bootGeneration: BOOT_GENERATION,
+      epoch: EPOCH,
+      snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT },
+    }) satisfies ThreadReadResponse,
+);
 // SessionChrome/Composer idle-time reads; scripted so nothing rejects into an
 // unhandledrejection and pollutes the page-error probe.
 fake.on("evener/tasks/list", () => ({ data: [] }));
@@ -377,9 +393,9 @@ async function appendLargeTurns(): Promise<TranscriptScrollMetrics> {
       params: {
         threadId: THREAD_ID,
         ref: REF,
-        bootGeneration: "1",
-        epoch: 1,
-        snapshot: { incarnation: "inc-1", length: 1 },
+        bootGeneration: BOOT_GENERATION,
+        epoch: EPOCH,
+        snapshot: { incarnation: INCARNATION, length: INITIAL_TURN_COUNT + k + 1 },
         turns: [{ id, itemsView: "full", status: "completed" }],
         items: turn.items?.map((item) => ({ ...item, turnId: id })) ?? [],
       },

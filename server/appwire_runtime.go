@@ -368,10 +368,8 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			s.appPendingStableTurnID = ""
 			s.appDeferredTerminalNotifications = nil
 		}
+		s.appActivity.observe(event.Kind)
 		projected := s.appProjector.Project(event)
-		for _, item := range projected {
-			s.appActivity.observe(item.Method, item.Params)
-		}
 		threadID, ref := s.appRootIdentityLocked()
 		if threadID == "" {
 			threadID = event.SessionID
@@ -475,7 +473,6 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		// order the session emitted the event.
 		if history != nil {
 			for _, change := range history.overlayEvent(event) {
-				s.appActivity.observe(change.Method, change.Params)
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: change.Method, params: change.Params})
 			}
 		}
@@ -652,11 +649,9 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		// once appDescendants holds it, from this commit on), so every entry a
 		// subscriber's read does not cover is announced to it.
 		history := s.ensureDescendantHistory(ownerThreadID, threadID)
-		projected := projection.projector.Project(event)
 		// A descendant's motion is its root's too: the meter shows the whole tree.
-		for _, item := range projected {
-			s.appActivity.observe(item.Method, item.Params)
-		}
+		s.appActivity.observe(event.Kind)
+		projected := projection.projector.Project(event)
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
 		for _, item := range projected {
@@ -723,7 +718,6 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		s.mu.Unlock()
 		if history != nil {
 			for _, change := range history.overlayEvent(event) {
-				s.appActivity.observe(change.Method, change.Params)
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: change.Method, params: change.Params})
 			}
 			// A delegate whose session closed releases its history: the

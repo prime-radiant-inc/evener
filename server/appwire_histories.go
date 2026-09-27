@@ -156,7 +156,6 @@ func (s *Server) descendantBootGenerationLocked() string {
 // identity replacement may still be finishing a projection, and what it
 // publishes describes a thread nobody reads any more.
 func (s *Server) commitHistoryNotification(threadID, method string, params any) {
-	s.appActivity.observe(method, params)
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
 		s.mu.RLock()
 		target, served := s.historyTargetLocked(threadID)

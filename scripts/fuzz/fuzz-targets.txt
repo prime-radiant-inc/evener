@@ -187,6 +187,7 @@ native:.:./frontmatter:FuzzParse
 native:.:./hubapi:FuzzParseRef
 native:.:./rendezvous:FuzzList
 native:.:./internal/appserver:FuzzHandleMessage
+native:.:./server:FuzzDecodeSubscriptionAdmissionParams
 native:.:./internal/appprojector:FuzzProject
 native:.:./internal/apptranscript:FuzzProjectTurn
 native:.:./internal/apptranscript:FuzzDerivedTotalsMatchesIndividualScans

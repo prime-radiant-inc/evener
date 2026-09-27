@@ -492,17 +492,8 @@ func NewServer(cfg ServerConfig) *Server {
 			Version:    buildinfo.Version(),
 			SourceID:   "local",
 			SubscriptionAdmissionResolver: func(msg appwire.Message) (string, bool) {
-				if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
-					return "", false
-				}
-				var params appwire.ThreadReadParams
-				if msg.Request.Method == appwire.MethodThreadUnsubscribe {
-					var unsubscribe appwire.ThreadUnsubscribeParams
-					if json.Unmarshal(msg.Request.Params, &unsubscribe) != nil {
-						return "", false
-					}
-					params.ThreadID, params.Ref = unsubscribe.ThreadID, unsubscribe.Ref
-				} else if json.Unmarshal(msg.Request.Params, &params) != nil || !params.Subscribe {
+				params, ok := decodeSubscriptionAdmissionParams(msg)
+				if !ok {
 					return "", false
 				}
 				threadID, target := runtime.appReadTarget(params)
@@ -547,6 +538,32 @@ func NewServer(cfg ServerConfig) *Server {
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)
 	return s
+}
+
+// decodeSubscriptionAdmissionParams decodes msg's thread/read or
+// thread/unsubscribe request params into a ThreadReadParams, the wire decode
+// step of SubscriptionAdmissionResolver above: ok is false for a message the
+// resolver does not apply to (not a request, or a method other than the two
+// it admits) or params it cannot decode. Pulled out as its own function so
+// the decode of client-supplied JSON, not the admission semantics that need a
+// live Server to resolve against, is what a fuzz target exercises
+// (FuzzDecodeSubscriptionAdmissionParams).
+func decodeSubscriptionAdmissionParams(msg appwire.Message) (params appwire.ThreadReadParams, ok bool) {
+	if msg.Request == nil || (msg.Request.Method != appwire.MethodThreadRead && msg.Request.Method != appwire.MethodThreadUnsubscribe) {
+		return appwire.ThreadReadParams{}, false
+	}
+	if msg.Request.Method == appwire.MethodThreadUnsubscribe {
+		var unsubscribe appwire.ThreadUnsubscribeParams
+		if json.Unmarshal(msg.Request.Params, &unsubscribe) != nil {
+			return appwire.ThreadReadParams{}, false
+		}
+		params.ThreadID, params.Ref = unsubscribe.ThreadID, unsubscribe.Ref
+		return params, true
+	}
+	if json.Unmarshal(msg.Request.Params, &params) != nil || !params.Subscribe {
+		return appwire.ThreadReadParams{}, false
+	}
+	return params, true
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
 )
 
@@ -30,12 +31,14 @@ type activitySlot struct {
 // every in-process descendant feed it, so a coordinator's meter shows its whole
 // tree (Jesse's ruling for S5).
 //
-// RecordAppEvent and RecordDescendantAppEvent feed it the overlay changes they
-// publish, inside their projection commits, and history's own publish hook
-// (commitHistoryNotification) feeds it a recorded item or turn finishing; the
-// thread list reads it. Those three sources run under different locks (the
-// event commits hold Server.mu, the history publish hook does not), so the
-// meter guards its own state with its own mutex rather than Server.mu. It is
+// RecordAppEvent and RecordDescendantAppEvent feed it the raw session event
+// each call projects, inside their projection commits, and the thread list
+// reads it; all three hold Server.mu. Observing the event itself, rather than
+// the AppWire notification(s) it turns into, keeps the meter working the same
+// way whether or not the thread has a transcript-backed history yet (phase 3's
+// history/overlay notifications only exist once one is attached), and it is
+// simpler: one session event is exactly one unit of transcript motion,
+// independent of how many wire notifications a reader is told about it. It is
 // not part of threadEnvelope: the envelope samples a fixed set of events and
 // never a delta (facetsByEvent in thread_envelope.go), and the meter has to
 // see every delta.
@@ -65,33 +68,26 @@ func (m *activityMeter) restart() {
 	m.lastMotion = m.clock()
 }
 
-// observe records one published AppWire notification. A recorded item or turn
-// finishing (history/updated) and a tool writing output (overlay/delta on the
-// output field) each count toward the current bar ("transcript items and tool
-// output events", spec 16.4). An item starting (overlay/upserted) and a
-// message or reasoning summary streaming (overlay/delta on the text field)
-// prove the tree is moving without finishing anything, so they only advance
-// the quiet clock. Everything else (status, queue, usage, task, goal, job and
-// retry notifications, overlay/reset, overlay/end) is bookkeeping and moves
-// neither: a retry loop that makes no progress should read May be stuck.
-func (m *activityMeter) observe(method string, params any) {
-	switch method {
-	case appwire.NotifyHistoryUpdated:
+// observe records one session event. An item finishing (a user message, an
+// assistant message, a tool call, or a delivered communicate) and a tool
+// writing output each count toward the current bar ("transcript items and
+// tool output events", spec 16.4). A turn or item starting and a message or
+// reasoning summary streaming prove the tree is moving without finishing
+// anything, so they only advance the quiet clock. Everything else (session
+// lifecycle, environment, retries, tasks, goals, notes, jobs, delegates,
+// notices and every other bookkeeping event) moves neither: a retry loop that
+// makes no progress should read May be stuck.
+func (m *activityMeter) observe(kind events.EventKind) {
+	switch kind {
+	case events.EventUserInput, events.EventAssistantTextEnd, events.EventToolCallEnd,
+		events.EventCommunicate, events.EventToolCallOutputDelta:
 		at := m.clock()
 		m.mu.Lock()
 		m.count(at)
 		m.touch(at)
 		m.mu.Unlock()
-	case appwire.NotifyOverlayDelta:
-		delta, ok := params.(appwire.OverlayDeltaParams)
-		at := m.clock()
-		m.mu.Lock()
-		if ok && delta.Field == appwire.OverlayDeltaOutput {
-			m.count(at)
-		}
-		m.touch(at)
-		m.mu.Unlock()
-	case appwire.NotifyOverlayUpserted:
+	case events.EventExecutionStarted, events.EventToolCallStart, events.EventAssistantTextStart,
+		events.EventAssistantTextDelta, events.EventReasoningSummaryDelta:
 		m.mu.Lock()
 		m.touch(m.clock())
 		m.mu.Unlock()
