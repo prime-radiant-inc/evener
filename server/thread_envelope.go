@@ -80,9 +80,6 @@ type threadEnvelope struct {
 	WorkMillis            int64
 	ActiveTurnStartedAt   int64
 	FailedToolCalls       *int
-	// AskPending and PendingQuestion are one facet sampled from one read:
-	// AskPending is PendingQuestion's presence (S1b).
-	AskPending            bool
 	PendingQuestion       *appwire.PendingQuestion
 	PendingEscalations    []appwire.SandboxEscalationRequested
 	ReasoningEffort       string
@@ -131,7 +128,7 @@ type ThreadEnvelopeSource interface {
 	WorkMetrics() (workMillis int64, usage *appwire.EvenerUsage, activeTurnStartedAt int64)
 	FailedToolCalls() (count int, measured bool)
 	// PendingQuestion is the first question of the session's pending ask, nil
-	// while none waits. The envelope's AskPending is its presence.
+	// while none waits. The thread's AskPending is its presence.
 	PendingQuestion() *appwire.PendingQuestion
 	PendingEscalations() []appwire.SandboxEscalationRequested
 	ReasoningInfo() (effort string, levels []string, supportsReasoning bool)
@@ -379,10 +376,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		}
 	}
 	if facets&facetAsk != 0 {
-		// One call answers both: a question waits exactly when the session
-		// names one, so the flag and the question cannot disagree.
 		next.PendingQuestion = src.PendingQuestion()
-		next.AskPending = next.PendingQuestion != nil
 	}
 	if facets&facetEscalations != 0 {
 		next.PendingEscalations = src.PendingEscalations()
@@ -516,7 +510,6 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notes
 		e.FailedToolCalls = next.FailedToolCalls
 	}
 	if facets&facetAsk != 0 {
-		e.AskPending = next.AskPending
 		e.PendingQuestion = next.PendingQuestion
 	}
 	if facets&facetEscalations != 0 {

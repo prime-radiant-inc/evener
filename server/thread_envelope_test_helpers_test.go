@@ -57,7 +57,7 @@ func (s *stubThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
 
 // PendingQuestion reports question when a test set one. A test that sets only
 // askPending gets a question with no text, which is still a pending ask: the
-// envelope's AskPending is the question's presence.
+// thread's AskPending is the question's presence.
 func (s *stubThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
 	if s.question != nil {
 		return s.question

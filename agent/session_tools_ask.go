@@ -78,7 +78,7 @@ func (s *Session) HasPendingAsk() bool {
 // PendingQuestion is the first question of the session's pending ask, which
 // its Needs you row names (S1b), cut to the wire's bounds; nil while no
 // question waits. It reads the pending set in one hold of s.mu, so the
-// envelope's AskPending, which is its presence, can never disagree with it.
+// question and its count describe the same moment.
 func (s *Session) PendingQuestion() *appwire.PendingQuestion {
 	s.mu.Lock()
 	defer s.mu.Unlock()
