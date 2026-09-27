@@ -332,6 +332,28 @@ func TestRawArgs_Stream_InvalidUTF8(t *testing.T) {
 	}
 }
 
+func TestRawArgs_Stream_ToolCallDeltaPreservesRawBytes(t *testing.T) {
+	args := `{"path":"` + "\xff" + `file.txt"}`
+	srv, _ := server(t, http.StatusOK, rawArgsStreamSSE(args))
+	res := liveRes(srv, func(c *registry.Caps) { c.FinishReasonMap = map[string]string{"tool_calls": "tool_calls"} })
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []byte
+	for ev := range s.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventToolCallDelta && ev.ToolCall != nil {
+			got = append(got, ev.ToolCall.Arguments...)
+		}
+	}
+	if !bytes.Equal(got, []byte(args)) {
+		t.Fatalf("ToolCallDelta Arguments = %q (% x), want %q (% x)", got, got, args, []byte(args))
+	}
+}
+
 // TestRawArgs_Stream_NonCanonicalJSON asserts that non-canonical valid JSON
 // in streamed tool-call arguments survives the decode byte-identical.
 //

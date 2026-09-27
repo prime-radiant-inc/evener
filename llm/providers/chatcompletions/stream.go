@@ -289,6 +289,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					})
 				}
 				if tc.Function.Arguments != "" {
+					deltaArgs := []byte(tc.Function.Arguments)
 					// Capture the arguments fragment as raw bytes from the
 					// chunk's raw data (ev.Data) to preserve bytes that
 					// json.Unmarshal into string would coerce to U+FFFD.
@@ -297,6 +298,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					if rawFrag, ok := captureChunkArgsRaw(ev.Data, tcArrIdx); ok && rawFrag != nil {
 						if content, cerr := protocolhttp.RawStringContent(rawFrag); cerr == nil {
 							state.args.Write(content)
+							deltaArgs = content
 						} else {
 							state.args.WriteString(tc.Function.Arguments)
 						}
@@ -308,7 +310,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 						ToolCall: &llm.ToolCallData{
 							ID:        state.id,
 							Name:      state.name,
-							Arguments: json.RawMessage(tc.Function.Arguments),
+							Arguments: deltaArgs,
 							Type:      "function",
 						},
 					})
