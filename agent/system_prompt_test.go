@@ -171,7 +171,9 @@ func buildDelegateWithRoleOverrideSession(t *testing.T) *Session {
 // TestSystemPromptRendersForEveryConfiguration renders each configuration
 // through the session's own render path. text/template reports a bad field or
 // method reference only in a branch it executes, so this is the check that
-// every body of the template still runs.
+// every body of the template still runs. A section that fails to execute
+// renders empty without a warning and records an "ERROR:" source instead, so
+// the source log is checked too.
 func TestSystemPromptRendersForEveryConfiguration(t *testing.T) {
 	t.Parallel()
 	for _, cfg := range promptConfigs() {
@@ -184,6 +186,11 @@ func TestSystemPromptRendersForEveryConfiguration(t *testing.T) {
 			}
 			if strings.TrimSpace(prompt) == "" {
 				t.Fatal("rendered an empty prompt")
+			}
+			for _, source := range s.promptSourceLog {
+				if strings.HasPrefix(source.Label, "ERROR:") {
+					t.Errorf("section failed to render: %s", source.Label)
+				}
 			}
 		})
 	}
@@ -315,4 +322,115 @@ func TestSystemPromptCarriesEachOperatorInputOnce(t *testing.T) {
 			}
 		}
 	}
+}
+
+// promptValue is one value the session computes for its prompt, named for the
+// failure message.
+type promptValue struct {
+	name  string
+	value string
+}
+
+// TestSystemPromptRendersTheSessionData proves each value the session computes
+// for its prompt reaches the rendered prompt. These are Go-generated facts and
+// contract names the model acts on (the working directory, the sandbox, a
+// skill's catalog name, an agent_type for delegate), not prose; operator-written
+// content is TestSystemPromptCarriesEachOperatorInputOnce's job. Each
+// configuration lists the values its template branches render, per the branch
+// map in the collapse plan. An empty value is skipped: TestPromptDataTypedInputs
+// pins which values each configuration has.
+func TestSystemPromptRendersTheSessionData(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		build  func(t *testing.T) *Session
+		values func(d promptData) []promptValue
+	}{
+		{
+			name: "root interactive anthropic",
+			build: func(t *testing.T) *Session {
+				s := buildRootInteractiveAnthropicSession(t)
+				// No prose uses this name, so finding it proves the agents list
+				// rendered it.
+				s.pluginAgents["fixture-agent-6d2b"] = plugin.Agent{Name: "fixture-agent-6d2b", Description: "Fixture agent."}
+				return s
+			},
+			values: func(d promptData) []promptValue {
+				values := append(environmentPromptValues(d),
+					promptValue{"git branch", d.GitBranch},
+					promptValue{"workspace tree", d.WorkspaceTree},
+					promptValue{"build info", d.BuildInfo},
+				)
+				for _, title := range d.GitRecentCommitTitles {
+					values = append(values, promptValue{"recent commit", title})
+				}
+				for _, skill := range d.Skills {
+					values = append(values,
+						promptValue{"skill catalog name", skill.CatalogNameOrName()},
+						promptValue{"skill directory", skill.Dir},
+					)
+				}
+				for _, agent := range d.AvailableAgents {
+					values = append(values,
+						promptValue{"agent name", agent.Name},
+						promptValue{"agent default tools", agent.DefaultTools},
+					)
+					for _, task := range agent.TaskList {
+						values = append(values, promptValue{"agent task", task.Title})
+					}
+				}
+				for _, doc := range d.ProjectDocs {
+					values = append(values, promptValue{"project doc path", doc.Path})
+				}
+				return values
+			},
+		},
+		{
+			name:  "explorer delegate",
+			build: func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "explorer") },
+			values: func(d promptData) []promptValue {
+				values := environmentPromptValues(d)
+				for _, name := range d.CallableToolNames {
+					values = append(values, promptValue{"callable tool", name})
+				}
+				for _, name := range d.UnavailableProfileToolNames {
+					values = append(values, promptValue{"unavailable profile tool", name})
+				}
+				return values
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := tc.build(t)
+			prompt, warning := s.renderSystemPrompt(s.env)
+			if warning != "" {
+				t.Fatalf("render failed: %s", warning)
+			}
+			for _, v := range tc.values(s.buildPromptData(s.env)) {
+				if v.value != "" && !strings.Contains(prompt, v.value) {
+					t.Errorf("%s %q is missing from the rendered prompt", v.name, v.value)
+				}
+			}
+		})
+	}
+}
+
+// environmentPromptValues lists the environment facts every configuration
+// renders.
+func environmentPromptValues(d promptData) []promptValue {
+	values := []promptValue{
+		{"working directory", d.WorkingDir},
+		{"platform", d.Platform},
+		{"OS version", d.OSVersion},
+		{"date", d.Today},
+		{"model", d.Model},
+		{"knowledge cutoff", d.KnowledgeCutoff},
+		{"resource caps", d.ResourceCapsJSON},
+		{"sandbox", d.Sandbox},
+	}
+	for _, line := range d.Capabilities {
+		values = append(values, promptValue{"capability line", line})
+	}
+	return values
 }

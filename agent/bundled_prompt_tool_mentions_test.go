@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -24,11 +25,18 @@ var mentionsAllowedWithoutTheTool = map[string][]string{
 	// The doctor's forensic contract is that a tool NAME appearing in assistant
 	// text is not evidence the tool ran. It has to print the name to say so.
 	"internal/bundled/agents/doctor.md": {"delegate_send"},
+}
+
+// mentionCapWithoutTheTool is how many times every assembled prompt may name a
+// tool the agent lacks because the text talks about the name. A mention past
+// the cap is an instruction to call the tool, so a gate that stops working
+// cannot hide behind the audited mention.
+var mentionCapWithoutTheTool = map[string]int{
 	// communicate.md.tmpl names the job_watch FRAME kind, not the tool: a
 	// delegate spawned with watch_parent receives watch frames without ever
 	// being able to create a watch, and that paragraph tells it how to answer
 	// one.
-	"*": {"job_watch"},
+	"job_watch": 1,
 }
 
 // TestShippedPromptsOnlyNameToolsTheSessionHas is the prompt half of the rule
@@ -62,12 +70,13 @@ func TestShippedPromptsOnlyNameToolsTheSessionHas(t *testing.T) {
 			t.Fatalf("%s: rendered no system prompt to sweep", source)
 		}
 		for _, name := range mentionedToolNames(prompt, parent.reg.RegisteredNames()) {
-			if surface[name] ||
-				hasString(mentionsAllowedWithoutTheTool[source], name) ||
-				hasString(mentionsAllowedWithoutTheTool["*"], name) {
+			if surface[name] || hasString(mentionsAllowedWithoutTheTool[source], name) {
 				continue
 			}
-			findings = append(findings, source+" ("+agentType+"): "+name)
+			if n := countToolMentions(prompt, name); n > mentionCapWithoutTheTool[name] {
+				findings = append(findings, fmt.Sprintf("%s (%s): %s, named %d time(s), audited cap %d",
+					source, agentType, name, n, mentionCapWithoutTheTool[name]))
+			}
 		}
 		releasePreparedTreeSlot(prepared)
 		child.Close()
@@ -77,7 +86,7 @@ func TestShippedPromptsOnlyNameToolsTheSessionHas(t *testing.T) {
 		t.Fatalf("%d assembled prompt(s) instruct a tool the agent cannot call. Gate the "+
 			"section on {{ if .HasTool \"<name>\" }}, add the tool to that agent's tools: "+
 			"list, or — if the text only talks ABOUT the name — record it in "+
-			"mentionsAllowedWithoutTheTool with a reason:\n%s",
+			"mentionsAllowedWithoutTheTool or mentionCapWithoutTheTool with a reason:\n%s",
 			len(findings), strings.Join(findings, "\n"))
 	}
 }
@@ -90,6 +99,9 @@ func promptSweepParentSession(t *testing.T) *Session {
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 3,
 		NoProjectPrompts: true,
+		// A state dir registers find_session_transcripts, which puts that name in
+		// the sweep's vocabulary and so checks its gate.
+		StateDir: t.TempDir(),
 		testOnly: testConfig{
 			skipGitSnapshot: true,
 			noSyncJobStore:  true,
@@ -139,6 +151,17 @@ func mentionedToolNames(body string, registered map[string]bool) []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// countToolMentions returns how many times a prompt body names the tool.
+func countToolMentions(body, name string) int {
+	n := 0
+	for _, m := range toolShapedMention.FindAllStringSubmatch(body, -1) {
+		if m[1] == name || m[2] == name {
+			n++
+		}
+	}
+	return n
 }
 
 // TestBundledPromptBodiesOnlyNameToolsTheirAgentHas keeps the cheap, direct

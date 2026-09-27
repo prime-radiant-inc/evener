@@ -669,7 +669,7 @@ In `TestSystemTemplate_StructuralRegression`, delete the `markers := []string{..
 
 Delete `postureSectionResolver`; after these deletions nothing calls it (confirm with `rg -n 'postureSectionResolver' agent`, which must print only its definition). The remaining resolver tests stay until PR 3.
 
-The tool-mention gates these tests checked stay covered by `TestShippedPromptsOnlyNameToolsTheSessionHas`. The `CanDelegate` and `IsSubagent` sections they checked are covered by Task 2 and, from PR 3, Task 8.
+The tool-mention gates these tests checked stay covered by `TestShippedPromptsOnlyNameToolsTheSessionHas`, once its parent session has a state dir (so `find_session_transcripts` is in the sweep's vocabulary) and `job_watch` has a one-mention cap in place of its blanket exception. PR 1's final review found the sweep blind to both gates without those two changes. The `CanDelegate` and `IsSubagent` sections they checked are covered by Task 2 and, from PR 3, Task 8.
 
 - [ ] **Step 2: `agent/profile_test.go`**
 
@@ -2080,6 +2080,8 @@ In `agent/prompt_data.go`, delete the fields `Provider`, `Agent`, `RolePromptOve
 - `agent/session_capabilities_test.go` `TestCapabilityPreambleRendersInEnvironmentSection`: delete the `resolver := &sectionResolver{...}` literal and replace `out, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", data)` with `out, err := executeSystemPromptTemplate(data)`. Remove the `bundled` import if unused.
 
 - `agent/session_tools_test.go` `TestDelegateSurfaceUsesAgentRegistryCapabilities`: delete the `const availableAgentsSection = ...` line and the `slices.ContainsFunc(sess.promptSourceLog, ...)` check that uses it.
+
+- `agent/system_prompt_test.go` `TestSystemPromptRendersForEveryConfiguration`: delete the loop over `s.promptSourceLog` that fails on an `ERROR:` label, and the doc comment's sentences about it. The resolver was the only thing that swallowed a section's execution error; the collapsed template reports one as a render warning, which the test already checks.
 
 - `agent/cov_s5_helpers_test.go` `TestS5Cov_ToolDefinitionHelpers`: delete the `entries := toolEntriesFromDefinitions(defs)` line and its check.
 

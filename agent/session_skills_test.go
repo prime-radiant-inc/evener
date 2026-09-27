@@ -410,6 +410,14 @@ func TestOpenAI_PluginSkillCatalogUsesNamespacedName(t *testing.T) {
 	if slices.ContainsFunc(data.Skills, func(s skillEntry) bool { return s.CatalogNameOrName() == "my-skill" }) {
 		t.Fatalf("prompt skills = %+v, advertised the bare plugin skill name", data.Skills)
 	}
+	// The catalog must render the namespaced name: it is the key use_skill loads.
+	prompt, warning := sess.renderSystemPrompt(sess.currentEnv())
+	if warning != "" {
+		t.Fatalf("renderSystemPrompt warning: %s", warning)
+	}
+	if !strings.Contains(prompt, "skill-plugin:my-skill") {
+		t.Fatal("rendered prompt lacks the namespaced catalog name skill-plugin:my-skill")
+	}
 }
 
 func TestOpenAI_IncludesUseSkillTool(t *testing.T) {

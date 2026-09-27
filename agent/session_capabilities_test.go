@@ -396,6 +396,7 @@ func TestCapabilityPreambleRendersInEnvironmentSection(t *testing.T) {
 		t.Fatalf("render error: %v", err)
 	}
 	for _, want := range []string{
+		data.Sandbox,
 		"\nPATH: inherited process environment\n",
 		"\n" + scratchLineForTest(t, "/scratch/s1") + "\n",
 		"\nGo cache: GOCACHE=/scratch/s1/gocache GOMODCACHE=/scratch/s1/gomodcache\n",
