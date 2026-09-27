@@ -1,0 +1,32 @@
+{
+  "name": "evener-hub-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server exposing the evener hub's session-management surface to supervising agents (the PM session kind). Speaks MCP over stdio; drives the hub over AppWire with @evener/appwire-client.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "dist/src/index.js",
+  "scripts": {
+    "preflight": "node scripts/preflight.mjs",
+    "build": "tsc -p tsconfig.json",
+    "lint": "biome ci src test scripts",
+    "check": "biome check --write src test scripts",
+    "typecheck": "node scripts/preflight.mjs && tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/preflight.mjs && tsc -p tsconfig.json && biome ci src test scripts && node --test \"dist/test/*.test.js\"",
+    "start": "node dist/src/index.js"
+  },
+  "dependencies": {
+    "@evener/appwire-client": "file:../appwire-client/typescript",
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "ws": "^8.18.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.5",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "~6.0.3"
+  }
+}

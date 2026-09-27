@@ -28,7 +28,7 @@ session-management surface to an agent. Primary audience: the planned
 The server is a TypeScript package at the repo root (`hub-mcp/`), built
 with `tsc` to `dist/`, run as `node hub-mcp/dist/index.js`. It imports
 `@evener/appwire-client` by name (repo rule; never a relative path),
-resolved through a `file:../typescript` dependency — the same resolution
+resolved through a `file:../appwire-client/typescript` dependency — the same resolution
 an installed consumer gets via the package's `exports` map. A preflight
 script builds `../typescript/dist` when missing or stale, mirroring
 `web-preflight.sh`'s role for the frontend and refusing the same
