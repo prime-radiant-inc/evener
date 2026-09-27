@@ -9,6 +9,7 @@
 // AskDock's own already-covered internal behavior.
 
 import type { MethodTypes, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -785,12 +786,9 @@ test("the composer resends recovered text while recovery projection callbacks ar
   // The steer is awaited where it arrives: the recovery reads held below keep
   // the projection work open, so a flush could not settle until they are
   // released.
-  let markSteerSent!: () => void;
-  const steerSent = new Promise<void>((resolve) => {
-    markSteerSent = resolve;
-  });
+  const steerSent = deferred<void>();
   fake.on("turn/steer", () => {
-    markSteerSent();
+    steerSent.resolve();
     return new Promise<never>(() => undefined);
   });
   await flushPendingTurnsProjectionForTests();
@@ -809,9 +807,7 @@ test("the composer resends recovered text while recovery projection callbacks ar
     await user.click(composerSteerButton());
     await waitFor(() => expect(textarea()?.textContent).toBe(""));
     expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
-    await act(async () => {
-      await steerSent;
-    });
+    await act(async () => steerSent.promise);
     expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
     const call = fake.calls.find((call) => call.method === "turn/steer");
     expect(call?.params).toEqual(expect.objectContaining({ input: [{ type: "text", text: "recover me edited" }] }));
