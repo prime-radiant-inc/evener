@@ -6,6 +6,7 @@
 // - a time marker introduces the first turn, a turn that starts after ten
 //   quiet minutes, and a new day.
 import { parseArgs, str, type TurnModel } from "@evener/appwire-client";
+import type { ConversationStatus } from "../../../mobile/src/state/conversation";
 import { hubTime } from "../board/attention";
 import { type RunStep, rowTurnId, type TimelineRow } from "../timeline";
 import { compactDuration } from "./format";
@@ -302,4 +303,14 @@ export function runPartFailedText(part: RunPart): string {
 export function runSummaryText(summary: RunSummary): string {
 	const parts = summary.parts.map((part) => `${part.text}${runPartFailedText(part)}`);
 	return [runHeadText(summary), parts.join(", ")].join(" · ");
+}
+
+/** What the transcript says while it has no rows. The app reconnects and
+ * reads on its own (spec principle 2, section 14), so until a conversation
+ * has loaded, a missing connection reads as loading and never asks you to
+ * reconnect; the connection status says why it is waiting. */
+export function emptyTranscriptText(status: ConversationStatus, connected: boolean, loaded: boolean): string {
+	if (status === "opening" || (!connected && !loaded)) return "Loading conversation…";
+	if (status === "error") return "Pull down to retry.";
+	return "No messages yet.";
 }

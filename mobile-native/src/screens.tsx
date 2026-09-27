@@ -120,7 +120,11 @@ import {
 import { RosterSearch } from "./rosterSearch";
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
-import { liveRunId, sessionRows } from "./session/transcriptRows";
+import {
+	emptyTranscriptText,
+	liveRunId,
+	sessionRows,
+} from "./session/transcriptRows";
 import { SessionControls } from "./sessionControls";
 import { localSessionId } from "./sessionDeletionResult";
 import { TasksSheet } from "./TasksSheet";
@@ -2367,13 +2371,11 @@ export function ConversationScreen({
 							}
 							ListEmptyComponent={
 								<Copy muted>
-									{snapshot.status === "opening"
-										? "Loading conversation…"
-										: !connected
-											? "Reconnect to load the conversation. Your draft is kept."
-											: snapshot.status === "error"
-												? "Pull down to retry."
-												: "No messages yet."}
+									{emptyTranscriptText(
+										snapshot.status,
+										connected,
+										conversation !== null,
+									)}
 								</Copy>
 							}
 						/>

@@ -2,7 +2,15 @@ import type { TurnModel } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { MobileTimelineItem } from "../projectedRows";
 import type { RunStep, TimelineRow } from "../timeline";
-import { liveRunId, runSummary, runSummaryText, sessionRows, stepTarget, timeMarkerText } from "./transcriptRows";
+import {
+	emptyTranscriptText,
+	liveRunId,
+	runSummary,
+	runSummaryText,
+	sessionRows,
+	stepTarget,
+	timeMarkerText,
+} from "./transcriptRows";
 
 type Activity = Extract<MobileTimelineItem, { kind: "activity" }>;
 const step = (id: string, label: string, over: Partial<Activity> = {}): Activity => ({
@@ -271,5 +279,23 @@ describe("a step's target", () => {
 	it("reads nothing from arguments that are missing or don't parse", () => {
 		expect(stepTarget("read_file", undefined)).toBeUndefined();
 		expect(stepTarget("read_file", '{"file_path": "agent/sess')).toBeUndefined();
+	});
+});
+
+describe("an empty transcript", () => {
+	it("is loading while the first read runs or the connection is away, and never asks you to reconnect", () => {
+		expect(emptyTranscriptText("opening", true, false)).toBe("Loading conversation…");
+		expect(emptyTranscriptText("idle", false, false)).toBe("Loading conversation…");
+		expect(emptyTranscriptText("closed", false, false)).toBe("Loading conversation…");
+		expect(emptyTranscriptText("error", false, false)).toBe("Loading conversation…");
+	});
+
+	it("has no messages once its conversation has loaded, connected or not", () => {
+		expect(emptyTranscriptText("open", true, true)).toBe("No messages yet.");
+		expect(emptyTranscriptText("open", false, true)).toBe("No messages yet.");
+	});
+
+	it("keeps the retry line for a read that failed while connected", () => {
+		expect(emptyTranscriptText("error", true, false)).toBe("Pull down to retry.");
 	});
 });
