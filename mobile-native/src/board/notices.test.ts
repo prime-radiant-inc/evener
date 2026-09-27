@@ -90,8 +90,22 @@ it("says 1 session for one, and drops the count when nothing loaded names the ho
 
 it("names each broken plugin", () => {
 	expect(notices({ ...none, plugins: [plugin("superpowers", false), plugin("elements-of-style", true)] })).toEqual([
-		{ key: "plugin:elements-of-style", kind: "plugin", text: "elements-of-style is broken", action: "Plugins", pluginId: "elements-of-style" },
+		{
+			key: "plugin:elements-of-style@evener",
+			kind: "plugin",
+			text: "elements-of-style is broken",
+			action: "Plugins",
+			pluginId: "elements-of-style",
+		},
 	]);
+});
+
+it("keeps two broken plugins of one name from different marketplaces apart", () => {
+	const found = notices({
+		...none,
+		plugins: [plugin("superpowers", true), { ...plugin("superpowers", true), marketplace: "community" }],
+	});
+	expect(found.map((notice) => notice.key)).toEqual(["plugin:superpowers@evener", "plugin:superpowers@community"]);
 });
 
 it("lists sign-ins, then hosts, then plugins", () => {

@@ -43,10 +43,11 @@ export function notices(input: {
 			sourceId: source.id,
 		});
 	}
-	for (const { plugin, broken } of input.plugins)
+	for (const { plugin, marketplace, broken } of input.plugins)
 		if (broken)
 			result.push({
-				key: `plugin:${plugin}`,
+				// Two marketplaces can each ship a plugin of the same name.
+				key: `plugin:${plugin}@${marketplace}`,
 				kind: "plugin",
 				text: `${plugin} is broken`,
 				action: "Plugins",
