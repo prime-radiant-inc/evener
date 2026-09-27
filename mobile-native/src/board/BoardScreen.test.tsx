@@ -1434,6 +1434,34 @@ it("shows each working row's activity read: its meter, the hub's subagent tally,
 	act(() => tree.unmount());
 });
 
+it("shows no stuck label or reordering from a stale read while offline (Jesse's ruling)", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 3 * MINUTE }],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 3m");
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+
+	// Offline: polling stops, but msSinceRead would otherwise keep counting
+	// from the last read - 3m (at read) plus 10m elapsed would cross the
+	// stuck threshold if it were trusted while disconnected, when really it's
+	// the connection that's quiet, not the session.
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	await advance(10 * MINUTE);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("May be stuck · no updates for 13m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(meterIn(rowTitled(tree, "Migrate schema")).props.perMinute).toBeUndefined();
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+	act(() => tree.unmount());
+});
+
 it("keeps every working row as it was before S5 on a hub that has no activity read, and stops asking", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
