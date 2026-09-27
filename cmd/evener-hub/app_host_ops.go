@@ -178,10 +178,11 @@ var hostEntryFingerprintAbsent = func() string {
 }()
 
 // hostPlanFactsFromPreflight maps component 04's preflight facts onto §1's fact
-// set. CapturedAt is stamped at the read: the caller has just read these values
-// off the live channel, and a token's freshness must measure from when they were
-// true.
-func hostPlanFactsFromPreflight(host hostreg.Host, preflight sshconn.Preflight) hubcore.HostPlanFacts {
+// set. capturedAt is the instant the caller's read returned — the caller must
+// pass when these values were read, never the mint's own clock: a token's
+// freshness term measures from here, so a later stamp would hand it a lifetime
+// the facts never earned (08b §3).
+func hostPlanFactsFromPreflight(host hostreg.Host, preflight sshconn.Preflight, capturedAt time.Time) hubcore.HostPlanFacts {
 	return hubcore.HostPlanFacts{
 		OS:          preflight.OS,
 		Arch:        preflight.Arch,
@@ -191,7 +192,7 @@ func hostPlanFactsFromPreflight(host hostreg.Host, preflight sshconn.Preflight) 
 		Version:     preflight.Version,
 		Protocol:    preflight.Protocol,
 		LaunchFlags: slices.Clone(preflight.LaunchFlags),
-		CapturedAt:  time.Now().UTC(),
+		CapturedAt:  capturedAt,
 	}
 }
 
@@ -300,8 +301,14 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 
 	fingerprint, ok := m.hostTOMLFingerprint(name)
 	if !ok {
-		return planNoToken(appwire.HostPlanReasonRefreshFailed,
-			fmt.Sprintf("host %q's hub.toml entry could not be fingerprinted: the selected hub.toml does not validate", name), attached)
+		// A file that does not validate is not a facts-refresh failure the next
+		// plan can clear: the selected hub.toml is this hub's own configuration,
+		// and every retry re-reads the same bytes. It is this hub's problem, not
+		// the host's, so it refuses as an internal error naming the file rather
+		// than as a retryable no-token arm that would blame the host.
+		return appwire.HostPlanResult{}, appwire.InternalError(fmt.Sprintf(
+			"host %q's hub.toml entry could not be fingerprinted: the selected hub.toml (%s) does not validate, so nothing about the host's on-disk entry can be bound; fix the file before planning",
+			name, m.cfg.configPath))
 	}
 	if m.cfg.ops == nil {
 		return appwire.HostPlanResult{}, appwire.InternalError("the host operation store is not configured, so no confirmation token can be minted")
@@ -337,11 +344,11 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 		Generation:         token.Generation,
 		TargetPath:         token.TargetPath,
 		ControllerRevision: token.ControllerRevision,
-		RestartFollows:     planRestartFollows(probe),
+		RestartFollows:     planRestartFollows(probe, token.ControllerRevision),
 		FactsRevision:      token.FactsRevision,
 		HubTOMLFingerprint: token.HubTOMLFingerprint,
 		FactsCapturedAt:    token.FactsCapturedAt.Format(time.RFC3339),
-		FactsAgeSec:        int64(now.Sub(token.FactsCapturedAt) / time.Second),
+		FactsAgeSec:        planFactsAgeSec(now, token.FactsCapturedAt),
 		RunningVersion:     token.RunningVersion,
 		RunningHealthy:     token.RunningHealthy,
 	}
@@ -355,15 +362,45 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	}}, nil
 }
 
-// planRestartFollows answers the plan's restartFollows field with §6's stated
-// rule: "a probed unverifiable revision (`dev` or dirty) always reads as
-// outdated: restart follows. No timestamp comparison exempts it." A verifiable
-// revision reads as no restart *here* — the rest of the deploy decision ladder
-// (what a verifiable but differing revision implies for the push and restart
-// steps) belongs to the slice that owns deploy's execution, and this slice does
-// not guess on its behalf.
-func planRestartFollows(probe hubcore.HostRuntimeProbe) bool {
-	return sshconn.UnverifiableVersion(probe.Version)
+// planFactsAgeSec is how old the plan's facts were, in whole seconds, never
+// negative: a capture stamped ahead of this hub's clock (a host whose clock
+// leads, a capture anchored at the durable mark during a rollback) is a fact
+// about timing the client does not need a signed number for, and a negative age
+// would read as fresher than fresh.
+func planFactsAgeSec(now, capturedAt time.Time) int64 {
+	age := now.Sub(capturedAt)
+	if age < 0 {
+		return 0
+	}
+	return int64(age / time.Second)
+}
+
+// planRestartFollows answers the plan's restartFollows field from the inputs the
+// plan actually has. §6 states one rule outright — "a probed unverifiable
+// revision (`dev` or dirty) always reads as outdated: restart follows. No
+// timestamp comparison exempts it" — and the same field must not read "no
+// restart" for the two other ways a running host is already known to need one:
+//
+//   - the host reports itself unhealthy, so the process must be replaced
+//     whatever it runs (the health flag is §10's third running-handler
+//     condition, computed by the host itself);
+//   - the probed revision is verifiable but is not the controller's own, so the
+//     host is running someone else's build and only a deploy-plus-restart makes
+//     it the build the plan is for.
+//
+// What a *matching* verifiable revision implies for the push and restart steps
+// beyond this — whether an already-current host still needs its process replaced
+// — is the deploy decision ladder's to state, and this slice does not guess on
+// its behalf: it reports no restart exactly when the host is healthy and already
+// runs the controller's revision.
+func planRestartFollows(probe hubcore.HostRuntimeProbe, controllerRevision string) bool {
+	if !probe.RunningHealthy {
+		return true
+	}
+	if sshconn.UnverifiableVersion(probe.Version) {
+		return true
+	}
+	return probe.Version != controllerRevision
 }
 
 // planEntryCurrent reports whether entry is still the registry's registration
@@ -414,4 +451,19 @@ func (m *hubHostManager) controllerDirty() bool {
 // request, and the handler itself holds nothing.
 func (m *hubHostManager) registerOpsHandlers(server *appserver.Server) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostPlan, hostManageHandler(m.Plan))
+}
+
+// revokeHostTokens drops name's outstanding confirmation tokens (§3's live
+// removal revocation). A missing operation store has no rows to drop, and a
+// store failure is logged rather than returned: the removal's hub.toml commit
+// has already landed and cannot be unwound, and the rows it would leave behind
+// are inert — see the call site in Remove, and the deploy slice's binding
+// comparison that refuses them.
+func (m *hubHostManager) revokeHostTokens(name string) {
+	if m.cfg.ops == nil {
+		return
+	}
+	if err := m.cfg.ops.RevokeTokens(name); err != nil {
+		m.logf("host %q removed, but its outstanding confirmation tokens could not be dropped: %v", name, err)
+	}
 }

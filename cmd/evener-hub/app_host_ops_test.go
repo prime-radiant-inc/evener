@@ -9,6 +9,8 @@ package hub
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -234,8 +236,10 @@ func TestHostPlanMintsThroughTheRealServer(t *testing.T) {
 		t.Fatalf("plan factsAgeSec = %d, want the real age of freshly captured facts", plan.FactsAgeSec)
 	case plan.RunningVersion != "v0.9.0" || !plan.RunningHealthy:
 		t.Fatalf("plan running state = %q/%v, want the probe's", plan.RunningVersion, plan.RunningHealthy)
-	case plan.RestartFollows:
-		t.Fatalf("plan restartFollows = true, want the deploy ladder's default until it ships")
+	case !plan.RestartFollows:
+		// The probe reports a verifiable build that is not this controller's, so
+		// only a deploy-plus-restart makes the host the build the plan is for.
+		t.Fatalf("plan restartFollows = false for probe %q, want true", plan.RunningVersion)
 	}
 
 	// The token the plan returned is the store's outstanding row for the host,
@@ -359,25 +363,39 @@ func TestHostPlanNoTokenArms(t *testing.T) {
 	}
 }
 
-// TestHostPlanRestartFollowsUnverifiableRevision pins §6's one stated
-// restart-follows rule: a probed unverifiable revision — `dev` or a dirty
-// `<sha>-dirty` — reads as outdated, so the plan the human confirms says a
-// restart follows. A verifiable revision does not.
-func TestHostPlanRestartFollowsUnverifiableRevision(t *testing.T) {
+// TestHostPlanRestartFollows pins the plan's restart-follows answer from the
+// inputs a plan has: §6's stated rule that a probed unverifiable revision (`dev`
+// or a dirty `<sha>-dirty`) always reads as outdated, the two other ways a
+// running host is already known to need a restart (an unhealthy host, a host
+// running a verifiable revision that is not the controller's), and the one case
+// that reads as no restart (healthy and already on the controller's revision).
+func TestHostPlanRestartFollows(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "hub.toml")
 	for _, tc := range []struct {
+		name     string
 		revision string
+		stamp    string
+		healthy  bool
 		want     bool
 	}{
-		{"dev", true},
-		{"0123abc-dirty", true},
-		{"v1.2.3", false},
-		{"0123abc", false},
+		{name: "a dev probe", revision: "dev", healthy: true, want: true},
+		{name: "a dirty probe", revision: "0123abc-dirty", healthy: true, want: true},
+		{name: "another verifiable build", revision: "v0.9.0", healthy: true, want: true},
+		{name: "the controller's own build, unhealthy", revision: "0123abc", stamp: "0123abc", healthy: false, want: true},
+		{name: "the controller's own build, healthy", revision: "0123abc", stamp: "0123abc", healthy: true, want: false},
 	} {
-		t.Run(tc.revision, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.stamp != "" {
+				// A stamped controller: the revision comparison only means
+				// something when this process carries a verifiable build.
+				previousSHA, previousDirty := buildinfo.GitSHA, buildinfo.GitDirty
+				buildinfo.GitSHA, buildinfo.GitDirty = tc.stamp, ""
+				t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty = previousSHA, previousDirty })
+			}
 			seams := planSeams{probe: func(context.Context, hostreg.Host, *appwire.Client) (hubcore.HostRuntimeProbe, error) {
 				probe := planTestProbe()
 				probe.Version = tc.revision
+				probe.RunningHealthy = tc.healthy
 				return probe, nil
 			}}
 			m, _, _ := planTestManager(t, configPath, []hostreg.Host{planTestHost()}, seams)
@@ -386,7 +404,7 @@ func TestHostPlanRestartFollowsUnverifiableRevision(t *testing.T) {
 				t.Fatalf("Plan = %+v/%v, want the planned arm", result, err)
 			}
 			if got := result.Plan.RestartFollows; got != tc.want {
-				t.Fatalf("restartFollows = %v for revision %q, want %v", got, tc.revision, tc.want)
+				t.Fatalf("restartFollows = %v for revision %q healthy=%v, want %v", got, tc.revision, tc.healthy, tc.want)
 			}
 		})
 	}
@@ -532,6 +550,109 @@ func TestPlanNoTokenBuilderCoversTheSpecSet(t *testing.T) {
 	}
 	if _, err := planNoToken("not-a-reason", "because", true); err == nil {
 		t.Fatal("planNoToken accepted a reason outside §10's set")
+	}
+}
+
+// TestHostRemoveRevokesOutstandingTokens pins §3's live-removal revocation: the
+// successful removal path drops the host's outstanding confirmation token, so a
+// removed name holds none and the value can never validate again.
+func TestHostRemoveRevokesOutstandingTokens(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{planTestHost()})), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	m, store, registry := planTestManager(t, configPath, []hostreg.Host{planTestHost()}, planSeams{})
+	live, ok := registry.Get("m4")
+	if !ok {
+		t.Fatal("the configured host vanished from the registry")
+	}
+	minted, err := store.MintToken(hostops.MintRequest{
+		Host:               live.Name,
+		Generation:         live.Generation,
+		IncarnationID:      live.IncarnationID,
+		EntryHash:          testHubHash("entry"),
+		HubTOMLFingerprint: testHubHash("toml"),
+		FactsRevision:      testHubHash("facts"),
+		FactsCapturedAt:    time.Now().UTC(),
+		TargetPath:         live.EvenerPath,
+		ControllerRevision: buildinfo.Version(),
+		RunningVersion:     "v0.9.0",
+		RunningHealthy:     true,
+	})
+	if err != nil {
+		t.Fatalf("MintToken: %v", err)
+	}
+	if _, ok := store.OutstandingToken("m4"); !ok {
+		t.Fatal("the mint stored no token")
+	}
+	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "m4"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, ok := store.OutstandingToken("m4"); ok {
+		t.Fatal("the removal left the host's outstanding token behind")
+	}
+	if _, err := store.ValidateToken("m4", minted.Value); !errors.Is(err, hostops.ErrTokenMissing) {
+		t.Fatalf("ValidateToken after removal = %v, want %v", err, hostops.ErrTokenMissing)
+	}
+}
+
+// testHubHash renders a canonical digest for the fixtures that need the shape a
+// real caller passes; the store never interprets these values.
+func testHubHash(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	return hex.EncodeToString(sum[:])
+}
+
+// expiredTokenStoreJSON is a store file carrying one expired confirmation-token
+// row — the deadline and the mark both long past — for the boot-reap test. It
+// repeats the row schema package hostops pins in its own tests because the boot
+// wiring is this package's; a schema change has to update both.
+func expiredTokenStoreJSON() string {
+	digest := strings.Repeat("a", 64)
+	return `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],` +
+		`"boundaries":{},"wallClockHighWaterMark":"2026-01-01T00:00:00Z","tokens":[` +
+		`{"host":"m4","value":"` + strings.Repeat("A", 32) + `","generation":7,` +
+		`"incarnationId":"inc-m4","entryHash":"` + digest + `",` +
+		`"hubTomlFingerprint":"` + digest + `","factsRevision":"` + digest + `",` +
+		`"factsCapturedAt":"2026-01-01T00:00:00Z","targetPath":"/opt/evener/bin/evener",` +
+		`"controllerRevision":"v1.2.3","runningVersion":"v1.1.0","runningHealthy":true,` +
+		`"freshnessBoundSec":300,"mintedAt":"2026-01-01T00:00:00Z",` +
+		`"expiresAt":"2026-01-01T00:05:00Z"}]}`
+}
+
+// TestHostPlanRefusesAnInvalidHubTOML pins the refusal for a selected hub.toml
+// that does not validate: the entry fingerprint cannot be bound, and no retry
+// clears a file the hub itself owns, so the plan refuses as an internal error
+// rather than as a retryable no-token arm that would blame the host.
+func TestHostPlanRefusesAnInvalidHubTOML(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := os.WriteFile(configPath, []byte("[[hosts\nname = \"m4\"\n"), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	m, _, _ := planTestManager(t, configPath, []hostreg.Host{planTestHost()}, planSeams{})
+	err := errOf(m.Plan(context.Background(), appwire.HostPlanParams{Name: "m4"}))
+	assertWireCode(t, err, appwire.CodeInternalError)
+}
+
+// TestOpenHostOpsStoreReapsExpiredTokens pins §3's boot reap at the wiring: the
+// store the hub opens at startup drops an expired token row before it is served,
+// so a restart never leaves a stale row for a later pass to trust.
+func TestOpenHostOpsStoreReapsExpiredTokens(t *testing.T) {
+	stateRoot := t.TempDir()
+	path := hostops.StorePath(stateRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(expiredTokenStoreJSON()), 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	var logged strings.Builder
+	store := openHostOpsStore(stateRoot, &logged)
+	if store == nil {
+		t.Fatalf("openHostOpsStore returned no store: %s", logged.String())
+	}
+	if _, ok := store.OutstandingToken("m4"); ok {
+		t.Fatal("the boot reap left an expired token row behind")
 	}
 }
 

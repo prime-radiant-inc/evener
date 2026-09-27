@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/appwire"
@@ -978,19 +979,18 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		logf:             logf,
 	}}
 	if m.cfg.planFacts == nil && manager != nil {
-		// The production refresh seam (deploy pipeline 08b §6 step 1): the facts
-		// the live channel already carries. The dedicated ungated one-shot SSH
-		// refresh — an explicit read whose capture instant this handler can stamp
-		// from the read itself — belongs to the slice that ships the gate and
-		// probe (§5, §6 step 2), so until then the capture instant is the moment
-		// this seam reads the channel's captured preflight, which is what a
-		// token's freshness term must measure from.
-		m.cfg.planFacts = func(_ context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
-			preflight, ok := manager.PreflightIfAttached(host.Name)
-			if !ok {
-				return hubcore.HostPlanFacts{}, fmt.Errorf("host %q has no live channel to read preflight facts from", host.Name)
+		// The production refresh seam (deploy pipeline 08b §6 step 1): the
+		// ungated one-shot SSH preflight the manager runs against the host, read
+		// now and stamped with the instant the read returned. Reading the live
+		// channel's captured snapshot instead would let a token's freshness term
+		// measure from the wrong instant — the snapshot was taken whenever the
+		// channel attached, which can be arbitrarily long before the plan.
+		m.cfg.planFacts = func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
+			preflight, err := manager.Preflight(ctx, host)
+			if err != nil {
+				return hubcore.HostPlanFacts{}, err
 			}
-			return hostPlanFactsFromPreflight(host, preflight), nil
+			return hostPlanFactsFromPreflight(host, preflight, time.Now().UTC()), nil
 		}
 	}
 	// The file's records are read once, before anything else can mint: its
@@ -2126,6 +2126,20 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	// re-persist an entry this removal already committed — the next start
 	// would resurrect the host this call is removing.
 	m.cfg.store.remove(host.Name)
+	// The removal also drops the host's outstanding confirmation tokens (§3:
+	// "live `remove` revokes every outstanding token row for the name"). The
+	// pendingStoreSync revocation *intent* is §9's; this is the durable effect
+	// it must carry, applied in its own atomic store write after the hub.toml
+	// commit — which cannot be unwound — so a failure is logged rather than
+	// returned. The rows that would survive it are inert: every deploy compares
+	// the token's bound (generation, incarnation id) with the registry's current
+	// pair, and this removal retires both halves, while a re-add mints a fresh
+	// pair that no older token can name.
+	// A teardown that later fails un-commits the removal above but not this
+	// revocation: the name stays live with no outstanding token, so the next
+	// deploy re-plans — the fail-closed direction, and the one that never leaves
+	// a live host a token that outlived its plan.
+	m.revokeHostTokens(host.Name)
 	// The mark fences the name for the window the mutex is about to release.
 	m.markMutating(host.Name)
 	m.cfg.mu.Unlock()

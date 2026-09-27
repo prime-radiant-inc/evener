@@ -876,6 +876,24 @@ _(no fields)_
 | `params` | `jsontext.Value` | yes |  |
 
 
+### `HostPlan`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `targetPath` | `string` |  |  |
+| `controllerRevision` | `string` |  |  |
+| `restartFollows` | `bool` |  |  |
+| `factsRevision` | `string` |  |  |
+| `hubTomlFingerprint` | `string` |  |  |
+| `factsCapturedAt` | `string` |  |  |
+| `factsAgeSec` | `int64` |  |  |
+| `runningVersion` | `string` |  |  |
+| `runningHealthy` | `bool` |  |  |
+| `runningProcessStartTime` | `string` | yes |  |
+
+
 ### `HostPlanNoToken`
 
 | Field | Go type | Omitempty | Embedded |
@@ -900,6 +918,15 @@ _(no fields)_
 | `outcome` | `string` |  |  |
 | `plan` | `appwire.HostPlan` |  |  |
 | `token` | `string` |  |  |
+
+
+### `HostPlanStaleFacts`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `message` | `string` |  |  |
+| `attached` | `bool` |  |  |
+| `reason` | `string` |  |  |
 
 
 ### `HostPushCredentialsParams`

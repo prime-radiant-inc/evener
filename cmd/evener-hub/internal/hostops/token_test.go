@@ -141,7 +141,9 @@ func tokenStoreJSON(mark time.Time, rows ...string) string {
 		`"tokens":[` + strings.Join(rows, ",") + `]}`
 }
 
-// wantTokenError asserts the classified refusal a validate/consume pass returned.
+// wantTokenError asserts the classified refusal a validate/consume pass
+// returned. Callers pass every result through it — never behind `if err != nil`,
+// which would let a pass that wrongly succeeded go untested.
 func wantTokenError(t *testing.T, err, want error) {
 	t.Helper()
 	if !errors.Is(err, want) {
@@ -217,11 +219,11 @@ func TestTokenMintValidateConsumeRoundTrip(t *testing.T) {
 		t.Fatalf("store file rows after consume = %+v, want the row deleted", rows)
 	}
 	// Consume is delete, never a mark: the replayed token reads token-missing.
-	if _, err := store.ValidateToken("m4", minted.Value); err != nil {
-		wantTokenError(t, err, ErrTokenMissing)
+	if _, err := store.ValidateToken("m4", minted.Value); !errors.Is(err, ErrTokenMissing) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
 	}
-	if _, err := store.ConsumeToken("m4", minted.Value); err != nil {
-		wantTokenError(t, err, ErrTokenMissing)
+	if _, err := store.ConsumeToken("m4", minted.Value); !errors.Is(err, ErrTokenMissing) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
 	}
 }
 
@@ -237,11 +239,11 @@ func TestTokenMintSupersedesEarlierToken(t *testing.T) {
 		t.Fatal("a second mint reused the earlier token's value")
 	}
 
-	if _, err := store.ValidateToken("m4", first.Value); err != nil {
-		wantTokenError(t, err, ErrTokenSuperseded)
+	if _, err := store.ValidateToken("m4", first.Value); !errors.Is(err, ErrTokenSuperseded) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenSuperseded)
 	}
-	if _, err := store.ConsumeToken("m4", first.Value); err != nil {
-		wantTokenError(t, err, ErrTokenSuperseded)
+	if _, err := store.ConsumeToken("m4", first.Value); !errors.Is(err, ErrTokenSuperseded) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenSuperseded)
 	}
 	if row, err := store.ValidateToken("m4", second.Value); err != nil || row.Value != second.Value {
 		t.Fatalf("the current token failed after a supersede: %+v/%v", row, err)
@@ -261,21 +263,21 @@ func TestTokenMissingAndMismatched(t *testing.T) {
 	other := mustMint(t, store, mintDefaults("other", tokenEpoch))
 
 	wellFormed := strings.Repeat("A", minTokenValueChars)
-	if _, err := store.ValidateToken("m4", wellFormed); err != nil {
-		wantTokenError(t, err, ErrTokenMissing)
+	if _, err := store.ValidateToken("m4", wellFormed); !errors.Is(err, ErrTokenMissing) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
 	}
 	for _, value := range []string{"", "not-a-token", strings.Repeat("A", minTokenValueChars-1), "!@#$%^&*" + strings.Repeat("A", 24)} {
-		if _, err := store.ConsumeToken("m4", value); err != nil {
+		if _, err := store.ConsumeToken("m4", value); !errors.Is(err, ErrTokenMismatched) {
 			wantTokenError(t, err, ErrTokenMismatched)
 		}
 	}
 	// A live token is bound to its host: presenting it for another host is a
 	// mismatch, never a supersede of the other host's row or a silent success.
-	if _, err := store.ValidateToken("m4", other.Value); err != nil {
-		wantTokenError(t, err, ErrTokenMismatched)
+	if _, err := store.ValidateToken("m4", other.Value); !errors.Is(err, ErrTokenMismatched) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenMismatched)
 	}
-	if _, err := store.ConsumeToken("m4", other.Value); err != nil {
-		wantTokenError(t, err, ErrTokenMismatched)
+	if _, err := store.ConsumeToken("m4", other.Value); !errors.Is(err, ErrTokenMismatched) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenMismatched)
 	}
 	if row, ok := store.OutstandingToken("other"); !ok || row.Value != other.Value {
 		t.Fatalf("the other host's token was disturbed: %+v/%v", row, ok)
@@ -298,8 +300,8 @@ func TestTokenExpiryRefusalAndLazyReap(t *testing.T) {
 		t.Fatalf("a token inside its TTL was refused: %v", err)
 	}
 	clock.set(tokenEpoch.Add(time.Minute))
-	if _, err := store.ValidateToken("m4", minted.Value); err != nil {
-		wantTokenError(t, err, ErrTokenExpired)
+	if _, err := store.ValidateToken("m4", minted.Value); !errors.Is(err, ErrTokenExpired) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenExpired)
 	}
 	if _, ok := store.OutstandingToken("m4"); ok {
 		t.Fatal("the expired row was not reaped by the pass that read it")
@@ -307,8 +309,8 @@ func TestTokenExpiryRefusalAndLazyReap(t *testing.T) {
 	if rows := tokenRows(t, path); len(rows) != 0 {
 		t.Fatalf("store file rows after the expiry pass = %+v, want none", rows)
 	}
-	if _, err := store.ValidateToken("m4", minted.Value); err != nil {
-		wantTokenError(t, err, ErrTokenMissing)
+	if _, err := store.ValidateToken("m4", minted.Value); !errors.Is(err, ErrTokenMissing) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
 	}
 }
 
@@ -351,8 +353,8 @@ func TestTokenExpiresAtClampsToFreshnessBound(t *testing.T) {
 func TestTokenMintRefusesStaleFacts(t *testing.T) {
 	store, path, _ := openClockStore(t)
 	req := mintDefaults("m4", tokenEpoch.Add(-DefaultFreshnessBound))
-	if _, err := store.MintToken(req); err != nil {
-		wantTokenError(t, err, ErrFactsStale)
+	if _, err := store.MintToken(req); !errors.Is(err, ErrFactsStale) {
+		t.Fatalf("err = %v, want %v", err, ErrFactsStale)
 	}
 	if _, ok := store.OutstandingToken("m4"); ok {
 		t.Fatal("a stale-facts mint stored a token")
@@ -383,8 +385,8 @@ func TestTokenPersistsAcrossReloadAndStaysConsumed(t *testing.T) {
 		t.Fatalf("ConsumeToken after reload: %v", err)
 	}
 	restarted := reopenClockStore(t, path, clock)
-	if _, err := restarted.ValidateToken("m4", minted.Value); err != nil {
-		wantTokenError(t, err, ErrTokenMissing)
+	if _, err := restarted.ValidateToken("m4", minted.Value); !errors.Is(err, ErrTokenMissing) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
 	}
 }
 
@@ -431,25 +433,38 @@ func TestTokenRollbackGuardKeepsMintedLifetime(t *testing.T) {
 		t.Fatalf("durable mark = %s, want it never to move backward from %s", doc.Mark, tokenEpoch.Format(time.RFC3339))
 	}
 
-	// The pre-rollback token still expires on the wall clock reaching its
-	// minted deadline, and an observed expiry stays expired.
+	// The pre-rollback token still expires on the wall clock reaching its minted
+	// deadline — the rollback two minutes back never shortens it — and an expiry
+	// the store has observed stays expired.
 	clock.set(tokenEpoch.Add(DefaultTokenTTL - time.Second))
 	if _, err := store.ValidateToken("m4", minted.Value); err != nil {
 		t.Fatalf("token refused before its deadline: %v", err)
 	}
+	// A short-lived token minted while the clock sits behind the mark anchors at
+	// the mark (mintedAt = +4m59s here), so its own deadline is +5m59s. A later
+	// rollback must neither shorten that deadline — at +2m the effective time is
+	// still the mark, so the token is inside its life — nor revive it once the
+	// wall clock has passed it.
 	expiring := mintDefaults("m6", tokenEpoch)
 	expiring.TTL = time.Minute
 	expiring.FreshnessBound = 10 * time.Minute
 	shortLived := mustMint(t, store, expiring)
+	if want := tokenEpoch.Add(DefaultTokenTTL + time.Minute - time.Second); !shortLived.ExpiresAt.Equal(want) {
+		t.Fatalf("short-lived token expiresAt = %s, want the mark-anchored %s", shortLived.ExpiresAt, want)
+	}
 	clock.set(tokenEpoch.Add(2 * time.Minute))
-	if _, err := store.ConsumeToken("m6", shortLived.Value); err != nil {
-		wantTokenError(t, err, ErrTokenExpired)
+	if _, err := store.ValidateToken("m6", shortLived.Value); err != nil {
+		t.Fatalf("a rollback shortened a token's deadline: %v", err)
+	}
+	clock.set(tokenEpoch.Add(DefaultTokenTTL + 2*time.Minute))
+	if _, err := store.ConsumeToken("m6", shortLived.Value); !errors.Is(err, ErrTokenExpired) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenExpired)
 	}
 	// A rollback after that expiry cannot revive it: the row is gone, and even a
 	// still-present row whose deadline the store has observed stays expired.
 	clock.set(tokenEpoch.Add(30 * time.Second))
-	if _, err := store.ConsumeToken("m6", shortLived.Value); err != nil {
-		wantTokenError(t, err, ErrTokenMissing)
+	if _, err := store.ConsumeToken("m6", shortLived.Value); !errors.Is(err, ErrTokenMissing) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
 	}
 }
 
@@ -492,8 +507,8 @@ func TestTokenCorruptRowPostdatingTheMarkReadsExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open refused a file carrying a post-mark row: %v", err)
 	}
-	if _, err := store.ValidateToken("m4", strings.Repeat("B", minTokenValueChars)); err != nil {
-		wantTokenError(t, err, ErrTokenExpired)
+	if _, err := store.ValidateToken("m4", strings.Repeat("B", minTokenValueChars)); !errors.Is(err, ErrTokenExpired) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenExpired)
 	}
 }
 
@@ -504,8 +519,8 @@ func TestTokenCorruptFactsPostdatingTheMarkReadStale(t *testing.T) {
 	store, _, _ := openClockStore(t)
 	mustMint(t, store, mintDefaults("m4", tokenEpoch))
 	future := mintDefaults("m5", tokenEpoch.Add(time.Hour))
-	if _, err := store.MintToken(future); err != nil {
-		wantTokenError(t, err, ErrFactsStale)
+	if _, err := store.MintToken(future); !errors.Is(err, ErrFactsStale) {
+		t.Fatalf("err = %v, want %v", err, ErrFactsStale)
 	}
 	if _, ok := store.OutstandingToken("m5"); ok {
 		t.Fatal("a mint from post-mark facts stored a token")
@@ -532,16 +547,15 @@ func TestTokenMintRefusesUnusableRequests(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			req := mintDefaults("m4", tokenEpoch)
 			mutate(&req)
-			if _, err := store.MintToken(req); err != nil {
-				wantTokenError(t, err, ErrInvalidToken)
-			}
+			_, err := store.MintToken(req)
+			wantTokenError(t, err, ErrInvalidToken)
 			if _, ok := store.OutstandingToken("m4"); ok {
 				t.Fatal("an unusable mint request stored a token")
 			}
 		})
 	}
-	if _, err := store.ValidateToken("", strings.Repeat("A", minTokenValueChars)); err != nil {
-		wantTokenError(t, err, ErrInvalidToken)
+	if _, err := store.ValidateToken("", strings.Repeat("A", minTokenValueChars)); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("err = %v, want %v", err, ErrInvalidToken)
 	}
 }
 
@@ -632,8 +646,8 @@ func TestTokenRevokeDropsOutstandingTokens(t *testing.T) {
 	if err := store.RevokeTokens("m4"); err != nil {
 		t.Fatalf("RevokeTokens: %v", err)
 	}
-	if _, err := store.ValidateToken("m4", removed.Value); err != nil {
-		wantTokenError(t, err, ErrTokenMissing)
+	if _, err := store.ValidateToken("m4", removed.Value); !errors.Is(err, ErrTokenMissing) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
 	}
 	if _, err := store.ValidateToken("m5", kept.Value); err != nil {
 		t.Fatalf("revoking one host dropped another's token: %v", err)
@@ -669,8 +683,8 @@ func TestTokenReapExpiredTokens(t *testing.T) {
 	if reaped != 1 {
 		t.Fatalf("ReapExpiredTokens = %d, want 1", reaped)
 	}
-	if _, err := store.ValidateToken("m4", expired.Value); err != nil {
-		wantTokenError(t, err, ErrTokenMissing)
+	if _, err := store.ValidateToken("m4", expired.Value); !errors.Is(err, ErrTokenMissing) {
+		t.Fatalf("err = %v, want %v", err, ErrTokenMissing)
 	}
 	if _, err := store.ValidateToken("m5", live.Value); err != nil {
 		t.Fatalf("the reap dropped an unexpired token: %v", err)

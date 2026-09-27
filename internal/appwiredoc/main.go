@@ -130,6 +130,12 @@ func build() docData {
 	// instance/action/reason fields have no field table at all while
 	// types.gen.ts still emits the interface (roborev review of the 07c push).
 	register(appwire.HostCredentialPushResult{})
+	// HostPlan and HostPlanStaleFacts nest inside the evener/host/plan union's
+	// arms — HostPlanPlanned.Plan and HostPlanNoToken.StaleFacts — so without
+	// these the reference would name both types with no field table of their own
+	// while the TypeScript output emits them.
+	register(appwire.HostPlan{})
+	register(appwire.HostPlanStaleFacts{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{

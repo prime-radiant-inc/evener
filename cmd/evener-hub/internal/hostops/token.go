@@ -238,8 +238,11 @@ func (s *Store) MintToken(req MintRequest) (Token, error) {
 	}
 	row.Value = value
 	row.FreshnessBoundSec = int64(bound / time.Second)
-	row.MintedAt = anchor
-	row.ExpiresAt = earlier(anchor.Add(ttl), req.FactsCapturedAt.Add(bound))
+	row.MintedAt = anchor.UTC()
+	// Both terms are normalized to UTC before the comparison, so the persisted
+	// deadline carries the store's own `Z`-suffixed form (§8's write invariant)
+	// even when a caller hands its facts across in a local-zone spelling.
+	row.ExpiresAt = earlier(anchor.Add(ttl).UTC(), row.FactsCapturedAt.Add(bound).UTC())
 	if err := validateTokenRow(row); err != nil {
 		return Token{}, err
 	}
@@ -432,9 +435,13 @@ func (s *Store) RevokeTokens(host string) error {
 
 // ReapExpiredTokens drops every row of every host whose deadline the store's
 // clock has observed passing — §3's boot reap, and the same pass the lazy reaps
-// run for one host. It returns how many rows it dropped, for the boot log. A
-// pass that reaps nothing writes nothing, so boot leaves a clean store's file
-// exactly as it found it.
+// run for one host. It returns how many rows it dropped, for the boot log.
+//
+// Like every token pass it records what it observed: when the clock has moved
+// past the durable mark the reap persists the mark in the same atomic write,
+// whether or not it dropped a row, so a later rollback can never present a
+// rewound clock as new time. A pass whose clock has not advanced and which drops
+// nothing writes nothing.
 func (s *Store) ReapExpiredTokens() (int, error) {
 	if s == nil {
 		return 0, errors.New("hostops: store is not configured")
@@ -442,9 +449,10 @@ func (s *Store) ReapExpiredTokens() (int, error) {
 	s.cell.mu.Lock()
 	defer s.cell.mu.Unlock()
 
+	now := s.now()
 	next := cloneSnapshot(s.cell.state)
 	mark := wallClockMark(next.WallClockHighWaterMark)
-	effectiveNow := later(s.now(), mark)
+	effectiveNow := later(now, mark)
 	kept := make([]Token, 0, len(next.Tokens))
 	for _, row := range next.Tokens {
 		if row.expired(effectiveNow, mark) {
@@ -453,8 +461,14 @@ func (s *Store) ReapExpiredTokens() (int, error) {
 		kept = append(kept, row)
 	}
 	reaped := len(next.Tokens) - len(kept)
-	if reaped == 0 {
+	if reaped == 0 && !now.After(mark) {
 		return 0, nil
+	}
+	if now.After(mark) {
+		// §3: "the mark is the greatest observed wall-clock value" — the reap
+		// observes the clock like every other pass, so it advances the mark even
+		// when it reaped nothing.
+		next.WallClockHighWaterMark = now
 	}
 	next.Tokens = kept
 	landed, err := s.commitLocked(next)

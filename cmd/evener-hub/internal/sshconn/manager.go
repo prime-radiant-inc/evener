@@ -2573,6 +2573,24 @@ func UnverifiableVersion(v string) bool {
 	return isDevVersion(v) || isDirtyVersion(v)
 }
 
+// Preflight runs host's non-interactive preflight now — the same probe series
+// the attach path runs, bounded by the manager's own attempt limit — and returns
+// the facts it read. It is the ungated refresh evener/host/plan builds from
+// (deploy pipeline 08b §6 step 1): a plan must read the host's facts for itself
+// rather than trust a snapshot captured whenever the channel attached, because a
+// token minted from arbitrarily old facts would carry a freshness term it never
+// earned.
+//
+// It is an SSH command execution, not a probe of the AppWire channel: it neither
+// needs nor takes the per-host gate, exactly as §6 step 1 requires. The returned
+// Preflight carries no timestamp of its own — the caller stamps the instant the
+// call returned, which is when these values were true.
+func (m *Manager) Preflight(ctx context.Context, host hostreg.Host) (Preflight, error) {
+	preflightCtx, cancel := context.WithTimeout(ctx, m.opts.attemptLimit())
+	defer cancel()
+	return m.preflight(preflightCtx, host)
+}
+
 // hostBuildDiffers reports whether the host's known on-disk build is a build other
 // than the one this controller expects to find there. An unreadable contract
 // carries no build at all, so it is not a difference to report: the launch-contract
