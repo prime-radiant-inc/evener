@@ -313,7 +313,7 @@ export function removeKeys(storage: SyncStringStorage, keys: readonly string[]):
 In `mobile-native/src/board/boardMemory.ts`:
 1. Compare its private `readJson` and `writeJson` with the ones above. They are the phase 2 plan's code, so they should be identical; if they differ, stop and report the difference rather than choose one.
 2. Delete them and import the shared ones: `import { readJson, writeJson } from "../deviceStorage";`. The module keeps its `SyncStringStorage` import, and `isPlainObject` from `@evener/appwire-client` for its own records.
-3. Leave `forgetBoard` as it is. Since #2528 it tries both keys and then throws when either removal failed, so `ConnectionProvider.removeHub` reports an incomplete removal; `removeKeys` swallows failures and would lose that.
+3. Leave `forgetBoard` as it is. Since #2528 it already tries every key and throws when one failed, the same contract `removeKeys` now has too.
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
