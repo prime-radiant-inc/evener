@@ -210,7 +210,7 @@ func hubTreeFromThreads(threads []appwire.Thread) hubTreeResponse {
 		if !ok {
 			idx = len(out.Projects)
 			projectIndexes[identity] = idx
-			out.Projects = append(out.Projects, hubTreeProject{Key: thread.ProjectID, Name: projectName, WorkingDir: workingDir, RollupState: rollupContribution(node), identity: identity})
+			out.Projects = append(out.Projects, hubTreeProject{Key: thread.ProjectID, Name: projectName, WorkingDir: workingDir, RollupState: rollupContribution(node.State, node.IsSubagent), identity: identity})
 		}
 		out.Projects[idx].Sessions = append(out.Projects[idx].Sessions, node)
 	}

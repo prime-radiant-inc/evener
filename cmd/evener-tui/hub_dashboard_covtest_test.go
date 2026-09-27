@@ -811,6 +811,45 @@ func TestCovProjectSummary(t *testing.T) {
 	}
 }
 
+// TestProjectSummary_SubagentAttentionCappedAtActive: issue #2558.
+// projectSummary renders the text shown right next to a project's dashboard
+// dot (hub_dashboard_view.go:264), computed by its own walk over the
+// group's session rows — separate from buildDashboardRows's rollup fold.
+// That walk needs the same subagent cap: an errored subagent row must not
+// surface as "Error" text next to an otherwise-idle coordinator's dot, or
+// the row would show a correct (idle) dot beside contradictory text.
+func TestProjectSummary_SubagentAttentionCappedAtActive(t *testing.T) {
+	project := hubRow{kind: hubRowProject, project: "Proj1", groupKey: "g1", state: "idle", liveCount: 2}
+	rows := []hubRow{
+		project,
+		{kind: hubRowSession, groupKey: "g1", state: "idle", live: true},
+		{kind: hubRowSession, groupKey: "g1", state: "errored", live: true, isSubagent: true},
+	}
+	got := projectSummary(project, rows)
+	if contains(got, "Error") {
+		t.Fatalf("got %q, want no Error (the errored subagent row must not surface in the project summary)", got)
+	}
+	if !contains(got, "Idle") {
+		t.Fatalf("got %q, want Idle (the coordinator's own state)", got)
+	}
+}
+
+// TestProjectSummary_ActiveSubagentSurfacesAsWorking complements the above:
+// a subagent that is genuinely active does still surface as "Working" in
+// the summary, same as buildDashboardRows's rollup allows it to.
+func TestProjectSummary_ActiveSubagentSurfacesAsWorking(t *testing.T) {
+	project := hubRow{kind: hubRowProject, project: "Proj1", groupKey: "g1", state: "idle", liveCount: 2}
+	rows := []hubRow{
+		project,
+		{kind: hubRowSession, groupKey: "g1", state: "idle", live: true},
+		{kind: hubRowSession, groupKey: "g1", state: "active", live: true, isSubagent: true},
+	}
+	got := projectSummary(project, rows)
+	if !contains(got, "Working") {
+		t.Fatalf("got %q, want Working (the subagent is genuinely active)", got)
+	}
+}
+
 // TestCovProjectSessionCounts exercises session counting.
 func TestCovProjectSessionCounts(t *testing.T) {
 	project := hubRow{kind: hubRowProject, groupKey: "g1", liveCount: 2, recentCount: 1}
