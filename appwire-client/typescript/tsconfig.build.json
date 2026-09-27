@@ -59,6 +59,7 @@
     "sharedNotesAvailability.ts",
     "marketplaceSourceLabel.ts",
     "railSessionState.ts",
+    "sessionActivity.ts",
     "reasoningEffort.ts",
     "credentialLabels.ts",
     "pathRows.ts",
