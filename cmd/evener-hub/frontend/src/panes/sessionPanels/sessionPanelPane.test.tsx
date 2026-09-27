@@ -495,6 +495,23 @@ test("standalone activity pane shows an open watch row's countdown without its o
       expandedFoldIDs: [],
     };
     activityPanelStore.setState({ entries: new Map([[model.ref, entry]]) });
+    // The retained tree is current for the model's jobs bump, so the pane
+    // mounts without starting a root refresh.
+    activitySummaryStore.setState({
+      entries: new Map([
+        [
+          model.ref,
+          {
+            counts: tree.root.counts,
+            established: true,
+            mountedBodies: 0,
+            loading: false,
+            lastFetchedBump: model.jobsUpdatedAt,
+            requestID: 1,
+          },
+        ],
+      ]),
+    });
     seedNavigationWatches(model.ref, [
       {
         id: "watch_open",
@@ -512,7 +529,9 @@ test("standalone activity pane shows an open watch row's countdown without its o
     expect(row.getAttribute("aria-expanded")).toBe("true");
     expect(row.textContent).toContain("next ~4m");
   } finally {
-    navigationStore.setState({ resources: new Map() });
+    act(() => {
+      navigationStore.setState({ resources: new Map() });
+    });
     vi.useRealTimers();
   }
 });

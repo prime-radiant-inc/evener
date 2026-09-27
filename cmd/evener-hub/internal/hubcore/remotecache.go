@@ -132,7 +132,7 @@ func (c *RemoteThreadCache) publish(snapshot RemoteThreadSnapshot, captured map[
 
 // RegisterSource records sourceID's registration and assigns it the next
 // identity generation. The hub's host manager calls it whenever a host's
-// source registers — sidecar entries at startup and every runtime add — and
+// source registers — every configured entry at startup and every runtime add — and
 // the source registry's construction does it for configured hosts, so the
 // cache knows which registration of the name a walk is walking: RemoveSource
 // deletes the entry, a re-add assigns a strictly newer generation, and

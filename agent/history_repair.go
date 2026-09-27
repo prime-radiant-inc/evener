@@ -64,6 +64,12 @@ func repairOrphanedToolResultsIndexed(history []schema.Turn) ([]schema.Turn, int
 	}
 
 	for _, turn := range history {
+		if turn.Kind.TranscriptOnly() {
+			// Never model history; resume keeps these out. One that got here
+			// keeps its place and interrupts no tool round.
+			out = append(out, turn)
+			continue
+		}
 		switch turn.Kind {
 		case schema.TurnAssistant:
 			flushPending()

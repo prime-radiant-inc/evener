@@ -355,8 +355,21 @@ function mutateThenRefresh<T>(ref: string, mutate: () => Promise<T>): Promise<T>
   );
 }
 
-export function retryBlockedPendingTurn(clientMutationId: string, ref: string): Promise<boolean> {
-  return mutateThenRefresh(ref, () => retryBlockedMutation(clientMutationId));
+export type BlockedRetryOutcome = { released: true } | { released: false; current: MutationOutboxRecord | undefined };
+
+// A retry that did not release the row reports the record as it stands after
+// the refresh (undefined once it left the outbox), so the caller decides on
+// the state that refresh observed rather than a pre-refresh snapshot another
+// tab may have made moot. The decision read belongs to the same tracked
+// operation: nothing about the press is settled until it has run.
+export function retryBlockedPendingTurn(clientMutationId: string, ref: string): Promise<BlockedRetryOutcome> {
+  return trackProjectionWork(
+    (async (): Promise<BlockedRetryOutcome> => {
+      if (await mutateThenRefresh(ref, () => retryBlockedMutation(clientMutationId))) return { released: true };
+      const { outbox } = await readMutationPersistence(ref);
+      return { released: false, current: outbox.find((entry) => entry.clientMutationId === clientMutationId) };
+    })(),
+  );
 }
 
 export function updateRecoveryPendingTurn(

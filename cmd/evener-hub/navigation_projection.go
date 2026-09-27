@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -35,7 +36,7 @@ const (
 	// untruncated command. Generous rather than label-tight: a tooltip can
 	// wrap, but it must not lie — a cut-off "full" command is worse than a
 	// long one. Still bounded so one pathological command cannot dominate
-	// the response's byte budget (navigationJSONFits).
+	// the response's byte budget (navigationEncodedSize).
 	maxNavigationFullCommandRunes = 4_096
 	maxNavigationIdentityBytes    = 1_024
 	maxNavigationWorkingDirBytes  = 4_096
@@ -1005,13 +1006,11 @@ func (p navigationProjection) PinCatalogPage(offset uint32, limit int) hubapi.Na
 	start, end := navigationRange(len(p.pinSections), offset, limit)
 	rows := make(hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor], 0, end-start)
 	for _, section := range p.pinSections[start:end] {
-		candidate := hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: truncateNavigationRunes(section.name, maxNavigationLabelRunes), Count: section.memberCount}
-		response := hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: append(append(hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor](nil), rows...), candidate), Remaining: len(p.pinSections) - start - len(rows) - 1}
-		if !navigationJSONFits(response, maxNavigationCatalogBytes) {
-			break
-		}
-		rows = append(rows, candidate)
+		rows = append(rows, hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: truncateNavigationRunes(section.name, maxNavigationLabelRunes), Count: section.memberCount})
 	}
+	rows = rows[:navigationCatalogRowsThatFit(rows, func(kept int) any {
+		return hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor]{}, Remaining: len(p.pinSections) - start - kept}
+	})]
 	return hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: rows, Remaining: len(p.pinSections) - start - len(rows)}
 }
 
@@ -1024,15 +1023,45 @@ func (p navigationProjection) CatalogPage(kind navigationResourceKind, offset ui
 	start, end := navigationRange(len(projects), offset, limit)
 	rows := make(hubapi.NavigationArray[hubapi.NavigationProjectSummary], 0, end-start)
 	for _, project := range projects[start:end] {
-		candidate := p.projectSummary(project)
-		response := hubapi.NavigationProjectCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Projects: append(append(hubapi.NavigationArray[hubapi.NavigationProjectSummary](nil), rows...), candidate), Remaining: len(projects) - start - len(rows) - 1}
-		if !navigationJSONFits(response, maxNavigationCatalogBytes) {
-			break
-		}
-		rows = append(rows, candidate)
+		rows = append(rows, p.projectSummary(project))
 	}
+	rows = rows[:navigationCatalogRowsThatFit(rows, func(kept int) any {
+		return hubapi.NavigationProjectCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Projects: hubapi.NavigationArray[hubapi.NavigationProjectSummary]{}, Remaining: len(projects) - start - kept}
+	})]
 	remaining := len(projects) - start - len(rows)
 	return hubapi.NavigationProjectCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Projects: rows, Remaining: remaining}, nil
+}
+
+// navigationCatalogRowsThatFit returns how many leading rows a catalog page
+// keeps: the page takes rows in order until the next one would carry it past
+// maxNavigationCatalogBytes. emptyPage returns the page with no rows and the
+// remaining count for kept rows.
+//
+// A page's encoding is its empty page with the rows spliced into the empty
+// array: encoding/json encodes each slice element on its own and joins them
+// with commas, and the NavigationArray wrapper's own json.Marshal output passes
+// through the outer encode byte for byte. So a page with kept rows is exactly
+// len(empty page) + the rows' encoded lengths + kept-1 commas, and each row is
+// encoded once rather than once per page it appears in.
+func navigationCatalogRowsThatFit[T any](rows []T, emptyPage func(kept int) any) int {
+	rowBytes := 0
+	for index, row := range rows {
+		kept := index + 1
+		// A row or page that cannot be encoded fits no budget
+		// (navigationEncodedSize is math.MaxInt). Each size is checked against
+		// the room left before it is added, so rowBytes and pageBytes stay
+		// within the budget and no sum below can wrap.
+		size := navigationEncodedSize(row)
+		if size > maxNavigationCatalogBytes-rowBytes {
+			return index
+		}
+		rowBytes += size
+		pageBytes := navigationEncodedSize(emptyPage(kept))
+		if pageBytes > maxNavigationCatalogBytes || pageBytes+rowBytes+kept-1 > maxNavigationCatalogBytes {
+			return index
+		}
+	}
+	return len(rows)
 }
 
 func (p navigationProjection) Project(key string) (hubapi.NavigationProjectResource, bool) {
@@ -1069,23 +1098,25 @@ func (p navigationProjection) ProjectPage(key, tier string, offset uint32, limit
 var navigationEnvelopeMarshal = json.Marshal
 
 // The fitters marshal complete candidate envelopes. When a resource is too
-// large, they retain the largest deterministic left-to-right node prefix found
-// by binary search; that is equivalent to pruning rightmost branches first but
-// needs O(log n) full-envelope probes rather than one marshal per removed node.
+// large, they retain the largest deterministic left-to-right node prefix that
+// fits (navigationFittingBudget); that is equivalent to pruning rightmost
+// branches first but needs a few full-envelope probes rather than one marshal
+// per removed node.
 func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
-	if navigationJSONFits(*resource, maxNavigationResponseBytes) {
+	fullBytes := navigationEncodedSize(*resource)
+	if fullBytes <= maxNavigationResponseBytes {
 		return
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), func(trim navigationWatchPayloadTrim, budget int) bool {
+	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
 		rows, dropped := limitNavigationSummaries(original, budget)
 		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
 		candidate.Truncated = true
-		return navigationJSONFits(candidate, maxNavigationResponseBytes)
+		return navigationEncodedSize(candidate)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
 	trimNavigationWatchPayloads(resource.Sessions, trim)
@@ -1094,19 +1125,20 @@ func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
 }
 
 func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
-	if navigationJSONFits(*resource, maxNavigationResponseBytes) {
+	fullBytes := navigationEncodedSize(*resource)
+	if fullBytes <= maxNavigationResponseBytes {
 		return
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), func(trim navigationWatchPayloadTrim, budget int) bool {
+	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
 		rows, dropped := limitNavigationSummaries(original, budget)
 		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
 		candidate.Truncated = true
-		return navigationJSONFits(candidate, maxNavigationResponseBytes)
+		return navigationEncodedSize(candidate)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
 	trimNavigationWatchPayloads(resource.Sessions, trim)
@@ -1115,40 +1147,44 @@ func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
 }
 
 func fitNavigationProject(resource *hubapi.NavigationProjectResource) {
-	if navigationJSONFits(*resource, maxNavigationResponseBytes) {
+	fullBytes := navigationEncodedSize(*resource)
+	if fullBytes <= maxNavigationResponseBytes {
 		return
 	}
 	original := cloneNavigationProjectResource(*resource)
 	nodes := navigationSummaryNodes(original.Current.Sessions) + navigationSummaryNodes(original.Recent.Sessions) + navigationSummaryNodes(original.Archived.Sessions)
-	trim, budget := navigationFittingChoice(nodes, func(trim navigationWatchPayloadTrim, budget int) bool {
+	trim, budget := navigationFittingChoice(nodes, fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
 		candidate := limitNavigationProject(original, budget)
 		trimNavigationProjectWatchPayloads(&candidate, trim)
-		return navigationJSONFits(candidate, maxNavigationResponseBytes)
+		return navigationEncodedSize(candidate)
 	})
 	limited := limitNavigationProject(original, budget)
 	trimNavigationProjectWatchPayloads(&limited, trim)
 	*resource = limited
 }
 
-// navigationFittingChoice finds the largest session-row budget that fits. It
-// tries the full payload first, preserving the pre-existing answer and probe
-// count. Only when even one untrimmed row cannot fit does it degrade optional
-// watch payloads - delivery instants first, then whole watch rows - so a
-// session whose watches are what overflowed the response is still listed with
-// as much of its payload as fits, instead of being dropped and leaving the
-// page with no rows while data remains (which validateNavigationPageProgress
-// rejects outright). It returns the trim level and budget actually used.
-func navigationFittingChoice(nodes int, fits func(navigationWatchPayloadTrim, int) bool) (navigationWatchPayloadTrim, int) {
-	full := navigationFittingBudget(nodes, func(budget int) bool {
-		return fits(navigationWatchPayloadFull, budget)
-	})
+// navigationFittingChoice finds the largest session-row budget whose candidate
+// size fits the response; fullBytes is the untrimmed resource's size. It tries
+// the full payload first. Only when even one untrimmed row cannot fit does it
+// degrade optional watch payloads - delivery instants first, then whole watch
+// rows - so a session whose watches are what overflowed the response is still
+// listed with as much of its payload as fits, instead of being dropped and
+// leaving the page with no rows while data remains (which
+// validateNavigationPageProgress rejects outright). It returns the trim level and budget actually used.
+func navigationFittingChoice(nodes, fullBytes int, size func(navigationWatchPayloadTrim, int) int) (navigationWatchPayloadTrim, int) {
+	budgetAt := func(trim navigationWatchPayloadTrim) int {
+		// The size callback cannot fail, so neither can the search.
+		budget, _ := navigationFittingBudget(nodes, maxNavigationResponseBytes, fullBytes, func(budget int) (int, error) {
+			return size(trim, budget), nil
+		})
+		return budget
+	}
+	full := budgetAt(navigationWatchPayloadFull)
 	if full > 0 || nodes == 0 {
 		return navigationWatchPayloadFull, full
 	}
 	for _, trim := range []navigationWatchPayloadTrim{navigationWatchPayloadNoDeliveryTimes, navigationWatchPayloadNoWatches} {
-		budget := navigationFittingBudget(nodes, func(budget int) bool {
-			return fits(trim, budget)
-		})
+		budget := budgetAt(trim)
 		if budget > 0 {
 			return trim, budget
 		}
@@ -1215,17 +1251,81 @@ func trimNavigationProjectWatchPayloads(resource *hubapi.NavigationProjectResour
 	trimNavigationWatchPayloads(resource.Archived.Sessions, trim)
 }
 
-func navigationFittingBudget(nodes int, fits func(int) bool) int {
-	low, high := 0, nodes+1 // nodes is known not to fit; zero always fits.
+// navigationFittingBudget returns the largest budget in [0, nodes] whose
+// candidate size is at most maxBytes. Budget 0 is known to fit and is never
+// probed. fullBytes, the size of the whole resource, seeds the search.
+//
+// No fitter's candidate gets smaller as its budget grows. One more unit of
+// budget adds a whole row (a session summary, plus its entity record and
+// children container in the normalized snapshot, or a catalog row) or, for a
+// location's single session, changes nothing. The same step can remove only
+// one digit of a remaining count and one parent's omitted_descendants field,
+// less than any row (TestNavigationFittingRowOutweighsTheCountsItShrinks). So
+// every budget up to the answer fits and none past it does: any search that
+// finds that boundary returns exactly what a bisection from zero returns, and
+// it may start anywhere. It starts where a linear size estimate puts the boundary
+// and gallops outward to bracket it. Rows are close to uniform in size, so
+// that takes two or three probes where a bisection from scratch takes
+// log2(nodes).
+func navigationFittingBudget(nodes, maxBytes, fullBytes int, size func(budget int) (int, error)) (int, error) {
+	if nodes <= 0 {
+		return 0, nil
+	}
+	guess := nodes
+	if fullBytes > 0 {
+		guess = int(int64(nodes) * int64(maxBytes) / int64(fullBytes))
+	}
+	guess = min(max(guess, 1), nodes)
+	fits := func(budget int) (bool, error) {
+		bytes, err := size(budget)
+		return err == nil && bytes <= maxBytes, err
+	}
+	// low always fits and high never does; nodes+1 stands for past the end.
+	low, high := 0, nodes+1
+	fit, err := fits(guess)
+	if err != nil {
+		return 0, err
+	}
+	if fit {
+		low = guess
+		for step := 1; low+step < high; step *= 2 {
+			fit, err := fits(low + step)
+			if err != nil {
+				return 0, err
+			}
+			if !fit {
+				high = low + step
+				break
+			}
+			low += step
+		}
+	} else {
+		high = guess
+		for step := 1; high-step > low; step *= 2 {
+			fit, err := fits(high - step)
+			if err != nil {
+				return 0, err
+			}
+			if fit {
+				low = high - step
+				break
+			}
+			high -= step
+		}
+	}
 	for high-low > 1 {
 		middle := low + (high-low)/2
-		if fits(middle) {
+		fit, err := fits(middle)
+		if err != nil {
+			return 0, err
+		}
+		if fit {
 			low = middle
 		} else {
 			high = middle
 		}
 	}
-	return low
+	return low, nil
 }
 
 func navigationSummaryWeight(summary hubapi.NavigationSessionSummary) int {
@@ -1236,9 +1336,14 @@ func navigationSummaryWeight(summary hubapi.NavigationSessionSummary) int {
 	return weight
 }
 
-func navigationJSONFits(value any, maxBytes int) bool {
+// navigationEncodedSize is the length of value's JSON encoding. A value that
+// cannot be encoded fits no budget.
+func navigationEncodedSize(value any) int {
 	encoded, err := navigationEnvelopeMarshal(value)
-	return err == nil && len(encoded) <= maxBytes
+	if err != nil {
+		return math.MaxInt
+	}
+	return len(encoded)
 }
 
 func navigationSummaryNodes(rows []hubapi.NavigationSessionSummary) int {
@@ -1728,6 +1833,8 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Live:                p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
 		AskPending:          node.AskPending,
 		ApprovalPending:     node.ApprovalPending,
+		ApprovalTool:        truncateNavigationBytes(node.ApprovalTool, maxNavigationIdentityBytes),
+		ApprovalTarget:      truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
 		Dormant:             node.Dormant,
 		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           updatedAt,

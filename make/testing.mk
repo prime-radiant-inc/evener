@@ -70,18 +70,21 @@ test-native: test-native-bundle
 	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run test:shared && NODE_DISABLE_COMPILE_CACHE=1 npm run check && NODE_DISABLE_COMPILE_CACHE=1 npm run check:scripts
 
 # native-preflight turns the misleading Metro failure a fresh worktree gets into
-# a message naming the missing install and the command to run. The check and the
+# a message naming the missing install and the command to run. A symlinked
+# install is refused outright: the bundler resolves no module through one, so
+# nothing else about it can make the native targets ready. The check and the
 # cases it settles live in the script.
-## Ensure the mobile-native dependency install is present and lockfile-compatible
-## before any native target runs.
-## proves: mobile-native/node_modules exists, matches package-lock.json, and
-##   holds an executable .bin/expo, so Metro bundles with the pinned Expo
-##   instead of whatever `npx` finds on PATH.
+## Ensure the mobile-native dependency install is present, real, and
+## lockfile-compatible before any native target runs.
+## proves: mobile-native/node_modules exists as a real directory, matches
+##   package-lock.json, and holds an executable .bin/expo, so Metro bundles
+##   with the pinned Expo instead of whatever `npx` finds on PATH.
 ## trigger: Setup prerequisite for the native gates.
 ## requires: Node 22.13+; never installs, refusing instead with the command to
 ##   run.
-## fails-when: node_modules is missing, does not match the lockfile (a symlink
-##   always by content), or has no executable .bin/expo; the message names
+## fails-when: node_modules is missing, is a symlink (the bundler resolves no
+##   module through one, whatever the lockfiles say), is older than
+##   package-lock.json, or has no executable .bin/expo; the message names
 ##   `cd mobile-native && npm ci`.
 native-preflight:
 	@scripts/native/native-preflight.sh

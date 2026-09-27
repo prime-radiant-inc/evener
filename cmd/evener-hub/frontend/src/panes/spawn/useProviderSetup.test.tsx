@@ -179,7 +179,7 @@ test("a controller-scoped refetch does not replace a remote host's provider list
 // knows nothing about registry identity - it must converge anyway, because the
 // same defect would otherwise reappear in every other partition consumer.
 function registryRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return { origin: "sidecar", attached: true, midAttach: false, removed: false, ...overrides };
+  return { origin: "hub.toml", attached: true, midAttach: false, removed: false, ...overrides };
 }
 
 // M1: the registry's own failure must be REACHABLE here. A remote target whose

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -278,6 +279,44 @@ func TestAppThreadTreeEntriesPreserveRemoteLineageAndKind(t *testing.T) {
 	}
 	if meta.ID != "remote:child" || meta.ParentSessionID != "remote:parent" || !meta.IsSubagent {
 		t.Fatalf("remote subagent metadata = %+v", meta)
+	}
+}
+
+// A remote host's session carries its unanswered question and its blocked
+// escalation cards into the live entry, as a local session's probe does, so
+// its rows show them and the approval promotes it into NeedsYou.
+func TestAppThreadTreeEntriesCarryRemoteAskAndApproval(t *testing.T) {
+	cards := []appwire.SandboxEscalationRequested{
+		{ThreadID: "thread-remote", Ref: "remote:thread-remote", EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/srv/docs/a.md"},
+		{ThreadID: "thread-remote", Ref: "remote:thread-remote", EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/srv/docs/b.md"},
+	}
+	_, entry, ok := appThreadTreeEntries(appwire.Thread{
+		ID:     "thread-remote",
+		Source: "remote",
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		Evener: appwire.EvenerThread{Ref: "remote:thread-remote", AskPending: true, PendingEscalations: cards},
+	})
+	if !ok {
+		t.Fatal("appThreadTreeEntries rejected a valid remote thread")
+	}
+	if !entry.PendingAsk {
+		t.Fatalf("entry = %+v, want the remote question carried", entry)
+	}
+	if !entry.PendingEscalation || !slices.Equal(entry.PendingEscalations, cards) {
+		t.Fatalf("entry flag %v, cards %+v; want the flag and both cards in raise order", entry.PendingEscalation, entry.PendingEscalations)
+	}
+
+	_, quiet, ok := appThreadTreeEntries(appwire.Thread{
+		ID:     "thread-quiet",
+		Source: "remote",
+		Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		Evener: appwire.EvenerThread{Ref: "remote:thread-quiet"},
+	})
+	if !ok {
+		t.Fatal("appThreadTreeEntries rejected a valid remote thread")
+	}
+	if quiet.PendingAsk || quiet.PendingEscalation || len(quiet.PendingEscalations) != 0 {
+		t.Fatalf("entry = %+v, want no question and no approval on a working remote row", quiet)
 	}
 }
 

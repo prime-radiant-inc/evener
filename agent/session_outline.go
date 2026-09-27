@@ -184,7 +184,7 @@ func renderOutline(entries []transcript.Entry, start, end int) (content string, 
 // Empty segments are dropped, so a plain user turn is just "<seq> · User · <text>".
 func outlineLine(entries []transcript.Entry, seq int, idx *resultIndex) (string, bool) {
 	t := entries[seq].Turn
-	if t.Kind == schema.TurnToolResults || t.Kind == schema.TurnAttentionResolution {
+	if t.Kind == schema.TurnToolResults || !publicTranscriptKind(t.Kind) {
 		return "", false
 	}
 
