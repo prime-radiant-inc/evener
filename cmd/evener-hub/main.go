@@ -289,6 +289,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	archive := hubcore.NewArchiveStore(pastIndexDB)
 	favorite := hubcore.NewFavoriteStore(pastIndexDB)
 	pinSections := hubcore.NewPinSectionStore(pastIndexDB)
+	sessionSeen := hubcore.NewSessionSeenStore(pastIndexDB)
 
 	// Spawner
 	hubToken, err := deps.newToken()
@@ -535,6 +536,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Archive:                   archive,
 		Favorite:                  favorite,
 		PinSections:               pinSections,
+		SessionSeen:               sessionSeen,
 		Spawner:                   spawner,
 		APILogDefault:             cfg.APILog,
 		DeletionStore:             deletionStore,
@@ -645,6 +647,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if pinSections != nil {
 		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	}
+	// A seen mark changes live rows' unseen flag; a mark committed by any
+	// writer, the RPC or a session deletion's scrub, invalidates navigation.
+	sessionSeen.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 
 	if deps.afterWeb != nil {
 		deps.afterWeb(web)

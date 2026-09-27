@@ -26,6 +26,7 @@ type wireProbeEnvelopeSource struct {
 	escalations []appwire.SandboxEscalationRequested
 	detailed    server.DetailedStatus
 	tasks       *appwire.TaskAggregate
+	meta        schema.SessionMeta
 }
 
 // An entry that names no session yet has only the answer to go on, so the
@@ -143,7 +144,7 @@ func (s wireProbeEnvelopeSource) PendingEscalations() []appwire.SandboxEscalatio
 }
 func (s wireProbeEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
 func (s wireProbeEnvelopeSource) VisionModel() string                     { return "" }
-func (s wireProbeEnvelopeSource) SessionMeta() schema.SessionMeta         { return schema.SessionMeta{} }
+func (s wireProbeEnvelopeSource) SessionMeta() schema.SessionMeta         { return s.meta }
 
 // TestStatusProberReadsAppWireStatusIncludingNonAgentJobs drives a real daemon
 // AppWire server through the real typed client. The shell row proves status is

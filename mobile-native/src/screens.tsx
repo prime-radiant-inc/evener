@@ -121,7 +121,7 @@ import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
 import { SessionControls } from "./sessionControls";
 import { localSessionId } from "./sessionDeletionResult";
-import { TasksSheet } from "./TasksSheet";
+import { leaveScreen, screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { TimelineItem } from "./TimelineItem";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
@@ -168,6 +168,7 @@ export type Routes = {
 	Sessions: undefined;
 	NewSession: { hubId: string; hubName: string };
 	Conversation: { hubId: string; ref: string; title: string };
+	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
 };
 
 export function HubsScreen({
@@ -818,6 +819,11 @@ export function SessionsScreen({
 // never fires on iOS, and subscribing there raises a dev-mode red box), so
 // the subscription itself is Android-only. Extracted so this is testable
 // without mounting the whole screen.
+//
+// It asks for real focus, not whether the screen is in front
+// (useScreenInFront): the keyboard belongs to the screen the person is looking
+// at, so a session under one of its own sheets never pulls focus into its
+// composer.
 export function useFocusAfterModal(
 	navigation: { isFocused: () => boolean },
 	focusAfterModal: RefObject<boolean>,
@@ -845,7 +851,7 @@ export function ConversationScreen({
 		retry,
 		state: connectionState,
 	} = useConnection();
-	const focused = useIsFocused();
+	const focused = useScreenInFront(route.key);
 	const colors = useColors();
 	const { fontScale, height: windowHeight } = useWindowDimensions();
 	const [viewportHeight, setViewportHeight] = useState(windowHeight);
@@ -951,14 +957,6 @@ export function ConversationScreen({
 	const [queueOpen, setQueueOpen] = useState(false);
 	const [recoveryOpen, setRecoveryOpen] = useState(false);
 	const [sessionOpen, setSessionOpen] = useState(false);
-	const [taskContext, setTaskContext] = useState<{
-		hubId: string;
-		ref: string;
-		threadId: string;
-		hasTasks: boolean;
-		hubName: string;
-		client: NonNullable<typeof client>;
-	} | null>(null);
 	const [activityContext, setActivityContext] = useState<{
 		hubId: string;
 		ref: string;
@@ -1015,15 +1013,15 @@ export function ConversationScreen({
 		imageSelection.subscribe,
 		imageSelection.getSnapshot,
 	);
-	useFocusEffect(
-		useCallback(
-			() => () => {
-				imageSelection.cancel();
-				projectLookup.current?.abort();
-			},
-			[imageSelection],
-		),
-	);
+	// Follows the screen in front rather than focus, so a photo being attached
+	// survives one of the screen's own sheets opening.
+	useEffect(() => {
+		if (!focused) return;
+		return () => {
+			imageSelection.cancel();
+			projectLookup.current?.abort();
+		};
+	}, [focused, imageSelection]);
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
@@ -1149,7 +1147,7 @@ export function ConversationScreen({
 		const current = store.getState();
 		if (
 			!connectionReady.current ||
-			!navigation.isFocused() ||
+			!screenInFront(navigation, route.key) ||
 			current.status !== "open" ||
 			!current.conversation?.capabilities?.forkFromTurn ||
 			!bindingInstance ||
@@ -1187,7 +1185,8 @@ export function ConversationScreen({
 							store.getState().close();
 							service.close();
 							setSessionOpen(false);
-							if (navigation.isFocused()) navigation.goBack();
+							if (screenInFront(navigation, route.key))
+								leaveScreen(navigation, route.key);
 						},
 						(scope) => {
 							const current = store.getState();
@@ -1195,7 +1194,7 @@ export function ConversationScreen({
 								currentDestination.current.store !== store ||
 								currentDestination.current.client !== client ||
 								!connectionReady.current ||
-								!navigation.isFocused()
+								!screenInFront(navigation, route.key)
 							)
 								return false;
 							if (scope === "destination")
@@ -1237,7 +1236,7 @@ export function ConversationScreen({
 						() => store.getState().conversation?.pendingEscalations ?? [],
 						() =>
 							connectionReady.current &&
-							navigation.isFocused() &&
+							screenInFront(navigation, route.key) &&
 							store.getState().status === "open" &&
 							store.getState().conversationGeneration === bindingGeneration &&
 							store.getState().conversation?.instanceId === bindingInstance,
@@ -1295,16 +1294,22 @@ export function ConversationScreen({
 				return;
 			}
 			if (!client || !connected) return;
-			const context = {
+			if (destination === "tasks") {
+				navigation.navigate("TasksSheet", {
+					hubId: route.params.hubId,
+					ref: route.params.ref,
+					threadId: current.threadId,
+					hasTasks: current.tasks != null,
+				});
+				return;
+			}
+			setActivityContext({
 				hubId: route.params.hubId,
 				ref: route.params.ref,
 				threadId: current.threadId,
 				hubName: activeProfile?.name ?? "Hub",
 				client,
-			};
-			if (destination === "tasks")
-				setTaskContext({ ...context, hasTasks: current.tasks != null });
-			else setActivityContext(context);
+			});
 		},
 		[
 			store,
@@ -1568,19 +1573,20 @@ export function ConversationScreen({
 		},
 		[],
 	);
-	useFocusEffect(
-		useCallback(() => {
-			appliedReaderRestore.current = null;
-			readerRestoreAttempts.current.reset();
-			setLayoutRevision((revision) => revision + 1);
-			return () => {
-				readerPositions.save(readerAnchor.current);
-				if (restoreFrame.current !== null)
-					cancelAnimationFrame(restoreFrame.current);
-				restoreFrame.current = null;
-			};
-		}, []),
-	);
+	// Follows the screen in front rather than focus, so opening one of the
+	// screen's own sheets neither saves nor re-applies the reading position.
+	useEffect(() => {
+		if (!focused) return;
+		appliedReaderRestore.current = null;
+		readerRestoreAttempts.current.reset();
+		setLayoutRevision((revision) => revision + 1);
+		return () => {
+			readerPositions.save(readerAnchor.current);
+			if (restoreFrame.current !== null)
+				cancelAnimationFrame(restoreFrame.current);
+			restoreFrame.current = null;
+		};
+	}, [focused]);
 	useEffect(() => {
 		const subscription = AppState.addEventListener("change", (state) => {
 			if (state !== "active") readerPositions.save(readerAnchor.current);
@@ -1643,7 +1649,7 @@ export function ConversationScreen({
 		setActionError(null);
 		const currentBinding = () =>
 			connectionReady.current &&
-			navigation.isFocused() &&
+			screenInFront(navigation, route.key) &&
 			store.getState().conversationGeneration === bindingGeneration &&
 			store.getState().conversation?.instanceId === bindingInstance;
 		commandBusy.current = true;
@@ -1737,18 +1743,12 @@ export function ConversationScreen({
 									throw new CommandArgumentError(
 										"Session tasks are unavailable.",
 									);
-								setTaskContext((open) =>
-									open
-										? null
-										: {
-												hubId: route.params.hubId,
-												ref: route.params.ref,
-												threadId: current.threadId,
-												hasTasks: current.tasks != null,
-												hubName: activeProfile?.name ?? "Hub",
-												client,
-											},
-								);
+								navigation.navigate("TasksSheet", {
+									hubId: route.params.hubId,
+									ref: route.params.ref,
+									threadId: current.threadId,
+									hasTasks: current.tasks != null,
+								});
 							}
 						},
 					});
@@ -1758,7 +1758,7 @@ export function ConversationScreen({
 				store.getState().close();
 				service.close();
 				setSessionOpen(false);
-				navigation.goBack();
+				leaveScreen(navigation, route.key);
 			} else await store.getState().rehydrate(service, activitySink);
 		} catch (error) {
 			if (!currentBinding()) return;
@@ -1776,7 +1776,7 @@ export function ConversationScreen({
 		const replace = () => {
 			if (
 				!connectionReady.current ||
-				!navigation.isFocused() ||
+				!screenInFront(navigation, route.key) ||
 				store.getState().conversationGeneration !== bindingGeneration ||
 				document.getSnapshot().submitting ||
 				document.getSnapshot().record.unconfirmed !== null
@@ -1811,7 +1811,7 @@ export function ConversationScreen({
 			!service ||
 			!ready ||
 			!connectionReady.current ||
-			!navigation.isFocused() ||
+			!screenInFront(navigation, route.key) ||
 			current.status !== "open" ||
 			current.conversationGeneration !== bindingGeneration ||
 			current.conversation?.instanceId !== bindingInstance ||
@@ -1840,7 +1840,7 @@ export function ConversationScreen({
 			if (
 				acceptedAnswers &&
 				connectionReady.current &&
-				navigation.isFocused() &&
+				screenInFront(navigation, route.key) &&
 				store.getState().conversationGeneration === bindingGeneration &&
 				store.getState().conversation?.instanceId === bindingInstance
 			)
@@ -2080,22 +2080,6 @@ export function ConversationScreen({
 					}
 					ready={ready}
 					close={() => setComposerSetting(null)}
-				/>
-			) : null}
-			{activeProfile?.id === route.params.hubId &&
-			taskContext?.hubId === route.params.hubId &&
-			taskContext.ref === route.params.ref ? (
-				<TasksSheet
-					key={`${route.params.hubId}:${route.params.ref}`}
-					client={client ?? taskContext.client}
-					sessionRef={route.params.ref}
-					threadId={conversation?.threadId ?? taskContext.threadId}
-					hasTasks={
-						conversation ? conversation.tasks != null : taskContext.hasTasks
-					}
-					connected={connected}
-					hubName={taskContext.hubName}
-					close={() => setTaskContext(null)}
 				/>
 			) : null}
 			{activeProfile?.id === route.params.hubId &&

@@ -478,7 +478,7 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 	var captured any
 	deps := &toolDeps{
 		emit:               func(events.EventKind, events.EventData) {},
-		deliverCommunicate: func(events.CommunicateData) bool { return true },
+		deliverCommunicate: func(events.CommunicateData) error { return nil },
 		abort: func(context.Context) error {
 			return nil
 		},
@@ -525,7 +525,7 @@ func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T
 	var captured any
 	deps := &toolDeps{
 		emit:               func(events.EventKind, events.EventData) {},
-		deliverCommunicate: func(events.CommunicateData) bool { return true },
+		deliverCommunicate: func(events.CommunicateData) error { return nil },
 		abort: func(context.Context) error {
 			return nil
 		},
