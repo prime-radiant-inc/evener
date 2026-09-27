@@ -3,14 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -20,22 +18,6 @@ const (
 	proseRootID  = "02wMz5Txv1C3Hut0M8GCeB"
 	proseChildID = "02wMz5Txv2enqVTitaig6F"
 )
-
-func writeFluencyMeta(t *testing.T, stateDir, id, parent string, created time.Time) {
-	t.Helper()
-	meta := schema.SessionMeta{ID: id, IsSubagent: parent != "", ParentSessionID: parent, CreatedAt: created}
-	data, err := json.Marshal(meta)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(stateDir, "sessions", id+".meta.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
 
 func assistantTurn(parts ...llm.ContentPart) schema.Turn {
 	return schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: parts})
@@ -49,9 +31,8 @@ func textPart(s string) llm.ContentPart {
 // result tool and a delegate that reports "Child report.".
 func writeProseRun(t *testing.T, stateDir, rootMessage string) {
 	t.Helper()
-	now := time.Now()
-	writeFluencyMeta(t, stateDir, proseRootID, "", now)
-	writeFluencyMeta(t, stateDir, proseChildID, proseRootID, now.Add(time.Second))
+	rootMeta(t, stateDir, proseRootID)
+	subagentMeta(t, stateDir, proseChildID, proseRootID)
 	message, _ := json.Marshal(map[string]any{"message": rootMessage, "end_turn": true})
 	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
 		assistantTurn(textPart("Looking at the tests."), fluencyToolCall("communicate", string(message))),
@@ -233,18 +214,11 @@ func TestRenderProseTableShowsTheChosenChannel(t *testing.T) {
 	}
 }
 
-// writeFluencyResult writes res as dir/<model>/<probe>/rep-NN/result.json.
+// writeFluencyResult writes res where a run under dir writes it:
+// dir/<model>/<probe>/rep-NN/result.json.
 func writeFluencyResult(t *testing.T, dir string, res probeResult) {
 	t.Helper()
-	data, err := json.Marshal(res)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, res.Model, res.Probe, fmt.Sprintf("rep-%02d", res.Repetition), "result.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := writeProbeResult(filepath.Join(dir, res.Model), res); err != nil {
 		t.Fatal(err)
 	}
 }

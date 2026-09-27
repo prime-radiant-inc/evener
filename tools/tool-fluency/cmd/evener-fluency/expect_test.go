@@ -27,7 +27,7 @@ func TestEvaluateExpectationsReportsFailedChecks(t *testing.T) {
 // TestRunCheckStopsAHungCommand: a check that never exits fails as a timeout
 // soon after its deadline, so one bad check cannot stall a run. The command
 // is a chain, as many task checks are: bash cannot exec its last command in
-// place, so a child outlives the kill and keeps the output pipe open.
+// place, so the child holding the output pipe is not bash itself.
 func TestRunCheckStopsAHungCommand(t *testing.T) {
 	t.Parallel()
 	start := time.Now()

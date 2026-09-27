@@ -20,15 +20,15 @@ type matrixVersion struct {
 }
 
 // matrixConfigs expands versions and models into one run configuration per
-// pair, each writing to out/<label>/<model>.
-func matrixConfigs(base runConfig, versions []matrixVersion, models []string, out string) []runConfig {
+// pair, each writing to <base.outDir>/<label>/<model>.
+func matrixConfigs(base runConfig, versions []matrixVersion, models []string) []runConfig {
 	var cfgs []runConfig
 	for _, v := range versions {
 		for _, model := range models {
 			cfg := base
 			cfg.evenerBin = v.Bin
 			cfg.model = model
-			cfg.outDir = filepath.Join(out, safeName(v.Label), safeName(model))
+			cfg.outDir = filepath.Join(base.outDir, safeName(v.Label), safeName(model))
 			cfg.systemPromptAppend = slices.Clone(base.systemPromptAppend)
 			cfgs = append(cfgs, cfg)
 		}
@@ -105,7 +105,7 @@ func runMatrixCommand(args []string) error {
 	}
 	base.harness = "cli"
 	base.systemPromptAppend = []string(systemPromptAppend)
-	cfgs := matrixConfigs(base, versions, modelList, base.outDir)
+	cfgs := matrixConfigs(base, versions, modelList)
 	if err := checkMatrixCells(cfgs); err != nil {
 		return err
 	}

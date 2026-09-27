@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -17,16 +18,18 @@ import (
 // long enough that a preview would cut it.
 const reviewRunReport = "Fixed the weekly totals. tally.Sum started its loop at index 1, so it skipped the first value; it now adds every value, and go test passes."
 
-// writeReviewRun writes one run under base the way a run lays it out: a
-// state directory whose root transcript mentions a file in the work
-// directory, and result.json. It returns the work and state directories.
+// writeReviewRun writes repetition rep of prose.bugfix-tally into cellDir the
+// way a run lays it out: <cellDir>/prose.bugfix-tally/rep-NN holds a state
+// directory whose root transcript mentions a file in the work directory, and
+// the result file. It returns the work and state directories.
 // The transcript opens with the harness's environment turn, names the version
 // label outside any path, as an agent that lists the directories above its
 // work directory would, and ends with reviewRunReport.
-func writeReviewRun(t *testing.T, base string) (workDir, stateDir string) {
+func writeReviewRun(t *testing.T, cellDir string, rep int) (workDir, stateDir string) {
 	t.Helper()
+	base := filepath.Join(cellDir, "prose.bugfix-tally", fmt.Sprintf("rep-%02d", rep))
 	workDir, stateDir = filepath.Join(base, "work"), filepath.Join(base, "state")
-	writeFluencyMeta(t, stateDir, proseRootID, "", time.Now())
+	rootMeta(t, stateDir, proseRootID)
 	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
 		schema.NewTurn(schema.TurnEnvironment, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{textPart("date: 2026-09-27 14:00 PDT")}}),
 		assistantTurn(
@@ -36,12 +39,8 @@ func writeReviewRun(t *testing.T, base string) (workDir, stateDir string) {
 		assistantTurn(textPart("The directory four levels up lists v1-A.")),
 		assistantTurn(fluencyToolCall("communicate", `{"message":"`+reviewRunReport+`","end_turn":true}`)),
 	})
-	res := probeResult{Probe: "prose.bugfix-tally", Model: "lunarouter/m", Repetition: 1, WorkDir: workDir, StateDir: stateDir}
-	data, err := json.Marshal(res)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(base, "result.json"), data, 0o644); err != nil {
+	res := probeResult{Probe: "prose.bugfix-tally", Model: "lunarouter/m", Repetition: rep, WorkDir: workDir, StateDir: stateDir}
+	if err := writeProbeResult(cellDir, res); err != nil {
 		t.Fatal(err)
 	}
 	return workDir, stateDir
@@ -54,7 +53,7 @@ func writeReviewRun(t *testing.T, base string) (workDir, stateDir string) {
 func TestWriteReviewPackMasksRunPaths(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	workDir, stateDir := writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m", "prose.bugfix-tally", "rep-01"))
+	workDir, stateDir := writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m"), 1)
 
 	packets := filepath.Join(t.TempDir(), "packets")
 	key, err := writeReviewPack([]labeledDir{{Label: "v1-A", Dir: filepath.Join(root, "v1-A")}}, packets, root, rand.New(rand.NewPCG(1, 1)))
@@ -88,8 +87,8 @@ func TestWriteReviewPackMasksRunPaths(t *testing.T) {
 func TestWriteReviewPackShowsWhatTheUserSawAndNoHarnessChrome(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	for _, rep := range []string{"rep-01", "rep-02"} {
-		writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m", "prose.bugfix-tally", rep))
+	for rep := 1; rep <= 2; rep++ {
+		writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m"), rep)
 	}
 	packets := filepath.Join(t.TempDir(), "packets")
 	key, err := writeReviewPack([]labeledDir{{Label: "v1-A", Dir: filepath.Join(root, "v1-A")}}, packets, root, rand.New(rand.NewPCG(1, 1)))
@@ -132,7 +131,7 @@ func TestWriteReviewPackShowsWhatTheUserSawAndNoHarnessChrome(t *testing.T) {
 func TestReviewPackRefusesALabelWithoutADigit(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writeReviewRun(t, filepath.Join(root, "baseline", "lunarouter-m", "prose.bugfix-tally", "rep-01"))
+	writeReviewRun(t, filepath.Join(root, "baseline", "lunarouter-m"), 1)
 	err := run([]string{"review-pack", "--results", "baseline=" + filepath.Join(root, "baseline"), "--mask-root", root,
 		"--packets", filepath.Join(t.TempDir(), "packets"), "--key", filepath.Join(t.TempDir(), "key.json")})
 	if err == nil || !strings.Contains(err.Error(), "digit") {
@@ -145,7 +144,7 @@ func TestReviewPackRefusesALabelWithoutADigit(t *testing.T) {
 // working directory.
 func TestReviewPackMasksUnderARelativeMaskRoot(t *testing.T) {
 	root := t.TempDir()
-	writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m", "prose.bugfix-tally", "rep-01"))
+	writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m"), 1)
 	t.Chdir(root)
 	packets := filepath.Join(t.TempDir(), "packets")
 	err := run([]string{"review-pack", "--results", "v1-A=v1-A", "--mask-root", ".",
@@ -233,7 +232,7 @@ func TestReviewPackRefusesLayoutsThatBreakTheBlinding(t *testing.T) {
 func TestReviewPackWritesPacketsAndKey(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m", "prose.bugfix-tally", "rep-01"))
+	writeReviewRun(t, filepath.Join(root, "v1-A", "lunarouter-m"), 1)
 	packets := filepath.Join(t.TempDir(), "packets")
 	keyPath := filepath.Join(t.TempDir(), "key.json")
 	err := run([]string{"review-pack", "--results", "v1-A=" + filepath.Join(root, "v1-A"), "--mask-root", root,

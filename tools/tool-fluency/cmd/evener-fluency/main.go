@@ -31,6 +31,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/procgroup"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
 )
@@ -1081,16 +1082,11 @@ func unavailableFinding(probe probeFile, available map[string]bool) *finding {
 }
 
 // walkTranscripts calls fn with every session transcript under stateDir in
-// session-file order. It returns the first error from fn or from reading a
-// transcript. The tool-count aggregation walks every transcript through this
-// enumeration; the phase metrics read the root session's transcript directly.
-func walkTranscripts(stateDir string, fn func(doctor.TranscriptResult) error) error {
-	return walkTranscriptsWith(stateDir, doctor.TranscriptOpts{}, fn)
-}
-
-// walkTranscriptsWith is walkTranscripts with render options, for callers
-// that need each turn's whole text.
-func walkTranscriptsWith(stateDir string, opts doctor.TranscriptOpts, fn func(doctor.TranscriptResult) error) error {
+// session-file order, rendered with opts. It returns the first error from fn
+// or from reading a transcript. The tool-count aggregation walks every
+// transcript through this enumeration; the phase metrics read the root
+// session's transcript directly.
+func walkTranscripts(stateDir string, opts doctor.TranscriptOpts, fn func(doctor.TranscriptResult) error) error {
 	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.transcript.jsonl"))
 	if err != nil {
 		return err
@@ -1234,7 +1230,7 @@ func transcriptToolCounts(tr doctor.TranscriptResult) map[string]int {
 
 func allTranscriptToolCounts(stateDir string) (map[string]int, error) {
 	counts := map[string]int{}
-	err := walkTranscripts(stateDir, func(tr doctor.TranscriptResult) error {
+	err := walkTranscripts(stateDir, doctor.TranscriptOpts{}, func(tr doctor.TranscriptResult) error {
 		for tool, n := range transcriptToolCounts(tr) {
 			counts[tool] += n
 		}
@@ -1278,6 +1274,13 @@ func rootSessionID(stateDir string) (string, error) {
 	return selected.ID, nil
 }
 
+// callCount is how many times the run called a tool. A manifest may name a
+// tool by its canonical name or by the name the model saw, so the count is the
+// larger of the two.
+func callCount(res probeResult, name string) int {
+	return max(res.CanonicalToolCounts[name], res.ModelToolCounts[name])
+}
+
 func evaluateExpectations(workDir string, probe probeFile, res probeResult) []finding {
 	var out []finding
 	for _, call := range probe.Expect.Calls {
@@ -1285,7 +1288,7 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 		if minCalls == 0 {
 			minCalls = 1
 		}
-		got := max(res.CanonicalToolCounts[call.Tool], res.ModelToolCounts[call.Tool])
+		got := callCount(res, call.Tool)
 		if got < minCalls {
 			out = append(out, finding{
 				Category: "selection",
@@ -1295,7 +1298,7 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 		}
 	}
 	for _, name := range probe.Expect.ForbiddenCalls {
-		got := max(res.CanonicalToolCounts[name], res.ModelToolCounts[name])
+		got := callCount(res, name)
 		if got > 0 {
 			out = append(out, finding{
 				Category: "churn",
@@ -1306,7 +1309,7 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 	}
 	for _, name := range slices.Sorted(maps.Keys(probe.Expect.MaxCalls)) {
 		limit := probe.Expect.MaxCalls[name]
-		got := max(res.CanonicalToolCounts[name], res.ModelToolCounts[name])
+		got := callCount(res, name)
 		if got > limit {
 			out = append(out, finding{
 				Category: "churn",
@@ -1394,8 +1397,18 @@ func runCheck(workDir string, check checkSpec, timeout time.Duration) (bool, str
 	cmd := exec.CommandContext(ctx, "bash", "-c", check.Run)
 	cmd.Dir = workDir
 	cmd.Env = fixtureEnv(workDir)
-	// A killed check can leave a child holding the output pipe; stop waiting
-	// for it shortly after the kill.
+	// The check runs in its own process group, so the kill at the deadline
+	// reaches everything it started, such as a go test binary stuck in a loop.
+	// The cost: a Ctrl-C of the runner no longer reaches a running check.
+	cmd.SysProcAttr = procgroup.SysProcAttr()
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			procgroup.Kill(cmd.Process.Pid)
+		}
+		return nil
+	}
+	// A descendant that left the group can still hold the output pipe; stop
+	// waiting for it shortly after the kill.
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err == nil {

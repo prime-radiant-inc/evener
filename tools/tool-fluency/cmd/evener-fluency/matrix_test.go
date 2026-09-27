@@ -13,10 +13,10 @@ import (
 
 func TestMatrixConfigsExpandsVersionsByModels(t *testing.T) {
 	t.Parallel()
-	base := runConfig{repetitions: 3, probesDir: "tasks"}
+	base := runConfig{repetitions: 3, probesDir: "tasks", outDir: "out"}
 	cfgs := matrixConfigs(base,
 		[]matrixVersion{{Label: "baseline", Bin: "/b/base"}, {Label: "v1-A", Bin: "/b/a"}},
-		[]string{"lunarouter/m1", "lunarouter/m2"}, "out")
+		[]string{"lunarouter/m1", "lunarouter/m2"})
 	if len(cfgs) != 4 {
 		t.Fatalf("got %d configs, want 4", len(cfgs))
 	}

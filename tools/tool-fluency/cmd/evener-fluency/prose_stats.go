@@ -35,7 +35,7 @@ func extractRunProse(stateDir string) (runProse, error) {
 		return runProse{}, err
 	}
 	var p runProse
-	err = walkTranscriptsWith(stateDir, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull}, func(tr doctor.TranscriptResult) error {
+	err = walkTranscripts(stateDir, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull}, func(tr doctor.TranscriptResult) error {
 		for _, turn := range tr.Turns {
 			if turn.Kind != string(schema.TurnAssistant) {
 				continue
@@ -175,7 +175,7 @@ func summarizeProse(dirs []labeledDir) ([]proseStats, error) {
 	type key struct{ label, model string }
 	rows := map[key]*proseStats{}
 	messageWords := map[key][]int{}
-	taskPasses := map[key]map[string]bool{} // probe -> passed on every run so far
+	taskFailed := map[key]map[string]bool{} // probe -> failed on some run
 	for _, d := range dirs {
 		results, err := loadResults(d.Dir)
 		if err != nil {
@@ -188,7 +188,7 @@ func summarizeProse(dirs []labeledDir) ([]proseStats, error) {
 			if row == nil {
 				row = &proseStats{Label: d.Label, Model: res.Model}
 				rows[k] = row
-				taskPasses[k] = map[string]bool{}
+				taskFailed[k] = map[string]bool{}
 			}
 			row.Runs++
 			passed := res.Status == "passed"
@@ -197,11 +197,7 @@ func summarizeProse(dirs []labeledDir) ([]proseStats, error) {
 			} else if res.Status != "failed" {
 				row.Blocked++
 			}
-			if prev, seen := taskPasses[k][res.Probe]; !seen {
-				taskPasses[k][res.Probe] = passed
-			} else {
-				taskPasses[k][res.Probe] = prev && passed
-			}
+			taskFailed[k][res.Probe] = taskFailed[k][res.Probe] || !passed
 			p, err := extractRunProse(res.StateDir)
 			if err != nil {
 				row.ProseErrors++
@@ -220,9 +216,9 @@ func summarizeProse(dirs []labeledDir) ([]proseStats, error) {
 	}
 	out := make([]proseStats, 0, len(rows))
 	for k, row := range rows {
-		row.Tasks = len(taskPasses[k])
-		for _, allPassed := range taskPasses[k] {
-			if allPassed {
+		row.Tasks = len(taskFailed[k])
+		for _, failed := range taskFailed[k] {
+			if !failed {
 				row.TasksAllPassed++
 			}
 		}

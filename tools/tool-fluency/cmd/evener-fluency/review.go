@@ -12,7 +12,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/schema"
@@ -123,21 +122,10 @@ func renderPacket(tr doctor.TranscriptResult) string {
 			if result.IsError {
 				status = " (error)"
 			}
-			fmt.Fprintf(&b, "← %s%s\n\n%s\n\n", result.Name, status, indentBlock(firstBytes(result.ContentPreview, packetToolResultMax)))
+			fmt.Fprintf(&b, "← %s%s\n\n%s\n\n", result.Name, status, indentBlock(doctor.Truncate(result.ContentPreview, packetToolResultMax)))
 		}
 	}
 	return b.String()
-}
-
-// firstBytes keeps the start of s, at most n bytes, without splitting a rune.
-func firstBytes(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + "…"
 }
 
 // indentBlock indents every line of s by four spaces, a Markdown code block
