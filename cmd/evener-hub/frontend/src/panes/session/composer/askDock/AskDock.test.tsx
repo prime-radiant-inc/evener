@@ -61,7 +61,12 @@ function testThread(ref: string): Thread {
 }
 
 function readResponse(ref: string): ThreadReadResponse {
-  return { thread: testThread(ref) };
+  return {
+    thread: testThread(ref),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 0 },
+  };
 }
 
 function connectFakeClient(state: ConnectionState = "ready"): FakeClient {

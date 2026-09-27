@@ -152,6 +152,9 @@ describe("DevHarness", () => {
             ],
             evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
           }),
+          bootGeneration: "1",
+          epoch: 0,
+          snapshot: { incarnation: "inc_a", length: 1 },
         }) satisfies ThreadReadResponse,
     );
 
@@ -168,8 +171,8 @@ describe("DevHarness", () => {
           threadId: "thr_ref_a",
           ref: "ref_a",
           bootGeneration: "1",
-          epoch: 1,
-          snapshot: { incarnation: "inc_a", length: 1 },
+          epoch: 0,
+          snapshot: { incarnation: "inc_a", length: 2 },
           items: [
             { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress", text: "hello websockets" },
           ],
