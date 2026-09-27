@@ -91,6 +91,29 @@ function answerTiers(
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 const label = (request: Pending | undefined) =>
 	`${request?.params.projectKey ?? "catalog"}:${request?.params.tier ?? ""}`;
+/** A controller whose catalog holds project "a", expanded, with its tiers
+ * answered with these rows and remaining counts. */
+async function loadedProject(
+	rows: Partial<Record<ProjectSessionTier, Row[]>> = { current: [session("a1")] },
+	remaining: Partial<Record<ProjectSessionTier, number>> = {},
+) {
+	const { client, requests, listeners } = boundary();
+	const controller = createProjectBrowserController(client);
+	const loading = controller.initialLoad();
+	requests[0]?.resolve(response(requests[0].params, { projects: [project("a")], remaining: 0 }));
+	await loading;
+	const expanding = controller.expand("a");
+	answerTiers(requests.slice(1), rows, remaining);
+	await expanding;
+	const invalidate = (target: NavigationInvalidationTarget, sequence = 1) => {
+		for (const listener of listeners)
+			listener({
+				method: "evener/navigation/invalidated",
+				params: { generationId: "generation-test", sequence, targets: [target] },
+			});
+	};
+	return { controller, requests, invalidate };
+}
 
 describe("project browser", () => {
 	it("reads the catalog it is made for, the projects catalog by default", () => {
@@ -135,14 +158,7 @@ describe("project browser", () => {
 	});
 
 	it("collapse keeps a project's rows and stops it loading more", async () => {
-		const { client, requests } = boundary();
-		const controller = createProjectBrowserController(client);
-		const loading = controller.initialLoad();
-		requests[0]?.resolve(response(requests[0].params, { projects: [project("a")], remaining: 0 }));
-		await loading;
-		const expanding = controller.expand("a");
-		answerTiers(requests.slice(1), { current: [session("a1")] }, { current: 5 });
-		await expanding;
+		const { controller, requests } = await loadedProject({ current: [session("a1")] }, { current: 5 });
 		controller.collapse("a");
 		await controller.loadMoreSessions("a", "current");
 		expect(requests).toHaveLength(4);
@@ -154,14 +170,7 @@ describe("project browser", () => {
 	});
 
 	it("deduplicates equal session refs between current and recent tiers", async () => {
-		const { client, requests } = boundary();
-		const controller = createProjectBrowserController(client);
-		const loading = controller.initialLoad();
-		requests[0]?.resolve(response(requests[0].params, { projects: [project("a")], remaining: 0 }));
-		await loading;
-		const expanding = controller.expand("a");
-		answerTiers(requests.slice(1), { current: [session("same")], recent: [session("same")] });
-		await expanding;
+		const { controller } = await loadedProject({ current: [session("same")], recent: [session("same")] });
 		expect(controller.getSnapshot().groups[0]?.sessions).toHaveLength(1);
 		controller.dispose();
 	});
@@ -180,18 +189,10 @@ describe("project browser", () => {
 	});
 
 	it("appends a 20-row session page once and keeps rows when the next page fails", async () => {
-		const { client, requests } = boundary();
-		const controller = createProjectBrowserController(client);
-		const loading = controller.initialLoad();
-		requests[0]?.resolve(response(requests[0].params, { projects: [project("a")], remaining: 0 }));
-		await loading;
-		const expanding = controller.expand("a");
-		answerTiers(
-			requests.slice(1),
+		const { controller, requests } = await loadedProject(
 			{ current: Array.from({ length: 20 }, (_, i) => session(`s${i}`)) },
 			{ current: 5 },
 		);
-		await expanding;
 		const more = controller.loadMoreSessions("a", "current");
 		const duplicate = controller.loadMoreSessions("a", "current");
 		await tick();
@@ -219,25 +220,6 @@ describe("project browser", () => {
 		expect(controller.getSnapshot().groups[0]?.sessions).toHaveLength(25);
 		controller.dispose();
 	});
-
-	async function loadedProject() {
-		const { client, requests, listeners } = boundary();
-		const controller = createProjectBrowserController(client);
-		const loading = controller.initialLoad();
-		requests[0]?.resolve(response(requests[0].params, { projects: [project("a")], remaining: 0 }));
-		await loading;
-		const expanding = controller.expand("a");
-		answerTiers(requests.slice(1), { current: [session("a1")] });
-		await expanding;
-		const invalidate = (target: NavigationInvalidationTarget, sequence = 1) => {
-			for (const listener of listeners)
-				listener({
-					method: "evener/navigation/invalidated",
-					params: { generationId: "generation-test", sequence, targets: [target] },
-				});
-		};
-		return { controller, requests, invalidate };
-	}
 
 	it("re-reads an invalidated project's three tiers without a refresh call", async () => {
 		const { controller, requests, invalidate } = await loadedProject();
