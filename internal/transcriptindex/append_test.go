@@ -456,6 +456,10 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 			// PR #2545).
 			rewriteMetaField(t, dir, "comm_calls", `[{"id":"x","raw_args":"{}","offset":0,"ordinal":0,"length":4294967295,"turn_id":"t"}]`)
 		}},
+		{"pending communicate without its calls", func(t *testing.T, dir string) {
+			rewriteMetaField(t, dir, "pending_communicate", `true`)
+			rewriteMetaField(t, dir, "comm_calls", `[]`)
+		}},
 		{"fabricated last-assistant position", func(t *testing.T, dir string) {
 			rewriteMetaField(t, dir, "last_assistant_pos", `{"offset":0,"ordinal":0,"length":4294967295}`)
 		}},

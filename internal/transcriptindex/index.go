@@ -317,6 +317,9 @@ func (x *Index) adopt(m meta) error {
 	// restoreBuilder's reader.entry allocates from them (see writeMeta):
 	// otherwise a self-consistent but fabricated meta.json could name a
 	// multi-gigabyte Length and OOM the process on read.
+	if m.PendingCommunicate != (len(m.CommCalls) > 0) {
+		return fmt.Errorf("%w: pending_communicate disagrees with comm_calls", errCorrupt)
+	}
 	for _, c := range m.CommCalls {
 		if err := validatePersistedPos(m, c.persistedPos); err != nil {
 			return err
