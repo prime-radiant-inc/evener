@@ -115,7 +115,7 @@ func canonicalEntry(t *testing.T, e transcript.Entry) (transcript.Entry, []byte)
 // divergence. A CallID-scoped live communicate commits its preview even when its
 // message repeats assistant text, while close-time reload suppresses that echo.
 // Tracked production follow-up: "hub: CallID communicate echo renders twice live
-// but once after reload" (proposed in the #2267 fix-round report).
+// but once after reload" (#2653). Remove this exclusion when it is resolved.
 //
 // Keep synthesizeLiveEvents faithful; the caller removes only the extra live item
 // with the matching CallID and still compares every other item. The reload
