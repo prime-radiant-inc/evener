@@ -44,5 +44,16 @@ vi.mock("./src/NativePreferencesProvider", () => ({
 
 it("roots the whole app in a full-screen GestureHandlerRootView", () => {
 	const root = render(<App />).toJSON();
-	expect(root).toMatchObject({ type: "GestureHandlerRootView", props: { style: { flex: 1 } } });
+	// useConnection reports its saved hubs still loading, so the tree under
+	// the root is Navigation's loading view: a centered ActivityIndicator.
+	expect(root).toMatchObject({
+		type: "GestureHandlerRootView",
+		props: { style: { flex: 1 } },
+		children: [
+			{
+				type: "View",
+				children: [{ type: "ActivityIndicator", props: { accessibilityLabel: "Loading saved hubs" } }],
+			},
+		],
+	});
 });
