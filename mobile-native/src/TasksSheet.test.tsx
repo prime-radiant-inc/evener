@@ -102,6 +102,39 @@ it("renders the Completed line for done rows only, never a stamped cancellation"
   expect(text.match(/Completed/g)?.length).toBe(1);
 });
 
+it("keeps its last list through a dropped connection", async () => {
+  const { client } = scriptedClient(tasks);
+  const tree = render(
+    <TaskList
+      client={client as ConversationClientLike}
+      sessionRef="local:s"
+      threadId="s"
+      hasTasks
+      connected
+    />,
+  );
+  await act(async () => {});
+  expect(renderedText(tree)).toContain("Done · settled · 2");
+
+  await act(async () => {
+    tree.update(
+      <TaskList
+        client={client as ConversationClientLike}
+        sessionRef="local:s"
+        threadId="s"
+        hasTasks
+        connected={false}
+      />,
+    );
+  });
+
+  // The connection dropped, but the store's last loaded rows are untouched:
+  // the list is still there, alongside the note explaining why it may be
+  // stale.
+  expect(renderedText(tree)).toContain("Done · settled · 2");
+  expect(renderedText(tree)).toContain("Disconnected");
+});
+
 type TasksSheetProps = ComponentProps<typeof TasksSheet>;
 
 function tasksRoute(hubId: string): TasksSheetProps["route"] {
