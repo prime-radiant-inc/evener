@@ -11,6 +11,7 @@ import { type NavigationSessionSummary, type SessionSeenMark, WireError } from "
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { hubTime } from "./attention";
 import type { SeenMarkers } from "./boardMemory";
+import { perHub } from "./perHub";
 
 /** The hub caps one seen/set call at 500 marks. */
 const MAX_MARKS_PER_CALL = 500;
@@ -159,19 +160,14 @@ export class HubSeenMarks {
 }
 
 // One controller per hub, in memory only, like seenMarkers(hubId).
-const controllers = new Map<string, HubSeenMarks>();
+const controllers = perHub(() => new HubSeenMarks());
 
 export function hubSeenMarks(hubId: string): HubSeenMarks {
-	let marks = controllers.get(hubId);
-	if (!marks) {
-		marks = new HubSeenMarks();
-		controllers.set(hubId, marks);
-	}
-	return marks;
+	return controllers.get(hubId);
 }
 
 export function forgetHubSeenMarks(hubId: string): void {
-	controllers.delete(hubId);
+	controllers.forget(hubId);
 }
 
 /** The Board's seen state over both paths: the hub decides a row that

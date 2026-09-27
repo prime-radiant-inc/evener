@@ -1,24 +1,7 @@
 import { Storage } from "expo-sqlite/kv-store";
 import { FoldedSections, forgetBoard, OrganizeByPreference, SeenMarkers } from "./boardMemory";
 import { BoardSeen, forgetHubSeenMarks, hubSeenMarks } from "./hubSeen";
-
-/** One instance per hub, made on first use and dropped when the hub is forgotten. */
-function perHub<T>(make: (hubId: string) => T) {
-	const instances = new Map<string, T>();
-	return {
-		get(hubId: string): T {
-			let instance = instances.get(hubId);
-			if (!instance) {
-				instance = make(hubId);
-				instances.set(hubId, instance);
-			}
-			return instance;
-		},
-		forget(hubId: string): void {
-			instances.delete(hubId);
-		},
-	};
-}
+import { perHub } from "./perHub";
 
 // One instance per hub, so every screen reading the Board's memory sees the
 // same in-memory state and the same subscribers.
