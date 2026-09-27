@@ -1590,6 +1590,14 @@ func (s *Session) recoverClientMutationFailures(publishEnvironment bool) error {
 		switch {
 		case own:
 			s.completeExecution(schema.TurnFailed)
+			if wasOpen {
+				// This turn also crashed open once before (closeCrashedExecutions
+				// left the marker at restore) and is completed above,
+				// regardless of err: closeAbandonedExecutions must not find
+				// the marker still here and complete it a second time,
+				// interrupted, over the failed completion just written.
+				s.takeOpenPendingExecution(pending.TurnID)
+			}
 		case wasOpen && err == nil:
 			s.takeOpenPendingExecution(pending.TurnID)
 			rec, completeErr := s.completeTurn(pending.TurnID, schema.TurnFailed)
