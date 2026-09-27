@@ -113,6 +113,14 @@ it("keeps two broken plugins of one name from different marketplaces apart", () 
 	]);
 });
 
+it("names no marketplace when the plugin sharing a broken one's name is healthy", () => {
+	const found = notices({
+		...none,
+		plugins: [plugin("superpowers", true), { ...plugin("superpowers", false), marketplace: "community" }],
+	});
+	expect(found.map((notice) => notice.text)).toEqual(["superpowers is broken"]);
+});
+
 it("lists sign-ins, then hosts, then plugins", () => {
 	expect(
 		notices({
