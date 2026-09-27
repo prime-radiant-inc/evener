@@ -97,10 +97,9 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   };
   // Only a refresh that changed something publishes: the outbox rescans
   // storage every two seconds while its client is ready, so most refreshes find
-  // what the store already holds, and a publish re-renders every component
-  // that reads the projection. A map replaceTargetRecords found unchanged comes
-  // back as itself, so the maps that did not change keep their identity when
-  // another one did.
+  // what the store already holds, and a publish wakes every subscriber. A map
+  // replaceTargetRecords found unchanged comes back as itself, so the maps that
+  // did not change keep their identity when another one did.
   if (
     projected.outbox !== state.outbox ||
     projected.optimistic !== state.optimistic ||
