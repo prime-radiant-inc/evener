@@ -69,11 +69,11 @@ func TestReadOutputSnapshotFromFilePinsOpenedOutput(t *testing.T) {
 
 				select {
 				case got := <-done:
-					if got.err != nil {
-						t.Fatalf("fd snapshot: %v", got.err)
+					if !errors.Is(got.err, ErrOutputChangedDuringRead) {
+						t.Fatalf("fd snapshot error = %v, want ErrOutputChangedDuringRead", got.err)
 					}
-					if string(got.content) != original {
-						t.Fatalf("content = %q, want pinned original %q", got.content, original)
+					if len(got.content) != 0 {
+						t.Fatalf("content = %q, want no bytes from replacement generation", got.content)
 					}
 				case <-time.After(3 * time.Second):
 					if replacement == "fifo" {
@@ -86,6 +86,15 @@ func TestReadOutputSnapshotFromFilePinsOpenedOutput(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestReadOutputSnapshotFromFileRejectsNilFile(t *testing.T) {
+	if _, err := ReadOutputSnapshotFromFile("unused", nil, 1, false); err == nil {
+		t.Fatal("ReadOutputSnapshotFromFile(nil) succeeded")
+	}
+	if _, err := ReadOutputWindowSnapshotFromFile("unused", nil, 0, 1); err == nil {
+		t.Fatal("ReadOutputWindowSnapshotFromFile(nil) succeeded")
 	}
 }
 
@@ -243,6 +252,153 @@ func TestReadOutputWindowSnapshotFromFileConcurrentAppend(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("append: %v", err)
 	}
+}
+
+func TestReadOutputSnapshotFromFilePreservesPostReadObservationError(t *testing.T) {
+	for _, api := range []string{"snapshot", "window"} {
+		t.Run(api, func(t *testing.T) {
+			path, f := newOutputSnapshotFile(t, 1024, "stable\n")
+			fs := &fdPostReadObservationFaultFS{Fs: afero.NewOsFs(), path: path}
+
+			var err error
+			if api == "snapshot" {
+				_, err = readOutputSnapshotFromFileOnce(fs, path, f, 1024, false)
+			} else {
+				_, err = readOutputWindowSnapshotFromFileOnce(fs, path, f, 0, 1024)
+			}
+			if !errors.Is(err, errFDPostReadObservation) || errors.Is(err, errOutputChanged) {
+				t.Fatalf("error = %v, want original post-read observation error", err)
+			}
+		})
+	}
+}
+
+func TestReadOutputSnapshotFromFileDetectsPrunedGeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.log")
+	o, err := CreateOutputNoSync(path, 4)
+	if err != nil {
+		t.Fatalf("create output: %v", err)
+	}
+	t.Cleanup(func() { _ = o.Close() })
+	appendOutput(t, o, "AAAA")
+
+	stale, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open pre-prune output: %v", err)
+	}
+	t.Cleanup(func() { _ = stale.Close() })
+	appendOutput(t, o, "BBBB")
+
+	if _, err := ReadOutputSnapshotFromFile(path, stale, 4, false); !errors.Is(err, ErrOutputChangedDuringRead) {
+		t.Fatalf("stale snapshot error = %v, want ErrOutputChangedDuringRead", err)
+	}
+	if _, err := ReadOutputWindowSnapshotFromFile(path, stale, o.RetainedStart(), 4); !errors.Is(err, ErrOutputChangedDuringRead) {
+		t.Fatalf("stale window error = %v, want ErrOutputChangedDuringRead", err)
+	}
+
+	fresh, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open post-prune output: %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.Close() })
+	got, err := ReadOutputWindowSnapshotFromFile(path, fresh, o.RetainedStart(), 4)
+	if err != nil {
+		t.Fatalf("fresh window: %v", err)
+	}
+	if string(got.Content) != "BBBB" {
+		t.Fatalf("fresh content = %q, want post-prune bytes", got.Content)
+	}
+}
+
+func TestReadOutputWindowSnapshotFromFileConcurrentAppendAndPrune(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.log")
+	o, err := CreateOutputNoSync(path, 128)
+	if err != nil {
+		t.Fatalf("create output: %v", err)
+	}
+	t.Cleanup(func() { _ = o.Close() })
+	appendOutput(t, o, "seed\n")
+
+	readWithFreshRetry := func(offset int64) (OutputWindowSnapshot, error) {
+		for attempt := range 2 {
+			f, err := os.Open(path)
+			if err != nil {
+				return OutputWindowSnapshot{}, err
+			}
+			snapshot, readErr := ReadOutputWindowSnapshotFromFile(path, f, offset, 31)
+			closeErr := f.Close()
+			if readErr == nil && closeErr != nil {
+				return OutputWindowSnapshot{}, closeErr
+			}
+			if errors.Is(readErr, ErrOutputChangedDuringRead) && attempt == 0 {
+				continue
+			}
+			return snapshot, readErr
+		}
+		panic("unreachable")
+	}
+
+	var finished atomic.Bool
+	done := make(chan error, 1)
+	go func() {
+		defer finished.Store(true)
+		for range 150 {
+			if _, err := o.Append([]byte("append-line\n")); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+
+	successes := 0
+	for !finished.Load() || successes == 0 {
+		got, err := readWithFreshRetry(o.RetainedStart())
+		if errors.Is(err, ErrOutputChangedDuringRead) || errors.Is(err, ErrOutputPruned) {
+			continue
+		}
+		if err != nil {
+			t.Fatalf("ReadOutputWindowSnapshotFromFile: %v", err)
+		}
+		successes++
+		if got.Start < got.RetainedStart || got.End < got.Start || got.End > got.TotalBytes || int64(len(got.Content)) != got.End-got.Start {
+			t.Fatalf("inconsistent fd snapshot = %+v", got)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("append: %v", err)
+	}
+}
+
+var errFDPostReadObservation = errors.New("fd snapshot test: post-read observation fault")
+
+type fdPostReadObservationFaultFS struct {
+	afero.Fs
+	path      string
+	metaOpens int
+}
+
+func (fs *fdPostReadObservationFaultFS) Open(name string) (afero.File, error) {
+	if name == outputMetaPath(fs.path) {
+		fs.metaOpens++
+		if fs.metaOpens == 3 {
+			appendFile, err := os.OpenFile(fs.path, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := appendFile.WriteString("changed\n"); err != nil {
+				_ = appendFile.Close()
+				return nil, err
+			}
+			if err := appendFile.Close(); err != nil {
+				return nil, err
+			}
+		}
+		if fs.metaOpens == 4 {
+			return nil, errFDPostReadObservation
+		}
+	}
+	return fs.Fs.Open(name)
 }
 
 func newOutputSnapshotFile(t *testing.T, maxRetained int64, content string) (string, *os.File) {

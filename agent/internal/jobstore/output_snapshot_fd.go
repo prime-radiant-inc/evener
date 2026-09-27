@@ -14,22 +14,32 @@ import (
 // ReadOutputSnapshotFromFile reads a stable head or tail window from an
 // already-open output file. The caller owns f and must close it. path is used
 // to locate the output metadata sidecars; output bytes and file observations
-// are read through f.
+// are read through f. A concurrent change returns ErrOutputChangedDuringRead;
+// callers that retry must reopen the output first.
 func ReadOutputSnapshotFromFile(path string, f *os.File, maxBytes int, fromHead bool) (OutputSnapshot, error) {
+	if f == nil {
+		return OutputSnapshot{}, errors.New("jobstore: output file is nil")
+	}
 	if maxBytes < 0 {
 		return OutputSnapshot{}, fmt.Errorf("%w: maxBytes=%d", ErrInvalidLimit, maxBytes)
 	}
 	fs := afero.NewOsFs()
-	return readOutputSnapshotWithRetry(func() (OutputSnapshot, error) {
-		return readOutputSnapshotFromFileOnce(fs, path, f, maxBytes, fromHead)
-	})
+	snapshot, err := readOutputSnapshotFromFileOnce(fs, path, f, maxBytes, fromHead)
+	if errors.Is(err, errOutputChanged) {
+		return OutputSnapshot{}, ErrOutputChangedDuringRead
+	}
+	return snapshot, err
 }
 
 // ReadOutputWindowSnapshotFromFile reads a stable raw forward range from an
 // already-open output file. The caller owns f and must close it. path is used
 // to locate the output metadata sidecars; output bytes and file observations
-// are read through f.
+// are read through f. A concurrent change returns ErrOutputChangedDuringRead;
+// callers that retry must reopen the output first.
 func ReadOutputWindowSnapshotFromFile(path string, f *os.File, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
+	if f == nil {
+		return OutputWindowSnapshot{}, errors.New("jobstore: output file is nil")
+	}
 	if maxBytes < 0 {
 		return OutputWindowSnapshot{}, fmt.Errorf("%w: maxBytes=%d", ErrInvalidLimit, maxBytes)
 	}
@@ -37,11 +47,17 @@ func ReadOutputWindowSnapshotFromFile(path string, f *os.File, offset int64, max
 		return OutputWindowSnapshot{}, fmt.Errorf("%w: offset=%d", ErrInvalidOffset, offset)
 	}
 	fs := afero.NewOsFs()
-	return readOutputWindowSnapshotWithRetry(func() (OutputWindowSnapshot, error) {
-		return readOutputWindowSnapshotFromFileOnce(fs, path, f, offset, maxBytes)
-	})
+	snapshot, err := readOutputWindowSnapshotFromFileOnce(fs, path, f, offset, maxBytes)
+	if errors.Is(err, errOutputChanged) {
+		return OutputWindowSnapshot{}, ErrOutputChangedDuringRead
+	}
+	return snapshot, err
 }
 
+// KEEP IN SYNC with the path-backed attempt protocol in output_snapshot.go.
+// These implementations intentionally remain separate: frozen path-reader
+// seams require afero path access, while descriptor reads must fence path/file
+// generations and give observation errors precedence over partial changes.
 func readOutputSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, maxBytes int, fromHead bool) (OutputSnapshot, error) {
 	before, err := observeOutputSnapshotFromFile(fs, path, f)
 	if err != nil {
@@ -50,14 +66,14 @@ func readOutputSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, maxByt
 
 	snapshot, readErr := readOutputSnapshotFromFileAttempt(fs, path, f, before.retainedBytes, maxBytes, fromHead)
 	after, observeErr := observeOutputSnapshotFromFile(fs, path, f)
+	if observeErr != nil {
+		return OutputSnapshot{}, observeErr
+	}
 	if errors.Is(readErr, errOutputChanged) {
 		return OutputSnapshot{}, errOutputChanged
 	}
 	if after.changedFrom(before) {
 		return OutputSnapshot{}, errOutputChanged
-	}
-	if observeErr != nil {
-		return OutputSnapshot{}, observeErr
 	}
 	if readErr != nil {
 		return OutputSnapshot{}, readErr
@@ -73,14 +89,14 @@ func readOutputWindowSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, 
 
 	snapshot, readErr := readOutputWindowSnapshotFromFileAttempt(fs, path, f, before.retainedBytes, offset, maxBytes)
 	after, observeErr := observeOutputSnapshotFromFile(fs, path, f)
+	if observeErr != nil {
+		return OutputWindowSnapshot{}, observeErr
+	}
 	if errors.Is(readErr, errOutputChanged) {
 		return OutputWindowSnapshot{}, errOutputChanged
 	}
 	if after.changedFrom(before) {
 		return OutputWindowSnapshot{}, errOutputChanged
-	}
-	if observeErr != nil {
-		return OutputWindowSnapshot{}, observeErr
 	}
 	if readErr != nil {
 		return snapshot, readErr
@@ -89,6 +105,9 @@ func readOutputWindowSnapshotFromFileOnce(fs afero.Fs, path string, f *os.File, 
 }
 
 func readOutputSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, retainedBytes int64, maxBytes int, fromHead bool) (OutputSnapshot, error) {
+	if err := checkOutputFileGeneration(path, f); err != nil {
+		return OutputSnapshot{}, err
+	}
 	fileFS := newOutputSnapshotFileFS(fs, path, f)
 	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, retainedBytes)
 	if err != nil {
@@ -111,6 +130,9 @@ func readOutputSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, ret
 	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart || afterRetainedStartPartial != retainedStartPartial {
 		return OutputSnapshot{}, errOutputChanged
 	}
+	if err := checkOutputFileGeneration(path, f); err != nil {
+		return OutputSnapshot{}, err
+	}
 	return OutputSnapshot{
 		Content:              content,
 		TotalBytes:           totalBytes,
@@ -121,6 +143,9 @@ func readOutputSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, ret
 }
 
 func readOutputWindowSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.File, retainedBytes int64, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
+	if err := checkOutputFileGeneration(path, f); err != nil {
+		return OutputWindowSnapshot{}, err
+	}
 	fileFS := newOutputSnapshotFileFS(fs, path, f)
 	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForSnapshot(fileFS, outputMetaPath(path), path, retainedBytes)
 	if err != nil {
@@ -163,7 +188,28 @@ func readOutputWindowSnapshotFromFileAttempt(fs afero.Fs, path string, f *os.Fil
 	if afterInfo.Size() != retainedBytes || afterTotal != totalBytes || afterRetainedStart != retainedStart || afterRetainedStartPartial != retainedStartPartial {
 		return OutputWindowSnapshot{}, errOutputChanged
 	}
+	if err := checkOutputFileGeneration(path, f); err != nil {
+		return OutputWindowSnapshot{}, err
+	}
 	return snapshot, nil
+}
+
+func checkOutputFileGeneration(path string, f *os.File) error {
+	pathInfo, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return errOutputChanged
+	}
+	if err != nil {
+		return fmt.Errorf("jobstore: stat output snapshot path: %w", err)
+	}
+	fileInfo, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("jobstore: stat output snapshot descriptor: %w", err)
+	}
+	if !os.SameFile(pathInfo, fileInfo) {
+		return errOutputChanged
+	}
+	return nil
 }
 
 func observeOutputSnapshotFromFile(fs afero.Fs, path string, f *os.File) (outputSnapshotObservation, error) {
