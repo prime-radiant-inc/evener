@@ -282,6 +282,15 @@ func validateHostTombstones(tombstones map[string]HostTombstone, generations map
 		if tombstone.Name != name {
 			return fmt.Errorf("tombstones[%q] names %q in its record", name, tombstone.Name)
 		}
+		if tombstone.Entry.Name != name {
+			// The nested effective-entry name is part of the record shape this
+			// build writes (it always equals the key): a hand-edited or
+			// corrupted record whose entry names something else — or nothing —
+			// is refused loudly rather than round-tripping a shape the hub can
+			// never produce, which would leave two disagreeing names in the
+			// durable file for every later reader.
+			return fmt.Errorf("tombstones[%q] entry names %q in its record", name, tombstone.Entry.Name)
+		}
 		if err := validateHostEntry(tombstoneEntry(tombstone)); err != nil {
 			return fmt.Errorf("tombstones[%q] carries an invalid entry: %w", name, err)
 		}

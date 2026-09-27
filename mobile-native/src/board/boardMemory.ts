@@ -1,12 +1,14 @@
 // What this device remembers about one hub's Board: which sessions you have
-// seen, which sections you folded and what you searched for. Kept in expo-sqlite's kv-store under
-// per-hub keys that ConnectionProvider.removeHub clears.
+// seen, which sections you folded, how you organize projects, and what you
+// searched for. Kept in expo-sqlite's kv-store under per-hub keys that
+// ConnectionProvider.removeHub clears.
 import { isPlainObject } from "@evener/appwire-client";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { hubTime } from "./attention";
 
 const seenKey = (hubId: string) => `evener.native.seen.${hubId}`;
 const foldedKey = (hubId: string) => `evener.native.board-sections.${hubId}`;
+const organizeKey = (hubId: string) => `evener.native.board-organize.${hubId}`;
 export const recentSearchesKey = (hubId: string) => `evener.native.recent-searches.${hubId}`;
 const MARK_LIMIT = 500;
 
@@ -171,9 +173,38 @@ export class FoldedSections {
 	}
 }
 
+/** How the Board's Projects section nests sessions once the hub has more
+ * than one host (spec 7.1's "Organize by"): by project, then host (the
+ * default, as on the web), or by host, then project. */
+export type OrganizeBy = "project-host" | "host-project";
+
+/** The Organize by choice, per device and hub, stored as a JSON string. It
+ * has its own key: FoldedSections stores a flat map of fold flags, and a mode
+ * is not a fold. */
+export class OrganizeByPreference {
+	private value: OrganizeBy;
+
+	constructor(
+		private readonly storage: SyncStringStorage,
+		private readonly hubId: string,
+	) {
+		// Unreadable storage, or a value this build doesn't know, reads as the default.
+		this.value = readJson(storage, organizeKey(hubId)) === "host-project" ? "host-project" : "project-host";
+	}
+
+	get(): OrganizeBy {
+		return this.value;
+	}
+
+	set(value: OrganizeBy): void {
+		this.value = value;
+		writeJson(this.storage, organizeKey(this.hubId), value);
+	}
+}
+
 export function forgetBoard(storage: SyncStringStorage, hubId: string): void {
 	let failed = false;
-	for (const key of [seenKey(hubId), foldedKey(hubId), recentSearchesKey(hubId)])
+	for (const key of [seenKey(hubId), foldedKey(hubId), organizeKey(hubId), recentSearchesKey(hubId)])
 		try {
 			storage.removeItemSync(key);
 		} catch {

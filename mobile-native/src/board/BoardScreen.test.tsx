@@ -29,13 +29,20 @@ const harness = vi.hoisted(() => ({
 	focused: true,
 	focusListeners: new Set<(focused: boolean) => void>(),
 	actionSheet: vi.fn(),
+	prompt: vi.fn(),
 }));
 
-vi.mock("react-native", async () => ({
-	...(await import("../renderNative.testkit")).nativeModuleMock(),
-	ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
-	Keyboard: { dismiss: () => {} },
-}));
+vi.mock("react-native", async () => {
+	const native = (await import("../renderNative.testkit")).nativeModuleMock();
+	return {
+		...native,
+		Alert: { ...native.Alert, prompt: (...args: unknown[]) => harness.prompt(...args) },
+		ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
+		Keyboard: { dismiss: () => {} },
+	};
+});
+// The organization journal names each change it records.
+vi.mock("expo-crypto", () => ({ randomUUID: () => `change-${Math.random()}` }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
@@ -137,6 +144,8 @@ interface Fleet {
 	live: NavigationSessionSummary[][];
 	needsYou: NavigationSessionSummary[];
 	pins: Array<{ id: string; name: string; count: number }>;
+	/** Each category's sessions, by id. */
+	pinned: Record<string, NavigationSessionSummary[]>;
 	manifest: ReturnType<typeof manifest>;
 	/** Sessions only search finds, as past results: the Board doesn't list them. */
 	searchOnly?: NavigationSessionSummary[];
@@ -148,6 +157,9 @@ interface Fleet {
 	/** Whether evener/auth/list and evener/plugin/list fail. */
 	listsFail?: boolean;
 }
+const keptNote = session("local:kept", { title: "Kept note", live: false, updated_at: minutesAgo(600) });
+const oldPlan = session("local:plan", { title: "Old plan", live: false, updated_at: minutesAgo(900) });
+const releaseNotes = session("local:notes", { title: "Release notes", live: false, updated_at: minutesAgo(1200) });
 const fleet: Fleet = {
 	// The ask is in the hub's needs_you section only: bands union it.
 	live: [[failing, working, finished, idleOne, idleTwo]],
@@ -156,6 +168,7 @@ const fleet: Fleet = {
 		{ id: "pins-1", name: "Mine", count: 3 },
 		{ id: "pins-2", name: "Empty", count: 0 },
 	],
+	pinned: { "pins-1": [keptNote, oldPlan, releaseNotes], "pins-2": [] },
 	manifest: manifest({
 		sources: [{ id: "local", label: "Laptop", kind: "local", online: true }],
 		sections: { live: { count: 5 }, needs_you: { count: 2 }, pin_sections: { count: 2 } },
@@ -164,22 +177,32 @@ const fleet: Fleet = {
 };
 
 /** A hub that answers navigation reads by params, and search and the
- * sign-in and plugin lists from the fleet; `hold` keeps a navigation read unanswered until the
- * test releases it, and `fail` rejects it. */
+ * sign-in and plugin lists from the fleet; `hold` keeps a navigation read
+ * unanswered until the test releases it, and `fail` rejects it. It accepts
+ * every category rename and delete (`mutations` records them), unless
+ * `refuse` says to reject one, and `holdChanges` keeps them unanswered
+ * until `release`. */
 function hub(
 	shape: Fleet,
 	hold: (params: NavigationReadParams) => boolean = () => false,
 	fail: (params: NavigationReadParams) => boolean = () => false,
+	{ holdChanges = false, refuse = false } = {},
 ) {
 	const requests: NavigationReadParams[] = [];
 	const lists: string[] = [];
 	const searches: string[] = [];
+	const mutations: Array<{ method: string; params: unknown }> = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
 	const held: Array<() => void> = [];
 	const answer = (params: NavigationReadParams) => {
 		const offset = params.offset ?? 0;
 		if (params.resource === "manifest") return shape.manifest;
 		if (params.resource === "pin_catalog") return { pin_sections: shape.pins, remaining: 0 };
+		if (params.resource === "pin_section") {
+			const rows = shape.pinned[params.sectionId ?? ""];
+			if (!rows) throw new Error(`no category ${params.sectionId}`);
+			return { sessions: rows, remaining: 0 };
+		}
 		if (params.section === "needs_you") return { sessions: shape.needsYou, remaining: 0 };
 		// Live pages are consecutive: each page's offset is the rows before it.
 		let before = 0;
@@ -195,6 +218,16 @@ function hub(
 	const client: ConversationClientLike = {
 		request: (method, params) =>
 			new Promise((resolve, reject) => {
+				if (method === "evener/pin-section/rename" || method === "evener/pin-section/delete") {
+					mutations.push({ method, params });
+					const respond = () =>
+						refuse
+							? reject(new Error("request timed out"))
+							: resolve({ ok: true, navigation: { generation_id: "generation-test", targets: [] } } as never);
+					if (holdChanges) held.push(respond);
+					else respond();
+					return;
+				}
 				if (method === "evener/search") {
 					// Search matches titles: the Board's sessions are live, and
 					// sessions only search finds are past.
@@ -262,6 +295,7 @@ function hub(
 		authUpdated: () => {
 			for (const listener of listeners) listener({ method: "evener/auth/updated", params: {} } as AnyNotification);
 		},
+		mutations,
 		invalidate: (sequence: number, targets: NavigationInvalidationTarget[]) => {
 			for (const listener of listeners)
 				listener({
@@ -307,7 +341,10 @@ function rerender(tree: ReactTestRenderer, nav: Navigation) {
 
 /** Every string a Text renders on its own. */
 function texts(tree: ReactTestRenderer): string[] {
-	return tree.root
+	return textsIn(tree.root);
+}
+function textsIn(root: ReactTestInstance): string[] {
+	return root
 		.findAll((node) => node.type === ("Text" as never))
 		.flatMap((node) => [node.props.children].flat().filter((child): child is string => typeof child === "string"));
 }
@@ -425,7 +462,34 @@ it("keeps the chips fixed above the Board's scroller, and jumps a chip's section
 	act(() => tree.unmount());
 });
 
-it("shows chips for the sections that have sessions, a row for every pinned category, and opens today's screens", async () => {
+const EMPTY_CATEGORY = "Touch and hold a session and choose Pin to category.";
+const pinHeaders = (tree: ReactTestRenderer) =>
+	tree.root.findAll((node) => node.props.testID === "pin-header").map((node) => node.props.accessibilityLabel);
+const menuLabels = (tree: ReactTestRenderer) =>
+	tree.root
+		.findAll(
+			(node) =>
+				node.type === ("Pressable" as never) &&
+				typeof node.props.accessibilityLabel === "string" &&
+				node.props.accessibilityLabel.endsWith(", category menu"),
+		)
+		.map((node) => node.props.accessibilityLabel);
+const pinSection = (tree: ReactTestRenderer, name: string) =>
+	tree.root.find(
+		(node) =>
+			node.props.testID === "pin-section" &&
+			node.findAll((child) => child.props.testID === "pin-header" && child.props.accessibilityLabel.startsWith(`${name}, `))
+				.length > 0,
+	);
+const opacity = (tree: ReactTestRenderer, name: string) => pinSection(tree, name).props.style.opacity;
+/** Opens a category's menu and chooses Delete; returns the confirmation. */
+function confirmDelete(tree: ReactTestRenderer, name: string) {
+	pressLabel(tree, `${name}, category menu`);
+	act(() => harness.actionSheet.mock.calls.at(-1)?.[1](1));
+	return alertRequests.at(-1);
+}
+
+it("shows chips for the sections that have sessions, and each pinned category inline with its sessions", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
@@ -433,14 +497,217 @@ it("shows chips for the sections that have sessions, a row for every pinned cate
 	const tree = await mount(nav);
 	expect(chipLabels(tree)).toEqual(["Live, 5 sessions, 2 need you", "Mine, 3 sessions", "Projects, 4 projects"]);
 	expect(texts(tree)).not.toContain("Archived · 0");
+	// Every category is a section in the hub's order, an empty one included
+	// (spec 7.1: a category is a place, and an empty one says how to pin to it).
+	expect(pinHeaders(tree)).toEqual(["Mine, 3 sessions", "Empty, 0 sessions"]);
+	for (const title of ["Kept note", "Old plan", "Release notes"]) expect(hasRow(tree, title)).toBe(true);
+	expect(textsIn(pinSection(tree, "Empty"))).toContain(EMPTY_CATEGORY);
+	expect(textsIn(pinSection(tree, "Mine"))).not.toContain(EMPTY_CATEGORY);
+	// The link rows to the category screens are gone.
+	expect(texts(tree)).not.toContain("Mine · 3");
+	act(() => rowTitled(tree, "Old plan").props.onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:plan", title: "Old plan" });
+	expect(seenMarkers(id).isSeen(oldPlan)).toBe(true);
+	// The header folds its category.
 	pressLabel(tree, "Mine, 3 sessions");
-	expect(nav.navigate).toHaveBeenLastCalledWith("PinnedSection", { hubId: id, sectionId: "pins-1", title: "Mine" });
-	// An empty category has no chip, but it keeps its row (spec 7.1: a
-	// category is a place, and an empty one says how to pin to it).
-	pressLabel(tree, "Empty, 0 sessions");
-	expect(nav.navigate).toHaveBeenLastCalledWith("PinnedSection", { hubId: id, sectionId: "pins-2", title: "Empty" });
+	expect(hasRow(tree, "Kept note")).toBe(false);
+	expect(nav.navigate.mock.calls.map(([route]) => route)).not.toContain("PinnedSection");
 	pressLabel(tree, "Projects, 4 projects");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Projects", { hubId: id, archived: false });
+	act(() => tree.unmount());
+});
+
+it("keeps a live pinned session in Live as well as in its category", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, pinned: { ...fleet.pinned, "pins-1": [working, keptNote, oldPlan] } }).client, "ready");
+	const tree = await mount(navigation());
+	const copies = tree.root.findAll(isRowTitled("Build docs"));
+	expect(copies).toHaveLength(2);
+	expect(bandHeaders(tree)).toContain("WORKING · 1");
+	act(() => tree.unmount());
+});
+
+it("unfolds a folded category when its chip is tapped", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	pressLabel(tree, "Mine, 3 sessions");
+	expect(hasRow(tree, "Kept note")).toBe(false);
+	const chip = tree.root.find(
+		(node) => node.props.testID === "chip" && node.props.accessibilityLabel === "Mine, 3 sessions",
+	);
+	act(() => chip.props.onPress());
+	expect(hasRow(tree, "Kept note")).toBe(true);
+	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "null")).toMatchObject({ "pin:pins-1": false });
+	act(() => tree.unmount());
+});
+
+it("renames a category from its menu, sending the trimmed name", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
+	const rename = (value: string) => {
+		pressLabel(tree, "Mine, category menu");
+		const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
+		expect(sheet).toEqual({
+			title: "Mine",
+			options: ["Rename", "Delete", "Cancel"],
+			destructiveButtonIndex: 1,
+			cancelButtonIndex: 2,
+		});
+		act(() => choose(0));
+		const [title, message, buttons, type, current] = harness.prompt.mock.calls.at(-1) ?? [];
+		expect([title, message, type, current]).toEqual(["Rename category", undefined, "plain-text", "Mine"]);
+		expect(buttons.map((button: { text: string; style?: string }) => [button.text, button.style])).toEqual([
+			["Cancel", "cancel"],
+			["Rename", undefined],
+		]);
+		act(() => buttons[1].onPress(value));
+	};
+	// A blank or unchanged name sends nothing, and neither does a long one.
+	rename("   ");
+	rename(" Mine ");
+	const alerts = alertRequests.length;
+	rename("x".repeat(81));
+	expect(alertRequests.slice(alerts).map((request) => request.title)).toEqual([
+		"Category names can be up to 80 characters.",
+	]);
+	expect(fake.mutations).toEqual([]);
+	rename("  Shipped  ");
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/pin-section/rename", params: { sectionId: "pins-1", name: "Shipped" } },
+	]);
+	act(() => tree.unmount());
+});
+
+it("deletes a category after the spec's confirmation", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const confirm = confirmDelete(tree, "Mine");
+	expect(confirm?.title).toBe("Delete “Mine”?");
+	expect(confirm?.message).toBe("Its sessions stay; they're only unpinned.");
+	expect(confirm?.buttons?.map((button) => [button.text, button.style])).toEqual([
+		["Cancel", "cancel"],
+		["Delete", "destructive"],
+	]);
+	expect(fake.mutations).toEqual([]);
+	act(() => confirm?.buttons?.[1].onPress?.());
+	await settle();
+	expect(fake.mutations).toEqual([{ method: "evener/pin-section/delete", params: { sectionId: "pins-1" } }]);
+	act(() => tree.unmount());
+});
+
+it("sends no delete for a category that left the catalog while its confirmation was up", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape = { ...fleet, pins: [...fleet.pins] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const confirm = confirmDelete(tree, "Mine");
+	shape.pins = [fleet.pins[1]];
+	// This fake hub answers every read at revision 1, so the change names none.
+	act(() => fake.invalidate(1, [{ kind: "pin_catalog" }]));
+	await settle();
+	expect(pinHeaders(tree)).toEqual(["Empty, 0 sessions"]);
+	act(() => confirm?.buttons?.[1].onPress?.());
+	await settle();
+	expect(fake.mutations).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("offers only Delete off iOS, where there is no text prompt", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	Platform.OS = "android";
+	try {
+		pressLabel(tree, "Mine, category menu");
+		const menu = alertRequests.at(-1);
+		expect(menu?.title).toBe("Mine");
+		expect(menu?.buttons?.map((button) => [button.text, button.style])).toEqual([
+			["Delete", "destructive"],
+			["Cancel", "cancel"],
+		]);
+		act(() => menu?.buttons?.[0].onPress?.());
+		expect(alertRequests.at(-1)?.title).toBe("Delete “Mine”?");
+	} finally {
+		Platform.OS = "ios";
+	}
+	act(() => tree.unmount());
+});
+
+it("hides ⋯ while disconnected, and a confirmation answered after the drop sends nothing", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const confirm = confirmDelete(tree, "Mine");
+	connect(id, null, "reconnecting");
+	rerender(tree, nav);
+	expect(menuLabels(tree)).toEqual([]);
+	// The categories stay on screen with their rows.
+	expect(pinHeaders(tree)).toEqual(["Mine, 3 sessions", "Empty, 0 sessions"]);
+	expect(hasRow(tree, "Kept note")).toBe(true);
+	act(() => confirm?.buttons?.[1].onPress?.());
+	await settle();
+	expect(fake.mutations).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("dims a category while its change is on its way, and hides every ⋯ until it lands", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet, undefined, undefined, { holdChanges: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(opacity(tree, "Mine")).toBe(1);
+	const mine = confirmDelete(tree, "Mine");
+	const empty = confirmDelete(tree, "Empty");
+	act(() => mine?.buttons?.[1].onPress?.());
+	await settle();
+	// The second confirmation was up before the first change went out;
+	// pressed while that change is pending, it sends nothing.
+	act(() => empty?.buttons?.[1].onPress?.());
+	await settle();
+	expect(fake.mutations).toEqual([{ method: "evener/pin-section/delete", params: { sectionId: "pins-1" } }]);
+	expect(opacity(tree, "Mine")).toBe(0.5);
+	expect(opacity(tree, "Empty")).toBe(1);
+	expect(menuLabels(tree)).toEqual([]);
+	fake.release();
+	await settle();
+	expect(opacity(tree, "Mine")).toBe(1);
+	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
+	act(() => tree.unmount());
+});
+
+it("never shows the journal's error, and hides ⋯ while a change can't be confirmed", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet, undefined, undefined, { refuse: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const confirm = confirmDelete(tree, "Mine");
+	act(() => confirm?.buttons?.[1].onPress?.());
+	await settle();
+	expect(fake.mutations).toHaveLength(1);
+	expect(menuLabels(tree)).toEqual([]);
+	expect(renderedText(tree)).not.toMatch(/Refresh|trying again|Could not confirm/);
+	expect(opacity(tree, "Mine")).toBe(1);
 	act(() => tree.unmount());
 });
 
@@ -799,11 +1066,16 @@ it("reads nothing while connecting, and reads the Board once the connection is r
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
 	await settle();
+	// The Board's reads, its categories', and the catalog read that
+	// confirms the organization journal before ⋯ shows.
 	expect(fake.requests.map((read) => read.section ?? read.resource).sort()).toEqual([
 		"live",
 		"manifest",
 		"needs_you",
 		"pin_catalog",
+		"pin_catalog",
+		"pin_section",
+		"pin_section",
 	]);
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
 	act(() => tree.unmount());
