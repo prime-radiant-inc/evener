@@ -125,6 +125,15 @@ func knownClosingCallIDEchoes(turn schema.Turn) map[string]string {
 	if turn.Kind != schema.TurnAssistant {
 		return nil
 	}
+	var calls []*llm.ToolCallData
+	for _, part := range turn.Message.Content {
+		if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.Name == "communicate" && part.ToolCall.ID != "" {
+			calls = append(calls, part.ToolCall)
+		}
+	}
+	if len(calls) == 0 {
+		return nil
+	}
 	const turnID = "replay_oracle_echo_detector"
 	reg := apptranscript.NewToolCallRegistry()
 	apptranscript.ProjectTurn(turnID, 0, turn, reg, nil, apptranscript.ToolResultOutputImages)
@@ -132,15 +141,12 @@ func knownClosingCallIDEchoes(turn schema.Turn) map[string]string {
 		return nil
 	}
 	echoes := make(map[string]string)
-	for _, part := range turn.Message.Content {
-		if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != "communicate" || part.ToolCall.ID == "" {
-			continue
-		}
-		repaired := argrepair.RepairJSON([]byte(part.ToolCall.SentArguments()))
+	for _, call := range calls {
+		repaired := argrepair.RepairJSON([]byte(call.SentArguments()))
 		normalized := apptranscript.NormalizeCommunicateArguments(repaired)
 		message := apptranscript.CommunicateMessageFromArguments(normalized)
 		if message != "" && apptranscript.EchoesAssistantText(reg.LastAssistantText, message) {
-			echoes[part.ToolCall.ID] = message
+			echoes[call.ID] = message
 		}
 	}
 	return echoes
@@ -447,7 +453,7 @@ func projectReloadThroughHub(t *testing.T, turns ...schema.Turn) []appwire.Threa
 	const openerText = "replay oracle fixed opener"
 	stateDir := t.TempDir()
 	sessionsDir := filepath.Join(stateDir, "sessions")
-	w, err := transcript.NewWriter(filepath.Join(sessionsDir, sessionID+".transcript.jsonl"), transcript.Header{
+	w, err := transcript.NewWriterNoSync(filepath.Join(sessionsDir, sessionID+".transcript.jsonl"), transcript.Header{
 		SessionID: sessionID,
 		CreatedAt: time.Date(2026, time.June, 1, 10, 0, 0, 0, time.UTC),
 		ProfileID: "replay-oracle",
