@@ -108,6 +108,34 @@ export type ConversationStatus =
   | "error"
   | "closed";
 
+// The known thread-scalar notifications: reducer.ts's own case for each just
+// restamps one scalar field (and lastFrameAt), never `turns` — read straight
+// off applyNotificationToThread's switch, minus history/updated, the
+// overlay/* cases (which do touch turns), evener/thread/resync (its own
+// clause) and warning (its own drop rule). The gap rule below reads this as
+// a denylist: anything NOT in this set — including a forward-compat method
+// this client has no case for at all — is transcript-shaped, and a frame
+// that leaves `turns` unchanged by reference is a gap.
+const THREAD_SCALAR_ONLY_METHODS = new Set<string>([
+  "thread/queueChanged",
+  "thread/status/changed",
+  "thread/model/changed",
+  "thread/reasoning-effort/changed",
+  "evener/goal/updated",
+  "evener/notes/updated",
+  "evener/urls/updated",
+  "thread/vision-model/changed",
+  "evener/task/updated",
+  "evener/thread/name/changed",
+  "evener/sandbox/escalation/requested",
+  "evener/sandbox/escalation/resolved",
+  "evener/job/started",
+  "evener/job/finished",
+  "evener/delegate/updated",
+  "evener/jobs/treeUpdated",
+  "evener/thread/modelRetry",
+]);
+
 // Mutation lifecycle state for send/steer/queue/interrupt. The store tracks
 // the kind, pending/failed status, the exact draft snapshot at submission,
 // the draft revision at submission (so type-then-delete after clear is
@@ -4422,7 +4450,26 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // rule for a frame and for a snapshot, so there is nothing for a row
         // applier to disagree with. The two display bounds run after the
         // projection.
-        const applied = applyThreadNotification(state.conversation, n);
+        let applied = applyThreadNotification(state.conversation, n);
+        // activeTurnId is otherwise snapshot-only (reducer.ts's
+        // activeTurnIdFromThread runs once, at hydrate); history/updated's
+        // own turn-scalar merge (mergeHistory) only adds/updates items and
+        // turn fields by version and never moves this field. The mobile
+        // store is this field's one live writer: a frame's own turn opening
+        // (inProgress) becomes the active turn, and a frame settling the
+        // CURRENTLY active turn (any status the wire uses to close one)
+        // clears it. A frame naming some OTHER, already-settled turn changes
+        // nothing (the "not on a superseded turn" rule).
+        if (n.method === "history/updated") {
+          let activeTurnId = applied.activeTurnId;
+          for (const turn of n.params.turns ?? []) {
+            if (turn.status === "inProgress") activeTurnId = turn.id;
+            else if (turn.id === activeTurnId) activeTurnId = undefined;
+          }
+          if (activeTurnId !== applied.activeTurnId) {
+            applied = { ...applied, activeTurnId };
+          }
+        }
         // RoboRev round 34: a warning with no active turn is the one frame
         // the wire drops entirely (and never persists, so no read can carry
         // it back), yet it is a real diagnostic — the projector emits
@@ -4523,7 +4570,16 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
         // own gap, "a history update whose epoch is newer than held"), so
         // the identity check below already recognizes both without a
         // separate epoch comparison here.
-        const touchesTranscript = n.method === "history/updated" || n.method === "warning";
+        // The gap rule is a DENYLIST, not an allowlist: per the comment
+        // above, ANY frame the reducer could not place — including a
+        // forward-compat method this client has no case for at all — is a
+        // gap when it leaves `turns` untouched by reference, and only the
+        // known thread-scalar frames (never touch turns; reducer.ts's own
+        // cases for each just restamp a scalar field and lastFrameAt) are
+        // named out. evener/thread/resync is handled by the clause's other
+        // arm above and warning by droppedByTheWiresOwnRule below, so
+        // neither needs to be named here.
+        const touchesTranscript = !THREAD_SCALAR_ONLY_METHODS.has(n.method);
         // One exception, by the wire's own rule rather than by this window's
         // contents: a warning that lands with no active turn is dropped in the
         // reducer because warnings are never transcript-persisted (its

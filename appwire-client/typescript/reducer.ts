@@ -2169,6 +2169,55 @@ function itemIdentity(item: ItemModel): string {
   return item.transcriptKey ?? item.id;
 }
 
+// Payload fields whose ABSENCE on a wire item means "this entry said nothing
+// new here", not "cleared" — appwire's own nil/non-nil-empty/non-empty rule
+// (imagesToItemImagesForSession, outputImagesToItemImages): an omitted field
+// (undefined) leaves the held value standing, an explicit empty list or
+// string is authoritative like any other value. The same list the mobile
+// store's rehydrate reconciliation already carries (conversation.ts's
+// SNAPSHOT_AUTHORITY_FIELDS) for the fresh-read merge; mergeReplacedItem is
+// where a live history/updated frame needs the identical rule, since
+// mergeHistory otherwise replaces an item wholesale on every higher-version
+// re-issue.
+const ITEM_OMISSION_TOLERANT_FIELDS = [
+  "images",
+  "outputImages",
+  "output",
+  "error",
+  "raw",
+  "prevalOnly",
+  "exitCode",
+  "argumentsJSON",
+  "description",
+  "toolName",
+  "callId",
+  "eventKind",
+  "steeringKind",
+  "source",
+] as const;
+
+// A version-superseding item replacement: incoming is authoritative for
+// every field it explicitly carries, but an omitted (undefined)
+// omission-tolerant field, or an omitted text field (itemTextPresence),
+// falls back to the held item's value instead of clearing it.
+function mergeReplacedItem(held: ItemModel | undefined, incoming: ItemModel): ItemModel {
+  if (held === undefined) return incoming;
+  let merged = incoming;
+  for (const field of ITEM_OMISSION_TOLERANT_FIELDS) {
+    const heldValue = (held as unknown as Record<string, unknown>)[field];
+    if (heldValue === undefined || (incoming as unknown as Record<string, unknown>)[field] !== undefined) continue;
+    if (merged === incoming) merged = { ...incoming };
+    (merged as unknown as Record<string, unknown>)[field] = heldValue;
+  }
+  if (itemTextPresence(incoming) === "omitted" && itemTextPresence(held) === "provided") {
+    merged = copyItemTextPresence(
+      incoming,
+      merged === incoming ? { ...incoming, text: held.text } : { ...merged, text: held.text },
+    );
+  }
+  return merged;
+}
+
 // Orders by (entry, item, sub). An item with no position sorts after every
 // positioned one. Exported for transcriptProjector.ts, which ranks items by
 // real document position rather than turn-then-item array order (turns can
@@ -2185,13 +2234,18 @@ function turnPosition(turn: TurnModel): ThreadItemPosition | undefined {
 }
 
 // The number of items that sort before position: the index a new item at
-// position is inserted at, and one past the last item preceding it.
+// position is inserted at, and one past the last item preceding it. An
+// upper-bound search (<=, not <): a new arrival whose position TIES an
+// already-held item's — including the common case of two items that both
+// carry no position at all, where comparePositions reads every such pair as
+// equal — inserts after every item already at that position, preserving
+// arrival order, rather than jumping to the front of the tied run.
 function itemsBefore(items: readonly ItemModel[], position: ThreadItemPosition | undefined): number {
   let low = 0;
   let high = items.length;
   while (low < high) {
     const mid = (low + high) >>> 1;
-    if (comparePositions(items[mid]?.position, position) < 0) low = mid + 1;
+    if (comparePositions(items[mid]?.position, position) <= 0) low = mid + 1;
     else high = mid;
   }
   return low;
@@ -2263,7 +2317,17 @@ function mergeHistory(turns: TurnModel[], fragment: HistoryFragment, heldOnly = 
     const writable = ownedItems.has(turn.id) ? turn : { ...turn, items: [...turn.items] };
     ownedItems.add(turn.id);
     if (index === -1) writable.items.splice(itemsBefore(writable.items, incoming.position), 0, incoming);
-    else writable.items[index] = incoming;
+    else {
+      // A higher-version replacement is otherwise authoritative for every
+      // field it carries, but an OMITTED text field is not a replacement —
+      // main's landed text-presence rule (itemTextPresence/wireItemToModel):
+      // an explicit empty string IS authoritative (a real settle with
+      // nothing to say), while an absent one just means this entry said
+      // nothing about text, and the prior provided value stands (e.g. a
+      // reasoning item's seeded summary surviving a completion that omits
+      // text of its own).
+      writable.items[index] = mergeReplacedItem(turn.items[index], incoming);
+    }
     byId.set(turn.id, writable);
     changed = true;
   }
