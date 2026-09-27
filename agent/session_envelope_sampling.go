@@ -67,7 +67,7 @@ type EnvelopeSampling interface {
 	CumulativeUsageSnapshot() llm.Usage
 	ActiveTurnStartedAtMillis() int64
 	FailedToolCallsSnapshot() (count int, measured bool)
-	HasPendingAsk() bool
+	PendingQuestion() *appwire.PendingQuestion
 	PendingEscalations() []events.SandboxEscalationRequestedData
 	ReasoningEffort() string
 	VisionModel() string

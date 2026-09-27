@@ -140,11 +140,54 @@ describe("a Board row (spec 7.2)", () => {
 		const host = mount({ item: item("failed", { host_id: "studio" }) });
 		const label = textWith(host, "Studio Mac")[0];
 		expect(label.props.numberOfLines).toBe(1);
-		expect(styleOf(label)).toMatchObject({ fontSize: 13, lineHeight: 18, color: palette.inkLow });
+		expect(styleOf(label)).toMatchObject({ fontSize: 13, lineHeight: 18, color: palette.inkLow, flexShrink: 0 });
 		expect(symbols(host)).toContain("server.rack");
 		expect(symbols(host)).not.toContain("folder");
 		const glyph = host.root.findAll((node) => node.props.name === "server.rack")[0];
 		expect(glyph.props).toMatchObject({ size: 13, tintColor: palette.inkLow });
+	});
+
+	it("shows task progress on the last line with a checklist glyph", () => {
+		const tree = mount({
+			item: item("failed", {
+				tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
+			}),
+		});
+		const line = textWith(tree, "Task 4 of 7 · Fix the settle/drain race")[0];
+		expect(line.props).toMatchObject({ numberOfLines: 1, ellipsizeMode: "tail" });
+		expect(styleOf(line)).toMatchObject({ fontSize: 13, lineHeight: 18, color: palette.inkLow, flexShrink: 1 });
+		expect(symbols(tree)).toContain("checklist");
+	});
+
+	it("never shrinks project or host, so a long task title is what gives way under pressure", () => {
+		const tree = mount({
+			item: item("failed", {
+				project: "magic-kingdom",
+				host_id: "studio",
+				tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
+			}),
+		});
+		expect(styleOf(textWith(tree, "magic-kingdom")[0])).toMatchObject({ flexShrink: 0 });
+		expect(styleOf(textWith(tree, "Studio Mac")[0])).toMatchObject({ flexShrink: 0 });
+		expect(styleOf(textWith(tree, "Task 4 of 7 · Fix the settle/drain race")[0])).toMatchObject({ flexShrink: 1 });
+	});
+
+	it("shows no task progress once the list is finished or when there is none", () => {
+		const finished = mount({ item: item("failed", { tasks: { total: 2, done: 2 } }) });
+		expect(symbols(finished)).not.toContain("checklist");
+		const none = mount();
+		expect(symbols(none)).not.toContain("checklist");
+	});
+
+	it("puts task progress ahead of project and host on the last line", () => {
+		const tree = mount({
+			item: item("failed", {
+				project: "magic-kingdom",
+				host_id: "studio",
+				tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
+			}),
+		});
+		expect(symbols(tree).slice(-3)).toEqual(["checklist", "folder", "server.rack"]);
 	});
 
 	it("moves a working row in Live with the pulse meter, and shows a still dot elsewhere", () => {
