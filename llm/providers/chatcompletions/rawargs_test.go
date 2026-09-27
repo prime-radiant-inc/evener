@@ -4,14 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -390,5 +388,3 @@ func TestRawArgs_Stream_FallbackOnBadFragment(t *testing.T) {
 }
 
 // Ensure the helper imports are used.
-var _ = io.EOF
-var _ = protocolhttp.Result{}

@@ -3,11 +3,9 @@ package google
 import (
 	"bytes"
 	"context"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 )
 
 // rawArgsJSON builds a Gemini generateContent response body whose
@@ -181,5 +179,3 @@ func TestRawArgs_Stream_FallbackOnNull(t *testing.T) {
 }
 
 // Ensure imports are used.
-var _ = strings.Builder{}
-var _ = protocolhttp.Result{}

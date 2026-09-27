@@ -35,6 +35,10 @@ var claudeXMLParamOpenRE = regexp.MustCompile(
 // If the input is already valid and contains no XML syntax, it is returned
 // unchanged. If rescue is not possible, the original input is returned so the
 // usual schema-validation error path can surface the problem.
+// One exception: when a top-level field's string value is itself a JSON
+// array or object (parsedAnyJSONString), that field is inlined and the
+// result is re-marshaled even without XML, since the parsed form differs
+// from the original string.
 func rescueClaudeXMLArgs(raw string) string {
 	if raw == "" {
 		return raw
