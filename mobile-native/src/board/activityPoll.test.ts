@@ -1,6 +1,6 @@
 import type { ActivityReadParams, ActivityReadResponse } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ACTIVITY_POLL_MS, ActivityPoll } from "./activityPoll";
 
@@ -93,17 +93,16 @@ describe("ActivityPoll (S5)", () => {
 
 	it("keeps the answer to the newest poll only, even if an older one resolves later", async () => {
 		const fake = client();
-		const resolvers: Array<(value: ActivityReadResponse) => void> = [];
-		fake.on("evener/activity/read", () => new Promise((resolve) => resolvers.push(resolve)));
+		const settlements = gateSettlements(fake, "evener/activity/read");
 		const poll = new ActivityPoll(fake);
 		poll.start();
 		await vi.advanceTimersByTimeAsync(0); // poll #1 in flight
 		await vi.advanceTimersByTimeAsync(ACTIVITY_POLL_MS); // poll #2 in flight
-		expect(resolvers).toHaveLength(2);
+		expect(settlements).toHaveLength(2);
 		// The OLDER poll (#1) resolves last, with different data than the newer one.
-		resolvers[1]?.({ sessions: [{ ...activityA, minutes: [0, 0, 0, 0, 0, 0, 5] }] });
+		settlements[1]?.resolve({ sessions: [{ ...activityA, minutes: [0, 0, 0, 0, 0, 0, 5] }] });
 		await vi.advanceTimersByTimeAsync(0);
-		resolvers[0]?.({ sessions: [{ ...activityA, minutes: [9, 9, 9, 9, 9, 9, 9] }] });
+		settlements[0]?.resolve({ sessions: [{ ...activityA, minutes: [9, 9, 9, 9, 9, 9, 9] }] });
 		await vi.advanceTimersByTimeAsync(0);
 		expect(poll.activity("local:a")?.minutes).toEqual([0, 0, 0, 0, 0, 0, 5]);
 	});
