@@ -2,7 +2,7 @@ schema: 1
 id: prose.git-greeting
 tool: prompt-eval
 prompt: |
-  Create a branch named add-greeting. On it, add a function Greet(name string) string to greet.go that returns "Hello, <name>!", and commit that change. Then merge add-greeting into main with a merge commit. Leave everything else in the working tree as it is.
+  Create a branch named add-greeting. On it, add a function Greet(name string) string to greet.go that returns "Hello, <name>!", and commit that change. Then merge add-greeting into main with a merge commit, and keep the add-greeting branch. Leave everything else in the working tree as it is.
 fixture:
   git: true
   files:
