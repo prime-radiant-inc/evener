@@ -120,6 +120,17 @@ type Options struct {
 	// no flags to name and keeps the refusal byte-for-byte what it was.
 	DeployHelp string
 
+	// EnsureDeploy, when set, records one Ensure-triggered deploy as a durable
+	// operation (deploy pipeline 08b §6: "Ensure-triggered operations are
+	// durable fenced operations"). It is called with the host's per-host gate
+	// already held and before any remote write of the deploy step; a non-nil
+	// error means no durable record could be persisted, so nothing may be
+	// launched (persisted-before-launch) and the deploy refuses. The returned
+	// finish records the step's outcome. Nil leaves the deploy unrecorded,
+	// which is only correct for a hub with no operation store wired (tests,
+	// embedders).
+	EnsureDeploy EnsureDeployHook
+
 	// HubAddr is the host hub's loopback listen address, used as this host's
 	// --addr for the bridge and by the restart path to find the old pid and probe
 	// /api/health. Both read the same resolution (hostAddrFor), so they cannot
@@ -326,9 +337,12 @@ func defaultJitter(d time.Duration) time.Duration {
 // Manager owns the SSH channels for the configured hosts. It is safe for
 // concurrent use.
 type Manager struct {
-	reg    *hostreg.Registry
-	opts   Options
-	runner Runner
+	// ensureDeploy is the deploy pipeline's Ensure-deploy recorder (see
+	// SetEnsureDeployHook); nil leaves Ensure-triggered deploys unrecorded.
+	ensureDeploy EnsureDeployHook
+	reg          *hostreg.Registry
+	opts         Options
+	runner       Runner
 	// diagWriter serializes ssh diagnostics from every host onto one sink. Each
 	// attach builds its own diagSink over Options.Stderr, and os/exec copies each
 	// child's stderr on its own goroutine, so without a shared lock two hosts'
@@ -1558,10 +1572,26 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	deploy, restart := m.ensureDecision(host.Name, facts, expected, running, runningKnown, hubPresent)
 	if deploy {
 		m.stateEvent(host.Name, StateDeploying)
+		// The Ensure-triggered deploy is a durable fenced operation (deploy
+		// pipeline 08b §6): the record carrying its fencing epoch is persisted
+		// before the deploy's first remote write, and the gate hold publishes
+		// the operation so a contender's busy refusal names it. A hook that
+		// cannot persist the record refuses the deploy with nothing launched.
+		var finishEnsureDeploy func(error)
+		if hook := m.ensureDeployHook(); hook != nil {
+			finish, err := hook(host)
+			if err != nil {
+				return nil, err
+			}
+			finishEnsureDeploy = finish
+		}
 		deployCtx, cancelDeploy := context.WithTimeout(ctx, m.opts.deployLimit())
 		resolvedTarget, err := m.deploy(deployCtx, host, facts)
 		cancelDeploy()
 		if err != nil {
+			if finishEnsureDeploy != nil {
+				finishEnsureDeploy(err)
+			}
 			return nil, err
 		}
 		if resolvedTarget != "" {
@@ -1586,10 +1616,19 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 		// Judging first makes the permanent cause the one that surfaces.
 		facts, err = m.reReadLaunchContract(ctx, host, facts)
 		if err != nil {
+			if finishEnsureDeploy != nil {
+				finishEnsureDeploy(err)
+			}
 			return nil, err
 		}
 		if err := m.deployedBuildNotStamped(host.Name, facts, expected); err != nil {
+			if finishEnsureDeploy != nil {
+				finishEnsureDeploy(err)
+			}
 			return nil, err
+		}
+		if finishEnsureDeploy != nil {
+			finishEnsureDeploy(nil)
 		}
 	}
 	if restart {
@@ -2418,8 +2457,14 @@ type hostLockEntry struct {
 // generic transient form, never a wrong operation id.
 type hostLockGate struct {
 	mu     sync.Mutex
+	held   atomic.Bool
 	holder atomic.Pointer[hostops.Holder]
 }
+
+// isHeld reports whether the gate is currently held, without disturbing the
+// holder a contender may be about to read. HoldAs tests it before publishing a
+// promotion.
+func (g *hostLockGate) isHeld() bool { return g.held.Load() }
 
 // Lock blocks until the gate is held, clearing any holder left by the previous
 // hold: an unregistered hold (this package's own paths register theirs
@@ -2427,6 +2472,7 @@ type hostLockGate struct {
 // previous holder's identity.
 func (g *hostLockGate) Lock() {
 	g.mu.Lock()
+	g.held.Store(true)
 	g.holder.Store(nil)
 }
 
@@ -2435,6 +2481,7 @@ func (g *hostLockGate) TryLock() bool {
 	if !g.mu.TryLock() {
 		return false
 	}
+	g.held.Store(true)
 	g.holder.Store(nil)
 	return true
 }
@@ -2443,6 +2490,7 @@ func (g *hostLockGate) TryLock() bool {
 // observe a stale holder for a gate that is about to be free.
 func (g *hostLockGate) Unlock() {
 	g.holder.Store(nil)
+	g.held.Store(false)
 	g.mu.Unlock()
 }
 
@@ -2577,6 +2625,63 @@ func (m *Manager) TryAcquire(host string, holder hostops.Holder) (func(), error)
 // hostGate is the compile-time assertion that the Manager is the production
 // hostops.Gate.
 var _ hostops.Gate = (*Manager)(nil)
+
+// HoldAs implements hostops.Gate: it replaces the holder published for name's
+// currently-held gate, the promotion the deploy/restart paths run once their
+// operation record exists (deploy pipeline 08b §5). The gate is the Manager's
+// own per-host lock, so the promotion upgrades the very holder a contender's
+// TryAcquire reads. The entry is looked up under the manager mutex with a
+// live-user reference, so a concurrently released gate cannot drop the entry
+// under the promotion; a gate nobody holds — free, or never created — refuses
+// with hostops.ErrGateNotHeld.
+func (m *Manager) HoldAs(host string, holder hostops.Holder) error {
+	name := strings.TrimSpace(host)
+	if name == "" {
+		return errors.New("sshconn: a gate promotion needs a host name")
+	}
+	m.mu.Lock()
+	entry := m.locks[name]
+	if entry == nil {
+		m.mu.Unlock()
+		return fmt.Errorf("%w: host %q", hostops.ErrGateNotHeld, name)
+	}
+	entry.refs++
+	m.mu.Unlock()
+
+	if !entry.gate.isHeld() {
+		m.releaseHostLock(name)
+		return fmt.Errorf("%w: host %q", hostops.ErrGateNotHeld, name)
+	}
+	entry.gate.holdAs(holder)
+	m.releaseHostLock(name)
+	return nil
+}
+
+// EnsureDeployHook records one Ensure-triggered deploy as a durable operation
+// (deploy pipeline 08b §6). It is called with the host's per-host gate already
+// held and before any remote write of the deploy step; it mints and persists
+// the operation record carrying the deploy's fencing epoch and returns the
+// finish the step's outcome is recorded through. A non-nil error means no
+// durable record could be persisted, so nothing may be launched.
+type EnsureDeployHook func(host hostreg.Host) (finish func(err error), err error)
+
+// SetEnsureDeployHook wires the deploy pipeline's recorder into this Manager's
+// Ensure path. It is a setter rather than an Options field because the hub's
+// host surface (which owns the operation store and the gate's holder
+// publication) is constructed after the Manager; the wiring runs before the
+// Manager serves any request. A nil hook clears it.
+func (m *Manager) SetEnsureDeployHook(hook EnsureDeployHook) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ensureDeploy = hook
+}
+
+// ensureDeployHook returns the wired hook, if any.
+func (m *Manager) ensureDeployHook() EnsureDeployHook {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.ensureDeploy
+}
 
 func (m *Manager) currentChannel(name string) *Channel {
 	m.mu.Lock()

@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -187,6 +188,40 @@ func TestTryAcquireRefusesAnEmptyHost(t *testing.T) {
 	}
 }
 
+// TestManagerHoldAsPublishesThePromotedHolder pins the production half of the
+// promotion affordance: a deploy/restart acquires the Manager's per-host lock
+// before its record exists (the pre-record window renders the transient form),
+// and promotes the holder to the operation class once the record id is known.
+// A promotion against a free gate refuses.
+func TestManagerHoldAsPublishesThePromotedHolder(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
+	reg := testRegistry(t, host)
+	m := newTestManager(t, reg, &fakeRunner{}, Options{})
+
+	release, err := m.TryAcquire("alpha", hostops.Holder{Kind: hostops.HolderOperation})
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	if _, err := m.TryAcquire("alpha", hostops.Holder{Kind: hostops.HolderPlan}); err == nil {
+		t.Fatal("a held gate admitted a second holder")
+	}
+	if err := m.HoldAs("alpha", hostops.Holder{Kind: hostops.HolderOperation, OperationID: "00000000000000000042"}); err != nil {
+		t.Fatalf("HoldAs: %v", err)
+	}
+	_, err = m.TryAcquire("alpha", hostops.Holder{Kind: hostops.HolderPlan})
+	var busy *hostops.BusyError
+	if !errors.As(err, &busy) {
+		t.Fatalf("busy after the promotion = %T (%v), want *hostops.BusyError", err, err)
+	}
+	if busy.Holder.Kind != hostops.HolderOperation || busy.Holder.OperationID != "00000000000000000042" {
+		t.Fatalf("busy holder = %+v, want the promoted operation", busy.Holder)
+	}
+	release()
+	if err := m.HoldAs("alpha", hostops.Holder{Kind: hostops.HolderOperation, OperationID: "1"}); !errors.Is(err, hostops.ErrGateNotHeld) {
+		t.Fatalf("HoldAs on a free gate = %v, want ErrGateNotHeld", err)
+	}
+}
+
 // TestAddHostRefusesAHeldGateRatherThanWaiting pins AddHost's try-acquire: the
 // hub's Add calls it while holding the process-wide mutation mutex, so it must
 // fail fast with the typed busy refusal instead of parking on a gate the
@@ -218,5 +253,44 @@ func TestAddHostRefusesAHeldGateRatherThanWaiting(t *testing.T) {
 	}
 	if _, ok := reg.Get("beta"); !ok {
 		t.Fatal("the add did not register the entry once the gate was free")
+	}
+}
+
+// TestEnsureDeployHookRunsUnderTheGateBeforeAnyRemoteWrite pins the Ensure
+// path's operation hook (deploy pipeline 08b §6): it is called with the host's
+// per-host gate already held and before the deploy step's first remote write,
+// and a hook that cannot persist its record refuses the deploy with nothing
+// launched.
+func TestEnsureDeployHookRunsUnderTheGateBeforeAnyRemoteWrite(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	reg := testRegistry(t, host)
+	fr := &fakeRunner{
+		runFn: cannedRun(map[string][]byte{
+			// The on-disk build and the running hub are an older revision, so the
+			// ladder decides to deploy this controller's build.
+			"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`),
+			"api/health":   []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
+		}),
+		startFn: goodStartFn(t),
+	}
+	gateHeld := make(chan bool, 1)
+	m := newTestManager(t, reg, fr, Options{
+		controllerVersionOverride: "newsha",
+		BuildBinary: func(_ context.Context, _, _, out string) error {
+			return os.WriteFile(out, []byte("binary"), 0o755)
+		},
+	})
+	m.SetEnsureDeployHook(func(h hostreg.Host) (func(error), error) {
+		_, err := m.TryAcquire(h.Name, hostops.Holder{Kind: hostops.HolderPlan})
+		gateHeld <- err != nil
+		return nil, errors.New("the operation store is not configured")
+	})
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if err == nil || !strings.Contains(err.Error(), "operation store is not configured") {
+		t.Fatalf("Ensure error = %v, want the hook's refusal surfaced", err)
+	}
+	if held := <-gateHeld; !held {
+		t.Fatal("the Ensure deploy hook ran without the host's gate held")
 	}
 }
