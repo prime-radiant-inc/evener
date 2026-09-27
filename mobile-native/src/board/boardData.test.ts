@@ -284,6 +284,26 @@ it("reads every page of the pin catalog, so every category has its row", async (
 	expect(requestsFor(hub, "pin_catalog")).toHaveLength(2);
 });
 
+it("resumes paging the pin catalog where a pause interrupted it", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	const categories = (count: number, from = 0) =>
+		Array.from({ length: count }, (_, index) => ({ id: `pins-${from + index}`, name: `Pins ${from + index}`, count: 1 }));
+	answer(hub, "pin_catalog", { pin_sections: categories(100), remaining: 20 });
+	await tick();
+	// The second page is out when the Board pauses, which cancels it.
+	next(hub, "pin_catalog");
+	board.pause();
+	board.resume();
+	await Promise.resolve();
+	const retry = next(hub, "pin_catalog");
+	expect(retry.params.offset).toBe(100);
+	retry.resolve(response(retry.params, { pin_sections: categories(20, 100), remaining: 0 }));
+	await tick();
+	expect(board.getSnapshot().pins.rows).toHaveLength(120);
+});
+
 it("reads a Needs you page that failed again when the Board resumes", async () => {
 	const hub = boundary();
 	const board = createBoardController();
