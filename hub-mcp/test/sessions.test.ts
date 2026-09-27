@@ -14,8 +14,9 @@ export function makeThread(overrides: Partial<Thread> = {}): Thread {
     preview: "fix the parser",
     ephemeral: false,
     modelProvider: "anthropic/claude-sonnet",
-    createdAt: NOW - 3600_000,
-    updatedAt: NOW - 120_000,
+    // Thread wire timestamps are epoch seconds (hubcore.UnixSeconds).
+    createdAt: (NOW - 3600_000) / 1000,
+    updatedAt: (NOW - 120_000) / 1000,
     status: { type: "idle" },
     cwd: "/home/jesse/git/evener",
     projectPath: "/home/jesse/git/evener",

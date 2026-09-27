@@ -20,7 +20,10 @@ export interface TranscriptWindow {
   hasMore: boolean;
 }
 
-const DEFAULT_ITEM_LIMIT = 120;
+// The hub's thread/read and thread/turns/list validate itemLimit against
+// 1..40 (appwire paging); the default asks for the maximum window.
+const DEFAULT_ITEM_LIMIT = 40;
+const MAX_ITEM_LIMIT = 40;
 
 /**
  * readTranscriptWindow fetches one window of a session's transcript. Without
@@ -32,7 +35,7 @@ export async function readTranscriptWindow(
   ref: string,
   opts: { cursor?: string; itemLimit?: number } = {},
 ): Promise<TranscriptWindow> {
-  const itemLimit = Math.min(Math.max(opts.itemLimit ?? DEFAULT_ITEM_LIMIT, 10), 400);
+  const itemLimit = Math.min(Math.max(opts.itemLimit ?? DEFAULT_ITEM_LIMIT, 1), MAX_ITEM_LIMIT);
   if (opts.cursor) {
     const page = await port.request("thread/turns/list", { ref, cursor: opts.cursor, itemsView: "full", itemLimit });
     return { turns: page.data, nextCursor: page.nextCursor, hasMore: Boolean(page.nextCursor) };

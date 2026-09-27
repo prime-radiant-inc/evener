@@ -23,6 +23,14 @@ function projectWord(t: Thread): string {
   return t.cwd;
 }
 
+// Thread.CreatedAt/UpdatedAt are epoch SECONDS on the wire (hubcore's
+// UnixSeconds), unlike turn and item timestamps, which are milliseconds.
+// Every renderer here works in milliseconds, so the thread fields convert
+// once, at the boundary.
+function threadMs(seconds: number): number {
+  return seconds * 1000;
+}
+
 function taskWord(t: Thread): string {
   const tasks = t.evener.tasks;
   if (!tasks || tasks.total === 0) return "";
@@ -39,7 +47,7 @@ export function sessionRow(t: Thread, now: number = Date.now()): string {
   // The wire Thread carries the model in modelProvider (the Go comment: "the
   // model field"); there is no separate model name on the wire.
   bits.push(t.modelProvider);
-  bits.push(fmtAge(t.updatedAt, now));
+  bits.push(fmtAge(threadMs(t.updatedAt), now));
   return bits.join(" | ");
 }
 
@@ -71,8 +79,8 @@ export function sessionDetail(t: Thread, now: number = Date.now()): string {
   const activeTurn = t.evener.activeTurnId ? `running turn ${t.evener.activeTurnId}` : "no turn running";
   const work = t.evener.workMillis ? `, worked ${fmtDuration(t.evener.workMillis)}` : "";
   lines.push(`turn: ${activeTurn}${work}`);
-  lines.push(`created: ${fmtClock(t.createdAt, now)}`);
-  lines.push(`updated: ${fmtClock(t.updatedAt, now)}`);
+  lines.push(`created: ${fmtClock(threadMs(t.createdAt), now)}`);
+  lines.push(`updated: ${fmtClock(threadMs(t.updatedAt), now)}`);
   const turnCount = t.evener.turnCount !== undefined ? `turns completed: ${t.evener.turnCount}` : "";
   const usage = usageLine(t);
   lines.push(

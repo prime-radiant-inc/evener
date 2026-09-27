@@ -157,15 +157,17 @@ e2e_wait_for_port "$run/fakellm.log" "$fakellm_pid" fakellm
 fakellm_port="$e2e_port"
 
 cat >"$HOME/.config/evener/providers.toml" <<EOF
-schema = 1
+schema = 2
 default = "fake"
 
-[instances.fake]
-type = "openai"
-api_style = "chat-completions"
+[providers.fake]
+base = "openai"
+protocol = "openai-chat"
 base_url = "http://127.0.0.1:$fakellm_port/v1"
 api_key = "fakellm-not-a-secret"
-send_session_affinity_headers = true
+
+[providers.fake.caps]
+session_affinity_headers = true
 EOF
 
 echo "==> starting evener hub" >&2

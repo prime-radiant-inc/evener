@@ -10,10 +10,10 @@
 # you are wiring fake429 into a hub without the script; the token the
 # script's sed replaces is the literal string on the base_url line, not
 # anything in this comment block.
-schema = 1
+schema = 2
 default = "ratelimited"
 
-[instances.ratelimited]
-type = "openai"
-api_style = "chat-completions"
+[providers.ratelimited]
+base = "openai"
+protocol = "openai-chat"
 base_url = "http://FAKE429_ADDR/v1"

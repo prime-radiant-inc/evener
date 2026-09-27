@@ -6,6 +6,11 @@ and steer it across many concurrent sessions; the `evener tui` terminal
 dashboard talks to the same API. The hub launches and supervises
 local `evener serve` daemons and indexes saved sessions for search.
 
+Agents get the same surface as a tool set: the [hub MCP
+server](evener-hub-mcp.md) exposes session supervision — list, read,
+start, steer, watch, stop — to any MCP client, including a evener
+session acting as project manager.
+
 **First time here?** [Getting started](getting-started.md)
 walks from install to your first session. This document is the
 production-style local runbook: config files, credentials, supervised

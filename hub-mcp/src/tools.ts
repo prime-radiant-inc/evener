@@ -260,7 +260,9 @@ const startSession: ToolSpec = {
     model: z
       .string()
       .optional()
-      .describe("model as instance/model, e.g. anthropic/claude-sonnet-…; omit for the hub default"),
+      .describe(
+        "model as instance/model, e.g. anthropic/claude-sonnet-…; pass it unless the hub is configured with a default provider — spawns without any resolvable model are refused",
+      ),
     reasoning_effort: z.string().optional().describe("reasoning effort for the session (low, medium, high)"),
     max_subagent_depth: z
       .number()

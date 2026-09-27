@@ -73,22 +73,38 @@ workspace="$run/workspace"
 mkdir -p "$workspace"
 echo "notes for the fake tool round: the parser mentions TODO lexer cleanup" >"$workspace/NOTES.md"
 
-echo "==> starting fakellm (hold 1s, 3 rounds per turn)" >&2
-"$run/fakellm" --hold 1s --rounds 3 127.0.0.1:0 >"$run/fakellm.log" 2>&1 &
+echo "==> writing the PM session script fakellm will follow" >&2
+# The scripted session is the PM: a real evener session, spawned with the
+# hub MCP in its mcp.json, whose model rounds call real MCP tools through a
+# real daemon. The marker identifies it by prompt text; every other session
+# (the workers it starts, the workers this driver starts) keeps fakellm's
+# default behaviour.
+cat >"$run/pm-script.json" <<EOF
+{
+	"marker": "PM-SCRIPTED-DRIVER",
+	"rounds": [
+		{"tool": "hub__hub_overview", "args": {}},
+		{"tool": "hub__start_session", "args": {"cwd": "$workspace", "prompt": "Read NOTES.md and index every parser mention.", "name": "scripted-worker", "model": "fake/fake-test-model"}},
+		{"text": "The worker is delegated and running. Ending my turn as the scripted PM."}
+	]
+}
+EOF
+
+echo "==> starting fakellm (hold 1s, 3 rounds, PM script)" >&2
+"$run/fakellm" --hold 1s --rounds 3 --script "$run/pm-script.json" 127.0.0.1:0 >"$run/fakellm.log" 2>&1 &
 echo $! >"$run/fakellm.pid"
 e2e_wait_for_port "$run/fakellm.log" "$(cat "$run/fakellm.pid")" fakellm
 fakellm_port="$e2e_port"
 
 cat >"$HOME/.config/evener/providers.toml" <<EOF
-schema = 1
+schema = 2
 default = "fake"
 
-[instances.fake]
-type = "openai"
-api_style = "chat-completions"
+[providers.fake]
+base = "openai"
+protocol = "openai-chat"
 base_url = "http://127.0.0.1:$fakellm_port/v1"
 api_key = "fakellm-not-a-secret"
-send_session_affinity_headers = true
 EOF
 
 echo "==> starting the hub" >&2
@@ -103,6 +119,27 @@ echo "==> building the hub MCP package" >&2
 cd "$repo_root/hub-mcp"
 npm run preflight
 npm run build
+mcp_entry="$repo_root/hub-mcp/dist/src/index.js"
+
+echo "==> wiring the hub MCP into the isolated home's global mcp.json" >&2
+# The global layer is the trusted one (mcpconfig's own split): the sessions
+# this hub spawns get the hub MCP exactly the way the PM session kind will.
+mkdir -p "$HOME/.config/evener"
+cat >"$HOME/.config/evener/mcp.json" <<EOF
+{
+	"mcpServers": {
+		"hub": {
+			"type": "stdio",
+			"command": "node",
+			"args": ["$mcp_entry"],
+			"env": {
+				"EVENER_HUB_RPC_URL": "ws://127.0.0.1:$hub_port/rpc",
+				"EVENER_HUB_TOKEN": "$token"
+			}
+		}
+	}
+}
+EOF
 
 echo "==> running the PM workflow through the MCP" >&2
 EVENER_E2E_RPC="ws://127.0.0.1:$hub_port/rpc" \
