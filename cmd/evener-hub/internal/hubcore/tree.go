@@ -1316,24 +1316,19 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// children form one task tree: child activity keeps the project working,
 		// but cannot inflate the count beyond one for that task tree. A
 		// descendant (any depth) can only ever raise the task tree's state to
-		// "active" — its own awaiting, warning, errored, or restartRequired
-		// state must never surface on the coordinator's row; only the
-		// top-level session's own state can raise the rollup into an
-		// attention state (#2557). Subagent failures still show in the
-		// session's own Subagents chip and list.
+		// "active"; only the top-level session's own state can raise the
+		// rollup into an attention state (#2557). Subagent failures still show
+		// in the session's own Subagents chip and list.
 		rollup := ""
 		rollupLive, rollupAttn := 0, 0
 		for _, s := range sessions {
 			taskState := s.State
 			var includeDescendants func(TreeNode)
 			includeDescendants = func(node TreeNode) {
-				if len(node.RunningJobs) > 0 && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
+				if (node.State == "active" || len(node.RunningJobs) > 0) && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
 					taskState = "active"
 				}
 				for _, child := range node.Children {
-					if child.State == "active" && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
-						taskState = "active"
-					}
 					includeDescendants(child)
 				}
 			}
