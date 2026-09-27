@@ -964,6 +964,16 @@ type SubagentTally struct {
 	Done    int `json:"done"`
 }
 
+// ThreadFailure summarizes the failed turn a session rests on (S1c): the
+// failure's headline (the diagnostic classifier's title, such as "Provider
+// error" or "Usage limit reached", cut to one line of MaxFailureTitleRunes)
+// and its structured cause. It never carries the failure's message, which can
+// quote a provider's error body; the transcript's error row has that.
+type ThreadFailure struct {
+	Title string           `json:"title,omitempty"`
+	Cause *DiagnosticCause `json:"cause,omitempty"`
+}
+
 // PendingQuestion is the first question of a session's pending ask (S1b): what
 // its Needs you row says ("Question · keep or drop the implied options?") and
 // the option labels a long-press preview lists. The daemon cuts Question and

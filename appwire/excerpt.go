@@ -16,6 +16,9 @@ const (
 	MaxQuestionOptionRunes = 80
 	// MaxQuestionOptions is ask_user's own ceiling on options per question.
 	MaxQuestionOptions = 5
+	// MaxFailureTitleRunes bounds a failure's headline, a Failed row's why
+	// line ("Provider error", "Usage limit reached").
+	MaxFailureTitleRunes = 80
 )
 
 // BoundedPendingQuestion is a pending question cut to the wire's bounds: its
