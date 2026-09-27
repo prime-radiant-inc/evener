@@ -2019,7 +2019,6 @@ describe("drain-as-steer affordance", () => {
       fireEvent.click(drainButton);
       await flushPendingTurnsProjectionForTests();
     });
-    await flushPendingTurnsProjectionForTests();
     expect(fake.calls.find((c) => c.method === "turn/drainAsSteer")?.params).toMatchObject({ ref: "ref_a" });
   });
 
@@ -2072,12 +2071,11 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
-      // The lookup stays outside the act scope (a waitFor inside it warns), and
-      // the projection flush inside it is main's own warning fix.
+      // The projection flush inside the act is main's own warning fix, and
+      // the drain's request has gone out by the time it returns.
       await flushPendingTurnsProjectionForTests();
     });
 
-    await flushPendingTurnsProjectionForTests();
     const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
     expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "my current draft" }] });
     expect(onDrainSuccess).toHaveBeenCalledTimes(1);

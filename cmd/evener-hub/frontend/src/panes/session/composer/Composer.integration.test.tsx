@@ -909,7 +909,6 @@ test("the strip's drain-as-steer reads the composer's live text at click time, n
   await user.click(drainButton());
 
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true);
   const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "st" }] });
 });
@@ -1241,7 +1240,6 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
   await user.click(screen.getByRole("button", { name: /remove from queue/i }));
 
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true);
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
 });
@@ -1713,7 +1711,6 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
 
   expect((textarea() as HTMLDivElement).textContent).toBe("fq"); // restored into the (now empty) composer
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true);
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
 });

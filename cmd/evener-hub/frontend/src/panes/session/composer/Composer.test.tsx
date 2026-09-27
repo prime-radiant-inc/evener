@@ -1361,7 +1361,6 @@ test("idle session: submit button reads Send and posts turn/start with the compo
   await user.click(submitButton());
 
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true);
   const call = fake.calls.find((c) => c.method === "turn/start");
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "ha" }] });
 });
@@ -1951,7 +1950,6 @@ test("Shift+Enter with an empty queue steers the draft and leaves nothing behind
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.some((c) => c.method === "turn/steer")).toBe(true);
   expect(fake.calls.find((c) => c.method === "turn/steer")?.params).toMatchObject({ ref: "ref_a" });
   await waitFor(() => expect(editor.textContent).toBe(""));
   expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
@@ -2080,7 +2078,6 @@ test("clicking steer with a non-empty queue routes to drain-as-steer, carrying t
   await user.click(steerButton());
 
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true);
   const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "dm" }] });
 });
@@ -2652,7 +2649,6 @@ test("sending recovered text uses current Composer routing and consumes the reco
   // The dispatch is fire-and-forget off the durable resend (threads.ts's own
   // handleDiscoveredMutations call), and every storage step it takes is
   // projection work, so the flush above has seen the wire call out.
-  expect(fake.calls.some((call) => call.method === "turn/queue")).toBe(true);
   expect(fake.calls.find((call) => call.method === "turn/queue")?.params).toMatchObject({
     input: [{ type: "text", text: "retry me" }],
   });
@@ -2757,7 +2753,6 @@ test.each(["automatic", "Edit message"] as const)(
 
       await user.click(submitButton());
       await flushPendingTurnsProjectionForTests();
-      expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
       expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
         input: expectedSubmittedInput,
       });
@@ -4784,7 +4779,6 @@ test("skill completions keep indivisible chips in the sentence and submit both r
   await user.click(submitButton());
 
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
   const call = fake.calls.find((candidate) => candidate.method === "turn/start");
   expect(call?.params).toMatchObject({
     ref: "ref_slash_skill",
@@ -4927,7 +4921,6 @@ test.each([
   ).toEqual(fixture.chips);
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
   expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ input: fixture.input });
 });
 
@@ -4997,7 +4990,6 @@ test("a leading skill that shares a builtin name remains message input", async (
   }));
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true);
   expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
     input: [
       { type: "text", text: "/clear keep this reference" },

@@ -508,7 +508,6 @@ test("/steer sends turn/steer when a turn is active", async () => {
   if (c.args?.kind !== "free") throw new Error("expected free args");
   await c.args.run(runContext(), "go left");
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true);
   const call = fake.calls.find((call) => call.method === "turn/steer");
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "go left" }] });
 });
@@ -637,7 +636,6 @@ test("/interrupt sends turn/interrupt for a working session whose turn has no na
   await cmd("interrupt").run?.(runContext());
 
   await flushPendingTurnsProjectionForTests();
-  expect(fake.calls.some((call) => call.method === "turn/interrupt")).toBe(true);
   expect(fake.calls.find((call) => call.method === "turn/interrupt")?.params).toMatchObject({ ref: "ref_a" });
 });
 
