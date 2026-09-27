@@ -93,6 +93,27 @@ test("explicit steer on an idle session is an explained error", async () => {
   assert.equal(hub.callsOf("turn/steer").length, 0);
 });
 
+test("explicit steer respects the steer capability, the gate auto applies", async () => {
+  const hub = new FakeHub();
+  hub.on("thread/read", () => ({
+    thread: makeThread({
+      status: { type: "active" },
+      evener: { ...makeThread().evener, capabilities: { ...makeThread().evener.capabilities, steer: false } },
+    }),
+  }));
+  const out = await runSend(hub, { ref: "local:a", text: "hi", mode: "steer" });
+  assert.match(outcome(out), /does not support steering while busy \(state active\); queue instead/);
+  assert.equal(hub.callsOf("turn/steer").length, 0);
+});
+
+test("explicit queue on an idle session is an explained error, like auto's gating", async () => {
+  const hub = new FakeHub();
+  hub.on("thread/read", () => ({ thread: makeThread() }));
+  const out = await runSend(hub, { ref: "local:a", text: "hi", mode: "queue" });
+  assert.match(outcome(out), /is idle, not mid-turn; there is nothing to queue behind — use mode "start" \(or auto\)/);
+  assert.equal(hub.callsOf("turn/queue").length, 0);
+});
+
 test("start on a session that cannot accept turns is an explained error", async () => {
   const hub = new FakeHub();
   hub.on("thread/read", () => ({

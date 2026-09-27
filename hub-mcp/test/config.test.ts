@@ -51,3 +51,32 @@ test("the default URL is the hub's default listener, overridable", () => {
   assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t" }).url, "ws://127.0.0.1:9180/rpc");
   assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_RPC_URL: "ws://h:1/rpc" }).url, "ws://h:1/rpc");
 });
+
+test("EVENER_HUB_MCP_READONLY enables read-only mode only for the literal 1", () => {
+  assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_READONLY: "1" }).readOnly, true);
+  for (const value of ["true", "yes", "0", "1 ", ""]) {
+    assert.equal(
+      resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_READONLY: value }).readOnly,
+      undefined,
+      `EVENER_HUB_MCP_READONLY=${JSON.stringify(value)} must not read as enabled`,
+    );
+  }
+  assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t" }).readOnly, undefined);
+});
+
+test("EVENER_HUB_MCP_PROJECT sets the scope and refuses non-absolute values", () => {
+  assert.equal(
+    resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "/home/jesse/git/evener" }).projectScope,
+    "/home/jesse/git/evener",
+  );
+  assert.equal(
+    resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "/home/jesse/git/evener/" }).projectScope,
+    "/home/jesse/git/evener",
+  );
+  assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "  " }).projectScope, undefined);
+  assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t" }).projectScope, undefined);
+  assert.throws(
+    () => resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "git/evener" }),
+    /EVENER_HUB_MCP_PROJECT must be an absolute path \(got "git\/evener"\)/,
+  );
+});

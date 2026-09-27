@@ -3,9 +3,10 @@ import { test } from "node:test";
 
 import type { Thread } from "@evener/appwire-client";
 
-import { normalizeRef, sessionDetail, sessionRow } from "../src/sessions.js";
+import { normalizeRef, pathInside, sessionDetail, sessionRow, threadInScope } from "../src/sessions.js";
 
 const NOW = 1_800_000_000_000;
+const SCOPE = "/home/jesse/git/evener";
 
 export function makeThread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -51,6 +52,27 @@ test("normalizeRef assumes the local source for bare session ids", () => {
   assert.equal(normalizeRef("host:h:01"), "host:h:01");
 });
 
+test("pathInside requires containment, never a shared prefix", () => {
+  assert.ok(pathInside(SCOPE, SCOPE));
+  assert.ok(pathInside(SCOPE, `${SCOPE}/`));
+  assert.ok(pathInside(SCOPE, `${SCOPE}/worktrees/w1`));
+  assert.ok(!pathInside(SCOPE, "/home/jesse/git/evener-other"));
+  assert.ok(!pathInside(SCOPE, "/elsewhere"));
+});
+
+test("threadInScope requires every path the thread names to be inside the scope", () => {
+  assert.ok(threadInScope(makeThread(), SCOPE));
+  assert.ok(
+    threadInScope(makeThread({ cwd: `${SCOPE}/worktrees/w1`, projectPath: SCOPE }), SCOPE),
+    "a linked worktree inside the project is in scope",
+  );
+  assert.ok(!threadInScope(makeThread({ cwd: "/elsewhere/repo" }), SCOPE), "cwd outside puts the session out");
+  assert.ok(
+    !threadInScope(makeThread({ cwd: SCOPE, projectPath: "/elsewhere/repo" }), SCOPE),
+    "projectPath outside puts the session out even when the cwd is inside",
+  );
+});
+
 test("a session row carries ref, state, name, project, model, and age", () => {
   const row = sessionRow(makeThread(), NOW);
   assert.match(row, /local:a \| idle \| fix the parser/);
@@ -76,7 +98,7 @@ test("queue depth and task progress surface in the row", () => {
   assert.match(row, /\| worker, queue 2, tasks 1\/4/);
 });
 
-test("detail names what you may do and flags resume-required sessions", () => {
+test("detail names only what this MCP can do, lists UI-only moves, and flags resume-required sessions", () => {
   const detail = sessionDetail(
     makeThread({
       evener: {
@@ -87,8 +109,46 @@ test("detail names what you may do and flags resume-required sessions", () => {
     }),
     NOW,
   );
-  assert.match(detail, /resume required before actions/);
-  assert.match(detail, /you can: queue, interrupt, clear-queue, compact, fork, change-model, stop, rename, set-goal/);
+  assert.match(detail, /resume required: resume it with resume_session/);
+  assert.match(detail, /you can: resume, queue, interrupt, clear-queue, stop, rename/);
+  assert.doesNotMatch(detail, /you can: [^\n]*compact/);
+  assert.match(detail, /hub UI only: compact, fork, change-model, set-goal/);
+});
+
+test("you can: lists rename only when the capability is set, and resume only when required", () => {
+  const plain = sessionDetail(makeThread(), NOW);
+  assert.match(plain, /you can: send, steer, queue, interrupt, clear-queue, stop, rename/);
+  assert.doesNotMatch(plain, /resume/, "a session not waiting on a resume does not offer one");
+
+  const noRename = sessionDetail(
+    makeThread({
+      evener: { ...makeThread().evener, capabilities: { ...makeThread().evener.capabilities, rename: false } },
+    }),
+    NOW,
+  );
+  assert.doesNotMatch(noRename, /you can: [^\n]*rename/);
+});
+
+test("detail carries failed tool calls and ask-pending, and nil failedToolCalls renders nothing", () => {
+  const flagged = sessionDetail(
+    makeThread({
+      evener: { ...makeThread().evener, failedToolCalls: 3, askPending: true },
+    }),
+    NOW,
+  );
+  assert.match(flagged, /failed tool calls: 3/);
+  assert.match(flagged, /waiting on a human answer/);
+
+  const counted = sessionDetail(makeThread({ evener: { ...makeThread().evener, failedToolCalls: 0 } }), NOW);
+  assert.match(counted, /failed tool calls: 0/, "a real zero is good news, not unknown");
+
+  const unknown = sessionDetail(makeThread(), NOW);
+  assert.doesNotMatch(unknown, /failed tool calls/, "nil means nobody counted — never render a fabricated 0");
+});
+
+test("the row flags ask-pending sessions", () => {
+  const row = sessionRow(makeThread({ evener: { ...makeThread().evener, askPending: true } }), NOW);
+  assert.match(row, /, ask pending/);
 });
 
 test("detail reports context pressure and cost when present", () => {

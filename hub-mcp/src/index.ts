@@ -13,7 +13,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { type HubConfig, resolveConfig } from "./config.js";
 import { ActivityWatcher } from "./events.js";
 import { AppwireHub, type HubInfo, type HubPort } from "./hub.js";
-import { TOOLS, type ToolContext, type ToolSpec } from "./tools.js";
+import { type ToolContext, type ToolSpec, toolsFor } from "./tools.js";
 
 const SERVER_VERSION = "0.1.0";
 
@@ -60,7 +60,7 @@ export function buildContext(port?: HubPort, configOverride?: HubConfig): ToolCo
 
 /** installTools registers every tool with honest, agent-facing errors. */
 export function installTools(server: McpServer, ctx: ToolContext): void {
-  for (const [name, spec] of Object.entries(TOOLS)) {
+  for (const [name, spec] of Object.entries(toolsFor(ctx.config))) {
     server.registerTool(
       name,
       {
@@ -117,7 +117,10 @@ export async function main(): Promise<void> {
     ctx.shutdown.abort();
     ctx.port.close();
   });
-  diagnostic(`serving hub MCP on stdio for hub at ${ctx.config.url} (token from ${ctx.config.tokenSource})`);
+  diagnostic(
+    `serving hub MCP on stdio for hub at ${ctx.config.url} (token from ${ctx.config.tokenSource})` +
+      (ctx.config.readOnly ? " — read-only (EVENER_HUB_MCP_READONLY=1): only the read tools are registered" : ""),
+  );
 }
 
 // Run only when executed as the program entry (node dist/src/index.js), not

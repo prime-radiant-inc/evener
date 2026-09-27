@@ -18,6 +18,8 @@ export interface TranscriptWindow {
   nextCursor?: string;
   /** True when older history exists beyond this window. */
   hasMore: boolean;
+  /** True when this window came from thread/turns/list, which the hub always serves as fragments. */
+  paged: boolean;
 }
 
 // The hub's thread/read and thread/turns/list validate itemLimit against
@@ -37,13 +39,16 @@ export async function readTranscriptWindow(
 ): Promise<TranscriptWindow> {
   const itemLimit = Math.min(Math.max(opts.itemLimit ?? DEFAULT_ITEM_LIMIT, 1), MAX_ITEM_LIMIT);
   if (opts.cursor) {
-    const page = await port.request("thread/turns/list", { ref, cursor: opts.cursor, itemsView: "full", itemLimit });
-    return { turns: page.data, nextCursor: page.nextCursor, hasMore: Boolean(page.nextCursor) };
+    // The hub forces itemsView to fragment server-side on thread/turns/list,
+    // so asking for full here is a no-op that misleads the caller — pages are
+    // always fragment view.
+    const page = await port.request("thread/turns/list", { ref, cursor: opts.cursor, itemLimit });
+    return { turns: page.data, nextCursor: page.nextCursor, hasMore: Boolean(page.nextCursor), paged: true };
   }
   const read = await port.request("thread/read", { ref, includeTurns: true, subscribe: true, itemLimit });
   const turns = read.thread.turns ?? [];
   const older = read.olderCursor;
-  return { turns, nextCursor: older || undefined, hasMore: Boolean(older) };
+  return { turns, nextCursor: older || undefined, hasMore: Boolean(older), paged: false };
 }
 
 function toolCallLine(item: ThreadItem): string {

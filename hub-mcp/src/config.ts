@@ -17,6 +17,21 @@ export interface HubConfig {
   token: string;
   /** Where the token came from, for configuration diagnostics (no secret). */
   tokenSource: string;
+  /**
+   * EVENER_HUB_MCP_READONLY=1 registers only the read tools — supervision
+   * without mutation. Only the literal "1" counts as set: every other value
+   * ("true", "yes", even "1 " with a stray space) leaves the full tool set
+   * registered, visibly so in tools/list, rather than guessing at what an
+   * operator might have meant.
+   */
+  readOnly?: boolean;
+  /**
+   * EVENER_HUB_MCP_PROJECT: the one project (absolute path) this server may
+   * see — rows, searches, starts, and named-ref tools are narrowed to it.
+   * Unset serves every project. Non-absolute values fail closed: the server
+   * starts unconfigured and every hub-touching call reports the error.
+   */
+  projectScope?: string;
 }
 
 /**
@@ -43,8 +58,23 @@ export function resolveConfig(
   readFile: (file: string) => string = (file) => fs.readFileSync(file, "utf8"),
 ): HubConfig {
   const url = env.EVENER_HUB_RPC_URL?.trim() || DEFAULT_HUB_RPC_URL;
+  const readOnly = env.EVENER_HUB_MCP_READONLY === "1";
+  const projectScopeRaw = env.EVENER_HUB_MCP_PROJECT?.trim();
+  if (projectScopeRaw && !path.isAbsolute(projectScopeRaw)) {
+    throw new Error(
+      `EVENER_HUB_MCP_PROJECT must be an absolute path (got "${projectScopeRaw}"); ` +
+        `set it to the absolute path of the one project this server may see, or unset it to serve every project.`,
+    );
+  }
+  const projectScope = projectScopeRaw ? path.resolve(projectScopeRaw) : undefined;
   if (env.EVENER_HUB_TOKEN && env.EVENER_HUB_TOKEN.trim() !== "") {
-    return { url, token: env.EVENER_HUB_TOKEN.trim(), tokenSource: "EVENER_HUB_TOKEN" };
+    return {
+      url,
+      token: env.EVENER_HUB_TOKEN.trim(),
+      tokenSource: "EVENER_HUB_TOKEN",
+      readOnly: readOnly || undefined,
+      projectScope,
+    };
   }
   const file = env.EVENER_HUB_TOKEN_FILE?.trim() || path.join(stateRoot(env), "auth-token");
   let raw: string;
@@ -60,5 +90,5 @@ export function resolveConfig(
   if (!token) {
     throw new Error(`the hub token file ${file} is empty; start the hub so it writes a token, or set EVENER_HUB_TOKEN`);
   }
-  return { url, token, tokenSource: `file ${file}` };
+  return { url, token, tokenSource: `file ${file}`, readOnly: readOnly || undefined, projectScope };
 }

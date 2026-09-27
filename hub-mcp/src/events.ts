@@ -9,16 +9,19 @@
 //    thread/read's subscribe flag), the ring buffer of recent events, and
 //    wait() — the blocking primitive wait_for_activity exposes.
 
+import { randomUUID } from "node:crypto";
+
 import type { AnyNotification, Thread } from "@evener/appwire-client";
 
 import type { HubPort } from "./hub.js";
 import { firstLine, fmtDuration, truncate } from "./render.js";
+import { normalizeRef } from "./sessions.js";
 
 export const EVENT_GROUPS = ["turns", "status", "tasks", "jobs", "delegates", "attention", "errors"] as const;
 export type EventGroup = (typeof EVENT_GROUPS)[number];
 
 export interface ActivityEvent {
-  /** Monotonic sequence number; pass back as `since` to wait_for_activity. */
+  /** Monotonic per-process sequence number; cursor() renders it with the process epoch. */
   seq: number;
   atMs: number;
   ref: string;
@@ -198,7 +201,10 @@ export function classify(n: AnyNotification): Classified[] {
           approvalPending?: boolean;
         }>) ?? [];
       return changed.map((c) => ({
-        ref: c.threadId ?? "",
+        // AttentionEntry.ID is the BARE session id on the wire, without the
+        // "local:" prefix every other notification's ref carries — normalize
+        // it or no wait keyed on local:<id> can ever match this group.
+        ref: c.threadId ? normalizeRef(c.threadId) : "",
         group: "attention" as EventGroup,
         method,
         summary: `attention ${c.prevLevel ?? "?"} → ${c.level ?? "?"}: ${c.title ?? c.project ?? "session"}${c.askPending ? " (waiting on a human answer)" : ""}${c.approvalPending ? " (waiting on sandbox approval)" : ""}`,
@@ -240,18 +246,48 @@ export function classify(n: AnyNotification): Classified[] {
 export interface WaitQuery {
   refs?: string[];
   groups?: EventGroup[];
-  since?: number;
+  /**
+   * The activity_cursor ("<epoch>:<seq>") from a previous call. A cursor from
+   * another epoch — a restart of this server process, or the bare-number
+   * format an older process printed — means those events were lost: the wait
+   * starts from now and the result says the stream restarted.
+   */
+  since?: string;
   limit?: number;
 }
 
 export interface WaitResult {
   events: ActivityEvent[];
-  cursor: number;
+  /** The position to pass back as `since`: "<epoch>:<seq>". */
+  cursor: string;
   timedOut: boolean;
+  /** Matching events dropped because they did not fit `limit`. */
+  skipped?: number;
+  /** True when `since` came from another stream epoch: the wait started from now. */
+  restarted?: boolean;
+  /** True when same-epoch events since the cursor may have been evicted from the buffer. */
+  evicted?: boolean;
+}
+
+/** The resolved form of WaitQuery the matcher works against. */
+interface ResolvedQuery {
+  refs?: string[];
+  groups?: EventGroup[];
+  sinceSeq: number;
+  limit?: number;
+}
+
+/** One wait's cursor resolution: a seq position, plus what the cursor claimed. */
+interface SinceMeta {
+  seq: number;
+  restarted: boolean;
+  /** True only when the cursor named this process's own epoch. */
+  sameEpoch: boolean;
 }
 
 interface Waiter {
-  query: WaitQuery;
+  query: ResolvedQuery;
+  meta: SinceMeta;
   resolve: (result: WaitResult) => void;
   timer: ReturnType<typeof setTimeout> | null;
   settled: boolean;
@@ -268,10 +304,13 @@ const DEFAULT_CAPACITY = 1000;
 export class ActivityWatcher {
   private readonly port: HubPort;
   private readonly capacity: number;
+  /** Per-process epoch: a restart is a new process, so seq alone cannot name a position across one. */
+  private readonly epoch = randomUUID().slice(0, 8);
   private readonly buffer: ActivityEvent[] = [];
   private readonly subscribed = new Set<string>();
   private readonly waiters = new Set<Waiter>();
   private seq = 0;
+  private everEvicted = false;
   private started = false;
   private readonly diagnostic: (message: string) => void;
 
@@ -301,7 +340,10 @@ export class ActivityWatcher {
         summary: c.summary,
       };
       this.buffer.push(event);
-      if (this.buffer.length > this.capacity) this.buffer.splice(0, this.buffer.length - this.capacity);
+      if (this.buffer.length > this.capacity) {
+        this.buffer.splice(0, this.buffer.length - this.capacity);
+        this.everEvicted = true;
+      }
       this.pokeWaiters(event);
     }
   }
@@ -310,7 +352,7 @@ export class ActivityWatcher {
     for (const waiter of this.waiters) {
       if (waiter.settled) continue;
       if (this.matches(waiter.query, event)) {
-        this.settle(waiter, { events: this.collect(waiter.query), cursor: this.seq, timedOut: false });
+        this.settle(waiter, this.buildResult(waiter.query, waiter.meta, false));
       }
     }
   }
@@ -322,27 +364,64 @@ export class ActivityWatcher {
     waiter.resolve(result);
   }
 
-  private matches(query: WaitQuery, event: ActivityEvent): boolean {
-    if (query.since !== undefined && event.seq <= query.since) return false;
+  private matches(query: ResolvedQuery, event: ActivityEvent): boolean {
+    if (event.seq <= query.sinceSeq) return false;
     if (query.refs && query.refs.length > 0 && !query.refs.includes(event.ref)) return false;
     if (query.groups && query.groups.length > 0 && !query.groups.includes(event.group)) return false;
     return true;
   }
 
-  private collect(query: WaitQuery): ActivityEvent[] {
+  /**
+   * collect gathers every match in the buffer, keeping only the newest
+   * `limit` and counting the rest as skipped — silently dropping older
+   * matches would answer "all quiet" over events that did happen.
+   */
+  private collect(query: ResolvedQuery): { events: ActivityEvent[]; skipped: number } {
     const limit = query.limit ?? 50;
-    const out: ActivityEvent[] = [];
-    for (let i = this.buffer.length - 1; i >= 0 && out.length < limit; i--) {
+    const matching: ActivityEvent[] = [];
+    for (let i = this.buffer.length - 1; i >= 0; i--) {
       const event = this.buffer[i];
-      if (!event) continue;
-      if (this.matches(query, event)) out.unshift(event);
+      if (event && this.matches(query, event)) matching.unshift(event);
     }
-    return out;
+    const skipped = Math.max(0, matching.length - limit);
+    return { events: skipped > 0 ? matching.slice(matching.length - limit) : matching, skipped };
   }
 
-  /** cursor returns the newest event's sequence number. */
-  cursor(): number {
-    return this.seq;
+  /**
+   * resolveSince turns a cursor string into a seq position. Cursors from
+   * another epoch — including the bare-number format an older process
+   * printed — cannot be honored: those events were lost with the old
+   * process, so the wait starts from now and says the stream restarted.
+   */
+  private resolveSince(since: string | undefined): SinceMeta {
+    if (since === undefined) return { seq: 0, restarted: false, sameEpoch: false };
+    const match = /^([^:]+):(\d+)$/.exec(since);
+    if (match && match[1] === this.epoch) return { seq: Number(match[2]), restarted: false, sameEpoch: true };
+    return { seq: this.seq, restarted: true, sameEpoch: false };
+  }
+
+  /** evictedSince reports whether matches between the cursor and the buffer's oldest event may have been dropped. */
+  private evictedSince(meta: SinceMeta): boolean {
+    if (!meta.sameEpoch || !this.everEvicted) return false;
+    const oldest = this.buffer[0]?.seq;
+    return oldest === undefined || meta.seq < oldest - 1;
+  }
+
+  private buildResult(query: ResolvedQuery, meta: SinceMeta, timedOut: boolean): WaitResult {
+    const { events, skipped } = this.collect(query);
+    return {
+      events,
+      cursor: this.cursor(),
+      timedOut,
+      skipped,
+      restarted: meta.restarted,
+      evicted: this.evictedSince(meta),
+    };
+  }
+
+  /** cursor returns the newest event's position as "<epoch>:<seq>". */
+  cursor(): string {
+    return `${this.epoch}:${this.seq}`;
   }
 
   /** subscribedRefs snapshots the refs this watcher receives events for. */
@@ -377,19 +456,34 @@ export class ActivityWatcher {
   }
 
   /**
-   * wait returns matching buffered events after `since` immediately; with
-   * none it blocks until one arrives or timeoutMs passes. An aborted signal
-   * (the MCP client cancelling the call) resolves with whatever is known.
+   * wait returns matching buffered events after the `since` cursor
+   * immediately; with none it blocks until one arrives or timeoutMs passes.
+   * A `since` from another epoch starts from now. An aborted signal (the MCP
+   * client cancelling the call) resolves with whatever is known.
    */
   wait(query: WaitQuery & { timeoutMs: number; signal?: AbortSignal }): Promise<WaitResult> {
-    const full = { ...query, refs: query.refs && query.refs.length > 0 ? query.refs : this.subscribedRefs() };
+    const meta = this.resolveSince(query.since);
+    const full: ResolvedQuery = {
+      refs: query.refs && query.refs.length > 0 ? query.refs : this.subscribedRefs(),
+      groups: query.groups,
+      sinceSeq: meta.seq,
+      limit: query.limit,
+    };
     const immediate = this.collect(full);
-    if (immediate.length > 0 || full.timeoutMs <= 0) {
-      return Promise.resolve({ events: immediate, cursor: this.seq, timedOut: immediate.length === 0 });
+    if (immediate.events.length > 0 || query.timeoutMs <= 0) {
+      return Promise.resolve({
+        events: immediate.events,
+        cursor: this.cursor(),
+        timedOut: immediate.events.length === 0,
+        skipped: immediate.skipped,
+        restarted: meta.restarted,
+        evicted: this.evictedSince(meta),
+      });
     }
     return new Promise<WaitResult>((resolve) => {
       const waiter: Waiter = {
         query: full,
+        meta,
         resolve,
         timer: null,
         settled: false,
@@ -399,13 +493,13 @@ export class ActivityWatcher {
         this.settle(waiter, result);
       };
       waiter.timer = setTimeout(() => {
-        finish({ events: this.collect(full), cursor: this.seq, timedOut: true });
-      }, full.timeoutMs);
-      if (full.signal) {
-        full.signal.addEventListener(
+        finish(this.buildResult(full, meta, true));
+      }, query.timeoutMs);
+      if (query.signal) {
+        query.signal.addEventListener(
           "abort",
           () => {
-            finish({ events: this.collect(full), cursor: this.seq, timedOut: false });
+            finish(this.buildResult(full, meta, false));
           },
           { once: true },
         );

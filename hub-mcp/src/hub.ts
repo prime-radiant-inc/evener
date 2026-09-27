@@ -92,14 +92,18 @@ export class AppwireHub implements HubPort {
   private state: ConnectionState;
   private connecting: Promise<void> | null = null;
   private initializeInfo: HubInfo | undefined;
+  // Pending ready-waits; close() settles them so no 10s timer outlives it.
+  private readonly readyWaits = new Set<{ reject: (err: Error) => void }>();
 
-  constructor(config: HubConfig) {
+  constructor(config: HubConfig, client?: AppwireClient) {
     this.hubUrl = config.url;
-    this.client = new AppwireClient({
-      url: config.url,
-      clientInfo: { name: "evener-hub-mcp", version: "0.1.0" },
-      socketFactory: (url) => authenticatedSocket(url, config.token),
-    });
+    this.client =
+      client ??
+      new AppwireClient({
+        url: config.url,
+        clientInfo: { name: "evener-hub-mcp", version: "0.1.0" },
+        socketFactory: (url) => authenticatedSocket(url, config.token),
+      });
     this.state = "idle";
     this.client.onStateChange((s) => {
       this.state = s;
@@ -135,14 +139,27 @@ export class AppwireHub implements HubPort {
   private waitForReady(): Promise<void> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        stop();
+        finish();
         reject(new HubUnavailableError(this.hubUrl, this.state));
       }, CONNECT_TIMEOUT_MS);
       const stop = this.client.onReady(() => {
-        clearTimeout(timer);
-        stop();
+        finish();
         resolve();
       });
+      const wait = {
+        // close() settles every pending ready-wait so no 10s timer
+        // outlives the connection it was waiting for.
+        reject: (err: Error) => {
+          finish();
+          reject(err);
+        },
+      };
+      const finish = () => {
+        clearTimeout(timer);
+        stop();
+        this.readyWaits.delete(wait);
+      };
+      this.readyWaits.add(wait);
     });
   }
 
@@ -182,6 +199,9 @@ export class AppwireHub implements HubPort {
   }
 
   close(): void {
+    const waits = [...this.readyWaits];
+    this.readyWaits.clear();
+    for (const wait of waits) wait.reject(new HubUnavailableError(this.hubUrl, "closed"));
     this.client.close();
   }
 }
