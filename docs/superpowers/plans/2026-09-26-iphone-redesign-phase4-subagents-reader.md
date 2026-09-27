@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A coordinator's subagents get their own list (a proportional strip, three states, one flat list) and a read-only transcript with "Ask coordinator to stop it"; plans and documents get a Reader with changes since you last read, comments, and a review sent through the composer's one Send; and the Board gains its Continue reading row. Everything works on the spec's fallbacks, before any server addition lands.
+**Goal:** A coordinator's subagents get their own list (a proportional strip, three states, one flat list), and each subagent opens as its own session: the normal composer once the hub takes a message for it, and "Ask coordinator to stop it" while it runs; plans and documents get a Reader with changes since you last read, comments, and a review sent through the composer's one Send; and the Board gains its Continue reading row. Everything works on the spec's fallbacks, before any server addition lands.
 
 **Architecture:**
 - **Pure cores.** `src/subagents/subagentModel.ts` turns the activity tree the hub already serves (`evener/jobs/list`) into subagent rows, states, sections, tallies and copy. `src/reader/documentBlocks.ts`, `documentChanges.ts`, `documentSource.ts` and `reviewMessage.ts` turn a document's text into blocks, changes, notices and the review message, and `documentReferences.ts` finds the documents a session's transcript names or wrote.
 - **Data.** `SubagentTree` shares one `ActivityList` per coordinator between the Subagents list and the subagent screens above it, and follows every page of the tree on its own. `DocumentMemory` keeps reading positions, the version you last read (as block hashes), unsent comments and the Continue reading trail in the kv-store. `StopRequests` remembers the stop requests you sent.
 - **Sending from above a session.** The stop request and the review are written on screens stacked above the session they go to. `src/session/sessionMessage.ts` reads that session's state, routes the review through phase 3's `sendAction` as the composer does, and admits the message through the durable runtime. `NativeMutationRuntime.settleTarget` then releases the session's target, so the message leaves at once, even after a reconnect.
-- **Screens.** `SubagentsScreen`, `SubagentScreen` and `StopSubagentSheet`; `ReaderScreen` with its outline, comment, comments and review sheets; `DocumentChip` under the agent's messages, and `FilesSheet`; and `ContinueReadingRow` on the Board. New routes `"Subagents"`, `"Subagent"` and `"Reader"` join the native stack.
+- **Screens.** `SubagentsScreen`; a subagent's screen, which is phase 3's Session on the subagent's ref with `SubagentBar` in the composer's place while the hub takes no message for it (ruling 30); `StopSubagentSheet`; `ReaderScreen` with its outline, comment, comments and review sheets; `DocumentChip` under the agent's messages, and `FilesSheet`; and `ContinueReadingRow` on the Board. New routes `"Subagents"`, `"Subagent"` and `"Reader"` join the native stack.
 
 **Tech Stack:** Expo SDK 57, React Native 0.86.3, React 19, TypeScript 6, vitest 5 with react-test-renderer (`src/renderNative.testkit.tsx`), `@react-navigation/native-stack` 7, `react-native-enriched-markdown` 1.0.2 (`EnrichedMarkdownText`), `expo-sqlite/kv-store` for device memory, `expo-clipboard`, `expo-symbols` (phase 2). This phase adds `marked` 18.0.6, the web's markdown parser, as a pure-JavaScript dependency of `mobile-native` (no pods).
 
@@ -38,7 +38,7 @@ This phase starts after phase 3's PRs are on main (roadmap: a phase starts only 
 
 - **Copy is the spec's, verbatim.**
   - Subagents: "Subagents · 55" (the count; "55+" per ruling 2), the filter chips "All", "Failed", "Running", "Done", the sections "FAILED · 2" and "RUNNING · 32" and the folded "Done · 21".
-  - The subagent transcript's banner: "Subagent of Get PR 2138 Test Clean. Talk to it through its coordinator." Its action bar: "Ask coordinator to stop it" and "Open coordinator".
+  - A running subagent's bar, where its composer would be: "Ask coordinator to stop it", "Stop requested" and "Open coordinator".
   - The stop sheet's line: "Arrives at the coordinator's next step". The row after a request: "Stop requested from the coordinator", then "Stopped at your request".
   - Reader: "Plan · updated 3m ago", "3 changes since you read it yesterday", "Touch and hold a paragraph to comment on it", "‹ Change 1 of 3 ›", "Send review", "Showing the first 512 KB of 1.3 MB". The review sheet is titled "Review"; its choices are "Approve", "Request changes" and "Comment only".
   - The Board: "Continue reading · 62%". The sheet: "Files & artifacts". A document chip that changed: "changed since you last read".
@@ -65,7 +65,7 @@ This phase starts after phase 3's PRs are on main (roadmap: a phase starts only 
 - **Routes and storage:**
   - New routes: `Subagents: { hubId: string; ref: string; threadId: string; title: string }` (the coordinator), `Subagent: { hubId: string; ref: string; title: string; coordinator: { ref: string; threadId: string; title: string } }` and `Reader: { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string; updatedAt?: string }`. Existing route names and params are unchanged.
   - New kv-store keys: `evener.native.subagent-stops.${hubId}`, `evener.native.documents.${hubId}` and `evener.native.continue-reading.${hubId}`. All three are cleared by `ConnectionProvider.removeHub`. Existing keys are unchanged.
-- **Fallbacks, not fakes.** Subagent rows come from `evener/jobs/list`; documents from `/doc/file?format=raw` through `readDocFile` and `nativeDocPort`, and images from `/doc/image`. Where the spec wants data the hub doesn't send yet, this phase uses section 18's fallback: S3 (tally the loaded subagents), S6 (steer the coordinator), S7 (an "Open it on the host" notice), S9 (diff against the version you last read).
+- **Fallbacks, not fakes.** Subagent rows come from `evener/jobs/list`; documents from `/doc/file?format=raw` through `readDocFile` and `nativeDocPort`, and images from `/doc/image`. Where the spec wants data the hub doesn't send yet, this phase uses section 18's fallback: S3 (tally the loaded subagents), S6 (steer the coordinator, and hold "Ask coordinator to stop it" where a running subagent's composer would be), S7 (an "Open it on the host" notice), S9 (diff against the version you last read).
 - **Tests** meet the hub at the request boundary: `FakeClient` from `@evener/appwire-client/testing/fakeClient`, a fetch spy for documents, and the durable runtime's own SQLite double. Never mock the module under test.
 - **Repo rules:**
   - `mobile-native/AGENTS.md`: read the versioned Expo docs (https://docs.expo.dev/versions/v57.0.0/) for any Expo module you touch before writing code against it.
@@ -88,9 +88,9 @@ Decisions this plan makes where the spec is silent, or where its data doesn't ex
    - Failures are never thinner than 3pt (spec). Running is never thinner than 1pt (the prototype). Done takes the rest in `edge`, the spec's "lightest neutral".
    - A state with no subagents has no chip. The search field appears past 8 subagents, as in the prototype.
    - A search filters the rows and the section counts; the chips and the strip keep the tree's totals, because they describe the tree.
-9. **Staying live without owning the connection.** A connection follows one thread at a time: each subscribing `thread/read` replaces the last (`internal/appserver/server.go` `ReplaceConnectionSubscriptions`). The Subagents list re-subscribes to the coordinator each time it comes into focus. The subagent screen follows its own subagent's thread, and refreshes the tree when that thread's status changes.
+9. **Staying live without owning the connection.** A connection follows one thread at a time: each subscribing `thread/read` replaces the last (`internal/appserver/server.go` `ReplaceConnectionSubscriptions`). The Subagents list re-subscribes to the coordinator each time it comes into focus. A subagent's screen, a Session, follows the subagent's own thread as any session does, and refreshes the coordinator's tree when that thread's status changes.
 10. **Ask coordinator to stop it.**
-    - It is offered while the subagent, or anything it started, is still working (`delegateHasActiveWork`).
+    - It is offered while the subagent, or anything it started, is still working (`delegateHasActiveWork`). Jesse agreed on 2026-09-26: a failed subagent with nothing running has nothing left to stop.
     - Its Send steers while the coordinator works. If the coordinator's harness can't steer, the request is queued. With no turn running, it sends, which starts a turn and resumes a shut-down coordinator.
     - The prefilled message is `Stop subagent “<title>”: it's no longer needed.`, or `Stop subagent “<title>”: it has failed.` for a failed one. Both are editable. The sheet is titled "Stop subagent", as in the prototype, and its one line says the message goes to the coordinator.
     - After Send, the bar reads "Stop requested" and the row "Stop requested from the coordinator" until its work ends. It then reads "Stopped at your request", with a toast naming it, when it or something under it was stopped; if it finished on its own, the request is simply forgotten. The row saying "Stop requested" is the echo, so the Send itself raises no toast.
@@ -104,7 +104,8 @@ Decisions this plan makes where the spec is silent, or where its data doesn't ex
 15. **The Reader's long-press menu** is Comment, Quote in reply, Copy and Select text: 8.2's pattern for messages, because a long-press on selectable text would otherwise start a selection. Selecting text adds Comment and Quote in reply to the system selection menu (`EnrichedMarkdownText` `contextMenuItems`).
 16. **The review.**
     - The message says `approved`, `request changes` or `comments only`; each quote is one line of at most 160 characters.
-    - It goes to the Reader's review session: the document's own session, or the coordinator for a subagent's document (question 2).
+    - It goes to the session the document was opened in, a coordinator or a subagent, and never to anyone else. Jesse, 2026-09-26: "how is this the ui's concern at all. users interact with whatever session they have open, whether it's an agent or a subagent." So `reviewRef` and `reviewTitle` always name the document's own session.
+    - "Send review" shows only while that session can take a message (its capabilities have `send` or `queue`): a running subagent can't yet (ruling 30's server gap), so its document collects comments and offers Send review once its run ends (Task 17).
     - Sending clears the comments and returns to that session, which shows the review as your message, or as a queued message with Steer now. That is the echo, so Send raises no toast, as with the stop request.
 17. **"updated 3m ago" comes from the opener.** A document chip or a Files row knows when the session last wrote the file, and passes it as `updatedAt`. Without it the caption shows only the kind, until S9 gives the file's own time.
 18. **Files the phone can't show as text.**
@@ -117,20 +118,23 @@ Decisions this plan makes where the spec is silent, or where its data doesn't ex
     - Progress is the bottom of the screen over the document's height, and leaving below 97% counts as leaving before the end (the prototype's rule).
     - One row, the latest; it lasts two hours and clears when you open that document.
     - It is a flat row like the notices (16.3: rows, not cards), and it's checked when the Board renders, so the Board still runs no clock.
-21. **Relaunch.** The Reader restores (Board, then its session, then the Reader), because reading is long. The Subagents list and a subagent's transcript restore to their coordinator's session, one tap away.
+21. **Relaunch.** The Reader restores (Board, then its session, then the Reader), because reading is long. The Subagents list and a subagent's screen restore to their coordinator's session, one tap away.
 22. **The Reader stays current:** it reads its document again when it comes into focus, when the app returns to the foreground, and when its session's turn ends. It keeps what it showed until the new read lands.
 23. **Files & artifacts lists documents only.** Artifacts wait for the shared-artifacts work to reach main (10.3), and the sheet keeps the spec's title. Rows come from the same derivation as the document chips (ruling 28), the files the session wrote, and the session's `file://` links inside its folder. Their blue dot compares the write time a row carries with the one you last read (both hub times).
-24. **In a subagent's transcript, your-message bubbles are captioned "From the coordinator"**, because the coordinator wrote them (the prototype's caption). Long-press offers Copy and Select text only: Quote in reply and Fork need a session you can write to.
+24. **A subagent's messages read as any session's**, with the Session's own captions and long-press menus, which follow its capabilities (ruling 30). The prototype's "From the coordinator" caption is left out: once you can write to a subagent, its user messages come from you as well as from its coordinator, and a `userMessage` item names no sender (`internal/appprojector/appwire_projection.go:363-375`).
 25. **`evener/jobs/list` is re-read whole on each tree notification while the list is focused.** That is the cost of a paged tree without S3. Notifications that arrive during a read coalesce into one more.
 26. **Sheets are page sheets**: an RN `Modal` with `presentationStyle="pageSheet"`, as every phase 3 sheet is. The spec's medium detent (section 6) needs a native sheet presentation the app doesn't have, and adopting one is a change for every sheet at once, so the stop request, comment, Comments, outline and Files & artifacts sheets open at the large size until then.
 27. **No haptics in this phase.** Phase 3 moved every haptic to phase 6, behind Hub > Alerts' one setting (its ruling 5), so the chips, the stop request and the review add none.
 28. **Document chips and the Files chip are this phase's.** Phase 3 left them for the Reader (its ruling 6), so Tasks 18 and 19 build them: a path the agent names in a message becomes a chip under that message (spec 8.2), and the session's write of that file gives its age. Paths come from inline code and link targets, only for files inside the session's folder (the `cwdRelative` rule the web's "Open beside" uses), and a bare name like `README.md` counts only when the session wrote that file, so a chip rarely points at nothing.
+29. **The Activity sheet retires** (Task 21). It was today's only place that lists a session's background commands and opens a command's whole output; the Subagents list replaces its subagent half, and a command's output stays reachable through its transcript step's evidence (8.2, "Show all 412 lines"). Jesse agreed on 2026-09-26, noting that a view of running commands and running subagents is probably wanted: that view is #2538, and this phase doesn't build it.
+30. **A subagent's screen is its session** (Jesse, 2026-09-26: "users interact with whatever session they have open, whether it's an agent or a subagent", and "the hub supports messaging subagents").
+    - The web does it this way. Its rail opens a subagent through `openSessionByRef` into its own session pane beside its owner (`cmd/evener-hub/frontend/src/shell/rail/Rail.tsx:1330-1331`, `shell/sessionPlacement.ts:10-26`, `shell/AppShell.tsx:284-289`). That pane mounts the ordinary composer (`panes/session/Session.tsx:621`), which sends `turn/start`, `turn/queue` or `turn/steer` with `{ ref, expectedInstanceId, input }` for the subagent's own ref (`composerMutationIntent`, `stores/threads.ts:1614-1665`). The hub resolves that ref like any other (`resolveTurnStartSource`, `cmd/evener-hub/app_rpc.go:171` and `:1533-1541`).
+    - So the phone opens a subagent in phase 3's Session, on its own ref, and the composer sends to it (Task 8). Every control follows the subagent's capabilities, as on any session.
+    - **The server gap.** The hub takes a message for a subagent only once its run has ended: its read is then a past session's, which advertises `send` and `queue` (`pastThreadCapabilities`, `cmd/evener-hub/app_threadread.go:675-698` and `:806`), and a send resumes it. While a subagent runs inside its coordinator's process, the hub serves it as a read-only alias with no capabilities (`app_rpc.go:136-163`; `internal/appsource/local_daemon.go:51-54` and `:1180-1187`), and a mutation finds no target for it (`StartTurn`'s `entryForRef` skips aliases, `local_daemon.go:434-440`, `:1037-1039` and `:1066-1067`). The web shows the same: its composer can't send to a running subagent. Messaging a running subagent is S6's second half (spec 18). Until it lands, a running subagent's screen holds `SubagentBar` ("Ask coordinator to stop it" and "Open coordinator") where the composer would be, and the composer returns when the subagent's run ends.
 
 ## Questions for Jesse
 
-1. **Background commands after the Activity sheet.** The Activity sheet is today's only place that lists a session's background commands and opens a command's whole output. The spec's structure (sections 6 and 8.7) has no place for it, and the Subagents list replaces its subagent half. May phase 4 remove the sheet once nothing opens it, leaving a command's output to the transcript step's evidence (8.2, "Show all 412 lines")? I recommend yes (Task 21).
-2. **Reviewing a subagent's document.** A subagent takes direction only from its coordinator (spec 9), so a review sent from a document opened in a subagent's transcript would go to the coordinator, whose sheet says "To Get PR 2138 Test Clean". Is that what you want, or should Send review be hidden there? I recommend sending to the coordinator: planning subagents write most plans.
-3. **Stopping a failed subagent with nothing running.** Spec 9's example asks the coordinator to stop a failed subagent. One that has failed with nothing running under it has nothing left to stop, and a request against it could never visibly complete, which is the round-4 complaint. I recommend offering "Ask coordinator to stop it" only while the subagent or something it started is still working. Should it be offered on every failed subagent instead?
+None open. Jesse answered this plan's three on 2026-09-26: the Activity sheet retires (ruling 29), a review from a subagent's document goes to that subagent (ruling 16, with ruling 30's server gap), and "Ask coordinator to stop it" shows only while the subagent or something it started still works (ruling 10).
 
 ## Review Focus
 
@@ -148,7 +152,7 @@ Decisions this plan makes where the spec is silent, or where its data doesn't ex
 |---|---|---|---|---|
 | 1: sending from above a session, and shared helpers | 1-3 | Sonnet (the plan carries the code) | phase 3 is on main | first |
 | 2: the Subagents list | 4-6 | Sonnet (4-5), Opus medium (6) | PR 1 lands | A |
-| 3: the subagent transcript and Ask coordinator to stop it | 7-9 | Sonnet (7), Opus medium (8-9) | PR 2 lands | A |
+| 3: a subagent's screen and Ask coordinator to stop it | 7-9 | Sonnet (7), Opus medium (8-9) | PR 2 lands | A |
 | 4: document foundations | 10-13 | Sonnet | PR 1 lands | B |
 | 5: the Reader | 14-15 | Opus medium | PR 4 lands | B |
 | 6: comments and review | 16-17 | Opus medium | PRs 5 and 1 land | B |
@@ -171,23 +175,22 @@ PR 1 lands the pieces both lanes share: the device-storage helpers phase 2's Boa
 
 **Files:**
 - Create: `mobile-native/src/deviceStorage.ts`
-- Modify: `mobile-native/src/board/boardMemory.ts` (phase 2: it keeps private copies of the three storage helpers)
+- Modify: `mobile-native/src/board/boardMemory.ts` (phase 2: it keeps private copies of `readJson` and `writeJson`)
 - Test: `mobile-native/src/deviceStorage.test.ts`
 
 **Interfaces:**
-- Produces:
-  - `interface DeviceStorage { getItemSync(key: string): string | null; setItemSync(key: string, value: string): void; removeItemSync(key: string): void }`
-  - `isRecord(value: unknown): value is Record<string, unknown>`, `readJson(storage: DeviceStorage, key: string): unknown`, `writeJson(storage: DeviceStorage, key: string, value: unknown): void`, `removeKeys(storage: DeviceStorage, keys: readonly string[]): void`
-  - `boardMemory.ts` keeps exporting `BoardStorage`, now `export type BoardStorage = DeviceStorage`.
+- Consumes: `SyncStringStorage` (`src/syncStringStorage.ts`), the kv-store's three sync methods, which #2536 made the app's one storage type.
+- Produces: `isRecord(value: unknown): value is Record<string, unknown>`, `readJson(storage: SyncStringStorage, key: string): unknown`, `writeJson(storage: SyncStringStorage, key: string, value: unknown): void`, `removeKeys(storage: SyncStringStorage, keys: readonly string[]): void`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
 // mobile-native/src/deviceStorage.test.ts
 import { expect, it } from "vitest";
-import { type DeviceStorage, isRecord, readJson, removeKeys, writeJson } from "./deviceStorage";
+import { isRecord, readJson, removeKeys, writeJson } from "./deviceStorage";
+import type { SyncStringStorage } from "./syncStringStorage";
 
-function memoryStorage(values = new Map<string, string>()): DeviceStorage & { values: Map<string, string> } {
+function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
 		values,
 		getItemSync: (key) => values.get(key) ?? null,
@@ -195,7 +198,7 @@ function memoryStorage(values = new Map<string, string>()): DeviceStorage & { va
 		removeItemSync: (key) => void values.delete(key),
 	};
 }
-const broken: DeviceStorage = {
+const broken: SyncStringStorage = {
 	getItemSync: () => {
 		throw new Error("disk");
 	},
@@ -248,18 +251,13 @@ Expected: FAIL: `Cannot find module './deviceStorage'`.
 // seen markers and folded sections, a document's reading state, the stop
 // requests you sent. Every read and write is guarded, because the store can
 // throw, and a record that doesn't parse reads as absent.
-
-export interface DeviceStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
-}
+import type { SyncStringStorage } from "./syncStringStorage";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function readJson(storage: DeviceStorage, key: string): unknown {
+export function readJson(storage: SyncStringStorage, key: string): unknown {
 	try {
 		const raw = storage.getItemSync(key);
 		return raw ? JSON.parse(raw) : null;
@@ -268,7 +266,7 @@ export function readJson(storage: DeviceStorage, key: string): unknown {
 	}
 }
 
-export function writeJson(storage: DeviceStorage, key: string, value: unknown): void {
+export function writeJson(storage: SyncStringStorage, key: string, value: unknown): void {
 	try {
 		storage.setItemSync(key, JSON.stringify(value));
 	} catch {
@@ -276,7 +274,7 @@ export function writeJson(storage: DeviceStorage, key: string, value: unknown): 
 	}
 }
 
-export function removeKeys(storage: DeviceStorage, keys: readonly string[]): void {
+export function removeKeys(storage: SyncStringStorage, keys: readonly string[]): void {
 	for (const key of keys)
 		try {
 			storage.removeItemSync(key);
@@ -287,16 +285,9 @@ export function removeKeys(storage: DeviceStorage, keys: readonly string[]): voi
 ```
 
 In `mobile-native/src/board/boardMemory.ts`:
-1. Compare its private `isRecord`, `readJson` and `writeJson` with the ones above. They are the phase 2 plan's code, so they should be identical; if they differ, stop and report the difference rather than choose one.
-2. Delete them and the `BoardStorage` interface's body, and import the shared ones:
-
-```ts
-import { type DeviceStorage, isRecord, readJson, removeKeys, writeJson } from "../deviceStorage";
-
-export type BoardStorage = DeviceStorage;
-```
-
-3. Replace `forgetBoard`'s body with `removeKeys(storage, [seenKey(hubId), foldedKey(hubId)]);`.
+1. Compare its private `readJson` and `writeJson` with the ones above. They are the phase 2 plan's code, so they should be identical; if they differ, stop and report the difference rather than choose one.
+2. Delete them and import the shared ones: `import { readJson, writeJson } from "../deviceStorage";`. The module keeps its `SyncStringStorage` import, and `isPlainObject` from `@evener/appwire-client` for its own records.
+3. Leave `forgetBoard` as it is. Since #2528 it tries both keys and then throws when either removal failed, so `ConnectionProvider.removeHub` reports an incomplete removal; `removeKeys` swallows failures and would lose that.
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
@@ -1292,7 +1283,7 @@ export type SubagentState = "running" | "failed" | "done";
 export interface SubagentRow {
 	/** The delegate id: stable across reads; the row's key and its stop request's key. */
 	id: string;
-	/** The subagent's own session ref, which its read-only transcript opens. */
+	/** The subagent's own session ref, which its screen opens (Task 8). */
 	ref: string;
 	title: string;
 	state: SubagentState;
@@ -2256,7 +2247,7 @@ describe("the list's items", () => {
 
 ---
 
-## PR 3: the subagent transcript and Ask coordinator to stop it
+## PR 3: a subagent's screen and Ask coordinator to stop it
 
 ### Task 7: The stop requests you sent
 
@@ -2266,11 +2257,11 @@ describe("the list's items", () => {
 - Test: `mobile-native/src/subagents/stopRequests.test.ts`
 
 **Interfaces:**
-- Consumes: `DeviceStorage` helpers (Task 1); `SubagentRow` and `subtreeStopped` (Task 4).
+- Consumes: the device-storage helpers (Task 1) over `SyncStringStorage` (`src/syncStringStorage.ts`); `SubagentRow` and `subtreeStopped` (Task 4).
 - Produces:
   - `type StopRequestView = "requested" | "stopped" | null`
-  - `class StopRequests`: constructor `(storage: DeviceStorage, hubId: string)`, `request(coordinatorRef: string, row: SubagentRow, now: number): void`, `view(row: SubagentRow): StopRequestView`, `reconcile(coordinatorRef: string, rows: readonly SubagentRow[]): SubagentRow[]`, `subscribe(listener): () => void`, `getRevision(): number`
-  - `forgetStopRequests(storage: DeviceStorage, hubId: string): void`
+  - `class StopRequests`: constructor `(storage: SyncStringStorage, hubId: string)`, `request(coordinatorRef: string, row: SubagentRow, now: number): void`, `view(row: SubagentRow): StopRequestView`, `reconcile(coordinatorRef: string, rows: readonly SubagentRow[]): SubagentRow[]`, `subscribe(listener): () => void`, `getRevision(): number`
+  - `forgetStopRequests(storage: SyncStringStorage, hubId: string): void`
   - From `nativeStopRequests.ts`: `stopRequests(hubId: string): StopRequests` and `forgetStopRequestsForHub(hubId: string): void`, per-hub singletons over `expo-sqlite/kv-store`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2279,11 +2270,11 @@ describe("the list's items", () => {
 // mobile-native/src/subagents/stopRequests.test.ts
 import { describe, expect, it } from "vitest";
 import type { ActivityDelegate } from "@evener/appwire-client";
-import type { DeviceStorage } from "../deviceStorage";
+import type { SyncStringStorage } from "../syncStringStorage";
 import { forgetStopRequests, StopRequests } from "./stopRequests";
 import { flattenSubagents, type SubagentRow } from "./subagentModel";
 
-function memoryStorage(values = new Map<string, string>()): DeviceStorage & { values: Map<string, string> } {
+function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
 		values,
 		getItemSync: (key) => values.get(key) ?? null,
@@ -2415,7 +2406,8 @@ Expected: FAIL: `Cannot find module './stopRequests'`.
 // coordinator" while the subagent still works, then "Stopped at your request"
 // once it (or something it started) stopped, so the request visibly completes
 // (round 4). A request whose subagent finished on its own is forgotten.
-import { type DeviceStorage, isRecord, readJson, removeKeys, writeJson } from "../deviceStorage";
+import { isRecord, readJson, removeKeys, writeJson } from "../deviceStorage";
+import type { SyncStringStorage } from "../syncStringStorage";
 import { type SubagentRow, subtreeStopped } from "./subagentModel";
 
 const storageKey = (hubId: string) => `evener.native.subagent-stops.${hubId}`;
@@ -2435,7 +2427,7 @@ export class StopRequests {
 	private listeners = new Set<() => void>();
 
 	constructor(
-		private readonly storage: DeviceStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
 		const value = readJson(storage, storageKey(hubId));
@@ -2503,7 +2495,7 @@ export class StopRequests {
 	}
 }
 
-export function forgetStopRequests(storage: DeviceStorage, hubId: string): void {
+export function forgetStopRequests(storage: SyncStringStorage, hubId: string): void {
 	removeKeys(storage, [storageKey(hubId)]);
 }
 ```
@@ -2545,28 +2537,30 @@ git add mobile-native/src/subagents/stopRequests.ts mobile-native/src/subagents/
 git commit -m "feat(native): remember the stop requests you sent a coordinator"
 ```
 
-### Task 8: The subagent's read-only transcript
+### Task 8: A subagent's screen is its session
 
 **Files:**
-- Create: `mobile-native/src/session/returnToSession.ts` (full code below) and `mobile-native/src/subagents/SubagentScreen.tsx`
+- Create: `mobile-native/src/session/returnToSession.ts` (full code below), `mobile-native/src/subagents/SubagentScreen.tsx` (the `"Subagent"` route's component) and `mobile-native/src/subagents/SubagentBar.tsx`
 - Modify:
   - `mobile-native/App.tsx` (the `"Subagent"` route; its params were declared in Task 6);
-  - `src/TimelineItem.tsx` (phase 3's Task 24): Quote and Quote in reply appear only when `quote` is given, and a user row takes an optional `userCaption` that replaces "Steered in mid-turn";
-  - `ConversationScreen`: its `SubagentRow` `onOpen` (phase 3's Task 28, which pushes `"Conversation"` until now) opens `"Subagent"` with this session as the coordinator;
+  - `ConversationScreen` (`src/screens.tsx`): it takes an optional `subagentOf`, the coordinator, which only `SubagentScreen` passes. Its `SubagentRow` `onOpen` (phase 3's Task 28, which pushes `"Conversation"` until now) opens `"Subagent"`;
   - `mobile-native/src/location.ts` (`"Subagent"` relaunches into its coordinator's session).
-- Test: `mobile-native/src/session/returnToSession.test.ts`, `mobile-native/src/subagents/SubagentScreen.test.tsx`, `mobile-native/src/TimelineItem.test.tsx`, `mobile-native/src/ConversationScreen.send.test.tsx` and `mobile-native/src/location.test.ts`
+- Test: `mobile-native/src/session/returnToSession.test.ts`, `mobile-native/src/subagents/SubagentScreen.test.tsx`, `mobile-native/src/ConversationScreen.send.test.tsx` and `mobile-native/src/location.test.ts`
 
 **Interfaces:**
-- Consumes: `useSubagentTree`, `flattenSubagents`, `subagentStateWord` and `timeInState` (Tasks 4-5); `stopRequests` (Task 7); `compactDuration` (phase 3's `src/session/format.ts`); phase 3's transcript: `TimelineItem`, `SubagentRow` and the row pipeline `ConversationScreen` runs (`sessionRows`, `groupTimeline`, `hideAnswerMessages`). Phase 3 keeps the store, service and activity-sink binding inside `ConversationScreen` (its ruling 1), so this task extracts that binding and the row pipeline into a hook both screens call, with no change to what the session screen does.
+- Consumes: `useSubagentTree` and `flattenSubagents` (Tasks 4-5); `stopRequests` (Task 7); phase 3's Session, `ConversationScreen`, with its binding, transcript, tray, docks and composer, and its `SubagentRow`.
 - Produces:
   - `popsToSession(state: { index: number; routes: readonly { name: string; params?: object }[] }, ref: string): number | null`
   - `returnToSession(navigation: SessionNavigation, session: { hubId: string; ref: string; title: string }): void`, where `SessionNavigation` is `{ getState(): { index: number; routes: readonly { name: string; params?: object }[] }; pop(count: number): void; navigate(name: "Conversation", params: { hubId: string; ref: string; title: string }): void }`
-  - `SubagentScreen`, the route component for `"Subagent"`.
+  - `SubagentScreen`, the route component for `"Subagent"`: phase 3's `ConversationScreen` for `params.ref` and `params.title`, with `subagentOf={params.coordinator}`
+  - `ConversationScreen`'s optional prop `subagentOf?: { ref: string; threadId: string; title: string }`
+  - `<SubagentBar row={SubagentRow | null} requested={boolean} onAskToStop={() => void} onOpenCoordinator={() => void} />`
 
 ```ts
 // mobile-native/src/session/returnToSession.ts
-// Screens stacked above a session (a subagent's transcript, a document) go
-// back to it rather than pushing a second copy of it.
+// Screens stacked above a session (the Subagents list, a document) go back to
+// it rather than pushing a second copy of it. A subagent's session sits on the
+// "Subagent" route (Task 8), so both session routes count.
 
 type StackState = { index: number; routes: readonly { name: string; params?: object }[] };
 
@@ -2576,12 +2570,14 @@ export interface SessionNavigation {
 	navigate(name: "Conversation", params: { hubId: string; ref: string; title: string }): void;
 }
 
+const SESSION_ROUTES: ReadonlySet<string> = new Set(["Conversation", "Subagent"]);
+
 /** How many screens to pop to land on this session's own screen, or null
  * when it isn't under the current one. */
 export function popsToSession(state: StackState, ref: string): number | null {
 	for (let index = state.index - 1; index >= 0; index -= 1) {
 		const route = state.routes[index];
-		if (route?.name === "Conversation" && (route.params as { ref?: unknown } | undefined)?.ref === ref)
+		if (route && SESSION_ROUTES.has(route.name) && (route.params as { ref?: unknown } | undefined)?.ref === ref)
 			return state.index - index;
 	}
 	return null;
@@ -2597,22 +2593,21 @@ export function returnToSession(
 }
 ```
 
-**Requirements (spec 9):**
-1. **The row.** The subagent's row is `flattenSubagents(snapshot.tree)` matched by `row.ref === params.ref`, from `useSubagentTree(hubId, coordinator.ref, coordinator.threadId)`. The list under this screen shares the same tree, so the row is there at once. A subagent the tree no longer lists shows the route's title, no subtitle, and only Open coordinator.
-2. **Header.** Two lines: the title (15pt semibold, one line) and a subtitle of the still mark, the state word and its time: "Running · 4m", "Failed · 6m", "Done · 12m" (`subagentStateWord`, `compactDuration(timeInState(row, now))`). There's no chevron: the title opens nothing.
-3. **Banner.** The first item above the transcript: "Subagent of <coordinator title>. Talk to it through its coordinator." It uses an `inset` background, a 12pt radius, 14/19 `inkMid`, and the coordinator's title semibold in `inkHi`, with 16pt side margins and 8pt above.
-4. **Transcript.** Phase 3's renderer bound to this subagent's ref, read-only:
-   - no composer, tray, Next capsule, chips or notes bar;
-   - your-message bubbles captioned "From the coordinator" (`userCaption`, ruling 24);
-   - long-press offers Copy and Select text only: no `quote` and no `fork` are passed;
-   - a `SubagentRow` inside it opens `"Subagent"` for that subagent, under the same coordinator;
-   - a document chip opens the Reader (Task 18 builds the chips) with `sessionRef` set to this subagent's ref and `reviewRef` and `reviewTitle` set to the coordinator's.
-5. **Action bar** (where the composer sits, above the home indicator, 12pt padding, 8pt gap, 44pt buttons of equal width):
-   - "Ask coordinator to stop it" (`stop.fill` 12pt and the label in `inkHi`, a hairline `edgeStrong` border) while `row.active` and `stopRequests(hubId).view(row)` isn't `"requested"` (question 3). Pressing it opens `StopSubagentSheet` (Task 9).
+**Requirements (spec 9; rulings 9, 10, 21, 24 and 30):**
+1. **The screen is the Session.** `SubagentScreen` renders phase 3's `ConversationScreen` for the subagent's own ref, bound, read and resumed exactly as any session is: its header, chips, notes bar, transcript, tray, docks and composer. The composer sends to the subagent's ref, the path the web's composer takes (ruling 30), and every control follows the subagent's capabilities. Adapt the route's params to the Session's (`{ hubId, ref, title }`) rather than copying any of the Session's code.
+2. **While the hub takes no message for it** (its capabilities have neither `send` nor `queue`: a running subagent, ruling 30's server gap), `SubagentBar` takes the composer's place, above the home indicator, with 12pt padding, an 8pt gap and 44pt buttons of equal width:
+   - "Ask coordinator to stop it" (`stop.fill` 12pt and the label in `inkHi`, a hairline `edgeStrong` border) while the row is `active` and `stopRequests(hubId).view(row)` isn't `"requested"` (ruling 10). Pressing it opens `StopSubagentSheet` (Task 9).
    - "Stop requested" (15/20 `inkMid`, not a button) while the request is pending.
    - "Open coordinator" (filled `accentFill`, `onFill` text), always. It calls `returnToSession(navigation, { hubId, ref: coordinator.ref, title: coordinator.title })`.
-6. **Liveness (ruling 9).** Here the connection follows this subagent's thread, through phase 3's binding. On focus, `tree.reload()`. While focused, a `thread/status/changed` or `turn/completed` for this subagent's ref calls `tree.reload()`, so a stop shows up here.
-7. **Relaunch (ruling 21).** `locationForRoute` maps `"Subagent"` to `{ hubId, conversation: { ref: coordinator.ref, title: coordinator.title } }`.
+
+   Once the hub takes a message for it (its run ended; a send resumes it), the composer takes its place back. While it works, the tray shows its line as on any session, with no Stop: a running subagent's read has no `interrupt` capability.
+3. **The row.** `flattenSubagents(snapshot.tree)` matched by `row.ref === params.ref`, from `useSubagentTree(hubId, coordinator.ref, coordinator.threadId)`. The Subagents list under this screen shares the same tree, so the row is there at once. With no row (the tree no longer lists it), the bar shows only "Open coordinator".
+4. **Liveness (ruling 9).** The Session follows this subagent's thread through its own binding. On focus, `tree.reload()`. While focused, a `thread/status/changed` or `turn/completed` for this subagent's ref calls `tree.reload()`, so a stop shows up here.
+5. **Nested subagents.** A `SubagentRow` opens `"Subagent"` for its subagent: under this session as the coordinator on a coordinator's own screen, and under the same coordinator on a subagent's screen.
+6. **Messages** read as on any session (ruling 24): no "From the coordinator" caption, and the Session's long-press menus as they are.
+7. **Documents.** A document chip (Task 18) opens the Reader on this subagent's own ref, which is also where its review goes (ruling 16).
+8. **Relaunch (ruling 21).** `locationForRoute` maps `"Subagent"` to `{ hubId, conversation: { ref: coordinator.ref, title: coordinator.title } }`.
+9. **Reached another way.** A subagent opened on the `"Conversation"` route (Continue reading's `openDocumentInSession`, Task 20) is still its own session. Only the bar needs the coordinator that the `"Subagent"` route carries, so there the composer stays, with Send disabled while the hub takes no message (phase 3's `sendAction` is `"none"`).
 
 - [ ] **Step 1: Write the failing tests**
   - `returnToSession.test.ts` (full code):
@@ -2638,6 +2633,22 @@ it("counts the pops back to a session under the current screen", () => {
 	expect(popsToSession({ index: 1, routes: stack.routes.slice(0, 2) }, "local:coord")).toBeNull();
 });
 
+it("goes back to a subagent's own screen under a document", () => {
+	const reading = {
+		index: 3,
+		routes: [
+			...stack.routes.slice(0, 2),
+			{ name: "Subagent", params: { hubId: "hub-1", ref: "local:fix", title: "Fix race" } },
+			{
+				name: "Reader",
+				params: { hubId: "hub-1", sessionRef: "local:fix", path: "plan.md", reviewRef: "local:fix", reviewTitle: "Fix race" },
+			},
+		],
+	};
+	expect(popsToSession(reading, "local:fix")).toBe(1);
+	expect(popsToSession(reading, "local:coord")).toBe(2);
+});
+
 it("goes back to the session when it's under this screen, and opens it otherwise", () => {
 	const navigation = { getState: () => stack, pop: vi.fn(), navigate: vi.fn() };
 	returnToSession(navigation, { hubId: "hub-1", ref: "local:coord", title: "Coordinator" });
@@ -2647,26 +2658,24 @@ it("goes back to the session when it's under this screen, and opens it otherwise
 });
 ```
 
-  - `SubagentScreen.test.tsx`: mock only the native edges, as phase 3's screen tests do (`react-native` through `nativeModuleMock()` with `ActionSheetIOS` recorded, `expo-symbols`, `@react-navigation/native` and `../ConnectionProvider`), and render the real rows; never mock this screen. Drive the hub with a `FakeClient` answering `evener/jobs/list`, and `thread/read` for the subagent with a user message and an agent message. Cover:
-    - the banner reads "Subagent of Get PR 2138 Test Clean. Talk to it through its coordinator.", and the subtitle reads "Running · 4m" for a running subagent;
-    - the bar shows "Ask coordinator to stop it" and "Open coordinator" for a running subagent, only "Open coordinator" for a done one, and "Stop requested" with "Open coordinator" once a request is pending;
-    - there is no text field (no composer); the user message reads "From the coordinator"; touch and hold on either message offers no "Quote", "Quote in reply" or "Fork from here";
+  - `SubagentScreen.test.tsx`: render the real screen with phase 3's Session harness (`ConversationScreen.send.test.tsx`'s mocks: `react-native` through `nativeModuleMock()` with `ActionSheetIOS` recorded, `expo-symbols`, `@react-navigation/*`, `../ConnectionProvider`, the Expo modules, and the durable runtime over the SQLite double); never mock this screen or the Session. Drive the hub with a `FakeClient` answering `evener/jobs/list`, and `thread/read` for the subagent with a user message and an agent message. Cover:
+    - a running subagent whose read carries no capabilities (the hub's read-only alias): no field labelled "Message"; the bar shows "Ask coordinator to stop it" and "Open coordinator", and "Stop requested" with "Open coordinator" once a request is pending; the tray has no "Stop";
+    - a done subagent whose read carries a past session's capabilities (`send` and `queue`): the field labelled "Message" shows, no bar shows, and typing "Try the other lock order" and pressing "Send" sends `turn/start` with the subagent's ref and that text;
     - "Open coordinator" pops back to the coordinator;
     - a `thread/status/changed` for this subagent's ref sends another `evener/jobs/list`;
-    - no rendered text is "Retry", "Refresh" or "Reconnect".
-  - `TimelineItem.test.tsx`: without `quote`, neither message's menu offers Quote or Quote in reply; `userCaption` replaces "Steered in mid-turn".
+    - no rendered text is "Retry", "Refresh", "Reconnect", "From the coordinator" or "Talk to it through its coordinator".
   - `ConversationScreen.send.test.tsx`: pressing a subagent row opens `"Subagent"` with that subagent and this session as its coordinator.
   - `location.test.ts`: `"Subagent"` maps to its coordinator's session.
-- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/returnToSession.test.ts src/subagents/SubagentScreen.test.tsx src/TimelineItem.test.tsx src/ConversationScreen.send.test.tsx src/location.test.ts`
-- [ ] **Step 3: Implement** to the requirements. Read `ConversationScreen` (`src/screens.tsx`, from `:815`) for how a conversation store, service and activity sink are bound to a ref and resumed on focus, and how its rows are built. The subagent screen needs that binding and those rows without the mutation host, the drafts or the composer.
-- [ ] **Step 4: Run them and watch them pass**, and `npm run check`. Build Release in the simulator and open a subagent from the list.
-- [ ] **Step 5: Commit** (`feat(native): a subagent's read-only transcript`).
+- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/returnToSession.test.ts src/subagents/SubagentScreen.test.tsx src/ConversationScreen.send.test.tsx src/location.test.ts`
+- [ ] **Step 3: Implement** to the requirements. Read `ConversationScreen` (`src/screens.tsx`, from `:815`, as phase 3 left it) for where its composer region sits, and put `SubagentBar` there when `subagentOf` is set and the hub takes no message; everything else is the Session unchanged.
+- [ ] **Step 4: Run them and watch them pass**, and `npm run check`. Build Release in the simulator and open a running subagent and a finished one from the list.
+- [ ] **Step 5: Commit** (`feat(native): a subagent opens as its own session`).
 
 ### Task 9: Ask coordinator to stop it
 
 **Files:**
 - Create: `mobile-native/src/subagents/StopSubagentSheet.tsx`
-- Modify: `mobile-native/src/subagents/SubagentScreen.tsx`, `mobile-native/src/subagents/SubagentsScreen.tsx` and `mobile-native/src/subagents/SubagentRowView.tsx` (the request's words on rows, and the toast)
+- Modify: `mobile-native/src/subagents/SubagentBar.tsx` and `ConversationScreen`'s `subagentOf` path (Task 8: the bar's "Ask coordinator to stop it" opens the sheet, and the toast), `mobile-native/src/subagents/SubagentsScreen.tsx` and `mobile-native/src/subagents/SubagentRowView.tsx` (the request's words on rows, and the toast)
 - Test: `mobile-native/src/subagents/StopSubagentSheet.test.tsx`, and additions to `SubagentsScreen.test.tsx`
 
 **Interfaces:**
@@ -2685,7 +2694,7 @@ it("goes back to the session when it's under this screen, and opens it otherwise
    - Pressing it calls `submitSessionMessage(getNativeMutationRuntime(), client, { hubId, ref: coordinator.ref, threadId: state.threadId, instanceId: state.instanceId }, kind, text.trim())`, then `stopRequests(hubId).request(coordinator.ref, row, Date.now())`, and closes the sheet. No haptic (ruling 27).
    - On failure the sheet stays open with the text kept, and one line in `dangerInk` (13/18) under the field: "Couldn't send this: <the error's message>".
 5. **The request's words.** The Subagents list passes `note` to `SubagentRowView`: "Stop requested from the coordinator" when `stopRequests(hubId).view(row)` is `"requested"`, and "Stopped at your request" when it is `"stopped"`. The subagent screen's bar shows "Stop requested" while pending.
-6. **The toast.** Each of the two screens hosts phase 3's toast (`useToast()`, with `<Toast>` above its bottom edge, as the session screen places it). Whichever is focused (`useIsFocused`) calls `stopRequests(hubId).reconcile(coordinator.ref, rows)` each time the tree snapshot changes, and shows `“Fix race in tree settle” stopped` for each row it returns. Only the focused screen reconciles, so the toast shows where you are, and once.
+6. **The toast.** The Subagents list hosts phase 3's toast (`useToast()`, with `<Toast>` above its bottom edge, as the session screen places it); a subagent's screen is a Session, which already has one. Whichever of the two is focused (`useIsFocused`; the Session only with `subagentOf`) calls `stopRequests(hubId).reconcile(coordinator.ref, rows)` each time the tree snapshot changes, and shows `“Fix race in tree settle” stopped` for each row it returns. Only the focused screen reconciles, so the toast shows where you are, and once.
 7. **S6.** When S6 lands, this sheet becomes "Stop subagent" with a confirmation and no message (spec 9), stopping only that subagent (Jesse's ruling). Leave a comment saying so at the call site of `stopRequestKind`.
 
 - [ ] **Step 1: Write the failing tests** (`StopSubagentSheet.test.tsx`). Use the real durable runtime, set up as `src/ConversationScreen.recovery.test.tsx:90-105` does: mock `expo-sqlite` so `openDatabaseSync` returns the in-memory double from `src/sqliteSync.testkit.ts`, and `expo-sqlite/kv-store` with an in-memory `Storage`. Then `getNativeMutationRuntime()` is a real runtime. Register the coordinator's target with the test's `FakeClient` and start the runtime (`registerTarget("hub-1", "local:coord", client)`, then `start()`), as the coordinator's session screen underneath would. The `FakeClient`'s `thread/read` answers the coordinator's status under test, shaped as `nativeMutationRuntime.test.ts`'s `readResponse`, and its `turn/steer` and `turn/start` answer an applied receipt (that file's `appliedReceipt`). Assert on what reaches the wire. Cover:
@@ -2699,7 +2708,7 @@ it("goes back to the session when it's under this screen, and opens it otherwise
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/subagents`
 - [ ] **Step 3: Implement** to the requirements.
 - [ ] **Step 4: Run them and watch them pass**, and `npm run check`. In the simulator, ask a running subagent's coordinator to stop it and watch the row settle.
-- [ ] **Step 5: Commit** (`feat(native): ask a subagent's coordinator to stop it`), then open PR 3: "feat(native): the subagent transcript and Ask coordinator to stop it (phase 4, PR 3)".
+- [ ] **Step 5: Commit** (`feat(native): ask a subagent's coordinator to stop it`), then open PR 3: "feat(native): a subagent's screen and Ask coordinator to stop it (phase 4, PR 3)".
 
 ---
 
@@ -3214,7 +3223,7 @@ git commit -m "feat(native): split documents into blocks with the web's markdown
 - Test: `mobile-native/src/reader/documentMemory.test.ts` and `mobile-native/src/reader/documentChanges.test.ts`
 
 **Interfaces:**
-- Consumes: `DeviceStorage` helpers (Task 1); `DocumentBlock` (Task 11).
+- Consumes: the device-storage helpers (Task 1) over `SyncStringStorage` (`src/syncStringStorage.ts`); `DocumentBlock` (Task 11).
 - Produces, from `documentMemory.ts`:
   - `interface DocumentKey { sessionRef: string; path: string }`
   - `interface ReadingPosition { blockIndex: number; blockHash: string; offset: number; progress: number }`
@@ -3222,8 +3231,8 @@ git commit -m "feat(native): split documents into blocks with the web's markdown
   - `interface LastRead { blocks: readonly string[]; readAt: number; updatedAt?: string }`
   - `interface ContinueReading { sessionRef: string; path: string; title: string; reviewRef: string; reviewTitle: string; progress: number; leftAt: number; updatedAt?: string }`
   - `interface Leaving { title: string; blocks: readonly string[]; position: ReadingPosition | null; reviewRef: string; reviewTitle: string; updatedAt?: string }`
-  - `class DocumentMemory`: constructor `(storage: DeviceStorage, hubId: string, clock?: () => number)`, `position(key)`, `lastRead(key)`, `comments(key)`, `savePosition(key, position)`, `opened(key)`, `left(key, leaving)`, `continueReading()`, `addComment(key, comment)`, `removeComment(key, id)`, `clearComments(key)`, `subscribe(listener)`, `getRevision()`
-  - `CONTINUE_READING_MS = 2 * 60 * 60 * 1000`, `FINISHED_PROGRESS = 0.97`, `forgetDocuments(storage: DeviceStorage, hubId: string): void`
+  - `class DocumentMemory`: constructor `(storage: SyncStringStorage, hubId: string, clock?: () => number)`, `position(key)`, `lastRead(key)`, `comments(key)`, `savePosition(key, position)`, `opened(key)`, `left(key, leaving)`, `continueReading()`, `addComment(key, comment)`, `removeComment(key, id)`, `clearComments(key)`, `subscribe(listener)`, `getRevision()`
+  - `CONTINUE_READING_MS = 2 * 60 * 60 * 1000`, `FINISHED_PROGRESS = 0.97`, `forgetDocuments(storage: SyncStringStorage, hubId: string): void`
   - from `nativeDocumentMemory.ts`: `documentMemory(hubId: string): DocumentMemory` and `forgetDocumentsForHub(hubId: string): void`
 - Produces, from `documentChanges.ts`:
   - `changedBlocks(blocks: readonly DocumentBlock[], lastRead: readonly string[] | null): number[]`
@@ -3301,10 +3310,10 @@ describe("anchors in a document that changed (ruling 14, Review Focus 3)", () =>
 ```ts
 // mobile-native/src/reader/documentMemory.test.ts
 import { describe, expect, it } from "vitest";
-import type { DeviceStorage } from "../deviceStorage";
+import type { SyncStringStorage } from "../syncStringStorage";
 import { CONTINUE_READING_MS, DocumentMemory, type DocumentKey, forgetDocuments } from "./documentMemory";
 
-function memoryStorage(values = new Map<string, string>()): DeviceStorage & { values: Map<string, string> } {
+function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
 		values,
 		getItemSync: (key) => values.get(key) ?? null,
@@ -3411,7 +3420,7 @@ describe("what the phone remembers about a document", () => {
 		const memory = new DocumentMemory(storage, "hub-1");
 		expect(memory.continueReading()).toBeNull();
 		expect(memory.position(plan)).toBeNull();
-		const broken: DeviceStorage = {
+		const broken: SyncStringStorage = {
 			getItemSync: () => {
 				throw new Error("disk");
 			},
@@ -3546,7 +3555,8 @@ export function restoreBlock(
 // review comments, and the Board's Continue reading trail. Kept in
 // expo-sqlite's kv-store under per-hub keys that ConnectionProvider.removeHub
 // clears.
-import { type DeviceStorage, isRecord, readJson, removeKeys, writeJson } from "../deviceStorage";
+import { isRecord, readJson, removeKeys, writeJson } from "../deviceStorage";
+import type { SyncStringStorage } from "../syncStringStorage";
 
 export interface DocumentKey {
 	/** The session whose folder holds the file. */
@@ -3684,7 +3694,7 @@ export class DocumentMemory {
 	private listeners = new Set<() => void>();
 
 	constructor(
-		private readonly storage: DeviceStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 		private readonly clock: () => number = Date.now,
 	) {
@@ -3805,7 +3815,7 @@ export class DocumentMemory {
 	}
 }
 
-export function forgetDocuments(storage: DeviceStorage, hubId: string): void {
+export function forgetDocuments(storage: SyncStringStorage, hubId: string): void {
 	removeKeys(storage, [documentsKey(hubId), trailKey(hubId)]);
 }
 ```
@@ -4035,7 +4045,8 @@ describe("the review message (spec 10.2)", () => {
 		expect(reviewMessage("a.md", "commentOnly", [{ quote: "  Split\n this   into two.  ", text: "One.\nTwo.\n" }], "")).toBe(
 			"Review of a.md: comments only.\n\n> Split this into two.\nOne.\nTwo.",
 		);
-		expect(quoteLine("x".repeat(200))).toBe(`${"x".repeat(160)}…`);
+		expect(quoteLine("x".repeat(200))).toBe(`${"x".repeat(159)}…`);
+		expect(quoteLine("x".repeat(160))).toBe("x".repeat(160));
 	});
 });
 ```
@@ -4174,11 +4185,12 @@ const VERDICT_WORDS: Record<Verdict, string> = {
 	commentOnly: "comments only",
 };
 
-/** One line of at most `max` characters, cut at a word where it can be (ruling 16). */
+/** One line of at most `max` characters, the ellipsis included, cut at a
+ * word where it can be (ruling 16). */
 export function quoteLine(text: string, max = 160): string {
 	const flat = text.replace(/\s+/g, " ").trim();
 	if (flat.length <= max) return flat;
-	const cut = flat.slice(0, max);
+	const cut = flat.slice(0, max - 1);
 	const space = cut.lastIndexOf(" ");
 	return `${(space > max * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
@@ -4486,10 +4498,10 @@ The Reader's first way in. Document chips and Files & artifacts follow in PR 7 (
 - Test: `mobile-native/src/reader/ReviewSheet.test.tsx`
 
 **Interfaces:**
-- Consumes: `reviewMessage` and `Verdict` (Task 13); `readSendAction` and `submitSessionMessage` (Task 3); `getNativeMutationRuntime`; `DocumentMemory.comments` and `.clearComments` (Task 12); `returnToSession` (Task 8); `useConnection` (`src/ConnectionProvider.tsx`).
+- Consumes: `reviewMessage` and `Verdict` (Task 13); `readSendAction` and `submitSessionMessage` (Task 3); the `SessionLink` state the Reader already follows (Task 14's requirement 1); `getNativeMutationRuntime`; `DocumentMemory.comments` and `.clearComments` (Task 12); `returnToSession` (Task 8); `useConnection` (`src/ConnectionProvider.tsx`).
 
-**Requirements (spec 10.2, ruling 16):**
-1. **Opening.** "Send review" in the bottom bar, and at the foot of the Comments sheet, opens the Review sheet (a page sheet, ruling 26), titled "Review", with Cancel leading. Under the title: "To Get PR 2138 Test Clean · settle-race.md" (13/18 `inkMid`; the review session's title and the file name).
+**Requirements (spec 10.2, rulings 16 and 30):**
+1. **Opening.** "Send review", in the bottom bar and at the foot of the Comments sheet, shows only while the review session can take a message: the Reader's `SessionLink` state for it has `capabilities.send` or `capabilities.queue`. A running subagent's document has neither (ruling 30's server gap), so it collects comments and shows Send review once the subagent's run ends; with no state read yet, it doesn't show. It opens the Review sheet (a page sheet, ruling 26), titled "Review", with Cancel leading. Under the title: "To Get PR 2138 Test Clean · settle-race.md" (13/18 `inkMid`; the review session's title and the file name).
 2. **The verdict.** A segmented control, "Approve", "Request changes" and "Comment only", with nothing chosen at first. The chosen segment is `accentBg` with `accentInk` (16.1). While nothing is chosen, "Choose one to send your review." shows under it, and Send is disabled.
 3. **The overall note.** An optional multiline field. Its placeholder is "Optional: anything to keep in mind" for Approve, else "Optional: the gist of what to change".
 4. **The comments,** each with its quote (serif, left rule, 120 characters) and text. With none: "No comments. Touch and hold a paragraph to add one."
@@ -4504,6 +4516,7 @@ The Reader's first way in. Document chips and Files & artifacts follow in PR 7 (
    - On failure the sheet stays open with everything kept, and one line in `dangerInk`: "Couldn't send this: <the error's message>".
 
 - [ ] **Step 1: Write the failing tests** (`ReviewSheet.test.tsx`). Use the real durable runtime, set up as in Task 9's test: `expo-sqlite` mocked to the in-memory double, the review session's target registered with the `FakeClient`, and the runtime started. The `FakeClient`'s `thread/read` answers the review session's status under test, and `turn/start` and `turn/queue` answer an applied receipt. Assert on what reaches the wire. Cover:
+  - for a running subagent's document, whose session read carries no capabilities, neither the bottom bar nor the Comments sheet shows "Send review", and a later read that carries `send` shows it;
   - Send is disabled until a verdict is chosen, with "Choose one to send your review.";
   - the text that reaches the wire is `reviewMessage(...)` of the document's path, the verdict, the comments and the note;
   - while the review session is active, the client receives `turn/queue` and never `turn/steer` or `turn/interrupt` (Review Focus 4);
@@ -4685,7 +4698,7 @@ export function documentReferences(turns: readonly TurnModel[], cwd: string): Do
    - before its summary loads, the title is the file name; nothing on it moves when the summary lands but the title's words and the count;
    - VoiceOver reads one label: "Plan, Fix the settle/drain race, settle-race.md, 142 lines, 3 minutes ago".
 3. **The summary.** `useDocumentSummary` loads each (session, path, write time) once with `loadDocument` and shares the answer across every chip and every Files row on the hub (Task 19): the document's own title for markdown, else the file name, and `lines` for markdown and code. A failed load leaves the file name, and loads again when the chip mounts next. The cache is per hub and `ConnectionProvider.removeHub` forgets it.
-4. **Tapping** opens the Reader. In a session: `{ hubId, sessionRef: ref, path, reviewRef: ref, reviewTitle: title, updatedAt }`. In a subagent's transcript, `sessionRef` is the subagent's ref, and `reviewRef` and `reviewTitle` are its coordinator's (question 2). `updatedAt` is `writes.get(path)`, present only when the session wrote the file (ruling 17).
+4. **Tapping** opens the Reader with `{ hubId, sessionRef: ref, path, reviewRef: ref, reviewTitle: title, updatedAt }`, where `ref` and `title` are the open session's. A subagent's screen is its own session (ruling 30), so its chips name the subagent, and its review goes to it (ruling 16). `updatedAt` is `writes.get(path)`, present only when the session wrote the file (ruling 17).
 5. **Nothing else changes** in `TimelineItem`: user rows, runs and every other row render as phase 3 left them.
 
 - [ ] **Step 1: Write the failing tests**
@@ -4817,7 +4830,7 @@ describe("every document the session named or wrote (spec 10.1)", () => {
   - `DocumentChip.test.tsx` (mock `react-native`, `expo-symbols`, `../ConnectionProvider` and `expo-secure-store` as in Task 14; answer `/doc/file` with a fetch spy): before the read answers, the chip reads "Plan" and "settle-race.md"; after it, the title from the first heading and "142 lines · 3m ago"; one label reads in order; pressing calls `onOpen`; two chips for one document make one request.
   - `TimelineItem.test.tsx`: an agent's message hands `documentChips` its id and markdown and draws what it returns under the message; a user's message never calls it.
   - `ConversationScreen.send.test.tsx`: after a `write_file` of `docs/superpowers/plans/settle-race.md`, an agent message naming it shows a chip, and pressing it navigates to `"Reader"` with that path and the write's time as `updatedAt`.
-  - `SubagentScreen.test.tsx`: a chip in a subagent's transcript opens the Reader with the subagent as `sessionRef` and the coordinator as the review session.
+  - `SubagentScreen.test.tsx`: a chip on a subagent's screen opens the Reader with the subagent as both `sessionRef` and the review session (`reviewRef`).
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/reader/documentReferences.test.ts src/reader/DocumentChip.test.tsx src/TimelineItem.test.tsx src/ConversationScreen.send.test.tsx src/subagents/SubagentScreen.test.tsx`
 - [ ] **Step 3: Implement** `documentReferences.ts` as written above, then the summaries, the chip and the wiring to the requirements.
 - [ ] **Step 4: Run them and watch them pass**, and `npm run check`. In the simulator, open a session whose agent named a plan, and open it from its chip.
@@ -5030,11 +5043,11 @@ describe("new or changed since you last opened it", () => {
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/board`
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them and watch them pass**, and `npm run check`. In the simulator: read half a plan, go back to the Board, and continue.
-- [ ] **Step 5: Commit** (`feat(native): continue reading from the Board`). If Jesse answered no to question 1, open PR 8 now: "feat(native): Continue reading on the Board (phase 4, PR 8)".
+- [ ] **Step 5: Commit** (`feat(native): continue reading from the Board`).
 
-### Task 21: Retire the Activity sheet (question 1)
+### Task 21: Retire the Activity sheet (ruling 29)
 
-Do this task only if Jesse answered yes to question 1. If he answered no, skip it: the sheet stays, and the Subagents list is the primary way to its subagents.
+Jesse agreed on 2026-09-26. The view of running commands and running subagents he expects to want next is #2538; this task doesn't build it.
 
 **Files:**
 - Delete, once nothing reaches them: `mobile-native/src/ActivitySheet.tsx`, `mobile-native/src/ActivityDelegateDetails.tsx` and `mobile-native/src/activityRetention.ts`; `mobile-native/src/jobOutput.ts` and `mobile-native/src/AnsiOutputLine.tsx` (with their tests) if nothing else imports them.
@@ -5051,7 +5064,7 @@ Do this task only if Jesse answered yes to question 1. If he answered no, skip i
 
 ### Task 22: The demo hub serves subagents and documents
 
-The demo hub from #2471 (`mobile-native/scripts/demo-hub.mts`, `mobile-native/src/dev/demoFleet.ts`) answers navigation rows, search, sign-ins and plugins (`scripts/demo-hub.mts:380-391`), and phase 3's `demoSessions.ts` (its Task 35) adds `thread/read` for the fleet's sessions. The Subagents list, a subagent's transcript and the Reader also need `evener/jobs/list`, `thread/read` for subagents, and `/doc/file`. Spec Appendix B names the prototype's `docs/design/mobile/redesign/prototype/data.js` as the canonical fixture.
+The demo hub from #2471 (`mobile-native/scripts/demo-hub.mts`, `mobile-native/src/dev/demoFleet.ts`) answers navigation rows, search, sign-ins and plugins (`scripts/demo-hub.mts:380-391`), and phase 3's `demoSessions.ts` (its Task 35) adds `thread/read` for the fleet's sessions. The Subagents list, a subagent's screen and the Reader also need `evener/jobs/list`, `thread/read` for subagents, and `/doc/file`. Spec Appendix B names the prototype's `docs/design/mobile/redesign/prototype/data.js` as the canonical fixture.
 
 **Files:**
 - Create: `mobile-native/src/dev/demoSubagents.ts` (full code below)
@@ -5068,7 +5081,7 @@ The demo hub from #2471 (`mobile-native/scripts/demo-hub.mts`, `mobile-native/sr
 // mobile-native/src/dev/demoSubagents.ts
 // The demo fleet's subagents and documents, as the hub serves them: the
 // activity tree behind the Subagents list (evener/jobs/list), a subagent's
-// read-only transcript (thread/read), and the documents the Reader opens
+// own session (thread/read), and the documents the Reader opens
 // (/doc/file). Built from the same raw swarm the Board's navigation rows come
 // from (demoFleet.ts, after the prototype's data.js), so the Board, the list
 // and the transcript agree (spec Appendix B).
@@ -5239,6 +5252,24 @@ const READ_ONLY = {
 	rename: false,
 };
 
+/** A subagent whose run ended reads as a past session, which takes a message
+ * and resumes on it (`pastThreadCapabilities`, cmd/evener-hub/app_threadread.go);
+ * a running one is READ_ONLY, as the hub serves it (ruling 30). */
+const RUN_ENDED = {
+	...READ_ONLY,
+	send: true,
+	compact: true,
+	clear: true,
+	forkFromTurn: true,
+	shutdown: true,
+	changeModel: true,
+	changeVisionModel: true,
+	queue: true,
+	goal: true,
+	sharedNotes: true,
+	rename: true,
+};
+
 /** thread/read's answer for one subagent: a short transcript in its state
  * (after the prototype's subTranscript, panels.js:84-101). */
 export function demoSubagentThread(coordinator: DemoCoordinator, sub: DemoSubagent, startupMs: number): Thread {
@@ -5307,7 +5338,7 @@ export function demoSubagentThread(coordinator: DemoCoordinator, sub: DemoSubage
 			parentRef: coordinator.ref,
 			instanceId: `${sub.id}-instance`,
 			queue: { revision: 0 },
-			capabilities: READ_ONLY,
+			capabilities: running ? READ_ONLY : RUN_ENDED,
 		},
 	};
 }
@@ -5464,10 +5495,14 @@ describe("the demo fleet's subagents", () => {
 		});
 	});
 
-	it("serves each subagent's own read-only transcript, naming its coordinator", () => {
+	it("serves each subagent's own session, naming its coordinator, read-only while it runs", () => {
 		const settle = coordinator.subagents[0];
 		const thread = demoSubagentThread(coordinator, settle as NonNullable<typeof settle>, NOW);
-		expect(thread.evener).toMatchObject({ ref: "local:g-settle", parentRef: "local:s-pr2138", capabilities: { send: false } });
+		expect(thread.evener).toMatchObject({
+			ref: "local:g-settle",
+			parentRef: "local:s-pr2138",
+			capabilities: { send: true, queue: true, interrupt: false },
+		});
 		expect(thread.turns?.[0]?.items?.map((item) => item.type)).toEqual([
 			"userMessage",
 			"agentMessage",
@@ -5475,6 +5510,11 @@ describe("the demo fleet's subagents", () => {
 			"commandExecution",
 			"agentMessage",
 		]);
+		const running = settle?.children?.[0];
+		expect(demoSubagentThread(coordinator, running as NonNullable<typeof running>, NOW).evener).toMatchObject({
+			ref: "local:g-settle-1",
+			capabilities: { send: false, queue: false },
+		});
 	});
 
 	it("reads data.js's token labels", () => {
@@ -5537,7 +5577,7 @@ describe("the demo fleet's documents", () => {
 With the demo fleet (`cd mobile-native && EVENER_DEMO_FLEET=1 npx tsx scripts/demo-hub.mts`), capture Release-simulator screenshots on the iPhone 17 Pro simulator, as phase 2 does, of Appendix A's frames for this phase, in light and dark:
 
 15. **Subagents:** Get PR 2138 Test Clean's list, with the strip, the chips, failed first, the nested running row ("from Fix race in tree settle"), and Done folded.
-16. **Subagent transcript:** "Fix race in tree settle", read-only, with the banner and the action bar; and its "Stop subagent" sheet.
+16. **A subagent's screen:** "Check drain ordering in tests" while it runs, with "Ask coordinator to stop it" and "Open coordinator" where the composer would be, and its "Stop subagent" sheet; and "Fix race in tree settle", whose run ended, with the composer.
 17. **Reader:** the settle-race plan with changes since last read and comment markers. Open the plan once and leave, so the demo hub serves its revision next; reopen it, and add comments on a paragraph and on a list item.
 18. **Reader:** the Review sheet with a verdict chosen, an overall note and the comments.
 
@@ -5547,7 +5587,7 @@ Also frame 17 at the largest standard Dynamic Type size. Save them as `docs/desi
 
 ## Self-review against the spec
 
-- **9, Subagents:** three states (Task 4, ruling 4); the strip and the chips (Tasks 4 and 6, ruling 8); one flat list by state, with Done folded and each section's count matching its chip (Task 6); a nested subagent naming who started it (Task 4); rows (Tasks 4 and 6, rulings 6-7); a virtualized list with search (Task 6); the read-only transcript, its banner and its action bar (Task 8); Ask coordinator to stop it, its one Send that steers, "Stop requested from the coordinator" and "Stopped at your request" with a toast (Tasks 3, 7 and 9); the later Stop subagent (S6, ruling 10).
+- **9, Subagents:** three states (Task 4, ruling 4); the strip and the chips (Tasks 4 and 6, ruling 8); one flat list by state, with Done folded and each section's count matching its chip (Task 6); a nested subagent naming who started it (Task 4); rows (Tasks 4 and 6, rulings 6-7); a virtualized list with search (Task 6); a subagent's screen as its own session, with the composer once the hub takes its messages and the bar while it runs (Task 8, ruling 30); Ask coordinator to stop it, its one Send that steers, "Stop requested from the coordinator" and "Stopped at your request" with a toast (Tasks 3, 7 and 9); the later Stop subagent (S6, ruling 10).
 - **10.1, Files & artifacts:** Task 19; artifacts wait for the shared-artifacts work (ruling 23).
 - **10.2, the Reader:** the reading surface and header (Task 14); changes since you last read (Tasks 12 and 14, ruling 13); comments, markers and the tip (Task 16, rulings 14-15); the review bar and the Review sheet through the composer's one Send (Task 17, ruling 16); the 512 KB note, code, images and binary files (Tasks 13 and 14, ruling 18); reading position and Continue reading (Tasks 12, 14 and 20).
 - **10.3, the artifact viewer:** not in this phase; it waits for the shared-artifacts work to reach main.
@@ -5555,7 +5595,7 @@ Also frame 17 at the largest standard Dynamic Type size. Save them as `docs/desi
 - **8.2:** the subagent row opens the subagent (Task 8); the document chip (Task 18) opens the Reader and says when it changed (Task 19); a note's file link opens it too (Task 15).
 - **13.3:** the Reader is a quiet screen with no Next capsule (Task 14); phase 6 holds alerts there.
 - **14:** no screen offers Retry, Refresh or Reconnect (Tasks 6, 8 and 14); messages sent from above a session survive a reconnect (Tasks 2-3); reading positions, comments and the Continue reading trail survive a relaunch (Task 12), and so does the Reader itself (Task 14, ruling 21).
-- **18:** S3's fallback (ruling 2), S6's (ruling 10), S7's (Task 13) and S9's (ruling 13).
+- **18:** S3's fallback (ruling 2), S6's (rulings 10 and 30), S7's (Task 13) and S9's (ruling 13).
 - **Appendix A frames 15-18:** Task 23, against the demo fleet (Task 22).
 - **What phase 3 hands this phase:** the Files chip, document chips and Files & artifacts (its ruling 6: Tasks 18-19); the Subagents chip and menu item, which open `ActivitySheet` until Task 6; its `SubagentRow`, which opens `"Subagent"` from Task 8; and notes' `file://` links (Task 15). What this phase reuses instead of copying: `sendAction` (Tasks 3 and 17), `compactDuration` and `compactCount` (Tasks 4, 6, 8, 14, 18-19), `SubagentTally` (Tasks 4 and 6), and `Toast` (Task 9).
 
