@@ -2071,8 +2071,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
-      // The projection flush inside the act is main's own warning fix, and
-      // the drain's request has gone out by the time it returns.
+      // Settling the drain's work inside the act keeps its re-renders inside
+      // it, and the drain's request has gone out by the time the flush returns.
       await flushPendingTurnsProjectionForTests();
     });
 
