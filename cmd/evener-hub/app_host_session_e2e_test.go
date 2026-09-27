@@ -312,8 +312,8 @@ func TestHostSpawnSessionE2E(t *testing.T) {
 	if err != nil {
 		t.Fatalf("step evener/host/add (ssh destination %q): %v", dest, err)
 	}
-	if row.Origin != "sidecar" {
-		t.Fatalf("step evener/host/add: added row origin = %q, want %q (a host added through the wire is a sidecar entry)", row.Origin, "sidecar")
+	if row.Origin != "hub.toml" {
+		t.Fatalf("step evener/host/add: added row origin = %q, want %q (every host lives in the machine-managed hub.toml)", row.Origin, "hub.toml")
 	}
 	attached := awaitHostAttached(ctx, t, client, hostE2EName)
 	t.Logf("attached %s: os=%s arch=%s hubVersion=%s", hostE2EName, attached.OS, attached.Arch, attached.HubVersion)

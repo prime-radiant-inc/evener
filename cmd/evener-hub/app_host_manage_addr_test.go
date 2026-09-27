@@ -54,7 +54,7 @@ func TestHostManageAddRefusesUnusableHostAddr(t *testing.T) {
 
 func TestHostManageUpdateRefusesUnusableHostAddr(t *testing.T) {
 	f := newUpdateFixture(t)
-	before := readSidecarBytes(t, f.configPath)
+	before := readHubTOMLBytes(t, f.configPath)
 	for _, entry := range []appwire.HostEntry{
 		{Address: "side.example", ConfigPath: "/etc/evener/hub.toml"},
 		{Address: "side.example", Addr: "127.0.0.1:9180"},
@@ -64,8 +64,8 @@ func TestHostManageUpdateRefusesUnusableHostAddr(t *testing.T) {
 			t.Errorf("Update(%+v) accepted an entry hub.toml loading refuses", entry)
 		}
 	}
-	if after := readSidecarBytes(t, f.configPath); !bytes.Equal(before, after) {
-		t.Fatalf("a refused update changed the sidecar:\nbefore=%s\nafter=%s", before, after)
+	if after := readHubTOMLBytes(t, f.configPath); !bytes.Equal(before, after) {
+		t.Fatalf("a refused update changed hub.toml:\nbefore=%s\nafter=%s", before, after)
 	}
 	if got, ok := f.m.cfg.hosts.Get("side"); !ok || got.ConfigPath != "" || got.Addr != "" {
 		t.Fatalf("refused updates changed the stored entry: %+v (ok=%v)", got, ok)
