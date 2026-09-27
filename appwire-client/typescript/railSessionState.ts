@@ -2,7 +2,7 @@
 // shared by the web rail (shell/rail/RailRow.tsx) and native's session list
 // (mobile-native/src/screens.tsx): the same wire state vocabulary the web's
 // cadenceStateFor (shell/rail/railNodes.ts) reads, worded for a person rather
-// than mapped to a Cadence family. Pure function, no imports.
+// than mapped to a Cadence family. Pure functions, no imports.
 //
 // "awaiting" itself splits on askPending: hubapi.StateWord (hubapi/
 // attention.go, Track A §2 ask-tiering) already draws this same line for the
@@ -23,7 +23,13 @@
 // gap ask_pending closed for "awaiting" above. Sharing Cadence's "needs-you"
 // dot family (cadenceStateFor) is still correct: that comment's own text
 // says only the dot family is shared by design, never the word.
-export function humanizeState(wireState: string, askPending: boolean): string {
+//
+// A pending approval (approvalWaiting below) leads over every state but a
+// failure: the escalation blocks its turn mid-tool, so the session keeps
+// reporting "active", and "working" would hide the one thing it needs from a
+// person.
+export function humanizeState(wireState: string, askPending: boolean, approvalPending = false): string {
+  if (approvalWaiting(wireState, approvalPending)) return "approval waiting";
   switch (wireState) {
     case "active":
       return "working";
@@ -40,4 +46,12 @@ export function humanizeState(wireState: string, askPending: boolean): string {
     default: // "idle", "notLoaded", "", and any future/unknown value
       return "idle";
   }
+}
+
+// approvalWaiting says a session is waiting on a person to allow or deny a
+// sandbox escalation. Its wire state cannot say so: the escalation blocks the
+// turn mid-tool, so the state stays "active". A failure outranks the
+// approval, the line the hub draws too (hubapi.AttentionState).
+export function approvalWaiting(wireState: string, approvalPending: boolean): boolean {
+  return approvalPending && wireState !== "errored";
 }

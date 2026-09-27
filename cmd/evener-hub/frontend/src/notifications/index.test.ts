@@ -9,7 +9,6 @@ import { navigationRootContainerKey, type ResourceKey } from "@evener/appwire-cl
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest } from "@evener/appwire-client/testing/navigation";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { connectionStore } from "../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
@@ -104,6 +103,7 @@ function attentionFromNodes(nodes: NavigationSessionSummary[]) {
       project: n.project ?? "",
       level: n.state === "errored" ? "error" : "needs_you",
       askPending: n.ask_pending === true,
+      approvalPending: n.approval_pending === true,
       prevLevel: "idle",
     })),
     summary: { needsYou, error, working: 0 },
@@ -152,12 +152,6 @@ beforeEach(() => {
   resetNotificationsForTests();
   resetNavigationStoreForTests();
   resetLeaderForTests();
-  // baseTitle() (notifications/title.ts) reads workspaceStore's focused pane
-  // - workspaceStore is a module singleton shared with every other file in
-  // the worker, so this file's own "no focused pane -> 'evener hub'" title
-  // assertions need a pristine workspace regardless of what an earlier file
-  // left focused.
-  resetWorkspaceStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
   resetPrefsStoreForTests();
@@ -497,6 +491,17 @@ describe("loudScope", () => {
     armPrefs("all");
     await boot(attentionFromNodes([]));
     navigationStore.setState({ attention: attentionFromNodes([node("local:a", "awaiting", false)]) });
+    expect(fires()).toEqual({ os: 1, sound: 1 });
+  });
+
+  // The hub promotes a session blocked on an approval to needs_you while it
+  // still reports "active"; approvalPending is what makes it loud.
+  test("asks: an approval fires like a question", async () => {
+    armPrefs("asks");
+    await boot(attentionFromNodes([]));
+    navigationStore.setState({
+      attention: attentionFromNodes([{ ...node("local:a", "active"), approval_pending: true }]),
+    });
     expect(fires()).toEqual({ os: 1, sound: 1 });
   });
 });

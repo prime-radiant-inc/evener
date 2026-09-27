@@ -85,6 +85,7 @@ const (
 	MethodEvenerSessionPinAssign         = "evener/session-pin/assign"
 	MethodEvenerSessionPinUnpin          = "evener/session-pin/unpin"
 	MethodEvenerSearch                   = "evener/search"
+	MethodEvenerActivityRead             = "evener/activity/read"
 	MethodEvenerHarnessesList            = "evener/harnesses/list"
 	MethodEvenerUpgrade                  = "evener/upgrade"
 	MethodEvenerUpdateCheck              = "evener/update/check"
@@ -151,9 +152,9 @@ const (
 	// It is the browser-reachable trigger that wraps the Ensure-backed dialing
 	// seam; every other remote path is attached-only. See HostAttachParams.
 	MethodEvenerHostAttach = "evener/host/attach"
-	// MethodEvenerHostAdd registers one sidecar host entry (component 08 slice
-	// 1: name + SSH address + key path). hub.toml stays authoritative for its
-	// own names; a duplicate of a live name is refused. See HostAddParams.
+	// MethodEvenerHostAdd registers one host entry (component 08 slice 1: name
+	// + SSH address + key path). The entry is written into the machine-managed
+	// hub.toml; a duplicate of a live name is refused. See HostAddParams.
 	MethodEvenerHostAdd = "evener/host/add"
 	// MethodEvenerHostList returns every known host with truthful online state
 	// (component 08 slice 1). Attached rows report live channel facts; rows
@@ -164,16 +165,15 @@ const (
 	// same HostRow evener/host/list serves, for a single named host. Never
 	// dials. See HostStatusParams.
 	MethodEvenerHostStatus = "evener/host/status"
-	// MethodEvenerHostRemove deregisters one sidecar host entry (component 08
+	// MethodEvenerHostRemove deregisters one live host entry (component 08
 	// slice 1): its supervisor stops, its channel drops, and the name is gone
-	// until re-added. hub.toml-declared names cannot be removed here. See
+	// until re-added. Every live host is removable here. See
 	// HostRemoveParams.
 	MethodEvenerHostRemove = "evener/host/remove"
-	// MethodEvenerHostUpdate edits one live sidecar host entry in place: every
-	// field except the name is mutable, the name is the request's target, and
-	// the entry's advancement of the registry generation retires the host's
-	// channel. hub.toml-declared names are refused (edit the file). See
-	// HostUpdateParams.
+	// MethodEvenerHostUpdate edits one live host entry in place: every field
+	// except the name is mutable, the name is the request's target, and the
+	// entry's advancement of the registry generation retires the host's
+	// channel. Every live host is editable here. See HostUpdateParams.
 	MethodEvenerHostUpdate = "evener/host/update"
 	// MethodEvenerHostPushCredentials copies the controller's local
 	// provider-instance keys to one named remote host (component 07c). The unit
@@ -599,6 +599,14 @@ type SearchResult struct {
 	State   string `json:"state"`
 	Age     string `json:"age"`
 	Ref     string `json:"ref"`
+	// AskPending and ApprovalPending carry the flags a navigation row does: a
+	// live session is waiting on an answer to an ask_user question, or on a
+	// person to allow or deny a sandbox escalation (M7). State keeps its real
+	// value ("active" while an escalation blocks mid-turn), so a pending
+	// approval shows only in ApprovalPending. A past (ended) result carries
+	// neither. Additive: an older hub omits both, decoding as false.
+	AskPending      bool `json:"askPending,omitempty"`
+	ApprovalPending bool `json:"approvalPending,omitempty"`
 }
 
 // SearchResponse groups matching live sessions separately from persisted
@@ -606,6 +614,39 @@ type SearchResult struct {
 type SearchResponse struct {
 	Live []SearchResult `json:"live"`
 	Past []SearchResult `json:"past"`
+}
+
+// ActivityReadParams selects the sessions evener/activity/read reports. Refs
+// names sessions by the refs their Live rows carry; empty reads every live
+// top-level session of the hub and of its attached hosts.
+type ActivityReadParams struct {
+	Refs []string `json:"refs,omitempty"`
+}
+
+// ActivityReadResponse is one read of the pulse meters. A session whose daemon
+// predates the meter, or whose host did not answer in time, is absent, and a
+// client keeps its fallback for it until the next read.
+type ActivityReadResponse struct {
+	Sessions []SessionActivity `json:"sessions"`
+}
+
+// SessionActivity is one live top-level session's activity (spec 13.1, 16.4).
+type SessionActivity struct {
+	// Ref is the session's navigation ref, the one its Live row carries.
+	Ref string `json:"ref"`
+	// Minutes holds seven one-minute counts over the session's whole tree,
+	// oldest first, the last ending when the hub last probed its daemon: the
+	// transcript items that finished and the tool output events in each.
+	Minutes []int `json:"minutes"`
+	// RunningSubagents counts the session's subagents, at every depth, whose
+	// own turn is running.
+	RunningSubagents int `json:"runningSubagents"`
+	// QuietForMS is how long the session's whole tree has gone without
+	// transcript motion, as of this read. It is present only while the session
+	// is working and none of its subagents runs: an agent waiting on subagents
+	// is never quiet or stuck (Jesse's ruling for S5), and a subagent inside
+	// one long model call emits nothing for minutes.
+	QuietForMS *int64 `json:"quietForMs,omitempty"`
 }
 
 type ServerInfo struct {
@@ -820,6 +861,46 @@ type EvenerThread struct {
 	// a model ref. Snapshot-only like the effort fields beside it; live updates
 	// arrive as thread/vision-model/changed.
 	VisionModel string `json:"visionModel,omitempty"`
+	// Activity is the pulse meter of a live root session's whole tree (spec
+	// 16.4, S5): the root and every in-process descendant. It rides thread/list
+	// rows only, never a thread/read snapshot, because nothing announces its
+	// changes to a subscriber; the hub serves it through evener/activity/read,
+	// never navigation. Absent on descendant rows and from an older daemon.
+	Activity *ThreadActivity `json:"activity,omitempty"`
+	// LastTurnEndedAt is when the session's last turn ended, in Unix
+	// milliseconds (S4); absent before any turn has ended and from an older
+	// daemon. The hub compares it with its seen-through marker to tell a
+	// Finished session from an Idle one. Snapshot-only: no notification
+	// carries it.
+	LastTurnEndedAt int64 `json:"lastTurnEndedAt,omitempty"`
+	// Subagents tallies a live root session's whole delegate tree (S3), read
+	// from the root's delegate controller when the row is listed. It rides
+	// thread/list root rows only, when the tree has at least one subagent, and
+	// never a thread/read snapshot: no notification announces its changes.
+	Subagents *SubagentTally `json:"subagents,omitempty"`
+}
+
+// ThreadActivity is one pulse meter sample. Minutes holds seven one-minute
+// counts, oldest first, the last ending when the row was listed; each counts
+// the transcript items that finished and the tool output events in that minute.
+// LastActivityAt is the Unix-millisecond time of the tree's newest transcript
+// motion (a turn or item starting, a message or reasoning summary streaming, an
+// item finishing, a tool writing output), or the time the daemon began serving
+// this session when nothing has moved since.
+type ThreadActivity struct {
+	Minutes        []int `json:"minutes"`
+	LastActivityAt int64 `json:"lastActivityAt"`
+}
+
+// SubagentTally counts a live root session's subagents, at every depth, by how
+// each one's latest run stands (spec 9, S3). Running: no run has ended yet, or
+// a run is open again after the last one ended. Failed: the latest run ended
+// failed or exhausted. Done: it ended any other way (completed, cancelled or
+// stopped), including a subagent idle between runs.
+type SubagentTally struct {
+	Running int `json:"running"`
+	Failed  int `json:"failed"`
+	Done    int `json:"done"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
@@ -2784,6 +2865,7 @@ type WarningParams struct {
 	Ref      string           `json:"ref"`
 	Message  string           `json:"message,omitempty"`
 	Source   string           `json:"source,omitempty"`
+	Code     string           `json:"code,omitempty"`
 	Title    string           `json:"title,omitempty"`
 	Hint     string           `json:"hint,omitempty"`
 	Warning  any              `json:"warning,omitempty"`
@@ -4127,9 +4209,10 @@ type HostAttachResponse struct {
 // HostEntry is one host's effective configuration as a mutation carries it
 // (component 08 slice 2): the six mutable HostConfig fields under slice 1's
 // wire spellings — Address is the schema's `ssh`, EvenerPath the schema's
-// `evener_path`, ConfigPath the schema's `config_path` — plus KeyPath, the one
-// field slice 1 added that hub.toml's schema has no spelling for (the dial needs
-// a key path, and hostreg's Host says a file-declared host never sets one).
+// `evener_path`, ConfigPath the schema's `config_path` — plus KeyPath, the SSH
+// identity file the dial uses. The machine-managed hub.toml stores KeyPath as
+// `key_path` (registry spec 08 §6), so a host with one round-trips through a
+// rewrite.
 //
 // Name is carried by the ADD entry, which has no other place to put the new
 // host's name. The update entry omits it: a rename is not a thing this wire
@@ -4148,20 +4231,20 @@ type HostEntry struct {
 }
 
 // HostAddParams is the evener/host/add payload (component 08 slice 1, reshaped
-// by slice 2): one sidecar host entry. The nested entry is the design record's
+// by slice 2): one host entry. The nested entry is the design record's
 // own shape, so the guard fields the pipeline slice adds land on a wire this
 // slice already matches instead of reshaping it a second time. The handler
-// validates exactly like hub.toml loading and refuses a name hub.toml or the
-// live set already holds.
+// validates exactly like hub.toml loading, writes the machine-managed hub.toml,
+// and refuses a name the live set already holds.
 type HostAddParams struct {
 	Entry HostEntry `json:"entry"`
 }
 
 // HostUpdateParams is the evener/host/update payload (component 08 slice 2): the
-// name of the live sidecar entry to edit, and the entry that replaces it. Name
+// name of the live entry to edit, and the entry that replaces it. Name
 // is the immutable target — it identifies which host to edit, and nothing in the
-// request can rename one. hub.toml-declared names are refused (edit the file);
-// unknown names are InvalidParams.
+// request can rename one. Every live host is editable; unknown names are
+// InvalidParams.
 type HostUpdateParams struct {
 	Name  string    `json:"name"`
 	Entry HostEntry `json:"entry"`
@@ -4177,9 +4260,12 @@ type HostUpdateResponse struct {
 // HostRow is one host as evener/host/list and evener/host/status render it
 // (component 08 slice 2): the effective entry plus live state. A dialog prefills
 // from this row, and list/status remain the one source of truth for what a host
-// currently is. Origin names the entry's source: "hub.toml" for file-declared
-// entries, "sidecar" for UI-added ones. Attached reports a live channel right
-// now; offline rows carry the last-known facts below when any were recorded.
+// currently is. Origin names the entry's source and is `hub.toml` on every
+// row: the storage decision (registry spec 08 §6/§19) made that file the
+// machine-managed store every host lives in, so there is no second origin to
+// distinguish (the field is retained for wire compatibility). Attached reports
+// a live channel right now; offline rows carry the last-known facts below when
+// any were recorded.
 // Optional entry fields and facts stay absent — never null — when unknown.
 type HostRow struct {
 	Name          string   `json:"name"`
@@ -4204,7 +4290,7 @@ type HostRow struct {
 
 // HostListResponse is evener/host/list's result (component 08 slice 1): every
 // known host in name-sorted order — the registry's own order; the origin field
-// distinguishes hub.toml entries from sidecar ones. It never dials: attached
+// is `hub.toml` on every row. It never dials: attached
 // rows read the live channel, offline rows render last-known state.
 type HostListResponse struct {
 	Hosts []HostRow `json:"hosts"`
@@ -4224,8 +4310,8 @@ type HostStatusResponse struct {
 }
 
 // HostRemoveParams is the evener/host/remove payload (component 08 slice 1):
-// the component-03 source ID of one sidecar host. hub.toml-declared names are
-// refused (edit the file); unknown names are InvalidParams. Removing an
+// the component-03 source ID of one live host, any of which is removable here;
+// unknown names are InvalidParams. Removing an
 // attached host stops its supervisor and drops its channel.
 type HostRemoveParams struct {
 	Name string `json:"name"`

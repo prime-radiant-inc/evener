@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
 import { WireError } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../../panes/session/composer/composerFocus";
@@ -207,6 +207,19 @@ test("the empty-query view lists needs-you sessions (title + 'needs you' hint) w
   const option = screen.getByRole("option", { name: /Session A/i });
   expect(within(option).getByText(/needs you/i)).toBeTruthy();
   expect(screen.getByRole("option", { name: /Session B/i })).toBeTruthy();
+});
+
+// An approval blocks its turn mid-tool, so the row's wire state stays
+// "active": the dot must read approval_pending, not the state alone.
+test("a needs-you row waiting on an approval shows a needs-you dot, not a working one", () => {
+  setNeedsYouRows(
+    needsYouRows().map((row) => (row.ref === "local:ny1" ? { ...row, state: "active", approval_pending: true } : row)),
+  );
+  render(<CommandPalette />);
+  act(() => openPalette());
+
+  const option = screen.getByRole("option", { name: /Session A/i });
+  expect(within(option).getByRole("img", { name: "Needs you" })).toBeTruthy();
 });
 
 test("Enter on a needs-you row opens that session and closes the palette", async () => {
@@ -532,27 +545,6 @@ test("typing after /help leaves the help panel and returns to a real command lis
 
 // --- search mode ---
 
-test("search mode renders Live and Past sections from AppWire with highlighting", async () => {
-  const user = userEvent.setup();
-  scriptSearch({
-    live: [
-      { id: "local:a", ref: "local:local:a", title: "frobnitz worker", project: "proj", state: "active", age: "now" },
-    ],
-    past: [{ id: "p1", ref: "local:p1", title: "old frobnitz run", project: "old", state: "ended", age: "2h" }],
-  });
-
-  render(<CommandPalette />);
-  act(() => openPalette());
-  await user.type(screen.getByRole("combobox"), "frobnitz");
-
-  await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
-  expect(screen.getByText("Past · 1")).toBeTruthy();
-  const live = screen.getAllByRole("option").find((o) => o.textContent?.includes("frobnitz worker"));
-  expect(live).toBeTruthy();
-  // The matched substring is wrapped in <mark> (§2.3 highlighting).
-  expect(within(live as HTMLElement).getByText("frobnitz").tagName).toBe("MARK");
-});
-
 test("in-session search scans the focused ThreadModel's turns", async () => {
   const user = userEvent.setup();
   scriptSearch({ live: [], past: [] });
@@ -607,32 +599,87 @@ test('typing past a bare "?" leaves the help view and resumes filtering, same as
   expect(screen.queryByText("Keyboard shortcuts")).toBeNull();
 });
 
-// --- search-result navigation ---
+// --- remote search results ---
 
-// Typed against the real SearchResult, not Record<string, unknown>: `ref` is
-// required now (see search.ts), and a fixture omitting it would be describing
-// a response the hub cannot produce.
-async function searchAndClick(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
-  scriptSearch({ live: [result], past: [] });
-  render(<CommandPalette />);
-  act(() => openPalette());
-  await user.type(screen.getByRole("combobox"), term);
-  await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
-  const row = screen.getAllByRole("option").find((o) => o.textContent?.includes(term));
-  await user.click(row as HTMLElement);
-}
+// Remote search waits out the palette's search debounce. Fake timers own that
+// clock, and the stubbed `jest` global lets Testing Library's waitFor polls
+// advance it, so the debounce costs a poll rather than real time.
+describe("remote search results", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
-// One ref form, and the type is what enforces it: a hit with no ref is not a
-// state this code can be in, so there is no runtime fallback to test. The hub
-// sets Ref at both construction sites and its field carries no omitempty.
-test("a search result is opened by its qualified ref", async () => {
-  const user = userEvent.setup();
-  await searchAndClick(
-    user,
-    { id: "bare123", ref: "local:qualified", title: "reffuls", project: "p", state: "active", age: "now" },
-    "reffuls",
-  );
-  expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:qualified");
+  test("search mode renders Live and Past sections from AppWire with highlighting", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearch({
+      live: [
+        { id: "local:a", ref: "local:local:a", title: "frobnitz worker", project: "proj", state: "active", age: "now" },
+      ],
+      past: [{ id: "p1", ref: "local:p1", title: "old frobnitz run", project: "old", state: "ended", age: "2h" }],
+    });
+
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "frobnitz");
+
+    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
+    expect(screen.getByText("Past · 1")).toBeTruthy();
+    const live = screen.getAllByRole("option").find((o) => o.textContent?.includes("frobnitz worker"));
+    expect(live).toBeTruthy();
+    // The matched substring is wrapped in <mark> (§2.3 highlighting).
+    expect(within(live as HTMLElement).getByText("frobnitz").tagName).toBe("MARK");
+  });
+
+  // Typed against the real SearchResult, not Record<string, unknown>: `ref` is
+  // required now (see search.ts), and a fixture omitting it would be describing
+  // a response the hub cannot produce.
+  async function searchLiveRow(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
+    scriptSearch({ live: [result], past: [] });
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), term);
+    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
+    return screen.getAllByRole("option").find((o) => o.textContent?.includes(term)) as HTMLElement;
+  }
+
+  // One ref form, and the type is what enforces it: a hit with no ref is not a
+  // state this code can be in, so there is no runtime fallback to test. The hub
+  // sets Ref at both construction sites and its field carries no omitempty.
+  test("a search result is opened by its qualified ref", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const row = await searchLiveRow(
+      user,
+      { id: "bare123", ref: "local:qualified", title: "reffuls", project: "p", state: "active", age: "now" },
+      "reffuls",
+    );
+    await user.click(row);
+    expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:qualified");
+  });
+
+  // An approval blocks its turn mid-tool, so the result's wire state stays
+  // "active": the dot must read approval_pending, not the state alone, the
+  // same rule #2560 gave the rail's needs-you dot (#2567).
+  test("a live search result waiting on an approval shows a needs-you dot, not a working one", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const live = await searchLiveRow(
+      user,
+      {
+        id: "local:a",
+        ref: "local:local:a",
+        title: "frobnitz worker",
+        project: "proj",
+        state: "active",
+        age: "now",
+        approvalPending: true,
+      },
+      "frobnitz",
+    );
+    expect(within(live).getByRole("img", { name: "Needs you" })).toBeTruthy();
+  });
 });
 
 // --- keyboard navigation ---
@@ -753,7 +800,6 @@ test("Enter on an unknown slash command against a fenced session toasts the refu
 test("selecting a plugin catalog entry's handoff row inserts the raw typed text into the composer instead of sending", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
   });
@@ -778,7 +824,6 @@ test("selecting a plugin catalog entry's handoff row inserts the raw typed text 
 test("Enter on a plugin command with arguments hands off the FULL typed text, args included", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  send.mockClear(); // isolate:false: threadsStore.send may already be spied by an earlier test in this worker
   useCommandCatalog.setState({
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
   });

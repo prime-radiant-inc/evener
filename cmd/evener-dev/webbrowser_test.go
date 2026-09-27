@@ -157,7 +157,16 @@ func startTestGate(t *testing.T, launcher guardLauncher, slots int, buildFronten
 // unbuffered one: a send on it completes only once the gate receives it.
 func startTestGateWithSignals(t *testing.T, launcher guardLauncher, slots int, buildFrontend bool, signals chan os.Signal) *testGate {
 	t.Helper()
-	return startGate(t, newBrowserGate(slots, buildFrontend), launcher, signals)
+	gate := newBrowserGate(slots, buildFrontend)
+	gate.now = stoppedClock()
+	return startGate(t, gate, launcher, signals)
+}
+
+// stoppedClock never advances, so every check that ran reports (0.0s),
+// whatever the box's load.
+func stoppedClock() func() time.Time {
+	stopped := time.Now()
+	return func() time.Time { return stopped }
 }
 
 // startGate runs gate over launcher in the background, in a scratch of its
@@ -219,7 +228,7 @@ func TestBrowserGateSuccessIsConcise(t *testing.T) {
 	}
 	var want strings.Builder
 	for _, guard := range browserGuards {
-		want.WriteString("PASS  web-" + guard + "\n")
+		want.WriteString("PASS  web-" + guard + " (0.0s)\n")
 	}
 	if tg.stdout.String() != want.String() || tg.stderr.Len() != 0 {
 		t.Fatalf("stdout = %q, stderr = %q; want only the seven verdicts", tg.stdout.String(), tg.stderr.String())
@@ -295,7 +304,7 @@ func TestBrowserGateFailureReplaysOnlyFailingLogsAndKeepsTheScratch(t *testing.T
 	if strings.Contains(tg.stdout.String(), "browser chatter") {
 		t.Errorf("a passing guard's log was replayed; stdout = %s", tg.stdout.String())
 	}
-	for _, want := range []string{"FAIL  web-overflowguard (exit 4)", "FAIL  web-spawnguard (exit 5)"} {
+	for _, want := range []string{"FAIL  web-overflowguard (exit 4, 0.0s)", "FAIL  web-spawnguard (exit 5, 0.0s)"} {
 		if !strings.Contains(tg.stderr.String(), want) {
 			t.Errorf("stderr lacks %q: %s", want, tg.stderr.String())
 		}
@@ -326,7 +335,7 @@ func TestBrowserGateBuildFailureFailsOnlyTheSkillGuard(t *testing.T) {
 		t.Fatalf("stdout = %s\nstderr = %s", tg.stdout.String(), tg.stderr.String())
 	}
 	for _, guard := range browserGuards[:len(browserGuards)-1] {
-		if !strings.Contains(tg.stdout.String(), "PASS  web-"+guard+"\n") {
+		if !strings.Contains(tg.stdout.String(), "PASS  web-"+guard+" (0.0s)\n") {
 			t.Errorf("web-%s did not reach its verdict", guard)
 		}
 	}
@@ -360,6 +369,7 @@ func TestBrowserGateHonorsAnInterruptDuringTheVerdicts(t *testing.T) {
 	tg := &testGate{gate: newBrowserGate(len(browserGuards), false), signals: signals, result: make(chan gateResult, 1)}
 	stdout := &signalOnFirstWrite{signals: signals, queue: []os.Signal{syscall.SIGINT, syscall.SIGTERM}}
 	tg.gate.launcher, tg.gate.scratch, tg.gate.signals = launcher, t.TempDir(), signals
+	tg.gate.now = stoppedClock()
 	tg.gate.stdout, tg.gate.stderr = stdout, &tg.stderr
 	go func() {
 		status, keep := tg.gate.run()
@@ -389,7 +399,7 @@ func TestBrowserGateRunsEveryGuardAfterASuccessfulBuild(t *testing.T) {
 	var want strings.Builder
 	want.WriteString("building the production frontend for web-skillguard…\n")
 	for _, guard := range browserGuards {
-		want.WriteString("PASS  web-" + guard + "\n")
+		want.WriteString("PASS  web-" + guard + " (0.0s)\n")
 	}
 	if tg.stdout.String() != want.String() {
 		t.Fatalf("stdout = %q, want %q", tg.stdout.String(), want.String())

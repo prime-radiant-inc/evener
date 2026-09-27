@@ -24,7 +24,10 @@ import {
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "./pendingTurnsStore";
-import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
+import {
+  flushPendingTurnsProjectionForTests,
+  outlastEmptyFlushRoundForTests,
+} from "./testing/flushPendingTurnsProjection";
 
 function thread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -93,19 +96,6 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  // Every test here calls ensureThread(ref)/connect(fake) directly for
-  // setup, so the ref stays refcounted after the LAST test unless this file
-  // itself releases it. Under isolate:false that is what a later file's own
-  // connectionStore.connect() re-triggers via rewireClient.
-  resetThreadsStoreForTests();
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
 });
 
 test("the plain pendingTurnEntries read returns the same empty-array reference when nothing is pending", async () => {
@@ -452,11 +442,8 @@ test("a flush cannot settle while a submit is still in flight", async () => {
     flushResolved = true;
   });
 
-  // Give the flush every chance to finish early: more macrotask hops than its
-  // own settle round takes. If the submit is tracked, it cannot return here.
-  for (let hop = 0; hop < 5; hop += 1) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
+  // If the submit is tracked, the flush cannot return here.
+  await outlastEmptyFlushRoundForTests();
   expect(flushResolved).toBe(false);
 
   releaseSubmit();

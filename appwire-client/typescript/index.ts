@@ -190,6 +190,7 @@ export {
   isActiveItem,
   isInProgressStatus,
   isNonZeroExit,
+  isTurnError,
 } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
@@ -319,7 +320,7 @@ export {
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 export { isPlainObject } from "./plainObject";
-export { humanizeState } from "./railSessionState";
+export { approvalWaiting, humanizeState } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
@@ -358,6 +359,8 @@ export {
 } from "./reducer";
 export type { SendQueueAvailability, SendQueueAvailabilityInput } from "./sendQueueAvailability";
 export { deriveSendQueueAvailability } from "./sendQueueAvailability";
+export type { QuietState } from "./sessionActivity";
+export { decodeActivityRead, QUIET_AFTER_MS, quietState, STUCK_AFTER_MS } from "./sessionActivity";
 export { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 export type { SettingsHubGeneration } from "./settingsHubGeneration";
 export { createSettingsHubGeneration } from "./settingsHubGeneration";
@@ -398,6 +401,7 @@ export {
   canSteer,
   decideSteerRoute,
   decideSubmitRoute,
+  isSessionResting,
   isTurnActive,
   NO_ACTIVE_TURN,
   QUEUE_EMPTY,
@@ -529,6 +533,7 @@ export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
 export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
+export { isInformationalWarning, WarningCodeContextBudget } from "./warnings";
 export type { ConditionSpec, JsonObject, WatchDisplayState, WatchRow, WatchSummary } from "./watchRows";
 export {
   asJsonObject,

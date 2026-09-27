@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { expect, test } from "vitest";
-import { humanizeState } from "./railSessionState";
+import { approvalWaiting, humanizeState } from "./railSessionState";
 
 // --- humanizeState: one lowercase word per wire state ---------------------
 // The rail's second line (web RailRow, native screens session list) leads
@@ -36,4 +36,26 @@ test("idle, notLoaded, the empty state and any unknown value all read as idle", 
   expect(humanizeState("notLoaded", false)).toBe("idle");
   expect(humanizeState("", false)).toBe("idle");
   expect(humanizeState("someFutureState", true)).toBe("idle");
+});
+
+// --- approvals --------------------------------------------------------------
+// A sandbox escalation blocks its turn mid-tool, so the session keeps reporting
+// "active" while it waits on a person's allow or deny. The approval flag, not
+// the state, is what says so; only a failure outranks it.
+
+test("a pending approval reads as approval waiting, never working", () => {
+  expect(humanizeState("active", false, true)).toBe("approval waiting");
+  expect(humanizeState("idle", false, true)).toBe("approval waiting");
+  expect(humanizeState("awaiting", true, true)).toBe("approval waiting");
+});
+
+test("a failure outranks a pending approval", () => {
+  expect(humanizeState("errored", false, true)).toBe("failed");
+});
+
+test("approvalWaiting holds for a pending approval on any state but errored", () => {
+  expect(approvalWaiting("active", true)).toBe(true);
+  expect(approvalWaiting("restartRequired", true)).toBe(true);
+  expect(approvalWaiting("errored", true)).toBe(false);
+  expect(approvalWaiting("active", false)).toBe(false);
 });

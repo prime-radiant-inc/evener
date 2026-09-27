@@ -40,6 +40,7 @@ import {
 } from "@evener/appwire-client";
 import {
   type FormEvent,
+  memo,
   type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useEffect,
@@ -67,7 +68,6 @@ import { type InputAttachment, threadsStore, useThreadsStore } from "../../../st
 import {
   Button,
   ConfirmDialog,
-  chordLabel,
   Dropzone,
   IconButton,
   PromptCard,
@@ -76,7 +76,7 @@ import {
   useToasts,
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { SessionChrome } from "../chrome/SessionChrome";
+import { SessionChrome, type SessionChromeProps } from "../chrome/SessionChrome";
 import { TasksPanel, type TasksPanelHandle } from "../chrome/TasksPanel";
 import { AttachmentTile } from "./AttachmentTile";
 import { useAskDockPending } from "./askDockPending";
@@ -87,6 +87,7 @@ import { runBuiltinCommand } from "./builtinCommand";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
+import { STEER_RECOVERY_FENCED_REASON, steerTooltipLabel, submitTooltipLabel } from "./controlTooltips";
 import {
   clearDraft,
   clearPersistedDraft,
@@ -108,6 +109,7 @@ import {
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   subscribeComposerSubmissionCommitted,
+  trackProjectionWork,
   updateRecoveryPendingTurn,
   useComposerSubmitting,
   useRecoveryEntries,
@@ -143,6 +145,15 @@ const CLASS = {
   formAnchor: requireClass(styles.formAnchor, "composer.module.css", "formAnchor"),
   submitLabel: requireClass(styles.submitLabel, "composer.module.css", "submitLabel"),
 };
+
+// The composer re-renders on every draft keystroke and nothing in the chrome
+// reads the draft, so its mounts go through this memo. It renders the imported
+// SessionChrome binding at render time instead of wrapping the function itself
+// (memo(SessionChrome)), so a replacement of the module export still reaches
+// these mounts.
+const MemoizedSessionChrome = memo(function MemoizedSessionChrome(props: SessionChromeProps) {
+  return <SessionChrome {...props} />;
+});
 
 // Shared by restoreTextToComposer (QueueStrip's "edit a queued entry" path)
 // and the quote-insert effect below (SelectionQuote's "Quote in reply" path,
@@ -209,11 +220,6 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // as terminal, so it is matched here too rather than leaving the two modules
 // disagreeing about the same word.
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
-
-// Why a Steer press is refused while the local recovery fence stands: the
-// explicit Resume action is the only thing that clears it, so the refusal
-// names that path instead of a generic unavailability.
-const STEER_RECOVERY_FENCED_REASON = "Steer isn't available until this session is resumed";
 
 // The local recovery fence lives in stores/liveControls.ts (one predicate for
 // every surface that owes it - this module's availability/card/Steer gates and
@@ -560,10 +566,12 @@ export function Composer({ ref, focused }: ComposerProps) {
     else workspaceStore.getState().openPane("sessionTasks", { ref }, { slot: "secondary" });
   };
 
-  const toggleTasks = (): void => {
+  // Stable so the memoized chrome below skips re-rendering on every keystroke
+  // of the draft.
+  const toggleTasks = useCallback((): void => {
     if (isMobile) tasksPanelRef.current?.open();
     else workspaceStore.getState().togglePane("sessionTasks", { ref });
-  };
+  }, [isMobile, ref]);
 
   // A shared projection can outlive a Composer remount while its durable
   // discard is still being projected. Only auto-activate after this mount
@@ -963,16 +971,8 @@ export function Composer({ ref, focused }: ComposerProps) {
       ended,
     });
   }
-  // Send keeps ONE label in every state. While a turn runs it queues rather
-  // than sending now, but that is a change of TIMING, not of verb - a label
-  // that flips to "Queue" made the same button mean two different things
-  // depending on when you looked, and Steer beside it is what now carries
-  // "act on this turn immediately". The tooltip says which timing applies,
-  // and the strip's queue depth is what shows the effect.
-  const submitChord: string[] = enterToSend ? ["Enter"] : ["Mod", "Enter"];
-  const submitTooltip = availability.canQueue
-    ? `Queue until the agent stops · ${chordLabel(submitChord)}`
-    : `Send now · ${chordLabel(submitChord)}`;
+  // The strip's queue depth is what shows the effect of a queued Send.
+  const submitTooltip = submitTooltipLabel({ canQueue: availability.canQueue, enterToSend });
   const canCompose = availability.canSend || availability.canQueue;
   // Whether the follow-up card renders at all is the capability's call, for the
   // same reason the substitution above is: gating it on the table renders no
@@ -1362,7 +1362,10 @@ export function Composer({ ref, focused }: ComposerProps) {
     if (!hasAttachments && skillNames.length === 0) {
       const match = matchBuiltinInvocation(text, sessionBuiltins);
       if (match) {
-        void handleBuiltinSubmit(match);
+        // Tracked from the press: a built-in's run can enqueue durably
+        // through the threads store (/interrupt does), which registers
+        // nothing with the pending-turns projection until the write lands.
+        void trackProjectionWork(handleBuiltinSubmit(match));
         return;
       }
     }
@@ -1705,7 +1708,12 @@ export function Composer({ ref, focused }: ComposerProps) {
                           onClick={() => fileInputRef.current?.click()}
                         />
                       </Tooltip>
-                      <SessionChrome ref={ref} placement="composer" onOpenTasks={toggleTasks} discoverActivity />
+                      <MemoizedSessionChrome
+                        ref={ref}
+                        placement="composer"
+                        onOpenTasks={toggleTasks}
+                        discoverActivity
+                      />
                     </div>
                   )
                 }
@@ -1724,7 +1732,9 @@ export function Composer({ ref, focused }: ComposerProps) {
                             size="xs"
                             type="button"
                             data-testid="composer-stop"
-                            onClick={() => void handleInterruptClick()}
+                            // Tracked from the press like a typed /interrupt:
+                            // Stop enqueues durably through the threads store.
+                            onClick={() => void trackProjectionWork(handleInterruptClick())}
                             // busy + the interrupt capability are already what
                             // makes this render at all, so only an in-flight
                             // request of our own is left to gate on.
@@ -1771,15 +1781,7 @@ export function Composer({ ref, focused }: ComposerProps) {
                         </Button>
                       </Tooltip>
                       {showSteer && (
-                        <Tooltip
-                          label={
-                            steerRecoveryFenced
-                              ? STEER_RECOVERY_FENCED_REASON
-                              : enterToSend
-                                ? "Interrupt and redirect now"
-                                : `Interrupt and redirect now · ${chordLabel(["Shift", "Enter"])}`
-                          }
-                        >
+                        <Tooltip label={steerTooltipLabel({ recoveryFenced: steerRecoveryFenced, enterToSend })}>
                           <Button
                             variant="primary"
                             size="xs"
@@ -1811,7 +1813,7 @@ export function Composer({ ref, focused }: ComposerProps) {
           transcript's entity ids stay plain text until the card is engaged.
           Renders nothing visible (the panel's only control is hidden and its
           sheet is closed). */}
-      {discoveryOnlyChrome && <SessionChrome ref={ref} discoveryOnly />}
+      {discoveryOnlyChrome && <MemoizedSessionChrome ref={ref} discoveryOnly />}
       {/* The session's working dir and git branch, in one quiet line under the
           card. Reference material, not a control: it stays put across every
           composer state (including an ended session's collapsed card and the

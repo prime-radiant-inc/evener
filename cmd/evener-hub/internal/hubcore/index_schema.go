@@ -190,11 +190,6 @@ func rebuildSessionPinTable(ctx context.Context, conn *sql.Conn) error {
 	if err != nil {
 		return err
 	}
-	type legacyPin struct {
-		sessionID  string
-		sectionID  string
-		assignedAt int64
-	}
 	var pins []legacyPin
 	for rows.Next() {
 		var pin legacyPin
@@ -217,8 +212,21 @@ VALUES (?, ?, ?, ?)`)
 		return err
 	}
 	defer func() { _ = insert.Close() }()
+	// Two legacy spellings can normalize to one key (a bare ID and a "local:"
+	// spelling of the same controller session). The surviving row is the most
+	// recently assigned one — the user's latest intent — with the lexically
+	// smaller spelling breaking a tie, so the survivor never depends on scan
+	// order.
+	latest := make(map[ArchiveKey]legacyPin, len(pins))
 	for _, pin := range pins {
 		key := SessionPinIdentity(pin.sessionID)
+		previous, ok := latest[key]
+		if ok && !newerLegacyPin(pin, previous) {
+			continue
+		}
+		latest[key] = pin
+	}
+	for key, pin := range latest {
 		if _, err := insert.ExecContext(ctx, key.Source, key.ID, pin.sectionID, pin.assignedAt); err != nil {
 			return err
 		}
@@ -227,4 +235,21 @@ VALUES (?, ?, ?, ?)`)
 		return err
 	}
 	return nil
+}
+
+// legacyPin is one pre-source pin row as it is read out of the legacy table.
+type legacyPin struct {
+	sessionID  string
+	sectionID  string
+	assignedAt int64
+}
+
+// newerLegacyPin reports whether left is the row to keep when two legacy pins
+// collapse onto one key: the later assignment wins, and a tie goes to the
+// lexically smaller stored identity so the outcome is deterministic.
+func newerLegacyPin(left, right legacyPin) bool {
+	if left.assignedAt != right.assignedAt {
+		return left.assignedAt > right.assignedAt
+	}
+	return left.sessionID < right.sessionID
 }

@@ -44,16 +44,6 @@ afterEach(() => {
   // waitFor() polling - silently never fires for the rest of this file.
   vi.restoreAllMocks();
   vi.useRealTimers();
-  // The beforeEach above only resets threadsStore BEFORE each test. Several
-  // tests here render SessionPanelPane against a real connected FakeClient,
-  // which calls ensureThread()/the mutation runtime for real - without this,
-  // the LAST test's tracked refs, pinned mutation refs, and open
-  // MutationOutboxIndexedDB connection stay live after this file finishes,
-  // and under isolate:false a later file's own beforeEach (e.g.
-  // stores/threads.test.ts's deleteMutationDatabase()) can find that
-  // connection still open, or a later file's own connectionStore.connect()
-  // re-triggers rewireClient against state this file never tore down.
-  resetThreadsStoreForTests();
 });
 
 const CAPABILITIES: ThreadCapabilities = {
@@ -505,6 +495,23 @@ test("standalone activity pane shows an open watch row's countdown without its o
       expandedFoldIDs: [],
     };
     activityPanelStore.setState({ entries: new Map([[model.ref, entry]]) });
+    // The retained tree is current for the model's jobs bump, so the pane
+    // mounts without starting a root refresh.
+    activitySummaryStore.setState({
+      entries: new Map([
+        [
+          model.ref,
+          {
+            counts: tree.root.counts,
+            established: true,
+            mountedBodies: 0,
+            loading: false,
+            lastFetchedBump: model.jobsUpdatedAt,
+            requestID: 1,
+          },
+        ],
+      ]),
+    });
     seedNavigationWatches(model.ref, [
       {
         id: "watch_open",
@@ -522,7 +529,9 @@ test("standalone activity pane shows an open watch row's countdown without its o
     expect(row.getAttribute("aria-expanded")).toBe("true");
     expect(row.textContent).toContain("next ~4m");
   } finally {
-    navigationStore.setState({ resources: new Map() });
+    act(() => {
+      navigationStore.setState({ resources: new Map() });
+    });
     vi.useRealTimers();
   }
 });

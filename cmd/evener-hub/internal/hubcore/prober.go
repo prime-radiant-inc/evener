@@ -145,12 +145,17 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	// probe (older daemon, mid-restart race) clears current capability — it
 	// never changes process ownership or this probe's residency verdict.
 	lifecycle, lifecycleFresh := probeDaemonLifecycle(ctx, appClient)
+	var subagents appwire.SubagentTally
+	if root.Evener.Subagents != nil {
+		subagents = *root.Evener.Subagents
+	}
 	return ProbeResult{
 		SessionID:             rootID,
 		Status:                root.Status.Type,
 		ActiveFlags:           append([]string(nil), root.Status.ActiveFlags...),
 		PendingAsk:            root.Evener.AskPending,
 		PendingEscalation:     len(root.Evener.PendingEscalations) > 0,
+		PendingEscalations:    root.Evener.PendingEscalations,
 		Capabilities:          root.Evener.Capabilities,
 		CapabilitiesKnown:     true,
 		RunningSubagentIDs:    runningSubagentIDs,
@@ -161,6 +166,9 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		LifecycleFresh:        lifecycleFresh,
 		Watches:               diagnosticsWatches(root.Evener.Diagnostics),
 		ChildWatches:          childWatches,
+		Tasks:                 root.Evener.Tasks,
+		Activity:              root.Evener.Activity,
+		Subagents:             subagents,
 		OK:                    true,
 	}
 }

@@ -31,6 +31,10 @@ type toolDeps struct {
 	// emit publishes a session event (best-effort, same as Session.emit).
 	emit func(kind events.EventKind, data events.EventData)
 
+	// deliverCommunicate records a communicate message in the transcript and
+	// then announces it, or reports why it did not (Session.deliverCommunicate).
+	deliverCommunicate func(data events.CommunicateData) error
+
 	// steering queue access for the communicate handler.
 	steer               func(msg, kind string) error
 	steerTaskCompletion func(msg string, blockingDelegateIDs []string) error
@@ -192,6 +196,12 @@ func (g readGuard) ReadBeforeWriteWarning(path string) string {
 type taskGuard struct {
 	getOrCreateTaskStore func() *taskpkg.TaskStore
 	markUsed             func()
+	// beforeBareTaskView is a test-only scheduling seam immediately before a
+	// bare task-list view. Production leaves it nil.
+	beforeBareTaskView func()
+	// afterFailedTaskReload is a test-only scheduling seam after a failed retry
+	// Load has released the store lock. Production leaves it nil.
+	afterFailedTaskReload func()
 }
 
 func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() }
@@ -262,6 +272,7 @@ func newToolDeps(s *Session) *toolDeps {
 	return &toolDeps{
 		registerTool:        s.cfg.testOnly.registerTool,
 		emit:                s.emit,
+		deliverCommunicate:  s.deliverCommunicate,
 		steer:               s.SteerKind,
 		steerTaskCompletion: s.SteerTaskCompletion,
 		drainSteering:       s.drainSteeringForCommunicate,

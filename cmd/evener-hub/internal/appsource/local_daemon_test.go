@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"syscall"
 	"testing"
@@ -1177,6 +1178,39 @@ func TestThreadFromEntryReadOnlyAliasCarriesKindAndParentRef(t *testing.T) {
 	}
 	if thread.Evener.ParentRef == "" {
 		t.Fatal("Evener.ParentRef is empty, want a non-empty parent reference")
+	}
+}
+
+// TestThreadFromEntryCarriesPendingEscalationCards: a list row carries the
+// session's blocked escalation cards in raise order, as thread/read does, so a
+// controller hub listing this hub's sessions can show and route the approval.
+// The row owns its copy of the cards.
+func TestThreadFromEntryCarriesPendingEscalationCards(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry { return nil }, nil)
+	cards := []appwire.SandboxEscalationRequested{
+		{ThreadID: "sess_root", Ref: "local:sess_root", EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/srv/docs/a.md"},
+		{ThreadID: "sess_root", Ref: "local:sess_root", EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/srv/docs/b.md"},
+	}
+	item := LocalDaemonEntry{
+		Entry: rendezvous.Entry{
+			Protocol: appwire.ProtocolVersion,
+			Endpoint: "ws://127.0.0.1/rpc",
+			ThreadID: "sess_root",
+		},
+		SessionID:          "sess_root",
+		Status:             appwire.ThreadStatusActive,
+		PendingEscalation:  true,
+		PendingEscalations: cards,
+	}
+
+	thread := source.threadFromEntry(item)
+
+	if !slices.Equal(thread.Evener.PendingEscalations, cards) {
+		t.Fatalf("Evener.PendingEscalations = %+v, want %+v", thread.Evener.PendingEscalations, cards)
+	}
+	cards[0].DeniedPath = "mutated"
+	if thread.Evener.PendingEscalations[0].DeniedPath != "/srv/docs/a.md" {
+		t.Fatalf("row card changed through the entry: %+v", thread.Evener.PendingEscalations)
 	}
 }
 

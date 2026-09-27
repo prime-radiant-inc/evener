@@ -451,7 +451,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		emitEnd := emitTerminal || !s.sessionEndEmitted
 		s.sessionEndEmitted = true
 		if s.state == SessionProcessing {
-			s.accumulateWorkLocked() // dying turn's work counts (Decision 4/L3)
+			s.endTurnLocked() // dying turn's work counts and it ends now (Decision 4/L3)
 		}
 		s.closing = true
 		if !retirement {
@@ -1337,6 +1337,8 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					s.finishProcessingAtBoundary(processCtx, SessionIdle)
 					s.clearAskPending()
 				}
+				// The interrupt marker was the execution's last entry.
+				s.completeExecution(schema.TurnInterrupted)
 				if markerAccepted {
 					s.mu.Lock()
 					turns := s.modelResponses
@@ -1437,9 +1439,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// failed, but nothing told it the thread is idle again, so its belief
 			// that a turn was still running leaked until it left and re-entered
 			// the session.
+			s.completeExecution(schema.TurnFailed) // no-op after an interrupt already completed it
 			s.endInputAtTurnFailure()
 			return strings.Join(outputs, "\n"), err
 		}
+		s.completeExecution(schema.TurnCompleted)
 		// Drain the next action after a completed (non-error) turn. The pops and the
 		// goal-gate fold are side effects kept here; selectDrainNextAction is the pure
 		// priority decision over their results. popQueueHead is reached only when no
@@ -1733,10 +1737,12 @@ func (s *Session) endInputAtTurnFailure() {
 // a write and an fsync), and neither fact is ever cleared, so a stale read costs
 // one turn that then meets the writer's own refusal.
 func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
-	refusal := refuseOnUnhealthyTranscript(s.attachedTranscript())
+	s.failClosedOnUnhealthyTranscript()
+	refusal := s.refuseOnUnhealthyTranscript(s.attachedTranscript())
 	if refusal == nil {
 		return nil
 	}
+	s.announceFailClosed()
 	s.finishProcessingAtFailureBoundary(ctx)
 	s.endInputAtTurnFailure()
 	return refusal
@@ -1750,13 +1756,18 @@ func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
 // poisoning can land between this read and that gate, which is why both callers
 // also give the claim back when the loop refuses.
 //
-// Unlike the loop's gate it settles nothing and emits nothing: at these entry
-// points no turn has begun and no input has been published, so there is no
-// processing boundary to close and no subscriber waiting to hear this input end.
-// Its callers only reach it when they have work in hand, so an idle wake against
-// a dead transcript still stands down quietly.
+// Unlike the loop's gate it settles nothing and emits no end of input: at these
+// entry points no turn has begun and no input has been published, so there is
+// no processing boundary to close and no subscriber waiting to hear this input
+// end. A session that failed closed does show its one diagnostic here, since a
+// refused claim never reaches the loop's gate. Its callers only reach it when
+// they have work in hand, so an idle wake against a dead transcript still
+// stands down quietly.
 func (s *Session) refuseBeforeClaimingOnUnhealthyTranscript() error {
-	return refuseOnUnhealthyTranscript(s.attachedTranscript())
+	s.failClosedOnUnhealthyTranscript()
+	refusal := s.refuseOnUnhealthyTranscript(s.attachedTranscript())
+	s.announceFailClosed()
+	return refusal
 }
 
 // refuseOnUnhealthyTranscript is refuseBeforeClaimingOnUnhealthyTranscript for a
@@ -1782,7 +1793,14 @@ func (s *Session) refuseBeforeClaimingOnUnhealthyTranscript() error {
 // the claim guarantees is that the refusal and the claim decision see one
 // generation, and both claim callers give the claim back when the turn loop then
 // refuses it.
-func refuseOnUnhealthyTranscript(writer *transcript.Writer) error {
+//
+// A session that failed closed refuses first, with its own reason. Deciding to
+// fail closed happens elsewhere (failClosedOnUnhealthyTranscript, the write
+// door): this read is lock-free, so it stays safe inside the serializer.
+func (s *Session) refuseOnUnhealthyTranscript(writer *transcript.Writer) error {
+	if refusal := s.failedClosedRefusal(); refusal != nil {
+		return refusal
+	}
 	if writer.Poisoned() {
 		return errTranscriptRefusesRecords()
 	}
@@ -1812,6 +1830,9 @@ func errTranscriptRefusesRecords() error {
 func transcriptRefusal(cause error) error {
 	if cause == nil {
 		return nil
+	}
+	if errors.Is(cause, errTranscriptFailedClosed) {
+		return cause
 	}
 	if errors.Is(cause, transcript.ErrWriterPoisoned) {
 		return errTranscriptRefusesRecords()
@@ -1858,7 +1879,7 @@ func (s *Session) transcriptRefusalForWrite(writeErr error) error {
 	if writeErr == nil {
 		return nil
 	}
-	return refuseOnUnhealthyTranscript(s.attachedTranscript())
+	return s.refuseOnUnhealthyTranscript(s.attachedTranscript())
 }
 
 func delegateEntryRequiresReport(kind EntryKind) bool {
@@ -1967,8 +1988,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 	}
 
-	// Derive a context that cancels when either the caller's ctx or the session ctx cancels.
+	// Derive a context that cancels when either the caller's ctx or the session
+	// ctx cancels, or the session fails closed.
 	ctx, cancel := context.WithCancel(ctx)
+	defer s.trackExecutionCancel(cancel)()
 	go func() {
 		select {
 		case <-s.sessionCtx.Done():
@@ -2129,6 +2152,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	if kind == EntryContinuation {
 		runningTurnID, _ = s.mintRunningTurnID()
 	}
+
+	// Admit the execution before its first entry: a continuation or a
+	// notification runs under the name minted above, user input under the
+	// name its durable claim reserved, anything else under a fresh id.
+	executionName := runningTurnID
+	if executionName == "" {
+		executionName = queuedIdentity.StableTurnID
+	}
+	s.beginExecution(executionName)
 
 	if kind == EntryContinuation {
 		s.acceptContinuationInput(ctx, input, runningTurnID)
@@ -2488,6 +2520,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 	}
 
+	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput}})
 	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
 	s.finishProcessingAtFailureBoundary(ctx)
 	if goalControlsCap {
@@ -2620,6 +2653,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			if _, exhausted := budgetExhaustionFromError(err); !exhausted {
 				return fmt.Errorf("reserve user turn budget: %w", err)
 			}
+			s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxTurns: s.cfg.MaxTurns}})
 			s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
 			s.finishProcessingAtFailureBoundary(ctx)
 			return &budgetExhaustionError{
@@ -2667,6 +2701,9 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	// userInputTurn is computed AFTER any SessionStart-hook and environment-context
 	// turns above so it reports the USER_INPUT turn's actual history position,
 	// not a position stale by however many turns those inserted ahead of it.
+	// With a transcript, the entry index the USER_INPUT entry was recorded at
+	// replaces it (recordedUserInputTurn): the transcript also holds entries
+	// history never does.
 	s.mu.Lock()
 	userInputTurn := len(s.history) + 1
 	if preseededInput {
@@ -2720,7 +2757,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 					Images:           userInputImagesFromAttachments(images),
 					ClientMutationID: queuedIdentity.ClientMutationID,
 					StableTurnID:     queuedIdentity.StableTurnID,
-					Turn:             userInputTurn,
+					Turn:             s.recordedUserInputTurn(userInputTurn),
 				})
 				s.emit(events.EventError, errorDataFromError(failure))
 				return failure
@@ -2753,7 +2790,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		Images:           userInputImagesFromAttachments(images),
 		ClientMutationID: queuedIdentity.ClientMutationID,
 		StableTurnID:     queuedIdentity.StableTurnID,
-		Turn:             userInputTurn,
+		Turn:             s.recordedUserInputTurn(userInputTurn),
 	})
 	s.launchInitialPromptNamer(s.sessionCtx, input)
 

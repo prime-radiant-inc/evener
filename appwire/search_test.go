@@ -42,7 +42,7 @@ func TestClientSearchRoundTrip(t *testing.T) {
 	}
 
 	transport.reads <- ResponseMessage(written.Request.ID, SearchResponse{
-		Live: []SearchResult{{ID: "live", Ref: "local:live"}},
+		Live: []SearchResult{{ID: "live", Ref: "local:live", AskPending: true, ApprovalPending: true}},
 		Past: []SearchResult{{ID: "past", Ref: "local:past"}},
 	})
 	select {
@@ -53,8 +53,18 @@ func TestClientSearchRoundTrip(t *testing.T) {
 		if len(result.resp.Live) != 1 || result.resp.Live[0].Ref != "local:live" {
 			t.Fatalf("live=%+v", result.resp.Live)
 		}
+		// AskPending and ApprovalPending round-trip over the wire like any
+		// other field (#2567): both additive, omitempty keys.
+		if !result.resp.Live[0].AskPending || !result.resp.Live[0].ApprovalPending {
+			t.Fatalf("live=%+v, want both AskPending and ApprovalPending to round-trip true", result.resp.Live[0])
+		}
 		if len(result.resp.Past) != 1 || result.resp.Past[0].Ref != "local:past" {
 			t.Fatalf("past=%+v", result.resp.Past)
+		}
+		// The past fixture never set either flag: they must decode as their
+		// omitempty zero value, not leak true from the live entry above.
+		if result.resp.Past[0].AskPending || result.resp.Past[0].ApprovalPending {
+			t.Fatalf("past=%+v, want neither flag set", result.resp.Past[0])
 		}
 	case <-time.After(time.Second):
 		t.Fatal("response was not routed")

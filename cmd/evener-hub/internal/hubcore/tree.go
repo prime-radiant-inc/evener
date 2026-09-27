@@ -124,6 +124,7 @@ func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, e
 		out[index].RunningJobs = appwire.CloneEvenerJobs(node.RunningJobs)
 		out[index].CompletedJobs = appwire.CloneEvenerJobs(node.CompletedJobs)
 		out[index].Watches = appwire.CloneEvenerWatches(node.Watches)
+		out[index].Tasks = appwire.CloneTaskAggregate(node.Tasks)
 		children, err := cloneTreeNodesContext(ctx, node.Children)
 		if err != nil {
 			return nil, err
@@ -431,6 +432,18 @@ type TreeNode struct {
 	Branch     string // git branch at session start; empty when unknown
 	State      string // "errored" | "awaiting" | "active" | "warning" | "idle" | "ended"
 	AskPending bool   // true while the daemon reports an unanswered ask_user question
+	// ApprovalPending is true while the daemon reports a blocked
+	// sandbox-exemption escalation (LiveEntry.PendingEscalation), the reason
+	// promotedAttentionLevel puts an active session in NeedsYou. The node
+	// keeps its real State.
+	ApprovalPending bool
+	// ApprovalTool and ApprovalTarget say what the oldest pending escalation
+	// asks for: the tool that was denied and the full literal path it was
+	// denied (LiveEntry.PendingEscalations[0]). Both are empty whenever
+	// ApprovalPending is false. The path is shown for informed consent, so it
+	// reaches human clients only, as thread/read's cards already do.
+	ApprovalTool   string
+	ApprovalTarget string
 	// Dormant is true for a session that has never run: no model response and
 	// no accepted user input. An empty-prompt spawn creates one, and it reports
 	// State "idle" — the same word a session that ran and finished reports — so
@@ -455,7 +468,15 @@ type TreeNode struct {
 	// Watches are this session's own live watches, carried from its daemon's
 	// diagnostics. Rows are never aggregated across sessions, so a receiver
 	// watch that two sessions can see is counted once per owning summary.
-	Watches   []appwire.EvenerWatchInfo
+	Watches []appwire.EvenerWatchInfo
+	// Tasks is this session's own task-list progress, carried from its live
+	// entry; nil for a session with no live entry, which includes every
+	// in-process child.
+	Tasks *appwire.TaskAggregate
+	// Subagents is a live root's whole-tree subagent tally (LiveEntry.Subagents,
+	// S3). Every builder sets it from one closure; subagent rows, ended sessions
+	// and a crashed daemon's rows have none.
+	Subagents appwire.SubagentTally
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	Age       string // pre-formatted "now", "2m", "3h", "5d"
@@ -852,6 +873,18 @@ func liveWorkspaceIdentity(entry LiveEntry) (string, appwire.Ref, bool) {
 	return currentID, ref, true
 }
 
+// LiveRowRef is the ref a live root's Live row carries (liveRefMap in
+// buildTreeAtWithProjects): the workspace ref its daemon advertises when that
+// ref is valid for the daemon's own source, else the session's local ref. A
+// client joining per-session data to Board rows by ref, as it does with
+// evener/activity/read, needs this exact spelling.
+func LiveRowRef(entry LiveEntry) string {
+	if _, ref, ok := liveWorkspaceIdentity(entry); ok {
+		return ref.String()
+	}
+	return hubapi.LocalRef(entry.SessionID).String()
+}
+
 // supersededSessionIDs identifies persisted instance IDs that a live daemon
 // has replaced under a stable workspace ref. Keeping those stale metadata rows
 // in the navigation tree would render the same logical session twice.
@@ -1010,6 +1043,44 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	// rendered elsewhere in the sidebar disagrees with its own NeedsYou tile.
 	askPendingFor := func(id string) bool {
 		return liveMap[id].PendingAsk
+	}
+
+	// approvalPendingFor resolves the pending-approval marker for a session ID
+	// from the same live map, for the same reason askPendingFor does.
+	approvalPendingFor := func(id string) bool {
+		return liveMap[id].PendingEscalation
+	}
+
+	// firstApprovalFor resolves the oldest pending escalation card for a
+	// session ID from the same live map, for the same reason: every builder
+	// names the same card. The daemon lists cards in raise order, so the
+	// oldest is first. It answers only while the entry's approval flag is set,
+	// so a row's approval detail always describes the approval the row says is
+	// pending; any other session gets the zero card.
+	firstApprovalFor := func(id string) appwire.SandboxEscalationRequested {
+		if entry := liveMap[id]; entry.PendingEscalation && len(entry.PendingEscalations) > 0 {
+			return entry.PendingEscalations[0]
+		}
+		return appwire.SandboxEscalationRequested{}
+	}
+
+	// tasksFor resolves a session's task-list progress from its own live
+	// entry, the same live map stateFor reads, so every builder below puts the
+	// same progress on every row of one session and a child row never borrows
+	// its parent's. Each row gets its own copy.
+	tasksFor := func(id string) *appwire.TaskAggregate {
+		return appwire.CloneTaskAggregate(liveMap[id].Tasks)
+	}
+
+	// subagentsFor resolves a live root's subagent tally from the same live map,
+	// so its Live, project and NeedsYou rows agree (S3). A crash-retained entry
+	// answers none: its daemon runs nothing, the rule that already drops a
+	// crashed entry's listed children above.
+	subagentsFor := func(id string) appwire.SubagentTally {
+		if entry := liveMap[id]; !entry.Crashed {
+			return entry.Subagents
+		}
+		return appwire.SubagentTally{}
 	}
 
 	// dormantFor resolves "this session has never run" for a session ID, from
@@ -1173,9 +1244,15 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 
 		state := stateFor(m.ID)
 		askPending := askPendingFor(m.ID)
+		approvalPending := approvalPendingFor(m.ID)
+		approval := firstApprovalFor(m.ID)
+		subagentTally := subagentsFor(m.ID)
 		if parentDead {
 			state = "ended"
 			askPending = false
+			approvalPending = false
+			approval = appwire.SandboxEscalationRequested{}
+			subagentTally = appwire.SubagentTally{}
 		}
 		// A subagent's state already resolved through stateFor above: its own
 		// live entry's status when it has one, else the parent's carried state
@@ -1185,21 +1262,26 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// for children WITH one (it overwrote the child's own daemon-reported
 		// status with the parent's projection).
 		node := TreeNode{
-			ID:            m.ID,
-			Ref:           liveRefMap[m.ID],
-			Title:         nodeTitle(m, kind),
-			Project:       acc.name,
-			Branch:        m.EnvInfo.GitBranch,
-			State:         state,
-			AskPending:    askPending,
-			Dormant:       dormantFor(m.ID),
-			Kind:          kind,
-			CreatedAt:     OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
-			UpdatedAt:     OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
-			Age:           AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
-			RunningJobs:   appwire.CloneEvenerJobs(liveMap[m.ID].RunningJobs),
-			CompletedJobs: appwire.CloneEvenerJobs(liveMap[m.ID].CompletedJobs),
-			Watches:       watchesFor(m.ID),
+			ID:              m.ID,
+			Ref:             liveRefMap[m.ID],
+			Title:           nodeTitle(m, kind),
+			Project:         acc.name,
+			Branch:          m.EnvInfo.GitBranch,
+			State:           state,
+			AskPending:      askPending,
+			ApprovalPending: approvalPending,
+			ApprovalTool:    approval.Tool,
+			ApprovalTarget:  approval.DeniedPath,
+			Dormant:         dormantFor(m.ID),
+			Kind:            kind,
+			CreatedAt:       OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
+			UpdatedAt:       OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
+			Age:             AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
+			RunningJobs:     appwire.CloneEvenerJobs(liveMap[m.ID].RunningJobs),
+			CompletedJobs:   appwire.CloneEvenerJobs(liveMap[m.ID].CompletedJobs),
+			Watches:         watchesFor(m.ID),
+			Tasks:           tasksFor(m.ID),
+			Subagents:       subagentTally,
 		}
 
 		childMetas := childrenByParent[m.ID]
@@ -1262,20 +1344,23 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// Rollup: highest-attention state (for the dot fallback) plus the
 		// magnitude counts the header renders. Each top-level session and its
 		// children form one task tree: child activity keeps the project working,
-		// but cannot inflate the count beyond one for that task tree.
+		// but cannot inflate the count beyond one for that task tree. A
+		// descendant (any depth) can only ever raise the task tree's state to
+		// "active"; only the top-level session's own state can raise the
+		// rollup into an attention state (#2557). That state is read through
+		// hubapi.AttentionState, so a session blocked on an approval needs you
+		// rather than reading as working. Subagent failures still show in the
+		// session's own Subagents chip and list.
 		rollup := ""
 		rollupLive, rollupAttn := 0, 0
 		for _, s := range sessions {
-			taskState := s.State
+			taskState := hubapi.AttentionState(s.State, s.ApprovalPending)
 			var includeDescendants func(TreeNode)
 			includeDescendants = func(node TreeNode) {
-				if len(node.RunningJobs) > 0 && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
+				if (node.State == "active" || len(node.RunningJobs) > 0) && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
 					taskState = "active"
 				}
 				for _, child := range node.Children {
-					if hubapi.RollupRank(child.State) > hubapi.RollupRank(taskState) {
-						taskState = child.State
-					}
 					includeDescendants(child)
 				}
 			}
@@ -1427,20 +1512,26 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// needs a meta to resolve kind/title/project, and a session with none
 		// has no lineage to recurse into.
 		if !hasMeta {
+			approval := firstApprovalFor(le.SessionID)
 			node := TreeNode{
-				ID:            le.SessionID,
-				Ref:           liveRefMap[le.SessionID],
-				State:         stateFor(le.SessionID),
-				AskPending:    askPendingFor(le.SessionID),
-				Dormant:       dormantFor(le.SessionID),
-				Kind:          "session",
-				Title:         ShortID(le.SessionID),
-				CreatedAt:     le.StartedAt,
-				UpdatedAt:     le.StartedAt,
-				Age:           AgeString(le.StartedAt),
-				RunningJobs:   appwire.CloneEvenerJobs(le.RunningJobs),
-				CompletedJobs: appwire.CloneEvenerJobs(le.CompletedJobs),
-				Watches:       appwire.CloneEvenerWatches(le.Watches),
+				ID:              le.SessionID,
+				Ref:             liveRefMap[le.SessionID],
+				State:           stateFor(le.SessionID),
+				AskPending:      askPendingFor(le.SessionID),
+				ApprovalPending: approvalPendingFor(le.SessionID),
+				ApprovalTool:    approval.Tool,
+				ApprovalTarget:  approval.DeniedPath,
+				Dormant:         dormantFor(le.SessionID),
+				Kind:            "session",
+				Title:           ShortID(le.SessionID),
+				CreatedAt:       le.StartedAt,
+				UpdatedAt:       le.StartedAt,
+				Age:             AgeString(le.StartedAt),
+				RunningJobs:     appwire.CloneEvenerJobs(le.RunningJobs),
+				CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),
+				Watches:         appwire.CloneEvenerWatches(le.Watches),
+				Tasks:           tasksFor(le.SessionID),
+				Subagents:       subagentsFor(le.SessionID),
 			}
 			liveNodes = append(liveNodes, node)
 			continue
@@ -1453,11 +1544,12 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		liveNodes = append(liveNodes, node)
 	}
 	sort.SliceStable(liveNodes, func(i, j int) bool {
-		ri, rj := hubapi.AttentionRank(liveNodes[i].State), hubapi.AttentionRank(liveNodes[j].State)
+		a, b := &liveNodes[i], &liveNodes[j]
+		ri, rj := hubapi.AttentionRank(hubapi.AttentionState(a.State, a.ApprovalPending)), hubapi.AttentionRank(hubapi.AttentionState(b.State, b.ApprovalPending))
 		if ri != rj {
 			return ri > rj
 		}
-		return treeNodeLess(liveNodes[i], liveNodes[j], metaMap, liveMap)
+		return treeNodeLess(*a, *b, metaMap, liveMap)
 	})
 
 	// Drop archived sessions from the Live tier: an explicit session
@@ -1530,15 +1622,21 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if !tierEligible(le.SessionID, meta, nestedMetaIDs, decisions) {
 			continue
 		}
+		approval := firstApprovalFor(le.SessionID)
 		node := TreeNode{
-			ID:            le.SessionID,
-			State:         st,
-			Kind:          "session",
-			AskPending:    le.PendingAsk,
-			Dormant:       dormantFor(le.SessionID),
-			RunningJobs:   appwire.CloneEvenerJobs(le.RunningJobs),
-			CompletedJobs: appwire.CloneEvenerJobs(le.CompletedJobs),
-			Watches:       appwire.CloneEvenerWatches(le.Watches),
+			ID:              le.SessionID,
+			State:           st,
+			Kind:            "session",
+			AskPending:      le.PendingAsk,
+			ApprovalPending: le.PendingEscalation,
+			ApprovalTool:    approval.Tool,
+			ApprovalTarget:  approval.DeniedPath,
+			Dormant:         dormantFor(le.SessionID),
+			RunningJobs:     appwire.CloneEvenerJobs(le.RunningJobs),
+			CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),
+			Watches:         appwire.CloneEvenerWatches(le.Watches),
+			Tasks:           tasksFor(le.SessionID),
+			Subagents:       subagentsFor(le.SessionID),
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))
@@ -1556,16 +1654,17 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		needsYou = append(needsYou, node)
 	}
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
-	// errored (broken beats blocked) > ask-pending (blocked beats your-move) >
-	// your-move (a generic amber settle). AttentionRank isn't used here — it
-	// would also separate plain awaiting from warning, which both belong in
-	// the your-move band unless ask-pending.
+	// errored (broken beats blocked) > blocked on a question or an approval
+	// (blocked beats your-move) > your-move (a generic amber settle).
+	// AttentionRank isn't used here: it would also separate plain awaiting
+	// from warning, which both belong in the your-move band unless blocked.
 	sort.SliceStable(needsYou, func(i, j int) bool {
-		bi, bj := hubapi.NeedsYouBand(needsYou[i].State, needsYou[i].AskPending), hubapi.NeedsYouBand(needsYou[j].State, needsYou[j].AskPending)
+		a, b := &needsYou[i], &needsYou[j]
+		bi, bj := hubapi.NeedsYouBand(a.State, a.AskPending, a.ApprovalPending), hubapi.NeedsYouBand(b.State, b.AskPending, b.ApprovalPending)
 		if bi != bj {
 			return bi > bj
 		}
-		return needsYou[i].UpdatedAt.Before(needsYou[j].UpdatedAt)
+		return a.UpdatedAt.Before(b.UpdatedAt)
 	})
 
 	// Live already excludes archived sessions (the filter right after the

@@ -2,9 +2,42 @@ package hubcore
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// TestPinSectionStoreRetryErrorsNameTheSourceQualifiedPin pins the identity the
+// retry-limit diagnostics render: the controller's bare session ID, or the
+// host-qualified ref a remote pin is addressed by — never an ArchiveKey struct
+// dump.
+func TestPinSectionStoreRetryErrorsNameTheSourceQualifiedPin(t *testing.T) {
+	store := setupLockedStore(t)
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "seed-a", time.Unix(1, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resetLockedCounters()
+	lockedBeginFailures.Store(100)
+	_, _, err = store.Assign(section.ID, "host-a", "th_1", time.Unix(2, 0))
+	if err == nil || err.Error() != "assign host-a:th_1: retry limit reached" {
+		t.Fatalf("Assign retry limit err = %v, want the host-qualified pin identity", err)
+	}
+	if strings.Contains(err.Error(), "{") {
+		t.Fatalf("Assign retry limit err = %v, want no ArchiveKey struct dump", err)
+	}
+
+	resetLockedCounters()
+	lockedBeginFailures.Store(100)
+	_, err = store.DeleteSession("", "th_2")
+	if err == nil || err.Error() != "delete session pin th_2: retry limit reached" {
+		t.Fatalf("DeleteSession retry limit err = %v, want the controller pin identity", err)
+	}
+	if strings.Contains(err.Error(), "{") {
+		t.Fatalf("DeleteSession retry limit err = %v, want no ArchiveKey struct dump", err)
+	}
+}
 
 // TestPinSectionStoreKeepsSameBareIDOnTwoSourcesIndependent pins the
 // source-qualified storage key: the same bare session ID on the controller and

@@ -593,6 +593,37 @@ func fuzzScenarioBuildTree_AttentionSortsLive(t *testing.T) {
 	}
 }
 
+// fuzzScenarioLiveTier_ApprovalRanksWithAwaiting: the Live tier sorts by
+// attention, and an approval waits on a person the way a question does while
+// its session keeps reporting "active" (the escalation blocks mid-turn), so
+// it sorts with the awaiting rows, ahead of the working ones. A failure still
+// ranks first, pending approval or not, and every row keeps its real state.
+func fuzzScenarioLiveTier_ApprovalRanksWithAwaiting(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01WORKING", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		{ID: "01APPROVAL", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		{ID: "01AWAIT", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		{ID: "01ERR", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01WORKING", Status: appwire.ThreadStatusActive},
+		{PID: 2, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{PID: 3, SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting},
+		{PID: 4, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError, PendingEscalation: true},
+	}
+	tree := buildTree(metas, live)
+	got := make([]string, 0, len(tree.Live))
+	for _, node := range tree.Live {
+		got = append(got, node.ID+"="+node.State)
+	}
+	// Inside the awaiting rank the newer row leads, the tier's usual order.
+	want := []string{"01ERR=errored", "01APPROVAL=active", "01AWAIT=awaiting", "01WORKING=active"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("Live = %v, want %v", got, want)
+	}
+}
+
 func fuzzScenarioBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T) {
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
@@ -931,6 +962,171 @@ func fuzzScenarioBuildTreeE2eProjectsClassifyByRecency(t *testing.T) {
 	}
 }
 
+// fuzzScenarioBuildTree_RollupCapsNestedSubagentToActive: issue #2557. A
+// project's rollup takes the worst state anywhere in each top-level
+// session's task tree, but a descendant (any depth) may only ever raise
+// that state to "active" — never to an attention state. A nested
+// (grandchild) delegate resting errored, as #2514 projects a failed last
+// turn, must not turn an otherwise idle coordinator's project red; the same
+// delegate genuinely working (active) does keep the project working.
+func fuzzScenarioBuildTree_RollupCapsNestedSubagentToActive(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "01COORD", CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01DELEGATE", CreatedAt: now, UpdatedAt: now, IsSubagent: true, ParentSessionID: "01COORD",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01GRANDDELEGATE", CreatedAt: now, UpdatedAt: now, IsSubagent: true, ParentSessionID: "01DELEGATE",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{{
+		PID:                1,
+		SessionID:          "01COORD",
+		Status:             appwire.ThreadStatusIdle,
+		RunningSubagentIDs: []string{"01DELEGATE", "01GRANDDELEGATE"},
+		RunningSubagentStates: map[string]string{
+			"01DELEGATE":      "idle",
+			"01GRANDDELEGATE": appwire.ThreadStatusSystemError,
+		},
+	}}
+
+	project := projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
+	if project.RollupState != "idle" {
+		t.Errorf("rollup state = %q, want idle (the errored grandchild must NOT turn the project red)", project.RollupState)
+	}
+	if project.RollupAttn != 0 {
+		t.Errorf("rollup attn = %d, want 0 (a nested delegate's errored state must not raise it)", project.RollupAttn)
+	}
+	if project.RollupLive != 0 || project.Expanded {
+		t.Errorf("rollup live=%d expanded=%v, want 0/false (coordinator idle, delegate resting)", project.RollupLive, project.Expanded)
+	}
+
+	// The same nested delegate genuinely working keeps the project active.
+	live[0].RunningSubagentStates = map[string]string{
+		"01DELEGATE":      "idle",
+		"01GRANDDELEGATE": appwire.ThreadStatusActive,
+	}
+	project = projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
+	if project.RollupState != "active" {
+		t.Errorf("rollup state = %q, want active (nested delegate is working)", project.RollupState)
+	}
+	if project.RollupLive != 1 {
+		t.Errorf("rollup live = %d, want 1", project.RollupLive)
+	}
+	if project.RollupAttn != 0 {
+		t.Errorf("rollup attn = %d, want 0", project.RollupAttn)
+	}
+}
+
+func TestBuildTree_RollupCapsNestedSubagentToActive(t *testing.T) {
+	fuzzScenarioBuildTree_RollupCapsNestedSubagentToActive(t)
+}
+
+// fuzzScenarioBuildTree_RollupCoordinatorErrorStillCounts: issue #2557. Only
+// a top-level session's own state may raise its project's rollup into an
+// attention state. A coordinator that is itself errored must still turn the
+// project red and count once toward RollupAttn. The delegate under it is
+// genuinely active — the one state that raises a task tree's rollup at
+// all — to prove the errored coordinator's own state is never downgraded
+// (or double-counted) by a child that legitimately ranks below it.
+func fuzzScenarioBuildTree_RollupCoordinatorErrorStillCounts(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "01FAILEDCOORD", CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01ACTIVEDELEGATE", CreatedAt: now, UpdatedAt: now, IsSubagent: true, ParentSessionID: "01FAILEDCOORD",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01FAILEDCOORD", Status: appwire.ThreadStatusSystemError},
+		{PID: 2, SessionID: "01ACTIVEDELEGATE", Status: appwire.ThreadStatusActive},
+	}
+
+	project := projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
+	if project.RollupState != "errored" {
+		t.Errorf("rollup state = %q, want errored (the coordinator itself failed, and an active child must not downgrade that)", project.RollupState)
+	}
+	if project.RollupAttn != 1 {
+		t.Errorf("rollup attn = %d, want 1 (unchanged: the coordinator's own state still counts in full)", project.RollupAttn)
+	}
+	if project.RollupLive != 0 {
+		t.Errorf("rollup live = %d, want 0 (the active child must not ALSO count toward live once the coordinator's errored state wins)", project.RollupLive)
+	}
+}
+
+func TestBuildTree_RollupCoordinatorErrorStillCounts(t *testing.T) {
+	fuzzScenarioBuildTree_RollupCoordinatorErrorStillCounts(t)
+}
+
+// fuzzScenarioBuildTree_RollupIgnoresChildAwaiting: issue #2557. A direct
+// child's awaiting state — not only a nested grandchild's — must not raise
+// the project's rollup into an attention state either.
+func fuzzScenarioBuildTree_RollupIgnoresChildAwaiting(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "01COORD2", CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01ASKINGCHILD", CreatedAt: now, UpdatedAt: now, IsSubagent: true, ParentSessionID: "01COORD2",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01COORD2", Status: appwire.ThreadStatusIdle},
+		{PID: 2, SessionID: "01ASKINGCHILD", Status: appwire.ThreadStatusAwaiting},
+	}
+
+	project := projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
+	if project.RollupAttn != 0 {
+		t.Errorf("rollup attn = %d, want 0 (a child's awaiting state must not raise it)", project.RollupAttn)
+	}
+	if project.RollupState != "idle" {
+		t.Errorf("rollup state = %q, want the coordinator's own idle state, not the child's awaiting", project.RollupState)
+	}
+}
+
+func TestBuildTree_RollupIgnoresChildAwaiting(t *testing.T) {
+	fuzzScenarioBuildTree_RollupIgnoresChildAwaiting(t)
+}
+
+// fuzzScenarioBuildTree_RollupNestedRunningJobsCountAsActive: issue #2557's
+// fix shape lets a descendant raise the rollup to "active" via running jobs
+// as well as via its own active state. A grandchild whose own projected
+// state is idle, but which is running a non-agent job (shell, watch), must
+// still keep the project working — the RunningJobs check in
+// includeDescendants applies at every depth, not only to the top-level
+// session.
+func fuzzScenarioBuildTree_RollupNestedRunningJobsCountAsActive(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "01COORD3", CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01QUIETDELEGATE", CreatedAt: now, UpdatedAt: now, IsSubagent: true, ParentSessionID: "01COORD3",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01BUSYGRANDDELEGATE", CreatedAt: now, UpdatedAt: now, IsSubagent: true, ParentSessionID: "01QUIETDELEGATE",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01COORD3", Status: appwire.ThreadStatusIdle},
+		{PID: 2, SessionID: "01QUIETDELEGATE", Status: appwire.ThreadStatusIdle},
+		{PID: 3, SessionID: "01BUSYGRANDDELEGATE", Status: appwire.ThreadStatusIdle,
+			RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}}},
+	}
+
+	project := projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
+	if project.RollupState != "active" {
+		t.Errorf("rollup state = %q, want active (a nested grandchild's running job keeps the project working)", project.RollupState)
+	}
+	if project.RollupLive != 1 {
+		t.Errorf("rollup live = %d, want 1", project.RollupLive)
+	}
+	if project.RollupAttn != 0 {
+		t.Errorf("rollup attn = %d, want 0", project.RollupAttn)
+	}
+}
+
+func TestBuildTree_RollupNestedRunningJobsCountAsActive(t *testing.T) {
+	fuzzScenarioBuildTree_RollupNestedRunningJobsCountAsActive(t)
+}
+
 func fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 	// mockup #10 spine: a project header carries a *magnitude* rollup
 	// (how many are live vs. how many need you), not a single ambiguous dot.
@@ -963,6 +1159,34 @@ func fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 	// RollupAttn; pinning both legs of the switch case.
 	if proj.RollupAttn != 2 {
 		t.Errorf("RollupAttn = %d, want 2 (awaiting + warning)", proj.RollupAttn)
+	}
+}
+
+// fuzzScenarioBuildTree_RollupCountsAnApprovalAsAttention: a session blocked
+// on an approval keeps reporting "active", yet its task needs a person, so
+// the project header counts it in RollupAttn (not RollupLive) and its dot
+// goes to the needs-you "awaiting". A failed task keeps "errored" whether or
+// not an approval is also pending.
+func fuzzScenarioBuildTree_RollupCountsAnApprovalAsAttention(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01WORK", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01APPROVAL", UpdatedAt: now.Add(-time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01BROKEN", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/broken"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01WORK", Status: appwire.ThreadStatusActive},
+		{PID: 2, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{PID: 3, SessionID: "01BROKEN", Status: appwire.ThreadStatusSystemError, PendingEscalation: true},
+	}
+	tree := buildTree(metas, live)
+	evener := projectByName(t, tree, "evener")
+	if evener.RollupState != "awaiting" || evener.RollupLive != 1 || evener.RollupAttn != 1 {
+		t.Errorf("evener rollup = %q live=%d attn=%d, want \"awaiting\" live=1 attn=1", evener.RollupState, evener.RollupLive, evener.RollupAttn)
+	}
+	broken := projectByName(t, tree, "broken")
+	if broken.RollupState != "errored" || broken.RollupAttn != 1 {
+		t.Errorf("broken rollup = %q attn=%d, want \"errored\" attn=1", broken.RollupState, broken.RollupAttn)
 	}
 }
 
@@ -1117,29 +1341,46 @@ func fuzzScenarioBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
 	}
 }
 
-func fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
-	// A subagent that still reports "active" in the live map but whose parent
-	// session has ended must not keep spinning ⟳ forever — its state is clamped
-	// to "ended" so the dead session's children read as terminal.
+// staleSubagentOfDeadParent builds a project whose parent session has ended
+// (it is not in the live map) while its subagent lingers there as entry, and
+// returns the subagent's row.
+func staleSubagentOfDeadParent(t *testing.T, entry LiveEntry) TreeNode {
+	t.Helper()
 	now := time.Now()
 	metas := []schema.SessionMeta{
 		{ID: "01DEADP", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "parent",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-		{ID: "01STALESUB", UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "sub",
+		{ID: entry.SessionID, UpdatedAt: now.Add(-2 * time.Hour), OriginalPrompt: "sub",
 			IsSubagent: true, ParentSessionID: "01DEADP",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
-	// Parent is NOT live (ended); the subagent lingers as "active" in the map.
-	live := []LiveEntry{
-		{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive},
-	}
-	proj := projectByName(t, buildTree(metas, live), "evener")
-	sessions := allSessions(proj)
+	sessions := allSessions(projectByName(t, buildTree(metas, []LiveEntry{entry}), "evener"))
 	if len(sessions) != 1 || len(sessions[0].Children) != 1 {
 		t.Fatalf("unexpected shape: %#v", sessions)
 	}
-	if got := sessions[0].Children[0].State; got != "ended" {
+	return sessions[0].Children[0]
+}
+
+func fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent(t *testing.T) {
+	// A subagent that still reports "active" in the live map but whose parent
+	// session has ended must not keep spinning ⟳ forever — its state is clamped
+	// to "ended" so the dead session's children read as terminal.
+	child := staleSubagentOfDeadParent(t, LiveEntry{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive})
+	if got := child.State; got != "ended" {
 		t.Errorf("stale subagent state = %q, want ended (parent is dead)", got)
+	}
+}
+
+// fuzzScenarioBuildTree_DeadParentClearsItsSubagentsApproval: a subagent row
+// under a parent that has ended is clamped to ended, and an ended row asks for
+// nothing, so the approval its stale live entry still carries goes with the
+// state: no flag, no tool, no target.
+func fuzzScenarioBuildTree_DeadParentClearsItsSubagentsApproval(t *testing.T) {
+	child := staleSubagentOfDeadParent(t, LiveEntry{PID: 9, SessionID: "01STALESUB", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
+		{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
+	}})
+	if child.State != "ended" || child.ApprovalPending || child.ApprovalTool != "" || child.ApprovalTarget != "" {
+		t.Fatalf("stale subagent = state %q, approval %v %q %q; want ended with no approval", child.State, child.ApprovalPending, child.ApprovalTool, child.ApprovalTarget)
 	}
 }
 
@@ -2114,6 +2355,30 @@ func fuzzScenarioLiveTier_CarriesAskPendingFromLiveEntry(t *testing.T) {
 	}
 }
 
+// fuzzScenarioLiveTier_LiveOnlyLeafCarriesApprovalPending: a live session the
+// past index has not caught up with is built as a meta-less leaf, and that
+// builder carries the approval too.
+func fuzzScenarioLiveTier_LiveOnlyLeafCarriesApprovalPending(t *testing.T) {
+	live := []LiveEntry{{PID: 1, SessionID: "01NOMETA", Status: appwire.ThreadStatusActive, PendingEscalation: true}}
+	tree := buildTree(nil, live)
+	if len(tree.Live) != 1 || !tree.Live[0].ApprovalPending {
+		t.Fatalf("Live = %+v, want the meta-less leaf carrying ApprovalPending", tree.Live)
+	}
+}
+
+// fuzzScenarioLiveTier_LiveOnlyLeafCarriesTheFirstApproval: the meta-less leaf
+// builder names the oldest pending card's tool and target too.
+func fuzzScenarioLiveTier_LiveOnlyLeafCarriesTheFirstApproval(t *testing.T) {
+	live := []LiveEntry{{PID: 1, SessionID: "01NOMETA", Status: appwire.ThreadStatusActive, PendingEscalation: true, PendingEscalations: []appwire.SandboxEscalationRequested{
+		{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
+		{EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/etc/hosts"},
+	}}}
+	tree := buildTree(nil, live)
+	if len(tree.Live) != 1 || tree.Live[0].ApprovalTool != "write_file" || tree.Live[0].ApprovalTarget != "/home/me/sites/docs/index.md" {
+		t.Fatalf("Live = %+v, want the meta-less leaf naming the first card's write_file and its full path", tree.Live)
+	}
+}
+
 // TestProjectTier_CarriesAskPendingFromLiveEntry guards against the
 // per-project TreeNode builder silently dropping AskPending: the same
 // ask-pending session rendered under its project (Current tier) must carry
@@ -2157,6 +2422,38 @@ func fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T)
 		if got[i] != want[i] {
 			t.Fatalf("band order = %v, want %v", got, want)
 		}
+	}
+}
+
+// fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand pins the spec's one
+// ordering (principle 1, section 7.1): failed first, then the sessions blocked
+// on a person's answer, questions and approvals together and oldest waiting
+// first, then your-move. The approval's session keeps reporting "active" (the
+// escalation blocks mid-turn), so only its ApprovalPending can place it.
+func fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01OLD_YOURMOVE", UpdatedAt: now.Add(-4 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ASK", UpdatedAt: now.Add(-1 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01APPROVAL", UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ERR", UpdatedAt: now.Add(-3 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01OLD_YOURMOVE", Status: appwire.ThreadStatusAwaiting},
+		{PID: 2, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+		{PID: 3, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{PID: 4, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
+	}
+	tree := buildTree(metas, live)
+	got := make([]string, 0, len(tree.NeedsYou))
+	for _, node := range tree.NeedsYou {
+		got = append(got, node.ID)
+	}
+	// The approval waits longer than the question, so it leads their shared
+	// band; in the lowest band it would trail even the older your-move row.
+	want := []string{"01ERR", "01APPROVAL", "01ASK", "01OLD_YOURMOVE"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("band order = %v, want %v", got, want)
 	}
 }
 

@@ -693,11 +693,13 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 	call = prep.Call
 	prevalidated := true
 	if len(prep.Changes) > 0 {
-		s.emit(events.EventToolCallRepaired, events.ToolCallRepairedData{
+		repaired := events.ToolCallRepairedData{
 			ToolName: call.Name,
 			CallID:   call.ID,
 			Changes:  changeStrings(prep.Changes),
-		})
+		}
+		s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeToolRepair, ToolRepair: &schema.ToolRepairNotice{ToolName: repaired.ToolName, CallID: repaired.CallID, Changes: repaired.Changes}})
+		s.emit(events.EventToolCallRepaired, repaired)
 	}
 
 	// PreToolUse hooks
@@ -1550,7 +1552,7 @@ func (s *Session) getOrCreateTaskStore() *task.TaskStore {
 			dir = s.currentEnv().WorkingDirectory()
 		}
 		s.taskStore = task.NewTaskStore(dir, s.id)
-		s.taskStoreLoadErr = s.taskStore.Load()
+		_ = s.taskStore.Load()
 	})
 	return s.taskStore
 }
@@ -1634,12 +1636,11 @@ func optionalIntArg(args map[string]any, key string) *int {
 	return nil
 }
 
-// TasksWithError returns a snapshot of the session's task list and the error,
-// if any, encountered while loading its persisted store. A nil error with an
-// empty slice is an authoritative empty store; a non-nil error means the
-// aggregate is unavailable.
+// TasksWithError returns one coherent snapshot of the session's task list and
+// its availability error. A nil error with an empty slice is an authoritative
+// empty store; a non-nil error means the aggregate is unavailable.
 func (s *Session) TasksWithError() ([]task.Task, error) {
-	return s.getOrCreateTaskStore().View(), s.taskStoreLoadErr
+	return s.getOrCreateTaskStore().ViewWithError()
 }
 
 // Tasks returns a snapshot of the session's task list.

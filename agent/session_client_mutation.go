@@ -572,7 +572,7 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 				// announced as a running turn, and one announced on a poisoned
 				// transcript is refused by the turn gate behind a phantom running
 				// notification.
-				if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+				if refusal := s.refuseOnUnhealthyTranscript(writer); refusal != nil {
 					return refusal
 				}
 				if pending.ExecutionState == "accepted" {
@@ -620,7 +620,7 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 			}
 			// Same refusal as the start branch: this incorporated queued turn
 			// would be announced as running too.
-			if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+			if refusal := s.refuseOnUnhealthyTranscript(writer); refusal != nil {
 				return refusal
 			}
 			claimed = queuedInputFromClientMutation(clientMutationQueueEntry{Input: pending.Input})
@@ -642,7 +642,7 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 			snapshot.ActiveTurnID != record.StableTurnID {
 			return nil
 		}
-		if refusal := refuseOnUnhealthyTranscript(writer); refusal != nil {
+		if refusal := s.refuseOnUnhealthyTranscript(writer); refusal != nil {
 			return refusal
 		}
 		record.ExecutionState = "claimed"
@@ -1809,6 +1809,18 @@ func (s *clientMutationStore) commitStateLocked(next clientMutationSnapshot) {
 	s.stateMu.Lock()
 	s.state = next
 	s.stateMu.Unlock()
+}
+
+// raiseTurnSequence makes the store's next reserved turn id exceed
+// turn_m<floor>: a transcript can name turns this store never reserved (a
+// fork's copied prefix). The raise is in memory; the next mutation persists
+// it, and a restart that finds none recomputes the floor from the transcript.
+func (s *clientMutationStore) raiseTurnSequence(floor uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.state.NextTurnSequence = max(s.state.NextTurnSequence, floor)
 }
 
 // snapshot returns the last committed generation. It takes only stateMu, so it

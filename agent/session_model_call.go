@@ -105,6 +105,7 @@ func (s *Session) maybeWarnContextUsage(profile *provider.Profile, req llm.Reque
 		Source:            string(diagnostic.SourceEvener),
 		Title:             "Context budget",
 		Hint:              "The conversation is nearing the model's context window; compaction will manage it. No action needed.",
+		Code:              events.WarningCodeContextBudget,
 		ApproxTokens:      approxTokens,
 		ContextWindowSize: cw,
 		Percent:           pct,
@@ -1176,6 +1177,9 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		policy = *s.cfg.LLMRetryPolicy
 	}
 	req, attempt := singleAttemptRequestMetadata(req)
+	// Every request up to the round's first recorded assistant entry belongs
+	// to its round: the attempts, the retries and the fallback groups.
+	s.roundIDForModelCall()
 	group := llm.NewAPIAttemptGroup(attempt.AttemptGroupID)
 	callCtx := llm.WithAPIAttemptGroup(ctx, group)
 	// Each callModel invocation is one retry group; the round's recorder keeps
@@ -1454,6 +1458,7 @@ func (s *Session) warnOutputReduction(profile *provider.Profile, budget llm.Toke
 		Source: string(diagnostic.SourceEvener),
 		Title:  "Context budget",
 		Hint:   "The model's output allocation was reduced to fit its context window. No action needed.",
+		Code:   events.WarningCodeContextBudget,
 	})
 }
 
@@ -1666,6 +1671,10 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 	}
 
 	for i, t := range historyTurns {
+		if t.Kind.TranscriptOnly() {
+			// Never sent to the model, and interrupts no tool round.
+			continue
+		}
 		inFlight := scope.active() && i >= scope.InFlightFrom
 		switch t.Kind {
 		case schema.TurnSteering:

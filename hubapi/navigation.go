@@ -221,6 +221,29 @@ type NavigationWatchSummary struct {
 	EndReason     string   `json:"end_reason,omitempty"`
 }
 
+// NavigationTaskProgress is a live session's task-list progress: how many of
+// its tasks exist, are done and were cancelled, and the first task in
+// progress. Carried only when the list is non-empty.
+type NavigationTaskProgress struct {
+	Total     int `json:"total"`
+	Done      int `json:"done"`
+	Cancelled int `json:"cancelled,omitempty"`
+	// CurrentID and Current name the first task in progress: its ID in the
+	// session's task list and its description, cut to the label bound. Both
+	// are absent while no task is in progress.
+	CurrentID int    `json:"current_id,omitempty"`
+	Current   string `json:"current,omitempty"`
+}
+
+// NavigationSubagentTally is a live root's whole-tree subagent tally (S3):
+// every subagent at every depth, running, failed (its latest run ended failed
+// or exhausted) or done.
+type NavigationSubagentTally struct {
+	Running int `json:"running"`
+	Failed  int `json:"failed"`
+	Done    int `json:"done"`
+}
+
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
 	Ref          string `json:"ref"`
@@ -236,7 +259,22 @@ type NavigationSessionSummary struct {
 	Rename       bool   `json:"rename,omitempty"`
 	Live         bool   `json:"live"`
 	AskPending   bool   `json:"ask_pending,omitempty"`
-	Dormant      bool   `json:"dormant,omitempty"`
+	// ApprovalPending is true while the session is blocked on a sandbox
+	// escalation a human must allow or deny (M7). The row keeps its real State
+	// ("active": the escalation blocks mid-turn); the flag says why the session
+	// is in NeedsYou, beside AskPending for a question.
+	ApprovalPending bool `json:"approval_pending,omitempty"`
+	// ApprovalTool and ApprovalTarget say what the oldest pending escalation
+	// asks for, so the row can say why it waits ("wants to write outside the
+	// workspace: ~/sites/docs"): the tool that was denied, which a client maps
+	// to a verb, and the escalation's full literal denied path. The path is
+	// shown for informed consent (appwire.SandboxEscalationRequested) and
+	// reaches human clients only, as thread/read's cards already do. Both are
+	// absent unless ApprovalPending is set; the tool is cut to the identity
+	// bound and the target to the label bound.
+	ApprovalTool   string `json:"approval_tool,omitempty"`
+	ApprovalTarget string `json:"approval_target,omitempty"`
+	Dormant        bool   `json:"dormant,omitempty"`
 	// Offline marks a row folded into the merged list from a source that is
 	// currently unreachable: its last-known rows stay visible, but they are not
 	// live and cannot serve host-targeted actions until the source reattaches.
@@ -245,10 +283,15 @@ type NavigationSessionSummary struct {
 	//
 	// It sits BESIDE Dormant rather than reusing it: Dormant means the session
 	// has never run, and an offline row that ran must not read as "Not started".
-	Offline            bool       `json:"offline,omitempty"`
-	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
-	MoreSubagents      int        `json:"more_subagents,omitempty"`
-	OmittedDescendants int        `json:"omitted_descendants,omitempty"`
+	Offline       bool       `json:"offline,omitempty"`
+	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
+	MoreSubagents int        `json:"more_subagents,omitempty"`
+	// Subagents is a live root's whole-tree subagent tally, counted by its
+	// daemon (S3). Present only on a live root row whose tree has a subagent;
+	// it counts subagents the row's children never show (nested, or past the
+	// children cap).
+	Subagents          *NavigationSubagentTally `json:"subagents,omitempty"`
+	OmittedDescendants int                      `json:"omitted_descendants,omitempty"`
 	// OmittedWatches counts live-watch rows this session's summary does not
 	// carry: rows beyond the projector's per-session cap, rows it could not
 	// represent, and rows the byte-budget fitter shed. It mirrors
@@ -265,7 +308,12 @@ type NavigationSessionSummary struct {
 	CompletedJobs       NavigationArray[NavigationJobSummary] `json:"completed_jobs,omitempty"`
 	// Watches carries this session's own live watches. Absent on an older
 	// daemon (or a past-index entry) and therefore absent-able for consumers.
-	Watches  NavigationArray[NavigationWatchSummary]   `json:"watches,omitempty"`
+	Watches NavigationArray[NavigationWatchSummary] `json:"watches,omitempty"`
+	// Tasks is the task line's facts ("Task 4 of 7 · Fix the settle/drain
+	// race"). Absent for a session with no task list or an empty one, and for
+	// every session this hub has no live daemon entry for: ended sessions,
+	// in-process children, and rows from other hosts.
+	Tasks    *NavigationTaskProgress                   `json:"tasks,omitempty"`
 	Children NavigationArray[NavigationSessionSummary] `json:"children"`
 }
 

@@ -17,7 +17,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { StrictMode, useSyncExternalStore } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { ClientProvider } from "../../shell/clientContext";
 import { urlToPane } from "../../shell/routing";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
@@ -66,22 +66,11 @@ import * as useTranscriptScrollModule from "./transcript/flow/useTranscriptScrol
 // this suite can pin the Session-level placement without duplicating Composer's
 // own behavior tests.
 //
-// A pair of hoisted vi.mock(...) calls used to sit here, swapping each whole
-// module in the shared module registry - under isolate:false that registry
-// is shared by every file in the worker, so whichever file (this one, or any
-// other file that renders the real Composer/SessionChrome through Session.tsx
-// or directly) happens to instantiate that module graph FIRST in the worker's
-// lifetime permanently wins; a vi.mock registered afterward cannot
-// retroactively change an already-instantiated consumer's binding (see
-// shell/DockRegion.test.tsx's own comment on the same class of bug). vi.spyOn
-// mutates only the one property this file cares about, on the SAME shared
-// module object every other file also reads from, and mockRestore() in
-// afterAll hands the real components back for whatever file runs next.
-//
-// Re-spied in beforeEach below too, not just once here: some other file
-// sharing this worker calling the GLOBAL vi.restoreAllMocks() would silently
-// hand the real Composer/SessionChrome back before this file's own tests run
-// (see shell/palette/commands.test.ts's own comment on the same hazard).
+// vi.spyOn, not a hoisted vi.mock, so individual tests can hand the real
+// Composer/SessionChrome back mid-file and render them. Re-stubbed in
+// beforeEach below too, not just once here: a test that restores a slot
+// without re-stubbing it (test.each has no onTestFinished) would otherwise
+// leave the real component in place for every later test in this file.
 function stubSessionSlots(): void {
   vi.spyOn(ComposerModule, "Composer").mockImplementation(({ ref }: { ref: string }) => (
     <div data-testid="composer-slot">
@@ -94,15 +83,6 @@ function stubSessionSlots(): void {
   ));
 }
 stubSessionSlots();
-
-afterAll(() => {
-  // A test that restored a slot mid-file (and, under test.each, has no
-  // onTestFinished to re-stub it) leaves vi.mocked(...).mockRestore absent;
-  // re-stub first so handing the real components back can't fail.
-  stubSessionSlots();
-  vi.mocked(ComposerModule.Composer).mockRestore();
-  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
-});
 
 // Force stop lives in the session "⋯" menu (SessionChrome) now that the inline
 // footer button is retired; this walks the same menu path a user would. Tests
@@ -313,14 +293,6 @@ afterEach(() => {
   if (offsetHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
 });
 
 test("shows a loading placeholder before the thread hydrates", async () => {
@@ -1055,38 +1027,10 @@ test("shows the seen divider above the first turn that arrived after the stored 
   expect(text.indexOf("New since your last visit")).toBeLessThan(text.indexOf("second"));
 });
 
-test("no divider when nothing arrived since the stored watermark (watermark is the last turn)", async () => {
-  writeSeenWatermark("ref_a", "turn_1");
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a", { turns: [turnFixture("turn_1", "only")] }));
-
-  render(
-    <ClientProvider client={fake}>
-      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
-  expect(screen.queryByTestId("seen-divider")).toBeNull();
-});
-
-test("no divider on a first-ever visit (no watermark stored)", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () =>
-    readResponse("ref_a", { turns: [turnFixture("turn_1", "first"), turnFixture("turn_2", "second")] }),
-  );
-
-  render(
-    <ClientProvider client={fake}>
-      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
-    </ClientProvider>,
-  );
-
-  await waitFor(() => expect(screen.getAllByTestId("turn-block").length).toBe(2));
-  expect(screen.queryByTestId("seen-divider")).toBeNull();
-});
-
-test("unmounting the pane stores the current last turn as the new watermark for next time", async () => {
+// The hook's own cases (useSeenDivider.test.ts) cover every watermark
+// position; this pins that Session renders no divider when the hook finds
+// none, and that unmounting records the last turn for the next visit.
+test("a first-ever visit shows no divider, and unmounting stores the last turn as the watermark", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", { turns: [turnFixture("turn_1", "first"), turnFixture("turn_2", "second")] }),
@@ -1099,6 +1043,7 @@ test("unmounting the pane stores the current last turn as the new watermark for 
   );
 
   await waitFor(() => expect(screen.getAllByTestId("turn-block").length).toBe(2));
+  expect(screen.queryByTestId("seen-divider")).toBeNull();
   unmount();
   expect(localStorage.getItem("evener.transcript.seen.v1.ref_a")).toBe("turn_2");
 });
@@ -3313,6 +3258,7 @@ test("confirmed force stop refreshes the session and exposes explicit Resume", a
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   const resume = await screen.findByRole("button", { name: "Resume session" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   await user.click(resume);
   await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("idle"));
@@ -3514,6 +3460,7 @@ test.each(["idle", "active"])(
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
     expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
       { method: "evener/thread/forceStop", params: { ref } },
     ]);
@@ -3601,6 +3548,7 @@ test.each(["pending", "failed"])(
           { method: "evener/thread/forceStop", params: { ref } },
         ]),
       );
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
     } finally {
       await act(async () => rejectRead(new Error("fixture cleanup")));
@@ -3673,8 +3621,10 @@ test("recovery rejection blocks durable dispatch and refreshes the Resume contro
     await act(async () => {
       await threadsStore.getState().queue(ref, "preserve this uncertain message");
       await flushPendingTurnsProjectionForTests();
+      // The blocked write's store publications re-render the session; they
+      // land inside this act() rather than after it.
+      await blockedWritten;
     });
-    await blockedWritten;
     expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
     expect(threadsStore.getState().mutationAuthorityRefs.has(ref)).toBe(false);
     const reconciled = nextReconciliation();
@@ -3839,6 +3789,14 @@ test.each(["model", "compact"])(
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      // Force stop's work runs past the click: the durable cancellation, the
+      // stop RPC (whose handler rejects the pending action), the recovery
+      // obligation, and the refresh after which the dialog closes. Awaiting
+      // the rejection alone would leave the rest to render outside act, so the
+      // test waits for the dialog to close and settles the projection reads
+      // that work started.
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await flushPendingTurnsProjectionForTests();
       await settled;
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       await user.click(screen.getByRole("button", { name: /session actions/i }));
@@ -3905,6 +3863,7 @@ test.each(["idle", "active"])(
       await openForceStopDialog(user);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
       ]);
@@ -3981,6 +3940,7 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
       { method: "evener/thread/forceStop", params: { ref } },
     ]),
   );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
 });
 

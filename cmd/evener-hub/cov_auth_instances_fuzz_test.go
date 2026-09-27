@@ -71,27 +71,36 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 
 		type authStatusCase struct {
 			expiry       time.Time
+			refreshToken string
 			wantStatus   authopenai.AuthStatus
 			wantNeedsRef bool
 		}
 		for _, tc := range []authStatusCase{
-			// Zero expiry: never logged out, never due for refresh.
-			{time.Time{}, authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth}, false},
-			// Already expired: signed out, refresh moot once login is required.
-			{now.Add(-time.Second), authopenai.AuthStatus{Source: authopenai.AuthSourceOAuth, Expiry: now.Add(-time.Second), NeedsLogin: true}, true},
+			// Zero expiry: never logged out, never due for refresh, regardless of
+			// whether a refresh token happens to be on file.
+			{expiry: time.Time{}, wantStatus: authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth}, wantNeedsRef: false},
+			{expiry: time.Time{}, refreshToken: "refresh", wantStatus: authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth}, wantNeedsRef: false},
+			// Already expired with no refresh token on file: there is no way to
+			// recover the session, so this is the case that must actually ask for
+			// login again (issue #2468).
+			{expiry: now.Add(-time.Second), wantStatus: authopenai.AuthStatus{Source: authopenai.AuthSourceOAuth, Expiry: now.Add(-time.Second), NeedsLogin: true}, wantNeedsRef: true},
+			// Already expired but a refresh token is on file: ResolveRuntimeCredentials
+			// refreshes it on the next use, so this is routine and still signed in,
+			// merely due for a refresh - not a login prompt.
+			{expiry: now.Add(-time.Second), refreshToken: "refresh", wantStatus: authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(-time.Second), NeedsRefresh: true}, wantNeedsRef: true},
 			// Expires inside the 5-minute refresh window but not yet: signed in, needs refresh.
-			{now.Add(time.Minute), authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(time.Minute), NeedsRefresh: true}, true},
+			{expiry: now.Add(time.Minute), wantStatus: authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(time.Minute), NeedsRefresh: true}, wantNeedsRef: true},
 			// Strictly distinguishes the 5-minute window from a 1-minute window.
-			{now.Add(3 * time.Minute), authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(3 * time.Minute), NeedsRefresh: true}, true},
+			{expiry: now.Add(3 * time.Minute), wantStatus: authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(3 * time.Minute), NeedsRefresh: true}, wantNeedsRef: true},
 			// Comfortably valid: signed in, no refresh due.
-			{now.Add(time.Hour), authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(time.Hour)}, false},
+			{expiry: now.Add(time.Hour), wantStatus: authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(time.Hour)}, wantNeedsRef: false},
 		} {
-			r := authopenai.AuthRecord{Expiry: tc.expiry, Source: authopenai.AuthSourceOAuth}
+			r := authopenai.AuthRecord{Expiry: tc.expiry, Source: authopenai.AuthSourceOAuth, RefreshToken: tc.refreshToken}
 			if got := openAIStatusFromRecord(now, r); got != tc.wantStatus {
-				t.Fatalf("openAIStatusFromRecord(expiry=%v) = %+v, want %+v", tc.expiry, got, tc.wantStatus)
+				t.Fatalf("openAIStatusFromRecord(expiry=%v, refreshToken=%q) = %+v, want %+v", tc.expiry, tc.refreshToken, got, tc.wantStatus)
 			}
 			if got := openAIRecordNeedsRefresh(now, r); got != tc.wantNeedsRef {
-				t.Fatalf("openAIRecordNeedsRefresh(expiry=%v) = %v, want %v", tc.expiry, got, tc.wantNeedsRef)
+				t.Fatalf("openAIRecordNeedsRefresh(expiry=%v, refreshToken=%q) = %v, want %v", tc.expiry, tc.refreshToken, got, tc.wantNeedsRef)
 			}
 		}
 

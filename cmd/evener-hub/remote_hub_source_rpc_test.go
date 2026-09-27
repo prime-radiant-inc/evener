@@ -25,8 +25,9 @@ type remoteHubCall struct {
 }
 
 // newScriptedRemoteHub wires an initialized AppWire client to an in-memory
-// server whose replies the caller scripts, recording every request. No SSH, no
-// network, no host.
+// server whose replies the caller scripts, recording every request. A reply
+// that is an appwire.WireError is sent as that error. No SSH, no network, no
+// host.
 func newScriptedRemoteHub(t *testing.T, handle func(method string, params json.RawMessage) any) (*appwire.Client, func() []remoteHubCall) {
 	t.Helper()
 	client, calls, _ := newPushableScriptedRemoteHub(t, handle)
@@ -60,6 +61,12 @@ func newPushableScriptedRemoteHub(t *testing.T, handle func(method string, param
 			calls = append(calls, remoteHubCall{method: msg.Request.Method, params: msg.Request.Params})
 			mu.Unlock()
 			reply := handle(msg.Request.Method, msg.Request.Params)
+			if wireErr, ok := reply.(appwire.WireError); ok {
+				if err := server.Send(ctx, appwire.ErrorMessage(msg.Request.ID, wireErr)); err != nil {
+					return
+				}
+				continue
+			}
 			data, err := json.Marshal(reply)
 			if err != nil {
 				return

@@ -38,7 +38,9 @@ both apps render counts, durations and clock times with, the text and
 argument helpers a tool call's rendering is built from, the marketplace
 source label both apps show beside a registered marketplace,
 the short lowercase session-state gloss a session row's second line leads
-with, the credential labels both apps describe a provider instance's active
+with, the pulse meter's activity read decoder and the Quiet and May be stuck
+rule both apps' Boards apply (`decodeActivityRead`, `quietState`), the
+credential labels both apps describe a provider instance's active
 credential source, shadowed layers and test outcome with, the path picker's
 flat row builder with the path helpers both apps' path fields share, the
 model catalog view helpers both apps' model pickers are built from (searchable
@@ -116,7 +118,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
 - `@evener/appwire-client/state/navigation` - the navigation state layer the
   web app's navigation store is built on, adoptable by native if it ever
   gains one: the resource-key vocabulary and
-  classifiers (`types`), the snapshot and delta codec (`codec`), the graph
+  classifiers (`types`), the snapshot and delta codec (`codec`), which
+  validates every key it knows and drops a value-record key it does not, so a
+  field a newer hub adds never fails an older app's read, the graph
   merge (`merge`), the deep-freeze helpers they share (`immutable`), the rule
   matching a hub invalidation target to a loaded resource and the revision it
   obliges it to reach (`invalidation`), and the revalidator that re-reads

@@ -25,7 +25,7 @@ function connectFakeClient(): FakeClient {
 }
 
 function row(name: string): HostRow {
-  return { name, origin: "sidecar", attached: false, midAttach: false, removed: false };
+  return { name, origin: "hub.toml", attached: false, midAttach: false, removed: false };
 }
 
 beforeEach(() => {

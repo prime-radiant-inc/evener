@@ -506,7 +506,7 @@ func delegateStatusInfoFromSnapshot(now time.Time, rootID string, row delegateSn
 	if row.lastOutcome != nil {
 		out.Outcome = string(row.lastOutcome.Status)
 		out.Reason = row.lastOutcome.Reason
-		out.Terminal = !row.currentRunOpen
+		out.Terminal = delegateRunTerminal(row.lastOutcome, row.currentRunOpen)
 		if !row.lastOutcome.EndedAt.IsZero() {
 			out.RunEndedAt = row.lastOutcome.EndedAt.UTC().Format(time.RFC3339Nano)
 		}

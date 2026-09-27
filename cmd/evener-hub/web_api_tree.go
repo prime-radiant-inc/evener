@@ -869,10 +869,21 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		},
 		SessionID: refText,
 		Status:    thread.Status.Type,
-		Project:   project,
+		// The remote hub's list row carries its session's question and blocked
+		// escalation cards as a local probe does, so the row shows them and the
+		// approval promotes the session into NeedsYou like a local one.
+		PendingAsk:         thread.Evener.AskPending,
+		PendingEscalation:  len(thread.Evener.PendingEscalations) > 0,
+		PendingEscalations: thread.Evener.PendingEscalations,
+		Project:            project,
 	}
 	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
 	entry.Watches = diagnosticsWatches(thread.Evener.Diagnostics)
+	// The remote hub's root row carries its tree's subagent tally (S3), so the
+	// remote row counts its subagents like a local one.
+	if thread.Evener.Subagents != nil {
+		entry.Subagents = *thread.Evener.Subagents
+	}
 	return meta, entry, true
 }
 

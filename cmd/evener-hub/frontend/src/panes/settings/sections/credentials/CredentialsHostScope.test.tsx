@@ -1,7 +1,7 @@
 import type { HostForwardedResult, HostRequestParams, HostRow, InstanceEntry } from "@evener/appwire-client";
 import { WireError } from "@evener/appwire-client";
 import { deferRequest, FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
@@ -41,7 +41,7 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   return {
-    origin: "sidecar",
+    origin: "hub.toml",
     attached: false,
     midAttach: false,
     removed: false,
@@ -140,6 +140,20 @@ function setupUser() {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 }
 
+// Renders the scope and waits for both reads it starts on mount: this hub's own
+// listing and the picker's host registry. Under fake timers a findBy that
+// matches at once (the Host label renders synchronously) returns before those
+// reads land, so they would land outside act between the test's later steps.
+// Waiting for both in one waitFor lets them land inside it.
+async function renderSettledScope(): Promise<HTMLSelectElement> {
+  render(<CredentialsHostScope sectionId="credentials" />);
+  await waitFor(() => {
+    expect(screen.getByText("controller-only")).toBeTruthy();
+    expect(hostsStore.getState().load.phase).toBe("ready");
+  });
+  return screen.getByLabelText("Host") as HTMLSelectElement;
+}
+
 beforeEach(() => {
   vi.stubGlobal("jest", { advanceTimersByTime: vi.advanceTimersByTime });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
@@ -207,9 +221,8 @@ test("selecting a remote host shows THAT host's own providers read-only, never t
     return HOST_LIST;
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByText("controller-only");
   await screen.findByRole("option", { name: "beta" });
 
@@ -228,9 +241,8 @@ test("a remote host's listing is read-only - it offers no per-instance actions",
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
 
@@ -245,9 +257,8 @@ test("a remote read in flight shows the host's own loading state, never the cont
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   const release = deferRequest<unknown>(fake, "evener/host/request");
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByText("controller-only");
   await screen.findByRole("option", { name: "beta" });
 
@@ -269,9 +280,8 @@ test("an unattached host's own refusal is shown honestly, not this hub's listing
     throw new WireError('host "beta" is not attached', -32000);
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta (offline)" });
 
   await user.selectOptions(select, "beta");
@@ -286,9 +296,8 @@ test("a host that is no longer configured says so instead of falling back to thi
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   await screen.findByText("on-beta");
@@ -307,9 +316,8 @@ test("switching back to this hub restores the controller's own listing", async (
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   await screen.findByText("on-beta");
@@ -329,9 +337,8 @@ test("a remote selection leaves the controller's own store untouched", async () 
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByText("controller-only");
   expect(credentialsStore.getState().instances).toEqual([CONTROLLER_ROW]);
 
@@ -357,9 +364,8 @@ test("a remote selection issues no controller-scoped credential write", async ()
     throw new Error("a remote selection must not write to this hub's credential store");
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   await screen.findByText("on-beta");
@@ -377,9 +383,8 @@ test("a connection transition re-reads the selected host's own listing", async (
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   await screen.findByText("on-beta");
@@ -409,9 +414,8 @@ test("a transition that orphans the first read never reads as 'no instances'", a
   // The first read never answers; the connection is replaced underneath it.
   deferRequest<unknown>(fake, "evener/host/request");
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
 
@@ -438,9 +442,8 @@ test("an error without a successful read shows no loading skeleton", async () =>
     throw new WireError('host "beta" is not attached', -32000);
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta (offline)" });
   await user.selectOptions(select, "beta");
 
@@ -462,9 +465,8 @@ test("an attachment transition retries a failed remote read", async () => {
     return HOST_LIST;
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta (offline)" });
   await user.selectOptions(select, "beta");
   await screen.findByText(/host "beta" is not attached/);
@@ -495,9 +497,8 @@ test("offers 'Sign in on host' for a remote host's Codex instance, and never for
     codexHostRequest(() => REMOTE_POLL_PENDING),
   );
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByText("controller-only");
   // This hub's own listing never offers it.
   expect(screen.queryByRole("button", { name: "Sign in on host" })).toBeNull();
@@ -510,7 +511,7 @@ test("offers 'Sign in on host' for a remote host's Codex instance, and never for
   expect(screen.queryByRole("button", { name: "Sign in on host" })).toBeNull();
 });
 
-test("'Sign in on host' drives device/start and device/poll through evener/host/request for the selected host, showing the code and the URL", async () => {
+test("'Sign in on host' drives device/start and device/poll through evener/host/request for the selected host, showing the code and the URL, and stops polling on success", async () => {
   const fake = connectFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
@@ -519,15 +520,14 @@ test("'Sign in on host' drives device/start and device/poll through evener/host/
     codexHostRequest(() => REMOTE_POLL_AUTHORIZED),
   );
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
 
   // The start is forwarded to the selected host...
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(forwardedMethodCalls(fake, "evener/auth/device/start")).toEqual([
       { host: "beta", method: "evener/auth/device/start", params: { provider: "codex" } },
     ]);
@@ -544,7 +544,7 @@ test("'Sign in on host' drives device/start and device/poll through evener/host/
   expect(screen.getByRole("dialog", { name: "Sign in to codex on beta" })).toBeTruthy();
 
   // The poll is the same host-addressed call, at the flow's own interval.
-  await vi.waitFor(
+  await waitFor(
     () => {
       expect(forwardedMethodCalls(fake, "evener/auth/device/poll")).toContainEqual({
         host: "beta",
@@ -555,29 +555,11 @@ test("'Sign in on host' drives device/start and device/poll through evener/host/
     { timeout: 3000 },
   );
   expect(fake.calls.some((call) => call.method === "evener/auth/device/poll")).toBe(false);
-});
 
-test("a remote device flow stops polling on success and reports it on the host", async () => {
-  const fake = connectFakeClient();
-  fake.on("evener/instance/list", () => CONTROLLER_LIST);
-  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
-  fake.on(
-    "evener/host/request",
-    codexHostRequest(() => REMOTE_POLL_AUTHORIZED),
-  );
-
-  render(<CredentialsHostScope sectionId="credentials" />);
-  const user = setupUser();
-  const select = await screen.findByLabelText("Host");
-  await screen.findByRole("option", { name: "beta" });
-  await user.selectOptions(select, "beta");
-  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
-
-  // Success closes the dialog - once it has opened, or its absence proves
-  // nothing - and names the instance and the host it signed in on (see
-  // oauthDialogs.tsx's DeviceCodeDialog).
-  expect(await screen.findByRole("dialog", { name: "Sign in to codex on beta" })).toBeTruthy();
-  await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 3000 });
+  // The authorized poll closes the dialog - which the assertions above saw
+  // open, or its absence would prove nothing - and names the instance and the
+  // host it signed in on (see oauthDialogs.tsx's DeviceCodeDialog).
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull(), { timeout: 3000 });
   expect(getToasts().some((toast) => toast.text === "Signed in to codex on beta")).toBe(true);
 
   const polls = forwardedMethodCalls(fake, "evener/auth/device/poll").length;
@@ -585,7 +567,12 @@ test("a remote device flow stops polling on success and reports it on the host",
   expect(forwardedMethodCalls(fake, "evener/auth/device/poll")).toHaveLength(polls);
 });
 
-test("a host that offers no device flow surfaces a named failure instead of a dead end", async () => {
+// The fallback refusal names the thing that actually completes the sign-in:
+// the `evener openai login` CLI on the host itself, against that instance.
+// EVENER_LOGIN_HEADLESS is read only by that CLI, never by the hub's own
+// DeviceStart (auth/openai/device.go's issuer-404 path is what sets
+// `fallback`), so pointing the operator at it would be a dead end.
+test("a host that offers no device flow surfaces a named failure that points at the host-side CLI, never a dead-end env var", async () => {
   const fake = connectFakeClient();
   fake.on("evener/instance/list", () => CONTROLLER_LIST);
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
@@ -595,14 +582,18 @@ test("a host that offers no device flow surfaces a named failure instead of a de
     throw new Error(`unexpected forwarded method ${params.method}`);
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
 
-  expect((await screen.findByRole("alert")).textContent).toContain("Device-code sign-in is not enabled on beta");
+  const alert = await screen.findByRole("alert");
+  expect(alert.textContent).toContain("Device-code sign-in is not enabled on beta");
+  // The remedy is the CLI on the host, naming the instance it signs in...
+  expect(alert.textContent).toContain("evener openai login --instance codex --no-device");
+  // ...and never the env var the hub does not read.
+  expect(alert.textContent).not.toContain("EVENER_LOGIN_HEADLESS");
   expect(screen.queryByRole("dialog")).toBeNull();
 });
 
@@ -618,9 +609,8 @@ test("a refused remote device/start surfaces the host's own failure, never a sil
     throw new Error(`unexpected forwarded method ${params.method}`);
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
@@ -638,9 +628,8 @@ test("a host re-registered under the same name never shows the previous host's r
   fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", address: "a.example", attached: true })] }));
   fake.on("evener/host/request", () => HOST_LIST);
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   await screen.findByText("on-beta");
@@ -855,13 +844,12 @@ test("a picker change while device/start is outstanding never renders or polls t
     throw new Error(`unexpected forwarded method ${params.method}`);
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "gamma" });
   await user.selectOptions(select, "beta");
   await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
-  await vi.waitFor(() => {
+  await waitFor(() => {
     expect(forwardedMethodCalls(fake, "evener/auth/device/start")).toEqual([
       { host: "beta", method: "evener/auth/device/start", params: { provider: "codex" } },
     ]);
@@ -901,9 +889,8 @@ test("a sign-in failure naming the old host does not survive a host change", asy
     throw new Error(`unexpected forwarded method ${params.method}`);
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "gamma" });
   await user.selectOptions(select, "beta");
   await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
@@ -936,9 +923,8 @@ test("a failed 'Start again' clears the expired dialog instead of leaving it sta
     throw new Error(`unexpected forwarded method ${params.method}`);
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
@@ -973,9 +959,8 @@ test("a successful 'Start again' opens the new flow's dialog", async () => {
     throw new Error(`unexpected forwarded method ${params.method}`);
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
@@ -1026,8 +1011,13 @@ test("'Sign in on host' follows the instance's auth scheme, not its provider id"
   settingsHostStore.setState({ host: "beta" });
   render(<CredentialsHostScope sectionId="credentials" />);
 
-  const remoteSection = await screen.findByRole("region", { name: "Providers on beta" });
-  await within(remoteSection).findByText("oauth-on-openai");
+  // One wait for both mount reads, the registry and beta's own listing - see
+  // renderSettledScope.
+  await waitFor(() => {
+    expect(screen.getByText("oauth-on-openai")).toBeTruthy();
+    expect(hostsStore.getState().load.phase).toBe("ready");
+  });
+  const remoteSection = screen.getByRole("region", { name: "Providers on beta" });
 
   // The instance the host's gate accepts is the one offered the action...
   const acceptedRow = within(remoteSection).getByText("oauth-on-openai").closest("li");
@@ -1054,9 +1044,8 @@ test("a restart the host answers with fallback clears the expired dialog", async
     throw new Error(`unexpected forwarded method ${params.method}`);
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
@@ -1087,14 +1076,13 @@ test("a host coming back online does not restart the sign-in it is not part of",
     codexHostRequest(() => REMOTE_POLL_PENDING),
   );
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta (offline)" });
   await user.selectOptions(select, "beta");
   await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
   await screen.findByText("REMOTE-CODE");
-  await vi.waitFor(() => expect(forwardedMethodCalls(fake, "evener/auth/device/poll").length).toBeGreaterThan(0), {
+  await waitFor(() => expect(forwardedMethodCalls(fake, "evener/auth/device/poll").length).toBeGreaterThan(0), {
     timeout: 3000,
   });
   const polls = forwardedMethodCalls(fake, "evener/auth/device/poll").length;
@@ -1109,7 +1097,7 @@ test("a host coming back online does not restart the sign-in it is not part of",
   // The same editor, still showing this flow's code, and still polling the host
   // it was started on.
   expect(screen.getByText("REMOTE-CODE")).toBeTruthy();
-  await vi.waitFor(() => expect(forwardedMethodCalls(fake, "evener/auth/device/poll").length).toBeGreaterThan(polls), {
+  await waitFor(() => expect(forwardedMethodCalls(fake, "evener/auth/device/poll").length).toBeGreaterThan(polls), {
     timeout: 3000,
   });
   expect(forwardedMethodCalls(fake, "evener/auth/device/poll").every((call) => call.host === "beta")).toBe(true);
@@ -1158,9 +1146,8 @@ test("a superseded sign-in start never replaces the newer one, and its flow is n
     throw new Error(`unexpected forwarded method ${params.method}`);
   });
 
-  render(<CredentialsHostScope sectionId="credentials" />);
+  const select = await renderSettledScope();
   const user = setupUser();
-  const select = await screen.findByLabelText("Host");
   await screen.findByRole("option", { name: "beta" });
   await user.selectOptions(select, "beta");
   const remoteSection = await screen.findByRole("region", { name: "Providers on beta" });
@@ -1170,9 +1157,9 @@ test("a superseded sign-in start never replaces the newer one, and its flow is n
   // Both starts are on the wire before either answers: the first row's, then
   // the second row's.
   await user.click(within(firstRow).getByRole("button", { name: "Sign in on host" }));
-  await vi.waitFor(() => expect(starts.has("codex-one")).toBe(true));
+  await waitFor(() => expect(starts.has("codex-one")).toBe(true));
   await user.click(within(secondRow).getByRole("button", { name: "Sign in on host" }));
-  await vi.waitFor(() => expect(starts.has("codex-two")).toBe(true));
+  await waitFor(() => expect(starts.has("codex-two")).toBe(true));
 
   // The SECOND (last-clicked) start answers first; the superseded first one
   // answers after it.
@@ -1195,35 +1182,4 @@ test("a superseded sign-in start never replaces the newer one, and its flow is n
   expect(polls.length).toBeGreaterThan(0);
   expect(polls.every((call) => (call.params as { flowId: string }).flowId === "flow-two")).toBe(true);
   expect(screen.queryByText("CODE-ONE")).toBeNull();
-});
-
-// L1 (roborev round 6): the fallback refusal sent the operator to
-// EVENER_LOGIN_HEADLESS=1 on the host - an env var the hub's own DeviceStart
-// never reads (auth/openai/device.go's issuer-404 path is what sets `fallback`;
-// the variable is consumed by the `evener openai login` CLI), so the retry
-// failed identically. The message names the thing that actually completes the
-// sign-in: the CLI on the host itself, against that instance.
-test("a host that offers no device flow names the host-side CLI, never a dead-end env var", async () => {
-  const fake = connectFakeClient();
-  fake.on("evener/instance/list", () => CONTROLLER_LIST);
-  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
-  fake.on("evener/host/request", (params) => {
-    if (params.method === "evener/instance/list") return CODEX_HOST_LIST;
-    if (params.method === "evener/auth/device/start") return REMOTE_DEVICE_FALLBACK;
-    throw new Error(`unexpected forwarded method ${params.method}`);
-  });
-
-  render(<CredentialsHostScope sectionId="credentials" />);
-  const user = setupUser();
-  const select = await screen.findByLabelText("Host");
-  await screen.findByRole("option", { name: "beta" });
-  await user.selectOptions(select, "beta");
-  await user.click(await screen.findByRole("button", { name: "Sign in on host" }));
-
-  const alert = await screen.findByRole("alert");
-  // The remedy is the CLI on the host, naming the instance it signs in...
-  expect(alert.textContent).toContain("evener openai login --instance codex --no-device");
-  // ...and never the env var the hub does not read.
-  expect(alert.textContent).not.toContain("EVENER_LOGIN_HEADLESS");
-  expect(screen.queryByRole("dialog")).toBeNull();
 });

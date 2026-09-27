@@ -1802,7 +1802,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			// turn/completed's — the daemon's real failure exit emits the same
 			// pair (agent/session_lifecycle.go's endInputAtTurnFailure announces
 			// EventSessionEnd{Reason:"turn_failed"} as
-			// thread/status/changed(idle)). Without the status frame a client
+			// thread/status/changed(systemError)). The synthesized frame keeps
+			// idle: a lost connection is not a recorded turn failure, and the
+			// roster marks a dead daemon errored. Without the status frame a client
 			// that leaves the status to the status frame, as the shared web and
 			// mobile reducer now does, would keep the session active with Stop
 			// and Steer still showing and Send withheld — the exact stall this

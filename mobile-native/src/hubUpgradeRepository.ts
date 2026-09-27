@@ -1,12 +1,8 @@
 import type { UpgradeCheckpoint, UpgradeStorage } from "./hubUpgrade";
 import { isValidUpgradeResponse } from "./hubUpgradeValidation";
+import type { SyncStringStorage } from "./syncStringStorage";
 
 const prefix = "evener:hub-upgrade:";
-export interface SyncUpgradeStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
-}
 const parse = (hubId: string, raw: string): UpgradeCheckpoint => {
 	const value: unknown = JSON.parse(raw);
 	if (!value || typeof value !== "object")
@@ -27,7 +23,7 @@ const parse = (hubId: string, raw: string): UpgradeCheckpoint => {
 };
 
 export class HubUpgradeRepository implements UpgradeStorage {
-	constructor(private readonly storage: SyncUpgradeStorage) {}
+	constructor(private readonly storage: SyncStringStorage) {}
 	read(hubId: string) {
 		const raw = this.storage.getItemSync(prefix + hubId);
 		return raw === null ? null : parse(hubId, raw);

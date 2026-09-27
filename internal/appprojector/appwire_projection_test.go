@@ -63,6 +63,7 @@ func TestProject_InformationalWarningKeepsNeutralTitle(t *testing.T) {
 		Source:  "evener",
 		Title:   "Context budget",
 		Hint:    "The model's output allocation was reduced to fit its context window. No action needed.",
+		Code:    events.WarningCodeContextBudget,
 	}})
 	if len(out) != 1 || out[0].Method != appwire.NotifyWarning {
 		t.Fatalf("notifications=%+v", out)
@@ -73,6 +74,9 @@ func TestProject_InformationalWarningKeepsNeutralTitle(t *testing.T) {
 	}
 	if params["title"] != "Context budget" {
 		t.Fatalf("title=%v, want the emitter-supplied neutral title", params["title"])
+	}
+	if params["code"] != events.WarningCodeContextBudget {
+		t.Fatalf("code=%v, want the emitter-supplied informational code forwarded verbatim", params["code"])
 	}
 	if strings.Contains(fmt.Sprint(params["hint"]), "session log") {
 		t.Fatalf("hint=%v, want the emitter-supplied hint, not the generic session-log guidance", params["hint"])
@@ -951,6 +955,122 @@ func TestAppEventProjectorMapsAwaitingSessionEnd(t *testing.T) {
 		return
 	}
 	t.Fatalf("awaiting SessionEnd missing turn/completed: %+v", sessionEnd)
+}
+
+// TestAppEventProjectorMapsFailedSessionEnd: a failed turn ends its input with
+// EventSessionEnd{Reason: "turn_failed", State: systemError} (the agent's
+// endInputAtTurnFailure). The session is open and takes the next message, so
+// the projector announces systemError and never thread/closed.
+func TestAppEventProjectorMapsFailedSessionEnd(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
+		Reason: "turn_failed",
+		State:  appwire.ThreadStatusSystemError,
+	}})
+
+	if hasAppNotification(sessionEnd, appwire.NotifyThreadClosed) {
+		t.Fatalf("a failed turn's SessionEnd emitted thread/closed: %+v", sessionEnd)
+	}
+	if status := notificationThreadStatus(t, sessionEnd, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("failed SessionEnd status = %+v, want systemError", status)
+	}
+}
+
+// TestAppEventProjectorMapsFailedSessionEndWithPendingWork: a failed turn with
+// a message still queued ends its input with the effective state active
+// (agent WireState), since the queued message starts the next turn. That is no
+// close: the projector announces active and never thread/closed.
+func TestAppEventProjectorMapsFailedSessionEndWithPendingWork(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
+		Reason: "turn_failed",
+		State:  appwire.ThreadStatusActive,
+	}})
+
+	if hasAppNotification(sessionEnd, appwire.NotifyThreadClosed) {
+		t.Fatalf("a failed turn with pending work emitted thread/closed: %+v", sessionEnd)
+	}
+	if status := notificationThreadStatus(t, sessionEnd, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("failed SessionEnd with pending work status = %+v, want active", status)
+	}
+}
+
+// TestAppEventProjectorSessionEndClosesOnlyOnAClose pins the SessionEnd
+// state table: only an end with no state, or closed, announces thread/closed
+// (the rule server/bridge.go's sessionEventClosesSession applies to the stored
+// status). Every state the agent's WireState publishes for an open session
+// maps to itself, and an unrecognized one reads idle, never closed.
+func TestAppEventProjectorSessionEndClosesOnlyOnAClose(t *testing.T) {
+	cases := []struct {
+		state      string
+		wantStatus string
+		wantClosed bool
+	}{
+		{"", appwire.ThreadStatusClosed, true},
+		{appwire.ThreadStatusClosed, appwire.ThreadStatusClosed, true},
+		{appwire.ThreadStatusIdle, appwire.ThreadStatusIdle, false},
+		{appwire.ThreadStatusAwaiting, appwire.ThreadStatusAwaiting, false},
+		{appwire.ThreadStatusActive, appwire.ThreadStatusActive, false},
+		{appwire.ThreadStatusSystemError, appwire.ThreadStatusSystemError, false},
+		{"someFutureState", appwire.ThreadStatusIdle, false},
+	}
+	for _, c := range cases {
+		t.Run("state="+c.state, func(t *testing.T) {
+			projector := NewAppEventProjector("th_1", "local:th_1")
+			projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+			sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
+				Reason: "test",
+				State:  c.state,
+			}})
+			if got := hasAppNotification(sessionEnd, appwire.NotifyThreadClosed); got != c.wantClosed {
+				t.Fatalf("thread/closed emitted = %v, want %v: %+v", got, c.wantClosed, sessionEnd)
+			}
+			if status := notificationThreadStatus(t, sessionEnd, appwire.NotifyThreadStatusChanged); status.Type != c.wantStatus {
+				t.Fatalf("status = %+v, want %q", status, c.wantStatus)
+			}
+		})
+	}
+}
+
+// TestAppEventProjectorRestoredSessionStartCarriesFailedState: a daemon
+// restored onto a transcript that ends in a failed turn stamps systemError on
+// its SessionStart (agent RestingWireState), and the thread starts Failed.
+func TestAppEventProjectorRestoredSessionStartCarriesFailedState(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	started := projector.Project(events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "th_1",
+		Data:      events.SessionStartData{Profile: "openai", Model: "gpt-5", Restored: true, State: appwire.ThreadStatusSystemError},
+	})
+
+	if thread := notificationThread(t, started, appwire.NotifyThreadStarted); thread.Status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("restored SessionStart thread status = %+v, want systemError", thread.Status)
+	}
+	if status := notificationThreadStatus(t, started, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("restored SessionStart status notification = %+v, want systemError", status)
+	}
+}
+
+// TestAppEventProjectorRestoredSessionStartCarriesActiveState: a daemon
+// restored with claimable queued input stamps its effective state, active, on
+// its SessionStart (agent WireState), so the thread starts active and agrees
+// with the state serve publishes synchronously (#251).
+func TestAppEventProjectorRestoredSessionStartCarriesActiveState(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	started := projector.Project(events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "th_1",
+		Data:      events.SessionStartData{Profile: "openai", Model: "gpt-5", Restored: true, State: appwire.ThreadStatusActive},
+	})
+
+	if thread := notificationThread(t, started, appwire.NotifyThreadStarted); thread.Status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("restored SessionStart thread status = %+v, want active", thread.Status)
+	}
+	if status := notificationThreadStatus(t, started, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("restored SessionStart status notification = %+v, want active", status)
+	}
 }
 
 // TestAppEventProjectorMarksInterruptedTurnCanceled covers kata 0ax1:
