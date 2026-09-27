@@ -176,9 +176,9 @@ func TestTaskTool_AutoAdvanceSaveFailureReportsCommittedMutation(t *testing.T) {
 	if taskStateEntry(t, state, 1).Status != taskpkg.TaskDone || taskStateEntry(t, state, 2).Status != taskpkg.TaskOpen {
 		t.Fatalf("published state after failed auto-advance = %#v", state)
 	}
-	view := store.View()
-	if view[0].Status != taskpkg.TaskDone || view[1].Status != taskpkg.TaskOpen {
-		t.Fatalf("in-memory state after failed auto-advance = %#v", view)
+	committed := store.View()
+	if committed[0].Status != taskpkg.TaskDone || committed[1].Status != taskpkg.TaskOpen {
+		t.Fatalf("in-memory state after failed auto-advance = %#v", committed)
 	}
 
 	reloaded := taskpkg.NewTaskStore("/state", "task-tool").SetFs(base)
@@ -189,9 +189,7 @@ func TestTaskTool_AutoAdvanceSaveFailureReportsCommittedMutation(t *testing.T) {
 	if durable[0].Status != taskpkg.TaskDone || durable[1].Status != taskpkg.TaskOpen {
 		t.Fatalf("durable state after failed auto-advance = %#v", durable)
 	}
-	if !reflect.DeepEqual(tasksWithUTCTimestamps(view), tasksWithUTCTimestamps(durable)) {
-		t.Fatalf("durable state after failed auto-advance differs from committed state = %#v, want %#v", durable, view)
-	}
+	assertTasksPersisted(t, "durable state after failed auto-advance", committed, durable)
 }
 
 func TestTaskTool_SteerFailureReportsCommittedMutation(t *testing.T) {
@@ -227,9 +225,7 @@ func TestTaskTool_SteerFailureReportsCommittedMutation(t *testing.T) {
 	if len(durable) != 1 || durable[0].Status != taskpkg.TaskInProgress {
 		t.Fatalf("durable state after steer failure = %#v", durable)
 	}
-	if !reflect.DeepEqual(tasksWithUTCTimestamps(committed), tasksWithUTCTimestamps(durable)) {
-		t.Fatalf("durable state after steer failure differs from committed state = %#v, want %#v", durable, committed)
-	}
+	assertTasksPersisted(t, "durable state after steer failure", committed, durable)
 }
 
 func TestTaskTool_AutoAdvanceSteerFailureReportsCommittedMutation(t *testing.T) {
@@ -258,18 +254,16 @@ func TestTaskTool_AutoAdvanceSteerFailureReportsCommittedMutation(t *testing.T) 
 	if taskStateEntry(t, state, 1).Status != taskpkg.TaskDone || taskStateEntry(t, state, 2).Status != taskpkg.TaskInProgress {
 		t.Fatalf("published state after auto steer failure = %#v", state)
 	}
-	if view := h.store.View(); len(view) != 2 || view[0].Status != taskpkg.TaskDone || view[1].Status != taskpkg.TaskInProgress {
-		t.Fatalf("in-memory state after auto steer failure = %#v", view)
-	}
 	committed := h.store.View()
+	if len(committed) != 2 || committed[0].Status != taskpkg.TaskDone || committed[1].Status != taskpkg.TaskInProgress {
+		t.Fatalf("in-memory state after auto steer failure = %#v", committed)
+	}
 	reloaded := h.reopened(t)
 	durable := reloaded.View()
 	if len(durable) != 2 || durable[0].Status != taskpkg.TaskDone || durable[1].Status != taskpkg.TaskInProgress {
 		t.Fatalf("durable state after auto steer failure = %#v", durable)
 	}
-	if !reflect.DeepEqual(tasksWithUTCTimestamps(committed), tasksWithUTCTimestamps(durable)) {
-		t.Fatalf("durable state after auto steer failure differs from committed state = %#v, want %#v", durable, committed)
-	}
+	assertTasksPersisted(t, "durable state after auto steer failure", committed, durable)
 }
 
 func TestTaskTool_TaskCompletionSteerFailureReportsCommittedMutation(t *testing.T) {
@@ -295,18 +289,16 @@ func TestTaskTool_TaskCompletionSteerFailureReportsCommittedMutation(t *testing.
 	if taskStateEntry(t, state, 1).Status != taskpkg.TaskDone {
 		t.Fatalf("published state after completion steer failure = %#v", state)
 	}
-	if view := h.store.View(); len(view) != 1 || view[0].Status != taskpkg.TaskDone {
-		t.Fatalf("in-memory state after completion steer failure = %#v", view)
-	}
 	committed := h.store.View()
+	if len(committed) != 1 || committed[0].Status != taskpkg.TaskDone {
+		t.Fatalf("in-memory state after completion steer failure = %#v", committed)
+	}
 	reloaded := h.reopened(t)
 	durable := reloaded.View()
 	if len(durable) != 1 || durable[0].Status != taskpkg.TaskDone {
 		t.Fatalf("durable state after completion steer failure = %#v", durable)
 	}
-	if !reflect.DeepEqual(tasksWithUTCTimestamps(committed), tasksWithUTCTimestamps(durable)) {
-		t.Fatalf("durable state after completion steer failure differs from committed state = %#v, want %#v", durable, committed)
-	}
+	assertTasksPersisted(t, "durable state after completion steer failure", committed, durable)
 }
 
 func taskStatusMap(tasks []taskpkg.Task) map[int]taskpkg.TaskStatus {
@@ -334,6 +326,13 @@ func tasksWithUTCTimestamps(tasks []taskpkg.Task) []taskpkg.Task {
 		}
 	}
 	return result
+}
+
+func assertTasksPersisted(t *testing.T, checkpoint string, committed, durable []taskpkg.Task) {
+	t.Helper()
+	if !reflect.DeepEqual(tasksWithUTCTimestamps(committed), tasksWithUTCTimestamps(durable)) {
+		t.Fatalf("%s differs from committed state = %#v, want %#v", checkpoint, durable, committed)
+	}
 }
 
 func tasksWithoutUpdatedAt(tasks []taskpkg.Task) []taskpkg.Task {
@@ -426,9 +425,7 @@ func TestTaskTool_AutoAdvanceValidationFailurePreservesCurrentTask(t *testing.T)
 	if got := taskStatusMap(blockedReopened); !reflect.DeepEqual(got, wantBlockedState) {
 		t.Fatalf("durable state after blocked auto-advance = %#v", got)
 	}
-	if !reflect.DeepEqual(tasksWithUTCTimestamps(blockedState), tasksWithUTCTimestamps(blockedReopened)) {
-		t.Fatalf("durable blocked state differs from committed state = %#v, want %#v", blockedReopened, blockedState)
-	}
+	assertTasksPersisted(t, "durable blocked state", blockedState, blockedReopened)
 
 	// The first explicit recovery attempt is rejected while task 3 remains the
 	// current task; it must not create a phantom transition or publication.
@@ -440,9 +437,8 @@ func TestTaskTool_AutoAdvanceValidationFailurePreservesCurrentTask(t *testing.T)
 	if got := h.store.View(); !reflect.DeepEqual(got, preRejected) {
 		t.Fatalf("in-memory state changed after rejected recovery = %#v, want %#v", got, preRejected)
 	}
-	if got := h.reopened(t).View(); !reflect.DeepEqual(tasksWithUTCTimestamps(got), tasksWithUTCTimestamps(preRejected)) {
-		t.Fatalf("durable state changed after rejected recovery = %#v, want %#v", got, preRejected)
-	}
+	rejectedDurable := h.reopened(t).View()
+	assertTasksPersisted(t, "durable state after rejected recovery", preRejected, rejectedDurable)
 
 	// Defer the real current task through the same tool API, then start the
 	// intended next task. This is the reachable recovery path after the
@@ -463,9 +459,7 @@ func TestTaskTool_AutoAdvanceValidationFailurePreservesCurrentTask(t *testing.T)
 	}) {
 		t.Fatalf("durable recovered state = %#v", got)
 	}
-	if !reflect.DeepEqual(tasksWithUTCTimestamps(recoveredState), tasksWithUTCTimestamps(gotRecovered)) {
-		t.Fatalf("durable recovered state differs from committed state = %#v, want %#v", gotRecovered, recoveredState)
-	}
+	assertTasksPersisted(t, "durable recovered state", recoveredState, gotRecovered)
 }
 
 func TestTaskTool_SteerFailureReassertionPreservesCommittedState(t *testing.T) {
@@ -591,9 +585,8 @@ func TestTaskTool_SteerFailureReassertionPreservesCommittedState(t *testing.T) {
 				want := false
 				assertTaskToolMarker(t, secondToolState, tc.secondSettledID, nil, &want)
 			}
-			if got := h.reopened(t).View(); !reflect.DeepEqual(tasksWithUTCTimestamps(secondState), tasksWithUTCTimestamps(got)) {
-				t.Fatalf("reassertion durable state = %#v, want %#v", got, secondState)
-			}
+			reassertedDurable := h.reopened(t).View()
+			assertTasksPersisted(t, "reassertion durable state", secondState, reassertedDurable)
 		})
 	}
 }
