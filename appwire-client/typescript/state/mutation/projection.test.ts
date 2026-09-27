@@ -51,20 +51,7 @@ describe("replaceTargetRecords", () => {
   test.each<[string, Partial<MutationOutboxRecord<HostAttachment>>]>([
     ["state changed", { state: "blockedUnknown" }],
     ["payload changed", { payload: { ref: "ref-a", input: [{ type: "text", text: "edited" }] } }],
-    [
-      "attachment was restaged under a new presentationId",
-      {
-        attachments: [
-          {
-            presentationId: "presentation-2",
-            marker: 1,
-            name: "a.png",
-            mediaType: "image/png",
-            bytes: new Blob(["png"]),
-          },
-        ],
-      },
-    ],
+    ["attachment was restaged under a new presentationId", { attachments: [hostAttachment("presentation-2")] }],
   ])("a record whose %s lands in a new map", (_change, overrides) => {
     const current = new Map([["cmid-1", readRecord()]]);
     const changed = readRecord(overrides);
@@ -105,6 +92,11 @@ interface HostAttachment extends MutationAttachmentRef {
   bytes: Blob;
 }
 
+// A fresh attachment on every call: new bytes, the same content.
+function hostAttachment(presentationId = "presentation-1"): HostAttachment {
+  return { presentationId, marker: 1, name: "a.png", mediaType: "image/png", bytes: new Blob(["png"]) };
+}
+
 // One outbox record as a read of storage hands it back: every call builds new
 // objects throughout, the attachment's bytes included, with the same content.
 function readRecord(
@@ -117,9 +109,7 @@ function readRecord(
       payload: { ref: "ref-a", input: [{ type: "text", text: "hello" }] },
       optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "hello" }] },
     }),
-    attachments: [
-      { presentationId: "presentation-1", marker: 1, name: "a.png", mediaType: "image/png", bytes: new Blob(["png"]) },
-    ],
+    attachments: [hostAttachment()],
     ...overrides,
   };
 }
