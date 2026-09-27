@@ -147,6 +147,39 @@ describe("a Board row (spec 7.2)", () => {
 		expect(glyph.props).toMatchObject({ size: 13, tintColor: palette.inkLow });
 	});
 
+	it("shows task progress on the last line with a checklist glyph", () => {
+		const tree = mount({
+			item: item("failed", {
+				tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
+			}),
+		});
+		const line = textWith(tree, "Task 4 of 7 · Fix the settle/drain race")[0];
+		expect(line.props).toMatchObject({ numberOfLines: 1, ellipsizeMode: "tail" });
+		expect(styleOf(line)).toMatchObject({ fontSize: 13, lineHeight: 18, color: palette.inkLow });
+		expect(symbols(tree)).toContain("checklist");
+	});
+
+	it("shows no task progress once the list is finished or when there is none", () => {
+		const finished = mount({ item: item("failed", { tasks: { total: 2, done: 2 } }) });
+		expect(symbols(finished)).not.toContain("checklist");
+		const none = mount();
+		expect(symbols(none)).not.toContain("checklist");
+	});
+
+	it("puts task progress ahead of project and host on the last line", () => {
+		const tree = mount({
+			item: item("failed", {
+				project: "magic-kingdom",
+				host_id: "studio",
+				tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
+			}),
+		});
+		const glyphs = symbols(tree);
+		expect(glyphs.indexOf("checklist")).toBeGreaterThanOrEqual(0);
+		expect(glyphs.indexOf("checklist")).toBeLessThan(glyphs.indexOf("folder"));
+		expect(glyphs.indexOf("folder")).toBeLessThan(glyphs.indexOf("server.rack"));
+	});
+
 	it("moves a working row in Live with the pulse meter, and shows a still dot elsewhere", () => {
 		const live = mount({ item: item("working", { state: "active" }), moving: true });
 		expect(live.root.findAllByType(PulseMeter)).toHaveLength(1);

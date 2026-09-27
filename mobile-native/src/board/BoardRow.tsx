@@ -219,8 +219,9 @@ export function BoardRow({
 				) : null}
 				{last ? (
 					<View style={{ marginTop: 4, flexDirection: "row", alignItems: "center", columnGap: 6, overflow: "hidden" }}>
-						{last.project ? <Place glyph="folder" text={last.project} scale={scale} /> : null}
-						{last.host ? <Place glyph="server.rack" text={last.host} scale={scale} /> : null}
+						{last.task ? <Fact glyph="checklist" text={last.task} scale={scale} /> : null}
+						{last.project ? <Fact glyph="folder" text={last.project} scale={scale} /> : null}
+						{last.host ? <Fact glyph="server.rack" text={last.host} scale={scale} /> : null}
 					</View>
 				) : null}
 			</View>
@@ -228,8 +229,19 @@ export function BoardRow({
 	);
 }
 
-/** A glyph and a name on the last line, which never wraps. */
-function Place({ glyph, text, scale }: { glyph: "folder" | "server.rack"; text: string; scale: number }) {
+/** A glyph and a fact on the last line, which never wraps. A fact whose text
+ * is a fixed prefix plus something longer (the task's "Task 4 of 7 · " plus
+ * its title) puts the variable part last, so tail ellipsis erodes it before
+ * touching the prefix: the title truncates first (spec 7.2). */
+function Fact({
+	glyph,
+	text,
+	scale,
+}: {
+	glyph: "checklist" | "folder" | "server.rack";
+	text: string;
+	scale: number;
+}) {
 	const { palette } = useColors();
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink: 1 }}>
