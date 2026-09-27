@@ -43,13 +43,31 @@ describe("snapshotFromNavigation", () => {
       title: "Ask A",
       level: "needs_you",
       askPending: true,
+      approvalPending: false,
     });
     expect(snap.get("local:b")).toEqual<AttentionEntry>({
       ref: "local:b",
       title: "Err B",
       level: "error",
       askPending: false,
+      approvalPending: false,
     });
+  });
+  // An approval blocks its turn mid-tool, so the row reports "active"; like
+  // the hub's promotedAttentionLevel, the approval promotes it to needs_you.
+  test("an active row waiting on an approval enters as needs_you, carrying the approval", () => {
+    const snap = snapshotFromNavigation([row({ ref: "local:p", state: "active", approval_pending: true })]);
+    expect(snap.get("local:p")).toEqual<AttentionEntry>({
+      ref: "local:p",
+      title: "local:p",
+      level: "needs_you",
+      askPending: false,
+      approvalPending: true,
+    });
+  });
+  test("a failed row stays an error with an approval pending", () => {
+    const snap = snapshotFromNavigation([row({ ref: "local:e", state: "errored", approval_pending: true })]);
+    expect(snap.get("local:e")?.level).toBe("error");
   });
   test("warning maps into the needs_you level", () => {
     const snap = snapshotFromNavigation([row({ ref: "local:w", state: "warning" })]);
@@ -91,6 +109,13 @@ describe("detectFires", () => {
     expect(
       detectFires(snap(), snap(row({ ref: "local:a", state: "awaiting", ask_pending: true })), asks).map((e) => e.ref),
     ).toEqual(["local:a"]);
+  });
+  test("asks: an approval transition fires, like a question", () => {
+    expect(
+      detectFires(snap(), snap(row({ ref: "local:p", state: "active", approval_pending: true })), asks).map(
+        (e) => e.ref,
+      ),
+    ).toEqual(["local:p"]);
   });
   test("asks: an error transition fires", () => {
     expect(detectFires(snap(), snap(row({ ref: "local:e", state: "errored" })), asks).map((e) => e.ref)).toEqual([

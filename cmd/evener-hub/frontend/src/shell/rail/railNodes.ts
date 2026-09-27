@@ -6,11 +6,12 @@
 // project detail map, the manifest's launch sources) and wires the results
 // into <Tree>.
 
-import type {
-  NavigationJobSummary,
-  NavigationSessionSummary,
-  NavigationWatchSummary,
-  Source,
+import {
+  approvalWaiting,
+  type NavigationJobSummary,
+  type NavigationSessionSummary,
+  type NavigationWatchSummary,
+  type Source,
 } from "@evener/appwire-client";
 import { projectNodeExpansionKey } from "@evener/appwire-client/state/navigation";
 import { LOCAL_HOST } from "../../stores/hostRouting";
@@ -601,10 +602,16 @@ function stateNeedsYou(state: string): boolean {
 // surface, simply idle: glossing it "your move" made every finished delegate
 // read as attention it does not need. Only a genuine ask_user (ask_pending)
 // keeps a subagent needs-you, because that question does reach the user.
-// Every per-node attention judgment (the row's dot and gloss in RailRow, the
-// badge count and sort below) reads this one helper, so they can never
-// disagree about the same row.
-export function displayState(node: RailSession): string {
+// A row waiting on an approval presents as needs-you the same way, from any
+// state but a failure: the escalation blocks its turn mid-tool, so the wire
+// state stays "active" (approvalWaiting). Every per-node attention judgment
+// (the row's dot and gloss in RailRow, the badge count, the working count and
+// the sort below, the palette's needs-you dots) reads this one helper, so
+// they can never disagree about the same row.
+export function displayState(
+  node: Pick<NavigationSessionSummary, "kind" | "state" | "ask_pending" | "approval_pending">,
+): string {
+  if (approvalWaiting(node.state, node.approval_pending === true)) return "awaiting";
   if (node.kind === "subagent" && node.state === "awaiting" && node.ask_pending !== true) return "idle";
   return node.state;
 }
@@ -631,7 +638,7 @@ export function activeWorkSummary(node: RailSession): ActiveWorkSummary {
   let runningJobs = (node.running_jobs ?? []).length;
   for (const child of node.children) {
     const childActivity = activeWorkSummary(child);
-    workingSubagents += (child.state === "active" ? 1 : 0) + childActivity.workingSubagents;
+    workingSubagents += (displayState(child) === "active" ? 1 : 0) + childActivity.workingSubagents;
     runningJobs += childActivity.runningJobs;
   }
   return { workingSubagents, runningJobs };

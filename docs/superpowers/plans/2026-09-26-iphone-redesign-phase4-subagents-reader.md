@@ -8,7 +8,7 @@
 - **Pure cores.** `src/subagents/subagentModel.ts` turns the activity tree the hub already serves (`evener/jobs/list`) into subagent rows, states, sections, tallies and copy. `src/reader/documentBlocks.ts`, `documentChanges.ts`, `documentSource.ts` and `reviewMessage.ts` turn a document's text into blocks, changes, notices and the review message, and `documentReferences.ts` finds the documents a session's transcript names or wrote.
 - **Data.** `SubagentTree` shares one `ActivityList` per coordinator between the Subagents list and the subagent screens above it, and follows every page of the tree on its own. `DocumentMemory` keeps reading positions, the version you last read (as block hashes), unsent comments and the Continue reading trail in the kv-store. `StopRequests` remembers the stop requests you sent.
 - **Sending from above a session.** The stop request and the review are written on screens stacked above the session they go to. `src/session/sessionMessage.ts` reads that session's state, routes the review through phase 3's `sendAction` as the composer does, and admits the message through the durable runtime. `NativeMutationRuntime.settleTarget` then releases the session's target, so the message leaves at once, even after a reconnect.
-- **Screens.** `SubagentsScreen`, `SubagentScreen` and `StopSubagentSheet`; `ReaderScreen` with its outline, comment, comments and review sheets; `DocumentChip` under the agent's messages, and `FilesSheet`; and `ContinueReadingRow` on the Board. New routes `"Subagents"`, `"Subagent"` and `"Reader"` join the native stack.
+- **Screens.** `SubagentsScreen`, `SubagentScreen` and `StopSubagentSheet`; `ReaderScreen` with its outline, comment, comments and review sheets; `DocumentChip` under the agent's messages, and `FilesSheet`; and `ContinueReadingRow` on the Board. New routes `"Subagents"`, `"Subagent"` and `"Reader"` join the native stack. The six sheets are native sheet routes on phase 2's PR 6, in the stack's sheet group (ruling 26).
 
 **Tech Stack:** Expo SDK 57, React Native 0.86.3, React 19, TypeScript 6, vitest 5 with react-test-renderer (`src/renderNative.testkit.tsx`), `@react-navigation/native-stack` 7, `react-native-enriched-markdown` 1.0.2 (`EnrichedMarkdownText`), `expo-sqlite/kv-store` for device memory, `expo-clipboard`, `expo-symbols` (phase 2). This phase adds `marked` 18.0.6, the web's markdown parser, as a pure-JavaScript dependency of `mobile-native` (no pods).
 
@@ -27,10 +27,10 @@ This phase starts after phase 3's PRs are on main (roadmap: a phase starts only 
 | The composer's one Send: `sendAction` in `src/session/sendAction.ts`, and `ownPendingSend` in `@evener/appwire-client/state/mutation` | phase 3, Tasks 2-3 | `grep -n "export function sendAction" mobile-native/src/session/sendAction.ts` |
 | Compact numbers: `compactDuration` and `compactCount` in `src/session/format.ts` | phase 3, Task 3 | `grep -n "export function compact" mobile-native/src/session/format.ts` |
 | The Subagents chip's tally type, `SubagentTally` in `src/session/sessionState.ts` | phase 3, Task 13 | `grep -n "interface SubagentTally" mobile-native/src/session/sessionState.ts` |
-| The Notes & links sheet, `NotesSheet` (`src/session/NotesSheet.tsx`), whose `file://` links aren't tappable yet (ruling 6) | phase 3, Task 17 | `grep -n "export function NotesSheet" mobile-native/src/session/NotesSheet.tsx` |
+| The Notes & links sheet: the `NotesSheet` route and its host `notesHosts` (`src/session/NotesSheet.tsx`), whose `file://` links aren't tappable yet (ruling 6) | phase 3, Task 17 | `grep -n "notesHosts" mobile-native/src/session/NotesSheet.tsx` |
 | The toast: `useToast` and `<Toast>` in `src/Toast.tsx`, one per screen | phase 3, Task 1 (its ruling 27) | `grep -n "export function useToast" mobile-native/src/Toast.tsx` |
 | Long-press menus: `ActionSheetIOS`, until phase 2 PR 4's context-menu spike settles a library | phase 3's ruling 25 | the description of phase 2's PR 4 |
-| Sheets: RN `Modal` with `presentationStyle="pageSheet"` | phase 3 (every sheet) | `grep -rn "pageSheet" mobile-native/src/session` |
+| Sheets: native-stack formSheet routes: `<Sheet>` and `useSheet` (`src/sheet/Sheet.tsx`), `SHEET_ROUTES` and `inFront` (`src/sheet/sheetRoutes.ts`), `sheetHosts`, `sheetKey`, `useSheetHost` and `useProvideSheetHost` (`src/sheet/sheetHosts.ts`), `useScreenInFront` (`src/sheet/useScreenInFront.ts`), and App.tsx's sheet group | phase 2's PR 6 (its part 3, Task 18), which phase 3's sheets build on (its ruling 37) | `grep -n "export function useSheet" mobile-native/src/sheet/Sheet.tsx` |
 | Haptics: none until phase 6, behind Hub > Alerts | phase 3's ruling 5 | nothing to check |
 | `StateMark`, `boardMemory.ts`, `BoardScreen`, the Board's section headers, and the notices (`src/board/Notices.tsx`) | phase 2, and its part 2 | `ls mobile-native/src/board` |
 
@@ -64,6 +64,7 @@ This phase starts after phase 3's PRs are on main (roadmap: a phase starts only 
 - **Numbers:** tabular figures; durations "40s", "12m", "3h", "2d" and tokens "39.8K", "1.2M", "46M", through phase 3's `compactDuration` and `compactCount`; sizes "512 KB", "1.3 MB".
 - **Routes and storage:**
   - New routes: `Subagents: { hubId: string; ref: string; threadId: string; title: string }` (the coordinator), `Subagent: { hubId: string; ref: string; title: string; coordinator: { ref: string; threadId: string; title: string } }` and `Reader: { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string; updatedAt?: string }`. Existing route names and params are unchanged.
+  - New sheet routes, each in `SHEET_ROUTES` and so never reopened by a relaunch (ruling 26): `StopSubagentSheet`, `OutlineSheet`, `CommentSheet`, `CommentsSheet`, `ReviewSheet` and `FilesSheet`, with the params ruling 26's table gives.
   - New kv-store keys: `evener.native.subagent-stops.${hubId}`, `evener.native.documents.${hubId}` and `evener.native.continue-reading.${hubId}`. All three are cleared by `ConnectionProvider.removeHub`. Existing keys are unchanged.
 - **Fallbacks, not fakes.** Subagent rows come from `evener/jobs/list`; documents from `/doc/file?format=raw` through `readDocFile` and `nativeDocPort`, and images from `/doc/image`. Where the spec wants data the hub doesn't send yet, this phase uses section 18's fallback: S3 (tally the loaded subagents), S6 (steer the coordinator), S7 (an "Open it on the host" notice), S9 (diff against the version you last read).
 - **Tests** meet the hub at the request boundary: `FakeClient` from `@evener/appwire-client/testing/fakeClient`, a fetch spy for documents, and the durable runtime's own SQLite double. Never mock the module under test.
@@ -122,7 +123,22 @@ Decisions this plan makes where the spec is silent, or where its data doesn't ex
 23. **Files & artifacts lists documents only.** Artifacts wait for the shared-artifacts work to reach main (10.3), and the sheet keeps the spec's title. Rows come from the same derivation as the document chips (ruling 28), the files the session wrote, and the session's `file://` links inside its folder. Their blue dot compares the write time a row carries with the one you last read (both hub times).
 24. **In a subagent's transcript, your-message bubbles are captioned "From the coordinator"**, because the coordinator wrote them (the prototype's caption). Long-press offers Copy and Select text only: Quote in reply and Fork need a session you can write to.
 25. **`evener/jobs/list` is re-read whole on each tree notification while the list is focused.** That is the cost of a paged tree without S3. Notifications that arrive during a read coalesce into one more.
-26. **Sheets are page sheets**: an RN `Modal` with `presentationStyle="pageSheet"`, as every phase 3 sheet is. The spec's medium detent (section 6) needs a native sheet presentation the app doesn't have, and adopting one is a change for every sheet at once, so the stop request, comment, Comments, outline and Files & artifacts sheets open at the large size until then.
+26. **Sheets are native sheets.** This supersedes this ruling's first form, which kept RN `Modal` page sheets until the app had a native sheet presentation. It has one now: Jesse approved native sheets that open pickers at half height ("Build the redesign's sheets as native navigation sheets, so pickers open at half height?" "yes"), and phase 2's PR 6 builds them (its ruling 28). Every sheet here is a formSheet route that rests at medium and large:
+
+    | Sheet | Route and params | Opens at | Reads | Hands back | Task |
+    |---|---|---|---|---|---|
+    | Stop subagent | `StopSubagentSheet` `{ hubId, coordinator: { ref, threadId, title }, ref }` | large (you type) | its params, the shared subagent tree, the connection and the durable runtime | nothing: it sends, then closes | 9 |
+    | Outline | `OutlineSheet` `{ hubId, sessionRef, path }` | medium (a picker) | `readerHosts`: the Reader's outline | the heading to jump to | 14 |
+    | Comment | `CommentSheet` `{ hubId, sessionRef, path, blockIndex, blockHash, quote }` | large (you type) | its params and `documentMemory` | nothing: it adds the comment, then closes | 16 |
+    | Comments | `CommentsSheet` `{ hubId, sessionRef, path, reviewRef, reviewTitle }` | medium (a list) | `documentMemory`, and `readerHosts` to jump | the block to show | 16 |
+    | Review | `ReviewSheet` `{ hubId, sessionRef, path, reviewRef, reviewTitle }` | large (you type) | its params, `documentMemory`, the connection and the durable runtime | nothing: it sends, then returns to the session | 17 |
+    | Files & artifacts | `FilesSheet` `{ hubId, ref, title, documents }` | medium (a list) | its params (`documents` is the session's `SessionDocument[]` when it opened) and `documentMemory` | nothing: a row opens the Reader | 19 |
+
+    - **The Reader's host.** `readerHosts = sheetHosts<ReaderHost>()` lives in `ReaderScreen.tsx`, keyed by `sheetKey(hubId, sessionRef, path)`. While mounted, the Reader provides `{ outline: readonly OutlineEntry[]; jumpTo(index: number): void }`.
+    - **A screen under its own sheets stays in front** (phase 2's Task 18.3). The Reader neither re-reads its document nor records a visit when one of its sheets opens or closes (Task 14). The subagent screen follows its subagent's thread through the session's binding, which stays in front under the stop sheet. Its tree reload and its stop toast stay on focus (Tasks 8 and 9), so they run when the stop sheet closes, where the toast can be seen; the sheet reads its own row from the shared tree meanwhile.
+    - **Unsaved input asks first:** the stop request once its text differs from the prefill ("Discard this message?"), a comment with text ("Discard this comment?"), and the review once a verdict or a note is chosen ("Discard this review?"). The comments themselves stay in `documentMemory` whatever happens.
+    - **A sheet closes before it leads elsewhere.** A Files row opens the Reader, and the review returns to its session, with the sheet gone first (`sheet.finish`). The Comments sheet opens the Review sheet over itself.
+    - **Send keeps the composer's look.** A sheet's header buttons are text, so the stop request's and the review's one Send sits in the body, in the composer's look, and the header keeps Cancel.
 27. **No haptics in this phase.** Phase 3 moved every haptic to phase 6, behind Hub > Alerts' one setting (its ruling 5), so the chips, the stop request and the review add none.
 28. **Document chips and the Files chip are this phase's.** Phase 3 left them for the Reader (its ruling 6), so Tasks 18 and 19 build them: a path the agent names in a message becomes a chip under that message (spec 8.2), and the session's write of that file gives its age. Paths come from inline code and link targets, only for files inside the session's folder (the `cwdRelative` rule the web's "Open beside" uses), and a bare name like `README.md` counts only when the session wrote that file, so a chip rarely points at nothing.
 
@@ -2608,7 +2624,7 @@ export function returnToSession(
    - a `SubagentRow` inside it opens `"Subagent"` for that subagent, under the same coordinator;
    - a document chip opens the Reader (Task 18 builds the chips) with `sessionRef` set to this subagent's ref and `reviewRef` and `reviewTitle` set to the coordinator's.
 5. **Action bar** (where the composer sits, above the home indicator, 12pt padding, 8pt gap, 44pt buttons of equal width):
-   - "Ask coordinator to stop it" (`stop.fill` 12pt and the label in `inkHi`, a hairline `edgeStrong` border) while `row.active` and `stopRequests(hubId).view(row)` isn't `"requested"` (question 3). Pressing it opens `StopSubagentSheet` (Task 9).
+   - "Ask coordinator to stop it" (`stop.fill` 12pt and the label in `inkHi`, a hairline `edgeStrong` border) while `row.active` and `stopRequests(hubId).view(row)` isn't `"requested"` (question 3). Pressing it opens the stop sheet (Task 9): `navigation.navigate("StopSubagentSheet", { hubId, coordinator, ref: row.ref })`.
    - "Stop requested" (15/20 `inkMid`, not a button) while the request is pending.
    - "Open coordinator" (filled `accentFill`, `onFill` text), always. It calls `returnToSession(navigation, { hubId, ref: coordinator.ref, title: coordinator.title })`.
 6. **Liveness (ruling 9).** Here the connection follows this subagent's thread, through phase 3's binding. On focus, `tree.reload()`. While focused, a `thread/status/changed` or `turn/completed` for this subagent's ref calls `tree.reload()`, so a stop shows up here.
@@ -2665,16 +2681,17 @@ it("goes back to the session when it's under this screen, and opens it otherwise
 ### Task 9: Ask coordinator to stop it
 
 **Files:**
-- Create: `mobile-native/src/subagents/StopSubagentSheet.tsx`
+- Create: `mobile-native/src/subagents/StopSubagentSheet.tsx` (the `StopSubagentSheet` route)
 - Modify: `mobile-native/src/subagents/SubagentScreen.tsx`, `mobile-native/src/subagents/SubagentsScreen.tsx` and `mobile-native/src/subagents/SubagentRowView.tsx` (the request's words on rows, and the toast)
+- Modify: `mobile-native/App.tsx` (`StopSubagentSheet` joins the sheet group), `mobile-native/src/sheet/sheetRoutes.ts` (`StopSubagentSheet: sheetOptions(["medium", "large"], "large")`) and `Routes` (`StopSubagentSheet: { hubId: string; coordinator: { ref: string; threadId: string; title: string }; ref: string }`)
 - Test: `mobile-native/src/subagents/StopSubagentSheet.test.tsx`, and additions to `SubagentsScreen.test.tsx`
 
 **Interfaces:**
-- Consumes: `SessionLink`, `stopRequestKind` and `submitSessionMessage` (Task 3); `getNativeMutationRuntime` (`src/nativeMutationRuntime.ts`); `stopRequests` (Task 7); `useToast` and `<Toast>` from `src/Toast.tsx` (phase 3's Task 1).
-- Produces: `<StopSubagentSheet hubId coordinator={{ ref, title }} row={SubagentRow} onClose={() => void} />`
+- Consumes: `SessionLink`, `stopRequestKind` and `submitSessionMessage` (Task 3); `getNativeMutationRuntime` (`src/nativeMutationRuntime.ts`); `stopRequests` (Task 7); `useSubagentTree` and `flattenSubagents` (Tasks 4-5); `useToast` and `<Toast>` from `src/Toast.tsx` (phase 3's Task 1); `useSheet` and `<Sheet>` (phase 2's Task 18.2).
+- Produces: `StopSubagentSheet`, the route component for `"StopSubagentSheet"`. It finds its row in the shared tree (`useSubagentTree(hubId, coordinator.ref, coordinator.threadId)`) by `ref`, as the subagent screen does, so its params stay plain data.
 
 **Requirements (spec 9, ruling 10):**
-1. **Presentation.** A page sheet (ruling 26), titled "Stop subagent", with Cancel leading.
+1. **Presentation.** A sheet route that opens at large, since you type in it (ruling 26): `<Sheet title="Stop subagent" onCancel={sheet.close}>` over one `ScrollView` with `automaticallyAdjustKeyboardInsets`. A row the tree no longer lists finishes the sheet.
 2. **Message.** A multiline text field in the composer's field style, prefilled and editable:
    - `Stop subagent “Fix race in tree settle”: it's no longer needed.` for a running subagent;
    - `Stop subagent “Fix race in tree settle”: it has failed.` for a failed one.
@@ -2682,16 +2699,19 @@ it("goes back to the session when it's under this screen, and opens it otherwise
 3. **The coordinator's state.** On open, `new SessionLink(client, coordinator.ref).read({ follow: false })`. It never takes the connection's subscription, which the transcript under the sheet is following. Dispose the link on close.
 4. **The one Send.** `paperplane.fill` on `accentFill` (the composer's Send look, 44pt), trailing.
    - It is disabled while the text is blank, while the coordinator's state is unknown, or while `stopRequestKind(state)` is null. In the null case the line reads "The coordinator can't take a message right now." instead.
-   - Pressing it calls `submitSessionMessage(getNativeMutationRuntime(), client, { hubId, ref: coordinator.ref, threadId: state.threadId, instanceId: state.instanceId }, kind, text.trim())`, then `stopRequests(hubId).request(coordinator.ref, row, Date.now())`, and closes the sheet. No haptic (ruling 27).
+   - It sits in the body, trailing the field, in the composer's look (ruling 26).
+   - Pressing it calls `submitSessionMessage(getNativeMutationRuntime(), client, { hubId, ref: coordinator.ref, threadId: state.threadId, instanceId: state.instanceId }, kind, text.trim())`, then `stopRequests(hubId).request(coordinator.ref, row, Date.now())`, and finishes the sheet (`sheet.finish()`). No haptic (ruling 27).
    - On failure the sheet stays open with the text kept, and one line in `dangerInk` (13/18) under the field: "Couldn't send this: <the error's message>".
+   - Until it sends, a text that differs from the prefill is unsaved input: `useSheet({ dirty, discardTitle: "Discard this message?" })`.
 5. **The request's words.** The Subagents list passes `note` to `SubagentRowView`: "Stop requested from the coordinator" when `stopRequests(hubId).view(row)` is `"requested"`, and "Stopped at your request" when it is `"stopped"`. The subagent screen's bar shows "Stop requested" while pending.
 6. **The toast.** Each of the two screens hosts phase 3's toast (`useToast()`, with `<Toast>` above its bottom edge, as the session screen places it). Whichever is focused (`useIsFocused`) calls `stopRequests(hubId).reconcile(coordinator.ref, rows)` each time the tree snapshot changes, and shows `“Fix race in tree settle” stopped` for each row it returns. Only the focused screen reconciles, so the toast shows where you are, and once.
 7. **S6.** When S6 lands, this sheet becomes "Stop subagent" with a confirmation and no message (spec 9), stopping only that subagent (Jesse's ruling). Leave a comment saying so at the call site of `stopRequestKind`.
 
-- [ ] **Step 1: Write the failing tests** (`StopSubagentSheet.test.tsx`). Use the real durable runtime, set up as `src/ConversationScreen.recovery.test.tsx:90-105` does: mock `expo-sqlite` so `openDatabaseSync` returns the in-memory double from `src/sqliteSync.testkit.ts`, and `expo-sqlite/kv-store` with an in-memory `Storage`. Then `getNativeMutationRuntime()` is a real runtime. Register the coordinator's target with the test's `FakeClient` and start the runtime (`registerTarget("hub-1", "local:coord", client)`, then `start()`), as the coordinator's session screen underneath would. The `FakeClient`'s `thread/read` answers the coordinator's status under test, shaped as `nativeMutationRuntime.test.ts`'s `readResponse`, and its `turn/steer` and `turn/start` answer an applied receipt (that file's `appliedReceipt`). Assert on what reaches the wire. Cover:
+- [ ] **Step 1: Write the failing tests** (`StopSubagentSheet.test.tsx`). Render the route with its params, `@react-navigation/native`'s `useNavigation` and `usePreventRemove` mocked as phase 2's Task 18.2 mocks them, and the tree answered by the `FakeClient`'s `evener/jobs/list`. Use the real durable runtime, set up as `src/ConversationScreen.recovery.test.tsx:90-105` does: mock `expo-sqlite` so `openDatabaseSync` returns the in-memory double from `src/sqliteSync.testkit.ts`, and `expo-sqlite/kv-store` with an in-memory `Storage`. Then `getNativeMutationRuntime()` is a real runtime. Register the coordinator's target with the test's `FakeClient` and start the runtime (`registerTarget("hub-1", "local:coord", client)`, then `start()`), as the coordinator's session screen underneath would. The `FakeClient`'s `thread/read` answers the coordinator's status under test, shaped as `nativeMutationRuntime.test.ts`'s `readResponse`, and its `turn/steer` and `turn/start` answer an applied receipt (that file's `appliedReceipt`). Assert on what reaches the wire. Cover:
   - the prefill for a running and for a failed subagent, and the line "Arrives at the coordinator's next step";
   - reading the coordinator sends `thread/read` without `subscribe`;
-  - Send steers when the coordinator is active: the client receives `turn/steer` with `ref: "local:coord"` and `input: [{ type: "text", text }]`, the request is recorded (`view` is `"requested"`), and the sheet closes;
+  - Send steers when the coordinator is active: the client receives `turn/steer` with `ref: "local:coord"` and `input: [{ type: "text", text }]`, the request is recorded (`view` is `"requested"`), and the sheet finishes (`goBack`);
+  - an edited message holds the route (`usePreventRemove` receives true), and the guard asks "Discard this message?"; the prefill alone doesn't;
   - Send sends when the coordinator is idle: the client receives `turn/start`;
   - Send is disabled while the text is blank, and for a coordinator that needs a restart, with "The coordinator can't take a message right now.";
   - a `submit` that rejects (`vi.spyOn(runtime, "submit").mockRejectedValueOnce(new Error("The mutations database is unavailable"))`) keeps the sheet open with "Couldn't send this: The mutations database is unavailable" and the text;
@@ -4217,16 +4237,18 @@ Open PR 4: "feat(native): the Reader's document foundations (phase 4, PR 4)". Th
 ### Task 14: The Reader screen
 
 **Files:**
-- Create: `mobile-native/src/reader/useDocument.ts`, `mobile-native/src/reader/ReaderScreen.tsx`, `mobile-native/src/reader/ReaderBlock.tsx`, `mobile-native/src/reader/OutlineSheet.tsx` and `mobile-native/src/markdownStyle.ts`
+- Create: `mobile-native/src/reader/useDocument.ts`, `mobile-native/src/reader/ReaderScreen.tsx` (the screen and `readerHosts`), `mobile-native/src/reader/ReaderBlock.tsx`, `mobile-native/src/reader/OutlineSheet.tsx` (the `OutlineSheet` route) and `mobile-native/src/markdownStyle.ts`
 - Modify:
-  - `mobile-native/App.tsx` (the `"Reader"` route) and the `Routes` type;
+  - `mobile-native/App.tsx` (the `"Reader"` route, and `OutlineSheet` in the sheet group) and the `Routes` type (`OutlineSheet: { hubId: string; sessionRef: string; path: string }` beside `Reader`);
+  - `mobile-native/src/sheet/sheetRoutes.ts` (`OutlineSheet: sheetOptions(["medium", "large"], "medium")`);
   - `mobile-native/src/MarkdownResponse.tsx` (the transcript's markdown, which phase 3's Task 24 keeps): its style object moves into `markdownStyle.ts` so the transcript and the Reader share one builder, and its `copy`, `openLink` and `showLink` helpers become exports the Reader reuses;
   - `mobile-native/src/location.ts` (the Reader restores, ruling 21; the code is below).
-- Test: `mobile-native/src/reader/useDocument.test.tsx`, `mobile-native/src/reader/ReaderScreen.test.tsx` and `mobile-native/src/location.test.ts`
+- Test: `mobile-native/src/reader/useDocument.test.tsx`, `mobile-native/src/reader/ReaderScreen.test.tsx`, `mobile-native/src/reader/OutlineSheet.test.tsx` and `mobile-native/src/location.test.ts`
 
 **Interfaces:**
 - Consumes:
   - Tasks 10-13;
+  - phase 2's Task 18 (`useSheet`, `<Sheet>`, `sheetHosts`, `sheetKey`, `useSheetHost`, `useProvideSheetHost`, `useScreenInFront`);
   - `nativeDocPort` and `nativeDocImageSource` (`src/nativeDocPort.ts`); the hub's origin from `useConnection().profiles`, and its token from `new HubProfiles(SecureStore).token(hubId)`, as `src/TranscriptImages.tsx:19-48` does;
   - `SessionLink` (Task 3), `returnToSession` (Task 8), `compactDuration` (phase 3's `src/session/format.ts`);
   - `typeRoles.document`, `fonts` and `useColors()` (`src/design/tokens.ts`, `src/ui.tsx`); `EnrichedMarkdownText` from `react-native-enriched-markdown`; `expo-clipboard`.
@@ -4234,16 +4256,18 @@ Open PR 4: "feat(native): the Reader's document foundations (phase 4, PR 4)". Th
   - `useDocument(hubId: string, sessionRef: string, path: string): { document: LoadedDocument | null; reload(): void }`
   - `markdownStyle(colors: ReturnType<typeof useColors>, roles: { body: TextRole; headings: [TextRole, TextRole, TextRole] }): MarkdownStyle`, where `TextRole` is `{ fontFamily?: string; fontSize: number; lineHeight: number; fontWeight?: string }`
   - `ReaderScreen`, the route component for `"Reader"`, and `<ReaderBlock block changed selected? commentCount? onLongPress? />`
+  - `interface ReaderHost { outline: readonly OutlineEntry[]; jumpTo(index: number): void }` and `readerHosts = sheetHosts<ReaderHost>()`, from `ReaderScreen.tsx`, keyed by `sheetKey(hubId, sessionRef, path)`
+  - `OutlineSheet`, the route component for `"OutlineSheet"`
 
 **Requirements (spec 10.2):**
 1. **Reading.** `useDocument` builds the doc port from the hub's origin and token and calls `loadDocument`.
    - It reads on mount, and again on `reload()`, whenever the connection returns to ready, and whenever the app returns to the foreground (`AppState` "active").
    - A re-read keeps the shown document until the new one lands. A re-read that comes back `failed` keeps the old one, because it is transient; `missing` or `forbidden` replace it, because the file really changed.
-   - The screen calls `reload()` when it comes into focus, and when the document's session ends a turn: a `SessionLink(client, sessionRef)` followed while the screen is focused, whose status moving from "active" to anything else triggers it (ruling 22).
+   - The screen calls `reload()` when it comes back to the front, and when the document's session ends a turn: a `SessionLink(client, sessionRef)` followed while the screen is in front, whose status moving from "active" to anything else triggers it (ruling 22). In front is `useScreenInFront(route.key)` (phase 2's Task 18.2), so the Reader's own sheets opening or closing never re-read it.
 2. **First load.** Three text-line skeletons (`inset` fill, no shimmer) until the first read lands. No spinner, and never a Retry.
 3. **Header.**
    - The nav bar is empty until the document's first heading scrolls out of view (viewability: that block is no longer viewable and a later one is). Then the title takes it, 15pt semibold, one line, with the caption beneath at 13pt `inkLow`.
-   - Trailing: the outline button (`list.bullet.indent`) when the document has two or more headings, and ⋯ (`ellipsis.circle`) with "Open session", "Copy path" and "Copy text". Both are `unstable_headerRightItems` entries, and ⋯ is a native menu, as phase 3's session menu is (its ruling 9).
+   - Trailing: the outline button (`list.bullet.indent`) when the document has two or more headings, and ⋯ (`ellipsis.circle`) with "Open session", "Copy path" and "Copy text". Both are `unstable_headerRightItems` entries, and ⋯ is a native menu, as phase 3's session menu is (its ruling 9). The outline button opens the outline sheet (requirement 13).
    - "Open session" is `returnToSession(navigation, { hubId, ref: reviewRef, title: reviewTitle })`. The copies go through MarkdownResponse's `copy`, which announces "Copied".
    - Back is the system back. Phase 6 holds in-app alerts on this screen and puts their count on Back (13.3); nothing here builds that.
 4. **Caption.** The first line above the document, 13/18 `inkLow` with 16pt margins: the kind; then " · updated 3m ago" when the route has an `updatedAt` that parses (`compactDuration(now - Date.parse(updatedAt))`; an unparseable one is left out, like a missing one); then " · " and `changesCaption(...)` in `accentInk` when there are changes. Under it, `truncationNote` when the document was cut.
@@ -4264,9 +4288,10 @@ Open PR 4: "feat(native): the Reader's document foundations (phase 4, PR 4)". Th
    - When a scroll ends (`onMomentumScrollEnd`, `onScrollEndDrag`), save `memory.savePosition(key, position)`: the first viewable block's index and hash, the screen's top edge's offset into it, and progress = (scroll offset + viewport height) / content height, clamped to 0-1.
 8. **Changes.** Computed once, when the first read of this visit lands: `changedBlocks(blocks, memory.lastRead(key)?.blocks ?? null)`, captioned with that last read's `readAt`. A re-read during the visit compares against the same last read.
 9. **The bottom bar** (this task's part), shown while there are changes: the stepper reads "‹ 3 changes ›" at first, then "‹ Change 1 of 3 ›". Its chevrons (`chevron.left`, `chevron.right`, 44pt) wrap around, and each step scrolls that block to the top, animated. The bar sits on the page above the home indicator, with no box. PR 6 adds Comments and Send review to it.
-10. **Leaving.** When the screen blurs or unmounts, call `memory.left(key, { title, blocks, position, reviewRef, reviewTitle, updatedAt })`, with `blocks` the hashes for markdown, and an empty list for other kinds, which have no changes.
+10. **Leaving.** When the screen leaves the front (a screen pushed over it; never its own sheets) or unmounts, call `memory.left(key, { title, blocks, position, reviewRef, reviewTitle, updatedAt })`, with `blocks` the hashes for markdown, and an empty list for other kinds, which have no changes.
 11. **Quiet.** No composer, tray, Next capsule, Retry, Refresh or Reconnect.
-12. **Relaunch.** In `location.ts` (code below): a `reader` location holds the document, and its `conversation` is the review session, so relaunch restores the Board, then that session, then the Reader.
+12. **Relaunch.** In `location.ts` (code below): a `reader` location holds the document, and its `conversation` is the review session, so relaunch restores the Board, then that session, then the Reader. A sheet open over the Reader is never saved (`routeToSave`), so the Reader is what reopens.
+13. **The outline** (ruling 26). While mounted, the Reader provides `readerHosts` under `sheetKey(hubId, sessionRef, path)` with `useProvideSheetHost`: `outline(blocks)`, and `jumpTo(index)`, which scrolls that block to the top, animated. The outline button navigates to `"OutlineSheet"` with `{ hubId, sessionRef, path }`. The sheet, at medium, is `<Sheet title="Outline" done={{ onPress: () => sheet.finish() }}>` (spec 10.2's word) over one `FlatList` of the headings, indented by depth. Tapping one finishes the sheet, then calls `jumpTo(entry.index)`.
 
 `location.ts` changes (full code):
 
@@ -4382,6 +4407,7 @@ function reader(value: unknown): value is NonNullable<SavedLocation["reader"]> {
 
 - [ ] **Step 1: Write the failing tests**
   - `location.test.ts`: the two tests above.
+  - `OutlineSheet.test.tsx`, rendering the route with a host in `readerHosts` and `@react-navigation/native` mocked as phase 2's Task 18.2 mocks it: the headings render in order, indented by depth, and tapping one calls `goBack()` and then `jumpTo` with its block's index.
   - `useDocument.test.tsx` (`renderHook` from `renderNative.testkit`; mock `../ConnectionProvider`, `expo-secure-store` and `react-native`'s `AppState`; spy on `globalThis.fetch` as `nativeDocPort.test.ts` does):
     - the first read asks `/doc/file` with the bearer token and returns the loaded document;
     - `reload()` keeps the old document on screen until the new read lands;
@@ -4394,11 +4420,11 @@ function reader(value: unknown): value is NonNullable<SavedLocation["reader"]> {
     - a remembered position scrolls to its block on open;
     - leaving writes the last read and the position, and leaves the Continue reading trail below 97% progress;
     - the truncation note, a binary notice, the other-host notice (with no request made), a missing file's notice, a code file's line numbers, and an image's source with the bearer header;
-    - the outline lists the headings and jumps to one;
+    - the outline button navigates to `"OutlineSheet"` with `{ hubId: "studio", sessionRef, path }`, the host the Reader provides lists the headings, and its `jumpTo` scrolls to that block;
     - ⋯ "Open session" returns to the review session, and "Copy path" puts the path on the clipboard;
     - no rendered text is "Retry", "Refresh" or "Reconnect", and nothing is a Next capsule.
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/reader src/location.test.ts`
-- [ ] **Step 3: Implement** to the requirements, with the location code above.
+- [ ] **Step 3: Implement** to the requirements, with the location code above. `ReaderScreen.test.tsx` mocks `useNavigationState` beside `useIsFocused`, since the Reader asks whether it is in front.
 - [ ] **Step 4: Run them and watch them pass**, `npm run check`, and `make test-native-bundle`. Build Release in the simulator and read a plan from a real session, then scroll, leave and come back.
 - [ ] **Step 5: Commit** (`feat(native): the Reader`).
 
@@ -4407,19 +4433,19 @@ function reader(value: unknown): value is NonNullable<SavedLocation["reader"]> {
 The Reader's first way in. Document chips and Files & artifacts follow in PR 7 (Tasks 18 and 19).
 
 **Files:**
-- Modify: `mobile-native/src/session/NotesSheet.tsx` (phase 3's Task 17) and `ConversationScreen` in `mobile-native/src/screens.tsx`, which renders it
+- Modify: `mobile-native/src/session/NotesSheet.tsx` (phase 3's Task 17: the `NotesSheet` route) and `ConversationScreen` in `mobile-native/src/screens.tsx`, which provides its host
 - Test: `mobile-native/src/session/NotesSheet.test.tsx`
 
 **Interfaces:**
-- Consumes: the `"Reader"` route (Task 14); `cwdRelative` and `fileURLToPath` (Task 10).
-- Produces: `NotesSheet` gains `cwd` in its `session` prop and an `onOpenDocument(path: string): void` prop.
+- Consumes: the `"Reader"` route (Task 14); `cwdRelative` and `fileURLToPath` (Task 10); `useSheet` (phase 2's Task 18.2).
+- Produces: `NotesHost` (phase 3's Task 17) gains `cwd: string` and `title: string`, the session's folder and its title as the screen shows it.
 
 **Requirements (spec 8.8):**
-1. **A `file://` link** opens the Reader when `cwdRelative(fileURLToPath(url), cwd)` names a path inside the session's folder: tapping it calls `onOpenDocument(path)`, and `ConversationScreen` closes the sheet, then navigates to `"Reader"` with `{ hubId, sessionRef: ref, path, reviewRef: ref, reviewTitle: title }` (no `updatedAt`: a link carries no write time, ruling 17).
+1. **A `file://` link** opens the Reader when `cwdRelative(fileURLToPath(url), host.cwd)` names a path inside the session's folder. Tapping it finishes the sheet first (ruling 26), which saves the note as any close does, then opens the Reader over the session: `sheet.finish(() => { navigation.goBack(); navigation.navigate("Reader", { hubId, sessionRef: ref, path, reviewRef: ref, reviewTitle: host.title }); })` (no `updatedAt`: a link carries no write time, ruling 17).
 2. **Any other file link** (another machine, a malformed escape, a file outside the folder) keeps its text and isn't tappable, as on the web, where `FileOpenBesideButton` withholds the same links. Its row's `doc.text` glyph stays.
 3. Web links are unchanged (phase 3's in-app browser), and so are touch and hold and the footer.
 
-- [ ] **Step 1: Write the failing tests** in `NotesSheet.test.tsx`, with phase 3's harness for that sheet: with the session's `cwd` "/home/jesse/git/evener", tapping `file:///home/jesse/git/evener/docs/plan.md` calls `onOpenDocument("docs/plan.md")`; `file://server/x.md`, `file:///home/jesse/notes/todo.md` and `file:///tmp/bad%zz.md` aren't tappable: pressing them calls nothing and opens nothing. In `ConversationScreen.send.test.tsx`, opening the sheet and tapping that link closes it and navigates to `"Reader"` with the params above.
+- [ ] **Step 1: Write the failing tests** in `NotesSheet.test.tsx`, with phase 3's harness for that sheet: with the host's `cwd` "/home/jesse/git/evener", tapping `file:///home/jesse/git/evener/docs/plan.md` calls `goBack()` and then navigates to `"Reader"` with `path: "docs/plan.md"` and the rest of the params above; `file://server/x.md`, `file:///home/jesse/notes/todo.md` and `file:///tmp/bad%zz.md` aren't tappable: pressing them calls nothing and opens nothing. In `ConversationScreen.send.test.tsx`, the host the screen provides carries the session's `cwd` and title.
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/NotesSheet.test.tsx src/ConversationScreen.send.test.tsx`
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them and watch them pass**, and `npm run check`. In the simulator, open a plan from a note's link.
@@ -4432,41 +4458,43 @@ The Reader's first way in. Document chips and Files & artifacts follow in PR 7 (
 ### Task 16: Comments
 
 **Files:**
-- Create: `mobile-native/src/reader/CommentSheet.tsx`, `mobile-native/src/reader/CommentsSheet.tsx` and `mobile-native/src/session/pendingQuote.ts`
+- Create: `mobile-native/src/reader/CommentSheet.tsx` and `mobile-native/src/reader/CommentsSheet.tsx` (the `CommentSheet` and `CommentsSheet` routes), and `mobile-native/src/session/pendingQuote.ts`
 - Modify: `mobile-native/src/reader/ReaderScreen.tsx`, `mobile-native/src/reader/ReaderBlock.tsx`, and `ConversationScreen` in `mobile-native/src/screens.tsx` (it takes a held quote when it comes into focus)
+- Modify: `mobile-native/App.tsx` (both join the sheet group), `mobile-native/src/sheet/sheetRoutes.ts` (`CommentSheet: sheetOptions(["medium", "large"], "large")` and `CommentsSheet: sheetOptions(["medium", "large"], "medium")`) and `Routes` (`CommentSheet: { hubId: string; sessionRef: string; path: string; blockIndex: number; blockHash: string; quote: string }` and `CommentsSheet: { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string }`)
 - Test: `mobile-native/src/reader/ReaderComments.test.tsx`, `mobile-native/src/session/pendingQuote.test.ts` and `mobile-native/src/ConversationScreen.send.test.tsx`
 
 **Interfaces:**
-- Consumes: `DocumentMemory.addComment`, `.removeComment` and `.comments` (Task 12); `anchorBlock` (Task 12); the long-press menu phase 3's messages use (its ruling 25: `ActionSheetIOS`, until phase 2 PR 4's context-menu spike settles a library); `ConversationScreen`'s `quote` (phase 3's Task 24); `returnToSession` (Task 8).
+- Consumes: `DocumentMemory.addComment`, `.removeComment` and `.comments` (Task 12); `anchorBlock` (Task 12); the long-press menu phase 3's messages use (its ruling 25: `ActionSheetIOS`, until phase 2 PR 4's context-menu spike settles a library); `ConversationScreen`'s `quote` (phase 3's Task 24); `returnToSession` (Task 8); `readerHosts` (Task 14); `useSheet`, `<Sheet>` and `useSheetHost` (phase 2's Task 18).
 - Produces: `holdQuote(hubId: string, ref: string, words: string): void` and `takeQuote(hubId: string, ref: string): string | null`, from `pendingQuote.ts`: one quote held per session in memory, a newer one replacing it, and taking it forgets it.
 
-**Requirements (spec 10.2, rulings 14-15):**
+**Requirements (spec 10.2, rulings 14-15 and 26):**
 1. **The block menu.** A long-press on any block but a rule opens the long-press menu the transcript's messages use (an `ActionSheetIOS` today; if phase 2 PR 4's spike has settled a context-menu library, that library, previewing the block's first 220 characters of words) with:
    - "Comment" (`bubble.left`), "Quote in reply" (`text.quote`), "Copy" (`doc.on.doc`) and "Select text" (`character.cursor.ibeam`);
    - while the menu is open, the block under your finger has an `accentBg` background. A list item is its own block, so the highlight and the comment belong to that item, never the whole list.
 2. **Select text** makes that block's `EnrichedMarkdownText` selectable until its selection menu closes or another block is pressed. Its `contextMenuItems` add "Comment" and "Quote in reply" acting on the selected text (the menu event's `text`); Copy stays the system's.
-3. **The comment sheet** (a page sheet, ruling 26), titled "Comment", with Cancel leading and "Add" trailing, disabled while the field is blank:
+3. **The comment sheet** (ruling 26: a sheet route that opens at large, since you type in it), titled "Comment", with Cancel leading and "Add" trailing, disabled while the field is blank (`<Sheet title="Comment" onCancel={sheet.close} done={{ label: "Add", disabled: text.trim() === "", onPress: add }}>` over one `ScrollView` with `automaticallyAdjustKeyboardInsets`). Comment in the block menu, and Comment on selected text, open it: `navigation.navigate("CommentSheet", { hubId, sessionRef, path, blockIndex, blockHash, quote })`, where `quote` is the selection or the block's words:
    - the quote (the selection, or the block's `text`; its first 280 characters) in the reading serif 15/21 `inkMid` behind a 2pt `edgeStrong` left rule;
    - a multiline field, focused on open, with the placeholder "What should change?";
    - the footer "Comments stay with this document until you send your review." (13/18 `inkMid`).
-   Add calls `memory.addComment(key, { blockIndex, blockHash, quote, text })` and closes. The marker appearing is the echo; no toast.
-4. **Markers.** A block that `anchorBlock` places comments on shows a pill at its top trailing corner: `bubble.left` 12pt and the count, 12pt semibold `accentInk` on `accentBg`, 10pt radius, with a 44pt touch area. Tapping it opens the Comments sheet. A comment whose words changed has no marker (ruling 14).
+   Add calls `memory.addComment(key, { blockIndex, blockHash, quote, text })` and finishes the sheet (`sheet.finish()`). The marker appearing is the echo; no toast. Typed text is unsaved input: `useSheet({ dirty: text.trim() !== "", discardTitle: "Discard this comment?" })`.
+4. **Markers.** A block that `anchorBlock` places comments on shows a pill at its top trailing corner: `bubble.left` 12pt and the count, 12pt semibold `accentInk` on `accentBg`, 10pt radius, with a 44pt touch area. Tapping it opens the Comments sheet: `navigation.navigate("CommentsSheet", { hubId, sessionRef, path, reviewRef, reviewTitle })`. A comment whose words changed has no marker (ruling 14).
 5. **The tip.** Until this document has a comment, one centered line sits above the bottom bar: `bubble.left` and "Touch and hold a paragraph to comment on it" (13/17 `inkLow`).
 6. **The bottom bar**, now always shown: leading, the Comments button (`bubble.left` and the count) once there are comments; center, the change stepper while there are changes; trailing, "Send review" (Task 17).
-7. **The Comments sheet** (a page sheet), titled "Comments · 2", with Done trailing:
-   - each comment shows its quote (serif 14/19 `inkMid`, left rule, 140 characters) and its text (15/20 `inkHi`), with "Show" (scrolls the Reader to its block; only when it's anchored) and "Delete" (`inkMid`; a draft edit, so no confirmation);
+7. **The Comments sheet** (ruling 26: a sheet route that opens at medium), titled "Comments · 2", with Done trailing. It reads the comments from `documentMemory(hubId)`, following its `subscribe`:
+   - each comment shows its quote (serif 14/19 `inkMid`, left rule, 140 characters) and its text (15/20 `inkHi`), with "Show" and "Delete" (`inkMid`; a draft edit, so no confirmation). "Show", only when the comment is anchored, finishes the sheet, then scrolls the Reader to its block through `readerHosts`' `jumpTo`;
    - with no comments: "No comments yet" over "Touch and hold a paragraph to comment on it.";
-   - with comments, a "Send review" button at the bottom opens the Review sheet.
+   - with comments, a "Send review" button at the end of the list opens the Review sheet over this one: `navigation.navigate("ReviewSheet", { hubId, sessionRef, path, reviewRef, reviewTitle })`.
 8. **Quote in reply** holds the words for the review session (`holdQuote(hubId, reviewRef, words)`), then `returnToSession(...)`. `ConversationScreen`, each time it comes into focus, takes a quote held for its own ref (`takeQuote`) and runs its own `quote` with it, which puts `> ` before each line, merges it into the draft with `mergeDraftText`, and focuses the field (phase 3's Task 24). A relaunch in between loses the held quote, and nothing else.
 9. **Copy** copies the block's words (a code block's code) through MarkdownResponse's `copy`.
 
 - [ ] **Step 1: Write the failing tests**
   - `ReaderComments.test.tsx`, with the Task 14 harness, and `ActionSheetIOS` recorded by the `react-native` mock as phase 3's tests record it:
     - a long-press opens the four actions and highlights the block;
-    - Comment on a paragraph adds a comment with that block's index, hash and words, and its marker reads "1";
+    - Comment on a paragraph navigates to `"CommentSheet"` with that block's index, hash and words; rendering that route with those params (navigation mocked as phase 2's Task 18.2 mocks it), typing and pressing Add adds the comment, calls `goBack()`, and the Reader's marker reads "1";
+    - typing in the comment sheet holds the route (`usePreventRemove` receives true), and the guard asks "Discard this comment?";
     - two comments on the second item of a list put "2" on that item, and nothing on the first;
     - the tip shows until the first comment, then gives way to the Comments button;
-    - the Comments sheet lists quote and text, "Show" scrolls to the block, and "Delete" removes it;
+    - the Comments sheet route lists quote and text; "Show" calls `goBack()` and then the host's `jumpTo` with the block's index; "Delete" removes it;
     - selecting text and choosing Comment quotes the selection;
     - a comment whose paragraph was edited keeps its place in the Comments sheet, with no marker;
     - Quote in reply holds the block's words for the review session and returns to it;
@@ -4481,29 +4509,32 @@ The Reader's first way in. Document chips and Files & artifacts follow in PR 7 (
 ### Task 17: The review
 
 **Files:**
-- Create: `mobile-native/src/reader/ReviewSheet.tsx`
+- Create: `mobile-native/src/reader/ReviewSheet.tsx` (the `ReviewSheet` route)
 - Modify: `mobile-native/src/reader/ReaderScreen.tsx` and `mobile-native/src/reader/CommentsSheet.tsx`
+- Modify: `mobile-native/App.tsx` (`ReviewSheet` joins the sheet group), `mobile-native/src/sheet/sheetRoutes.ts` (`ReviewSheet: sheetOptions(["medium", "large"], "large")`) and `Routes` (`ReviewSheet: { hubId: string; sessionRef: string; path: string; reviewRef: string; reviewTitle: string }`)
 - Test: `mobile-native/src/reader/ReviewSheet.test.tsx`
 
 **Interfaces:**
-- Consumes: `reviewMessage` and `Verdict` (Task 13); `readSendAction` and `submitSessionMessage` (Task 3); `getNativeMutationRuntime`; `DocumentMemory.comments` and `.clearComments` (Task 12); `returnToSession` (Task 8); `useConnection` (`src/ConnectionProvider.tsx`).
+- Consumes: `reviewMessage` and `Verdict` (Task 13); `readSendAction` and `submitSessionMessage` (Task 3); `getNativeMutationRuntime`; `DocumentMemory.comments` and `.clearComments` (Task 12); `returnToSession` (Task 8); `useConnection` (`src/ConnectionProvider.tsx`); `useSheet` and `<Sheet>` (phase 2's Task 18.2).
+- Produces: `ReviewSheet`, the route component for `"ReviewSheet"`. Its params name the document and the review session, and it reads everything else from `documentMemory`, the connection and the durable runtime.
 
-**Requirements (spec 10.2, ruling 16):**
-1. **Opening.** "Send review" in the bottom bar, and at the foot of the Comments sheet, opens the Review sheet (a page sheet, ruling 26), titled "Review", with Cancel leading. Under the title: "To Get PR 2138 Test Clean · settle-race.md" (13/18 `inkMid`; the review session's title and the file name).
+**Requirements (spec 10.2, rulings 16 and 26):**
+1. **Opening.** "Send review" in the bottom bar, and at the foot of the Comments sheet, opens the Review sheet: `navigation.navigate("ReviewSheet", { hubId, sessionRef, path, reviewRef, reviewTitle })`, over the Comments sheet when it came from there. It is a sheet route that opens at large, since you type in it (ruling 26), titled "Review", with Cancel leading: `<Sheet title="Review" onCancel={sheet.close} accessory={to}>` over one `ScrollView` with `automaticallyAdjustKeyboardInsets`. `to`, pinned under the title, reads "To Get PR 2138 Test Clean · settle-race.md" (13/18 `inkMid`; the review session's title and the file name).
 2. **The verdict.** A segmented control, "Approve", "Request changes" and "Comment only", with nothing chosen at first. The chosen segment is `accentBg` with `accentInk` (16.1). While nothing is chosen, "Choose one to send your review." shows under it, and Send is disabled.
 3. **The overall note.** An optional multiline field. Its placeholder is "Optional: anything to keep in mind" for Approve, else "Optional: the gist of what to change".
 4. **The comments,** each with its quote (serif, left rule, 120 characters) and text. With none: "No comments. Touch and hold a paragraph to add one."
-5. **The one Send** is the composer's (Global Constraints): `paperplane.fill` on `accentFill`, 44pt, trailing, labeled "Send review" for VoiceOver.
+5. **The one Send** is the composer's (Global Constraints): `paperplane.fill` on `accentFill`, 44pt, trailing, labeled "Send review" for VoiceOver. It sits in the body, trailing the overall note (ruling 26: a sheet's header buttons are text).
    - When the sheet opens, and again whenever the connection returns to ready, `readSendAction(getNativeMutationRuntime(), client, hubId, reviewRef)` gives the action and the session's target. `send` and `resume` send; `queue` queues.
    - `none`: Send is disabled and a line reads "This session can't take a message right now."
    - Until a read answers, Send is disabled. While the connection isn't ready it stays disabled, and the line reads "Send when you're back online." (phase 3's composer also waits for the connection, its ruling 4).
 6. **Sending.**
    - Call `submitSessionMessage(getNativeMutationRuntime(), client, target, action === "queue" ? "queue" : "send", reviewMessage(path, verdict, comments, note))`.
-   - Then clear the comments (`memory.clearComments(key)`), close the sheet, and `returnToSession(navigation, { hubId, ref: reviewRef, title: reviewTitle })`.
+   - Then clear the comments (`memory.clearComments(key)`), and finish the sheet by returning to the session: `sheet.finish(() => returnToSession(navigation, { hubId, ref: reviewRef, title: reviewTitle }))`. Its one pop takes the sheet, the Comments sheet if it sat under it, and the Reader.
    - The session then shows the review as your message, or as a queued message with Steer now (phase 3's ghosts). That is the echo, so Send raises no toast (ruling 16).
    - On failure the sheet stays open with everything kept, and one line in `dangerInk`: "Couldn't send this: <the error's message>".
+7. **Unsaved input.** A chosen verdict or a typed note is unsaved input: `useSheet({ dirty, discardTitle: "Discard this review?" })`. The comments stay in `documentMemory` whatever you answer.
 
-- [ ] **Step 1: Write the failing tests** (`ReviewSheet.test.tsx`). Use the real durable runtime, set up as in Task 9's test: `expo-sqlite` mocked to the in-memory double, the review session's target registered with the `FakeClient`, and the runtime started. The `FakeClient`'s `thread/read` answers the review session's status under test, and `turn/start` and `turn/queue` answer an applied receipt. Assert on what reaches the wire. Cover:
+- [ ] **Step 1: Write the failing tests** (`ReviewSheet.test.tsx`). Render the route with its params, and `@react-navigation/native`'s `useNavigation` (with `getState`, `pop` and `navigate` for `returnToSession`) and `usePreventRemove` mocked as phase 2's Task 18.2 mocks them. Use the real durable runtime, set up as in Task 9's test: `expo-sqlite` mocked to the in-memory double, the review session's target registered with the `FakeClient`, and the runtime started. The `FakeClient`'s `thread/read` answers the review session's status under test, and `turn/start` and `turn/queue` answer an applied receipt. Assert on what reaches the wire. Cover:
   - Send is disabled until a verdict is chosen, with "Choose one to send your review.";
   - the text that reaches the wire is `reviewMessage(...)` of the document's path, the verdict, the comments and the note;
   - while the review session is active, the client receives `turn/queue` and never `turn/steer` or `turn/interrupt` (Review Focus 4);
@@ -4512,7 +4543,8 @@ The Reader's first way in. Document chips and Files & artifacts follow in PR 7 (
   - a session that needs a restart, or one that is paused (`resumeRequired`), can't be sent to, and says so;
   - offline, Send is disabled with "Send when you're back online.";
   - with this client's own send still waiting (a `send` submitted to the runtime before the sheet opens, while the target waits for its read), the review goes as `turn/queue`, after that send's `turn/start`;
-  - after sending, the comments are cleared, the Reader returns to the review session, and no toast shows;
+  - after sending, the comments are cleared, the sheet pops back to the review session (`pop` with the count `returnToSession` computes from the stack), and no toast shows;
+  - a chosen verdict holds the route (`usePreventRemove` receives true), and the guard asks "Discard this review?";
   - a `submit` that rejects (spied on the real runtime, as in Task 9) keeps the sheet, the verdict, the note and the comments, with "Couldn't send this: …".
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/reader/ReviewSheet.test.tsx`
 - [ ] **Step 3: Implement.**
@@ -4826,13 +4858,14 @@ describe("every document the session named or wrote (spec 10.1)", () => {
 ### Task 19: Files & artifacts
 
 **Files:**
-- Create: `mobile-native/src/reader/sessionDocuments.ts` (pure, full code below) and `mobile-native/src/reader/FilesSheet.tsx`
+- Create: `mobile-native/src/reader/sessionDocuments.ts` (pure, full code below) and `mobile-native/src/reader/FilesSheet.tsx` (the `FilesSheet` route)
 - Modify:
   - `mobile-native/src/session/sessionState.ts` (phase 3's Task 13): `ChipKind` gains `"files"`, `ContextChip` gains `dot?: boolean`, and `contextChips` takes the session's documents;
   - `mobile-native/src/session/SessionHeader.tsx` (phase 3's Task 15): the Files chip's `doc.text` symbol and its dot;
   - `mobile-native/src/session/sessionMenu.ts` (phase 3's Task 14): the "Files & artifacts" item and its `{ kind: "files" }` action;
-  - `ConversationScreen` in `mobile-native/src/screens.tsx`: the documents, the chip's and the menu's handlers, and the sheet;
-  - `mobile-native/src/reader/DocumentChip.tsx` (Task 18): its dot and "changed since you last read".
+  - `ConversationScreen` in `mobile-native/src/screens.tsx`: the documents, and the chip's and the menu's handlers, which open the sheet;
+  - `mobile-native/src/reader/DocumentChip.tsx` (Task 18): its dot and "changed since you last read";
+  - `mobile-native/App.tsx` (`FilesSheet` joins the sheet group), `mobile-native/src/sheet/sheetRoutes.ts` (`FilesSheet: sheetOptions(["medium", "large"], "medium")`) and `Routes` (`FilesSheet: { hubId: string; ref: string; title: string; documents: SessionDocument[] }`).
 - Test: `mobile-native/src/reader/sessionDocuments.test.ts`, `mobile-native/src/reader/FilesSheet.test.tsx`, `mobile-native/src/session/sessionState.test.ts`, `mobile-native/src/session/sessionMenu.test.ts` and `mobile-native/src/reader/DocumentChip.test.tsx`
 
 **Interfaces:**
@@ -4841,7 +4874,7 @@ describe("every document the session named or wrote (spec 10.1)", () => {
   - `interface SessionDocument { path: string; kind: DocumentKind; updatedAt?: string }`
   - `sessionDocuments(references: readonly DocumentReference[], links: readonly SessionURL[], cwd: string): SessionDocument[]`
   - `type Freshness = "new" | "changed" | "read"` and `documentFreshness(lastRead: LastRead | null, updatedAt: string | undefined): Freshness`
-  - `<FilesSheet hubId sessionRef documents={readonly SessionDocument[]} onOpen={(document: SessionDocument) => void} onClose={() => void} />`
+  - `FilesSheet`, the route component for `"FilesSheet"`. Its params carry the session's documents as they were when it opened: plain data, so the sheet needs no host (ruling 26).
 
 ```ts
 // mobile-native/src/reader/sessionDocuments.ts
@@ -4905,16 +4938,16 @@ export function documentFreshness(lastRead: LastRead | null, updatedAt: string |
 }
 ```
 
-**Requirements (spec 8.1, 8.2, 8.7, 10.1, ruling 23):**
+**Requirements (spec 8.1, 8.2, 8.7, 10.1, rulings 23 and 26):**
 1. **The documents.** `ConversationScreen` computes `documents = sessionDocuments(documentReferences(conversation.turns, cwd), conversation.sessionUrls, cwd)` once per change of those three (`useMemo`).
-2. **The sheet.** A page sheet (ruling 26) titled "Files & artifacts", with Done trailing. The Files chip and the ⋯ menu's "Files & artifacts" open it.
+2. **The sheet.** A sheet route that opens at medium (ruling 26), titled "Files & artifacts", with Done trailing, over one `FlatList` of rows. The Files chip and the ⋯ menu's "Files & artifacts" open it: `navigation.navigate("FilesSheet", { hubId, ref, title, documents })`.
 3. **Rows**, one per document, newest write first. Each row has:
    - the kind (13pt semibold `inkMid`) and the title (the summary's title, else the file name; serif semibold 15/20 `inkHi`);
    - beneath, the path in Menlo 12 `inkLow` (middle truncation), then " · 142 lines · 3m ago" (13/18 `inkLow`; the age is `compactDuration(now - Date.parse(updatedAt))`, left out without a write time that parses);
    - an 8pt `circle.fill` in `accent` when `documentFreshness(memory.lastRead({ sessionRef: ref, path }), updatedAt)` is "new" or "changed" (spec 10.1).
    The title and the line count come from `useDocumentSummary` (Task 18), so the sheet and the chips share one read per document.
-4. **Tapping a row** closes the sheet, then opens the Reader over the session: `{ hubId, sessionRef: ref, path, reviewRef: ref, reviewTitle: title, updatedAt }`.
-5. **Empty.** The chip and the menu item are hidden without documents, so the sheet is empty only if a removed link takes the last one while it's open. It then reads "This session hasn't written or linked any documents yet."
+4. **Tapping a row** finishes the sheet, then opens the Reader over the session (ruling 26: the sheet goes first): `sheet.finish(() => { navigation.goBack(); navigation.navigate("Reader", { hubId, sessionRef: ref, path, reviewRef: ref, reviewTitle: title, updatedAt }); })`.
+5. **Empty.** The chip and the menu item are hidden without documents, so the sheet opens with at least one. Its list is the one it opened with, so a link removed while it's open stays until it closes. Opened with none, it reads "This session hasn't written or linked any documents yet."
 6. **The Files chip** (spec 8.1). `contextChips(session, files)`, with `files = { count: documents.length, fresh }` where `fresh` says any row is new or changed, adds a `"files"` chip after Subagents: "Files 4", `accessibilityLabel` "Files, 4" (", new or changed" appended when fresh), and `dot: fresh`. No documents, no chip. `SessionHeader` draws it with `doc.text`, and the dot as an 8pt `circle.fill` in `accent` after the label.
 7. **The ⋯ menu** (spec 8.7). `sessionMenu` gains "Files & artifacts" (`doc.text`), after "Find in session" once phase 3's PR 10 adds it, and before "Subagents". Like "Subagents", it is there only when the session has documents (`hasDocuments` joins `SessionMenuInput`).
 8. **The document chip** (spec 8.2). `DocumentChip` shows the dot before its kind, and ends its second line with " · changed since you last read", only when `documentFreshness(...)` is "changed". A document you haven't opened has no dot on its chip: 8.2 marks change, and the Files chip and rows mark new.
@@ -4982,10 +5015,10 @@ describe("new or changed since you last opened it", () => {
 });
 ```
 
-  - `FilesSheet.test.tsx` (mock `react-native`, `expo-symbols`, navigation, and `./nativeDocumentMemory` over a memory store; answer `/doc/file` with a fetch spy):
+  - `FilesSheet.test.tsx`, rendering the route with its params (mock `react-native`, `expo-symbols`, `@react-navigation/native` as phase 2's Task 18.2 mocks it, and `./nativeDocumentMemory` over a memory store; answer `/doc/file` with a fetch spy):
     - rows show the kind, the title from the first heading, the path, "142 lines" and "3m ago", newest first;
     - an unopened document and one written after its last read show the dot, and one read since doesn't;
-    - tapping a row closes the sheet and opens the Reader with `{ hubId, sessionRef, path, reviewRef, reviewTitle, updatedAt }`;
+    - tapping a row calls `goBack()` and then navigates to `"Reader"` with `{ hubId, sessionRef, path, reviewRef, reviewTitle, updatedAt }`;
     - an empty session shows "This session hasn't written or linked any documents yet.".
   - `sessionState.test.ts`: with documents, the Files chip follows Subagents and reads "Files 4"; `fresh` sets its dot and adds ", new or changed" to its label; with none, there's no Files chip.
   - `sessionMenu.test.ts`: with `hasDocuments`, "Files & artifacts" sits before "Subagents", and choosing it calls `choose({ kind: "files" })`; without, it's absent.
@@ -5556,6 +5589,7 @@ Also frame 17 at the largest standard Dynamic Type size. Save them as `docs/desi
 - **13.3:** the Reader is a quiet screen with no Next capsule (Task 14); phase 6 holds alerts there.
 - **14:** no screen offers Retry, Refresh or Reconnect (Tasks 6, 8 and 14); messages sent from above a session survive a reconnect (Tasks 2-3); reading positions, comments and the Continue reading trail survive a relaunch (Task 12), and so does the Reader itself (Task 14, ruling 21).
 - **18:** S3's fallback (ruling 2), S6's (ruling 10), S7's (Task 13) and S9's (ruling 13).
+- **6, sheets:** every sheet here is a native sheet on phase 2's PR 6, with the size its section names, a swipe down that closes it, and a question before a typed message, comment or review is lost (ruling 26; Tasks 9, 14, 16, 17 and 19).
 - **Appendix A frames 15-18:** Task 23, against the demo fleet (Task 22).
-- **What phase 3 hands this phase:** the Files chip, document chips and Files & artifacts (its ruling 6: Tasks 18-19); the Subagents chip and menu item, which open `ActivitySheet` until Task 6; its `SubagentRow`, which opens `"Subagent"` from Task 8; and notes' `file://` links (Task 15). What this phase reuses instead of copying: `sendAction` (Tasks 3 and 17), `compactDuration` and `compactCount` (Tasks 4, 6, 8, 14, 18-19), `SubagentTally` (Tasks 4 and 6), and `Toast` (Task 9).
+- **What phase 3 hands this phase:** the Files chip, document chips and Files & artifacts (its ruling 6: Tasks 18-19); the Subagents chip and menu item, which open `ActivitySheet` until Task 6; its `SubagentRow`, which opens `"Subagent"` from Task 8; and notes' `file://` links (Task 15). What this phase reuses instead of copying: `sendAction` (Tasks 3 and 17), `compactDuration` and `compactCount` (Tasks 4, 6, 8, 14, 18-19), `SubagentTally` (Tasks 4 and 6), `Toast` (Task 9), and phase 2's sheets (`<Sheet>`, `useSheet`, `sheetHosts`, `useScreenInFront`; ruling 26).
 
