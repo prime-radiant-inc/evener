@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -217,6 +218,20 @@ type expectSpec struct {
 	ForbiddenCalls []string         `yaml:"forbidden_calls"`
 	Artifacts      []artifactExpect `yaml:"artifacts"`
 	FinalContains  []string         `yaml:"final_contains"`
+	// MaxCalls caps how many times a tool may be called, by canonical name.
+	MaxCalls map[string]int `yaml:"max_calls,omitempty"`
+	// Checks are shell commands run in the work directory after the agent
+	// finishes. Each must exit zero. They judge the outcome of the work.
+	Checks []checkSpec `yaml:"checks,omitempty"`
+	// AllowToolErrors keeps tool errors from failing the run. A realistic
+	// task meets missing files and failing commands on its way to the outcome.
+	AllowToolErrors bool `yaml:"allow_tool_errors,omitempty"`
+}
+
+// checkSpec is one outcome check: a named shell command.
+type checkSpec struct {
+	Name string `yaml:"name"`
+	Run  string `yaml:"run"`
 }
 
 type expectedCall struct {
@@ -1229,6 +1244,17 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 			})
 		}
 	}
+	for _, name := range slices.Sorted(maps.Keys(probe.Expect.MaxCalls)) {
+		limit := probe.Expect.MaxCalls[name]
+		got := max(res.CanonicalToolCounts[name], res.ModelToolCounts[name])
+		if got > limit {
+			out = append(out, finding{
+				Category: "churn",
+				Title:    "tool called more often than the task allows",
+				Detail:   fmt.Sprintf("%s calls=%d max=%d", name, got, limit),
+			})
+		}
+	}
 	for _, artifact := range probe.Expect.Artifacts {
 		path := filepath.Join(workDir, filepath.Clean(artifact.Path))
 		info, err := os.Stat(path)
@@ -1252,6 +1278,15 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 			}
 		}
 	}
+	for _, check := range probe.Expect.Checks {
+		if ok, detail := runCheck(workDir, check, checkTimeout); !ok {
+			out = append(out, finding{
+				Category: "outcome",
+				Title:    "check failed: " + check.Name,
+				Detail:   detail,
+			})
+		}
+	}
 	for _, want := range probe.Expect.FinalContains {
 		if !resultContains(res, want) {
 			out = append(out, finding{
@@ -1261,13 +1296,15 @@ func evaluateExpectations(workDir string, probe probeFile, res probeResult) []fi
 			})
 		}
 	}
-	for toolName, n := range res.ToolErrors {
-		if n > 0 {
-			out = append(out, finding{
-				Category: "arguments",
-				Title:    "tool returned validation/runtime errors",
-				Detail:   fmt.Sprintf("%s errors=%d", toolName, n),
-			})
+	if !probe.Expect.AllowToolErrors {
+		for toolName, n := range res.ToolErrors {
+			if n > 0 {
+				out = append(out, finding{
+					Category: "arguments",
+					Title:    "tool returned validation/runtime errors",
+					Detail:   fmt.Sprintf("%s errors=%d", toolName, n),
+				})
+			}
 		}
 	}
 	return out
@@ -1283,6 +1320,38 @@ func resultContains(res probeResult, want string) bool {
 		}
 	}
 	return false
+}
+
+// checkTimeout bounds one outcome check, so a command that waits on a
+// terminal or on a child process cannot stall a run.
+const checkTimeout = 2 * time.Minute
+
+// runCheck runs one check in workDir with no stdin. It reports whether the
+// check passed and, when it failed, why.
+func runCheck(workDir string, check checkSpec, timeout time.Duration) (bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-c", check.Run)
+	cmd.Dir = workDir
+	// A killed check can leave a child holding the output pipe; stop waiting
+	// for it shortly after the kill.
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, ""
+	}
+	if ctx.Err() != nil {
+		return false, fmt.Sprintf("timed out after %s", timeout)
+	}
+	return false, fmt.Sprintf("%v: %s", err, lastBytes(strings.TrimSpace(string(out)), 1500))
+}
+
+// lastBytes keeps the end of s, where a failing command says why it failed.
+func lastBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return "..." + s[len(s)-n:]
 }
 
 // classifyProbeError decides whether a probe command failure reflects the
