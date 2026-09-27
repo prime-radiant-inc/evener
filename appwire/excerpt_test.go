@@ -49,7 +49,7 @@ func TestExcerptCutsLongTextAtAWordBreak(t *testing.T) {
 
 // Invalid UTF-8 is repaired, so the wire never carries a malformed string.
 func TestExcerptRepairsInvalidUTF8(t *testing.T) {
-	if got, want := Excerpt("ok\xffgo", 200), "ok�go"; got != want {
+	if got, want := Excerpt("ok\xffgo", 200), "ok\ufffdgo"; got != want {
 		t.Fatalf("Excerpt = %q, want %q", got, want)
 	}
 }
@@ -72,7 +72,7 @@ func TestExcerptNeverExceedsItsBound(t *testing.T) {
 		strings.Repeat("😀", 300),
 		"line one\nline two\n\nline three",
 		"\xff\xfe" + strings.Repeat("x y ", 100),
-		"para graph with\x00control\u0085runes " + strings.Repeat("é ", 30),
+		"para\u2028graph\u00a0with\x00control\u0085runes " + strings.Repeat("é ", 30),
 		strings.Repeat("a", 1<<20),
 	}
 	for _, text := range inputs {
