@@ -66,11 +66,14 @@ const sessions = (prefix: string, count: number, from = 0) =>
 	);
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-type Reader = "live" | "needs_you" | "pin_catalog" | "pin_section" | "manifest";
+/** Each category's reads are a reader of their own, named by its id. */
+type Reader = "live" | "needs_you" | "pin_catalog" | "manifest" | `pin_section:${string}`;
 const readerOf = (params: NavigationReadParams): Reader =>
 	params.resource === "section"
 		? (params.section as Reader)
-		: (params.resource as Reader);
+		: params.resource === "pin_section"
+			? `pin_section:${params.sectionId}`
+			: (params.resource as Reader);
 /** The oldest unanswered request for one reader. */
 function next(hub: Hub, reader: Reader) {
 	const request = hub.requests.find(
@@ -106,7 +109,7 @@ async function answerAll(
 	answer(hub, "manifest", manifest({ sources }));
 	await tick();
 	// The catalog's one category is read once the catalog lands.
-	answer(hub, "pin_section", { sessions: [session("pinned-0")], remaining: 0 });
+	answer(hub, "pin_section:pins-1", { sessions: [session("pinned-0")], remaining: 0 });
 	await tick();
 }
 function invalidate(
@@ -708,44 +711,25 @@ it("dispose leaves no listeners", async () => {
 	expect(notified).toBe(after);
 });
 
-/** The oldest unanswered read of one pinned category. */
-function nextSection(hub: Hub, sectionId: string) {
-	const request = hub.requests.find(
-		(candidate) =>
-			!candidate.answered &&
-			candidate.params.resource === "pin_section" &&
-			candidate.params.sectionId === sectionId,
-	);
-	if (!request) throw new Error(`no pending read of category ${sectionId}`);
-	request.answered = true;
-	return request;
-}
-function answerSection(hub: Hub, sectionId: string, data: unknown, revision = 1) {
-	const request = nextSection(hub, sectionId);
-	request.resolve(response(request.params, data, revision));
-	return request;
-}
-const sectionReads = (hub: Hub, sectionId: string) =>
-	hub.requests.filter(
-		(request) => request.params.resource === "pin_section" && request.params.sectionId === sectionId,
-	);
 const category = (id: string, count = 1) => ({ id, name: id, count });
 
 it("reads each category's first page once the catalog lands, and its answers become pinSections", async () => {
 	const hub = boundary();
+	// Every category's reads, in the order they went out.
+	const categoryReads = () => hub.requests.filter((request) => request.params.resource === "pin_section");
 	const board = createBoardController();
 	board.setClient(hub.client);
 	await Promise.resolve();
-	expect(requestsFor(hub, "pin_section")).toHaveLength(0);
+	expect(categoryReads()).toHaveLength(0);
 	answer(hub, "pin_catalog", { pin_sections: [category("release", 2), category("later", 0)], remaining: 0 });
 	await tick();
-	expect(requestsFor(hub, "pin_section").map((request) => request.params)).toEqual([
+	expect(categoryReads().map((request) => request.params)).toEqual([
 		expect.objectContaining({ resource: "pin_section", sectionId: "release", limit: 50 }),
 		expect.objectContaining({ resource: "pin_section", sectionId: "later", limit: 50 }),
 	]);
 	expect(board.getSnapshot().reading).toBe(true);
-	answerSection(hub, "release", { sessions: [session("r-0"), session("r-1")], remaining: 0 });
-	answerSection(hub, "later", { sessions: [], remaining: 0 });
+	answer(hub, "pin_section:release", { sessions: [session("r-0"), session("r-1")], remaining: 0 });
+	answer(hub, "pin_section:later", { sessions: [], remaining: 0 });
 	await tick();
 	const { pinSections } = board.getSnapshot();
 	expect(Object.keys(pinSections)).toEqual(["release", "later"]);
@@ -759,16 +743,16 @@ it("reads a category of more than 50 sessions to completion", async () => {
 	board.setClient(hub.client);
 	answer(hub, "pin_catalog", { pin_sections: [category("big", 120)], remaining: 0 });
 	await tick();
-	answerSection(hub, "big", { sessions: sessions("big-", 50), remaining: 70 });
+	answer(hub, "pin_section:big", { sessions: sessions("big-", 50), remaining: 70 });
 	await tick();
-	const second = answerSection(hub, "big", { sessions: sessions("big-", 50, 50), remaining: 20 });
+	const second = answer(hub, "pin_section:big", { sessions: sessions("big-", 50, 50), remaining: 20 });
 	expect(second.params.offset).toBe(50);
 	await tick();
-	const third = answerSection(hub, "big", { sessions: sessions("big-", 20, 100), remaining: 0 });
+	const third = answer(hub, "pin_section:big", { sessions: sessions("big-", 20, 100), remaining: 0 });
 	expect(third.params.offset).toBe(100);
 	await tick();
 	expect(board.getSnapshot().pinSections.big.rows).toHaveLength(120);
-	expect(sectionReads(hub, "big")).toHaveLength(3);
+	expect(requestsFor(hub, "pin_section:big")).toHaveLength(3);
 });
 
 it("drops a category that leaves the catalog: its reader, its entry and any late answer", async () => {
@@ -779,7 +763,7 @@ it("drops a category that leaves the catalog: its reader, its entry and any late
 	invalidate(hub, 1, [{ kind: "pin_catalog", revision: 2 }]);
 	answer(hub, "pin_catalog", { pin_sections: [category("pins-1", 3), category("gone")], remaining: 0 }, 2);
 	await tick();
-	const late = nextSection(hub, "gone");
+	const late = next(hub, "pin_section:gone");
 	expect(Object.keys(board.getSnapshot().pinSections)).toEqual(["pins-1", "gone"]);
 	expect(hub.listeners.size).toBe(6);
 	invalidate(hub, 2, [{ kind: "pin_catalog", revision: 3 }]);
@@ -795,7 +779,7 @@ it("drops a category that leaves the catalog: its reader, its entry and any late
 	await tick();
 	expect(notified).toBe(0);
 	expect(board.getSnapshot().pinSections.gone).toBeUndefined();
-	expect(sectionReads(hub, "gone")).toHaveLength(1);
+	expect(requestsFor(hub, "pin_section:gone")).toHaveLength(1);
 });
 
 it("re-reads a category when the hub invalidates it", async () => {
@@ -804,7 +788,7 @@ it("re-reads a category when the hub invalidates it", async () => {
 	board.setClient(hub.client);
 	await answerAll(hub);
 	invalidate(hub, 1, [{ kind: "pin_section", sectionId: "pins-1", revision: 2 }]);
-	answerSection(hub, "pins-1", { sessions: [session("pinned-0"), session("pinned-1")], remaining: 0 }, 2);
+	answer(hub, "pin_section:pins-1", { sessions: [session("pinned-0"), session("pinned-1")], remaining: 0 }, 2);
 	await tick();
 	expect(refs(board.getSnapshot().pinSections["pins-1"])).toEqual(["pinned-0", "pinned-1"]);
 });
@@ -823,7 +807,7 @@ it("keeps a category's rows across a reconnect, reading it at once, until its ne
 	await Promise.resolve();
 	// The retained catalog names the category, so it is read before the
 	// catalog's own read lands.
-	expect(sectionReads(second, "pins-1")).toHaveLength(1);
+	expect(requestsFor(second, "pin_section:pins-1")).toHaveLength(1);
 	answer(second, "live", { sessions: sessions("live-", 2), remaining: 0 });
 	answer(second, "needs_you", { sessions: [], remaining: 0 });
 	answer(second, "manifest", manifest({ sources }));
@@ -832,11 +816,11 @@ it("keeps a category's rows across a reconnect, reading it at once, until its ne
 	expect(refs(board.getSnapshot().pinSections["pins-1"])).toEqual(["pinned-0"]);
 	expect(board.getSnapshot().pinSections["pins-1"].loading).toBe(true);
 	expect(board.getSnapshot().retained).toBe(true);
-	answerSection(second, "pins-1", { sessions: [session("pinned-9")], remaining: 0 });
+	answer(second, "pin_section:pins-1", { sessions: [session("pinned-9")], remaining: 0 });
 	await tick();
 	expect(refs(board.getSnapshot().pinSections["pins-1"])).toEqual(["pinned-9"]);
 	expect(board.getSnapshot().retained).toBe(false);
-	expect(sectionReads(second, "pins-1")).toHaveLength(1);
+	expect(requestsFor(second, "pin_section:pins-1")).toHaveLength(1);
 });
 
 it("a retained category the new catalog no longer lists loses its rows", async () => {
@@ -861,15 +845,15 @@ it("a failed category read reports its error, and resume reads it again", async 
 	board.setClient(hub.client);
 	answer(hub, "pin_catalog", { pin_sections: [category("release", 2)], remaining: 0 });
 	await tick();
-	nextSection(hub, "release").reject(new Error("The hub went away."));
+	fail(hub, "pin_section:release", "The hub went away.");
 	await tick();
 	expect(board.getSnapshot().error).toBe("The hub went away.");
 	board.pause();
 	board.resume();
-	answerSection(hub, "release", { sessions: [session("r-0")], remaining: 0 });
+	answer(hub, "pin_section:release", { sessions: [session("r-0")], remaining: 0 });
 	await tick();
 	expect(refs(board.getSnapshot().pinSections.release)).toEqual(["r-0"]);
-	expect(sectionReads(hub, "release")).toHaveLength(2);
+	expect(requestsFor(hub, "pin_section:release")).toHaveLength(2);
 });
 
 it("pause holds a category's reads, and resume catches up", async () => {
@@ -878,23 +862,23 @@ it("pause holds a category's reads, and resume catches up", async () => {
 	board.setClient(hub.client);
 	answer(hub, "pin_catalog", { pin_sections: [category("big", 70)], remaining: 0 });
 	await tick();
-	answerSection(hub, "big", { sessions: sessions("big-", 50), remaining: 20 });
+	answer(hub, "pin_section:big", { sessions: sessions("big-", 50), remaining: 20 });
 	await tick();
 	// The second page is out when the Board pauses, which cancels it.
-	const cancelled = nextSection(hub, "big");
+	const cancelled = next(hub, "pin_section:big");
 	board.pause();
 	invalidate(hub, 1, [{ kind: "pin_section", sectionId: "big", revision: 2 }]);
 	await tick();
-	expect(sectionReads(hub, "big")).toHaveLength(2);
+	expect(requestsFor(hub, "pin_section:big")).toHaveLength(2);
 	cancelled.resolve(response(cancelled.params, { sessions: sessions("big-", 20, 50), remaining: 0 }));
 	await tick();
 	expect(board.getSnapshot().pinSections.big.rows).toHaveLength(50);
 	board.resume();
 	await Promise.resolve();
-	const reread = answerSection(hub, "big", { sessions: sessions("big-", 50), remaining: 20 }, 2);
+	const reread = answer(hub, "pin_section:big", { sessions: sessions("big-", 50), remaining: 20 }, 2);
 	expect(reread.params.offset ?? 0).toBe(0);
 	await tick();
-	answerSection(hub, "big", { sessions: sessions("big-", 20, 50), remaining: 0 }, 2);
+	answer(hub, "pin_section:big", { sessions: sessions("big-", 20, 50), remaining: 0 }, 2);
 	await tick();
 	expect(board.getSnapshot().pinSections.big.rows).toHaveLength(70);
 });
@@ -912,7 +896,7 @@ it("a category the retained catalog lists waits for resume to read on a client g
 	expect(refs(board.getSnapshot().pinSections["pins-1"])).toEqual(["pinned-0"]);
 	board.resume();
 	await Promise.resolve();
-	expect(sectionReads(second, "pins-1")).toHaveLength(1);
+	expect(requestsFor(second, "pin_section:pins-1")).toHaveLength(1);
 });
 
 it("dispose stops the category readers too", async () => {
@@ -924,5 +908,5 @@ it("dispose stops the category readers too", async () => {
 	expect(hub.listeners.size).toBe(0);
 	invalidate(hub, 1, [{ kind: "pin_section", sectionId: "pins-1", revision: 2 }]);
 	await tick();
-	expect(sectionReads(hub, "pins-1")).toHaveLength(1);
+	expect(requestsFor(hub, "pin_section:pins-1")).toHaveLength(1);
 });
