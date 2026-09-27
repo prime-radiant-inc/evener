@@ -99,8 +99,8 @@ type sessionAskPendingEnvelopeSource struct {
 	sess *agent.Session
 }
 
-func (s *sessionAskPendingEnvelopeSource) AskPending() bool {
-	return s.sess.HasPendingAsk()
+func (s *sessionAskPendingEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+	return s.sess.PendingQuestion()
 }
 
 func TestAskUserLiveStatusFrameCarriesAskPending(t *testing.T) {

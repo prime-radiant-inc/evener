@@ -2515,6 +2515,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	activeTurnStartedAt := envelope.ActiveTurnStartedAt
 	failedToolCalls := envelope.FailedToolCalls
 	askPending := envelope.AskPending
+	pendingQuestion := envelope.PendingQuestion
 	pendingEscalations := envelope.PendingEscalations
 	reasoningEffort := envelope.ReasoningEffort
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
@@ -2561,6 +2562,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			ActiveTurnStartedAt:   activeTurnStartedAt,
 			FailedToolCalls:       failedToolCalls,
 			AskPending:            askPending,
+			PendingQuestion:       pendingQuestion,
 			PendingEscalations:    pendingEscalations,
 			ReasoningEffort:       reasoningEffort,
 			ReasoningEffortLevels: reasoningEffortLevels,

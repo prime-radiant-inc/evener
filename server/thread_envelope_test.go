@@ -745,7 +745,10 @@ func (c *countingThreadEnvelopeSource) DetailedStatus() DetailedStatus {
 	return DetailedStatus{}
 }
 func (c *countingThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate { c.hit(); return nil }
-func (c *countingThreadEnvelopeSource) AskPending() bool                      { c.hit(); return false }
+func (c *countingThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+	c.hit()
+	return nil
+}
 func (c *countingThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
 	c.hit()
 	return schema.SessionMeta{}

@@ -896,6 +896,12 @@ type EvenerThread struct {
 	// absent on old daemons and source-backed threads that omit the field,
 	// decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
+	// PendingQuestion is the first question of the session's pending ask and
+	// how many the ask holds (S1b). The daemon reads both from one sample of
+	// the pending set, so it is present exactly when AskPending is true; it is
+	// absent from an older daemon. Snapshot-only: thread/status/changed
+	// carries AskPending, and nothing carries the question's text.
+	PendingQuestion *PendingQuestion `json:"pendingQuestion,omitempty"`
 	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
 	// cards for any sandbox-exemption escalations currently blocked on this session,
 	// so a client entering / reconnecting to / not-having-seen-live this session

@@ -138,7 +138,12 @@ func (s wireProbeEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int
 	return 0, nil, 0
 }
 func (s wireProbeEnvelopeSource) FailedToolCalls() (int, bool) { return 0, false }
-func (s wireProbeEnvelopeSource) AskPending() bool             { return s.askPending }
+func (s wireProbeEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+	if s.askPending {
+		return &appwire.PendingQuestion{Count: 1}
+	}
+	return nil
+}
 func (s wireProbeEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
 	return s.escalations
 }
