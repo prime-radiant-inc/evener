@@ -646,10 +646,11 @@ test("a second message queues behind a committed start even when recovery projec
     await waitFor(() => expect(textarea()?.textContent).toBe(""));
     await user.type(textarea() as HTMLDivElement, "m2");
     await user.click(screen.getByTestId("composer-submit"));
-    // The second submit's local commit and its draft bookkeeping land after
-    // the click returns and while its dispatch is on the way, so the wait for
-    // that dispatch is where they render: inside act.
-    expect(await act(() => secondRequest)).toBe("turn/queue");
+    // The second submit's local commit and its draft bookkeeping can land after
+    // the click returns, before the dispatch this waits for can go out, so the
+    // wait runs inside act. The projection flush the other tests settle with
+    // cannot settle here until the finally releases the held recovery reads.
+    expect(await act(async () => secondRequest)).toBe("turn/queue");
   } finally {
     spy.mockRestore();
     for (const hold of held) hold.release();

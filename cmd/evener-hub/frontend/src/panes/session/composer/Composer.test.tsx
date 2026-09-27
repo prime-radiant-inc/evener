@@ -188,17 +188,17 @@ class PausedCommitStorage extends MutationOutboxIndexedDB {
   }
 
   override enqueueIntent(
-    intent: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>[0],
+    ...args: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>
   ): ReturnType<MutationOutboxIndexedDB["enqueueIntent"]> {
-    return this.holdCommit(() => super.enqueueIntent(intent));
+    return this.holdCommit(() => super.enqueueIntent(...args));
   }
 
   // Stop's write (the interrupt record and the cancellations it makes in the
   // same transaction) is a local outbox commit too, held by the same gate.
   override enqueueInterruptAndCancel(
-    intent: Parameters<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]>[0],
+    ...args: Parameters<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]>
   ): ReturnType<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]> {
-    return this.holdCommit(() => super.enqueueInterruptAndCancel(intent));
+    return this.holdCommit(() => super.enqueueInterruptAndCancel(...args));
   }
 
   private async holdCommit<T>(commit: () => Promise<T>): Promise<T> {

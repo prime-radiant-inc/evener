@@ -3459,6 +3459,7 @@ test.each(["idle", "active"])(
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
     expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
       { method: "evener/thread/forceStop", params: { ref } },
     ]);
@@ -3546,6 +3547,7 @@ test.each(["pending", "failed"])(
           { method: "evener/thread/forceStop", params: { ref } },
         ]),
       );
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
     } finally {
       await act(async () => rejectRead(new Error("fixture cleanup")));
@@ -3936,6 +3938,7 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
       { method: "evener/thread/forceStop", params: { ref } },
     ]),
   );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
 });
 

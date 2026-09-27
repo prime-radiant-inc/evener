@@ -33,10 +33,11 @@ import { settlePendingTurnsProjectionForTests } from "../pendingTurnsStore";
 // late reopens it as a load-sensitive false green rather than a failure.
 // pendingTurnsStore's "a flush cannot settle while a submit is still in
 // flight" pins the property for the paths there. A caller outside that file
-// registers its own durable work through trackProjectionWork from the moment
-// it starts, as Composer's Stop button and typed built-ins do (both enqueue
-// through the threads store); Composer's "a flush cannot settle while %s's
-// durable write is still in flight" pins both Stop routes.
+// must register its own durable work through trackProjectionWork from the
+// moment it starts. Composer's Stop button and typed built-ins do, and its
+// "a flush cannot settle while %s's durable write is still in flight" pins
+// both Stop routes. Issue #2571 lists the callers that do not register, and a
+// flush after one of their presses proves nothing about that press's write.
 export async function flushPendingTurnsProjectionForTests(): Promise<void> {
   for (let round = 0; round < 10; round += 1) {
     let awaited = 0;
