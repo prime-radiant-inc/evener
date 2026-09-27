@@ -136,8 +136,11 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   through (`selectors`): launch sources, section rows with their remaining
   count and next offset, pin-section summaries, the project catalog and a
   session summary found by ref, each pure over `NavigationStoreState` and
-  adoptable by native if it ever gains a store. The subpath
-  resolves to `state/navigation/index.ts`, a barrel that re-exports the eight
+  adoptable by native if it ever gains a store, and host grouping
+  (`hostGrouping`): where a row, and a project whose rows live on several
+  hosts, sit when a client organizes sessions by host (the web rail's
+  Organize by and the phone Board's Hosts section). The subpath
+  resolves to `state/navigation/index.ts`, a barrel that re-exports the nine
   modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
   apps' plugin settings surfaces are built on: the marketplaces store
