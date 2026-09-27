@@ -3,11 +3,13 @@ import { act } from "@testing-library/react";
 import { settleProjectionWorkForTests } from "../../../../../stores/projectionWork";
 
 // The repeat loop every test wants: run rounds until one of them sees no work
-// at all. Each round settles the tracked work inside act, and act's exit is
-// where React runs the effects that work's updates scheduled; an effect can
-// start new work, which the next round settles. So the bound counts those
-// effect cycles, and it is a tripwire for a livelock: it throws rather than
-// letting a test pass on a half-settled projection.
+// at all. Each round settles the tracked work inside act. When the flush is the
+// outermost act, each round's exit is where React runs the effects that work's
+// updates scheduled; an effect can start new work, which the next round
+// settles, so the bound counts those effect cycles. Called inside an outer act,
+// React holds those effects until the outer act exits, and work they start is
+// that caller's to settle. Either way the bound is a tripwire for a livelock:
+// it throws rather than letting a test pass on a half-settled projection.
 //
 // The act comes from @testing-library/react, not react: only RTL's wrapper
 // marks the environment as act-capable for the wrapped scope, and callers of
