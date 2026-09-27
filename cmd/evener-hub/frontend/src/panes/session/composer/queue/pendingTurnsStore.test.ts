@@ -24,7 +24,10 @@ import {
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "./pendingTurnsStore";
-import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
+import {
+  flushPendingTurnsProjectionForTests,
+  outlastEmptyFlushRoundForTests,
+} from "./testing/flushPendingTurnsProjection";
 
 function thread(overrides: Partial<Thread> = {}): Thread {
   return {
@@ -439,11 +442,8 @@ test("a flush cannot settle while a submit is still in flight", async () => {
     flushResolved = true;
   });
 
-  // Give the flush every chance to finish early: more macrotask hops than its
-  // own settle round takes. If the submit is tracked, it cannot return here.
-  for (let hop = 0; hop < 5; hop += 1) {
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-  }
+  // If the submit is tracked, the flush cannot return here.
+  await outlastEmptyFlushRoundForTests();
   expect(flushResolved).toBe(false);
 
   releaseSubmit();
