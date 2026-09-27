@@ -965,6 +965,15 @@ func TestEnsureTriggeredDeployIsADurableOperationNamingItsRecord(t *testing.T) {
 	if done.State != hostops.StateComplete || done.Result == nil || !done.Result.OK {
 		t.Fatalf("finished Ensure record = %+v, want complete", done)
 	}
+	// Once the step is over the holder goes back to the ladder's attach class:
+	// a contender must not be told the finished operation is still running.
+	_, err = m.cfg.gate.TryAcquire(entry.Name, hostops.Holder{Kind: hostops.HolderPlan})
+	if !errors.As(err, &busy) {
+		t.Fatalf("contender after the finish = %v, want a busy refusal", err)
+	}
+	if busy.Holder.Kind != hostops.HolderManager {
+		t.Fatalf("holder after the finish = %+v, want the manager's attach class", busy.Holder)
+	}
 	release()
 }
 

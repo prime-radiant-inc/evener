@@ -1101,7 +1101,7 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (func(error), error) {
 		m.logf("host %q: the Ensure-triggered operation %s could not publish itself as the gate holder: %v",
 			host.Name, record.ID, err)
 	}
-	return func(err error) { m.finishEnsureDeploy(record.ID, err) }, nil
+	return func(err error) { m.finishEnsureDeploy(record.ID, host.Name, err) }, nil
 }
 
 // finishEnsureDeploy records the Ensure deploy step's outcome: success is
@@ -1109,8 +1109,16 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (func(error), error) {
 // whose cause is the manager's own shutdown is `interrupted` — the same
 // controller-lifetime rule the RPC-triggered workers follow. Competing
 // concurrent terminal operations never share a call: the Ensure attempt is
-// serialized by the host's gate.
-func (m *hubHostManager) finishEnsureDeploy(id string, err error) {
+// serialized by the host's gate. The step is over at this point, so the gate's
+// holder goes back to the manager's attach class: a contender must not be told
+// a finished operation is still running.
+func (m *hubHostManager) finishEnsureDeploy(id, name string, err error) {
+	defer func() {
+		restored := hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"}
+		if herr := m.cfg.gate.HoldAs(name, restored); herr != nil {
+			m.logf("host %q: the gate's holder could not be restored after the Ensure deploy %s: %v", name, id, herr)
+		}
+	}()
 	if m.cfg.ops == nil {
 		return
 	}
