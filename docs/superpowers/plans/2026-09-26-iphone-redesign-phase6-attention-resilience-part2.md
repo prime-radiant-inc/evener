@@ -16,6 +16,10 @@ Part 1's review (#2511) left three findings against the alert center, and Jesse'
 
 Main also moved: Task 5's store takes the app's `SyncStringStorage` (`src/syncStringStorage.ts`, #2536).
 
+Jesse has answered part 1's two questions (2026-09-26), and both of its rulings stand as written:
+- Question 1, banners about what changed while disconnected: "sure". Ruling 2: a drop that recovers while you're in the app is diffed and alerts; a return from the background starts a new baseline and alerts nothing.
+- Question 2, banners over a sheet: "don't show over a sheet". Ruling 7: banners wait while a sheet is up and show when it closes, with no full-window overlay.
+
 ---
 
 ## PR B: the alert center and haptics
@@ -590,8 +594,9 @@ export class AlertCenter {
 	offer(alert: Alert): void {
 		if (!this.wanted(alert)) return;
 		if (needsYou(alert)) this.remember(alert.ref);
-		// A finished result never joins, replaces or waits with alerts about
-		// sessions that need you (spec 13.3).
+		// A finished result is the quietest alert: it never joins or replaces a
+		// banner that is up, a notice's included, and never waits (spec 13.3;
+		// the prototype's EV.alert drops it behind any banner).
 		if (alert.kind === "finished" && (this.banner !== null || this.holding())) return;
 		if (this.holding()) {
 			this.held = [...this.held.filter((waiting) => subject(waiting) !== subject(alert)), alert];
@@ -899,6 +904,16 @@ describe("session alerts (spec 13.3)", () => {
 		expect(detectSessionAlerts(later.states, both, none).alerts).toEqual([]);
 	});
 
+	it("diffs a session once even if it arrives in two bands, Needs you first", () => {
+		const asking = row("d", { state: "awaiting", ask_pending: true });
+		const start = detectSessionAlerts(null, bands([row("d", { state: "active" })]), none).states;
+		const twice = { needsYou: [{ row: asking, state: "question" as const }], finished: [], working: [{ row: row("d", { state: "active" }), state: "working" as const }], idle: [] };
+		const later = detectSessionAlerts(start, twice, none);
+		expect(later.alerts.map((alert) => alert.kind)).toEqual(["question"]);
+		expect(later.states.get("d")).toBe("question");
+		expect(detectSessionAlerts(later.states, twice, none).alerts).toEqual([]);
+	});
+
 	it("alerts a finished turn only when the session was working", () => {
 		const start = detectSessionAlerts(
 			null,
@@ -1002,10 +1017,15 @@ export function detectSessionAlerts(
 	}
 	const alerts: SessionAlert[] = [];
 	// liveBands holds each session once, from Live or the Needs you section,
-	// and leaves offline rows out (boardState calls them shutDown), so each
-	// ref is diffed once and an offline ref keeps the state seeded above.
+	// and leaves offline rows out (boardState calls them shutDown), so an
+	// offline ref keeps the state seeded above. Each ref is diffed once even
+	// if that ever changes: the first band it appears in, Needs you first,
+	// decides.
+	const diffed = new Set<string>();
 	for (const item of [...bands.needsYou, ...bands.finished, ...bands.working, ...bands.idle]) {
 		const { ref, title } = item.row;
+		if (diffed.has(ref)) continue;
+		diffed.add(ref);
 		const before = previous?.get(ref);
 		states.set(ref, item.state);
 		if (previous === null) continue;
@@ -1807,7 +1827,9 @@ Expected: FAIL. The self-check passes, and the guard lists every file that impor
 ```tsx
 // mobile-native/src/alerts/HoldingModal.tsx
 // React Native's Modal, holding in-app alerts while it is up (ruling 7): a
-// banner over a sheet would cover the sheet's own controls.
+// banner can't show above it. A Modal is visible unless told otherwise (its
+// defaultProps, react-native Libraries/Modal/Modal.js), so an unset `visible`
+// holds, as the Modal shows.
 import { Modal, type ModalProps } from "react-native";
 import { useHoldAlerts } from "./AlertsProvider";
 
@@ -1923,6 +1945,8 @@ Then pass `useAlertSnapshot().recent` where the screen calls `nextSession`, sort
 
 Jesse, 2026-09-26: "board actions while offline: hold em" (part 1's ruling 18). Spec 7.5 sends a Board action taken offline "to the outbox". Phase 2 part 3 hides those actions while offline (its ruling 21); this PR replaces the hiding with a hold. It builds on part 3's pieces and adds no second copy of them: the Board's one organization journal (`useBoardOrganization`, its Task 10.5), `BoardStops` (its Task 12.2), and `rowMenuActions`, `swipeActions`, `archiveSession`, `pinSession`, `shutDownSession` and `renameSession` (its Task 12.3), plus the project actions (its ruling 15).
 
+It adds a second kv-store key, `evener.native.board-hold.${hubId}` (per hub), beside part 1's per-device `evener.native.alert-preferences`: part 1's Global Constraints counted one new key before Jesse's answer added the hold.
+
 Why a hold of its own, and not the mutation outbox: the outbox carries the four turn kinds with receipts and client mutation ids (`nativeMutationRuntime.ts:69-77`), while archive, pin and rename are set-style writes the hub answers without receipts, confirmed by the journal's read-back (`checkOrganizationChange`), and `thread/shutdown` and `evener/thread/name/set` take no client mutation id. Set-style writes replay safely; the hold's job is order, durability, and keeping a Stop or Shut down from landing on work nobody saw.
 
 ### Task 19: The hold
@@ -1977,7 +2001,7 @@ Why a hold of its own, and not the mutation outbox: the outbox carries the four 
 **Requirements:**
 1. **Offline, the actions stay.** `rowMenuActions` and `swipeActions` offer the same actions offline as online, so part 3's ruling 21 is gone; select mode's actions and the project menu stay too. Offline, choosing one holds it (`boardHold(hubId).hold`) instead of sending it, after the same confirmation Shut down asks for online. A Pin opens part 3's category picker over the Board's loaded catalog, and a Rename its name field; both hold what you choose. A Stop or Shut down records `seen`: the running turn's id (the row's own once S19 lands, else from a thread read this launch made), and the row's `updated_at`.
 2. **Held rows say so, where they are** (spec 14): a row with something held is dimmed, as an unconfirmed archive is today, and its second line reads what waits: "Archive waits for the connection", "Stop waits for the connection", and so on, one line for the latest. A held archive leaves the row in place until the hub confirms it. The row's menu adds "Cancel <action>" for each held action, which cancels it.
-3. **Replay.** On each ready connection, and on relaunch once the connection is ready, the Board sends the active hub's held actions in the order held, one at a time:
+3. **Replay.** On each ready connection, and on relaunch once the connection is ready, the Board sends the active hub's held actions in two streams, each in the order held and one at a time. Stop, Shut down and Rename go at once; the organization changes wait for the Board. A Stop never waits behind an archive, so the two streams may interleave:
    - Stop and Shut down go at once, wherever you are: `BoardStops.stop(client, ref, (thread) => turnStillSeen(seen, thread))`, and for Shut down a thread read first with the same guard's rule (requirement 3 of Task 19), then `shutDownSession`. A dropped Stop shows the toast "The turn you stopped ended before you were back online"; a dropped Shut down, "A newer turn started, so the session wasn't shut down".
    - Rename goes at once through `renameSession`.
    - Archive, pin and the project changes go through the Board's own journal once the Board is focused and `organizationFree` holds, one change at a time, each confirmed by the journal's check before the next. The journal holds one change per hub, and a second writer would break it (part 3's ruling 16).
