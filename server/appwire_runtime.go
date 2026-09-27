@@ -1332,7 +1332,7 @@ func (s *Server) handleAppThreadList(_ context.Context, params appwire.ThreadLis
 	// single walk of the live tree, where resolving each row on its own searched
 	// that tree once per row.
 	s.attachLiveWatches(data)
-	s.attachSubagentTally(data)
+	s.attachSubagentTally(&data[0])
 	return appwire.ThreadListResponse{Data: data}, nil
 }
 
@@ -2742,22 +2742,22 @@ func (s *Server) attachLiveWatches(data []appwire.Thread) {
 	}
 }
 
-// attachSubagentTally stamps the root row (data[0]) with its tree's subagent
+// attachSubagentTally stamps the root row with its tree's subagent
 // tally. A nested delegate's lifecycle change is emitted on its owner's stream
 // and never samples the root's envelope, so the tally is read when the row is
 // listed rather than cached. A tree with no subagent carries none.
-func (s *Server) attachSubagentTally(data []appwire.Thread) {
+func (s *Server) attachSubagentTally(root *appwire.Thread) {
 	s.mu.RLock()
 	fn := s.appSubagentTallyFunc
 	s.mu.RUnlock()
-	if fn == nil || len(data) == 0 {
+	if fn == nil {
 		return
 	}
 	tally, ok := fn()
-	if !ok || tally.Running+tally.Failed+tally.Done == 0 {
+	if !ok || tally == (appwire.SubagentTally{}) {
 		return
 	}
-	data[0].Evener.Subagents = &tally
+	root.Evener.Subagents = &tally
 }
 
 // appThreadWithWatches returns thread with statuses as its diagnostics watch
