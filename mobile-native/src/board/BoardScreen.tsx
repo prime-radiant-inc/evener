@@ -1,6 +1,6 @@
 import { humanizeState, type NavigationSessionSummary } from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
-import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import type { NativeStackHeaderItemMenu, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
@@ -401,26 +401,25 @@ function useHeader(navigation: Navigation, hubId: string, hubName: string, conne
 	const { fontScale } = useWindowDimensions();
 	useEffect(() => {
 		const switchHub = () => navigation.navigate("Hubs");
+		const hubMenu: NativeStackHeaderItemMenu["menu"] = {
+			items: [
+				{
+					type: "action",
+					label: "Hub settings",
+					disabled: !connected,
+					onPress: () => navigation.navigate("HubSettings", { hubId }),
+				},
+				{ type: "action", label: "Switch hub", onPress: switchHub },
+			],
+		};
 		navigation.setOptions({
 			title: "",
+			// A bar item given both a label and an icon draws only the icon, so
+			// the hub's name and its chevron are two items, each opening the
+			// same menu.
 			unstable_headerLeftItems: () => [
-				{
-					type: "menu",
-					label: hubName,
-					accessibilityLabel: `${hubName}, hub menu`,
-					icon: { type: "sfSymbol", name: "chevron.down" },
-					menu: {
-						items: [
-							{
-								type: "action",
-								label: "Hub settings",
-								disabled: !connected,
-								onPress: () => navigation.navigate("HubSettings", { hubId }),
-							},
-							{ type: "action", label: "Switch hub", onPress: switchHub },
-						],
-					},
-				},
+				{ type: "menu", label: hubName, accessibilityLabel: `${hubName}, hub menu`, menu: hubMenu },
+				{ type: "menu", label: "Hub menu", icon: { type: "sfSymbol", name: "chevron.down" }, menu: hubMenu },
 			],
 			unstable_headerRightItems: () => [
 				{

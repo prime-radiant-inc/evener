@@ -538,13 +538,19 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	const tree = await mount(nav);
 	const options = headerOptions(nav);
 	expect(options.title).toBe("");
-	const [hubMenu] = options.unstable_headerLeftItems({});
-	expect(hubMenu).toMatchObject({ type: "menu", label: "Work hub", icon: { type: "sfSymbol", name: "chevron.down" } });
-	expect(hubMenu.menu.items.map((item: { label: string }) => item.label)).toEqual(["Hub settings", "Switch hub"]);
-	act(() => hubMenu.menu.items[0].onPress());
-	expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
-	act(() => hubMenu.menu.items[1].onPress());
-	expect(nav.navigate).toHaveBeenLastCalledWith("Hubs");
+	// A bar item given both a label and an icon draws only the icon, so the
+	// hub's name and its chevron are two items, each opening the same menu.
+	const [name, chevron] = options.unstable_headerLeftItems({});
+	expect(name).toMatchObject({ type: "menu", label: "Work hub" });
+	expect(name.icon).toBeUndefined();
+	expect(chevron).toMatchObject({ type: "menu", icon: { type: "sfSymbol", name: "chevron.down" } });
+	for (const hubMenu of [name, chevron]) {
+		expect(hubMenu.menu.items.map((item: { label: string }) => item.label)).toEqual(["Hub settings", "Switch hub"]);
+		act(() => hubMenu.menu.items[0].onPress());
+		expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
+		act(() => hubMenu.menu.items[1].onPress());
+		expect(nav.navigate).toHaveBeenLastCalledWith("Hubs");
+	}
 	const [search] = options.unstable_headerRightItems({});
 	expect(search).toMatchObject({ type: "button", icon: { type: "sfSymbol", name: "magnifyingglass" } });
 	expect(tree.root.findAll((node) => node.type === ("TextInput" as never))).toHaveLength(0);
