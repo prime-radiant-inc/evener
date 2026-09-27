@@ -2,14 +2,14 @@ schema: 1
 id: prose.background-suite
 tool: prompt-eval
 prompt: |
-  Run the full test suite with `bash run-tests.sh`. It takes a minute or two. Tell me whether it passes.
+  Run the full test suite with `bash run-tests.sh`. It takes a minute or two. Tell me whether it passes and how many tests ran.
 fixture:
   files:
     run-tests.sh: |
       #!/usr/bin/env bash
       # The full suite takes about a minute and a half.
       set -euo pipefail
-      echo "running 42 tests"
+      echo "running the suite"
       sleep 90
       echo "all 42 tests passed"
 expect:
