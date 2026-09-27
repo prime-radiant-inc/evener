@@ -16,6 +16,10 @@ import (
 // decodeStream's accumulated response.output_item.done events, so both
 // callers share this one walk.
 func responseContentFromOutputItems(out []any, body []byte) []llm.ContentPart {
+	return responseContentFromOutputItemsRaw(out, body, nil)
+}
+
+func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.RawMessage) []llm.ContentPart {
 	var content []llm.ContentPart
 	for itemIdx, itemAny := range out {
 		item, ok := itemAny.(map[string]any)
@@ -53,8 +57,15 @@ func responseContentFromOutputItems(out []any, body []byte) []llm.ContentPart {
 			// When the raw body is available, try a focused RawMessage
 			// decode to capture byte-faithful arguments. Degrade, never
 			// drop: fall back to the existing string-form args on failure.
-			if len(body) > 0 {
-				if rawArgs, ok := captureResponsesArgsRaw(body, itemIdx); ok && rawArgs != nil {
+			if len(body) > 0 || itemIdx < len(rawItems) {
+				var rawArgs json.RawMessage
+				var rawOK bool
+				if itemIdx < len(rawItems) && len(rawItems[itemIdx]) > 0 {
+					rawArgs, rawOK = captureResponsesItemArgsRaw(rawItems[itemIdx])
+				} else {
+					rawArgs, rawOK = captureResponsesArgsRaw(body, itemIdx)
+				}
+				if rawOK && rawArgs != nil {
 					if content, cerr := protocolhttp.RawStringContent(rawArgs); cerr == nil {
 						args = string(content)
 					}
@@ -121,7 +132,7 @@ func responseContentFromOutputItems(out []any, body []byte) []llm.ContentPart {
 // response.output_item.done events in the same stream carried real content).
 // Shared by the live streaming decoder (decodeStream) and offline
 // recomputation so both apply the identical terminal-wins rule.
-func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accumulatedOutput []any) {
+func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accumulatedOutput []any, accumulatedRawOutput []json.RawMessage) {
 	terminalOutput, _ := rawResp["output"].([]any)
 	switch {
 	case len(terminalOutput) == 0 && len(accumulatedOutput) > 0:
@@ -129,7 +140,7 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 		// output_item.done events carried real content (observed on
 		// affected sessions). Synthesize the settled message from what the
 		// stream actually sent, reusing fromResponses' item-walk.
-		r.Message.Content = responseContentFromOutputItems(accumulatedOutput, nil)
+		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput)
 		if status, _ := rawResp["status"].(string); status != "incomplete" {
 			if len(r.ToolCalls()) > 0 {
 				r.Finish = llm.FinishReason{Reason: "tool_calls"}
@@ -219,12 +230,8 @@ func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.R
 // output array. Returns (nil, false) if the focused decode fails — the
 // caller falls back to the existing string-form args (degrade, never drop).
 func captureResponsesArgsRaw(body []byte, itemIdx int) (json.RawMessage, bool) {
-	type outputItemRaw struct {
-		Type      string          `json:"type"`
-		Arguments json.RawMessage `json:"arguments,omitempty"`
-	}
 	var focused struct {
-		Output []outputItemRaw `json:"output"`
+		Output []json.RawMessage `json:"output"`
 	}
 	if err := json.Unmarshal(body, &focused); err != nil {
 		return nil, false
@@ -232,10 +239,18 @@ func captureResponsesArgsRaw(body []byte, itemIdx int) (json.RawMessage, bool) {
 	if itemIdx < 0 || itemIdx >= len(focused.Output) {
 		return nil, false
 	}
-	if focused.Output[itemIdx].Type != "function_call" {
+	return captureResponsesItemArgsRaw(focused.Output[itemIdx])
+}
+
+func captureResponsesItemArgsRaw(item []byte) (json.RawMessage, bool) {
+	var focused struct {
+		Type      string          `json:"type"`
+		Arguments json.RawMessage `json:"arguments,omitempty"`
+	}
+	if err := json.Unmarshal(item, &focused); err != nil || focused.Type != "function_call" {
 		return nil, false
 	}
-	return focused.Output[itemIdx].Arguments, true
+	return focused.Arguments, true
 }
 
 // parseUsage maps a Responses API usage object into an llm.Usage.

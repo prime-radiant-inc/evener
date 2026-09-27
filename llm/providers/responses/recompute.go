@@ -112,7 +112,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 		case "response.function_call_arguments.done":
 			acc.HandleFunctionCallArgumentsDone(payload)
 		case "response.output_item.done":
-			acc.HandleOutputItemDone(payload)
+			acc.HandleOutputItemDone(payload, ev.Data)
 		case "response.completed":
 			rawResp, _ := payload["response"].(map[string]any)
 			if rawResp == nil {
@@ -131,7 +131,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 	}
 
 	r := fromResponses(terminal, requestedModel, terminalRaw)
-	settleResponsesTerminalOutput(&r, terminal, acc.Output())
+	settleResponsesTerminalOutput(&r, terminal, acc.Output(), acc.RawOutput())
 	return r, nil
 }
 
