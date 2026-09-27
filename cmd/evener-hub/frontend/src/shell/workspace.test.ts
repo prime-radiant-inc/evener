@@ -799,4 +799,31 @@ describe("currentSessionRef", () => {
   test("is null for an empty workspace", () => {
     expect(currentSessionRef(workspaceStore.getState())).toBeNull();
   });
+
+  test("a focused job-log transcript is about the session that owns the job, not the job ref", () => {
+    workspaceStore.setState({
+      panes: [{ id: "p1", type: "transcript", params: { ref: "job:job_x", parentRef: "local:s" }, slot: "main" }],
+      focusedPaneId: "p1",
+    });
+    expect(currentSessionRef(workspaceStore.getState())).toBe("local:s");
+  });
+
+  test("a focused doc pane names its session under `session`", () => {
+    workspaceStore.setState({
+      panes: [{ id: "p1", type: "doc", params: { session: "local:d", path: "README.md", kind: "file" }, slot: "main" }],
+      focusedPaneId: "p1",
+    });
+    expect(currentSessionRef(workspaceStore.getState())).toBe("local:d");
+  });
+
+  test("a focused pane about no session falls through to the main pane", () => {
+    workspaceStore.setState({
+      panes: [
+        { id: "m", type: "session", params: { ref: "local:a" }, slot: "main" },
+        { id: "t", type: "transcript", params: { ref: "job:job_x" }, slot: "secondary" },
+      ],
+      focusedPaneId: "t",
+    });
+    expect(currentSessionRef(workspaceStore.getState())).toBe("local:a");
+  });
 });

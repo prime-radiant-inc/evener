@@ -2863,4 +2863,38 @@ describe("the selected session's rail row", () => {
 
     expect(screen.getByRole("treeitem", { name: /Zeta project/i }).hasAttribute("aria-selected")).toBe(false);
   });
+
+  test("a session listed in two sections is selected once in each section's own tree", () => {
+    installState([
+      sectionResource("live", [summary({ ref: "local:a", title: "Session Alpha" })]),
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        { generation_id: "g1", revision: 1, pin_sections: [{ id: "pins", name: "Pins", count: 1 }], remaining: 0 },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "pins", offset: 0, limit: 50 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          sessions: [summary({ ref: "local:a", title: "Session Alpha" })],
+          remaining: 0,
+        },
+      ),
+    ]);
+    workspaceStore.setState({
+      panes: [{ id: "p", type: "session", params: { ref: "local:a" }, slot: "main" }],
+      focusedPaneId: "p",
+    });
+    render(<Rail />);
+
+    // Each rail section renders its OWN role=tree, so the same session appearing
+    // in Live and in a pin section is one selected row in each tree - never two
+    // selected rows inside one tree, which is the invariant single-select ARIA
+    // actually constrains.
+    const trees = screen.getAllByRole("tree");
+    expect(trees).toHaveLength(2);
+    for (const tree of trees) {
+      expect(within(tree).queryAllByRole("treeitem", { selected: true })).toHaveLength(1);
+    }
+  });
 });
