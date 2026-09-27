@@ -10,6 +10,7 @@ package hostreg
 import (
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -54,6 +55,11 @@ var (
 	// write the caller made recorded that generation, and applying a different
 	// one would leave the file and the live entry disagreeing.
 	ErrStaleStamp = errors.New("stamped generation does not advance")
+	// ErrCounterExhausted marks a mutation whose identity cannot be minted
+	// because the counter the next value comes from is already at its maximum:
+	// the value would wrap to zero, which no reader treats as an identity, so
+	// the mutation is refused before anything changes.
+	ErrCounterExhausted = errors.New("counter exhausted")
 )
 
 // Host is one validated remote-host entry. It mirrors the hub's HostConfig
@@ -311,7 +317,11 @@ func (r *Registry) seed(entry Host) error {
 // name's first presence value when the file carried none. Callers hold r.mu.
 func (r *Registry) seedLocked(entry Host) error {
 	if entry.Generation == 0 {
-		entry.Generation = r.gen + 1
+		generation, err := r.nextGenerationLocked()
+		if err != nil {
+			return err
+		}
+		entry.Generation = generation
 	}
 	if entry.Generation > r.gen {
 		r.gen = entry.Generation
@@ -329,7 +339,11 @@ func (r *Registry) seedLocked(entry Host) error {
 		// the name retained (the marks seed the counter before this runs), so
 		// the name never records a value the file already recorded — not even
 		// the removed incarnation's epoch.
-		entry.PresenceEpoch = r.nextPresenceLocked(entry.Name)
+		presence, err := r.nextPresenceLocked(entry.Name)
+		if err != nil {
+			return err
+		}
+		entry.PresenceEpoch = presence
 	}
 	if entry.PresenceEpoch > r.presence[entry.Name] {
 		r.presence[entry.Name] = entry.PresenceEpoch
@@ -373,14 +387,22 @@ func (r *Registry) Stamp(entry Host) (Identity, error) {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	identity := Identity{Generation: r.nextGenerationLocked()}
+	generation, err := r.nextGenerationLocked()
+	if err != nil {
+		return Identity{}, err
+	}
+	identity := Identity{Generation: generation}
 	if live, ok := r.hosts[entry.Name]; ok {
 		// A replace keeps the live identity's incarnation and presence epoch;
 		// the name's next generation is the one thing an edit advances.
 		identity.IncarnationID = live.IncarnationID
 		identity.PresenceEpoch = live.PresenceEpoch
 	} else {
-		identity.PresenceEpoch = r.nextPresenceLocked(entry.Name)
+		presence, err := r.nextPresenceLocked(entry.Name)
+		if err != nil {
+			return Identity{}, err
+		}
+		identity.PresenceEpoch = presence
 		incarnation, err := mintIncarnationID()
 		if err != nil {
 			return Identity{}, err
@@ -549,7 +571,11 @@ func (r *Registry) Update(entry Host) error {
 		return fmt.Errorf("%w: the generation %d stamped for %q does not advance past the live %d; re-read the host and stamp again",
 			ErrStaleStamp, identity.Generation, entry.Name, live.Generation)
 	default:
-		entry.Generation = r.nextGenerationLocked()
+		generation, err := r.nextGenerationLocked()
+		if err != nil {
+			return err
+		}
+		entry.Generation = generation
 	}
 	if entry.Generation > r.gen {
 		r.gen = entry.Generation
@@ -573,20 +599,38 @@ func (r *Registry) Update(entry Host) error {
 // next generation and the name's presence epoch advanced by one, with a freshly
 // minted incarnation id. Callers hold r.mu.
 func (r *Registry) mintIdentityLocked(name string) (Identity, error) {
+	// The counters come first: a registry with no room left refuses the identity
+	// outright, and a refusal must not leave a minted id behind.
+	generation, err := r.nextGenerationLocked()
+	if err != nil {
+		return Identity{}, err
+	}
+	presence, err := r.nextPresenceLocked(name)
+	if err != nil {
+		return Identity{}, err
+	}
 	incarnation, err := mintIncarnationID()
 	if err != nil {
 		return Identity{}, err
 	}
 	return Identity{
-		Generation:    r.nextGenerationLocked(),
+		Generation:    generation,
 		IncarnationID: incarnation,
-		PresenceEpoch: r.nextPresenceLocked(name),
+		PresenceEpoch: presence,
 	}, nil
 }
 
 // nextGenerationLocked is the one place the registry's next generation comes
-// from: the counter's next value. Callers hold r.mu.
-func (r *Registry) nextGenerationLocked() uint64 { return r.gen + 1 }
+// from: the counter's next value. A counter at its maximum has no next value —
+// the addition would wrap to zero, which is not an identity ("no persisted
+// value" to every reader of the field, and not monotone) — so the mint is
+// refused instead. Callers hold r.mu.
+func (r *Registry) nextGenerationLocked() (uint64, error) {
+	if r.gen == math.MaxUint64 {
+		return 0, fmt.Errorf("%w: the generation counter is at its maximum; no generation above it can be minted", ErrCounterExhausted)
+	}
+	return r.gen + 1, nil
+}
 
 // HighWater is one name's retained high-water record: the presence epoch the
 // name's last presence event reached and the greatest generation it carried. A
@@ -635,8 +679,9 @@ func (r *Registry) SeedHighWater(marks map[string]HighWater) {
 // registry's own add and remove paths apply. It is exported for the
 // durable-first removal, which must record the advance in hub.toml before the
 // registry's own Remove runs — the removal's write lands before any live state
-// changes.
-func (r *Registry) NextPresenceEpoch(name string) uint64 {
+// changes. A counter at its maximum has no next value, and the returned
+// error says so rather than wrapping to zero.
+func (r *Registry) NextPresenceEpoch(name string) (uint64, error) {
 	name = strings.TrimSpace(name)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -645,13 +690,18 @@ func (r *Registry) NextPresenceEpoch(name string) uint64 {
 
 // nextPresenceLocked is the one place the advance's arithmetic lives: one above
 // the name's highest recorded value, counting both the counter and (defensively)
-// a live entry whose epoch somehow runs ahead of it. Callers hold r.mu.
-func (r *Registry) nextPresenceLocked(name string) uint64 {
+// a live entry whose epoch somehow runs ahead of it. A counter at its maximum
+// has no next value — the addition would wrap to zero, a presence value the
+// name already used — so the advance is refused instead. Callers hold r.mu.
+func (r *Registry) nextPresenceLocked(name string) (uint64, error) {
 	next := r.presence[name]
 	if live, ok := r.hosts[name]; ok && live.PresenceEpoch > next {
 		next = live.PresenceEpoch
 	}
-	return next + 1
+	if next == math.MaxUint64 {
+		return 0, fmt.Errorf("%w: host %q's presence counter is at its maximum; no presence epoch above it can be minted", ErrCounterExhausted, name)
+	}
+	return next + 1, nil
 }
 
 // SetUpstreams attaches or replaces the upstream edges of an already registered
@@ -759,22 +809,28 @@ func (r *Registry) Get(name string) (Host, bool) {
 	return cloneHost(host), true
 }
 
-// SameRegistration reports whether two captures describe the same insert: equal
-// configured content and the same generation. It is the one predicate an
+// SameRegistration reports whether two captures describe the same insert:
+// equal configured content and the same (generation, incarnation id) pair —
+// the identity spec 08 §1 mints together on every add/re-add. It is the one
+// predicate an
 // identity recheck states, wrapped here by Registry.SameRegistration and
 // applied by sshconn's channels to pair a live channel with an entry. Content
 // equality alone cannot tell a removed entry from its byte-identical re-add
-// (Equal excludes Generation, and a re-add takes a fresh generation from the
-// registry-wide counter); generation equality alone cannot refuse a hand-built
-// capture whose generation is current but whose content is stale, even though
-// the registry never mutates an inserted entry. Both are needed.
+// (Equal excludes Generation and IncarnationID, and a re-add takes a fresh
+// generation from the registry-wide counter); the generation alone cannot
+// refuse a hand-built capture whose generation is current but whose content is
+// stale, even though the registry never mutates an inserted entry; and two
+// captures that agree on content and generation but name different
+// incarnations are different inserts, because the pair is what the registry
+// mints together. All three are needed.
 func SameRegistration(a, b Host) bool {
-	return a.Equal(b) && a.Generation == b.Generation
+	return a.Equal(b) && a.Generation == b.Generation && a.IncarnationID == b.IncarnationID
 }
 
 // SameRegistration reports whether name is currently registered as the same
 // insert captured describes: present, carrying the same configured content,
-// and stamped with the same generation. It is the identity recheck for
+// and stamped with the same (generation, incarnation id) pair. It is the
+// identity recheck for
 // callers that captured an entry and are about to act on it — attach paths
 // before publishing a channel, host rows before folding retained state: a
 // name whose entry was removed, or removed and re-added even byte-identically
@@ -817,9 +873,16 @@ func (r *Registry) Remove(name string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	host, ok := r.hosts[name]
-	if !ok {
+	if _, ok := r.hosts[name]; !ok {
 		return fmt.Errorf("%w: %q", ErrUnknownHost, name)
+	}
+	// The advance is computed before anything is deleted: a counter with no
+	// room left refuses the removal with nothing changed, and a value computed
+	// while the entry is still live is the one the durable-first removal recorded
+	// with NextPresenceEpoch before this ran.
+	presence, err := r.nextPresenceLocked(name)
+	if err != nil {
+		return err
 	}
 	delete(r.hosts, name)
 	delete(r.edges, name)
@@ -827,8 +890,7 @@ func (r *Registry) Remove(name string) error {
 	// that never landed); either way it must not survive to be consumed by a
 	// later insert, which would re-adopt the removed incarnation's id and epoch.
 	delete(r.pending, name)
-	host.PresenceEpoch = r.nextPresenceLocked(name)
-	r.presence[name] = host.PresenceEpoch
+	r.presence[name] = presence
 	return nil
 }
 

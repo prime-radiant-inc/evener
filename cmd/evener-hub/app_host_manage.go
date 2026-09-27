@@ -2033,7 +2033,14 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	// boundary. NextPresenceEpoch is the one place that arithmetic lives: the
 	// registry's own Remove applies the same rule when the live entry drops in
 	// the teardown below.
-	advanced := m.cfg.hosts.NextPresenceEpoch(host.Name)
+	advanced, err := m.cfg.hosts.NextPresenceEpoch(host.Name)
+	if err != nil {
+		// The advance spec 08 §1 requires for a removal cannot be minted, so the
+		// removal refuses with nothing staged: the name keeps its live record and
+		// the host stays fully intact.
+		m.cfg.mu.Unlock()
+		return appwire.HostRemoveResponse{}, fmt.Errorf("remove host %q: %w", name, err)
+	}
 	m.cfg.store.setHighWater(host.Name, HostGeneration{
 		Generation:    host.Generation,
 		IncarnationID: host.IncarnationID,

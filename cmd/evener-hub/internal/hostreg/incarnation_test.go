@@ -1,6 +1,8 @@
 package hostreg
 
 import (
+	"errors"
+	"math"
 	"testing"
 
 	"github.com/google/uuid"
@@ -94,15 +96,18 @@ func TestPresenceEpochAdvancesExactlyOncePerPresenceEvent(t *testing.T) {
 	}
 	// The durable-first removal records the advance before the registry's own
 	// Remove runs, with the one arithmetic NextPresenceEpoch holds.
-	advanced := r.NextPresenceEpoch("a")
+	advanced, err := r.NextPresenceEpoch("a")
+	if err != nil {
+		t.Fatalf("NextPresenceEpoch(a): %v", err)
+	}
 	if advanced != first.PresenceEpoch+1 {
 		t.Fatalf("NextPresenceEpoch(a) = %d, want the removed event's %d", advanced, first.PresenceEpoch+1)
 	}
 	if err := r.Remove("a"); err != nil {
 		t.Fatalf("Remove(a): %v", err)
 	}
-	if next := r.NextPresenceEpoch("a"); next != advanced+1 {
-		t.Fatalf("the event after the remove advances to %d, want %d", next, advanced+1)
+	if next, err := r.NextPresenceEpoch("a"); err != nil || next != advanced+1 {
+		t.Fatalf("the event after the remove advances to %d (err %v), want %d", next, err, advanced+1)
 	}
 	if err := r.Add(Host{Name: "a", SSH: "a.example"}); err != nil {
 		t.Fatalf("re-Add(a): %v", err)
@@ -173,8 +178,8 @@ func TestSeedHighWaterNeverLowersTheCounterOrALiveEntry(t *testing.T) {
 	if updated.PresenceEpoch != 5 {
 		t.Fatalf("the update lowered the presence epoch to %d, want 5", updated.PresenceEpoch)
 	}
-	if next := r.NextPresenceEpoch("a"); next != 6 {
-		t.Fatalf("NextPresenceEpoch(a) = %d, want 6", next)
+	if next, err := r.NextPresenceEpoch("a"); err != nil || next != 6 {
+		t.Fatalf("NextPresenceEpoch(a) = %d (err %v), want 6", next, err)
 	}
 	// A zero-value Registry's seeding is a no-op, not a panic.
 	var zero Registry
@@ -298,8 +303,8 @@ func TestSeedHighWaterRaisesTheCountersOnly(t *testing.T) {
 	}
 	// A mark at or below the counters leaves them alone: the live name's next
 	// presence event still advances one past its own value.
-	if next := r.NextPresenceEpoch("live"); next != 2 {
-		t.Fatalf("NextPresenceEpoch(live) after a lower seed = %d, want 2", next)
+	if next, err := r.NextPresenceEpoch("live"); err != nil || next != 2 {
+		t.Fatalf("NextPresenceEpoch(live) after a lower seed = %d (err %v), want 2", next, err)
 	}
 }
 
@@ -352,7 +357,101 @@ func TestNewSeedsPersistedRecordsAndMintsWhatIsAbsent(t *testing.T) {
 	if err := legacy.Remove("legacy"); err != nil {
 		t.Fatalf("Remove(legacy): %v", err)
 	}
-	if next := legacy.NextPresenceEpoch("legacy"); next != 3 {
-		t.Fatalf("after the first removal of a loaded host the next epoch = %d, want 3", next)
+	if next, err := legacy.NextPresenceEpoch("legacy"); err != nil || next != 3 {
+		t.Fatalf("after the first removal of a loaded host the next epoch = %d (err %v), want 3", next, err)
 	}
+}
+
+// TestSameRegistrationDistinguishesIncarnations pins roborev round 5's second
+// finding: the registration identity is the (generation, incarnation id) pair
+// — spec 08 §1 mints the id "fresh on every add/re-add ... never reused" — so
+// two captures that agree on content and generation but name different
+// incarnations are different registrations, not the same one.
+func TestSameRegistrationDistinguishesIncarnations(t *testing.T) {
+	base := Host{Name: "a", SSH: "a.example", Generation: 7, IncarnationID: "inc-a"}
+	if !SameRegistration(base, base) {
+		t.Fatal("a capture did not match itself")
+	}
+	rotated := base
+	rotated.IncarnationID = "inc-b"
+	if SameRegistration(base, rotated) {
+		t.Fatal("two incarnations with the same content and generation compared as one registration")
+	}
+	r, err := New(nil)
+	if err != nil {
+		t.Fatalf("New(nil): %v", err)
+	}
+	if err := r.Add(Host{Name: "a", SSH: "a.example"}); err != nil {
+		t.Fatalf("Add(a): %v", err)
+	}
+	live, _ := r.Get("a")
+	if !r.SameRegistration("a", live) {
+		t.Fatal("the live entry's own capture did not match")
+	}
+	forged := live
+	forged.IncarnationID = "inc-b"
+	if r.SameRegistration("a", forged) {
+		t.Fatal("a forged incarnation id matched the live registration")
+	}
+}
+
+// TestRegistryRefusesToMintPastTheCountersMaximum pins roborev round 5's first
+// finding: a counter at its maximum has no next value, and incrementing it
+// would wrap to zero — not an identity (zero is "no persisted value" to every
+// reader) and not monotone. Each mutation that needs the next value refuses
+// with ErrCounterExhausted before anything changes, while the paths that do
+// not need that counter keep working.
+func TestRegistryRefusesToMintPastTheCountersMaximum(t *testing.T) {
+	t.Run("generation", func(t *testing.T) {
+		// The registry-wide generation counter is at its maximum: adds, stamps,
+		// and updates have no generation to mint.
+		r, err := New([]Host{{Name: "a", SSH: "a.example"}})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		r.SeedHighWater(map[string]HighWater{"a": {Generation: math.MaxUint64}})
+		if err := r.Add(Host{Name: "b", SSH: "b.example"}); !errors.Is(err, ErrCounterExhausted) {
+			t.Fatalf("Add at the generation maximum = %v, want ErrCounterExhausted", err)
+		}
+		if _, err := r.Stamp(Host{Name: "b", SSH: "b.example"}); !errors.Is(err, ErrCounterExhausted) {
+			t.Fatalf("Stamp at the generation maximum = %v, want ErrCounterExhausted", err)
+		}
+		if err := r.Update(Host{Name: "a", SSH: "a2.example"}); !errors.Is(err, ErrCounterExhausted) {
+			t.Fatalf("Update at the generation maximum = %v, want ErrCounterExhausted", err)
+		}
+		// Every refusal left the registry exactly as it was.
+		if _, ok := r.Get("b"); ok {
+			t.Fatal("a refused add registered b")
+		}
+		if live, _ := r.Get("a"); live.SSH != "a.example" {
+			t.Fatalf("a refused update changed host a: %+v", live)
+		}
+		// A removal needs the presence counter, not the generation counter, so
+		// it still works.
+		if err := r.Remove("a"); err != nil {
+			t.Fatalf("Remove beside an exhausted generation counter = %v, want success", err)
+		}
+	})
+	t.Run("presence", func(t *testing.T) {
+		// One name's presence counter is at its maximum: that name's next
+		// presence event has no epoch to carry, so the removal that must advance
+		// it refuses, and a name with a live counter still adds.
+		r, err := New([]Host{{Name: "a", SSH: "a.example"}})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		r.SeedHighWater(map[string]HighWater{"a": {PresenceEpoch: math.MaxUint64}})
+		if _, err := r.NextPresenceEpoch("a"); !errors.Is(err, ErrCounterExhausted) {
+			t.Fatalf("NextPresenceEpoch at the name's maximum = %v, want ErrCounterExhausted", err)
+		}
+		if err := r.Remove("a"); !errors.Is(err, ErrCounterExhausted) {
+			t.Fatalf("Remove at the name's presence maximum = %v, want ErrCounterExhausted", err)
+		}
+		if _, ok := r.Get("a"); !ok {
+			t.Fatal("a refused remove dropped the host")
+		}
+		if err := r.Add(Host{Name: "b", SSH: "b.example"}); err != nil {
+			t.Fatalf("Add beside an exhausted name = %v, want success", err)
+		}
+	})
 }

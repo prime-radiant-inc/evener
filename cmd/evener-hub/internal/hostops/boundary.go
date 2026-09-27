@@ -151,12 +151,18 @@ func (s *Store) MirrorBoundaries(updates map[string]Boundary, remove []string) e
 		return nil
 	}
 	next := cloneSnapshot(s.cell.state)
-	if next.Boundaries == nil {
+	if len(updates) > 0 && next.Boundaries == nil {
 		next.Boundaries = make(map[string]Boundary, len(updates))
 	}
 	maps.Copy(next.Boundaries, updates)
 	for _, name := range remove {
 		delete(next.Boundaries, name)
+	}
+	if boundaryMapsEqual(s.cell.state.Boundaries, next.Boundaries) {
+		// Nothing this call names changes a value — a removal of a name with no
+		// boundary, or an update carrying the values already stored — so there is
+		// no write to commit and no file to create or rewrite.
+		return nil
 	}
 	if _, err := s.commitLocked(next); err != nil {
 		// A refusal before the rename wrote nothing; a post-rename failure is a
@@ -166,4 +172,21 @@ func (s *Store) MirrorBoundaries(updates map[string]Boundary, remove []string) e
 		return err
 	}
 	return nil
+}
+
+// boundaryMapsEqual reports whether two boundary maps carry exactly the same
+// names and triples, so MirrorBoundaries can tell a call that changes a value
+// from one that only names names. Boundary is a comparable value type, so the
+// comparison is the values themselves, not a serialization of them.
+func boundaryMapsEqual(a, b map[string]Boundary) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, boundary := range a {
+		other, ok := b[name]
+		if !ok || other != boundary {
+			return false
+		}
+	}
+	return true
 }

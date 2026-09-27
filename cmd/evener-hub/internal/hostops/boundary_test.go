@@ -1,6 +1,7 @@
 package hostops
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -293,5 +294,65 @@ func TestBoundaryMirrorRefusesWhatNoWriterEmits(t *testing.T) {
 				t.Fatalf("a refused mirror write created the store file (stat err = %v)", err)
 			}
 		})
+	}
+}
+
+// TestBoundaryMirrorPruningAnAbsentNameWritesNothing pins roborev round 5's low
+// finding: a remove that deletes no boundary changes no value, so it is not a
+// write. The fresh-store call proves the file is not created, the write counter
+// proves no commit ran even on a store that already has records (the bytes stay
+// untouched), and a real removal still commits exactly one write.
+func TestBoundaryMirrorPruningAnAbsentNameWritesNothing(t *testing.T) {
+	path := StorePath(t.TempDir())
+	writes := 0
+	store, err := openFS(afero.NewOsFs(), path, storeFaults{beforeRename: func() error {
+		writes++
+		return nil
+	}})
+	if err != nil {
+		t.Fatalf("openFS(%s): %v", path, err)
+	}
+	if err := store.MirrorBoundaries(nil, []string{"absent"}); err != nil {
+		t.Fatalf("MirrorBoundaries(nil, remove absent): %v", err)
+	}
+	if writes != 0 {
+		t.Fatalf("pruning a name with no boundary committed %d write(s), want none", writes)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pruning a name with no boundary created the store file (stat err = %v)", err)
+	}
+	if err := store.MirrorBoundaries(map[string]Boundary{
+		"h1": {Generation: 7, IncarnationID: "inc-h1", PresenceEpoch: 2},
+	}, nil); err != nil {
+		t.Fatalf("MirrorBoundaries(h1): %v", err)
+	}
+	if writes != 1 {
+		t.Fatalf("mirroring h1 committed %d write(s), want 1", writes)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the store file: %v", err)
+	}
+	if err := store.MirrorBoundaries(nil, []string{"absent"}); err != nil {
+		t.Fatalf("MirrorBoundaries(nil, remove absent) on a written store: %v", err)
+	}
+	if writes != 1 {
+		t.Fatalf("pruning an absent name on a written store committed %d write(s), want 1", writes)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the store file after the no-op: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("pruning an absent name rewrote the store file")
+	}
+	if err := store.MirrorBoundaries(nil, []string{"h1"}); err != nil {
+		t.Fatalf("MirrorBoundaries(nil, remove h1): %v", err)
+	}
+	if writes != 2 {
+		t.Fatalf("removing h1 committed %d write(s), want 2", writes)
+	}
+	if _, ok := store.Boundary("h1"); ok {
+		t.Fatal("h1's boundary survived its removal")
 	}
 }
