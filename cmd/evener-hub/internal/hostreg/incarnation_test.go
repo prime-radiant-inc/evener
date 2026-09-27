@@ -113,6 +113,40 @@ func TestPresenceEpochAdvancesExactlyOncePerPresenceEvent(t *testing.T) {
 	}
 }
 
+// TestRegistryRefusesAStampThatNoLongerAdvances pins roborev round 3's Low
+// finding: an edit that carries a matching pending stamp whose generation no
+// longer advances past the live entry's is refused — leaving the stamp
+// unconsumed and the live entry untouched — instead of quietly minting a
+// generation different from the one the caller already wrote durably.
+func TestRegistryRefusesAStampThatNoLongerAdvances(t *testing.T) {
+	r, err := New([]Host{{Name: "a", SSH: "a.example"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	stamp, err := r.Stamp(Host{Name: "a", SSH: "a2.example"})
+	if err != nil {
+		t.Fatalf("Stamp(a): %v", err)
+	}
+	// An intervening edit of the same name raises the live generation past the
+	// stamp (the app's mutex excludes this in production; the exported API
+	// allows it).
+	if err := r.Update(Host{Name: "a", SSH: "a3.example"}); err != nil {
+		t.Fatalf("Update(a): %v", err)
+	}
+	live, _ := r.Get("a")
+	stale := Host{
+		Name: "a", SSH: "a2.example",
+		Generation: stamp.Generation, IncarnationID: stamp.IncarnationID, PresenceEpoch: stamp.PresenceEpoch,
+	}
+	if err := r.Update(stale); err == nil {
+		t.Fatal("Update applied a stamp that no longer advances, want a refusal")
+	}
+	after, _ := r.Get("a")
+	if after.Generation != live.Generation || after.IncarnationID != live.IncarnationID || after.PresenceEpoch != live.PresenceEpoch {
+		t.Fatalf("the refused update changed the live entry: %+v, want %+v", after, live)
+	}
+}
+
 // TestRegistryMintsRatherThanTrustingAForgedIdentity pins roborev round 2's
 // provenance finding: Add and Update honor only the identity a pending Stamp
 // minted for the entry — three non-zero fields are not proof — so a hand-built

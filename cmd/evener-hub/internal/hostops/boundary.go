@@ -26,9 +26,11 @@ const MaxIncarnationIDBytes = 128
 // The record outlives the host's live entry by design: §4's retention rule
 // keeps "the historical (generation, incarnation id, presenceEpoch) boundary"
 // in this record until the host's last operation record compacts, so a removed
-// host's pagination still validates against a boundary. Nothing in this slice
-// deletes a boundary record; compaction, the slice that owns retention, is
-// where one goes.
+// host's pagination still validates against a boundary. Retention deletion —
+// compacting that last record — belongs to the slice that owns retention; the
+// one deletion this layer performs is the ownership prune MirrorBoundaries
+// applies to a name the writing mutation no longer carries (a compensated add,
+// a name dropped while the write ran).
 type Boundary struct {
 	// Generation is the registry generation the write committed: the live
 	// entry's generation for a live host, or the removed incarnation's

@@ -49,6 +49,11 @@ var (
 	ErrInvalidKeyPath = errors.New("invalid key_path")
 	// ErrUnknownHost marks an operation naming a host the registry does not hold.
 	ErrUnknownHost = errors.New("unknown host")
+	// ErrStaleStamp marks an update whose entry carries a matching pending stamp
+	// whose generation no longer advances past the live entry's: the durable
+	// write the caller made recorded that generation, and applying a different
+	// one would leave the file and the live entry disagreeing.
+	ErrStaleStamp = errors.New("stamped generation does not advance")
 )
 
 // Host is one validated remote-host entry. It mirrors the hub's HostConfig
@@ -393,17 +398,17 @@ func (r *Registry) Stamp(entry Host) (Identity, error) {
 	return identity, nil
 }
 
-// consumeStampLocked returns the identity a pending Stamp minted for entry's
-// name, when entry carries exactly that identity, and clears it; otherwise it
-// reports false and clears nothing. It is the provenance check the durable-first
-// insert and edit paths rely on: the only way a caller can hold an identity that
-// matches a pending stamp is to have received it from Stamp, so Add and Update
-// mint rather than trust a caller-supplied generation, incarnation id or
-// presence epoch — a hand-built entry that merely carries three non-zero values
-// proves nothing. A stamp whose mutation never landed stays pending and a later
-// mutation of the same name may consume it, which is correct: that identity was
-// minted and never persisted. Callers hold r.mu.
-func (r *Registry) consumeStampLocked(entry Host) (Identity, bool) {
+// peekStampLocked returns the identity a pending Stamp minted for entry's name,
+// when entry carries exactly that identity, without consuming it. It is the
+// provenance check the durable-first insert and edit paths rely on: the only way
+// a caller can hold an identity that matches a pending stamp is to have received
+// it from Stamp, so Add and Update mint rather than trust a caller-supplied
+// generation, incarnation id or presence epoch — a hand-built entry that merely
+// carries three non-zero values proves nothing. A stamp whose mutation never
+// landed stays pending and a later mutation of the same name may consume it,
+// which is correct: that identity was minted and never persisted. Callers hold
+// r.mu.
+func (r *Registry) peekStampLocked(entry Host) (Identity, bool) {
 	pending, ok := r.pending[entry.Name]
 	if !ok {
 		return Identity{}, false
@@ -413,8 +418,17 @@ func (r *Registry) consumeStampLocked(entry Host) (Identity, bool) {
 		entry.PresenceEpoch != pending.PresenceEpoch {
 		return Identity{}, false
 	}
-	delete(r.pending, entry.Name)
 	return pending, true
+}
+
+// consumeStampLocked is peekStampLocked plus the consumption the insert path
+// needs: it clears the pending stamp it returns. Callers hold r.mu.
+func (r *Registry) consumeStampLocked(entry Host) (Identity, bool) {
+	identity, ok := r.peekStampLocked(entry)
+	if ok {
+		delete(r.pending, entry.Name)
+	}
+	return identity, ok
 }
 
 // Add validates entry and inserts it. It is AddWithUpstreams with no upstreams;
@@ -519,15 +533,22 @@ func (r *Registry) Update(entry Host) error {
 	// preserved for the same reason.
 	live := r.hosts[entry.Name]
 	// The generation is the one thing an edit advances, and only a stamp from
-	// this registry may name it: a supplied generation counts when the entry
-	// carries exactly a pending stamp and that value still advances past the
-	// live entry's. Everything else — zero, a copy of the live entry's value, or
-	// a hand-built number — mints, so an update always advances the generation
-	// and never adopts a caller's.
-	identity, stamped := r.consumeStampLocked(entry)
-	if stamped && identity.Generation > live.Generation {
+	// this registry may name it. The stamp is inspected before it is consumed,
+	// because consuming one this call cannot apply would leave the caller's
+	// durable write (which recorded the stamped generation) and the live entry
+	// disagreeing: a stamped generation that no longer advances is refused, and
+	// everything else — zero, a copy of the live entry's value, a hand-built
+	// number — mints, so an update always advances the generation and never
+	// adopts a caller's.
+	identity, stamped := r.peekStampLocked(entry)
+	switch {
+	case stamped && identity.Generation > live.Generation:
 		entry.Generation = identity.Generation
-	} else {
+		delete(r.pending, entry.Name)
+	case stamped:
+		return fmt.Errorf("%w: the generation %d stamped for %q does not advance past the live %d; re-read the host and stamp again",
+			ErrStaleStamp, identity.Generation, entry.Name, live.Generation)
+	default:
 		entry.Generation = r.nextGenerationLocked()
 	}
 	if entry.Generation > r.gen {
