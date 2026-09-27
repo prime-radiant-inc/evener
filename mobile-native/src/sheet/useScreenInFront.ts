@@ -2,13 +2,16 @@
 // (sheetRoutes.ts, inFront). A sheet is part of the screen under it, so that
 // screen keeps following its session, and its actions stay allowed, while its
 // sheets are open.
-import { useIsFocused, useNavigationState } from "@react-navigation/native";
+import { useNavigationState } from "@react-navigation/native";
 import { inFront, type StackState } from "./sheetRoutes";
 
 export function useScreenInFront(routeKey: string): boolean {
-	const focused = useIsFocused();
-	const underSheets = useNavigationState((state) => inFront(state, routeKey));
-	return focused || underSheets;
+	// inFront already answers true for the focused route itself (position ===
+	// state.index leaves nothing between it and the top to check), so a
+	// separate useIsFocused subscription would only re-render this screen an
+	// extra time on every sheet open and close for an answer inFront already
+	// gives.
+	return useNavigationState((state) => inFront(state, routeKey));
 }
 
 /** The same answer at the moment of a call, for a guard inside a callback. */

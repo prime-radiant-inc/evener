@@ -3,12 +3,10 @@ import { renderHook } from "../renderNative.testkit";
 import { leaveScreen, screenInFront, useScreenInFront } from "./useScreenInFront";
 
 const navigationState = vi.hoisted(() => ({
-	focused: false,
 	state: { index: 0, routes: [] as { key: string; name: string }[] },
 }));
 
 vi.mock("@react-navigation/native", () => ({
-	useIsFocused: () => navigationState.focused,
 	useNavigationState: <T>(select: (state: typeof navigationState.state) => T) => select(navigationState.state),
 }));
 
@@ -17,12 +15,14 @@ const tasks = { key: "tasks", name: "TasksSheet" };
 const reader = { key: "reader", name: "Reader" };
 
 it("keeps a session in front while its own sheet covers it, and not once a screen is pushed", () => {
-	navigationState.focused = false;
 	navigationState.state = { index: 1, routes: [session, tasks] };
 	expect(renderHook(() => useScreenInFront("session")).result.current).toBe(true);
 	navigationState.state = { index: 1, routes: [session, reader] };
 	expect(renderHook(() => useScreenInFront("session")).result.current).toBe(false);
-	navigationState.focused = true;
+	// The pushed screen is popped, so session is focused (the top of the
+	// stack) again - in front through the very same state check, with no
+	// separate useIsFocused subscription to answer it.
+	navigationState.state = { index: 0, routes: [session] };
 	expect(renderHook(() => useScreenInFront("session")).result.current).toBe(true);
 });
 
