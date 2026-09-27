@@ -484,6 +484,8 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 						accessibilityRole="button"
 						accessibilityLabel={chip.label}
 						onPress={chip.onPress}
+						// The chip draws 32pt tall; the row's padding makes up a 44pt target.
+						hitSlop={{ top: 6, bottom: 6 }}
 						style={({ pressed }) => ({
 							minHeight: 32,
 							paddingHorizontal: 12,
@@ -584,6 +586,8 @@ function SummaryLine({
 					<Pressable
 						accessibilityRole="button"
 						onPress={() => onJump(band)}
+						// Each count draws 30pt tall; the slop makes a 44pt target.
+						hitSlop={{ top: 7, bottom: 7 }}
 						style={({ pressed }) => ({
 							minHeight: 30,
 							flexDirection: "row",

@@ -339,6 +339,28 @@ it("shows chips and section rows for the sections that have sessions, and opens 
 	act(() => tree.unmount());
 });
 
+it("gives every control a touch target at least 44pt tall", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	const flat = (style: unknown): Record<string, number> =>
+		Object.assign({}, ...[typeof style === "function" ? style({ pressed: false }) : style].flat(Number.POSITIVE_INFINITY));
+	const short = tree.root
+		.findAll((node) => node.type === ("Pressable" as never))
+		.map((node) => {
+			const style = flat(node.props.style);
+			const slop = node.props.hitSlop ?? {};
+			return {
+				label: node.props.accessibilityLabel,
+				height: (style.minHeight ?? style.height ?? 0) + (slop.top ?? 0) + (slop.bottom ?? 0),
+			};
+		})
+		.filter((target) => target.height < 44);
+	expect(short).toEqual([]);
+	act(() => tree.unmount());
+});
+
 it("opens a session after marking it seen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
