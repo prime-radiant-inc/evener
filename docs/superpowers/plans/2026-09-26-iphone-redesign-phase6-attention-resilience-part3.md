@@ -359,6 +359,36 @@ it("lets only a settle's own end release its claim, so a record that lands meanw
 	await outbox.stop();
 });
 
+it("leaves sending to the runtime: a record for a target it holds open goes without another settle", async () => {
+	const outbox = runtime();
+	await outbox.submit(message());
+	const client = new FakeClient("ready");
+	client.on("thread/read", () => read("ref-1"));
+	const starts: (() => void)[] = [];
+	client.on(
+		"turn/start",
+		(params) =>
+			new Promise((resolve) => {
+				starts.push(() => resolve(applied(params)));
+			}),
+	);
+	const flush = new OutboxFlush(() => outbox);
+	flush.bind("hub-1", client);
+	// The first send is out, so the flush keeps its claim: something still waits.
+	await vi.waitFor(() => expect(starts).toHaveLength(1));
+	expect(outbox.targetClient("hub-1", "ref-1")).toBe(client);
+
+	await outbox.submit(message({ input: [{ type: "text", text: "the second" }] }));
+	starts.shift()?.();
+	await vi.waitFor(() => expect(starts).toHaveLength(1));
+	starts.shift()?.();
+
+	await vi.waitFor(() => expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined());
+	expect(methods(client)).toEqual(["thread/read", "turn/start", "turn/start"]);
+	flush.dispose();
+	await outbox.stop();
+});
+
 it("never uses a read an older connection started, nor lets it touch the new one's", async () => {
 	const outbox = runtime();
 	await outbox.submit(message());
@@ -447,6 +477,7 @@ Each test pins one part of the flush, and fails without it:
 - "lets go of a target it can't settle, and still sends the others": the per-target catch;
 - "looks again for a record that landed while a settle it then lost was in flight": the `touched` set;
 - "lets only a settle's own end release its claim, so a record that lands meanwhile still goes": a change while a settle is out only notes the target, and one read per settle;
+- "leaves sending to the runtime: a record for a target it holds open goes without another settle": the division of labor, with one read for two sends;
 - "never uses a read an older connection started, nor lets it touch the new one's": claims as objects, so a late continuation lets go of its own claim or none;
 - "sends only the active hub's messages, and nothing while the connection isn't ready": the hub filter and the ready check;
 - "lets every session go when the connection drops": `bind(null, null)` letting every claim go;
@@ -483,6 +514,13 @@ In `nativeMutationRuntime.ts`, before `beginAuthoritativeRead`:
 // A session screen owns its own target; the flush only settles one that has
 // something waiting, for a screen under the Reader or a subagent, which
 // doesn't read while it's covered.
+//
+// The flush opens targets; the runtime sends. A settle's reconcile dispatches
+// everything already waiting (reconcileAuthoritativeRead, dispatchTargets),
+// and a record committed for a target that is open is discovered and sent on
+// commit (MutationOutbox's announceCommit). So a record that lands during or
+// after a settle goes either way; the flush only decides when to let a
+// registration go.
 import type { AppwireClientLike } from "@evener/appwire-client";
 
 export type SettleResult = "open" | "reconciled" | "blocked" | "stale" | "unregistered";
