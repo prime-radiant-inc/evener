@@ -73,8 +73,8 @@ export type TerminalReason = "protocol" | null;
 // Same values as legacy appwire.js. Browsers can't send WebSocket ping
 // frames from JS, so a silently-dropped connection leaves readyState OPEN
 // forever with no notifications flowing; the heartbeat sends a cheap app-level
-// `ping` once nothing has arrived for HEARTBEAT_INTERVAL_MS, whatever requests
-// are pending, and force-closes the socket if it goes unanswered.
+// `ping` once nothing has arrived for HEARTBEAT_INTERVAL_MS and force-closes
+// the socket if it goes unanswered.
 export const HEARTBEAT_INTERVAL_MS = 20_000;
 export const HEARTBEAT_TIMEOUT_MS = 10_000;
 
@@ -724,11 +724,10 @@ export class AppwireClient {
   // starts the same reconnect lifecycle as a server-initiated drop. close()
   // remains best-effort cleanup: a half-open transport may never emit onclose.
   //
-  // The heartbeat timer calls it once nothing has arrived for
-  // HEARTBEAT_INTERVAL_MS, whatever requests are pending: a pending request
-  // proves nothing about a socket that has gone silent, and the hub answers
-  // ping outside its request queue, so a slow request cannot hold the pong
-  // back. Request timeouts are not a liveness signal either: they measure a
+  // It pings even while requests are pending: a pending request proves
+  // nothing about a socket that has gone silent, and the hub answers ping
+  // outside its request queue, so a slow request cannot hold the pong back.
+  // Request timeouts are not a liveness signal either: they measure a
   // handler's latency, and a silent drop is already caught within
   // HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS of the last frame received.
   private sendHeartbeat(): void {
