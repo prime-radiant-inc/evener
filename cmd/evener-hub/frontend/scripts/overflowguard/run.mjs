@@ -610,6 +610,27 @@ async function verifyIntentColumn(cdpEndpoint, url) {
   }
 }
 
+// The trailing held-steer ghost stack's column: Session renders HeldSteerStack
+// as the transcript's trailing virtual-list row, outside TurnBlock's .turn
+// column, so like the top-level intent group it must read the reading measure
+// itself or it spans the full pane while every turn above stays clamped and
+// centered. Same 1024px leg as the intent column check: wide enough that the
+// 44rem measure leaves visible margins on both sides.
+async function verifyHeldSteerColumn(cdpEndpoint, url) {
+  const page = await connectPage(cdpEndpoint);
+  const { send } = page;
+  try {
+    await applyViewport(send, { width: 1024, height: 900, mobile: false });
+    await navigateTo(page, url, BOOT);
+    await evaluate(send, "window.settled");
+    await waitForFonts(send);
+    return await evaluate(send, "window.__overflowGuardHeldSteerColumn = window.inspectHeldSteerColumn()");
+  } finally {
+    await clearViewportOverride(send);
+    page.close();
+  }
+}
+
 function assertFieldsets(detail, label) {
   const failures = [];
   if (!detail || !Number.isFinite(detail.rootRemPx) || detail.rootRemPx <= 0) {
@@ -1229,6 +1250,23 @@ async function main() {
       console.log(`intent group column ... FAIL - ${JSON.stringify(intentColumn)}`);
     } else {
       console.log("intent group column ... PASS - top-level intent group shares the turn content column");
+    }
+
+    const heldSteerColumn = await verifyHeldSteerColumn(
+      cdpEndpoint,
+      `http://127.0.0.1:${vitePort}/overflowharness.html?heldtail=1&w=1024`,
+    );
+    if (
+      !heldSteerColumn.stackFound ||
+      heldSteerColumn.turnLeft === null ||
+      heldSteerColumn.turnRight === null ||
+      Math.abs(heldSteerColumn.stackLeft - heldSteerColumn.turnLeft) > GEOMETRY_TOLERANCE ||
+      Math.abs(heldSteerColumn.stackRight - heldSteerColumn.turnRight) > GEOMETRY_TOLERANCE
+    ) {
+      failed++;
+      console.log(`held steer column ... FAIL - ${JSON.stringify(heldSteerColumn)}`);
+    } else {
+      console.log("held steer column ... PASS - trailing held-steer stack shares the turn content column");
     }
 
     const panelCollapse = await verifyPanelCollapse(

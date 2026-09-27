@@ -16,6 +16,7 @@
 import { createRoot } from "react-dom/client";
 import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
+import { refreshPendingTurnsProjection } from "../panes/session/composer/queue/pendingTurnsStore";
 import Session from "../panes/session/Session";
 import Settings from "../panes/settings/Settings";
 import "../panes/sessionPanels";
@@ -33,6 +34,7 @@ import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
+import { MutationOutboxIndexedDB } from "../stores/mutationOutboxIndexedDB";
 import { navigationStore } from "../stores/navigation/store";
 import { putThreadModel, threadsStore } from "../stores/threads";
 import { initTranscriptDisplay, transcriptDisplayStore } from "../stores/transcriptDisplay";
@@ -53,6 +55,9 @@ const theme = params.get("theme");
 const settingsMode = params.get("settings") === "1";
 const pagingMode = params.get("paging") === "1";
 const intentTailMode = params.get("intenttail") === "1";
+// ?heldtail=1: the trailing held-steer ghost fixture for the stack's column
+// alignment (see inspectHeldSteerColumn below).
+const heldTailMode = params.get("heldtail") === "1";
 // steer=1 advertises the steer capability, so the busy fixture draws Stop +
 // Send + Steer (every busy session on a harness that can steer); without it
 // the cluster is Stop + Send, the one the status row's narrow-pane budget was
@@ -297,6 +302,23 @@ const intentTailSnapshot: ThreadReadResponse = {
   },
 };
 
+// ?heldtail=1: the trailing held-steer ghost fixture. HeldSteerStack renders
+// as Session's trailing virtual-list row, so this reuses the main snapshot's
+// settled turn (a real [data-testid="turn-block"] to measure against) under a
+// ref of its own, keeping the thread active (the live gate Session's
+// heldSurfaceLive reads). The ghost itself is seeded below through the REAL
+// durable outbox path every submission takes, never a direct store write, so
+// the rendered row is the one a real held steer produces.
+const HELDTAIL_REF = "overflowheld";
+const heldTailSnapshot: ThreadReadResponse = {
+  thread: {
+    ...snapshot.thread,
+    id: "thr_overflow_held",
+    sessionId: "sess_overflow_held",
+    evener: { ...snapshot.thread.evener, ref: HELDTAIL_REF },
+  },
+};
+
 const PAGING_REF = "overflowpaging";
 const PAGING_ITEM_IDS = Array.from({ length: 45 }, (_, index) => `paging-item-${index}`);
 PAGING_ITEM_IDS[4] = "item_tool_paging";
@@ -363,7 +385,9 @@ const pagingSnapshot: ThreadReadResponse = {
 };
 
 const fake = new FakeClient("ready");
-fake.on("thread/read", () => (pagingMode ? pagingSnapshot : intentTailMode ? intentTailSnapshot : snapshot));
+fake.on("thread/read", () =>
+  pagingMode ? pagingSnapshot : intentTailMode ? intentTailSnapshot : heldTailMode ? heldTailSnapshot : snapshot,
+);
 fake.on("thread/turns/list", (request: ThreadTurnsListParams): ThreadTurnsListResponse => {
   if (!pagingMode || request.ref !== PAGING_REF) return { data: [] };
   return {
@@ -382,9 +406,38 @@ fake.on("evener/tasks/list", () => ({ data: [] }));
 connectionStore.getState().connect(fake);
 // putThreadModel keeps the routing index in step with the seeded map
 // entry (the store's membership path for threads).
-const activeRef = pagingMode ? PAGING_REF : intentTailMode ? INTENTTAIL_REF : REF;
-const activeSnapshot = pagingMode ? pagingSnapshot : intentTailMode ? intentTailSnapshot : snapshot;
+const activeRef = pagingMode ? PAGING_REF : intentTailMode ? INTENTTAIL_REF : heldTailMode ? HELDTAIL_REF : REF;
+const activeSnapshot = pagingMode
+  ? pagingSnapshot
+  : intentTailMode
+    ? intentTailSnapshot
+    : heldTailMode
+      ? heldTailSnapshot
+      : snapshot;
 putThreadModel(activeRef, hydrateThread(activeSnapshot, activeRef, 1000));
+// The one durable row the held fixture renders from: the same
+// enqueueIntent + shared projection refresh every real submission takes
+// (seedHeld's exact path in messages/testing/heldSteerTestUtils.ts, minus the
+// test-only act flush - the browser has real IndexedDB, and the inspect call
+// below frame-waits for the stack the refresh mounts). Floats free of module
+// scope: the guard's own settled/inspect sequencing owns the timing.
+if (heldTailMode) {
+  void (async () => {
+    const storage = new MutationOutboxIndexedDB();
+    await storage.enqueueIntent({
+      targetRef: HELDTAIL_REF,
+      method: "turn/steer",
+      payload: { ref: HELDTAIL_REF, input: [{ type: "text", text: "held steer column probe" }] },
+      attachments: [],
+      optimisticDisplay: {
+        method: "turn/steer",
+        input: [{ type: "text", text: "held steer column probe" }],
+      },
+    });
+    storage.close();
+    await refreshPendingTurnsProjection(HELDTAIL_REF);
+  })();
+}
 const locationKey = { kind: "location", ref: REF } as const;
 const location: NavigationSessionLocation = {
   generation_id: "overflow_generation",
@@ -1367,6 +1420,51 @@ async function inspectIntentColumn(): Promise<IntentColumnMeasurement> {
   }
 }
 
+interface HeldSteerColumnMeasurement {
+  stackFound: boolean;
+  stackLeft: number | null;
+  stackRight: number | null;
+  turnLeft: number | null;
+  turnRight: number | null;
+}
+
+// The trailing held-steer ghost stack (HeldSteerStack, Session's second
+// trailing-row tenant) must share the content column every .turn row reads:
+// same left edge, same right edge. It renders as the transcript's trailing
+// virtual-list row without TurnBlock's .turn wrapper, so the horizontal-
+// overflow scan cannot see this either - nothing escapes a scroller, the
+// stack simply starts at the pane's raw left edge while every turn above
+// stays clamped and centered. Run at the ?heldtail=1 fixture, whose seeded
+// row can mount a few frames after `settled` (the outbox refresh is async),
+// so both boxes are frame-waited for before measuring.
+async function inspectHeldSteerColumn(): Promise<HeldSteerColumnMeasurement> {
+  const pane = document.getElementById("oh-pane");
+  if (!pane) throw new Error("Held steer column harness pane never mounted");
+  const waitFor = async <T,>(read: () => T | null | undefined, label: string): Promise<T> => {
+    for (let frame = 0; frame < 180; frame += 1) {
+      const value = read();
+      if (value !== null && value !== undefined) return value;
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    throw new Error(`Held steer column harness did not settle: ${label}`);
+  };
+  const stack = await waitFor(
+    () => pane.querySelector<HTMLElement>('[data-testid="held-steer-stack"]'),
+    "held steer stack",
+  );
+  const turn = await waitFor(() => pane.querySelector<HTMLElement>('[data-testid="turn-block"]'), "turn block");
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const stackRect = stack.getBoundingClientRect();
+  const turnRect = turn.getBoundingClientRect();
+  return {
+    stackFound: true,
+    stackLeft: stackRect.left,
+    stackRight: stackRect.right,
+    turnLeft: turnRect.left,
+    turnRight: turnRect.right,
+  };
+}
+
 function measure() {
   if (settingsMode) return measureSettings();
   const pane = document.getElementById("oh-pane");
@@ -1770,6 +1868,7 @@ declare global {
     inspectDetail: typeof inspectDetail;
     inspectChatFocus: typeof inspectChatFocus;
     inspectIntentColumn: typeof inspectIntentColumn;
+    inspectHeldSteerColumn: typeof inspectHeldSteerColumn;
     settled: Promise<true>;
     verifyItemPaging: typeof verifyItemPaging;
   }
@@ -1779,5 +1878,6 @@ window.dump = dump;
 window.inspectDetail = inspectDetail;
 window.inspectChatFocus = inspectChatFocus;
 window.inspectIntentColumn = inspectIntentColumn;
+window.inspectHeldSteerColumn = inspectHeldSteerColumn;
 window.settled = settled;
 window.verifyItemPaging = verifyItemPaging;
