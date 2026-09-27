@@ -2583,9 +2583,11 @@ Expected: both binaries exist, and the log names the baseline commit. The tasks 
 - [ ] **Step 2: Get the model names**
 
 Jesse named seven models, then (2026-09-27) set the Claude models and the GPT model aside for now. The runs use the three lunarouter models. Write their refs, one per line, to `$LAB/models.txt`, in this order, since later steps pick models by line:
-1. `lunarouter/deepseek-4.1-flash`
-2. `lunarouter/glm-5.3-vision`
-3. `lunarouter/glm-5.3-flash`, which the gateway may not serve
+1. `lunarouter/deepseek-4.1-flash-background`
+2. `lunarouter/glm-5.3-vision-background`
+3. `lunarouter/glm-5.3-flash-background`, which the gateway may not serve
+
+The `-background` suffix puts a model on lunarouter's batch pool, which allows 30 concurrent requests; the regular pool allows 10 and is shared with interactive sessions (Jesse, 2026-09-27). Every run also passes `--fast-cheap-model lunarouter/deepseek-4.1-flash-background`, so evener's side calls stay on the batch pool too.
 
 If the Claude or GPT models come back, ask Jesse for their exact lunarouter names rather than guessing, and append them.
 
@@ -2597,7 +2599,7 @@ $LAB/bin/evener-fluency matrix \
   --models "$(paste -sd, $LAB/models.txt)" \
   --probes-dir $LAB/tasks --probe prose.smoke \
   --repetitions 1 --max-concurrent 3 \
-  --fast-cheap-model lunarouter/deepseek-4.1-flash \
+  --fast-cheap-model lunarouter/deepseek-4.1-flash-background \
   --out $LAB/smoke
 ```
 
@@ -2613,7 +2615,7 @@ $LAB/bin/evener-fluency matrix \
   --models "$(paste -sd, $LAB/models.txt)" \
   --probes-dir $LAB/tasks \
   --repetitions 3 --timeout 25m --max-concurrent 4 \
-  --fast-cheap-model lunarouter/deepseek-4.1-flash \
+  --fast-cheap-model lunarouter/deepseek-4.1-flash-background \
   --out $LAB/runs 2>&1 | tee $LAB/baseline-run.log
 ```
 
@@ -2783,7 +2785,7 @@ $LAB/bin/evener-fluency matrix \
   --version v1-A=$LAB/bin/evener-v1-A --version v1-B=$LAB/bin/evener-v1-B --version v1-C=$LAB/bin/evener-v1-C \
   --models $FLASH --probes-dir $LAB/tasks \
   --repetitions 3 --timeout 25m --max-concurrent $CAP \
-  --fast-cheap-model lunarouter/deepseek-4.1-flash \
+  --fast-cheap-model lunarouter/deepseek-4.1-flash-background \
   --out $LAB/runs 2>&1 | tee $LAB/round1-run.log
 ```
 
@@ -2853,7 +2855,7 @@ done
 [ -z "$NEW" ] || $LAB/bin/evener-fluency matrix $NEW \
   --models "$(paste -sd, $LAB/models.txt)" --probes-dir $LAB/tasks \
   --repetitions 3 --timeout 25m --max-concurrent $CAP \
-  --fast-cheap-model lunarouter/deepseek-4.1-flash \
+  --fast-cheap-model lunarouter/deepseek-4.1-flash-background \
   --out $LAB/runs 2>&1 | tee $LAB/round2-run.log
 ```
 

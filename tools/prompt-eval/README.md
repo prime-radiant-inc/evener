@@ -32,12 +32,14 @@ Run every task on several models, three times each. Each prompt version gets a l
 ```bash
 /tmp/lab/evener-fluency matrix \
   --version v0=/tmp/lab/evener-v0 \
-  --models lunarouter/deepseek-4.1-flash,lunarouter/glm-5.3-vision \
+  --models lunarouter/deepseek-4.1-flash-background,lunarouter/glm-5.3-vision-background \
   --probes-dir tools/prompt-eval/tasks \
   --repetitions 3 --timeout 25m --max-concurrent 4 \
-  --fast-cheap-model lunarouter/deepseek-4.1-flash \
+  --fast-cheap-model lunarouter/deepseek-4.1-flash-background \
   --out $PWD/tools/prompt-eval/results/example
 ```
+
+On lunarouter, the `-background` suffix puts a model on the batch pool, which allows 30 concurrent requests where the regular pool allows 10 and is shared with interactive sessions.
 
 A run refuses an `--out` that already holds results, so give each run its own directory, or add new version labels to an existing one.
 
