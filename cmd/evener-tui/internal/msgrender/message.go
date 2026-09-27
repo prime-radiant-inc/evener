@@ -10,13 +10,10 @@ import (
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/cmd/evener-tui/internal/toolsummary"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitext"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
-	"primeradiant.com/evener/llm"
 )
 
 var markdownRenderer *glamour.TermRenderer
@@ -265,6 +262,14 @@ func RenderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string 
 
 	verb := r.Verb(args)
 	target := r.Target(args)
+	// When rawJSON is non-empty but does not parse as a JSON object (rejected
+	// calls with malformed raw bytes), every renderer sees empty args and
+	// produces an empty target. Mirror the hub's toolInputSummary bounded
+	// fallback (agent/transcript_render.go:1595-1601) so the malformed raw
+	// bytes reach the row instead of a bare verb.
+	if rawJSON != "" && !parsesAsJSONObject(rawJSON) {
+		target = oneLineTrunc(rawJSON, toolCardRawFallbackMaxRunes)
+	}
 	var result string
 	if tc.Done || tc.Error != "" {
 		result = r.Result(args, tc.Output, tc.Error, tc.Duration)
@@ -444,93 +449,41 @@ func wrapText(text string, firstBudget, contBudget int) []string {
 	return lines
 }
 
-// historyToMessages converts session history turns into TUI chat messages
-// for display when resuming a session.
-func historyToMessages(turns []schema.Turn) []transcript.ChatMessage {
-	// Collect tool results keyed by call ID for matching with tool calls.
-	toolResults := make(map[string]llm.ToolResultData)
-	for _, t := range turns {
-		if t.Kind != schema.TurnToolResults && t.Kind != schema.TurnTool {
-			continue
-		}
-		for _, p := range t.Message.Content {
-			if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-				toolResults[p.ToolResult.ToolCallID] = *p.ToolResult
-			}
-		}
+// oneLineTrunc collapses newlines to spaces (so a multi-line raw payload does
+// not span the chat view) and truncates to at most limit runes, appending an
+// ellipsis when truncated. Mirrors the hub's oneLine+truncRunes bounding.
+func oneLineTrunc(s string, limit int) string {
+	// \r is stripped (not normalized to a space), matching the hub's oneLine
+	// (agent/transcript_render.go:1762-1764): ReplaceAll(\n, " ") then
+	// ReplaceAll(\r, ""). So "a\rb" -> "ab" and "a\r\nb" -> "a b".
+	s = strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
+	r := []rune(s)
+	if len(r) <= limit {
+		return s
 	}
-
-	var msgs []transcript.ChatMessage
-	for _, t := range turns {
-		switch t.Kind {
-		case schema.TurnUserInput:
-			text := t.Message.Text()
-			if strings.TrimSpace(text) != "" {
-				msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgUser, Text: text})
-			}
-
-		case schema.TurnAssistant:
-			for _, p := range t.Message.Content {
-				switch p.Kind {
-				case llm.ContentText:
-					// Skip empty text (common in tool-only responses).
-					if strings.TrimSpace(p.Text) != "" {
-						msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgAssistant, Text: p.Text})
-					}
-
-				case llm.ContentToolCall:
-					if p.ToolCall == nil {
-						continue
-					}
-					tc := p.ToolCall
-					if tc.Name == "communicate" {
-						msg := extractCommunicate(tc)
-						if msg != "" {
-							msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgCommunicate, Text: msg})
-						}
-						continue
-					}
-
-					// Non-communicate tool call: show as collapsed tool entry.
-					argsJSON := string(tc.Arguments)
-					toolDesc, toolDetail := toolsummary.SummarizeTool(tc.Name, argsJSON)
-					result := toolResults[tc.ID]
-					output := fmt.Sprintf("%v", result.Content)
-					info := &transcript.ToolCallInfo{
-						Name:        tc.Name,
-						Description: toolDesc,
-						Detail:      toolDetail,
-						RawArgs:     argsJSON,
-						Output:      output,
-						Done:        true,
-						Expanded:    toolDetail != "",
-					}
-					if result.IsError {
-						info.Error = output
-					}
-					msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgTool, Tool: info})
-				}
-			}
-		}
-	}
-	return msgs
+	return string(r[:limit]) + "…"
 }
 
-// extractCommunicate pulls the message field from a communicate tool call.
-func extractCommunicate(tc *llm.ToolCallData) string {
-	var args struct {
-		Message string `json:"message"`
-		Output  *struct {
-			Message string `json:"message"`
-		} `json:"output"`
+// toolCardRawFallbackMaxRunes bounds the raw-arguments fallback for a
+// non-communicate tool-card row so one pathological line cannot dominate the
+// chat view, mirroring the hub's toolInputSummary 120-rune bound for tool
+// cards (agent/transcript_render.go:1600).
+const toolCardRawFallbackMaxRunes = 120
+
+// parsesAsJSONObject reports whether s decodes as a JSON object. Returns
+// false for empty input, invalid JSON, null, and valid non-object JSON
+// (arrays, strings, numbers). Mirrors the hub's parseArgs returning nil on
+// error and for null (where Unmarshal succeeds with a nil map), so
+// RenderToolCall can detect the rejected-call raw-bytes shape without
+// changing toolArgsFromJSON (which the fuzz oracle requires to never return
+// nil).
+func parsesAsJSONObject(s string) bool {
+	if s == "" {
+		return false
 	}
-	if err := json.Unmarshal(tc.Arguments, &args); err == nil {
-		if args.Message != "" {
-			return args.Message
-		}
-		if args.Output != nil && args.Output.Message != "" {
-			return args.Output.Message
-		}
-	}
-	return ""
+	var m map[string]any
+	// json.Unmarshal([]byte("null"), &m) succeeds with m == nil, so a bare
+	// null is not a JSON object — require m != nil, mirroring the hub's
+	// parseArgs which returns nil for null.
+	return json.Unmarshal([]byte(s), &m) == nil && m != nil
 }

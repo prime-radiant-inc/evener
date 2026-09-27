@@ -3,7 +3,7 @@ import type { DraftDestination, DraftRepository } from "./draftRepository";
 
 export type DraftStorage = Pick<
 	DraftRepository,
-	"read" | "write" | "removeHub" | "imageInputs"
+	"read" | "write" | "removeHub" | "imageInputs" | "refsWithDrafts"
 >;
 
 /** One document per destination keeps pending work coherent across navigation. */
@@ -23,6 +23,10 @@ export class DraftLibrary {
 			sessions.set(destination.sessionRef, document);
 		}
 		return document;
+	}
+
+	refsWithDrafts(hubId: string): Set<string> {
+		return this.repository().refsWithDrafts(hubId);
 	}
 
 	removeHub(hubId: string) {

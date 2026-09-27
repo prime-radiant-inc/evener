@@ -564,10 +564,26 @@ func EmitCatalog() string {
 
 	methods := make([]methodEntry, 0, len(appwire.Methods))
 	for _, m := range appwire.Methods {
+		var result string
+		if arms, union := appwire.MethodResultArms[m.Name]; union {
+			// A union result: each arm is its own interface (the arm's own Go
+			// name, per the registration) and the method's result type is the
+			// union over them, so a client branches on the arm it received
+			// rather than on a flattened struct that pretends every arm's
+			// fields are always present. The union type itself is the Go
+			// router's marshaling value and has no interface of its own.
+			names := make([]string, 0, len(arms))
+			for _, arm := range arms {
+				names = append(names, registerTopLevel(reg, arm, deriveName(m.Name, "Result")))
+			}
+			result = strings.Join(names, " | ")
+		} else {
+			result = registerTopLevel(reg, m.Result, deriveName(m.Name, "Result"))
+		}
 		methods = append(methods, methodEntry{
 			name:   m.Name,
 			params: registerTopLevel(reg, m.Params, deriveName(m.Name, "Params")),
-			result: registerTopLevel(reg, m.Result, deriveName(m.Name, "Result")),
+			result: result,
 		})
 	}
 

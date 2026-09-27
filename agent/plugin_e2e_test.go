@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -178,13 +179,12 @@ func TestPlugin_EndToEnd(t *testing.T) {
 		t.Errorf("EvenerToClaude(read_file) = %q, want Read", toolname.EvenerToClaude("read_file"))
 	}
 
-	// 8. Plugin agent prompt formatting
-	agentPrompt := renderAvailableAgentsSectionForTest(t, lp.Agents)
-	if !strings.Contains(agentPrompt, "e2e-plugin:helper") {
-		t.Error("prompt should contain agent name 'e2e-plugin:helper'")
-	}
-	if !strings.Contains(agentPrompt, "Helps with tasks") {
-		t.Error("prompt should contain agent description 'Helps with tasks'")
+	// 8. Plugin agents reach the prompt's available-agents input
+	entries := availableAgentEntriesForTest(t, lp.Agents, -1, nil)
+	if !slices.ContainsFunc(entries, func(e agentEntry) bool {
+		return e.Name == "e2e-plugin:helper" && e.Description == "Helps with tasks"
+	}) {
+		t.Errorf("available agents = %+v, want e2e-plugin:helper with its description", entries)
 	}
 
 	// 9. Multiple plugins with unique names work

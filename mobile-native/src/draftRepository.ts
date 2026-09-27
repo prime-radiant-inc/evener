@@ -270,6 +270,19 @@ export class DraftRepository {
 		);
 	}
 
+	/** The sessions on a hub with a draft worth marking: typed or unconfirmed
+	 * text, or images alone (an image-only draft lives only in
+	 * draft_image_sets, since write deletes its empty drafts row). */
+	refsWithDrafts(hubId: string): Set<string> {
+		const rows = this.db.getAllSync<{ session_ref: string }>(
+			`SELECT session_ref FROM drafts WHERE hub_id = ? AND (draft != '' OR unconfirmed IS NOT NULL)
+       UNION SELECT session_ref FROM draft_image_sets WHERE hub_id = ?`,
+			hubId,
+			hubId,
+		);
+		return new Set(rows.map((row) => row.session_ref));
+	}
+
 	removeHub(hubId: string): void {
 		this.creation.clear(hubId);
 		this.db.runSync("DELETE FROM draft_image_sets WHERE hub_id = ?", hubId);

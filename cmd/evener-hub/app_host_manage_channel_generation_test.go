@@ -116,10 +116,7 @@ func TestHostRowAcrossTheUpdateWindowDoesNotAdoptTheNewGenerationsChannel(t *tes
 
 	// The edit the window is about, then the attach it admits: the channel now
 	// installed was built from a later registration than preSwap.
-	if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{
-		Name:  "side",
-		Entry: appwire.HostEntry{Address: "edited.example"},
-	}); err != nil {
+	if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"})); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	if _, err := manager.Ensure(context.Background(), "side"); err != nil {

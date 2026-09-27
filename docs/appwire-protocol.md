@@ -137,7 +137,9 @@ no router (reserved).
 | `evener/pin-section/delete` | hub | `PinSectionDeleteParams` | `PinSectionDeleteResponse` | Deletes a named pin section and returns its removed membership and committed navigation receipt. |
 | `evener/session-pin/assign` | hub | `SessionPinAssignParams` | `SessionPinAssignResponse` | Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt. |
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
+| `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
+| `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
 | `evener/update/check` | hub | `UpdateCheckParams` | `UpdateCheckResponse` | Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request. |
@@ -199,6 +201,10 @@ no router (reserved).
 | `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
 | `evener/host/remove` | hub | `HostRemoveParams` | `HostRemoveResponse` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. |
 | `evener/host/update` | hub | `HostUpdateParams` | `HostUpdateResponse` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. |
+| `evener/host/plan` | hub | `HostPlanParams` | `HostPlanPlanned \| HostPlanNoToken` | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
+| `evener/host/deploy` | hub | `HostDeployParams` | `HostDeployResponse` | Consumes a plan's confirmation token and starts the deploy operation it names: dedup-first on the client operation ID, then the token's single-use consume under the host gate after the running probe and under-gate re-resolution, and a durable pending operation record whose worker runs the 04b deploy path outside the RPC. |
+| `evener/host/restart` | hub | `HostRestartParams` | `HostRestartResponse` | Starts a restart operation for one named host: dedup on the client operation ID and the intended (generation, incarnation id) pair, the gated under-gate re-resolution and terminal-operation scan, then a durable pending operation record whose worker runs the 04b restart path outside the RPC. |
+| `evener/host/running` | hub | `HostRunningParams` | `HostRunningResponse` | Serves one hub's own running build revision and authoritative health to the controller probing it over an attached session, presenting the caller's required fencing epoch: process start time is present exactly when the hub knows it, and healthy reflects the local restart-required predicate, the owner-set minimum-free-space knob, and the state-root write probe. |
 | `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
 | `evener/session/image` | hub | `SessionImageParams` | `SessionImageResponse` | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a session-relative file inside the session's working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
 
@@ -254,6 +260,20 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 
 JSON fields of each params/result/payload type, reflected from the Go structs.
 An embedded type contributes its own fields inline.
+
+
+### `ActivityReadParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `refs` | `[]string` | yes |  |
+
+
+### `ActivityReadResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sessions` | `[]appwire.SessionActivity` |  |  |
 
 
 ### `AgentMessageDeltaParams`
@@ -791,6 +811,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `entry` | `appwire.HostEntry` |  |  |
+| `mutationId` | `string` | yes |  |
 
 
 ### `HostAttachParams`
@@ -822,6 +843,24 @@ _(no fields)_
 | `instance` | `string` |  |  |
 | `action` | `string` |  |  |
 | `reason` | `string` | yes |  |
+
+
+### `HostDeployParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `token` | `string` |  |  |
+| `operationId` | `string` |  |  |
+
+
+### `HostDeployResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `clientOperationId` | `string` |  |  |
+| `state` | `appwire.OperationState` |  |  |
 
 
 ### `HostEntry`
@@ -859,6 +898,59 @@ _(no fields)_
 | `params` | `jsontext.Value` | yes |  |
 
 
+### `HostPlan`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `targetPath` | `string` |  |  |
+| `controllerRevision` | `string` |  |  |
+| `restartFollows` | `bool` |  |  |
+| `factsRevision` | `string` |  |  |
+| `hubTomlFingerprint` | `string` |  |  |
+| `factsCapturedAt` | `string` |  |  |
+| `factsAgeSec` | `int64` |  |  |
+| `runningVersion` | `string` |  |  |
+| `runningHealthy` | `bool` |  |  |
+| `runningProcessStartTime` | `string` | yes |  |
+
+
+### `HostPlanNoToken`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `staleFacts` | `appwire.HostPlanStaleFacts` |  |  |
+| `terminal` | `bool` |  |  |
+| `remnantId` | `string` | yes |  |
+
+
+### `HostPlanParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+
+
+### `HostPlanPlanned`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `plan` | `appwire.HostPlan` |  |  |
+| `token` | `string` |  |  |
+
+
+### `HostPlanStaleFacts`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `message` | `string` |  |  |
+| `attached` | `bool` |  |  |
+| `reason` | `string` |  |  |
+
+
 ### `HostPushCredentialsParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -879,6 +971,9 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `mutationId` | `string` |  |  |
+| `expectedGeneration` | `uint64` |  |  |
+| `expectedIncarnationId` | `string` |  |  |
 
 
 ### `HostRemoveResponse`
@@ -897,6 +992,25 @@ _(no fields)_
 | `params` | `jsontext.Value` | yes |  |
 
 
+### `HostRestartParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `operationId` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
+
+
+### `HostRestartResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `clientOperationId` | `string` |  |  |
+| `state` | `appwire.OperationState` |  |  |
+
+
 ### `HostRow`
 
 | Field | Go type | Omitempty | Embedded |
@@ -910,6 +1024,8 @@ _(no fields)_
 | `addr` | `string` | yes |  |
 | `roots` | `[]string` | yes |  |
 | `origin` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `incarnationId` | `string` |  |  |
 | `attached` | `bool` |  |  |
 | `serverName` | `string` | yes |  |
 | `serverVersion` | `string` | yes |  |
@@ -919,6 +1035,24 @@ _(no fields)_
 | `lastAttachError` | `string` | yes |  |
 | `midAttach` | `bool` |  |  |
 | `removed` | `bool` |  |  |
+| `retainedRows` | `*int` | yes |  |
+| `rowsTruncated` | `bool` | yes |  |
+
+
+### `HostRunningParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `fencingEpoch` | `appwire.FencingEpoch` |  |  |
+
+
+### `HostRunningResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `buildRevision` | `string` |  |  |
+| `healthy` | `bool` |  |  |
+| `processStartTime` | `string` | yes |  |
 
 
 ### `HostStatusParams`
@@ -941,6 +1075,9 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
 | `entry` | `appwire.HostEntry` |  |  |
+| `mutationId` | `string` |  |  |
+| `expectedGeneration` | `uint64` |  |  |
+| `expectedIncarnationId` | `string` |  |  |
 
 
 ### `HostUpdateResponse`
@@ -1824,6 +1961,22 @@ _(no fields)_
 | `ok` | `bool` |  |  |
 | `changed` | `bool` |  |  |
 | `assignment` | `appwire.SessionPinUnpinAssignment` |  |  |
+| `navigation` | `appwire.NavigationMutation` |  |  |
+
+
+### `SessionSeenSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sessions` | `[]appwire.SessionSeenMark` |  |  |
+
+
+### `SessionSeenSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ok` | `bool` |  |  |
+| `changed` | `bool` |  |  |
 | `navigation` | `appwire.NavigationMutation` |  |  |
 
 

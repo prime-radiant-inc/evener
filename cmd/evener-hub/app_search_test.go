@@ -39,6 +39,49 @@ func TestHubSearchIncludesMatchingPastSession(t *testing.T) {
 	if got.ID != "02wMz5TxvLgZ6BB3uYgqz5" || got.Title != "Generated Frobnitz Title" || got.Ref != "local:"+got.ID {
 		t.Fatalf("past result=%+v", got)
 	}
+	// A past session has ended: it has no live ask or escalation left to be
+	// pending, the same reason a past navigation row never carries either flag.
+	if got.AskPending || got.ApprovalPending {
+		t.Fatalf("past result=%+v, want neither AskPending nor ApprovalPending", got)
+	}
+}
+
+// TestHubSearchLiveResultCarriesApprovalPending pins #2567's wire contract: a
+// live session blocked on a sandbox approval surfaces in search the same way
+// it surfaces in navigation, computed from the same LiveEntry.PendingEscalation
+// navigation rows read (hubcore.approvalPendingFor), not a second derivation.
+func TestHubSearchLiveResultCarriesApprovalPending(t *testing.T) {
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{
+			PID: 1, WorkingDir: "/projects/evener", SessionID: "02wMz5TxvLgZ6BB3uYgqz5",
+			Status: appwire.ThreadStatusActive, PendingEscalation: true,
+		},
+	)
+	resp := hubSearch(hubcore.WebConfig{Roster: roster}, appwire.SearchParams{})
+	if len(resp.Live) != 1 || !resp.Live[0].ApprovalPending {
+		t.Fatalf("live=%+v, want one result carrying ApprovalPending", resp.Live)
+	}
+	if resp.Live[0].AskPending {
+		t.Fatalf("live=%+v, want AskPending false with no pending question", resp.Live)
+	}
+}
+
+// TestHubSearchLiveResultCarriesAskPending mirrors the approval case for an
+// unanswered ask_user question (hubcore.askPendingFor's LiveEntry.PendingAsk).
+func TestHubSearchLiveResultCarriesAskPending(t *testing.T) {
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{
+			PID: 1, WorkingDir: "/projects/evener", SessionID: "02wMz5TxvLgZ6BB3uYgqz5",
+			Status: appwire.ThreadStatusAwaiting, PendingAsk: true,
+		},
+	)
+	resp := hubSearch(hubcore.WebConfig{Roster: roster}, appwire.SearchParams{})
+	if len(resp.Live) != 1 || !resp.Live[0].AskPending {
+		t.Fatalf("live=%+v, want one result carrying AskPending", resp.Live)
+	}
+	if resp.Live[0].ApprovalPending {
+		t.Fatalf("live=%+v, want ApprovalPending false with no pending escalation", resp.Live)
+	}
 }
 
 func TestHubSearchOrdersLiveResultsByPastAwareRecency(t *testing.T) {

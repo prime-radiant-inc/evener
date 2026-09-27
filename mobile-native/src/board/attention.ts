@@ -2,8 +2,9 @@
 // navigation rows the hub already sends. Where the spec wants a fact the rows
 // don't carry yet, the fallback from spec 18 lives here, and each server
 // addition replaces its fallback in this file: S1 (why text), S2 (approval
-// flag), S3 (subagent failures), S5 (activity), S13 (tasks). S4 replaces the
-// seen marker, which lives in boardMemory.ts.
+// flag), S3 (subagent counts), S5 (activity), S13 (tasks). S4 replaces the
+// seen marker, which lives in boardMemory.ts. Subagent failures never appear
+// on a Board row; they show only in the session's Subagents chip and list.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 
 export type BoardState =
@@ -89,6 +90,17 @@ export function boardState(
 	return "finished";
 }
 
+/** Classifies any of the Board's rows, Live's or a category's: the needs_you
+ * section marks approvals (approvalRefs), and isSeen splits Finished from
+ * Idle. */
+export function rowClassifier(
+	needsYouSection: readonly NavigationSessionSummary[],
+	isSeen: (row: NavigationSessionSummary) => boolean,
+): (row: NavigationSessionSummary) => ClassifiedRow {
+	const approvals = approvalRefs(needsYouSection);
+	return (row) => ({ row, state: boardState(row, approvals.has(row.ref), isSeen(row)) });
+}
+
 const BANDS: Record<BoardState, Band | null> = {
 	failed: "needsYou",
 	question: "needsYou",
@@ -140,15 +152,15 @@ export function liveBands(
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
 ): LiveBands {
-	const approvals = approvalRefs(needsYouSection);
+	const classify = rowClassifier(needsYouSection, isSeen);
 	const rows = new Map<string, NavigationSessionSummary>();
 	for (const row of live) rows.set(row.ref, row);
 	for (const row of needsYouSection) if (!rows.has(row.ref)) rows.set(row.ref, row);
 	const bands: LiveBands = { needsYou: [], finished: [], working: [], idle: [] };
 	for (const row of rows.values()) {
-		const state = boardState(row, approvals.has(row.ref), isSeen(row));
-		const band = bandOf(state);
-		if (band) bands[band].push({ row, state });
+		const item = classify(row);
+		const band = bandOf(item.state);
+		if (band) bands[band].push(item);
 	}
 	bands.needsYou.sort(needsYouOrder);
 	bands.finished.sort(newestFirst);
@@ -174,6 +186,10 @@ export function liveSummary(bands: LiveBands): LiveSummary | null {
 	};
 	return Object.values(counts).filter((count) => count > 0).length >= 2 ? counts : null;
 }
+
+export const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+/** A section's VoiceOver label, shared by its chip and its header. */
+export const sectionLabel = (name: string, count: number, noun: string) => `${name}, ${plural(count, noun)}`;
 
 export function summaryText(band: Band, count: number): string {
 	if (band === "needsYou") return `${count} ${count === 1 ? "needs you" : "need you"}`;
@@ -252,8 +268,9 @@ export interface LastLine {
 	host?: string;
 }
 
-/** The row's last line on the fallbacks: task progress waits for S13 and
- * subagent failures for S3, so today it is the unusual project and host. */
+/** The row's last line on the fallback: task progress waits for S13, so today
+ * it is the unusual project and host. Subagent failures never appear here;
+ * they show only in the session's Subagents chip and list. */
 export function lastLine(
 	row: NavigationSessionSummary,
 	usual: Usual,

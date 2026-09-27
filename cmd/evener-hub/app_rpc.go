@@ -131,6 +131,8 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			Watches:            item.Watches,
 			Capabilities:       item.Capabilities,
 			CapabilitiesKnown:  item.CapabilitiesKnown,
+			Subagents:          item.Subagents,
+			LastTurnEndedAt:    hubcore.UnixMilliseconds(item.LastTurnEndedAt),
 		}
 		entries = append(entries, entry)
 		// In-process descendants are addressed as their own AppWire
@@ -160,6 +162,9 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			child.PendingAsk = false
 			child.PendingEscalation = false
 			child.PendingEscalations = nil
+			// The root's tally counts the root's tree, not the child's.
+			child.Subagents = appwire.SubagentTally{}
+			child.LastTurnEndedAt = 0 // the root's turn is not the child's
 			child.ReadOnlyAlias = true
 			entries = append(entries, child)
 		}
@@ -1103,10 +1108,12 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerMobilePairingHandler(server, cfg)
 	registerNavigationReadHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
+	registerActivityReadHandler(server, cfg, sources)
 	registerArchiveHandler(server, cfg, sources, func() *NavigationService { return navigation })
 	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
+	registerSessionSeenHandler(server, cfg, navigation)
 	registerMiscHandlers(server, cfg, sources)
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method

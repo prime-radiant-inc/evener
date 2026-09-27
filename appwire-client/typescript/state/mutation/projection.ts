@@ -20,10 +20,12 @@
 // be called synchronously, immediately before that projection, so its
 // re-check of the floor sees everything that has landed up to that point.
 
+import { sameJsonValue } from "../../plainObject";
 import type {
   MutationAttachmentRef,
   MutationOptimisticRecord,
   MutationOutboxRecord,
+  MutationRecord,
   MutationRecoveryRecord,
 } from "./records";
 
@@ -177,12 +179,16 @@ export function createMutationProjectionFence<
 // Replaces every record `targets` names with `records`' own for that target,
 // and drops every existing record of `current`'s whose target is in
 // `targets` but has no replacement in `records` - a target's whole set of
-// records is always replaced together, never merged field by field.
-export function replaceTargetRecords<T extends { clientMutationId: string; targetRef: string }>(
+// records is always replaced together, never merged field by field. When
+// `records` says what `current` already holds for every target, `current`
+// itself comes back: most reads find nothing new, and identity is how a
+// caller tells a real change from a fresh copy of the same records.
+export function replaceTargetRecords<T extends MutationRecord>(
   current: Map<string, T>,
   targets: ReadonlySet<string>,
   records: T[],
 ): Map<string, T> {
+  if (sameTargetRecords(current, targets, records)) return current;
   const next = new Map(current);
   for (const [id, record] of next) {
     if (targets.has(record.targetRef)) next.delete(id);
@@ -191,4 +197,48 @@ export function replaceTargetRecords<T extends { clientMutationId: string; targe
     if (targets.has(record.targetRef)) next.set(record.clientMutationId, record);
   }
   return next;
+}
+
+// Whether `records` holds the same records `current` does for every target, in
+// the same order. Each target is compared on its own: both hold a target's
+// records in intent-sequence order, but an all-targets read interleaves
+// targets differently from the order a map's entries arrived in.
+function sameTargetRecords<T extends MutationRecord>(
+  current: Map<string, T>,
+  targets: ReadonlySet<string>,
+  records: T[],
+): boolean {
+  const heldRecords = [...current.values()];
+  for (const target of targets) {
+    const held = heldRecords.filter((record) => record.targetRef === target);
+    const read = records.filter((record) => record.targetRef === target);
+    if (held.length !== read.length || !held.every((record, index) => sameRecord(record, read[index]))) return false;
+  }
+  return true;
+}
+
+// Whether a fresh read of a durable record says what `held` does. A read hands
+// back new objects throughout, so the record's own fields compare by content.
+// An attachment's bytes are the host's (the web's Blob), which no content
+// comparison can see into, so attachments compare by their reference fields:
+// the same presentationId means the same bytes (MutationAttachmentRef).
+function sameRecord(held: MutationRecord, read: MutationRecord | undefined): boolean {
+  if (read === undefined) return false;
+  const { attachments: heldAttachments, ...heldFields } = held;
+  const { attachments: readAttachments, ...readFields } = read;
+  return (
+    sameJsonValue(heldFields, readFields) &&
+    heldAttachments.length === readAttachments.length &&
+    heldAttachments.every((attachment, index) => sameAttachmentRef(attachment, readAttachments[index]))
+  );
+}
+
+function sameAttachmentRef(held: MutationAttachmentRef, read: MutationAttachmentRef | undefined): boolean {
+  return (
+    read !== undefined &&
+    held.presentationId === read.presentationId &&
+    held.marker === read.marker &&
+    held.name === read.name &&
+    held.mediaType === read.mediaType
+  );
 }

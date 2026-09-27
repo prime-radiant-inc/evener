@@ -32,6 +32,7 @@ import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { recoveryComposerDraft } from "../panes/session/composer/recovery/recoveryDraft";
 import {
   resetSubagentModuleStoreForTests,
@@ -4850,7 +4851,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       },
     });
     await pending;
-    await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+    await flushPendingTurnsProjectionForTests();
+    expect((await readMutationPersistence("ref_a")).outbox).toEqual([]);
 
     expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("authoritative note");
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.humanNote).toBe("authoritative note");
@@ -4888,7 +4890,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       await threadsStore.getState().ensureThread("ref_a");
       // Response-only control proves this same runtime can acknowledge an ordinary write.
       await threadsStore.getState().setHumanNote("ref_a", "smoke");
-      await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+      await flushPendingTurnsProjectionForTests();
+      expect((await readMutationPersistence("ref_a")).outbox).toEqual([]);
       expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("smoke");
       syncHumanNote("ref_a", "smoke");
       const { result } = renderHook(() => useHumanNoteDraft("ref_a"));
@@ -4947,7 +4950,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
           },
         }),
       );
-      await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+      await flushPendingTurnsProjectionForTests();
+      expect((await readMutationPersistence("ref_a")).outbox).toEqual([]);
       const authoritative = boundary === "push" || boundary === "hydration" ? "new authority" : "B";
       expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe(authoritative);
       expect(result.current).toMatchObject(
@@ -5002,7 +5006,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       fake.emitReady();
     });
     await waitFor(() => expect(result.current).toMatchObject({ text: canonical, dirty: false, saved: true }));
-    await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+    await flushPendingTurnsProjectionForTests();
+    expect((await readMutationPersistence("ref_a")).outbox).toEqual([]);
     expect((await readMutationPersistence("ref_a")).optimistic).toEqual([]);
     expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
   });
@@ -5032,7 +5037,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     fake.emitStateChange("reconnecting");
     fake.emitReady();
     expect(await retried).toEqual(first);
-    await waitFor(async () => expect(await independent.getOutbox(record.clientMutationId)).toBeUndefined());
+    await flushPendingTurnsProjectionForTests();
+    expect(await independent.getOutbox(record.clientMutationId)).toBeUndefined();
     expect(await independent.listOptimistic()).toEqual([]);
     independent.close();
   });
@@ -5106,7 +5112,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       },
     });
     await pending;
-    await waitFor(async () => expect((await readMutationPersistence("ref_a")).outbox).toEqual([]));
+    await flushPendingTurnsProjectionForTests();
+    expect((await readMutationPersistence("ref_a")).outbox).toEqual([]);
 
     expect(threadsStore.getState().threads.get("ref_a")?.humanNote).toBe("local note");
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.humanNote).toBe("local note");
@@ -5277,9 +5284,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
     await threadsStore.getState().clearThread("ref_a");
 
-    await waitFor(async () => {
-      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
   });
 
   // RoboRev's detached-promise finding: discardCanceledMutations fires the pin
@@ -5324,9 +5330,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [] })));
     await threadsStore.getState().clearThread("ref_a");
 
-    await waitFor(async () => {
-      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
     // Let a would-be unhandled rejection surface: a few real event-loop turns,
     // each a real storage read the same runtime serves.
     const probe = new MutationOutboxIndexedDB();
@@ -5366,9 +5371,8 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await waitFor(() => {
       expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
     });
-    await waitFor(async () => {
-      expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
-    });
+    await flushPendingTurnsProjectionForTests();
+    expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
   });
 
   // One representative Conflict-mapping test standing in for every
@@ -10646,11 +10650,10 @@ test("clear permits explicit fresh recovery without replaying old-instance input
   const reads = fake.calls.filter((call) => call.method === "thread/read").length;
   expect(await retryBlockedMutation(record.clientMutationId)).toBe(true);
   expect(fake.calls.filter((call) => call.method === "thread/read").length).toBeGreaterThan(reads);
-  await vi.waitFor(async () => {
-    expect(await storage.getRecovery(record.clientMutationId)).toMatchObject({
-      recoveryKind: "rejected",
-      payload: { expectedInstanceId: "thr_ref_a" },
-    });
+  await flushPendingTurnsProjectionForTests();
+  expect(await storage.getRecovery(record.clientMutationId)).toMatchObject({
+    recoveryKind: "rejected",
+    payload: { expectedInstanceId: "thr_ref_a" },
   });
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
 });

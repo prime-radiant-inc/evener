@@ -70,6 +70,29 @@ type Config struct {
 	PastResultsPerPage int              `toml:"past_results_per_page"`
 	Providers          []ProviderConfig `toml:"providers"`
 	Hosts              []HostConfig     `toml:"hosts"`
+	// HostRecords and Generations are hub.toml's machine-managed per-host
+	// records (registry spec 08 §6's reserved-key layout). They live beside
+	// [[hosts]], never inside an entry, because they must survive a host edit:
+	// an edit rewrites the entry's configured fields and nothing here. The
+	// zero/absent value is the compatibility default for a file written before
+	// the records existed — see app_host_records.go.
+	HostRecords map[string]HostRecord     `toml:"host_records"`
+	Generations map[string]HostGeneration `toml:"generations"`
+	// MutationReceipts is hub.toml's durable mutation-receipt section (registry
+	// spec 08 §5/§6), keyed by the five-part scoped receipt key. Like the two
+	// records above it lives beside [[hosts]] and survives every host edit; the
+	// absent value is the compatibility default for a file written before
+	// receipts existed.
+	MutationReceipts map[string]HostMutationReceipt `toml:"mutation_receipts"`
+	// Tombstones is hub.toml's durable removed-host section (registry spec 08
+	// §6/§15), keyed by host name. It lives beside [[hosts]]; a tombstone and
+	// its removal are one atomic write, and the absent value is the
+	// compatibility default for a file written before tombstones existed.
+	Tombstones map[string]HostTombstone `toml:"tombstones"`
+	// PrunedReceipts is hub.toml's durable pruned-marker section (registry spec
+	// 08 §6), keyed by the full five-part scoped receipt key. Each marker is
+	// the bounded proof that a superseded receipt was compacted away.
+	PrunedReceipts map[string]PrunedReceiptMarker `toml:"pruned_receipts"`
 
 	// PluginAutoUpgrade is the global on/off switch for the background plugin
 	// auto-upgrade daemon (design doc §9.1). Defaults to on: the meaningful
@@ -96,22 +119,142 @@ type Config struct {
 	// api_log explicitly (either direction) win over it. Defaults to false —
 	// API-request logging is opt-in because its records are large.
 	APILog bool `toml:"api_log"`
+	// HostProbeTimeout is the owner-adjustable deadline for one
+	// evener/host/running round trip (deploy pipeline 08b §6 step 2: the plan's
+	// probe is "deadline-bounded with an explicit owner-adjustable probe
+	// timeout"). It bounds the gate hold too: a hung remote holds no gate past
+	// the probe window. Default DefaultHostProbeTimeout (10s); a value at or
+	// below zero is floored back to the default at load, since an unset probe
+	// deadline would let a hung remote hold the plan's gate.
+	HostProbeTimeout time.Duration `toml:"host_probe_timeout"`
+	// HostMinFreeSpaceBytes is the owner-adjustable minimum free space the
+	// serving hub's running-health predicate requires on each durable state root
+	// (deploy pipeline 08b §10). Below it the hub reports healthy: false without
+	// running the state-root write probe. Default
+	// DefaultHostMinFreeSpaceBytes (512 MiB); a value at or below zero is
+	// floored back to the default at load, so a state root that is critically
+	// full is never reported healthy by an unset knob.
+	HostMinFreeSpaceBytes int64 `toml:"host_min_free_space_bytes"`
+	// HostTombstoneRetention is the owner-set tombstone retention period
+	// (registry spec 08 §15: "owner-set `tombstoneRetention` knob, default 7
+	// days"): a tombstone past `removed_at + retention` is pruned from hub.toml
+	// by the mutation-path atomic write and by boot, and omitted in memory by
+	// `list` between those writes. Default DefaultHostTombstoneRetention; a
+	// value at or below zero is floored back to the default at load.
+	HostTombstoneRetention time.Duration `toml:"host_tombstone_retention"`
+	// HostTombstoneMaxRows and HostTombstoneMaxRowBytes are the per-tombstone
+	// retained-projection bounds (spec §15: "at most 500 retained rows per
+	// tombstone and at most 1 MiB of serialized row bytes per tombstone
+	// (owner-adjustable knobs in the same family as the cleared-marker TTL; the
+	// defaults ship in the implementing PR)"). A non-positive value is floored
+	// to the default at load, so an unset knob never disables the bound.
+	HostTombstoneMaxRows     int   `toml:"host_tombstone_max_rows"`
+	HostTombstoneMaxRowBytes int64 `toml:"host_tombstone_max_row_bytes"`
+	// HostTombstoneMaxCount and HostTombstoneMaxBytes are the GLOBAL tombstone
+	// caps (spec §15: "at most 64 tombstones and at most 16 MiB of total
+	// serialized tombstone bytes (same knob family; defaults ship in the
+	// implementing PR)"). A non-positive value is floored to the default.
+	HostTombstoneMaxCount int   `toml:"host_tombstone_max_count"`
+	HostTombstoneMaxBytes int64 `toml:"host_tombstone_max_bytes"`
+	// HostSupersededReceiptMaxCount and HostSupersededReceiptTTL bound a live
+	// name's superseded-generation receipts (spec §6: "at most 8 newest
+	// same-key superseded receipts per name (owner-adjustable count bound; a
+	// same-key superseded receipt older than the owner-set superseded-receipt
+	// TTL compacts the same way)"). A non-positive value is floored to the
+	// default at load.
+	HostSupersededReceiptMaxCount int           `toml:"host_superseded_receipt_max_count"`
+	HostSupersededReceiptTTL      time.Duration `toml:"host_superseded_receipt_ttl"`
+	// HostPrunedReceiptMaxCount and HostPrunedReceiptTTL bound a live name's
+	// pruned markers (spec §6: "at most 64 newest markers per live name plus a
+	// marker TTL in the same owner-knob family as the superseded-receipt TTL
+	// (every `hub.toml` mutation and every boot compacts markers past either
+	// bound in the same atomic write; defaults ship in the implementing PR)").
+	// A non-positive value is floored to the default at load.
+	HostPrunedReceiptMaxCount int           `toml:"host_pruned_receipt_max_count"`
+	HostPrunedReceiptTTL      time.Duration `toml:"host_pruned_receipt_ttl"`
+	// HostKeylessAuditMaxCount and HostKeylessAuditTTL bound a name's
+	// keyless-add audit records (spec §11: "audit records compact under the
+	// same dual bound as receipts — at most 64 newest per name plus an
+	// owner-set audit TTL in the same knob family, every `hub.toml` mutation
+	// and every boot compacting past either bound in the same atomic write").
+	// A non-positive value is floored to the default at load.
+	HostKeylessAuditMaxCount int           `toml:"host_keyless_audit_max_count"`
+	HostKeylessAuditTTL      time.Duration `toml:"host_keyless_audit_ttl"`
 }
+
+const (
+	// DefaultHostProbeTimeout is the default deadline for one
+	// evener/host/running round trip. Ten seconds is generous for a loopback
+	// AppWire call proxied over the SSH bridge — the probe's own work is a
+	// roster read, a free-space query, and one tiny state-root write — while
+	// keeping the plan's gate hold bounded when a remote hangs.
+	DefaultHostProbeTimeout = 10 * time.Second
+	// DefaultHostMinFreeSpaceBytes is the default minimum free space the
+	// running-health predicate requires on each durable state root. 512 MiB is
+	// roughly the headroom a hub needs to keep writing session state and its
+	// own durable stores without landing in a critically-full window, and it is
+	// far above the size of any single probe write.
+	DefaultHostMinFreeSpaceBytes int64 = 512 << 20
+	// DefaultHostTombstoneRetention is the tombstone retention period spec 08
+	// §15 names: seven days.
+	DefaultHostTombstoneRetention = 7 * 24 * time.Hour
+	// DefaultHostTombstoneMaxRows and DefaultHostTombstoneMaxRowBytes are the
+	// per-tombstone retained-projection bounds spec §15 names: 500 rows and
+	// 1 MiB of serialized row bytes.
+	DefaultHostTombstoneMaxRows           = 500
+	DefaultHostTombstoneMaxRowBytes int64 = 1 << 20
+	// DefaultHostTombstoneMaxCount and DefaultHostTombstoneMaxBytes are the
+	// global caps spec §15 names: 64 tombstones and 16 MiB of serialized
+	// tombstone bytes.
+	DefaultHostTombstoneMaxCount       = 64
+	DefaultHostTombstoneMaxBytes int64 = 16 << 20
+	// DefaultHostSupersededReceiptMaxCount and DefaultHostSupersededReceiptTTL
+	// are the superseded-receipt bounds spec §6 describes. The TTL matches the
+	// tombstone retention: a superseded receipt's post-remove recovery window
+	// is the tombstone's own window, and any replay past it refuses through the
+	// retained pruned marker instead.
+	DefaultHostSupersededReceiptMaxCount = 8
+	DefaultHostSupersededReceiptTTL      = 7 * 24 * time.Hour
+	// DefaultHostPrunedReceiptMaxCount and DefaultHostPrunedReceiptTTL are the
+	// pruned-marker bounds spec §6 describes; the TTL matches the tombstone
+	// retention for the same reason.
+	DefaultHostPrunedReceiptMaxCount = 64
+	DefaultHostPrunedReceiptTTL      = 7 * 24 * time.Hour
+	// DefaultHostKeylessAuditMaxCount and DefaultHostKeylessAuditTTL are the
+	// keyless-add audit bounds spec §11 describes; the TTL is longer than the
+	// tombstone window because the audit trail's purpose is post-hoc forensics
+	// rather than outcome recovery.
+	DefaultHostKeylessAuditMaxCount = 64
+	DefaultHostKeylessAuditTTL      = 30 * 24 * time.Hour
+)
 
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Addr:                      "127.0.0.1:9180",
-		HubStateRoot:              DefaultHubStateRoot(),
-		StateGlob:                 "",
-		RunDir:                    "",
-		StatusPollInterval:        2 * time.Second,
-		PastIndexRebuild:          60 * time.Second,
-		SpawnTimeout:              30 * time.Second,
-		PastResultsPerPage:        50,
-		PluginAutoUpgrade:         true,
-		PluginAutoUpgradeInterval: 12 * time.Hour,
-		DaemonIdleTimeout:         time.Hour,
+		Addr:                          "127.0.0.1:9180",
+		HubStateRoot:                  DefaultHubStateRoot(),
+		StateGlob:                     "",
+		RunDir:                        "",
+		StatusPollInterval:            2 * time.Second,
+		PastIndexRebuild:              60 * time.Second,
+		SpawnTimeout:                  30 * time.Second,
+		PastResultsPerPage:            50,
+		PluginAutoUpgrade:             true,
+		PluginAutoUpgradeInterval:     12 * time.Hour,
+		DaemonIdleTimeout:             time.Hour,
+		HostProbeTimeout:              DefaultHostProbeTimeout,
+		HostMinFreeSpaceBytes:         DefaultHostMinFreeSpaceBytes,
+		HostTombstoneRetention:        DefaultHostTombstoneRetention,
+		HostTombstoneMaxRows:          DefaultHostTombstoneMaxRows,
+		HostTombstoneMaxRowBytes:      DefaultHostTombstoneMaxRowBytes,
+		HostTombstoneMaxCount:         DefaultHostTombstoneMaxCount,
+		HostTombstoneMaxBytes:         DefaultHostTombstoneMaxBytes,
+		HostSupersededReceiptMaxCount: DefaultHostSupersededReceiptMaxCount,
+		HostSupersededReceiptTTL:      DefaultHostSupersededReceiptTTL,
+		HostPrunedReceiptMaxCount:     DefaultHostPrunedReceiptMaxCount,
+		HostPrunedReceiptTTL:          DefaultHostPrunedReceiptTTL,
+		HostKeylessAuditMaxCount:      DefaultHostKeylessAuditMaxCount,
+		HostKeylessAuditTTL:           DefaultHostKeylessAuditTTL,
 	}
 }
 
@@ -216,12 +359,75 @@ func decodeConfig(name, data string) (Config, error) {
 	if metadata.Type("daemon_idle_timeout") == "Integer" {
 		return cfg, fmt.Errorf("daemon_idle_timeout must be a duration string such as \"1h\" or \"0s\" (got the integer %[1]d, which TOML decodes as %[1]d nanoseconds)", int64(cfg.DaemonIdleTimeout))
 	}
+	// The same footgun, same refusal: a bare integer is a nanosecond count, so
+	// `host_probe_timeout = 10` (plausible shorthand for ten seconds) would arm
+	// a 10ns deadline that fails every probe.
+	if metadata.Type("host_probe_timeout") == "Integer" {
+		return cfg, fmt.Errorf("host_probe_timeout must be a duration string such as \"10s\" (got the integer %[1]d, which TOML decodes as %[1]d nanoseconds)", int64(cfg.HostProbeTimeout))
+	}
+	// The same footgun, same refusal, for every duration-shaped record knob:
+	// `host_tombstone_retention = 7` would arm a 7ns retention and prune every
+	// tombstone on the next write.
+	for _, knob := range []struct {
+		key   string
+		value time.Duration
+	}{
+		{"host_tombstone_retention", cfg.HostTombstoneRetention},
+		{"host_superseded_receipt_ttl", cfg.HostSupersededReceiptTTL},
+		{"host_pruned_receipt_ttl", cfg.HostPrunedReceiptTTL},
+		{"host_keyless_audit_ttl", cfg.HostKeylessAuditTTL},
+	} {
+		if metadata.Type(knob.key) == "Integer" {
+			return cfg, fmt.Errorf("%[1]s must be a duration string such as \"168h\" (got the integer %[2]d, which TOML decodes as %[2]d nanoseconds)", knob.key, int64(knob.value))
+		}
+	}
 	applyConfigDefaults(&cfg)
 	if cfg.DaemonIdleTimeout < 0 {
 		return cfg, fmt.Errorf("daemon_idle_timeout must not be negative (got %v)", cfg.DaemonIdleTimeout)
 	}
 	if err := validateHostConfigs(cfg.Hosts); err != nil {
 		return cfg, fmt.Errorf("validate hosts: %w", err)
+	}
+	// The machine records are decoded as plain tables, so a record the hub's
+	// writer never emits — an incomplete one, or a live record disagreeing with
+	// the name's high-water triple — is refused here rather than read as one of
+	// its halves (registry spec 08 §6: a reserved value whose shape this build
+	// cannot decode is refused loudly before any rewrite).
+	if err := validateHostRecords(cfg.HostRecords, cfg.Generations); err != nil {
+		return cfg, fmt.Errorf("validate host records: %w", err)
+	}
+	// The mutation receipts are the other machine-managed section this build
+	// decodes: a record whose key or shape this build cannot decode, or whose
+	// fields disagree with its key, is refused loudly before any rewrite
+	// (registry spec 08 §6's reserved-namespace rule) — never read as a
+	// half-understood record, and never dropped by the next rewrite.
+	if err := validateHostMutationReceipts(cfg.MutationReceipts); err != nil {
+		return cfg, fmt.Errorf("validate mutation receipts: %w", err)
+	}
+	// The tombstones and pruned markers are the other machine-managed sections
+	// this build decodes: a record whose shape this build cannot decode, or a
+	// tombstone whose entry/identity fails validation, is refused loudly before
+	// any rewrite (registry spec 08 §6's reserved-namespace rule) — the same
+	// hard startup-error posture the host entries take.
+	if err := validateHostTombstones(cfg.Tombstones, cfg.Generations); err != nil {
+		return cfg, fmt.Errorf("validate tombstones: %w", err)
+	}
+	if err := validatePrunedReceipts(cfg.PrunedReceipts); err != nil {
+		return cfg, fmt.Errorf("validate pruned receipts: %w", err)
+	}
+	// Every field of a reserved record must decode: the two tables are decoded
+	// into typed structs and rebuilt on every rewrite, so a field this build does
+	// not know would be silently dropped by the next write. Spec 08 §6 is
+	// explicit that forward preservation is not offered — "a reserved value whose
+	// shape this build cannot decode is refused loudly before any rewrite" — and
+	// a downgrade meeting a newer record must refuse to rewrite rather than
+	// preserve or drop it. Unknown keys outside the reserved set stay the
+	// operator's data and are not this check's business.
+	for _, key := range metadata.Undecoded() {
+		if len(key) > 1 && (key[0] == "host_records" || key[0] == "generations" || key[0] == "mutation_receipts" ||
+			key[0] == "tombstones" || key[0] == "pruned_receipts") {
+			return cfg, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
+		}
 	}
 	if err := validateMobileBaseURL(cfg.MobileBaseURL); err != nil {
 		return cfg, fmt.Errorf("validate mobile_base_url: %w", err)
@@ -391,6 +597,45 @@ func applyConfigDefaults(cfg *Config) {
 	}
 	if cfg.PastResultsPerPage == 0 {
 		cfg.PastResultsPerPage = 50
+	}
+	if cfg.HostProbeTimeout <= 0 {
+		cfg.HostProbeTimeout = DefaultHostProbeTimeout
+	}
+	if cfg.HostMinFreeSpaceBytes <= 0 {
+		cfg.HostMinFreeSpaceBytes = DefaultHostMinFreeSpaceBytes
+	}
+	if cfg.HostTombstoneRetention <= 0 {
+		cfg.HostTombstoneRetention = DefaultHostTombstoneRetention
+	}
+	if cfg.HostTombstoneMaxRows <= 0 {
+		cfg.HostTombstoneMaxRows = DefaultHostTombstoneMaxRows
+	}
+	if cfg.HostTombstoneMaxRowBytes <= 0 {
+		cfg.HostTombstoneMaxRowBytes = DefaultHostTombstoneMaxRowBytes
+	}
+	if cfg.HostTombstoneMaxCount <= 0 {
+		cfg.HostTombstoneMaxCount = DefaultHostTombstoneMaxCount
+	}
+	if cfg.HostTombstoneMaxBytes <= 0 {
+		cfg.HostTombstoneMaxBytes = DefaultHostTombstoneMaxBytes
+	}
+	if cfg.HostSupersededReceiptMaxCount <= 0 {
+		cfg.HostSupersededReceiptMaxCount = DefaultHostSupersededReceiptMaxCount
+	}
+	if cfg.HostSupersededReceiptTTL <= 0 {
+		cfg.HostSupersededReceiptTTL = DefaultHostSupersededReceiptTTL
+	}
+	if cfg.HostPrunedReceiptMaxCount <= 0 {
+		cfg.HostPrunedReceiptMaxCount = DefaultHostPrunedReceiptMaxCount
+	}
+	if cfg.HostPrunedReceiptTTL <= 0 {
+		cfg.HostPrunedReceiptTTL = DefaultHostPrunedReceiptTTL
+	}
+	if cfg.HostKeylessAuditMaxCount <= 0 {
+		cfg.HostKeylessAuditMaxCount = DefaultHostKeylessAuditMaxCount
+	}
+	if cfg.HostKeylessAuditTTL <= 0 {
+		cfg.HostKeylessAuditTTL = DefaultHostKeylessAuditTTL
 	}
 	if cfg.HubStateRoot == "" {
 		cfg.HubStateRoot = DefaultHubStateRoot()

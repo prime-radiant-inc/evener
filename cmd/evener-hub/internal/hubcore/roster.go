@@ -90,6 +90,21 @@ type LiveEntry struct {
 	// this entry, which the row's task line shows. nil means the daemon cannot
 	// read its task state; a present zero is an authoritative empty list.
 	Tasks *appwire.TaskAggregate
+	// Activity is the daemon's pulse meter sample for the root's whole tree,
+	// from the probe that produced this entry (S5). evener/activity/read serves
+	// it and navigation never does. rosterFingerprint leaves it out on purpose:
+	// its bars move every minute a session works, and hashing them would bump
+	// navigation revisions and broadcast an invalidation on every probe.
+	Activity *appwire.ThreadActivity
+	// Subagents is the root's whole-tree subagent tally from its probe (S3). It
+	// renders on the row's last line and Subagents chip, so rosterFingerprint
+	// hashes it; the counts move only when a subagent's run starts or ends.
+	Subagents appwire.SubagentTally
+	// LastTurnEndedAt is when the session's last turn ended, stamped by its
+	// daemon at the turn boundary (S4). It decides Finished versus Idle against
+	// the hub's seen marker, so rosterFingerprint hashes it: a turn that starts
+	// and ends between two probes leaves Status unchanged and moves only this.
+	LastTurnEndedAt time.Time
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -123,6 +138,15 @@ type ProbeResult struct {
 	// Tasks mirrors LiveEntry.Tasks: the root's task-list progress from the
 	// same projection cut as Status.
 	Tasks *appwire.TaskAggregate
+	// Activity is the root tree's pulse meter sample (S5), nil from a daemon
+	// that predates it. See LiveEntry.Activity.
+	Activity *appwire.ThreadActivity
+	// Subagents is the listed root's whole-tree subagent tally (S3); zero from
+	// a daemon that predates it and for a tree with no subagent.
+	Subagents appwire.SubagentTally
+	// LastTurnEndedAt is when the listed root's last turn ended (S4); zero from
+	// a daemon that predates it, or before any turn has ended.
+	LastTurnEndedAt time.Time
 	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
 	// talk to (restart required). Such an answer names no session of its own,
 	// so it does not vouch for the entry's PID the way a bound answer does.
@@ -183,6 +207,7 @@ func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out.Watches = cloneWatches(in.Watches)
 	out.ChildWatches = cloneChildWatches(in.ChildWatches)
 	out.Tasks = appwire.CloneTaskAggregate(in.Tasks)
+	out.Activity = appwire.CloneThreadActivity(in.Activity)
 	return out
 }
 
@@ -549,6 +574,16 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		// being cancelled or starting must move the fingerprint while the
 		// status holds still, or onChange never invalidates navigation.
 		writeTaskFingerprint(h, bySess[id].Tasks)
+		// A subagent failing or finishing changes the row's last line (S3).
+		tally := bySess[id].Subagents
+		for _, count := range []int{tally.Running, tally.Failed, tally.Done} {
+			_, _ = h.Write([]byte(strconv.Itoa(count)))
+			_, _ = h.Write([]byte{0})
+		}
+		_, _ = h.Write([]byte{0})
+		// A turn that starts and ends between two probes leaves Status where it
+		// was and moves only this, and it turns the row Finished (S4).
+		_, _ = h.Write([]byte(strconv.FormatInt(UnixMilliseconds(bySess[id].LastTurnEndedAt), 10)))
 	}
 	return h.Sum64()
 }
@@ -1097,6 +1132,26 @@ func (r *Roster) IsSubagentActive(sessionID string) bool {
 	return live
 }
 
+// RestartRequired reports whether any live daemon on this roster needs a
+// restart (an incompatible build: thread status restart-required). It is the
+// direct local scan evener/host/running's health predicate evaluates — under
+// the roster's read lock, without List's per-entry clones and sort — and never
+// the authenticated-probe path (restartRequiredDaemon), which dials and
+// verifies ownership.
+func (r *Roster) RestartRequired() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, entry := range r.byPID {
+		if !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired {
+			return true
+		}
+	}
+	return false
+}
+
 // SubagentState resolves a running in-process child's own projected status.
 // live is true when a live parent daemon currently lists the child (it is
 // non-closed and resumable); the returned state is the child's own reported
@@ -1349,6 +1404,9 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Watches:               result.Watches,
 		ChildWatches:          result.ChildWatches,
 		Tasks:                 result.Tasks,
+		Activity:              result.Activity,
+		Subagents:             result.Subagents,
+		LastTurnEndedAt:       result.LastTurnEndedAt,
 	})
 }
 

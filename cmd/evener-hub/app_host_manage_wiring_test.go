@@ -122,7 +122,7 @@ func TestHostManageConfiguredHostThroughRealServer(t *testing.T) {
 	// managed file is the hub's store, so no class of live host is protected —
 	// and its registry entry and live source go with it.
 	var removed appwire.HostRemoveResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "m4"}, &removed); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "m4"), &removed); err != nil {
 		t.Fatalf("evener/host/remove(configured host): %v", err)
 	}
 	if !removed.Host.Removed {
@@ -195,7 +195,7 @@ func TestHostManageUIAddedHostThroughRealServer(t *testing.T) {
 
 	// Remove through the real server: everything goes together.
 	var removed appwire.HostRemoveResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, &removed); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), &removed); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
 	if !removed.Host.Removed {
@@ -212,7 +212,20 @@ func TestHostManageUIAddedHostThroughRealServer(t *testing.T) {
 		t.Fatalf("evener/host/list after remove: %v", err)
 	}
 	if len(after.Hosts) != 1 || after.Hosts[0].Name != "m4" {
-		t.Fatalf("list after remove = %+v, want only the hub.toml host", after.Hosts)
+		// Registry spec 08 §15 (S11): the removed host stays as a tombstone row
+		// (`removed: true`), so the live set is m4 plus that retained row.
+		live := map[string]bool{}
+		tombstoneRows := 0
+		for _, row := range after.Hosts {
+			if row.Removed {
+				tombstoneRows++
+				continue
+			}
+			live[row.Name] = true
+		}
+		if tombstoneRows != 1 || len(live) != 1 || !live["m4"] {
+			t.Fatalf("list after remove = %+v, want the hub.toml host live and one tombstone row", after.Hosts)
+		}
 	}
 	// hub.toml no longer carries the entry: a restart will not resurrect it.
 	data, err = os.ReadFile(configPath)
@@ -567,7 +580,7 @@ func TestHostManageRemovePrunesRemoteThreadCache(t *testing.T) {
 	}
 
 	var removed appwire.HostRemoveResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, &removed); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), &removed); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
 	if !removed.Host.Removed {
@@ -654,7 +667,7 @@ func TestHostManageRemoveBlocksInFlightRefreshRepublish(t *testing.T) {
 
 	// The remove commits while that refresh is in flight.
 	var removed appwire.HostRemoveResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, &removed); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), &removed); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
 	if !removed.Host.Removed {
@@ -734,7 +747,7 @@ func TestHostManageRemoveDropsLastGoodThreads(t *testing.T) {
 	web.storeLastGoodThreads("web-side", []appwire.Thread{{ID: "t1", Source: "web-side", CWD: "/srv/ws", Name: "side session"}})
 	web.storeLastGoodThreads("m4", []appwire.Thread{{ID: "c1", Source: "m4", CWD: "/srv/m4", Name: "configured session"}})
 
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), nil); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
 
@@ -782,7 +795,7 @@ func TestHostManageRemoveChurnBoundedLastGoodThreads(t *testing.T) {
 			t.Fatalf("evener/host/add %s: %v", name, err)
 		}
 		web.storeLastGoodThreads(name, []appwire.Thread{{ID: "t1", Source: name, CWD: "/srv/ws", Name: "session"}})
-		if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: name}, nil); err != nil {
+		if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, name), nil); err != nil {
 			t.Fatalf("evener/host/remove %s: %v", name, err)
 		}
 	}
@@ -873,7 +886,7 @@ func TestHostManageRemoveDuringInFlightListSkipsLastGoodStore(t *testing.T) {
 	// The remove completes while the list is parked: the finish phase drops
 	// the registration generation and forgets the retained rows (the
 	// round-9 M1 fix) while the walk holds nothing it needs.
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), nil); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
 	if threads := web.lastGoodThreadsForSource("web-side"); len(threads) != 0 {
@@ -966,7 +979,7 @@ func TestHostManageRemoveBlocksPostCaptureAddedHostRepublish(t *testing.T) {
 		},
 	}
 	// The remove commits while the walk is still in flight.
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), nil); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
 
@@ -1054,7 +1067,7 @@ func TestHostManageRemoveReAddStillBlocksPostCaptureAddedHostRepublish(t *testin
 	// the registration the walk read, and the re-add registers the name under
 	// a new generation — live again, but not the registration that owned the
 	// rows the walk holds.
-	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "web-side"}, nil); err != nil {
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, wireRemoveRequest(t, client, "web-side"), nil); err != nil {
 		t.Fatalf("evener/host/remove: %v", err)
 	}
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, nil); err != nil {

@@ -118,6 +118,23 @@ func UnixSeconds(t time.Time) int64 {
 	return t.Unix()
 }
 
+// UnixMilliTime is UnixTime for a Unix-millisecond wire value, such as a
+// daemon's lastTurnEndedAt.
+func UnixMilliTime(ms int64) time.Time {
+	if ms <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms).UTC()
+}
+
+// UnixMilliseconds is UnixSeconds in milliseconds.
+func UnixMilliseconds(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
+}
+
 func liveEntryOrderKey(le LiveEntry, past *PastIndex) sessionOrderKey {
 	if past != nil && le.SessionID != "" {
 		if entry, ok := past.Find(le.SessionID); ok {
