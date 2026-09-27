@@ -1839,6 +1839,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           updatedAt,
 		MoreSubagents:       node.MoreSubagents,
+		Subagents:           navigationSubagentTally(node.Subagents),
 		RunningJobs:         navigationJobs(node.RunningJobs),
 		CompletedJobs:       navigationJobs(node.CompletedJobs),
 		Watches:             watches,
@@ -1868,6 +1869,18 @@ func navigationTaskProgress(tasks *appwire.TaskAggregate) *hubapi.NavigationTask
 		return nil
 	}
 	return progress
+}
+
+// navigationSubagentTally is a root row's tally on the wire: absent when the
+// tree has no subagent, and dropped when the schema would refuse it (a
+// negative count, which only a malformed daemon answer can carry), the way
+// navigationTaskProgress drops bad progress rather than fail the resource.
+func navigationSubagentTally(tally appwire.SubagentTally) *hubapi.NavigationSubagentTally {
+	wire := hubapi.NavigationSubagentTally{Running: tally.Running, Failed: tally.Failed, Done: tally.Done}
+	if wire == (hubapi.NavigationSubagentTally{}) || !navigationSubagentTallyValid(wire) {
+		return nil
+	}
+	return &wire
 }
 
 // offlineSourceIDs indexes the manifest sources whose connection state is
@@ -2136,10 +2149,7 @@ func (p navigationProjection) pinSectionIDFor(ref hubapi.Ref) string {
 
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {
 	clone := summary
-	if summary.UpdatedAt != nil {
-		updated := *summary.UpdatedAt
-		clone.UpdatedAt = &updated
-	}
+	clone.UpdatedAt = clonePointer(summary.UpdatedAt)
 	clone.RunningJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.RunningJobs...)
 	clone.CompletedJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.CompletedJobs...)
 	clone.Watches = append(hubapi.NavigationArray[hubapi.NavigationWatchSummary](nil), summary.Watches...)
@@ -2148,15 +2158,24 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 		clone.Watches[index].Events = append([]string(nil), watch.Events...)
 		clone.Watches[index].DeliveryTimes = append([]string(nil), watch.DeliveryTimes...)
 	}
-	if summary.Tasks != nil {
-		tasks := *summary.Tasks
-		clone.Tasks = &tasks
-	}
+	clone.Tasks = clonePointer(summary.Tasks)
+	clone.Subagents = clonePointer(summary.Subagents)
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {
 		clone.Children[index] = cloneNavigationSummary(child)
 	}
 	return clone
+}
+
+// clonePointer returns a pointer to a shallow copy of *value; nil stays nil.
+// The summaries point only at values (a time, the task progress, the subagent
+// tally), so the copy shares nothing that can change.
+func clonePointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func navigationPage[T any](rows []T, offset uint32, limit, maximum int) ([]T, int) {

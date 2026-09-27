@@ -2133,6 +2133,13 @@ export interface NavigationSessionSummary {
   offline?: boolean;
   updated_at?: string;
   more_subagents?: number;
+  /**
+   * Subagents is a live root's whole-tree subagent tally, counted by its
+   * daemon (S3). Present only on a live root row whose tree has a subagent;
+   * it counts subagents the row's children never show (nested, or past the
+   * children cap).
+   */
+  subagents?: NavigationSubagentTally;
   omitted_descendants?: number;
   /**
    * OmittedWatches counts live-watch rows this session's summary does not
@@ -2171,6 +2178,12 @@ export interface NavigationSnapshot {
   metadata: unknown;
   entities: NavigationEntityRecord[];
   containers: NavigationOrderContainer[];
+}
+
+export interface NavigationSubagentTally {
+  running: number;
+  failed: number;
+  done: number;
 }
 
 export interface NavigationTaskProgress {
