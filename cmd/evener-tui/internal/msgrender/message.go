@@ -267,6 +267,14 @@ func RenderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string 
 
 	verb := r.Verb(args)
 	target := r.Target(args)
+	// When rawJSON is non-empty but does not parse as a JSON object (rejected
+	// calls with malformed raw bytes), every renderer sees empty args and
+	// produces an empty target. Mirror the hub's toolInputSummary bounded
+	// fallback (agent/transcript_render.go:1595-1601) so the malformed raw
+	// bytes reach the row instead of a bare verb.
+	if rawJSON != "" && !parsesAsJSONObject(rawJSON) {
+		target = oneLineTrunc(rawJSON, toolCardRawFallbackMaxRunes)
+	}
 	var result string
 	if tc.Done || tc.Error != "" {
 		result = r.Result(args, tc.Output, tc.Error, tc.Duration)
@@ -609,4 +617,25 @@ func oneLineTrunc(s string, limit int) string {
 		return s
 	}
 	return string(r[:limit]) + "…"
+}
+
+// toolCardRawFallbackMaxRunes bounds the raw-arguments fallback for a
+// non-communicate tool-card row so one pathological line cannot dominate the
+// chat view, mirroring the hub's toolInputSummary 120-rune bound for tool
+// cards (agent/transcript_render.go:1600). The communicate fallback's 300
+// (communicateRawFallbackMaxRunes) is a separate site with a different limit.
+const toolCardRawFallbackMaxRunes = 120
+
+// parsesAsJSONObject reports whether s decodes as a JSON object. Returns
+// false for empty input, invalid JSON, and valid non-object JSON (arrays,
+// strings, numbers). Mirrors the hub's parseArgs returning nil on error, so
+// RenderToolCall can detect the rejected-call raw-bytes shape without
+// changing toolArgsFromJSON (which the fuzz oracle requires to never return
+// nil).
+func parsesAsJSONObject(s string) bool {
+	if s == "" {
+		return false
+	}
+	var m map[string]any
+	return json.Unmarshal([]byte(s), &m) == nil
 }
