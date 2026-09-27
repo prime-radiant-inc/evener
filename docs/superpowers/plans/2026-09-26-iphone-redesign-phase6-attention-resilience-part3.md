@@ -6,7 +6,9 @@ This is part 3 of `docs/superpowers/plans/2026-09-26-iphone-redesign-phase6-atte
 
 ## What part 1's review left here
 
-Part 1's review (#2511) raised Task 15's flush in rounds 3, 4, 6, 7, 8 and 9; each round's fixes are in the code below. Round 9 left one Medium, which moved here with the task and is fixed below: a covered screen's target could be settled twice at once. The flush claims an unheld target before its first await, so a second flush beside it skips that target, but a screen's target is never the flush's to claim. The flush now marks a screen's target while it settles it, so a second flush skips it; the mark is cleared by the settle that set it and never by an older connection's (the same `generation` fence `release` uses). Two tests pin it: "settles a covered screen's target once, however many flushes run beside each other" and "keeps a new connection's mark on a screen's target when an older settle finishes late".
+Part 1's review (#2511) raised Task 15's flush in rounds 3, 4, 6, 7, 8 and 9; each round's fixes are in the code below. Round 9 left one Medium, which moved here with the task and is fixed below: a covered screen's target could be settled twice at once. The flush now marks a screen's target while it settles it, so a second flush skips it, and only the settle that set the mark clears it.
+
+This PR's first review found that a storage change mid-settle could let go of the claim, and the settle's late end could then let go of a newer claim on the same target, stranding a message. Claims are now objects: a change while a claim's settle is out only notes the target, only that settle's end lets the claim go, and any late continuation can release its own claim and never another. The plan lists which test pins each rule.
 
 ---
 
@@ -317,6 +319,46 @@ it("looks again for a record that landed while a settle it then lost was in flig
 	await outbox.stop();
 });
 
+it("lets only a settle's own end release its claim, so a record that lands meanwhile still goes", async () => {
+	const outbox = runtime();
+	const key = JSON.stringify(["hub-1", "ref-1"]);
+	const client = new FakeClient("ready");
+	const reads: ((response: ThreadReadResponse) => void)[] = [];
+	client.on(
+		"thread/read",
+		() =>
+			new Promise<ThreadReadResponse>((resolve) => {
+				reads.push(resolve);
+			}),
+	);
+	client.on("turn/start", applied);
+	const answerReads = () => {
+		for (const answer of reads.splice(0)) answer(read("ref-1"));
+	};
+	const starts = () => methods(client).filter((method) => method === "turn/start").length;
+	const flush = new OutboxFlush(() => outbox);
+	flush.bind("hub-1", client);
+	// A first message goes, and leaves the target listed by its accepted row.
+	await outbox.submit(message());
+	await vi.waitFor(() => expect(reads).toHaveLength(1));
+	answerReads();
+	await vi.waitFor(() => expect(starts()).toBe(1));
+	await vi.waitFor(() => expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined());
+
+	// Another flush claims the target and waits on its read.
+	void flush.flush();
+	await vi.waitFor(() => expect(reads).toHaveLength(1));
+	// A storage change with nothing waiting, then a second message, both mid-settle.
+	await outbox.discardRecovery("nothing-here", key);
+	await outbox.submit(message({ input: [{ type: "text", text: "the second" }] }));
+	answerReads();
+	await vi.waitFor(() => answerReads() === undefined && expect(starts()).toBe(2));
+	// One read for each settle: the change mid-settle claimed nothing new.
+	expect(methods(client).filter((method) => method === "thread/read")).toHaveLength(2);
+	flush.dispose();
+	await outbox.stop();
+});
+
 it("never uses a read an older connection started, nor lets it touch the new one's", async () => {
 	const outbox = runtime();
 	await outbox.submit(message());
@@ -398,13 +440,14 @@ Each test pins one part of the flush, and fails without it:
 - "sends a message kept while offline once the connection returns, even after a relaunch": the flush's `runtime.start()`, since a fresh runtime dispatches nothing until started (`#getClient`, `nativeMutationRuntime.ts:140-149`);
 - "never takes a session a screen holds": the check on `targetClient`, so the flush never registers over a screen;
 - "settles for a session screen that isn't reading, and leaves the target the screen's": settling a covered screen's target for it;
-- "settles a covered screen's target once, however many flushes run beside each other" and "keeps a new connection's mark on a screen's target when an older settle finishes late": the in-flight mark and its fence;
+- "settles a covered screen's target once, however many flushes run beside each other" and "keeps a new connection's mark on a screen's target when an older settle finishes late": the in-flight mark, which only the settle that set it clears;
 - "reads nothing for a session screen with nothing waiting to send": the `waiting` check before that settle;
 - "sends what another screen admits for a session no screen has open": the storage watch;
 - "keeps a message it can't settle, and lets its session go": letting go of a target whose settle comes back blocked, record kept;
 - "lets go of a target it can't settle, and still sends the others": the per-target catch;
 - "looks again for a record that landed while a settle it then lost was in flight": the `touched` set;
-- "never uses a read an older connection started, nor lets it touch the new one's": the `generation` fence on every claim;
+- "lets only a settle's own end release its claim, so a record that lands meanwhile still goes": a change while a settle is out only notes the target, and one read per settle;
+- "never uses a read an older connection started, nor lets it touch the new one's": claims as objects, so a late continuation lets go of its own claim or none;
 - "sends only the active hub's messages, and nothing while the connection isn't ready": the hub filter and the ready check;
 - "lets every session go when the connection drops": `bind(null, null)` letting every claim go;
 - "reads the hub and ref out of a composite target key": `parseTargetKey`.
@@ -470,15 +513,23 @@ export function parseTargetKey(key: string): { hubId: string; ref: string } | nu
 	return null;
 }
 
+/** The flush's hold on one target it is sending for. Each claim is its own
+ * object, so a late continuation can only ever let go of its own. */
+interface Claim {
+	release(): void;
+	/** Its settle is out: only that settle's end may let it go. */
+	settling: boolean;
+}
+
 export class OutboxFlush {
 	private hubId: string | null = null;
 	private client: AppwireClientLike | null = null;
 	private generation = 0;
-	private readonly owned = new Map<string, () => void>();
-	/** Targets the flush holds whose records changed while it held them. */
+	private readonly owned = new Map<string, Claim>();
+	/** Claimed targets whose records changed while their settle was out. */
 	private readonly touched = new Set<string>();
 	/** Screens' targets this connection is settling for them right now. */
-	private readonly settlingForScreens = new Set<string>();
+	private readonly settlingForScreens = new Map<string, symbol>();
 	private unsubscribe: (() => void) | null = null;
 
 	/** `runtime` is read at the first ready connection: a message kept from an
@@ -490,7 +541,8 @@ export class OutboxFlush {
 	 * every target go. */
 	bind(hubId: string | null, client: AppwireClientLike | null): void {
 		if (hubId === this.hubId && client === this.client) return;
-		this.releaseAll();
+		for (const claim of this.owned.values()) claim.release();
+		this.owned.clear();
 		this.touched.clear();
 		this.settlingForScreens.clear();
 		this.unsubscribe?.();
@@ -515,17 +567,12 @@ export class OutboxFlush {
 		for (const key of await runtime.storage.listTargetRefs()) {
 			if (generation !== this.generation) return;
 			const target = parseTargetKey(key);
-			// settle() claims a target before its first await, so a second flush
-			// running beside this one finds it owned and skips it.
+			// A claim is taken before settle's first await, so a second flush
+			// running beside this one finds the target owned and skips it.
 			if (target === null || target.hubId !== hubId || this.owned.has(key)) continue;
-			try {
-				await this.settle(runtime, key, hubId, target.ref, client, generation);
-			} catch {
-				// A read or storage failure leaves this target's records where
-				// they are, for the next ready connection or the next record,
-				// and the other targets still go.
-				this.letGo(key, generation);
-			}
+			// A storage failure before any claim leaves the target for the next
+			// ready connection or the next record; the other targets still go.
+			await this.settle(runtime, key, hubId, target.ref, client).catch(() => undefined);
 		}
 	}
 
@@ -539,7 +586,6 @@ export class OutboxFlush {
 		hubId: string,
 		ref: string,
 		client: AppwireClientLike,
-		generation: number,
 	): Promise<void> {
 		const holder = runtime.targetClient(hubId, ref);
 		if (holder !== undefined) {
@@ -548,52 +594,60 @@ export class OutboxFlush {
 			// wait for a trip back: settle it for the screen, which keeps its
 			// registration. Only a screen on this connection: a target held
 			// with another client is that client's. A screen's target is never
-			// the flush's to claim, so one settle at a time is kept by marking
-			// it here; a second flush beside this one skips it.
+			// the flush's to claim, so a mark keeps one settle at a time, and
+			// only the settle that set it clears it (bind() clears them all).
 			if (holder !== client || this.settlingForScreens.has(key)) return;
-			this.settlingForScreens.add(key);
+			const mark = Symbol(key);
+			this.settlingForScreens.set(key, mark);
 			try {
 				if (await this.waiting(runtime, key)) await runtime.settleTarget(hubId, ref, client);
 			} finally {
-				// An older connection's settle never clears the new one's mark:
-				// bind() already cleared its own.
-				if (generation === this.generation) this.settlingForScreens.delete(key);
+				if (this.settlingForScreens.get(key) === mark) this.settlingForScreens.delete(key);
 			}
 			return;
 		}
-		this.owned.set(key, runtime.registerTarget(hubId, ref, client));
+		const claim: Claim = { release: runtime.registerTarget(hubId, ref, client), settling: true };
+		this.owned.set(key, claim);
 		this.touched.delete(key);
-		// A read an older connection started can't land here: bind() lets that
-		// connection's claims go, and the runtime answers a read for a
-		// registration that is gone or replaced with "stale", before it
-		// reconciles or dispatches anything (isCurrentRead).
-		const settled = await runtime.settleTarget(hubId, ref, client);
-		if (settled === "reconciled" || settled === "open") await this.releaseIfDone(runtime, key, generation);
-		else this.letGo(key, generation);
+		let settled = false;
+		try {
+			// A read an older connection started can't land here: bind() lets
+			// that connection's claims go, and the runtime answers a read for a
+			// registration that is gone or replaced with "stale", before it
+			// reconciles or dispatches anything (isCurrentRead).
+			const answer = await runtime.settleTarget(hubId, ref, client);
+			settled = answer === "reconciled" || answer === "open";
+		} catch {
+			// A read or storage failure: let go, as for a read that failed.
+		}
+		claim.settling = false;
+		if (settled) await this.releaseIfDone(runtime, key, claim);
+		else this.letGo(key, claim);
 	}
 
 	/** Lets go of a target the flush couldn't settle. A record that landed on
 	 * it meanwhile was left to that settle, so look again for it; a failure
 	 * with nothing new waits for the next record or connection, so a failing
 	 * read never spins. */
-	private letGo(key: string, generation: number): void {
-		if (generation !== this.generation) return;
-		this.release(key, generation);
+	private letGo(key: string, claim: Claim): void {
+		if (!this.release(key, claim)) return;
 		if (this.touched.delete(key)) void this.flush().catch(() => undefined);
 	}
 
 	/** A target the flush holds may be done; a record for one nobody holds is
-	 * work no screen will send. A target a session screen holds stays that
-	 * screen's here: its records come from the screen, or bring their own
+	 * work no screen will send. A claim whose settle is out only notes the
+	 * change: that settle's end decides. A target a session screen holds stays
+	 * that screen's here: its records come from the screen, or bring their own
 	 * settle (a message sent from a screen above it), and settling it on every
 	 * change would re-read after each unknown outcome and could resend in a
 	 * loop. */
 	private changed(runtime: FlushRuntime, keys: readonly string[]): void {
 		let unclaimed = false;
 		for (const key of keys) {
-			if (this.owned.has(key)) {
-				this.touched.add(key);
-				void this.releaseIfDone(runtime, key, this.generation).catch(() => undefined);
+			const claim = this.owned.get(key);
+			if (claim !== undefined) {
+				if (claim.settling) this.touched.add(key);
+				else void this.releaseIfDone(runtime, key, claim).catch(() => undefined);
 				continue;
 			}
 			const target = parseTargetKey(key);
@@ -606,8 +660,8 @@ export class OutboxFlush {
 	/** A target is done once nothing on it is waiting to be sent: what's left
 	 * is settled, or waits for you in its session (a message it couldn't
 	 * confirm, or one a Stop held). */
-	private async releaseIfDone(runtime: FlushRuntime, key: string, generation: number): Promise<void> {
-		if (!(await this.waiting(runtime, key))) this.release(key, generation);
+	private async releaseIfDone(runtime: FlushRuntime, key: string, claim: Claim): Promise<void> {
+		if (!(await this.waiting(runtime, key))) this.release(key, claim);
 	}
 
 	private async waiting(runtime: FlushRuntime, key: string): Promise<boolean> {
@@ -615,20 +669,14 @@ export class OutboxFlush {
 		return records.some((record) => record.state === "submitting");
 	}
 
-	/** Lets go of this connection's claim on a target. Every claim a
-	 * continuation of an earlier connection could reach was already let go
-	 * by bind(), so it must never touch the new connection's. */
-	private release(key: string, generation: number): void {
-		if (generation !== this.generation) return;
-		const release = this.owned.get(key);
-		if (release === undefined) return;
+	/** Lets go of this claim, and only this one: a late continuation of an
+	 * older claim, or an older connection's, finds another claim or none, and
+	 * leaves it be. True when it let go. */
+	private release(key: string, claim: Claim): boolean {
+		if (this.owned.get(key) !== claim) return false;
 		this.owned.delete(key);
-		release();
-	}
-
-	private releaseAll(): void {
-		for (const release of this.owned.values()) release();
-		this.owned.clear();
+		claim.release();
+		return true;
 	}
 }
 ```
@@ -644,7 +692,7 @@ export const outboxFlush = new OutboxFlush(getNativeMutationRuntime);
 ```
 
 - [ ] **Step 4: Wire it**
-  - In `App.tsx`'s `Navigation`, bind the flush to the connection: `useEffect(() => { outboxFlush.bind(activeProfile?.id ?? null, state === "ready" ? client : null); }, [activeProfile?.id, state, client]);`, with `client` and `state` from `useConnection()`.
+  - In `App.tsx`'s `Navigation`, bind the flush to the connection. `Navigation` already names its navigation state `state` (`App.tsx:60`), so take the connection's under another name: `const { client, state: connectionState } = useConnection();` beside the existing destructuring, then `useEffect(() => { outboxFlush.bind(activeProfile?.id ?? null, connectionState === "ready" ? client : null); }, [activeProfile?.id, connectionState, client]);`.
   - In the session screen's durable-host effect cleanup (`screens.tsx:1070-1073`), after `host.dispose()`, call `void outboxFlush.flush()`: letting go of a target writes nothing to storage, so without it a message still waiting when you leave a session would wait for the next connection.
   - Screen tests that import `screens.tsx` mock `./outbox/nativeOutboxFlush` to `{ outboxFlush: { flush: async () => {}, bind: () => {} } }`, the way they mock other native singletons.
 
