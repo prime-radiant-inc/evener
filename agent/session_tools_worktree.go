@@ -3331,16 +3331,24 @@ func branchExists(run worktree.GitRunner, name string) bool {
 }
 
 // branchGone reports whether refs/heads/<name> is confirmed absent. It uses
-// for-each-ref, which exits 0 with empty output when the pattern matches no
-// ref, so an empty result means "absent" and a non-nil error means the probe
-// itself could not answer. Callers must treat a failed probe as doubt, not as
-// absence: unlike branchExists, this distinguishes the two.
+// for-each-ref, which exits 0 when the pattern matches nothing, so a non-nil
+// error means the probe itself could not answer and callers must treat it as
+// doubt, not as absence: unlike branchExists, this distinguishes the two.
 func branchGone(run worktree.GitRunner, name string) (bool, error) {
 	out, err := run("for-each-ref", "--format=%(refname)", "refs/heads/"+name)
 	if err != nil {
 		return false, err
 	}
-	return strings.TrimSpace(out) == "", nil
+	// for-each-ref also matches a literal pattern as a prefix up to a slash, so
+	// refs/heads/foo matches refs/heads/foo/bar. Only an exact refname line means
+	// the branch itself still exists; a descendant line means foo is gone.
+	want := "refs/heads/" + name
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.TrimSpace(line) == want {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // managedWorktreeExists reports whether a managed worktree already lives at

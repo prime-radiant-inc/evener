@@ -695,6 +695,44 @@ func TestWorktreePrune_Sweep1_BranchDeleteRealFailureStillAborts(t *testing.T) {
 	}
 }
 
+// TestWorktreePrune_Sweep1_GoneBranchPrefixCollisionCollected: git's
+// for-each-ref matches a literal pattern as a prefix up to a slash, so
+// refs/heads/foo also matches refs/heads/foo/bar. A lane whose branch foo is
+// already gone must still be collected when a sibling branch foo/bar exists;
+// reading the descendant match as "foo present" would re-abort the very pass
+// this fix exists to unblock.
+func TestWorktreePrune_Sweep1_GoneBranchPrefixCollisionCollected(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	// git forbids foo and foo/bar from coexisting, so foo is genuinely absent
+	// while foo/bar exists — the shape that makes for-each-ref over-match.
+	wtGit(t, r.mainRoot, "branch", "gone-prefix-lane/child", r.head)
+	path := r.addOrphanedBranchLaneFixture(t, "gone-prefix-lane", "gone-prefix-lane")
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune with a gone branch that prefixes an existing branch: %v", err)
+	}
+	e := findPruneEntry(t, pruneEntries(t, out, "removed"), "gone-prefix-lane")
+	if e == nil {
+		t.Fatalf("gone-prefix-lane not collected: %+v", out)
+	}
+	if e["sidecar_removed"] != true {
+		t.Errorf("gone-prefix-lane sidecar_removed = %v, want true", e["sidecar_removed"])
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("gone-prefix-lane worktree survived prune: err=%v", statErr)
+	}
+	if _, scErr := worktree.ReadSidecar(metaDir, "gone-prefix-lane"); !os.IsNotExist(scErr) {
+		t.Errorf("gone-prefix-lane sidecar survived: err=%v", scErr)
+	}
+	if !branchExistsInRepo(t, r.mainRoot, "gone-prefix-lane/child") {
+		t.Error("the sibling branch gone-prefix-lane/child was deleted; it must be kept")
+	}
+}
+
 // TestP3CollectLane_GoneBranchStillDeletesSidecar: under the P3
 // skip-and-continue policy a lane whose branch is already gone must still have
 // its sidecar deleted. Before the fix collectLane returned a deleting-branch
