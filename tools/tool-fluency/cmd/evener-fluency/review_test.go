@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -122,6 +123,25 @@ func TestWriteReviewPackShowsWhatTheUserSawAndNoHarnessChrome(t *testing.T) {
 	}
 	if !modTimes[0].Equal(modTimes[1]) {
 		t.Errorf("packets were modified at %v, want one shared time", modTimes)
+	}
+}
+
+// TestRenderPacketShowsTheMessageTheAppShows: a packet shows the reader the
+// message the user saw, not a structured body the app does not show.
+func TestRenderPacketShowsTheMessageTheAppShows(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootMeta(t, stateDir, proseRootID)
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
+		assistantTurn(fluencyToolCall("communicate", `{"message":"Short note.","output":{"message":"Structured body."},"end_turn":true}`)),
+	})
+	tr, err := runnerReadTranscript(stateDir, proseRootID, doctor.TranscriptOpts{TextMax: doctor.TextMaxFull})
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := renderPacket(tr)
+	if !strings.Contains(packet, "Short note.") || strings.Contains(packet, "Structured body.") {
+		t.Errorf("packet = %q, want the shown message and not the structured body", packet)
 	}
 }
 

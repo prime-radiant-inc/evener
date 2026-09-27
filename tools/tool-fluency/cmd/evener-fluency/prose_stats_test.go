@@ -70,6 +70,30 @@ func TestExtractRunProseSplitsRootAndDelegateProse(t *testing.T) {
 	}
 }
 
+// TestExtractRunProseCountsWhatTheAppShows: the user sees one message per
+// call, the one the app shows: message, or output.message when message is
+// empty. The whole run's prose still counts both, since output.message is
+// writing the agent did.
+func TestExtractRunProseCountsWhatTheAppShows(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootMeta(t, stateDir, proseRootID)
+	writeFluencyTranscript(t, stateDir, proseRootID, []schema.Turn{
+		assistantTurn(fluencyToolCall("communicate", `{"message":"Short note.","output":{"message":"Structured body."}}`)),
+		assistantTurn(fluencyToolCall("communicate", `{"output":{"message":"Only in output."},"end_turn":true}`)),
+	})
+	p, err := extractRunProse(stateDir)
+	if err != nil {
+		t.Fatalf("extractRunProse: %v", err)
+	}
+	if want := []string{"Short note.", "Only in output."}; !slices.Equal(p.ToUser, want) {
+		t.Errorf("ToUser = %q, want %q", p.ToUser, want)
+	}
+	if want := []string{"Short note.", "Structured body.", "Only in output."}; !slices.Equal(p.All, want) {
+		t.Errorf("All = %q, want %q", p.All, want)
+	}
+}
+
 func TestResultMessagesReadsBothFieldsOnce(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {

@@ -113,7 +113,7 @@ func renderPacket(tr doctor.TranscriptResult) string {
 				fmt.Fprintf(&b, "→ %s `%s`\n\n", call.Name, call.ArgPreview)
 				continue
 			}
-			for _, msg := range resultMessages(call.Arguments) {
+			if msg := shownMessage(call.Arguments); msg != "" {
 				fmt.Fprintf(&b, "⇒ %s\n\n%s\n\n", call.Name, msg)
 			}
 		}

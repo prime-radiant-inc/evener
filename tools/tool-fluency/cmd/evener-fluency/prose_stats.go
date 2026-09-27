@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/doctor"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/apptranscript"
 )
 
 // runProse is the agent prose one run produced. ToUser holds what the root
@@ -47,11 +48,9 @@ func extractRunProse(stateDir string) (runProse, error) {
 				if !isMessageToUser(call) {
 					continue
 				}
-				for _, msg := range resultMessages(call.Arguments) {
-					p.All = append(p.All, msg)
-					if tr.SessionID == rootID {
-						p.ToUser = append(p.ToUser, msg)
-					}
+				p.All = append(p.All, resultMessages(call.Arguments)...)
+				if msg := shownMessage(call.Arguments); msg != "" && tr.SessionID == rootID {
+					p.ToUser = append(p.ToUser, msg)
 				}
 			}
 		}
@@ -66,9 +65,16 @@ func isMessageToUser(call doctor.ToolCallSummary) bool {
 	return call.IsResult || call.Name == "communicate"
 }
 
-// resultMessages returns the visible text of one result-tool call: its
+// shownMessage returns the one message the app shows the user for a call that
+// carries a message to the user: message, or output.message when message is
+// empty, read the way the app reads it.
+func shownMessage(arguments string) string {
+	return apptranscript.CommunicateMessageFromArguments(apptranscript.NormalizeCommunicateArguments(json.RawMessage(arguments)))
+}
+
+// resultMessages returns all the prose one result-tool call carries: its
 // message, and its output.message when that says something else. Arguments
-// that are not valid JSON carry no message anyone saw.
+// that are not valid JSON carry no prose.
 func resultMessages(arguments string) []string {
 	var args struct {
 		Message string          `json:"message"`
