@@ -324,17 +324,6 @@ export function expandedProjectKeys(items: readonly ProjectTreeItem[]): Set<stri
 	return keys;
 }
 
-/** The pages the visible "more" rows ask for, once each. */
-export function morePagesToLoad(
-	visible: readonly { kind: string; projectKey?: string; tier?: ProjectSessionTier }[],
-): { projectKey: string; tier: ProjectSessionTier }[] {
-	const wanted = new Map<string, { projectKey: string; tier: ProjectSessionTier }>();
-	for (const item of visible)
-		if (item.kind === "more" && item.projectKey !== undefined && item.tier !== undefined)
-			wanted.set(`${item.projectKey}:${item.tier}`, { projectKey: item.projectKey, tier: item.tier });
-	return [...wanted.values()];
-}
-
 export interface ProjectsView {
 	projects: readonly NavigationProjectSummary[];
 	/** A catalog read has landed for this section, on this connection or an earlier one. */

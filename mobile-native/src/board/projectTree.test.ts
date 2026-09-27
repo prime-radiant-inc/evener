@@ -9,7 +9,6 @@ import { boardState } from "./attention";
 import {
 	expandedProjectKeys,
 	liveCountsByHost,
-	morePagesToLoad,
 	type ProjectPages,
 	type ProjectTreeInput,
 	type ProjectTreeItem,
@@ -410,20 +409,6 @@ describe("what the Board reads", () => {
 		expect([...expandedProjectKeys(items({ projects: [evener], isFolded: () => true }))]).toEqual([]);
 	});
 
-	it("loads each visible more row's page once", () => {
-		expect(
-			morePagesToLoad([
-				{ kind: "more", projectKey: "a", tier: "current" },
-				{ kind: "more", projectKey: "a", tier: "current" },
-				{ kind: "session" },
-				{ kind: "more", projectKey: "a", tier: "archived" },
-			]),
-		).toEqual([
-			{ projectKey: "a", tier: "current" },
-			{ projectKey: "a", tier: "archived" },
-		]);
-	});
-
 	it("counts a host's live rows once each, only when every Live page is loaded", () => {
 		const rows = [session("local:a"), session("paradise-park:b", "paradise-park"), session("paradise-park:c", "paradise-park"), session("paradise-park:c", "paradise-park")];
 		const counts = liveCountsByHost(rows, true);
@@ -530,10 +515,5 @@ describe("a catalog with more projects than its first pages", () => {
 		expect(outline(items({ organizeBy: "project-host", projects: [project("a")], isFolded: defaults }))).toEqual([
 			"project a",
 		]);
-	});
-
-	it("never asks for a project's session page", () => {
-		const list = items({ section: "archived", projects: [project("old")], remainingProjects: 3 });
-		expect(morePagesToLoad(list)).toEqual([]);
 	});
 });
