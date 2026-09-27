@@ -13,6 +13,7 @@ import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-c
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { type PaneTypeId, paneFor } from "./paneRegistry";
+import { refParam } from "./routing";
 
 // Which of the workspace's two slots a pane lives in. The main slot holds
 // exactly ONE pane - the big one in the top left, beside the rail - and
@@ -131,6 +132,22 @@ const pendingPaneFocus = new Set<string>();
 
 export function isPaneOpen(state: WorkspaceStoreState, type: PaneTypeId, params: unknown): boolean {
   return state.panes.some((pane) => pane.type === type && sameParams(pane.params, params));
+}
+
+// The session the workspace is currently SHOWING: the ref the focused pane
+// names, or - when the focused pane names none, e.g. a settings pane focused
+// beside a session still holding main - the ref the main pane names. Every
+// session-scoped pane carries its session's ref (the session pane itself and
+// the companion panels opened for it), so this is the rail's answer to "which
+// session am I looking at" and what marks its row as the selected item.
+//
+// Deliberately wider than AppShell's own focusedSessionRef, which answers a
+// narrower question ("is a session PANE the focused pane?") for the
+// composer/needs-you chords and must ignore a subagent's companion panel.
+// This one follows those panels and falls back to main.
+export function currentSessionRef(state: WorkspaceStoreState): string | null {
+  const focused = state.panes.find((pane) => pane.id === state.focusedPaneId);
+  return refParam(focused?.params) ?? refParam(state.panes.find((pane) => pane.slot === "main")?.params);
 }
 
 export function requestPaneFocus(paneId: string): void {

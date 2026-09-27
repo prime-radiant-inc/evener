@@ -7,6 +7,7 @@ import { type PaneDescriptor, type PaneProps, type PaneTypeId, registerPaneForTe
 import {
   cancelPaneFocus,
   consumePaneFocus,
+  currentSessionRef,
   isPaneOpen,
   type OpenPaneRecord,
   registerDockviewApi,
@@ -769,4 +770,33 @@ describe("exact Open origin lifetime", () => {
       expect(workspaceStore.getState().panes).toHaveLength(shape === "invalid layout" ? 0 : 2);
     },
   );
+});
+
+describe("currentSessionRef", () => {
+  test("is the focused pane's session ref", () => {
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    expect(currentSessionRef(workspaceStore.getState())).toBe("local:a");
+  });
+
+  test("follows focus to a secondary session pane", () => {
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    workspaceStore.getState().openPane("session", { ref: "local:b" }, { slot: "secondary" });
+    expect(currentSessionRef(workspaceStore.getState())).toBe("local:b");
+  });
+
+  test("falls back to the main pane's session when the focused pane names none", () => {
+    workspaceStore.getState().openPane("session", { ref: "local:a" });
+    const settings = workspaceStore.getState().openPane("settings", { section: "appearance" }, { slot: "secondary" });
+    workspaceStore.getState().focusPane(settings);
+    expect(currentSessionRef(workspaceStore.getState())).toBe("local:a");
+  });
+
+  test("is null when neither the focused nor the main pane names a session", () => {
+    workspaceStore.getState().openPane("settings", { section: "appearance" });
+    expect(currentSessionRef(workspaceStore.getState())).toBeNull();
+  });
+
+  test("is null for an empty workspace", () => {
+    expect(currentSessionRef(workspaceStore.getState())).toBeNull();
+  });
 });

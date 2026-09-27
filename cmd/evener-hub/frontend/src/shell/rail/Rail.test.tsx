@@ -31,7 +31,7 @@ import { topNotesStore } from "../../stores/topNotes";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { ClientProvider } from "../clientContext";
 import { registerPaneForTests } from "../paneRegistry";
-import { resetWorkspaceStoreForTests } from "../workspace";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { adaptNavigationResources, archiveSessionIdentity, Rail } from "./Rail";
 import railStyles from "./Rail.module.css";
 import { EXPANSION_STORAGE_KEY } from "./railExpansion";
@@ -2799,5 +2799,68 @@ describe("host grouping (organize by)", () => {
     } finally {
       restoreScroll();
     }
+  });
+});
+
+describe("the selected session's rail row", () => {
+  test("the session the workspace shows is marked selected; its sibling is not", () => {
+    installState([
+      sectionResource("live", [
+        summary({ ref: "local:a", session_id: "a", title: "Session Alpha" }),
+        summary({ ref: "local:b", session_id: "b", title: "Session Beta" }),
+      ]),
+    ]);
+    workspaceStore.setState({
+      panes: [{ id: "pane_a", type: "session", params: { ref: "local:a" }, slot: "main" }],
+      focusedPaneId: "pane_a",
+    });
+    render(<Rail />);
+
+    const selected = screen.getByRole("treeitem", { name: /Session Alpha/i });
+    const other = screen.getByRole("treeitem", { name: /Session Beta/i });
+    expect(selected.getAttribute("aria-selected")).toBe("true");
+    expect(other.getAttribute("aria-selected")).toBe("false");
+  });
+
+  test("no session row is selected while the workspace shows no session", () => {
+    installState([sectionResource("live", [summary({ ref: "local:a", title: "Session Alpha" })])]);
+    render(<Rail />);
+
+    const row = screen.getByRole("treeitem", { name: /Session Alpha/i });
+    expect(row.getAttribute("aria-selected")).toBe("false");
+  });
+
+  test("the highlight follows focus to another open session pane", () => {
+    installState([
+      sectionResource("live", [
+        summary({ ref: "local:a", session_id: "a", title: "Session Alpha" }),
+        summary({ ref: "local:b", session_id: "b", title: "Session Beta" }),
+      ]),
+    ]);
+    workspaceStore.setState({
+      panes: [
+        { id: "pane_a", type: "session", params: { ref: "local:a" }, slot: "main" },
+        { id: "pane_b", type: "session", params: { ref: "local:b" }, slot: "secondary" },
+      ],
+      focusedPaneId: "pane_a",
+    });
+    render(<Rail />);
+    expect(screen.getByRole("treeitem", { name: /Session Alpha/i }).getAttribute("aria-selected")).toBe("true");
+
+    act(() => workspaceStore.getState().focusPane("pane_b"));
+
+    expect(screen.getByRole("treeitem", { name: /Session Alpha/i }).getAttribute("aria-selected")).toBe("false");
+    expect(screen.getByRole("treeitem", { name: /Session Beta/i }).getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("a project row carries no aria-selected state at all", () => {
+    installState([
+      sectionResource("live", [summary({ ref: "local:a", title: "Session Alpha" })]),
+      catalogResource([{ key: "p", name: "Zeta project", session_count: 1 }]),
+      projectResource("p", [summary({ ref: "local:a", title: "Session Alpha" })]),
+    ]);
+    render(<Rail />);
+
+    expect(screen.getByRole("treeitem", { name: /Zeta project/i }).hasAttribute("aria-selected")).toBe(false);
   });
 });
