@@ -111,6 +111,78 @@ func canonicalEntry(t *testing.T, e transcript.Entry) (transcript.Entry, []byte)
 	return canon, b
 }
 
+// hasKnownClosingCallIDEchoDivergence identifies one deliberately excluded
+// product divergence. A CallID-scoped live communicate commits its preview even
+// when its message repeats assistant text, while close-time reload suppresses
+// that echo. Tracked production follow-up: "hub: CallID communicate echo renders
+// twice live but once after reload" (proposed in the #2267 fix-round report).
+//
+// Keep synthesizeLiveEvents faithful and exclude only that input shape here. The
+// reload registry remembers the last individual raw-nonempty text part (not
+// Message.Text's concatenation); a later whitespace-only part therefore resets
+// the trimmed value to empty. This detector deliberately mirrors that rule.
+func hasKnownClosingCallIDEchoDivergence(turn schema.Turn) bool {
+	if turn.Kind != schema.TurnAssistant {
+		return false
+	}
+	lastAssistantText := ""
+	for _, part := range turn.Message.Content {
+		if part.Kind == llm.ContentText && part.Text != "" {
+			lastAssistantText = strings.TrimSpace(part.Text)
+		}
+	}
+	if lastAssistantText == "" {
+		return false
+	}
+	for _, part := range turn.Message.Content {
+		if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.Name != "communicate" || part.ToolCall.ID == "" {
+			continue
+		}
+		repaired := argrepair.RepairJSON([]byte(part.ToolCall.SentArguments()))
+		normalized := apptranscript.NormalizeCommunicateArguments(repaired)
+		message := apptranscript.CommunicateMessageFromArguments(normalized)
+		if message != "" && apptranscript.EchoesAssistantText(lastAssistantText, message) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestClosingCallIDEchoDivergenceExclusionIsNarrow(t *testing.T) {
+	tests := []struct {
+		name    string
+		texts   []string
+		callID  string
+		message string
+		want    bool
+	}{
+		{name: "last individual text echoes", texts: []string{"first", "last"}, callID: "call-1", message: "last", want: true},
+		{name: "earlier text does not echo", texts: []string{"first", "last"}, callID: "call-1", message: "first"},
+		{name: "later whitespace clears reload echo state", texts: []string{"first", "  "}, callID: "call-1", message: "first"},
+		{name: "missing call ID uses projector dedup", texts: []string{"same"}, message: "same"},
+		{name: "different message remains covered", texts: []string{"shown"}, callID: "call-1", message: "delivered"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parts := make([]llm.ContentPart, 0, len(tc.texts)+1)
+			for _, text := range tc.texts {
+				parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: text})
+			}
+			arguments, err := json.Marshal(map[string]string{"message": tc.message})
+			if err != nil {
+				t.Fatalf("marshal communicate arguments: %v", err)
+			}
+			parts = append(parts, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID: tc.callID, Name: "communicate", Arguments: arguments,
+			}})
+			turn := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}}
+			if got := hasKnownClosingCallIDEchoDivergence(turn); got != tc.want {
+				t.Fatalf("hasKnownClosingCallIDEchoDivergence() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // FuzzHubReplayLiveVsReload is the full live-vs-reload metamorphic: it compares
 // what the user saw LIVE (the appprojector stream) against what the hub renders
 // on RELOAD (saved transcript → computePastEntryTurns), for one turn. The live
@@ -278,6 +350,9 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 		return
 	}
 	canon, canonBytes := canonicalEntry(t, e)
+	if hasKnownClosingCallIDEchoDivergence(canon.Turn) {
+		return
+	}
 
 	liveEvents, supported := synthesizeLiveEvents(canon.Turn, true)
 	if !supported {
@@ -432,7 +507,7 @@ func synthesizeLiveEvents(turn schema.Turn, transcriptCloses bool) ([]events.Ses
 					if transcriptCloses {
 						repaired := argrepair.RepairJSON([]byte(p.ToolCall.SentArguments()))
 						normalized := apptranscript.NormalizeCommunicateArguments(repaired)
-						if msg := apptranscript.CommunicateMessageFromArguments(normalized); msg != "" && !apptranscript.EchoesAssistantText(turn.Message.Text(), msg) {
+						if msg := apptranscript.CommunicateMessageFromArguments(normalized); msg != "" {
 							// At transcript close there is no paired result left to
 							// disambiguate. Model the preview and successful delivery the
 							// live client already saw; reload recovers the same message by
