@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -51,6 +52,27 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	}
 	if calls := resp.ToolCalls(); len(calls) != 0 {
 		t.Fatalf("ToolCalls() = %d, want 0: %+v", len(calls), calls)
+	}
+}
+
+func TestExtractRecordedResponse_ResponsesSSE_TerminalRawArguments(t *testing.T) {
+	args := `{ "path" : "` + "\xff" + `" }`
+	payload := []byte(`{"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.2","status":"completed","output":[{"type":"function_call","call_id":"call_1","id":"item_1","name":"write_file","arguments":`)
+	payload = append(payload, jsonStringToken(args)...)
+	payload = append(payload, []byte(`}]}}`)...)
+	body := append([]byte("event: response.completed\ndata: "), payload...)
+	body = append(body, '\n', '\n')
+
+	resp, err := ExtractRecordedResponse(body, "gpt-5.2")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ToolCalls() = %d, want 1", len(calls))
+	}
+	if !bytes.Equal(calls[0].Arguments, []byte(args)) {
+		t.Fatalf("Arguments = %q (% x), want %q (% x)", calls[0].Arguments, calls[0].Arguments, args, []byte(args))
 	}
 }
 

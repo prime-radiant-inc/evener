@@ -85,7 +85,10 @@ func isChatCompletionsSSE(body []byte) bool {
 // or the accumulated items are authoritative.
 func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, error) {
 	acc := newResponsesOutputAccumulator()
-	var terminal map[string]any
+	var (
+		terminal    map[string]any
+		terminalRaw []byte
+	)
 
 	parseErr := llm.ParseSSE(context.Background(), bytes.NewReader(body), func(ev llm.SSEEvent) error {
 		if len(ev.Data) == 0 {
@@ -116,6 +119,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 				rawResp = payload
 			}
 			terminal = rawResp
+			terminalRaw = append(terminalRaw[:0], extractResponseObjectRaw(ev.Data)...)
 		}
 		return nil
 	})
@@ -126,7 +130,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 		return llm.Response{}, errors.New("responses: recorded responses SSE body has no response.completed event")
 	}
 
-	r := fromResponses(terminal, requestedModel, nil)
+	r := fromResponses(terminal, requestedModel, terminalRaw)
 	settleResponsesTerminalOutput(&r, terminal, acc.Output())
 	return r, nil
 }
