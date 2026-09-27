@@ -8,6 +8,7 @@ import {
 	isActiveItem,
 	type ModelRetryState,
 	parseArgs,
+	pendingTextJoined,
 	str,
 	type ThreadModel,
 } from "@evener/appwire-client";
@@ -117,11 +118,16 @@ function stepFor(item: ItemModel): Step | null {
 }
 
 // Characters over four, as the web's thinking estimate does (ThinkBlock.tsx):
-// a count, never the thought itself.
+// a count, never the thought itself. This runs on every render while the
+// agent thinks, so it reads lengths through pendingTextJoined, which answers
+// a streaming chunk view in O(1) instead of walking every chunk.
 function thinkingTokens(item: ItemModel): number {
-	const summaries = (item.reasoningSummaries ?? []).flat().join("");
-	const text = item.text + (item.pendingText ?? []).join("");
-	return Math.round(Math.max(summaries.length, text.length) / 4);
+	const summaries = (item.reasoningSummaries ?? []).reduce(
+		(total, chunks) => total + pendingTextJoined(chunks).length,
+		0,
+	);
+	const text = item.text.length + (item.pendingText ? pendingTextJoined(item.pendingText).length : 0);
+	return Math.round(Math.max(summaries, text) / 4);
 }
 
 function runningSubagents(session: TraySource): number {

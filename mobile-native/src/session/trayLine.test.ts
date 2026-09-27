@@ -75,6 +75,23 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ turns: [turn([thought])] }), NOW)?.text).toBe("Thinking… · 1.2K tokens");
 	});
 
+	it("estimates a streaming thought from its summaries or its text, whichever is longer", () => {
+		const summarized = item({
+			type: "reasoning",
+			status: "inProgress",
+			reasoningSummaries: [["x".repeat(2_000), "x".repeat(2_000)], ["x".repeat(800)]],
+		});
+		expect(trayLine(session({ turns: [turn([summarized])] }), NOW)?.text).toBe("Thinking… · 1.2K tokens");
+		const streamed = item({
+			type: "reasoning",
+			status: "inProgress",
+			text: "x".repeat(800),
+			pendingText: ["x".repeat(2_000), "x".repeat(6_000)],
+			reasoningSummaries: [["x".repeat(400)]],
+		});
+		expect(trayLine(session({ turns: [turn([streamed])] }), NOW)?.text).toBe("Thinking… · 2.2K tokens");
+	});
+
 	it("says Writing while the reply streams", () => {
 		const reply = item({ type: "agentMessage", status: "inProgress" });
 		expect(trayLine(session({ turns: [turn([reply])] }), NOW)?.text).toBe("Writing…");
