@@ -10,6 +10,7 @@ import {
 	liveSummary,
 	stateWord,
 	summaryText,
+	taskLine,
 	usualPlace,
 	whyLine,
 	workingActivity,
@@ -240,6 +241,34 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 	});
 });
 
+describe("the task line (spec 7.2, S13)", () => {
+	it("names the task now in progress by its position among every done, cancelled or current task", () => {
+		const unfinished = row("s", { tasks: { total: 7, done: 3, current: "Fix the settle/drain race" } });
+		expect(taskLine(unfinished)).toBe("Task 4 of 7 · Fix the settle/drain race");
+	});
+
+	it("counts a cancelled task as settled, advancing the current task's position", () => {
+		const withCancellation = row("s", {
+			tasks: { total: 4, done: 2, cancelled: 1, current: "Cap retries per host" },
+		});
+		expect(taskLine(withCancellation)).toBe("Task 4 of 4 · Cap retries per host");
+	});
+
+	it("has no line once every task is done or cancelled (current absent)", () => {
+		const finished = row("s", { tasks: { total: 3, done: 3 } });
+		expect(taskLine(finished)).toBeNull();
+	});
+
+	it("has no line before any task starts (current absent, nothing done yet)", () => {
+		const notStarted = row("s", { tasks: { total: 5, done: 0 } });
+		expect(taskLine(notStarted)).toBeNull();
+	});
+
+	it("has no line for a session with no task list", () => {
+		expect(taskLine(row("s"))).toBeNull();
+	});
+});
+
 describe("the last line prints project and host only when unusual", () => {
 	const fleet = [
 		row("a", { project: "evener", host_id: "local" }),
@@ -259,5 +288,25 @@ describe("the last line prints project and host only when unusual", () => {
 			project: "docs",
 			host: "paradise-park",
 		});
+	});
+
+	it("puts task progress ahead of project and host, the order spec 7.2 sets", () => {
+		const usual = usualPlace(fleet);
+		const withTask = row("d", {
+			project: "docs",
+			host_id: "paradise-park",
+			tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
+		});
+		expect(lastLine(withTask, usual, label)).toEqual({
+			task: "Task 4 of 7 · Fix the settle/drain race",
+			project: "docs",
+			host: "paradise-park",
+		});
+	});
+
+	it("has no last line when the task list is finished and the project and host are usual", () => {
+		const usual = usualPlace(fleet);
+		const finished = row("a", { tasks: { total: 2, done: 2 } });
+		expect(lastLine(finished, usual, label)).toBeNull();
 	});
 });

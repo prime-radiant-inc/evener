@@ -2,9 +2,11 @@
 // navigation rows the hub already sends. Where the spec wants a fact the rows
 // don't carry yet, the fallback from spec 18 lives here, and each server
 // addition replaces its fallback in this file: S1 (why text), S2 (approval
-// flag), S3 (subagent counts), S5 (activity), S13 (tasks). S4 replaces the
-// seen marker, which lives in boardMemory.ts. Subagent failures never appear
-// on a Board row; they show only in the session's Subagents chip and list.
+// flag), S3 (subagent counts), S5 (activity). S4 replaces the seen marker,
+// which lives in boardMemory.ts. S13 (tasks) has landed: lastLine's task
+// progress reads row.tasks directly, with no fallback left. Subagent
+// failures never appear on a Board row; they show only in the session's
+// Subagents chip and list.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 
 export type BoardState =
@@ -263,21 +265,41 @@ export function usualPlace(rows: readonly NavigationSessionSummary[]): Usual {
 	};
 }
 
+/** The task now in progress, by its position among every task already done
+ * or cancelled ("Task 4 of 7 · Fix the settle/drain race", spec 7.2). The hub
+ * sends current/current_id only while a task is actually in progress
+ * (NavigationTaskProgress), which is exactly "the session keeps a task list
+ * and hasn't finished it": absent both before the first task starts and
+ * after the last one settles. That single check covers spec 7.2's condition
+ * without a separate done/total comparison. A cancelled task counts as
+ * settled too, so it advances the position the same as a done one. */
+export function taskLine(row: NavigationSessionSummary): string | null {
+	const tasks = row.tasks;
+	if (!tasks?.current) return null;
+	const position = tasks.done + (tasks.cancelled ?? 0) + 1;
+	return `Task ${position} of ${tasks.total} · ${tasks.current}`;
+}
+
 export interface LastLine {
+	task?: string;
 	project?: string;
 	host?: string;
 }
 
-/** The row's last line on the fallback: task progress waits for S13, so today
- * it is the unusual project and host. Subagent failures never appear here;
- * they show only in the session's Subagents chip and list. */
+/** The row's last line (spec 7.2): task progress first, when the session
+ * keeps a task list and hasn't finished it, then the project and host, each
+ * only when it differs from the fleet's usual one. Subagent failures never
+ * appear here; they show only in the session's Subagents chip and list. The
+ * model name (the "Show model on Board rows" setting) isn't implemented yet. */
 export function lastLine(
 	row: NavigationSessionSummary,
 	usual: Usual,
 	hostLabel: (hostId: string) => string,
 ): LastLine | null {
 	const line: LastLine = {};
+	const task = taskLine(row);
+	if (task) line.task = task;
 	if (row.project && row.project !== usual.project) line.project = row.project;
 	if (row.host_id !== usual.host) line.host = hostLabel(row.host_id);
-	return line.project || line.host ? line : null;
+	return line.task || line.project || line.host ? line : null;
 }
