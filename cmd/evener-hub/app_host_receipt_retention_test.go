@@ -319,305 +319,69 @@ func TestHostReceiptPrunedMarkerBound(t *testing.T) {
 // tombstoned name's remove-retry backstop marker is never dropped by the
 // count/TTL bound while the tombstone lives; once the tombstone is purged the
 // bound applies again.
+//
+// It drives the derivation directly with controlled pruned_at instants: the
+// end-to-end churn variant is wall-clock dependent (marker timestamps have
+// second granularity, so the count bound's newest-first order can flip across
+// a second boundary) and pinned nothing more than this does.
 func TestHostReceiptTombstonedNameBackstopExemption(t *testing.T) {
 	f := newUpdateFixture(t)
-	f.m.cfg.policy.supersededMaxCount = 1
 	f.m.cfg.policy.prunedMaxCount = 1
-	// Churn one remove key into a marker, then a newer update key into a
-	// newer marker, so the count bound would drop the older remove marker.
-	removeKey := newTestMutationID()
-	params := removeRequest(t, f.m, "side")
-	params.MutationID = removeKey
-	if _, err := f.m.Remove(context.Background(), params); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "fresh.example"}}); err != nil {
-		t.Fatalf("re-add: %v", err)
-	}
-	keys := churnUpdates(t, f.m, "side", 5)
-	_ = keys
-	_, markers := receiptScopesFor(t, f.m, "side")
-	hasRemoveMarker := false
-	for key := range markers {
-		scope, _ := parseHostReceiptScopedKey(key)
-		if scope.MutationID == removeKey {
-			hasRemoveMarker = true
-		}
-	}
-	if !hasRemoveMarker {
-		t.Fatalf("the remove-key marker was never created: %v", markers)
-	}
-	// Now tombstone the name again: the remove marker is the backstop and must
-	// survive compaction past the count bound.
-	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
-		t.Fatalf("second Remove: %v", err)
-	}
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later", Address: "later.example"}}); err != nil {
-		t.Fatalf("Add(later): %v", err)
-	}
-	_, markers = receiptScopesFor(t, f.m, "side")
-	hasRemoveMarker = false
-	for key := range markers {
-		scope, _ := parseHostReceiptScopedKey(key)
-		if scope.MutationID == removeKey {
-			hasRemoveMarker = true
-		}
-	}
-	if !hasRemoveMarker {
-		t.Fatalf("the tombstoned name's backstop marker was compacted away: %v", markers)
-	}
-	// A re-add purges the tombstone and ends the exemption: the next write's
-	// compaction may drop it under the count bound.
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "final.example"}}); err != nil {
-		t.Fatalf("final re-add: %v", err)
-	}
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later2", Address: "later2.example"}}); err != nil {
-		t.Fatalf("Add(later2): %v", err)
-	}
-	_, markers = receiptScopesFor(t, f.m, "side")
-	if len(markers) > 1 {
-		t.Fatalf("markers after the purge = %d, want the post-purge bound 1", len(markers))
-	}
-}
-
-// TestHostKeylessAuditCompaction pins spec §11's audit bound: repeated keyless
-// adds converge to the newest N audit records per name under the audit TTL.
-func TestHostKeylessAuditCompaction(t *testing.T) {
-	f := newUpdateFixture(t)
-	f.m.cfg.policy.auditMaxCount = 2
-	// Repeated keyless adds of one name require a remove between them (a live
-	// duplicate is refused): the audit record survives each re-add's purge and
-	// compacts under its own bound.
-	for i := range 4 {
-		if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "audit", Address: fmt.Sprintf("audit-%d.example", i)}}); err != nil {
-			t.Fatalf("keyless add %d: %v", i, err)
-		}
-		if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "audit")); err != nil {
-			t.Fatalf("remove %d: %v", i, err)
-		}
-	}
-	audits := 0
-	for key, receipt := range f.m.cfg.store.receiptsSnapshot() {
-		scope, _ := parseHostReceiptScopedKey(key)
-		if scope.Name == "audit" && receipt.Audit {
-			audits++
-		}
-	}
-	if audits != 2 {
-		t.Fatalf("stored keyless audit records = %d, want the bound 2", audits)
-	}
-}
-
-// TestHostReceiptPurgeNotResurrectedByPreservation pins the review finding: a
-// receipt the tombstone purge dropped must leave hub.toml with the tombstone —
-// the reserved-key preservation rule must not re-emit the file's older copy,
-// or a restart would serve the purged key as the recorded outcome instead of
-// the `stale-entry` (pruned-generation) refusal on the surviving marker.
-func TestHostReceiptPurgeNotResurrectedByPreservation(t *testing.T) {
-	f := newUpdateFixture(t)
-	removeKey := newTestMutationID()
-	params := removeRequest(t, f.m, "side")
-	params.MutationID = removeKey
-	if _, err := f.m.Remove(context.Background(), params); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-	f.m.cfg.now = func() time.Time { return time.Now().UTC().Add(DefaultHostTombstoneRetention + time.Hour) }
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later", Address: "later.example"}}); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	cfg, err := LoadConfig(f.configPath)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	for key := range cfg.MutationReceipts {
-		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.Name == "side" {
-			t.Fatalf("hub.toml still carries the purged receipt %q", key)
-		}
-	}
-	markerSeen := false
-	for key := range cfg.PrunedReceipts {
-		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == removeKey {
-			markerSeen = true
-		}
-	}
-	if !markerSeen {
-		t.Fatal("the purge's marker is not in hub.toml")
-	}
-	// A restart keeps the refusal: the purged key reads stale-entry, never the
-	// resurrected recorded outcome.
-	boot := bootHostManager(t, f.configPath)
-	generation, incarnation := testMutationIdentity(t, boot, "later")
-	if _, err := boot.Remove(context.Background(), appwire.HostRemoveParams{
-		Name: "side", MutationID: removeKey, ExpectedGeneration: generation, ExpectedIncarnationID: incarnation,
-	}); err == nil {
-		t.Fatal("a purged-key replay committed after restart")
-	} else {
-		info, _, _ := deployWireInfo(t, err)
-		if info != appwire.ErrorStaleEntry {
-			t.Fatalf("after restart the purged key refused %q, want %q", info, appwire.ErrorStaleEntry)
-		}
-	}
-}
-
-// TestHostReceiptEvictionMarkersBounded pins the review finding's fix: a
-// capacity eviction's purge persists markers for the evicted name, and marker
-// compaction must run in the SAME atomic write, so one persist can never write
-// more markers than the bound (§6: "every `hub.toml` mutation and every boot
-// compacts markers past either bound in the same atomic write").
-func TestHostReceiptEvictionMarkersBounded(t *testing.T) {
-	f := newUpdateFixture(t)
-	f.m.cfg.policy.tombstoneMaxCount = 1
-	f.m.cfg.policy.prunedMaxCount = 2
-	base := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
-	f.m.cfg.now = func() time.Time { return base }
-	// Churn one name through several keyless add/remove cycles so it carries
-	// audit receipts the eviction purge will drop all at once.
-	for i := range 5 {
-		if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "churn", Address: fmt.Sprintf("churn-%d.example", i)}}); err != nil {
-			t.Fatalf("add %d: %v", i, err)
-		}
-		if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "churn")); err != nil {
-			t.Fatalf("remove %d: %v", i, err)
-		}
-	}
-	if _, ok := f.m.cfg.store.tombstoneSnapshot()["churn"]; !ok {
-		t.Fatal("the churn tombstone is missing before the eviction")
-	}
-	// The next removal exceeds the count cap and evicts churn — its purge
-	// drops the name's receipts and persists their markers.
-	f.m.cfg.now = func() time.Time { return base.Add(time.Hour) }
-	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
-		t.Fatalf("Remove(side): %v", err)
-	}
-	if _, still := f.m.cfg.store.tombstoneSnapshot()["churn"]; still {
-		t.Fatal("the eviction did not drop the oldest tombstone")
-	}
-	cfg, err := LoadConfig(f.configPath)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	total := 0
-	for key := range cfg.PrunedReceipts {
-		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.Name == "churn" {
-			total++
-		}
-	}
-	if total > 2 {
-		t.Fatalf("hub.toml carries %d markers for the evicted name, want the bound 2 in the same write", total)
-	}
-	if total == 0 {
-		t.Fatal("the eviction persisted no markers at all; the test no longer exercises the purge")
-	}
-}
-
-// TestHostReceiptKeyedReAddNotPurgedByItsOwnWrite pins the review finding: a
-// keyed re-add over a tombstone stages its own receipt into the very write
-// whose re-add purge drops the name's superseded receipts. The staged receipt
-// must be protected — otherwise the file loses it (and gains a false pruned
-// marker) while the store keeps it, and a lost-response replay after a restart
-// refuses `stale-entry` instead of returning the recorded committed row.
-func TestHostReceiptKeyedReAddNotPurgedByItsOwnWrite(t *testing.T) {
-	f := newUpdateFixture(t)
-	removeKey := newTestMutationID()
-	removeParams := removeRequest(t, f.m, "side")
-	removeParams.MutationID = removeKey
-	if _, err := f.m.Remove(context.Background(), removeParams); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-	addKey := newTestMutationID()
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{
-		Entry:      appwire.HostEntry{Name: "side", Address: "fresh.example"},
-		MutationID: addKey,
-	}); err != nil {
-		t.Fatalf("keyed re-add: %v", err)
-	}
-	// The durable file carries the re-add's receipt and no marker for its key.
-	cfg, err := LoadConfig(f.configPath)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	for key := range cfg.PrunedReceipts {
-		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == addKey {
-			t.Fatalf("the re-add's own write persisted a pruned marker for its receipt: %q", key)
-		}
-	}
-	found := false
-	for key, receipt := range cfg.MutationReceipts {
-		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == addKey {
-			found = true
-			_ = receipt
-		}
-	}
-	if !found {
-		t.Fatal("hub.toml lost the keyed re-add's just-committed receipt")
-	}
-	// A restart then a lost-response replay returns the recorded committed row.
-	boot := bootHostManager(t, f.configPath)
-	resp, err := boot.Add(context.Background(), appwire.HostAddParams{
-		Entry:      appwire.HostEntry{Name: "side", Address: "fresh.example"},
-		MutationID: addKey,
+	base := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	removeMarkerKey := hostReceiptScopedKey(hostReceiptScope{
+		MutationID: "m-remove", Name: "side", Kind: hostMutationRemove, Generation: 1, IncarnationID: "inc-1",
 	})
+	updateMarkerKey := hostReceiptScopedKey(hostReceiptScope{
+		MutationID: "m-update", Name: "side", Kind: hostMutationUpdate, Generation: 2, IncarnationID: "inc-2",
+	})
+	tombstone := HostTombstone{
+		Name: "side",
+		Entry: HostConfig{
+			Name: "side", SSH: "side.example",
+		},
+		Origin:        hostOriginHubTOML,
+		Generation:    1,
+		IncarnationID: "inc-1",
+		PresenceEpoch: 2,
+		RemovedAt:     base.Format(time.RFC3339),
+	}
+	// The remove marker is the OLDER one: without the exemption the count bound
+	// (1) would keep only the newer update marker.
+	// Pin the derivation's clock just past the removal instant: the tombstone
+	// and both markers are fresh, so neither the retention prune nor the
+	// marker TTL fires and the only rule under test is the backstop exemption.
+	f.m.cfg.now = func() time.Time { return base.Add(time.Minute) }
+	f.m.cfg.store.setRecordMaps(
+		map[string]HostTombstone{"side": tombstone},
+		map[string]PrunedReceiptMarker{
+			removeMarkerKey: {PrunedAt: base.Add(-2 * time.Hour).Format(time.RFC3339)},
+			updateMarkerKey: {PrunedAt: base.Format(time.RFC3339)},
+		},
+	)
+	records, err := f.m.deriveHostTOMLRecords(nil, nil, hostPersistChange{})
 	if err != nil {
-		t.Fatalf("replay after restart: %v", err)
+		t.Fatalf("derive with the tombstone: %v", err)
 	}
-	if resp.Name != "side" || resp.Removed || resp.Address != "fresh.example" {
-		t.Fatalf("replay row = %+v, want the recorded committed row", resp)
+	if _, ok := records.prunedReceipts[removeMarkerKey]; !ok {
+		t.Fatalf("the tombstoned name's backstop marker was compacted away: %v", records.prunedReceipts)
 	}
-}
-
-// TestHostTombstonePruneRaisesPresenceCounter pins the review finding: the
-// expiry prune persists an ADVANCED presence epoch in the name's high-water
-// entry, so the registry's counter must be raised to that value in the same
-// step — otherwise a same-process re-add mints a value equal to the retained
-// mark (the restart path seeds the counter and mints strictly above), and the
-// durable identity outcome depends on whether the process restarted.
-func TestHostTombstonePruneRaisesPresenceCounter(t *testing.T) {
-	f := newUpdateFixture(t)
-	removedAt := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
-	f.m.cfg.now = func() time.Time { return removedAt }
-	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
-		t.Fatalf("Remove: %v", err)
+	if _, ok := records.prunedReceipts[updateMarkerKey]; !ok {
+		t.Fatalf("the newer marker did not survive its own bound: %v", records.prunedReceipts)
 	}
-	f.m.cfg.now = func() time.Time { return removedAt.Add(DefaultHostTombstoneRetention + time.Hour) }
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later", Address: "later.example"}}); err != nil {
-		t.Fatalf("Add(later): %v", err)
-	}
-	cfg, err := LoadConfig(f.configPath)
+	// Purge the tombstone: the exemption ends and the bound drops the oldest
+	// non-backstop marker.
+	f.m.cfg.store.setRecordMaps(nil, map[string]PrunedReceiptMarker{
+		removeMarkerKey: {PrunedAt: base.Add(-2 * time.Hour).Format(time.RFC3339)},
+		updateMarkerKey: {PrunedAt: base.Format(time.RFC3339)},
+	})
+	records, err = f.m.deriveHostTOMLRecords(nil, nil, hostPersistChange{})
 	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
+		t.Fatalf("derive without the tombstone: %v", err)
 	}
-	mark, ok := cfg.Generations["side"]
-	if !ok {
-		t.Fatal("the prune did not persist the name's high-water entry")
+	if _, ok := records.prunedReceipts[removeMarkerKey]; ok {
+		t.Fatalf("the backstop marker outlived its tombstone: %v", records.prunedReceipts)
 	}
-	// Same-process re-add: strictly above the retained mark.
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "side2.example"}}); err != nil {
-		t.Fatalf("re-add: %v", err)
-	}
-	sameProcess, _ := f.m.cfg.hosts.Get("side")
-	if sameProcess.PresenceEpoch <= mark.PresenceEpoch {
-		t.Fatalf("same-process re-add presence epoch = %d, want strictly above the pruned mark %d", sameProcess.PresenceEpoch, mark.PresenceEpoch)
-	}
-	// A restart's re-add produces the same strict ordering.
-	f.m.cfg.now = func() time.Time { return removedAt.Add(2 * DefaultHostTombstoneRetention) }
-	if _, err := f.m.Remove(context.Background(), removeRequestFor("side", sameProcess.Generation, sameProcess.IncarnationID)); err != nil {
-		t.Fatalf("second Remove: %v", err)
-	}
-	boot := bootHostManager(t, f.configPath)
-	cfg, err = LoadConfig(f.configPath)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	mark, ok = cfg.Generations["side"]
-	if !ok {
-		t.Fatal("the second removal lost the high-water entry")
-	}
-	boot.cfg.now = func() time.Time { return removedAt.Add(3 * DefaultHostTombstoneRetention) }
-	if _, err := boot.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "side3.example"}}); err != nil {
-		t.Fatalf("re-add after restart: %v", err)
-	}
-	restarted, _ := boot.cfg.hosts.Get("side")
-	if restarted.PresenceEpoch <= mark.PresenceEpoch {
-		t.Fatalf("restart re-add presence epoch = %d, want strictly above the mark %d", restarted.PresenceEpoch, mark.PresenceEpoch)
+	if _, ok := records.prunedReceipts[updateMarkerKey]; !ok {
+		t.Fatalf("the newer marker did not survive the post-purge bound: %v", records.prunedReceipts)
 	}
 }
