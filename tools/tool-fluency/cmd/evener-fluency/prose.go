@@ -42,7 +42,7 @@ var (
 		regexp.MustCompile(`(?i)\bnot\s+(?:just|only|merely)\b[^.;:!?\n]{0,60}?\bbut\b`),
 		regexp.MustCompile(`(?i)\b(?:isn't|is not|aren't|are not|wasn't|was not)\b[^.;:!?\n]{0,60}?[,;—]\s*(?:it's|it is|they're|they are|that's|this is)\b`),
 	}
-	boldLabelRe = regexp.MustCompile(`(?m)^\s*(?:[-*+]|\d+[.)])\s+\*\*[^*\n]+(?::\*\*|\*\*\s*[:—–-])`)
+	boldLabelRe = regexp.MustCompile(`(?m)^\s*(?:(?:[-*+]|\d+[.)])\s+)?\*\*[^*\n]+(?::\*\*|\*\*\s*[:—–-])`)
 	headerRe    = regexp.MustCompile(`(?m)^#{1,6}\s`)
 	arrowRe     = regexp.MustCompile(`→|⇒|->|=>`)
 	shoutingRe  = regexp.MustCompile(`\b(?:NEVER|ALWAYS|MUST|CRITICAL|IMPORTANT|NOT|ONLY)\b`)
