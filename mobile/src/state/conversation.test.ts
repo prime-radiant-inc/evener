@@ -21,6 +21,7 @@ import type {
   EvenerThread,
   InputItem,
   MutationReceipt,
+  OverlayItem,
   Thread,
   ThreadCapabilities,
   ThreadItem,
@@ -195,8 +196,16 @@ function makeConversation(
   const { items, turns, ...rest } = over;
   if (turns !== undefined) {
     // A turns override is the model itself: the rows project from it, so
-    // the fixture stays consistent through every re-projection.
-    return { ...projectConversation({ ...base, turns }), ...rest };
+    // the fixture stays consistent through every re-projection. Versioned:
+    // a live history/updated frame merges against model.history.turns, not
+    // model.turns directly (withDisplay derives the latter from the
+    // former) — an override that set only model.turns would merge the next
+    // frame against the ORIGINAL (turns-less) history, silently discarding
+    // the fixture's turns the moment any live frame arrived. Seeding
+    // history.turns to match keeps the two in sync from the start.
+    const withHistory =
+      base.history === undefined ? base : { ...base, history: { ...base.history, turns } };
+    return { ...projectConversation({ ...withHistory, turns }), ...rest };
   }
   if (items === undefined) {
     return {
@@ -2345,7 +2354,7 @@ describe("ConversationStore", () => {
       service.openConv = makeConversation({ status: { type: "idle" } }, true);
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
-      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "default", status: "running" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t1", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       // The status is thread/status/changed's, never turn/started's (the
       // status frame rides right behind it); the turn id is this frame's.
       expect(store.getState().conversation?.status.type).toBe("idle");
@@ -2484,7 +2493,7 @@ describe("ConversationStore", () => {
       expect(drained?.queue?.depth).toBe(0);
       expect(drained?.activeTurnId).toBeUndefined();
 
-      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "running" }] } } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       const resumed = store.getState().conversation;
       expect(resumed?.status.type).toBe("active");
       expect(resumed?.activeTurnId).toBe("t2");
@@ -4636,9 +4645,17 @@ describe("ConversationStore", () => {
         params: { threadId: "thread-1", ref: "ref-1", status: { type: "running" } },
       }],
     ] as const)("does not reread for %s", async (_label, frame) => {
-      const { store, service } = await openRunningTurn([
-        agentMessageItem("r-1", "", "inProgress"),
-      ]);
+      // Versioned: an unversioned model has no epoch/generation to compare
+      // a history/updated frame against, so classifySignal always reads
+      // "replace" (bootGeneration "" never parses as a counter) and
+      // invalidates on the very first one — a real gap, correctly, not the
+      // one this case means to pin (a v6 model merging a frame that names
+      // an item it already holds, entirely in place, no reread needed).
+      const { store, service } = await openRunningTurn(
+        [agentMessageItem("r-1", "", "inProgress")],
+        {},
+        true,
+      );
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification(frame as AnyNotification);
       await Promise.resolve();
@@ -5458,7 +5475,11 @@ describe("ConversationStore", () => {
             }),
           ],
         });
-        const store = await openProjectedThread(thread);
+        // Versioned: turn/started and item/completed are gone with the rest
+        // of the per-item lifecycle family (Task 15) — a new turn and its
+        // first item now arrive together as one history/updated frame, and
+        // that frame only merges against a v6 (versioned) model.
+        const store = await openProjectedThread(thread, true);
         store.getState().setDisplayConfig(
           makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }),
         );
@@ -5479,31 +5500,17 @@ describe("ConversationStore", () => {
             message: "careful",
           },
         } as AnyNotification);
-        // A newer same-family activity arrives AFTER the notice: the run
-        // splits at the anchored member, and BOTH sub-runs re-project.
-        store.getState().applyNotification({
-          method: "turn/started",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turn: { id: "t2", itemsView: "default", status: "running" },
-          },
-        } as AnyNotification);
-        store.getState().applyNotification({
-          method: "item/completed",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            turnId: "t2",
-            item: {
+        // A newer same-family activity arrives AFTER the notice, on a new
+        // turn: the run splits at the anchored member, and BOTH sub-runs
+        // re-project.
+        store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }], items: [{
               type: "commandExecution",
               id: "c-tool",
               toolName: "shell",
               status: "completed",
               description: "third audit",
-            } as ThreadItem,
-          },
-        } as AnyNotification);
+              turnId: "t2",
+            } as ThreadItem] } } as AnyNotification);
         // The split keeps the members displayed at arrival above the notice
         // (the [a, b] run) and seats the member that arrived later below it.
         const split = rows(store).filter((row) => row.kind === "activity");
@@ -16306,7 +16313,7 @@ describe("ConversationStore", () => {
         ],
       });
       const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(askThread);
+      service.readProjectionResult = makeReadProjectionResult(askThread, ALL_TRUE_CAPS, true);
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       expect(store.getState().conversation?.askPending).toBe(true);
@@ -19024,6 +19031,11 @@ describe("ConversationStore", () => {
       // images: the fold keeps them (the round-31 rule — absent images mean
       // unchanged), and the projection re-keys the attachment row to the
       // reissued source's id.
+      // Versioned (matches the frames below's bootGeneration/epoch/
+      // incarnation): an unversioned rehydrate here would invalidate on the
+      // very next history/updated frame (reducer.ts's classifySignal, any
+      // boot generation but the held "" one is a replace) and the
+      // withdrawal this test pins would never run at all.
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
           turns: [
@@ -19042,6 +19054,8 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
+        ALL_TRUE_CAPS,
+        true,
       );
       store.getState().applyNotification({
         method: "evener/thread/resync",
@@ -21505,10 +21519,19 @@ describe("ConversationStore", () => {
       await store.getState().loadOlder(service);
       expect(rows(store).map((item) => item.id)).toEqual(["P", "A", "B"]);
 
-      // A live frame inserts N while the read is in flight — on screen at
-      // once, and accounted for by the snapshot that follows.
+      // A history/updated frame while the resync's own read is in flight is
+      // not a live insert any more: the resync itself invalidated history
+      // (a bare resync — "the hub pushes itself, names no epoch" — always
+      // does, classifySignal's own rule), and applyHistoryUpdated drops
+      // every frame against an invalidated thread until the awaited
+      // generation's read replaces it wholesale (reducer.ts: "nothing
+      // merges until a latest-window response ... replaces its whole
+      // history"). N never lands, on screen or in the model, before the
+      // snapshot commits — asserted here as a no-op rather than removed,
+      // so a regression that resumed merging mid-invalidation would fail
+      // loudly instead of silently changing this test's shape.
       store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...(userMessageItem("N", "live notification")), turnId: "t0" }] } } as AnyNotification);
-      expect(rows(store).map((item) => item.id)).toEqual(["P", "A", "B", "N"]);
+      expect(rows(store).map((item) => item.id)).toEqual(["P", "A", "B"]);
 
       ctrl.release();
       await ctrl.completed(1);
@@ -22521,8 +22544,13 @@ describe("ConversationStore", () => {
       service: FakeConversationService;
     }> {
       const service = new FakeConversationService();
+      // Versioned: the test's own frames are history/updated, which an
+      // unversioned model always invalidates (drops) on arrival — a real
+      // gap, not the live delta this test means to pin.
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({ turns: [makeTurn({ id: "t0", items })] }),
+        ALL_TRUE_CAPS,
+        true,
       );
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
@@ -22724,7 +22752,7 @@ describe("ConversationStore", () => {
   describe("a page against the 500-row cap", () => {
     async function openProjectedWithItems(
       items: ThreadItem[],
-      options: { running?: boolean } = {},
+      options: { running?: boolean; versioned?: boolean } = {},
     ): Promise<{
       store: ReturnType<typeof createConversationStore>;
       service: FakeConversationService;
@@ -22735,6 +22763,8 @@ describe("ConversationStore", () => {
           turns: [makeTurn({ id: "t0", status: options.running ? "inProgress" : "completed", items })],
           ...(options.running ? { evener: evenerWith({ activeTurnId: "t0" }) } : {}),
         }),
+        ALL_TRUE_CAPS,
+        options.versioned ?? false,
       );
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
@@ -22827,7 +22857,14 @@ describe("ConversationStore", () => {
       const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
       const items: ThreadItem[] = [agentMessageItem("X", oversized, "completed")];
       for (let i = 1; i < 500; i++) items.push(userMessageItem(`u-${i}`, ""));
-      const { store, service } = await openProjectedWithItems(items, { running: true });
+      // Versioned only for the item-frame case: its history/updated needs a
+      // v6 model to merge at all (an unversioned one invalidates on
+      // arrival), while the warning case is handled off the model entirely
+      // (the transient-warning surface) and stays on the plain fixture.
+      const { store, service } = await openProjectedWithItems(items, {
+        running: true,
+        versioned: _label === "an item frame",
+      });
       expect(rows(store)).toHaveLength(500);
       const xBefore = rowById(store, "X");
       expect(xBefore?.kind === "assistant" && xBefore.markdown.endsWith(TRUNCATION_MARKER)).toBe(true);
@@ -23098,32 +23135,72 @@ describe("ConversationStore", () => {
       return row.members ?? [];
     }
 
-    function toolOutputDelta(
-      store: ReturnType<typeof createConversationStore>,
-      itemId: string,
+    // item/toolOutput/delta and item/reasoning/summaryTextDelta are gone —
+    // Task 15 replaced the whole per-item lifecycle-notification family with
+    // the overlay (design doc's "Running state": running output lives in the
+    // overlay, laid over the in-progress history item — reducer.ts's
+    // applyOverlayDelta/buildDisplayTurn). A live delta now arrives as
+    // overlay/upserted (opens the entry) then overlay/delta (appends), keyed
+    // "tool:<historyKey>"/"tool:<callId>" by the call item's own
+    // transcriptKey, and only applies to a v6 (versioned) model — the
+    // overlay is part of `history`, absent from a pre-v6 hydrate.
+    function toolOverlayItem(
+      turnId: string,
       callId: string,
+      historyKey: string,
+      output: string,
+    ): OverlayItem {
+      const key = `tool:${historyKey}`;
+      return {
+        key,
+        kind: "tool",
+        turnId,
+        callId,
+        historyKey,
+        item: {
+          type: "commandExecution",
+          id: key,
+          turnId,
+          callId,
+          output,
+          status: "inProgress",
+        },
+      };
+    }
+
+    function upsertOverlay(
+      store: ReturnType<typeof createConversationStore>,
+      item: OverlayItem,
+    ): void {
+      store.getState().applyNotification({
+        method: "overlay/upserted",
+        params: { threadId: "thread-1", ref: "ref-1", item },
+      } as AnyNotification);
+    }
+
+    function overlayDelta(
+      store: ReturnType<typeof createConversationStore>,
+      key: string,
+      field: string,
       delta: string,
     ): void {
       store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId,
-          callId,
-          delta,
-        },
+        method: "overlay/delta",
+        params: { threadId: "thread-1", ref: "ref-1", key, field, delta },
       } as AnyNotification);
     }
 
     it("applies a tool-output delta aimed at a later clustered member in place", async () => {
-      const { store } = await openProjectedWithItems([
-        toolItem("wire-a", "key-a", "call-a", "first"),
-        toolItem("wire-b", "key-b", "call-b", "second"),
-      ]);
+      const { store } = await openProjectedWithItems(
+        [
+          toolItem("wire-a", "key-a", "call-a", "first"),
+          toolItem("wire-b", "key-b", "call-b", "second"),
+        ],
+        true,
+      );
 
-      toolOutputDelta(store, "wire-b", "call-b", " MORE");
+      upsertOverlay(store, toolOverlayItem("t0", "call-b", "key-b", "second"));
+      overlayDelta(store, "tool:key-b", "output", " MORE");
 
       const [memberA, memberB] = clusterMembers(store, "wire-a");
       expect(memberB?.detail.output).toBe("second MORE");
@@ -23134,12 +23211,16 @@ describe("ConversationStore", () => {
     });
 
     it("applies a tool-output delta aimed at the first clustered member to that member, not only the cluster", async () => {
-      const { store } = await openProjectedWithItems([
-        toolItem("wire-a", "key-a", "call-a", "first"),
-        toolItem("wire-b", "key-b", "call-b", "second"),
-      ]);
+      const { store } = await openProjectedWithItems(
+        [
+          toolItem("wire-a", "key-a", "call-a", "first"),
+          toolItem("wire-b", "key-b", "call-b", "second"),
+        ],
+        true,
+      );
 
-      toolOutputDelta(store, "wire-a", "call-a", " MORE");
+      upsertOverlay(store, toolOverlayItem("t0", "call-a", "key-a", "first"));
+      overlayDelta(store, "tool:key-a", "output", " MORE");
 
       const [memberA, memberB] = clusterMembers(store, "wire-a");
       expect(memberA?.detail.output).toBe("first MORE");
@@ -23151,27 +23232,32 @@ describe("ConversationStore", () => {
     });
 
     it("applies a reasoning delta aimed at a later clustered member in place", async () => {
-      const { store } = await openProjectedWithItems([
-        reasoningItem("wire-a", "key-a", "first"),
-        // inProgress: a summaryTextDelta only ever streams into a still-running
-        // item, and the row module's reasoningText prefers the settled item.text
-        // over reasoningSummaries once an item is completed (see the reducer's
-        // own mergeReasoning/mergeCompletedText contract) — a completed item
-        // would show its frozen "second" instead of the delta.
-        reasoningItem("wire-b", "key-b", "second", "inProgress"),
-      ]);
+      // item/reasoning/summaryTextDelta is gone with the rest of the per-item
+      // lifecycle family (Task 15); the overlay that replaced it lays a tool
+      // call's running output/status/images over its recorded item
+      // (reducer.ts's layOverHistoryItem) but never its text — reasoning
+      // content is never one of the fields an overlay carries over a held
+      // item. A reasoning item already recorded but still running gets its
+      // next chunk the same way any other held item does: a history/updated
+      // carrying the item's own (higher-version-implicit, since neither side
+      // stamps one here) text, still inProgress. Same delivery the sibling
+      // "sparse completion" tests below use; this one keeps its own name and
+      // running status to pin the still-running, one-member-only case.
+      const { store } = await openProjectedWithItems(
+        [
+          reasoningItem("wire-a", "key-a", "first"),
+          reasoningItem("wire-b", "key-b", "second", "inProgress"),
+        ],
+        true,
+      );
 
-      store.getState().applyNotification({
-        method: "item/reasoning/summaryTextDelta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t0",
-          itemId: "wire-b",
-          summaryIndex: 0,
-          delta: " MORE",
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, items: [{ ...({
+            type: "reasoning",
+            id: "wire-b",
+            transcriptKey: "key-b",
+            status: "inProgress",
+            text: "second MORE",
+          }), turnId: "t0" }] } } as AnyNotification);
 
       const [memberA, memberB] = clusterMembers(store, "wire-a");
       expect(memberB?.detail.output).toBe("second MORE");
@@ -23180,14 +23266,18 @@ describe("ConversationStore", () => {
 
     it("keeps a later clustered member bounded when a delta pushes it past the limit", async () => {
       const oversized = "b".repeat(MAX_ITEM_BYTES + 100);
-      const { store } = await openProjectedWithItems([
-        toolItem("wire-a", "key-a", "call-a", "first"),
-        toolItem("wire-b", "key-b", "call-b", oversized),
-      ]);
+      const { store } = await openProjectedWithItems(
+        [
+          toolItem("wire-a", "key-a", "call-a", "first"),
+          toolItem("wire-b", "key-b", "call-b", oversized),
+        ],
+        true,
+      );
       const boundedOutput = clusterMembers(store, "wire-a")[1]?.detail.output;
       expect(boundedOutput?.endsWith(TRUNCATION_MARKER)).toBe(true);
 
-      toolOutputDelta(store, "wire-b", "call-b", " MORE");
+      upsertOverlay(store, toolOverlayItem("t0", "call-b", "key-b", oversized));
+      overlayDelta(store, "tool:key-b", "output", " MORE");
 
       // The row shows the same bounded prefix: what a reader sees is the
       // first MAX_ITEM_BYTES of the text, however much more streams in.
@@ -23540,7 +23630,10 @@ describe("ConversationStore", () => {
           }),
         ],
       });
-      const store = await openProjectedThread(thread);
+      // Versioned: turn/started and item/completed are gone (Task 15); a
+      // new turn and its item now arrive together in one history/updated
+      // frame, which only merges against a v6 model.
+      const store = await openProjectedThread(thread, true);
       store.getState().applyNotification({
         method: "warning",
         params: {
@@ -23552,23 +23645,7 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       // A later reply arrives on a new turn, so the anchored thought
       // sits mid-timeline.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t2",
-          item: agentMessageItem("a2", "working on it", "completed"),
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }], items: [{ ...(agentMessageItem("a2", "working on it", "completed")), turnId: "t2" }] } } as AnyNotification);
       expect(
         rows(store).some((row) => row.kind === "failure" && row.id === "warning:1"),
       ).toBe(true);
@@ -23642,17 +23719,12 @@ describe("ConversationStore", () => {
           }),
         ],
       });
-      const store = await openProjectedThread(thread);
+      // Versioned: turn/started is gone (Task 15); a new turn now arrives
+      // as a history/updated frame, which only merges against a v6 model.
+      const store = await openProjectedThread(thread, true);
       store.getState().setDisplayConfig(intentConfig);
       // A row-changing frame lands at intent: a new turn starts.
-      store.getState().applyNotification({
-        method: "turn/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turn: { id: "t2", itemsView: "default", status: "running" },
-        },
-      } as AnyNotification);
+      store.getState().applyNotification({ method: "history/updated", params: { threadId: "thread-1", ref: "ref-1", bootGeneration: "1", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 }, turns: [{ id: "t2", itemsView: "default", status: "inProgress" }] } } as AnyNotification);
       expect(store.getState().conversation?.turns[0]?.items).toHaveLength(1);
       store.getState().setDisplayConfig(fullConfig);
       expect(rowById(store, "r1")).toMatchObject({ kind: "activity" });

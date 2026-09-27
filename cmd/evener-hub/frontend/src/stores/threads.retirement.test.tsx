@@ -257,10 +257,21 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
   // RED_SUPPRESS_REPLACEMENT is on, neither happens.
   let replacementBound = false;
 
-  socket.on("thread/read", (_id, _params) => {
+  socket.on("thread/read", (_id, params) => {
     const instanceId = replacementBound && !RED_SUPPRESS_REPLACEMENT ? INSTANCE_V2 : INSTANCE_V1;
+    // Matches the turn/start handler's own history/updated identity below:
+    // a read with no snapshot at all takes hydrateThread's legacy
+    // (unversioned) branch, whose EMPTY_HISTORY bootGeneration ("") never
+    // equals a live frame's "1" - the mismatch reads as a boot-generation
+    // replace and invalidates the thread the instant that frame lands,
+    // dropping the new turn instead of merging it.
+    const requestGeneration = (params as { requestGeneration?: number } | undefined)?.requestGeneration;
     const response: ThreadReadResponse = {
       thread: makeThread(instanceId, sentTurnIds),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: sentTurnIds.length },
+      ...(requestGeneration !== undefined ? { requestGeneration } : {}),
     };
     return response;
   });

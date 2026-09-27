@@ -425,27 +425,7 @@ for (const f of ["basic-turn", "streaming-with-reset", "tool-and-jobs", "queue-a
     const { header, notifications } = readFixture(f);
     let model = hydrateThread(header.hydrate, header.ref, 1000);
     for (const [i, n] of notifications.entries()) {
-      // These fixtures (basic-turn, streaming-with-reset, tool-and-jobs) were
-      // captured on the old lifecycle-notification wire and still carry
-      // turn/completed, item/started and the rest — none of which reach the
-      // reducer's switch any more (its default case is a no-op), so this
-      // replay no longer exercises real reduction for them. Left in place,
-      // untouched, rather than deleted or hand-rewritten to a protocol they
-      // were never captured on: flagged in the porting task's report as a
-      // fixture-refresh follow-up, not a mechanical rename this pass can make
-      // honestly.
-      const notification: AnyNotification =
-        (n.method as string) === "turn/completed"
-          ? ({
-              ...n,
-              params: {
-                ...(n.params as object),
-                threadId: header.hydrate.thread.id,
-                ref: header.ref,
-              },
-            } as AnyNotification)
-          : n;
-      model = applyNotification(model, notification, 1000 + i);
+      model = applyNotification(model, n, 1000 + i);
     }
     expect(model).toMatchSnapshot();
   });

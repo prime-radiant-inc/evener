@@ -138,20 +138,22 @@ function floodThread(ref: string): Thread {
     cwd: "/tmp/project",
     cliVersion: "1.0.0",
     source: "evener",
-    // One turn holding TWO items: a settled sibling (probe-instrumented, see
-    // below) and the live agentMessage item this test floods with deltas -
-    // both inside the SAME turn deliberately, since reducer.ts's
-    // item/agentMessage/delta case (`mapTurn`) replaces the whole enclosing
-    // TurnModel object on every delta even though only one of its items
-    // actually changed (`{...turn, items: mapItem(...)}}`) - the exact
-    // shape TurnBlock.tsx passes straight through to every item renderer as
-    // the `turn` prop (`<ItemRenderer item={item} turn={turn} .../>`, T1's
-    // own locked ItemRenderProps). A settled sibling in a DIFFERENT turn
-    // would trivially never re-render (its own TurnModel reference never
-    // changes) - this setup is the one that actually exercises "does a
-    // live delta re-render an unrelated ALREADY-SETTLED ROW SHARING THE
-    // SAME TURN," which is the realistic shape of a long multi-item turn
-    // (e.g. a tool call followed by the model's streamed response).
+    // One turn holding the settled sibling (probe-instrumented, see below);
+    // the live agentMessage item this test floods with deltas is not
+    // recorded yet (an unrecorded item is overlay-only, never in history -
+    // spec's "Live history notifications"), and arrives via overlay/upserted
+    // right after mount, into the SAME turn deliberately: reducer.ts's
+    // buildDisplayTurn rebuilds the whole enclosing TurnModel object on
+    // every delta even though only the overlay's trailing item actually
+    // changed - the exact shape TurnBlock.tsx passes straight through to
+    // every item renderer as the `turn` prop (`<ItemRenderer item={item}
+    // turn={turn} .../>`, T1's own locked ItemRenderProps). A settled
+    // sibling in a DIFFERENT turn would trivially never re-render (its own
+    // TurnModel reference never changes) - this setup is the one that
+    // actually exercises "does a live delta re-render an unrelated
+    // ALREADY-SETTLED ROW SHARING THE SAME TURN," which is the realistic
+    // shape of a long multi-item turn (e.g. a tool call followed by the
+    // model's streamed response).
     turns: [
       {
         id: "turn_flood_settled",
@@ -164,12 +166,6 @@ function floodThread(ref: string): Thread {
             type: "tokenflood-render-probe",
             text: "settled sibling content",
             status: "completed",
-          },
-          {
-            id: "item_flood_live",
-            turnId: "turn_flood_settled",
-            type: "agentMessage",
-            status: "inProgress",
           },
         ],
       },
@@ -232,7 +228,16 @@ describe("token-flood: multi-delta streaming fast path through a mounted Session
     const fake = new FakeClient("ready");
     connectionStore.getState().connect(fake);
     const ref = "ref_flood_session";
-    fake.on("thread/read", () => ({ thread: floodThread(ref) }) as ThreadReadResponse);
+    fake.on(
+      "thread/read",
+      () =>
+        ({
+          thread: floodThread(ref),
+          bootGeneration: "1",
+          epoch: 1,
+          snapshot: { incarnation: "inc_flood", length: 1 },
+        }) as ThreadReadResponse,
+    );
 
     await act(async () => {
       render(
@@ -248,19 +253,36 @@ describe("token-flood: multi-delta streaming fast path through a mounted Session
     expect(renderCountAfterMount).toBeGreaterThan(0);
 
     const chunks = buildFloodChunks(SESSION_FLOOD_SIZE, 2);
-    // item/agentMessage/delta's read-model replacement, history/updated,
-    // merges by item identity into whatever the model's own versioned
-    // history already holds (reducer.ts's mergeHistory) — a turn/item this
-    // client's history has never seen gets synthesized fresh (status
-    // "inProgress", no other items), which would silently drop the settled
-    // sibling this probe depends on. Seeding both items into the FIRST
-    // history/updated (mirroring the settled-then-live shape thread/read
-    // handed this test before the migration) keeps the sibling in the
-    // model's tracked history so it survives every later merge, the same
-    // way it survived every earlier item/agentMessage/delta.
-    let text = "";
-    for (const [i, delta] of chunks.entries()) {
-      text += delta;
+    // The stream mints its overlay slot once (overlay/upserted); every delta
+    // after that is a plain overlay/delta append (spec's "The live overlay" -
+    // item/agentMessage/delta's read-model replacement). Only the display
+    // turn holding the stream is rebuilt per delta (reducer.ts's
+    // applyOverlayDelta), so the settled sibling's own item reference never
+    // changes.
+    await act(async () => {
+      fake.emitNotification({
+        method: "overlay/upserted",
+        params: {
+          ref,
+          threadId: `thr_${ref}`,
+          item: {
+            key: "stream:round_flood/0:agentMessage",
+            kind: "stream",
+            turnId: "turn_flood_settled",
+            roundId: "round_flood",
+            streamId: "round_flood/0",
+            item: {
+              type: "agentMessage",
+              id: "item_flood_live",
+              turnId: "turn_flood_settled",
+              roundId: "round_flood",
+              status: "inProgress",
+            },
+          },
+        },
+      } as AnyNotification);
+    });
+    for (const delta of chunks) {
       // Each delta emitted in its OWN act() call, not batched together -
       // faithful to the real world, where each delta arrives as its own
       // WebSocket frame producing its own separate store commit, rather than
@@ -269,42 +291,8 @@ describe("token-flood: multi-delta streaming fast path through a mounted Session
       // exactly the per-delta re-render cost this probe exists to measure).
       await act(async () => {
         fake.emitNotification({
-          method: "history/updated",
-          params: {
-            ref,
-            threadId: `thr_${ref}`,
-            bootGeneration: "1",
-            epoch: 1,
-            snapshot: { incarnation: "inc_flood", length: i + 1 },
-            turns: [{ id: "turn_flood_settled", status: "inProgress", itemsView: "" }],
-            items:
-              i === 0
-                ? [
-                    {
-                      id: "item_settled_sibling",
-                      turnId: "turn_flood_settled",
-                      type: "tokenflood-render-probe",
-                      text: "settled sibling content",
-                      status: "completed",
-                    },
-                    {
-                      id: "item_flood_live",
-                      turnId: "turn_flood_settled",
-                      type: "agentMessage",
-                      text,
-                      status: "inProgress",
-                    },
-                  ]
-                : [
-                    {
-                      id: "item_flood_live",
-                      turnId: "turn_flood_settled",
-                      type: "agentMessage",
-                      text,
-                      status: "inProgress",
-                    },
-                  ],
-          },
+          method: "overlay/delta",
+          params: { ref, threadId: `thr_${ref}`, key: "stream:round_flood/0:agentMessage", field: "text", delta },
         } as AnyNotification);
       });
       // Notification subscribers also start durable projection reads. Await
