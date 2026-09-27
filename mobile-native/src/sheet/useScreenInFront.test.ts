@@ -19,19 +19,17 @@ it("keeps a session in front while its own sheet covers it, and not once a scree
 	expect(renderHook(() => useScreenInFront("session")).result.current).toBe(true);
 	navigationState.state = { index: 1, routes: [session, reader] };
 	expect(renderHook(() => useScreenInFront("session")).result.current).toBe(false);
-	// The pushed screen is popped, so session is focused (the top of the
-	// stack) again - in front through the very same state check, with no
-	// separate useIsFocused subscription to answer it.
+	// The pushed screen is popped, so session is the top of the stack again.
 	navigationState.state = { index: 0, routes: [session] };
 	expect(renderHook(() => useScreenInFront("session")).result.current).toBe(true);
 });
 
 it("answers the same at the moment of a call", () => {
-	const covered = { isFocused: () => false, getState: () => ({ index: 1, routes: [session, tasks] }) };
+	const covered = { getState: () => ({ index: 1, routes: [session, tasks] }) };
 	expect(screenInFront(covered, "session")).toBe(true);
-	const pushed = { isFocused: () => false, getState: () => ({ index: 1, routes: [session, reader] }) };
+	const pushed = { getState: () => ({ index: 1, routes: [session, reader] }) };
 	expect(screenInFront(pushed, "session")).toBe(false);
-	expect(screenInFront({ isFocused: () => true, getState: () => ({ index: 0, routes: [] }) }, "session")).toBe(true);
+	expect(screenInFront({ getState: () => ({ index: 0, routes: [session] }) }, "session")).toBe(true);
 });
 
 it("leaves with the sheets over the screen, since a covered screen's goBack pops only its top sheet", () => {

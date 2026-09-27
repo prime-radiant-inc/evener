@@ -35,10 +35,11 @@ const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 }));
 
-// The root stack the screen sits in, read by useScreenInFront (screens.tsx).
-// Kept at the screen's own route on top, so the screen is in front the way a
-// freshly opened conversation really is - this suite isn't exercising sheet
-// coverage or a pushed screen, unlike ConversationScreen.sheets.test.tsx.
+// The root stack the screen sits in, read by useScreenInFront and
+// screenInFront (screens.tsx). Kept at the screen's own route on top, so the
+// screen is in front the way a freshly opened conversation really is - this
+// suite isn't exercising sheet coverage or a pushed screen, unlike
+// ConversationScreen.sheets.test.tsx.
 const navigationState = vi.hoisted(() => ({
 	state: { index: 0, routes: [] as { key: string; name: string }[] },
 }));
@@ -155,6 +156,7 @@ function conversationRoute(ref: string): ConversationScreenProps["route"] {
 
 const navigation = {
 	isFocused: () => true,
+	getState: () => navigationState.state,
 	navigate: vi.fn(),
 	push: vi.fn(),
 	goBack: vi.fn(),

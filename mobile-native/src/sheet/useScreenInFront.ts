@@ -6,20 +6,18 @@ import { useNavigationState } from "@react-navigation/native";
 import { inFront, type StackState } from "./sheetRoutes";
 
 export function useScreenInFront(routeKey: string): boolean {
-	// inFront already answers true for the focused route itself (position ===
-	// state.index leaves nothing between it and the top to check), so a
-	// separate useIsFocused subscription would only re-render this screen an
-	// extra time on every sheet open and close for an answer inFront already
-	// gives.
+	// inFront already answers true for the focused route, so a useIsFocused
+	// subscription would add nothing but a re-render on every sheet open and
+	// close.
 	return useNavigationState((state) => inFront(state, routeKey));
 }
 
 /** The same answer at the moment of a call, for a guard inside a callback. */
 export function screenInFront(
-	navigation: { isFocused(): boolean; getState(): StackState },
+	navigation: { getState(): StackState },
 	routeKey: string,
 ): boolean {
-	return navigation.isFocused() || inFront(navigation.getState(), routeKey);
+	return inFront(navigation.getState(), routeKey);
 }
 
 /** Leaves the screen along with every route over it. A covered screen's own
