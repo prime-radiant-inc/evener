@@ -387,4 +387,91 @@ func TestRawArgs_Stream_FallbackOnBadFragment(t *testing.T) {
 	}
 }
 
-// Ensure the helper imports are used.
+func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	body := []byte(`{"id":"chatcmpl-1","model":"m-wire","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[` +
+		`{"id":"call_1","type":"function","function":{"name":"first","arguments":` + string(jsonStringToken(first)) + `}},` +
+		`{"id":"call_2","type":"function","function":{"name":"second","arguments":` + string(jsonStringToken(second)) + `}}` +
+		`]},"finish_reason":"tool_calls"}]}`)
+
+	got := decodeRawArgsCompleteMany(t, body)
+	want := [][]byte{[]byte(first), []byte(second)}
+	assertRawArgsByIndex(t, got, want)
+}
+
+func TestRawArgs_Stream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	sseBody := "data: {\"id\":\"c1\",\"model\":\"m-wire\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[" +
+		`{"index":0,"id":"call_1","type":"function","function":{"name":"first","arguments":` + string(jsonStringToken(first)) + `}},` +
+		`{"index":1,"id":"call_2","type":"function","function":{"name":"second","arguments":` + string(jsonStringToken(second)) + `}}` +
+		"]}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	got := decodeRawArgsStreamMany(t, sseBody)
+	want := [][]byte{[]byte(first), []byte(second)}
+	assertRawArgsByIndex(t, got, want)
+}
+
+func decodeRawArgsCompleteMany(t *testing.T, body []byte) [][]byte {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	res := resolved(func(c *registry.Caps) { c.FinishReasonMap = map[string]string{"tool_calls": "tool_calls"} })
+	res.Transport = registry.Transport{Auth: registry.AuthBearer, BaseURL: srv.URL + "/v1", Endpoint: "/chat/completions", StreamEndpoint: "/chat/completions", ModelsEndpoint: "/models", CountTokensEndpoint: registry.EndpointUnsupported}
+	res.Credential = registry.Credential{Value: "k-1", Source: "api_key"}
+	resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	return toolCallArguments(resp)
+}
+
+func decodeRawArgsStreamMany(t *testing.T, sseBody string) [][]byte {
+	t.Helper()
+	srv, _ := server(t, http.StatusOK, sseBody)
+	res := liveRes(srv, func(c *registry.Caps) { c.FinishReasonMap = map[string]string{"tool_calls": "tool_calls"} })
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final *llm.Response
+	for ev := range s.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventFinish {
+			final = ev.Response
+		}
+	}
+	if final == nil {
+		t.Fatal("stream ended without a finish event")
+	}
+	return toolCallArguments(*final)
+}
+
+func toolCallArguments(resp llm.Response) [][]byte {
+	calls := resp.ToolCalls()
+	args := make([][]byte, len(calls))
+	for i := range calls {
+		args[i] = calls[i].Arguments
+	}
+	return args
+}
+
+func assertRawArgsByIndex(t *testing.T, got, want [][]byte) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d tool calls, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("tool call %d Arguments = %q (% x), want %q (% x)", i, got[i], got[i], want[i], want[i])
+		}
+	}
+}
