@@ -1,6 +1,6 @@
 # iPhone redesign, Phase 7: Server additions (Implementation Plan)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PR 1 and PR 3 are written out in full, and PR 2 is a requirements-only section. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. PRs 14 to 19 (S5, S4 and S3) are planned in full in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md`. Every other later item is a design-level section; turn each into a full plan (same format as PR 1 or PR 3) just before it starts, against main as it is then.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PR 1 and PR 3 are written out in full, and PR 2 is a requirements-only section. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. PRs 14 to 19 (S5, S4 and S3) are planned in full in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md`, and PRs 7 to 11 and 13 (S1b, S1c, S1d and S13b) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s1-s13b.md`. Every other later item is a design-level section; turn each into a full plan (same format as PR 1 or PR 3) just before it starts, against main as it is then.
 
 **Goal:** The hub gives the phone (and the web and the TUI) the facts the redesign's Board, Session and Hub screens need, item by item in the roadmap's value order, so the phone can switch from each fallback as its addition lands.
 
@@ -46,11 +46,11 @@
 | 4 | The web rail and notifications read the approval flag | S2 | task | PR 3 |
 | 5 | Remote-host parity for questions and approvals (S2b) | S2 | task | PR 3 |
 | 6 | Approval action and target on rows (S1a) | S1 | task | PR 5 |
-| 7-8 | First pending question on rows (S1b: daemon, then hub) | S1 | design | PR 1 |
-| 9 | Failure summary on rows (S1c) | S1 | design | PR 2 |
-| 10-11 | Last agent message excerpt (S1d: daemon and meta, then hub) | S1 | design | PR 1 |
+| 7-8 | First pending question on rows (S1b: daemon, then hub) | S1 | full, in the S1-S13b plan | PR 1 |
+| 9 | Failure summary on rows (S1c) | S1 | full, in the S1-S13b plan | PR 2, PR 7; its hub tasks follow PR 8 |
+| 10-11 | Last agent message excerpt (S1d: daemon and meta, then hub) | S1 | full, in the S1-S13b plan | PR 1, PR 7; PR 11 also PR 9 |
 | 12 | Task progress for live local sessions (S13a) | S13 | task | PR 1 |
-| 13 | Task progress for remote-host sessions (S13b) | S13 | design | PR 12, PR 5 |
+| 13 | Task progress for remote-host sessions (S13b) | S13 | full, in the S1-S13b plan | PR 12, PR 5 |
 | 14-15 | Activity pulse (S5a daemon counters, S5b hub read) | S5 | full, in the S4-S5-S3 plan | none |
 | 16-17 | Seen-through marker (S4a turn-ended time, S4b store and method) | S4 | full, in the S4-S5-S3 plan | PR 1 |
 | 18-19 | Subagent tallies (S3a daemon counts, S3b rows) | S3 | full, in the S4-S5-S3 plan | PR 1 |
@@ -1277,36 +1277,31 @@ PR 3, "feat(hub): the approval flag on rows and attention (S2a, phase 7 PR 3)". 
 
 ---
 
-## S1b-S1d: The rest of the row "why" payload (design level)
+## S1b-S1d: The rest of the row "why" payload (PRs 7-11, full plan elsewhere)
 
-S1 is split three more ways because each part needs agent and daemon state the hub does not have (`askPending` carries no text, no error text reaches the hub, no excerpt is tracked; explorer report section 3). The documents-and-artifacts part waits for the shared-artifacts work.
+S1 is split three more ways because each part needs agent and daemon state the hub does not have (`askPending` carries no text, no error text reaches the hub, no excerpt is tracked; explorer report section 3). The documents-and-artifacts part waits for the shared-artifacts work. All three are planned in full, with their rulings, in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s1-s13b.md`, which also gives the phone lane the facts to switch off each fallback. Every string on a row is cut twice by one shared rule, `appwire.Excerpt` (one trimmed line of valid UTF-8, cut at a word break): by the daemon before it leaves the session and by the hub on projection, and the hub schema accepts exactly what the cut yields.
 
 ### S1b: The first pending question (PRs 7-8)
 
+- **Plan.** PRs 7 and 8, rulings 1 to 10.
 - **Adds.** "Question · keep or drop the implied options?" on the row, and the option labels for the long-press preview.
-- **Daemon (PR 7).** `askQuestion` keeps `Header` and `Question` only (`agent/session_tools_ask.go:33-36`); keep the option labels too, from the parse that already sees them (`:278-289`), in `s.askPending` and in `deriveRestoredAskPending`'s restore path. A new envelope field on `EvenerThread`: `PendingQuestion *PendingQuestion` with `{header, question, options []string, count int}`, where `count` is how many questions the ask holds ("Question 1 of 2"). It needs a new `ThreadEnvelopeSource` method, which `server/thread_envelope.go:112` calls a concurrency decision: sample it on the carriers that already move `AskPending` (the ask posted, answered or cleared), never on deltas. Deep-copy in `appwire/clone.go` (`cloneEvenerThread` `:104-117`).
-- **Hub (PR 8).** The StatusOnly root row carries it; the probe keeps it on `LiveEntry` (clone, fingerprint); a `TreeNode` field; the summary gains `question *NavigationQuestion{text, options, count}` with bounds text at most 512 runes, at most 5 options of at most 200 runes each, count at most 4. Codec nested record, fixture, `make generate`.
+- **Settled there.** `ThreadEnvelopeSource.AskPending()` becomes `PendingQuestion()`, and the envelope's `AskPending` is the question's presence, so the flag and the text come from one call and no new concurrency decision is needed. The row names the question itself, with no display header (spec 13.1's "Asks: <first question>"), and only while `ask_pending` is set. Bounds: text 200 runes, at most 5 labels of 80 runes; `count` is uncapped, since several `ask_user` calls can share a round.
 - **Fallback.** "Has a question"; the phone subscribes to the few Needs you sessions.
-- **Tests.** Agent: labels kept live and after restore. Server: the StatusOnly row carries the question and it clears on answer. Hub: prober wire test, fingerprint, navigation test, schema bounds, codec.
-- **Open questions.** None that change behavior; the text a row shows is the first question, per spec 7.2.
 
 ### S1c: The failure summary (PR 9)
 
+- **Plan.** PR 9, rulings 11 to 16.
 - **Adds.** "Failed · codex-jesse-fsck.com sign-in expired (401)" on a Failed row.
-- **Daemon.** After PR 2 the failure is the newest `TurnFailure` in the history, which carries `TurnFailureInfo{Message, Title, Hint, Cause{Kind, Provider, Model, Status}}` (`agent/schema/turn.go:135-180`). A new envelope field, `EvenerThread.Failure *ThreadFailure{title, message, causeKind, provider}`, present exactly when the resting wire state is `systemError` and derived from the history the same way (one function beside `historyEndsInTurnFailure`), so it agrees across a restart.
-- **Hub.** The probe keeps it; the summary gains `failure *NavigationFailure{title, message, cause_kind, provider}` with title and message at most 200 runes. A crashed daemon (`Crashed: true`) carries `cause_kind: "crashed"` from the hub so the phone can say so.
+- **Settled there.** The summary is the classifier's title and the structured cause, never the failure's message, which can quote a provider's error body (ruling 12); on rows, `failure {title, cause_kind, provider, status}`, where `status` lets S11 tell an expired sign-in (401 or 403). It is derived under the lock and condition `RestingWireState` uses, so it shows exactly while the status is systemError and survives a restore. A crashed daemon's rows carry `cause_kind: "crashed"` from the hub, and a coordinator's row never names a subagent's failure (Jesse's answer 12).
 - **Fallback.** A bare "Failed".
-- **Tests.** Agent: the envelope carries the failure after a failed turn, clears on the next turn, and survives a restore. Hub: probe, fingerprint, navigation, schema, codec.
 - **Open questions.** None; it feeds S11's sign-in notices.
 
 ### S1d: The last agent message excerpt (PRs 10-11)
 
-- **Adds.** The Finished row's why line: the opening of the last agent message, about 200 characters, in the reading serif (spec 7.2).
-- **Daemon and meta (PR 10).** Track the last completed assistant message of the last turn (the result tool's text or a plain final response); the loop's `lastText` is turn-local today (`agent/session_lifecycle.go:2176`, `:2330`). Carry it on the envelope (`EvenerThread.LastMessage *MessageExcerpt{text, at}`), and persist it in `SessionMeta` at turn end so ended sessions have it without a transcript read.
-- **Hub (PR 11).** Live rows from the probe, ended rows from the meta; the summary gains `last_message` (at most 200 runes, cut at a word boundary on the daemon side).
+- **Plan.** PRs 10 and 11, rulings 17 to 24.
+- **Adds.** The Finished row's why line: the opening of the last agent message, about 200 characters (spec 18), in the reading serif (spec 7.2).
+- **Settled there.** The session records the opening of each agent message as it writes it (an assistant response's last text part, or a delivered communicate message), so compaction never folds it away, and persists it in `SessionMeta.LastMessage`. It rides the envelope's meta facet as a plain string, `lastMessage`, with no timestamp of its own: the row's `turn_ended_at` dates it. It carries only the agent's own words, never reasoning or a tool's output (ruling 20). The byte-budget question is settled without the fitter: rows carry it for top-level sessions only, live and ended, at most 150 per project resource, about 120 KB of the 2 MiB cap at worst; subagent rows carry none (ruling 21).
 - **Fallback.** Generic copy.
-- **Tests.** Agent: excerpt after a clean turn, updated by the next, persisted in meta, survives restore. Hub: probe, past-index meta, navigation, schema, codec.
-- **Open question.** Byte budget: 2,000 rows times 200 runes is about 400 KB, inside the 2 MiB response cap (`maxNavigationResponseBytes`) but worth measuring with `fitNavigationSection`. If it crowds the fitter, carry the excerpt only on live rows.
 
 ### Documents and artifacts named in the final message
 
@@ -1343,12 +1338,12 @@ type NavigationTaskProgress struct {
 
 ---
 
-## S13b: Task progress for remote-host sessions (PR 13, design level)
+## S13b: Task progress for remote-host sessions (PR 13, full plan elsewhere)
 
+- **Plan.** Written in full in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s1-s13b.md` (PR 13, ruling 25).
 - **Adds.** The task line on sessions running on another host.
-- **Build points.** The PR 5 pattern: `LocalDaemonEntry.Tasks`, `threadFromEntry` emits `Evener.Tasks`, `appThreadTreeEntries` reads it.
+- **Build points.** The PR 5 pattern: `LocalDaemonEntry.Tasks`, `threadFromEntry` emits `Evener.Tasks`, `appThreadTreeEntries` reads it. The tree needs no change (`tasksFor` reads the live entry), and the remote cache compares whole rows, so no fingerprint change either.
 - **Fallback.** No task line on remote rows.
-- **Tests.** A `threadFromEntry` test, `appThreadTreeEntries` carries it, a remote-row navigation test.
 - **Open questions.** Ended sessions stay without a task line: `persistedTaskAggregate` costs a disk read per session (`app_threadread.go:945-965`), and a Board row for an ended session is a quiet one-line row anyway.
 
 ---
