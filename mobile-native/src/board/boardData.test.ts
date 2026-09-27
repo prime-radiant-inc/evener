@@ -566,6 +566,21 @@ it("a failed first read reports its error and stays unloaded", async () => {
 	expect(board.getSnapshot().loaded).toBe(false);
 });
 
+it("says it's reading while any read is out, the manifest's included", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	expect(board.getSnapshot().reading).toBe(true);
+	answer(hub, "live", { sessions: sessions("live-", 2), remaining: 0 });
+	answer(hub, "needs_you", { sessions: [], remaining: 0 });
+	answer(hub, "pin_catalog", { pin_sections: [], remaining: 0 });
+	await tick();
+	expect(board.getSnapshot().reading).toBe(true);
+	answer(hub, "manifest", manifest({ sources }));
+	await tick();
+	expect(board.getSnapshot().reading).toBe(false);
+});
+
 it("a failed manifest read reports its error", async () => {
 	const hub = boundary();
 	const board = createBoardController();

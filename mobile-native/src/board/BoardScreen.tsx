@@ -384,17 +384,16 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 function useReadRetry(
 	board: BoardController,
 	client: ConversationClientLike | null,
-	snapshot: Pick<BoardSnapshot, "live" | "needsYou" | "pins" | "loaded" | "retained" | "error">,
+	snapshot: Pick<BoardSnapshot, "loaded" | "retained" | "reading" | "error">,
 ) {
 	const [retries, setRetries] = useState({ client, count: 0 });
 	const count = retries.client === client ? retries.count : 0;
-	const reading = snapshot.live.loading || snapshot.needsYou.loading || snapshot.pins.loading;
-	const failed = snapshot.error !== null && !reading;
+	const failed = snapshot.error !== null && !snapshot.reading;
 	// Only fresh reads that settled count as success: the Board has loaded
 	// and shows nothing retained, with no error and no read in flight. A read
 	// a pause cancelled leaves no error and no loading flag, but it never
 	// lands, so its page stays unloaded or retained.
-	const succeeded = snapshot.loaded && !snapshot.retained && snapshot.error === null && !reading;
+	const succeeded = snapshot.loaded && !snapshot.retained && snapshot.error === null && !snapshot.reading;
 	useEffect(() => {
 		if (client && succeeded && count > 0) setRetries({ client, count: 0 });
 	}, [client, count, succeeded]);

@@ -27,6 +27,9 @@ export interface BoardSnapshot {
 	/** True while the rows shown were read over an earlier connection and the
 	 * current one hasn't replaced them yet. */
 	retained: boolean;
+	/** True while any of the Board's reads (Live, Needs you, the pin catalog
+	 * or the manifest) is out. */
+	reading: boolean;
 	error: string | null;
 }
 export interface BoardController {
@@ -50,6 +53,7 @@ const MANIFEST_KEY = navigationParamsToResourceKey(MANIFEST_PARAMS);
 interface ManifestState {
 	manifest: NavigationManifest | null;
 	loaded: boolean;
+	loading: boolean;
 	error: string | null;
 }
 
@@ -58,11 +62,10 @@ interface ManifestState {
  * read, which is dropped when the read already returned every revision they
  * announced. */
 class ManifestReader {
-	state: ManifestState = { manifest: null, loaded: false, error: null };
+	state: ManifestState = { manifest: null, loaded: false, loading: false, error: null };
 	/** Bumped by every read and by pause, so an abandoned read's late answer
 	 * is dropped. */
 	private request = 0;
-	private loading = false;
 	/** A read is owed: the first one, or one an invalidation asked for that no
 	 * landed read has covered yet. */
 	private owed = false;
@@ -94,10 +97,10 @@ class ManifestReader {
 	 * may never answer it. */
 	pause() {
 		this.paused = true;
-		if (!this.loading) return;
+		if (!this.state.loading) return;
 		this.request++;
-		this.loading = false;
 		this.owed = true;
+		this.publish({ loading: false });
 	}
 	/** Catch up on invalidations held while paused, and retry a read that
 	 * never landed or failed. A failed read doesn't re-arm itself, which
@@ -135,14 +138,14 @@ class ManifestReader {
 		this.drain();
 	}
 	private drain() {
-		if (!this.owed || this.loading || this.paused || this.disposed) return;
+		if (!this.owed || this.state.loading || this.paused || this.disposed) return;
 		this.owed = false;
 		void this.fetch();
 	}
 	private async fetch() {
 		const request = ++this.request;
 		const seen = this.invalidations;
-		this.loading = true;
+		this.publish({ loading: true });
 		try {
 			const wire = await this.client.request(
 				"evener/navigation/read",
@@ -165,21 +168,20 @@ class ManifestReader {
 					decoded,
 				) as unknown as NavigationManifest,
 				loaded: true,
+				loading: false,
 				error: null,
 			});
 		} catch (cause) {
 			if (request !== this.request) return;
 			this.publish({
+				loading: false,
 				error:
 					cause instanceof Error
 						? cause.message
 						: "Could not read the hub's navigation.",
 			});
 		} finally {
-			if (request === this.request) {
-				this.loading = false;
-				this.drain();
-			}
+			if (request === this.request) this.drain();
 		}
 	}
 	private publish(change: Partial<ManifestState>) {
@@ -261,6 +263,12 @@ export function createBoardController(): BoardController {
 			retained.needsYou !== null ||
 			retained.pins !== null ||
 			retained.manifest !== null,
+		reading: readers
+			? readers.live.getSnapshot().loading ||
+				readers.needsYou.getSnapshot().loading ||
+				readers.pins.getSnapshot().loading ||
+				readers.manifest.state.loading
+			: false,
 		error: readers
 			? (readers.live.getSnapshot().error ??
 				readers.needsYou.getSnapshot().error ??

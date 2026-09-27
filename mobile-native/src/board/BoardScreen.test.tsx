@@ -765,6 +765,31 @@ it("retries a failed pin catalog read once Live's read is done, without saying a
 	act(() => tree.unmount());
 });
 
+it("waits for a manifest read that's still out before it retries", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let holdManifest = true;
+	let needsYouFails = true;
+	const fake = hub(
+		fleet,
+		(read) => holdManifest && read.resource === "manifest",
+		(read) => needsYouFails && read.section === "needs_you",
+	);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const manifestReads = () => fake.requests.filter((read) => read.resource === "manifest").length;
+	// A retry now would rebind, and cancel the manifest read that's still out.
+	await advance(60_000);
+	expect(manifestReads()).toBe(1);
+	holdManifest = false;
+	needsYouFails = false;
+	fake.release();
+	await settle();
+	await advance(1000);
+	expect(fake.requests.filter((read) => read.section === "needs_you")).toHaveLength(2);
+	act(() => tree.unmount());
+});
+
 it("retries a failed Needs you read while the Board is in view, so first run completes", async () => {
 	const id = hubId();
 	let needsYouFails = true;
