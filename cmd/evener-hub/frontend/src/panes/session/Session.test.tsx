@@ -3258,6 +3258,7 @@ test("confirmed force stop refreshes the session and exposes explicit Resume", a
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   const resume = await screen.findByRole("button", { name: "Resume session" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   await user.click(resume);
   await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("idle"));
@@ -3862,6 +3863,7 @@ test.each(["idle", "active"])(
       await openForceStopDialog(user);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
       ]);
