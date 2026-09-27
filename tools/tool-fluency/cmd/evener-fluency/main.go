@@ -34,6 +34,7 @@ import (
 	"primeradiant.com/evener/execsupport/procgroup"
 	"primeradiant.com/evener/llm"
 	_ "primeradiant.com/evener/llm/providers/all"
+	"primeradiant.com/evener/llm/registry"
 )
 
 var exitProcess = os.Exit
@@ -101,7 +102,11 @@ func runCatalog(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	tools, err := catalogTools(*model)
+	reg, err := runnerLoadRegistry()
+	if err != nil {
+		return fmt.Errorf("provider registry: %w", err)
+	}
+	tools, err := catalogTools(reg, *model)
 	if err != nil {
 		return err
 	}
@@ -116,15 +121,23 @@ func runCatalog(args []string) error {
 	return nil
 }
 
-func catalogTools(modelRef string) ([]catalogTool, error) {
+// runnerLoadRegistry loads the provider registry a run resolves its model on:
+// the one evener itself loads, with the user's configured providers, so the
+// runner reads a run the way evener ran it. TestMain replaces it with the
+// embedded registry, so default tests never read a developer's configuration.
+var runnerLoadRegistry = func() (*registry.Registry, error) {
+	r, _, err := cmdutil.LoadRegistry()
+	return r, err
+}
+
+// catalogTools lists the tools evener offers the model, resolved on reg. The
+// catalog needs only the model's profile: no credentials and no network.
+func catalogTools(reg *registry.Registry, modelRef string) ([]catalogTool, error) {
 	providerName, modelName, err := splitModelRef(modelRef)
 	if err != nil {
 		return nil, err
 	}
-	// The catalog is what a model of this shape is offered, so it resolves on
-	// the embedded registry: no credentials, no network, and no dependence on
-	// whatever the developer happens to have configured.
-	profile, err := provider.Resolve(provider.EmbeddedRegistry(), providerName+"/"+modelName)
+	profile, err := provider.Resolve(reg, providerName+"/"+modelName)
 	if err != nil {
 		return nil, err
 	}
@@ -364,11 +377,15 @@ func runSuiteWithConfig(cfg runConfig) error {
 	// so a scoped request never silently balloons into the full set without
 	// the caller seeing it named. See kata 73cb(a).
 	fmt.Fprint(os.Stderr, selectionSummary(cfg, probes))
-	wireNames, err := wireNameToCanonicalForModel(cfg.model)
+	reg, err := runnerLoadRegistry()
+	if err != nil {
+		return fmt.Errorf("provider registry: %w", err)
+	}
+	wireNames, err := wireNameToCanonicalForModel(reg, cfg.model)
 	if err != nil {
 		return err
 	}
-	catalog, err := catalogTools(cfg.model)
+	catalog, err := catalogTools(reg, cfg.model)
 	if err != nil {
 		return err
 	}
@@ -521,10 +538,8 @@ type probeMetrics struct {
 // source of truth the renderer renamed tools with. A hand-maintained copy
 // here would silently misclassify metrics the day a profile gains or
 // changes a rename (roborev Medium on f5e1017).
-func wireNameToCanonicalForModel(modelRef string) (map[string]string, error) {
-	// Resolve on the embedded registry, like catalogTools: no credentials,
-	// no network, and no dependence on developer configuration.
-	profile, err := provider.Resolve(provider.EmbeddedRegistry(), modelRef)
+func wireNameToCanonicalForModel(reg *registry.Registry, modelRef string) (map[string]string, error) {
+	profile, err := provider.Resolve(reg, modelRef)
 	if err != nil {
 		return nil, err
 	}
