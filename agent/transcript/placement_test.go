@@ -196,3 +196,20 @@ func TestPreludeSurvivesAResumeBetweenHeaderAndTail(t *testing.T) {
 		t.Fatalf("a new transcript's first entry is in turn %q (%s), want the prelude", p.TurnID, p.TurnKind)
 	}
 }
+
+func TestPlaceInTurnRefusesAnEmptyTurnID(t *testing.T) {
+	w := newPlacementWriter(t)
+	r, err := w.Record(steeringTurn("x"), RecordOptions{Door: DoorBuffered, Place: PlaceInTurn("")})
+	if err == nil || r.Recorded {
+		t.Fatalf("an entry placed in an unnamed turn = %+v, %v; want refused", r, err)
+	}
+}
+
+func TestBeginExecutionIgnoresAnEmptyTurnID(t *testing.T) {
+	w := newPlacementWriter(t)
+	w.BeginExecution("turn_m1", false)
+	w.BeginExecution("", false)
+	if got := w.RunningTurnID(); got != "turn_m1" {
+		t.Fatalf("running = %q after an unnamed BeginExecution, want turn_m1", got)
+	}
+}

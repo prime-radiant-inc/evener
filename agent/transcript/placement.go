@@ -1,6 +1,7 @@
 package transcript
 
 import (
+	"errors"
 	"fmt"
 
 	"primeradiant.com/evener/agent/schema"
@@ -109,6 +110,9 @@ func (state *turnPlacement) place(turn *schema.Turn, p Placement) (skip bool, er
 		state.running.join(turn, schema.TurnSpanExecution)
 		state.running = openTurn{}
 	case placeInTurn:
+		if p.turnID == "" {
+			return false, errors.New("place transcript entry: no turn named")
+		}
 		stamp(turn, p.turnID, "")
 	case placeAsync, placeDelivery:
 		if p.mode == placeAsync && state.running.id != "" {
@@ -164,9 +168,9 @@ func newTurnID() (string, error) {
 // do asynchronous writes. It ends the prelude and closes the open gap. reopen
 // marks a turn recovery reclaimed and runs again under its old ID: its
 // TurnKind is already recorded, so no entry of the new span restamps it.
-// Nil-safe, like the append doors.
+// Nil-safe, like the append doors, and an empty turnID changes nothing.
 func (w *Writer) BeginExecution(turnID string, reopen bool) {
-	if w == nil || w.tail == nil {
+	if w == nil || w.tail == nil || turnID == "" {
 		return
 	}
 	w.tail.mu.Lock()
