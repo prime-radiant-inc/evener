@@ -784,6 +784,19 @@ it("reads the hub's sign-ins and plugins when it gets a client, and their answer
 	expect(board.getSnapshot().plugins).toEqual([brokenPlugin("superpowers")]);
 });
 
+it("reads a list the hub sends as null as an empty list", async () => {
+	// Go's encoding/json sends a nil slice as null: a hub listing no
+	// providers answers evener/auth/list with {"providers": null}.
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	next(hub, "auth").resolve({ providers: null } as never);
+	next(hub, "plugins").resolve({ plugins: null } as never);
+	await tick();
+	expect(board.getSnapshot().auth).toEqual([]);
+	expect(board.getSnapshot().plugins).toEqual([]);
+});
+
 it("re-reads the sign-ins on any auth update, and only the sign-ins", async () => {
 	const hub = boundary();
 	const board = createBoardController();

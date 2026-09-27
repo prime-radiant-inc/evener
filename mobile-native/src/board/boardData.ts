@@ -488,7 +488,8 @@ export function createBoardController(): BoardController {
 			"auth",
 			() => bound.client.request("evener/auth/list", {}),
 			(result) => {
-				auth = unlessSame(auth, result.providers);
+				// Go sends an empty (nil) slice as null.
+				auth = unlessSame(auth, result.providers ?? []);
 			},
 		);
 	const readPlugins = (bound: Readers) =>
@@ -497,7 +498,7 @@ export function createBoardController(): BoardController {
 			"plugins",
 			() => bound.client.request("evener/plugin/list", {}),
 			(result) => {
-				plugins = unlessSame(plugins, result.plugins);
+				plugins = unlessSame(plugins, result.plugins ?? []);
 			},
 		);
 	const stopPluginPoll = (bound: Readers) => {
