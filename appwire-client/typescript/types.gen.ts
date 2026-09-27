@@ -2120,6 +2120,19 @@ export interface NavigationSessionSummary {
   more_subagents?: number;
   omitted_descendants?: number;
   /**
+   * TurnEndedAt is when a live session's last turn ended, stamped by its
+   * daemon (S4). It is present only on a live row whose daemon reported one.
+   * A client that marks the row seen echoes it back as seenThrough.
+   */
+  turn_ended_at?: string;
+  /**
+   * Unseen marks a live row whose last turn ended after the hub's
+   * seen-through marker for it, or that was marked unread (S4): Finished on
+   * the Board, and Idle when absent. It is only ever set on a row that
+   * carries TurnEndedAt.
+   */
+  unseen?: boolean;
+  /**
    * OmittedWatches counts live-watch rows this session's summary does not
    * carry: rows beyond the projector's per-session cap, rows it could not
    * represent, and rows the byte-budget fitter shed. It mirrors
