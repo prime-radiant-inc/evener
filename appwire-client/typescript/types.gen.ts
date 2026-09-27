@@ -2142,6 +2142,19 @@ export interface NavigationSessionSummary {
   subagents?: NavigationSubagentTally;
   omitted_descendants?: number;
   /**
+   * TurnEndedAt is when a live session's last turn ended, stamped by its
+   * daemon (S4). It is present only on a live row whose daemon reported one.
+   * A client that marks the row seen echoes it back as seenThrough.
+   */
+  turn_ended_at?: string;
+  /**
+   * Unseen marks a live row whose last turn ended after the hub's
+   * seen-through marker for it, or that was marked unread (S4): Finished on
+   * the Board, and Idle when absent. It is only ever set on a row that
+   * carries TurnEndedAt.
+   */
+  unseen?: boolean;
+  /**
    * OmittedWatches counts live-watch rows this session's summary does not
    * carry: rows beyond the projector's per-session cap, rows it could not
    * represent, and rows the byte-budget fitter shed. It mirrors
@@ -2644,6 +2657,22 @@ export interface SessionPinUnpinResponse {
   ok: boolean;
   changed: boolean;
   assignment: SessionPinUnpinAssignment;
+  navigation: NavigationMutation;
+}
+
+export interface SessionSeenMark {
+  ref: string;
+  seenThrough?: number;
+  unread?: boolean;
+}
+
+export interface SessionSeenSetParams {
+  sessions: SessionSeenMark[];
+}
+
+export interface SessionSeenSetResponse {
+  ok: boolean;
+  changed: boolean;
   navigation: NavigationMutation;
 }
 
@@ -3694,6 +3723,7 @@ export const METHOD_NAMES = [
   "evener/pin-section/delete",
   "evener/session-pin/assign",
   "evener/session-pin/unpin",
+  "evener/session/seen/set",
   "evener/search",
   "evener/activity/read",
   "evener/harnesses/list",
@@ -3908,6 +3938,7 @@ export interface MethodTypes {
   "evener/pin-section/delete": { params: PinSectionDeleteParams; result: PinSectionDeleteResponse };
   "evener/session-pin/assign": { params: SessionPinAssignParams; result: SessionPinAssignResponse };
   "evener/session-pin/unpin": { params: SessionPinUnpinParams; result: SessionPinUnpinResponse };
+  "evener/session/seen/set": { params: SessionSeenSetParams; result: SessionSeenSetResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/activity/read": { params: ActivityReadParams; result: ActivityReadResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };

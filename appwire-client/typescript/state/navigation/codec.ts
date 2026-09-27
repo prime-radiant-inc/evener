@@ -175,6 +175,8 @@ const SESSION_KEYS = valueRecordKeys(
     "dormant",
     "offline",
     "updated_at",
+    "turn_ended_at",
+    "unseen",
     "more_subagents",
     "subagents",
     "omitted_descendants",
@@ -329,6 +331,8 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.dormant, bool) &&
     optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&
+    optional(value.turn_ended_at, rfc3339Timestamp) &&
+    optional(value.unseen, bool) &&
     optional(value.more_subagents, count) &&
     optional(value.subagents, subagentTallyValue) &&
     optional(value.omitted_descendants, count) &&

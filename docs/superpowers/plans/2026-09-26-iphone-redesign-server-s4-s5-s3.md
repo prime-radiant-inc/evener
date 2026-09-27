@@ -4021,11 +4021,11 @@ git commit -m "feat(agent): a root session tallies its whole delegate tree by st
 ### Task 18.2: The root row carries the tally
 
 **Files:**
-- Modify: `appwire/types.go` (`EvenerThread.Subagents`, at the end of `EvenerThread`, `:822`)
-- Modify: `appwire/clone.go` (`cloneSubagentTally`; one line in `cloneEvenerThread`, `:104-117`)
+- Modify: `appwire/types.go` (`EvenerThread.Subagents`, at the end of `EvenerThread`, `:838`)
+- Modify: `appwire/clone.go` (one line in `cloneEvenerThread`, reusing the existing `clonePointer` helper; `:102`)
 - Modify: `appwire/clone_test.go`
-- Modify: `server/server.go` (`Server`: `appSubagentTallyFunc` after `appDescendantLiveWatchesFunc`, `:393-400`)
-- Modify: `server/appwire_runtime.go` (`SetSubagentTallyFunc` after `SetDescendantLiveWatchesFunc`, `:383-387`; `attachSubagentTally` after `attachLiveWatches`, `:2712-2731`; one call in `handleAppThreadList`, `:1293-1325`)
+- Modify: `server/server.go` (`Server`: `appSubagentTallyFunc` after `appDescendantLiveWatchesFunc`, `:404-406`)
+- Modify: `server/appwire_runtime.go` (`SetSubagentTallyFunc` after `SetDescendantLiveWatchesFunc`, `:390-399`; `attachSubagentTally` after `attachLiveWatches`, `:2758-2774`; one call in `handleAppThreadList`, `:1312-1348`)
 - Create: `server/appwire_subagent_tally_test.go`
 - Modify: `cmd/evener/serve.go` (`serveServer`: `SetSubagentTallyFunc` after `SetDescendantLiveWatchesFunc`, `:146`; one line in `bridgeSession` after the live-watches seam, `:1308-1310`)
 - Modify: `cmd/evener/serve_state_test.go` (`clearIdentityServer` `:767-778` records the installed tally)
@@ -4174,17 +4174,7 @@ Expected: FAIL to compile (`SetSubagentTallyFunc` and `EvenerThread.Subagents` u
 	Subagents *SubagentTally `json:"subagents,omitempty"`
 ```
 
-`appwire/clone.go`: in `cloneEvenerThread` after `e.FailedToolCalls = cloneInt(e.FailedToolCalls)`: `e.Subagents = cloneSubagentTally(e.Subagents)`; and after `cloneEvenerUsage`:
-
-```go
-func cloneSubagentTally(value *SubagentTally) *SubagentTally {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-```
+`appwire/clone.go`: in `cloneEvenerThread` after `e.FailedToolCalls = clonePointer(e.FailedToolCalls)`: `e.Subagents = clonePointer(e.Subagents)`, reusing the file's existing generic `clonePointer[T any]` helper (`:110`); no new clone function is needed.
 
 `server/server.go`, after `appDescendantLiveWatchesFunc`:
 
@@ -4212,26 +4202,26 @@ func (s *Server) SetSubagentTallyFunc(fn func() (appwire.SubagentTally, bool)) {
 after `attachLiveWatches`:
 
 ```go
-// attachSubagentTally stamps the root row (data[0]) with its tree's subagent
+// attachSubagentTally stamps the root row with its tree's subagent
 // tally. A nested delegate's lifecycle change is emitted on its owner's stream
 // and never samples the root's envelope, so the tally is read when the row is
 // listed rather than cached. A tree with no subagent carries none.
-func (s *Server) attachSubagentTally(data []appwire.Thread) {
+func (s *Server) attachSubagentTally(root *appwire.Thread) {
 	s.mu.RLock()
 	fn := s.appSubagentTallyFunc
 	s.mu.RUnlock()
-	if fn == nil || len(data) == 0 {
+	if fn == nil {
 		return
 	}
 	tally, ok := fn()
-	if !ok || tally.Running+tally.Failed+tally.Done == 0 {
+	if !ok || tally == (appwire.SubagentTally{}) {
 		return
 	}
-	data[0].Evener.Subagents = &tally
+	root.Evener.Subagents = &tally
 }
 ```
 
-and in `handleAppThreadList`, after `s.attachLiveWatches(data)`: `s.attachSubagentTally(data)`.
+and in `handleAppThreadList`, after `s.attachLiveWatches(data)`: `s.attachSubagentTally(&data[0])`.
 
 `cmd/evener/serve.go`: in `serveServer` after `SetDescendantLiveWatchesFunc(...)`, add `SetSubagentTallyFunc(func() (appwire.SubagentTally, bool))`; in `bridgeSession`, after the `srv.SetDescendantLiveWatchesFunc(...)` call:
 

@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
@@ -80,9 +81,10 @@ type WebConfig struct {
 	NoUserLayer         bool              // EVENER_PROVIDERS_CONFIG is present and empty: no user layer at all (spec §10). A file that fails to load adds to this per call; it is not folded in here.
 	APILogDefault       bool              // hub.toml api_log floor for hub-spawned daemons; applied when no launch layer sets api_log
 
-	Archive     *ArchiveStore    // archive decision store; nil when not configured (tree uses empty decisions)
-	Favorite    *FavoriteStore   // favorite decision store; nil when not configured
-	PinSections *PinSectionStore // named pin-section store; nil when not configured
+	Archive     *ArchiveStore     // archive decision store; nil when not configured (tree uses empty decisions)
+	Favorite    *FavoriteStore    // favorite decision store; nil when not configured
+	PinSections *PinSectionStore  // named pin-section store; nil when not configured
+	SessionSeen *SessionSeenStore // per-session seen-through markers (S4); nil when not configured
 
 	Inputs *InputsVersion // shared inputs-version counter; nil in tests (memo treats as version 0)
 
@@ -116,6 +118,12 @@ type WebConfig struct {
 	// registry spec 08 §6 — so UI-added and UI-edited hosts live in it; empty
 	// disables host persistence (the surface stays memory-only).
 	RemoteHostConfigPath string
+	// RemoteHostOpsStore is the operation store the host-management surface
+	// mirrors each hub.toml commit's per-host boundary record into (registry
+	// spec 08 §7). nil (tests, embedders) disables mirroring; the mirror is a
+	// copy of hub.toml's machine records, never their authority, so a hub
+	// without it still commits and loads hosts.
+	RemoteHostOpsStore *hostops.Store
 	// RemoteHostClient returns an attached, initialized AppWire client for a
 	// remote host, attaching over SSH on first use (component 04). nil
 	// disables remote hosts (tests).

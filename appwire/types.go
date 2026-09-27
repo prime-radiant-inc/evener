@@ -84,6 +84,7 @@ const (
 	MethodEvenerPinSectionDelete         = "evener/pin-section/delete"
 	MethodEvenerSessionPinAssign         = "evener/session-pin/assign"
 	MethodEvenerSessionPinUnpin          = "evener/session-pin/unpin"
+	MethodEvenerSessionSeenSet           = "evener/session/seen/set"
 	MethodEvenerSearch                   = "evener/search"
 	MethodEvenerActivityRead             = "evener/activity/read"
 	MethodEvenerHarnessesList            = "evener/harnesses/list"
@@ -581,6 +582,32 @@ type SessionPinUnpinResponse struct {
 	Changed    bool                      `json:"changed"`
 	Assignment SessionPinUnpinAssignment `json:"assignment"`
 	Navigation NavigationMutation        `json:"navigation"`
+}
+
+// SessionSeenSetParams marks sessions seen or unread on the hub (S4), so the
+// Board's Finished and Idle agree on every device.
+type SessionSeenSetParams struct {
+	Sessions []SessionSeenMark `json:"sessions"`
+}
+
+// SessionSeenMark is one session's mark, addressed by the ref its row carries.
+// It sets exactly one of SeenThrough and Unread. SeenThrough is the row's own
+// turn_ended_at in Unix milliseconds, the turn the client showed, never a
+// client clock; the hub keeps the newest it has been sent. Unread is "Mark as
+// unread", which lasts until the next SeenThrough mark.
+type SessionSeenMark struct {
+	Ref         string `json:"ref"`
+	SeenThrough int64  `json:"seenThrough,omitempty"`
+	Unread      bool   `json:"unread,omitempty"`
+}
+
+// SessionSeenSetResponse acknowledges the marks. Changed reports whether any
+// mark moved a stored marker; Navigation carries the committed invalidation
+// targets, empty when nothing changed.
+type SessionSeenSetResponse struct {
+	OK         bool               `json:"ok"`
+	Changed    bool               `json:"changed"`
+	Navigation NavigationMutation `json:"navigation"`
 }
 
 // SearchParams selects matching live and past sessions for the hub command
