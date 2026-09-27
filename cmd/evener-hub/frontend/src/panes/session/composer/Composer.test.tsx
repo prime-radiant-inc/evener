@@ -2571,12 +2571,12 @@ test("an explicit rejection returns to the sole Composer textarea", async () => 
 });
 
 test("an occupied Composer is not overwritten by a later rejection", async () => {
+  const requested = deferred<string>();
   const rejection = deferred<never>();
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });
-  let clientMutationId = "";
   fake.on("turn/start", (params) => {
-    clientMutationId = String(params.clientMutationId);
+    requested.resolve(String(params.clientMutationId));
     return rejection.promise;
   });
 
@@ -2585,6 +2585,10 @@ test("an occupied Composer is not overwritten by a later rejection", async () =>
   await user.click(submitButton());
   await waitFor(() => expect(editor.textContent).toBe(""));
   await user.type(editor, "cw");
+  // The draft clears at the local commit, and the dispatcher sends turn/start
+  // a few IndexedDB steps later, so the rejection waits for the request it
+  // answers. Rejected any earlier, it names no mutation and settles nothing.
+  const clientMutationId = await act(() => requested.promise);
   act(() => rejection.reject(notAcceptedError(clientMutationId)));
 
   await waitFor(() => expect(screen.getByText("rd")).toBeTruthy());
