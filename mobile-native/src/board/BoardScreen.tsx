@@ -118,17 +118,18 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	const usual = useMemo(() => usualPlace(snapshot.live.rows), [snapshot.live.rows]);
 	const sources = snapshot.manifest?.sources;
-	// An offline host counts its sessions on the Live and Needs you pages
-	// loaded so far; pinned categories join when the Board loads them.
+	// Every session row the Board has loaded so far, from any section.
+	const loadedRows = useMemo(
+		() => [
+			...snapshot.live.rows,
+			...snapshot.needsYou.rows,
+			...Object.values(snapshot.pinSections).flatMap((page) => page.rows),
+		],
+		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections],
+	);
 	const hubNotices = useMemo(
-		() =>
-			notices({
-				auth: snapshot.auth,
-				sources: sources ?? [],
-				plugins: snapshot.plugins,
-				loadedRows: [...snapshot.live.rows, ...snapshot.needsYou.rows],
-			}),
-		[snapshot.auth, sources, snapshot.plugins, snapshot.live.rows, snapshot.needsYou.rows],
+		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
+		[snapshot.auth, sources, snapshot.plugins, loadedRows],
 	);
 	const hostLabel = useMemo(() => {
 		const labels = new Map((sources ?? []).map((source) => [source.id, source.label]));
@@ -189,8 +190,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// it's marked seen with the row's own hub timestamp. A session the Board
 	// doesn't list has no Finished state to clear.
 	const openResult = (result: { ref: string; title: string }) => {
-		const listed = (row: NavigationSessionSummary) => row.ref === result.ref;
-		const row = snapshot.live.rows.find(listed) ?? snapshot.needsYou.rows.find(listed);
+		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
 		if (row) openSession(row);
 		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
 	};

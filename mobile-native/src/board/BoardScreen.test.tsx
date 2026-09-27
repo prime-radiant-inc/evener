@@ -965,6 +965,25 @@ it("holds a scope picked before you type", async () => {
 	act(() => tree.unmount());
 });
 
+it("opens a result only a pinned category lists the way the Board opens its row, marking it seen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	// Not live, so search finds it among past sessions.
+	const pinnedOnly = session("local:pinned", { title: "Pinned draft", live: false, updated_at: minutesAgo(10) });
+	const shape = { ...fleet, pinned: { ...fleet.pinned, "pins-1": [pinnedOnly] }, searchOnly: [pinnedOnly] };
+	connect(id, hub(shape).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(seenMarkers(id).isSeen(pinnedOnly)).toBe(false);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("pinned");
+	act(() => resultTitled(tree, "Pinned draft").props.onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:pinned", title: "Pinned draft" });
+	expect(seenMarkers(id).isSeen(pinnedOnly)).toBe(true);
+	act(() => tree.unmount());
+});
+
 it("says a failed search failed, and never asks you to retry", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -1759,5 +1778,20 @@ it("says nothing when the sign-in and plugin reads fail, and doesn't retry the B
 	const reads = fake.requests.length;
 	await advance(60_000);
 	expect(fake.requests).toHaveLength(reads);
+	act(() => tree.unmount());
+});
+
+it("counts an offline host's sessions from every section the Board loaded, each once", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape = troubledFleet();
+	const stuck = shape.needsYou.find((row) => row.ref === "studio:stuck");
+	const kept = session("studio:kept", { host_id: "studio", title: "Kept on the studio", live: false });
+	// A category loads one of the host's sessions no other section has, and
+	// one Live and Needs you already count.
+	shape.pinned = { ...shape.pinned, "pins-1": [kept, ...(stuck ? [stuck] : [])] };
+	connect(id, hub(shape).client, "ready");
+	const tree = await mount(navigation());
+	expect(noticeTexts(tree)).toContain("Studio Mac is offline · 3 sessionsDetails");
 	act(() => tree.unmount());
 });
