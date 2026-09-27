@@ -13,8 +13,13 @@ import {
   type NavigationWatchSummary,
   type Source,
 } from "@evener/appwire-client";
-import { projectNodeExpansionKey } from "@evener/appwire-client/state/navigation";
-import { LOCAL_HOST } from "../../stores/hostRouting";
+import {
+  canonicalHostId,
+  orderedHosts,
+  projectHostIds as ownerHostIds,
+  projectNodeExpansionKey,
+  sessionGroupHostId,
+} from "@evener/appwire-client/state/navigation";
 
 export type TreeTier = "current" | "recent" | "archived";
 
@@ -909,58 +914,6 @@ function hostBranchId(projectId: string, hostId: string): string {
   return `${projectId}@host:${hostId}`;
 }
 
-/** The manifest's id→Source lookup, single-slot memoized on the sources
- * array's identity: the display selector hands back the manifest's own
- * array, so every grouped builder call between manifest updates shares one
- * Map instead of building one per call. */
-const sourceLookupCache: { sources: readonly Source[] | null; known: Map<string, Source> } = {
-  sources: null,
-  known: new Map(),
-};
-
-function sourceLookup(sources: readonly Source[]): Map<string, Source> {
-  if (sourceLookupCache.sources !== sources) {
-    sourceLookupCache.sources = sources;
-    sourceLookupCache.known = new Map(sources.map((source): [string, Source] => [source.id, source]));
-  }
-  return sourceLookupCache.known;
-}
-
-type HostFacts = { id: string; label: string; online: boolean };
-
-/** Hosts in rail order: this hub first, then online hosts by their display
- * labels (the id breaking ties), offline hosts last (an offline host cannot
- * reveal rows until it reconnects, so it sorts behind the hosts that can). A
- * host the manifest does not name reads as ONLINE - the same unknown-host
- * contract the session rows' own chips follow (RailRow's useHostOnline) -
- * and falls back to its id as a label. */
-function orderedHosts(hostIds: Iterable<string>, sources: readonly Source[]): HostFacts[] {
-  return [...new Set(hostIds)]
-    .map((id) => {
-      const source = sourceLookup(sources).get(id);
-      return {
-        id,
-        label: source?.label ?? id,
-        online: source ? source.online : true,
-        tier: id === LOCAL_HOST ? 0 : source ? (source.online ? 1 : 2) : 1,
-      };
-    })
-    .sort((a, b) => a.tier - b.tier || a.label.localeCompare(b.label) || a.id.localeCompare(b.id))
-    .map(({ id, label, online }) => ({ id, label, online }));
-}
-
-/** The host a row groups under. A CLUSTER row's own host_id is synthetic -
- * "cluster", the scope prefix of its id, because the hub names no host for a
- * row it folded out of repeated titles (navigationNodeRef falls back to the
- * node ID, so the wire carries "cluster:<hex>"). It groups under its
- * most-recent member's host, the member the cluster itself carries recency
- * from; a memberless cluster (the hub never builds one) falls back to this
- * hub so the row still renders somewhere. */
-export function sessionGroupHostId(n: RailSession): string {
-  if (n.kind !== "cluster") return n.host_id;
-  return n.children[0]?.host_id ?? LOCAL_HOST;
-}
-
 /** Every host a project's rows can appear under: its owning sources plus any
  * host its loaded sessions name (a project whose summary predates a host
  * still lands where its rows are). A project naming neither is this hub's
@@ -975,10 +928,7 @@ const projectHostIdsCache = new WeakMap<
 function projectHostIds(p: RailProject): string[] {
   const cached = projectHostIdsCache.get(p);
   if (cached && cached.sources === p.sources && cached.sessions === p.sessions) return cached.hosts;
-  const hosts = new Set<string>(p.sources ?? []);
-  for (const n of p.sessions) hosts.add(sessionGroupHostId(n));
-  if (hosts.size === 0) hosts.add(LOCAL_HOST);
-  const result = [...hosts];
+  const result = ownerHostIds(p.sources, p.sessions);
   projectHostIdsCache.set(p, { sources: p.sources, sessions: p.sessions, hosts: result });
   return result;
 }
@@ -1040,11 +990,14 @@ export function hostProjectNodes(
   // anchor cannot flip copy-to-copy while rows stream in.
   const overflowHost = new Map<RailProject, string>();
   for (const p of projects) {
-    const ordered = orderedHosts(projectHostIds(p), sources);
-    const withRows = ordered.find(({ id }) =>
-      p.sessions.some((n) => !isArchivedTier(n) && sessionGroupHostId(n) === id),
+    overflowHost.set(
+      p,
+      canonicalHostId(
+        projectHostIds(p),
+        p.sessions.filter((n) => !isArchivedTier(n)),
+        sources,
+      ),
     );
-    overflowHost.set(p, (withRows ?? ordered[0])?.id ?? LOCAL_HOST);
     for (const hostId of projectHostIds(p)) {
       const owned = projectsByHost.get(hostId) ?? [];
       owned.push(p);
