@@ -514,8 +514,8 @@ export function createBoardController(): BoardController {
 			publish();
 		},
 		async loadMoreLive() {
-			// A paused Board reads nothing new, as the Needs you and pin
-			// catalog paging doesn't.
+			// A paused Board reads nothing new, as the Needs you, pin catalog
+			// and category paging doesn't.
 			if (paused) return;
 			await readers?.live.more();
 		},

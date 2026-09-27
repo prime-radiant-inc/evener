@@ -454,16 +454,17 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 }
 
 /** While any of the Board's reads has failed on a ready connection (Live,
- * Needs you, the pin catalog or the manifest; first read or later), rebind
- * the client after a backoff that grows with each failed attempt. Nothing
- * else would retry it while the Board stays in view: an idle fleet sends no
- * invalidations, and the controller retries failed reads only when it
- * resumes, on a focus change. The retry waits while another read is still
- * out, so a rebind never cancels a healthy read. Rebinding is the reconnect
- * path: the loaded rows stay on screen until the fresh reads land, and the
- * screen's load-more pages Live back out. A read that lands, or a new
- * connection, starts the count over; with no client (disconnected or out of
- * view) the hook holds its count and schedules nothing. */
+ * Needs you, the pin catalog, a category or the manifest; first read or
+ * later), rebind the client after a backoff that grows with each failed
+ * attempt. Nothing else would retry it while the Board stays in view: an
+ * idle fleet sends no invalidations, and the controller retries failed
+ * reads only when it resumes, on a focus change. The retry waits while
+ * another read is still out, so a rebind never cancels a healthy read.
+ * Rebinding is the reconnect path: the loaded rows stay on screen until the
+ * fresh reads land, and the screen's load-more pages Live back out. A read
+ * that lands, or a new connection, starts the count over; with no client
+ * (disconnected or out of view) the hook holds its count and schedules
+ * nothing. */
 function useReadRetry(
 	board: BoardController,
 	client: ConversationClientLike | null,
