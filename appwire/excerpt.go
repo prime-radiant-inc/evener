@@ -18,6 +18,25 @@ const (
 	MaxQuestionOptions = 5
 )
 
+// BoundedPendingQuestion is a pending question cut to the wire's bounds: its
+// text as one line of at most MaxQuestionTextRunes, and at most
+// MaxQuestionOptions of its labels, each one line of at most
+// MaxQuestionOptionRunes, leaving out a label with no text. The daemon applies
+// it before a question leaves the session, and the hub again before a row
+// carries one, so a remote host or an older daemon cannot widen a row.
+func BoundedPendingQuestion(text string, labels []string, count int) PendingQuestion {
+	question := PendingQuestion{Question: Excerpt(text, MaxQuestionTextRunes), Count: count}
+	for _, label := range labels {
+		if len(question.Options) == MaxQuestionOptions {
+			break
+		}
+		if label = Excerpt(label, MaxQuestionOptionRunes); label != "" {
+			question.Options = append(question.Options, label)
+		}
+	}
+	return question
+}
+
 // Excerpt is text as one short line, the form every row why text takes on the
 // wire (S1). Each run of whitespace or control characters, line breaks
 // included, becomes one space; the ends are trimmed; invalid UTF-8 becomes

@@ -1,6 +1,7 @@
 package appwire
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -83,5 +84,26 @@ func TestExcerptNeverExceedsItsBound(t *testing.T) {
 				t.Fatalf("Excerpt(%.20q…, %d) = %q, want one trimmed valid line of at most %d runes that is its own excerpt", text, maxRunes, got, maxRunes)
 			}
 		}
+	}
+}
+
+// A question leaves the session, and reaches a row, as one bounded line with
+// at most five one-line labels, none of them empty (S1b).
+func TestBoundedPendingQuestionCutsTheQuestionToTheWireBounds(t *testing.T) {
+	got := BoundedPendingQuestion(
+		"Keep or drop\nthe implied options? "+strings.Repeat("Fourteen descriptions mention flags. ", 20),
+		[]string{"Drop them", " \n ", strings.Repeat("x", 200), "B", "C", "D", "E"},
+		2,
+	)
+	if !strings.HasPrefix(got.Question, "Keep or drop the implied options? Fourteen") || !strings.HasSuffix(got.Question, "…") ||
+		utf8.RuneCountInString(got.Question) > MaxQuestionTextRunes {
+		t.Fatalf("question = %q, want one line cut to %d runes", got.Question, MaxQuestionTextRunes)
+	}
+	want := []string{"Drop them", strings.Repeat("x", MaxQuestionOptionRunes-1) + "…", "B", "C", "D"}
+	if !slices.Equal(got.Options, want) {
+		t.Fatalf("options = %q, want %q", got.Options, want)
+	}
+	if got.Count != 2 {
+		t.Fatalf("count = %d, want the count it was given", got.Count)
 	}
 }
