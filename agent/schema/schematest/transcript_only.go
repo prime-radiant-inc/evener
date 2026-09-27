@@ -20,7 +20,13 @@ func TranscriptOnlySamples() []schema.Turn {
 	completion := sample(schema.TurnCompletion, "t_sample_execution")
 	completion.Completion = &schema.TurnCompletionInfo{Status: schema.TurnCompleted, CompletedAt: at, DurationMS: 42}
 	reopen := sample(schema.TurnReopen, "turn_m9")
-	communicate := sample(schema.TurnCommunicate, "t_sample_execution")
+	// A distinct turn id from completion's: InterleaveTranscriptOnly cycles
+	// through all seven samples repeatedly across a long fixture, so two
+	// samples sharing one id would have that turn revisited many times, non-
+	// adjacently, each cycle - a shape no real writer produces (an execution's
+	// completion and its communicate call are one turn, but that turn is not
+	// reopened once closed).
+	communicate := sample(schema.TurnCommunicate, "t_sample_communicate")
 	communicate.Communicate = &schema.CommunicateInfo{CallID: "sample-call", EndTurn: true, Message: "a delivered message"}
 	// Each notice gets its own turn id: real notices of different kinds come
 	// from unrelated contexts (a tool repair, a goal ending, a turn limit, a
