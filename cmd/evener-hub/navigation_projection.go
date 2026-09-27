@@ -36,7 +36,7 @@ const (
 	// untruncated command. Generous rather than label-tight: a tooltip can
 	// wrap, but it must not lie — a cut-off "full" command is worse than a
 	// long one. Still bounded so one pathological command cannot dominate
-	// the response's byte budget (navigationJSONFits).
+	// the response's byte budget (navigationEncodedSize).
 	maxNavigationFullCommandRunes = 4_096
 	maxNavigationIdentityBytes    = 1_024
 	maxNavigationWorkingDirBytes  = 4_096
@@ -1329,10 +1329,6 @@ func navigationSummaryWeight(summary hubapi.NavigationSessionSummary) int {
 		weight += navigationSummaryWeight(child)
 	}
 	return weight
-}
-
-func navigationJSONFits(value any, maxBytes int) bool {
-	return navigationEncodedSize(value) <= maxBytes
 }
 
 // navigationEncodedSize is the length of value's JSON encoding. A value that
