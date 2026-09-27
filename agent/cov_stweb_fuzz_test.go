@@ -116,7 +116,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 	deps.emit = func(kind events.EventKind, data events.EventData) {
 		t.Fatalf("communicate emitted unexpected event %q", kind)
 	}
-	deps.deliverCommunicate = func(events.CommunicateData) { emitted++ }
+	deps.deliverCommunicate = func(events.CommunicateData) bool { emitted++; return true }
 	deps.drainSteering = func() []steeringMessage {
 		return []steeringMessage{
 			{Text: "steer " + token},
@@ -214,7 +214,7 @@ func stoolCommunicateRun(t *testing.T, data []byte) stoolCommunicateTrace {
 func stoolCommunicateDeps() *toolDeps {
 	return &toolDeps{
 		emit:                   func(events.EventKind, events.EventData) {},
-		deliverCommunicate:     func(events.CommunicateData) {},
+		deliverCommunicate:     func(events.CommunicateData) bool { return true },
 		abort:                  func(context.Context) error { return nil },
 		drainSteering:          func() []steeringMessage { return nil },
 		prependSteering:        func([]steeringMessage) {},
