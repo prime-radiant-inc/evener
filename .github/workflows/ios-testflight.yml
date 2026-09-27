@@ -1,12 +1,12 @@
 name: iOS TestFlight
 
 on:
-  # TestFlight builds ship only from tagged releases on main. The mutable
-  # `snapshot` tag that binaries.yml force-moves on every green main build does
-  # not match `v*`, so refreshing that channel never uploads to TestFlight, and
-  # the archive job verifies the tag's commit is on main before building.
+  # TestFlight builds ship only from version tags on main. The mutable
+  # `snapshot` tag that binaries.yml force-moves on every green main build, and
+  # any non-version `v...` tag, do not match `v[0-9]*`, so neither can upload to
+  # TestFlight. The archive job verifies the tag's commit is on main first.
   push:
-    tags: ["v*"]
+    tags: ["v[0-9]*"]
   workflow_dispatch:
     inputs:
       build_number:
@@ -47,22 +47,29 @@ jobs:
           exit 1
 
   archive-and-upload:
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.recovery_run_id == '' && github.ref == 'refs/heads/main')
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.recovery_run_id == '' && github.ref == 'refs/heads/main')
     runs-on: macos-26
     timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify the release tag is on main
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
           # actions/checkout fetches a single commit for the tag; fetch main
-          # (without --depth) so the tag's ancestry can be checked.
+          # so the tag's ancestry can be checked.
           git fetch --no-tags origin main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
-            echo "Release tag ${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not on main" >&2
-            exit 1
+            # Deepen a shallow checkout before concluding the tag is off main:
+            # truncated history must not masquerade as a missing ancestor.
+            if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+              git fetch --no-tags --unshallow origin main
+            fi
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+              echo "Release tag ${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not on main" >&2
+              exit 1
+            fi
           fi
       - name: Select and verify Xcode
         run: |
