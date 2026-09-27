@@ -506,6 +506,11 @@ func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []str
 			decisionErrors = append(decisionErrors, fmt.Sprintf("pin section store error: %v", err))
 		}
 	}
+	if s.cfg.SessionSeen != nil {
+		if _, err := s.cfg.SessionSeen.Delete("", threadID); err != nil {
+			decisionErrors = append(decisionErrors, fmt.Sprintf("seen marker store error: %v", err))
+		}
+	}
 	return decisionErrors
 }
 

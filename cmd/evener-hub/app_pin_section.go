@@ -41,7 +41,7 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		if err != nil {
 			return appwire.PinSectionRenameResponse{}, pinSectionAppWireError(err)
 		}
-		mutation, err := commitPinNavigation(ctx, cfg, navigation, changed)
+		mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
 		if err != nil {
 			return appwire.PinSectionRenameResponse{}, err
 		}
@@ -56,7 +56,7 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		if err != nil {
 			return appwire.PinSectionDeleteResponse{}, pinSectionAppWireError(err)
 		}
-		mutation, err := commitPinNavigation(ctx, cfg, navigation, changed)
+		mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
 		if err != nil {
 			return appwire.PinSectionDeleteResponse{}, err
 		}
@@ -85,7 +85,7 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		if err != nil {
 			return appwire.SessionPinAssignResponse{}, pinSectionAppWireError(err)
 		}
-		mutation, err := commitPinNavigation(ctx, cfg, navigation, changed)
+		mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
 		if err != nil {
 			return appwire.SessionPinAssignResponse{}, err
 		}
@@ -107,7 +107,7 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		if err != nil {
 			return appwire.SessionPinUnpinResponse{}, pinSectionAppWireError(err)
 		}
-		mutation, err := commitPinNavigation(ctx, cfg, navigation, changed)
+		mutation, err := commitNavigationChange(ctx, cfg, navigation, changed)
 		if err != nil {
 			return appwire.SessionPinUnpinResponse{}, err
 		}
@@ -132,7 +132,10 @@ func resolvePinSession(ctx context.Context, resolve topLevelSessionResolver, req
 	return session, nil
 }
 
-func commitPinNavigation(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, changed bool) (appwire.NavigationMutation, error) {
+// commitNavigationChange returns the navigation receipt for a hub-owned
+// mutation: the committed targets when the mutation changed anything, and an
+// empty mutation when it did not.
+func commitNavigationChange(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, changed bool) (appwire.NavigationMutation, error) {
 	if navigation == nil {
 		return appwire.NavigationMutation{}, appwire.Unavailable("navigation service not configured")
 	}
