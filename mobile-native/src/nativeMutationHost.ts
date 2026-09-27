@@ -34,7 +34,7 @@ export interface NativeMutationHost extends ConversationMutationSubmitter {
  * unavailable, so the store must surface a failure rather than durably accept
  * a message that no registered client can dispatch. */
 export const NATIVE_MUTATION_HOST_UNAVAILABLE =
-	"Durable sending is unavailable right now. Reconnect and try again.";
+	"Durable sending is unavailable right now.";
 
 /** A submitter bound to a host that may not be live yet (or any more): while
  * the host lookup is null it refuses, so a submission is never admitted

@@ -294,6 +294,29 @@ describe("demo fleet search, auth and plugins", () => {
 		expect(fleet.answerSearch({ query: "wasm" }).live[0]?.age).toBe("17m");
 	});
 
+	// #2583: a live result carries the same askPending/approvalPending a
+	// navigation row does, so a session blocked on a question or an approval
+	// doesn't read as an ordinary working session in search.
+	it("carries askPending and approvalPending on live hits, the same as a navigation row", () => {
+		const fleet = createDemoFleet({ now: STARTUP });
+		// s-audit: state "question" - awaiting an answer, not an escalation.
+		const askHit = fleet.answerSearch({ query: "audit" }).live[0];
+		expect(askHit).toMatchObject({ id: "s-audit", askPending: true });
+		expect(askHit?.approvalPending).toBeUndefined();
+
+		// s-mirror: state "approval" - blocked on a sandbox escalation, not a
+		// question.
+		const approvalHit = fleet.answerSearch({ query: "mirror" }).live[0];
+		expect(approvalHit).toMatchObject({ id: "s-mirror", approvalPending: true });
+		expect(approvalHit?.askPending).toBeUndefined();
+
+		// s-wasm: ordinary working session - neither flag applies, and the wire's
+		// additive contract omits them rather than sending false.
+		const idleHit = fleet.answerSearch({ query: "wasm" }).live[0];
+		expect(idleHit?.askPending).toBeUndefined();
+		expect(idleHit?.approvalPending).toBeUndefined();
+	});
+
 	it("reports one provider needing sign-in, in a combination the hub actually produces", () => {
 		const fleet = createDemoFleet({ now: STARTUP });
 		const response = fleet.answerAuthList();
