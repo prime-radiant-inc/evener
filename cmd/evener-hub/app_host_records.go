@@ -443,6 +443,14 @@ func hubTOMLStagedReceiptTables(cfg Config, entries, known []hostreg.Host, marke
 		return out
 	}
 	for name, marker := range cfg.StagedReceipts {
+		if _, carried := out[name]; carried {
+			// The carried set is authoritative for the keys it names: a marker
+			// this write moves (the flip writes) or drops must not be overwritten
+			// by the file's older copy, which is also why the ownership test
+			// below cannot be the only guard — a marker for a name outside the
+			// live set (a tombstoned host's) is still this write's to move.
+			continue
+		}
 		if _, carried := owned[name]; carried {
 			continue
 		}
@@ -467,6 +475,12 @@ func hubTOMLTeardownRemnantTables(cfg Config, entries, known []hostreg.Host, rem
 		return out
 	}
 	for id, remnant := range cfg.TeardownRemnants {
+		if _, carried := out[id]; carried {
+			// The carried record wins: the retry's clearance, the re-add purge,
+			// and the boot compaction all move records for names outside the
+			// live set (a removed host's), so ownership alone cannot guard them.
+			continue
+		}
 		if _, carried := owned[remnant.Host]; carried {
 			continue
 		}
@@ -490,6 +504,9 @@ func hubTOMLTeardownAttemptTables(cfg Config, entries, known []hostreg.Host, att
 		return out
 	}
 	for id, attempt := range cfg.TeardownAttempts {
+		if _, carried := out[id]; carried {
+			continue
+		}
 		if _, carried := remnants[attempt.RemnantID]; carried {
 			// A remnant this write carries owns its attempts: the derivation
 			// already decided which survive.

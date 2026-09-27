@@ -12793,6 +12793,12 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		// Component 07c's credential push: controller-local like the proxy, so a
 		// peer hub cannot make this hub push its credentials by forwarding it.
 		appwire.MethodEvenerHostPushCredentials,
+		// Slice 12's teardown-repair mutations: controller-local like the rest
+		// of the registry surface — they act on this hub's own hub.toml records
+		// and channels — so a peer hub must not be able to resume or clear this
+		// hub's remnants by forwarding them.
+		appwire.MethodEvenerHostTeardownRetry,
+		appwire.MethodEvenerHostTeardownRecover,
 		appwire.MethodEvenerDaemonList,
 		appwire.MethodEvenerDaemonRetire,
 	}

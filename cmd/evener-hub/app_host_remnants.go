@@ -716,8 +716,13 @@ func validateHostTeardownAttempts(attempts map[string]HostTeardownAttempt, remna
 			if _, err := time.Parse(time.RFC3339, attempt.TimedOutAt); err != nil {
 				return fmt.Errorf("teardown_attempts[%q] carries timed_out_at %q, not an RFC3339 instant: %w", id, attempt.TimedOutAt, err)
 			}
-			if !attempt.open() {
-				return fmt.Errorf("teardown_attempts[%q] carries a timeout on a fenced-closed attempt", id)
+		}
+		if attempt.FencedAt != "" {
+			if _, err := time.Parse(time.RFC3339, attempt.FencedAt); err != nil {
+				return fmt.Errorf("teardown_attempts[%q] carries fenced_at %q, not an RFC3339 instant: %w", id, attempt.FencedAt, err)
+			}
+			if attempt.open() {
+				return fmt.Errorf("teardown_attempts[%q] carries a fenced instant on an open attempt", id)
 			}
 		}
 		if _, ok := remnants[attempt.RemnantID]; !ok {

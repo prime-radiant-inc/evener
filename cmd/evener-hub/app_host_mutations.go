@@ -260,11 +260,20 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	} else if hit != nil && params.MutationID != "" {
 		return m.receiptArm(hit, hostMutationAdd), nil
 	}
+	// The remnant fence, past the dedup check: "re-add ... is refused with the
+	// typed `remnant-open` conflict refusal carrying the blocking `remnantId`".
+	// The fence outranks the keyless read-after-unknown path below: a keyless
+	// route is a non-replay mutation too, and a new incarnation must never start
+	// while the old lifecycle still owns supervisors, channels, or fan-outs
+	// (spec §6: "The remnant fence takes precedence over the tombstone
+	// not-found rule").
+	if err := m.remnantRefusal(name); err != nil {
+		return appwire.HostMutationResult{}, err
+	}
 	// The keyless read-after-unknown path: "a keyless `add` retry that observes
 	// a matching listed row (the listed entry hash equals the intended entry)
 	// returns the explicit ambiguous outcome ... instead of claiming the
-	// mutation committed". It runs before the fence and the gate because it
-	// consults nothing either locks.
+	// mutation committed".
 	if params.MutationID == "" {
 		if observed, ok := m.keylessAddObservedRow(entry); ok {
 			return appwire.HostMutationResult{HostMutationAmbiguous: &appwire.HostMutationAmbiguous{
@@ -272,11 +281,6 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 				ObservedRow: observed,
 			}}, nil
 		}
-	}
-	// The remnant fence, past the dedup check: "re-add ... is refused with the
-	// typed `remnant-open` conflict refusal carrying the blocking `remnantId`".
-	if err := m.remnantRefusal(name); err != nil {
-		return appwire.HostMutationResult{}, err
 	}
 	m.cfg.mu.Lock()
 	if m.isMutating(entry.Name) {
@@ -298,6 +302,11 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	entry = stampedEntry(entry, identity)
 	receipt := newHostMutationReceipt(auditKey, hostMutationAdd, entry, m.nowTime())
 	receipt.Audit = params.MutationID == ""
+	// The marker's staged payload always carries a pre-minted `remnantId` (spec
+	// §5). An add plans no teardown — its pinned target is empty — so the id is
+	// cleared again on a clean finalize: §6 has the receipt carry `remnantId`
+	// exactly when a remnant record exists, and a clean add leaves none.
+	receipt.RemnantID = mintRemnantID()
 	receiptKey := hostMutationReceiptKey(auditKey, entry.Name, hostMutationAdd, hostMutationIdentity{
 		Generation:    entry.Generation,
 		IncarnationID: entry.IncarnationID,
@@ -355,6 +364,7 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	plan.Marker.TeardownStarted = true
 	plan.Marker.Phase = hostStagedPhaseRuntimeSwapped
 	finalizeReceipt := receipt
+	finalizeReceipt.RemnantID = ""
 	if err := m.finalizeReceipt(plan, finalizeReceipt, "", nil); err != nil {
 		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
@@ -569,7 +579,6 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	}
 
 	m.cfg.mu.Lock()
-	defer m.cfg.mu.Unlock()
 	m.unmarkMutating(name)
 	if liveErr != nil {
 		// The commit point: the staged runtime transition is durable and the
@@ -582,9 +591,12 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		receipt.Generation = before.Generation
 		receipt.IncarnationID = before.IncarnationID
 		if err := m.finalizeReceipt(plan, receipt, remnantID, &remnant); err != nil {
+			m.cfg.mu.Unlock()
 			return appwire.HostMutationResult{}, err
 		}
-		return teardownCommittedArm(hostMutationUpdate, "update-host", remnantID, hostReceiptRow(receipt, hostMutationUpdate)), nil
+		row := hostReceiptRow(receipt, hostMutationUpdate)
+		m.cfg.mu.Unlock()
+		return teardownCommittedArm(hostMutationUpdate, "update-host", remnantID, row), nil
 	}
 	stored, ok := m.cfg.hosts.Get(name)
 	if !ok {
@@ -592,6 +604,7 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		m.cfg.store.remove(name)
 		m.dropHostDerivedState(name)
 		_ = m.rollbackHubTOML(m.cfg.store.snapshot(), unionHosts(m.cfg.store.snapshot(), []hostreg.Host{entry}), refusal)
+		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, refusal
 	}
 	if !slicesEqualStrs(before.Roots, stored.Roots) {
@@ -606,9 +619,19 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		}
 		m.registerSource(stored)
 	}
-	if err := m.finalizeReceipt(plan, receipt, "", nil); err != nil {
+	clean := receipt
+	// A clean finalize leaves no remnant record, so the receipt carries no
+	// remnantId (§6: the field is present exactly when a remnant exists).
+	clean.RemnantID = ""
+	if err := m.finalizeReceipt(plan, clean, "", nil); err != nil {
+		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
+	m.cfg.mu.Unlock()
+	// The row's retained-state fold is fenced on the entry's generation, so the
+	// reread above is what makes the returned row the identity this call
+	// committed; it is built lock-free, like every other row (hostRow's lookups
+	// run on the network).
 	return committedArm(hostMutationUpdate, m.hostRow(ctx, stored)), nil
 }
 
@@ -787,7 +810,9 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		row.EscalationAgeSec = m.escalationAgeSec(remnant)
 		return teardownCommittedArm(hostMutationRemove, "remove-host", remnantID, row), nil
 	}
-	if err := m.finalizeReceipt(plan, receipt, "", nil); err != nil {
+	clean := receipt
+	clean.RemnantID = ""
+	if err := m.finalizeReceipt(plan, clean, "", nil); err != nil {
 		return appwire.HostMutationResult{}, err
 	}
 	m.dropHostDerivedState(host.Name)
