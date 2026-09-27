@@ -16,6 +16,7 @@ import type { SeenMarkers } from "./boardMemory";
 const MAX_MARKS_PER_CALL = 500;
 const METHOD_NOT_FOUND = -32601;
 
+/** A mark as seen/set carries it, less its ref. */
 type PendingMark = { seenThrough: number } | { unread: true };
 interface PendingEntry {
 	mark: PendingMark;
@@ -127,9 +128,7 @@ export class HubSeenMarks {
 			if (!client || withoutSeenSet.has(client)) return;
 			const batch = [...this.pending].filter(([, entry]) => !entry.acknowledged).slice(0, MAX_MARKS_PER_CALL);
 			if (batch.length === 0) return;
-			const sessions: SessionSeenMark[] = batch.map(([ref, { mark }]) =>
-				"unread" in mark ? { ref, unread: true } : { ref, seenThrough: mark.seenThrough },
-			);
+			const sessions: SessionSeenMark[] = batch.map(([ref, { mark }]) => ({ ref, ...mark }));
 			// An entry replaced while its call was out is a newer mark: only the
 			// entry that was sent takes the call's outcome.
 			const stillSent = ([ref, entry]: [string, PendingEntry]) => this.pending.get(ref) === entry;
