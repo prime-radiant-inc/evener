@@ -268,6 +268,25 @@ it("reads every Needs you page, up to 200 rows", async () => {
 	expect(requestsFor(hub, "needs_you")).toHaveLength(2);
 });
 
+it("reads a Needs you page that failed again when the Board resumes", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	answer(hub, "needs_you", { sessions: sessions("ask-", 50), remaining: 30 });
+	await tick();
+	fail(hub, "needs_you", "The hub went away.");
+	await tick();
+	// A failed page isn't retried hot.
+	expect(requestsFor(hub, "needs_you")).toHaveLength(2);
+	board.pause();
+	board.resume();
+	const retry = next(hub, "needs_you");
+	expect(retry.params.offset).toBe(50);
+	retry.resolve(response(retry.params, { sessions: sessions("ask-", 30, 50), remaining: 0 }));
+	await tick();
+	expect(board.getSnapshot().needsYou.rows).toHaveLength(80);
+});
+
 it("reads Needs you until the hub has no more rows, past 200", async () => {
 	const hub = boundary();
 	const board = createBoardController();
