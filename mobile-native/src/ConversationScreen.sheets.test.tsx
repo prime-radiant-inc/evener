@@ -200,9 +200,11 @@ const thread: Thread = {
 	},
 };
 
-/** What the hub answers beside the session's read: a value, or a thrown
- * error for a rejection. Any other request stays pending. */
-type Answers = Record<string, unknown>;
+/** What the hub answers beside the session's read: a value, a thrown error
+ * for a rejection, or a function of the call's params for a method whose
+ * calls answer differently (Undo re-sending the same method with the
+ * opposite `archived`). Any other request stays pending. */
+type Answers = Record<string, unknown | ((params: unknown) => unknown)>;
 
 /** A hub that answers the session's read with `read` and records every
  * request the screen makes. */
@@ -216,6 +218,7 @@ function sessionClient(read: Thread, answers: Answers) {
 			if (method === "thread/read") return { thread: read };
 			if (method in answers) {
 				const answer = answers[method];
+				if (typeof answer === "function") return answer(params);
 				if (answer instanceof Error) throw answer;
 				return answer;
 			}
@@ -410,6 +413,19 @@ it("shuts the session down after a confirmation and stays on it (ruling 19)", as
 	tree.unmount();
 });
 
+it("says so when a shut down can't be confirmed (coordinator ruling: silence reads as success)", async () => {
+	const { tree } = mount(withCapabilities({ shutdown: true }), { "thread/shutdown": new Error("refused") });
+	await flush();
+
+	act(() => menuAction("Shut down").onPress());
+	const [confirm] = alertRequests;
+	act(() => confirm?.buttons?.[1]?.onPress?.());
+	await flush();
+
+	expect(renderedText(tree)).toContain("Couldn't shut down this session.");
+	tree.unmount();
+});
+
 it("archives the session, with an Undo that restores it", async () => {
 	const { tree, requests } = mount(thread, { "evener/archive/set": {} });
 	await flush();
@@ -428,6 +444,25 @@ it("archives the session, with an Undo that restores it", async () => {
 		{ kind: "session", id: ref, archived: true },
 		{ kind: "session", id: ref, archived: false },
 	]);
+	tree.unmount();
+});
+
+it("says so when Undo can't restore the session (coordinator ruling: silence reads as success)", async () => {
+	const { tree } = mount(thread, {
+		"evener/archive/set": (params: unknown) => {
+			if ((params as { archived: boolean }).archived) return {};
+			throw new Error("refused");
+		},
+	});
+	await flush();
+
+	act(() => menuAction("Archive").onPress());
+	await flush();
+	const undo = tree.root.find((node) => node.props.accessibilityLabel === "Undo" && node.props.onPress);
+	act(() => undo.props.onPress());
+	await flush();
+
+	expect(renderedText(tree)).toContain("Couldn't undo the archive.");
 	tree.unmount();
 });
 

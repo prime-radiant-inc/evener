@@ -1031,7 +1031,10 @@ export function ConversationScreen({
 							text: "Session archived",
 							action: {
 								label: "Undo",
-								run: () => void archive(false).catch(() => undefined),
+								run: () =>
+									void archive(false).catch(() =>
+										toast.show({ text: "Couldn't undo the archive." }),
+									),
 							},
 						}),
 					() => toast.show({ text: "Couldn't archive this session." }),
@@ -1050,7 +1053,11 @@ export function ConversationScreen({
 							style: "destructive",
 							onPress: () => {
 								void stopping.shutdown().then((stopped) => {
-									if (stopped) toast.show({ text: "Session shut down" });
+									toast.show(
+										stopped
+											? { text: "Session shut down" }
+											: { text: "Couldn't shut down this session." },
+									);
 								});
 							},
 						},
