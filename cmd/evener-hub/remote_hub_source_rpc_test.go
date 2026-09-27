@@ -34,6 +34,22 @@ func newScriptedRemoteHub(t *testing.T, handle func(method string, params json.R
 	return client, calls
 }
 
+// scriptedRemoteHubReplying scripts a remote hub (newScriptedRemoteHub) that
+// answers every request for method with reply: a response, or an
+// appwire.WireError it sends back as an error.
+func scriptedRemoteHubReplying(method string, reply any) func(string, json.RawMessage) any {
+	return func(got string, _ json.RawMessage) any {
+		switch got {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case method:
+			return reply
+		default:
+			return appwire.EmptyResponse{}
+		}
+	}
+}
+
 // scriptedRemoteHubParams decodes the params of every request for method a
 // scripted remote hub recorded, in order.
 func scriptedRemoteHubParams[P any](t *testing.T, calls []remoteHubCall, method string) []P {

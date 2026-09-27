@@ -3,7 +3,6 @@ package hub
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,31 +17,15 @@ import (
 const sessionImageRouteSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 // newRemoteSessionImageServer serves a hub with one attached host source whose
-// client answers evener/session/image through handle.
+// client answers every evener/session/image with reply: a response, or an
+// appwire.WireError it sends back as an error.
 func newRemoteSessionImageServer(
 	t *testing.T,
 	cfg hubcore.WebConfig,
-	handle func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError),
-) (*httptest.Server, *WebServer, func() []appwire.SessionImageParams) {
+	reply any,
+) (*httptest.Server, func() []appwire.SessionImageParams) {
 	t.Helper()
-	client, calls := newScriptedRemoteHub(t, func(method string, raw json.RawMessage) any {
-		switch method {
-		case appwire.MethodInitialize:
-			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
-		case appwire.MethodEvenerSessionImage:
-			var params appwire.SessionImageParams
-			if err := json.Unmarshal(raw, &params); err != nil {
-				return appwire.InvalidParams(err.Error())
-			}
-			response, wireErr := handle(params)
-			if wireErr != nil {
-				return *wireErr
-			}
-			return response
-		default:
-			return appwire.EmptyResponse{}
-		}
-	})
+	client, calls := newScriptedRemoteHub(t, scriptedRemoteHubReplying(appwire.MethodEvenerSessionImage, reply))
 	seen := func() []appwire.SessionImageParams {
 		return scriptedRemoteHubParams[appwire.SessionImageParams](t, calls(), appwire.MethodEvenerSessionImage)
 	}
@@ -55,7 +38,7 @@ func newRemoteSessionImageServer(
 	srv, web := newHubRPCTestServerWithWeb(t, cfg)
 	t.Cleanup(srv.Close)
 	web.sources.Add(source)
-	return srv, web, seen
+	return srv, seen
 }
 
 func getSessionImageRoute(t *testing.T, srv *httptest.Server, path string) *http.Response {
@@ -75,15 +58,12 @@ func getSessionImageRoute(t *testing.T, srv *httptest.Server, path string) *http
 func TestSessionImageRouteProxiesRemoteSessionImageThroughHostClient(t *testing.T) {
 	png := sessionImageTestPNG
 	sha := imageSha(png)
-	srv, _, seen := newRemoteSessionImageServer(t, hubcore.WebConfig{},
-		func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
-			return appwire.SessionImageResponse{
-				MediaType: "image/png",
-				Size:      int64(len(png)),
-				SHA:       sha,
-				Data:      png,
-			}, nil
-		})
+	srv, seen := newRemoteSessionImageServer(t, hubcore.WebConfig{}, appwire.SessionImageResponse{
+		MediaType: "image/png",
+		Size:      int64(len(png)),
+		SHA:       sha,
+		Data:      png,
+	})
 
 	resp := getSessionImageRoute(t, srv, "/s/h1:t1/images/"+sha)
 	defer resp.Body.Close()
@@ -120,15 +100,12 @@ func TestSessionImageRouteProxiesRemoteSessionImageThroughHostClient(t *testing.
 func TestSessionImageRouteProxiesRemoteDocImageThroughHostClient(t *testing.T) {
 	png := sessionImageTestPNG
 	sha := imageSha(png)
-	srv, _, seen := newRemoteSessionImageServer(t, hubcore.WebConfig{},
-		func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
-			return appwire.SessionImageResponse{
-				MediaType: "image/png",
-				Size:      int64(len(png)),
-				SHA:       sha,
-				Data:      png,
-			}, nil
-		})
+	srv, seen := newRemoteSessionImageServer(t, hubcore.WebConfig{}, appwire.SessionImageResponse{
+		MediaType: "image/png",
+		Size:      int64(len(png)),
+		SHA:       sha,
+		Data:      png,
+	})
 
 	resp := getSessionImageRoute(t, srv, "/doc/image?session=h1%3At1&path=shot.png")
 	defer resp.Body.Close()
@@ -161,10 +138,8 @@ func TestSessionImageRouteProxiesRemoteDocImageThroughHostClient(t *testing.T) {
 // this hub's own past index and never consults a host client.
 func TestSessionImageRouteKeepsLocalSessionsLocal(t *testing.T) {
 	past := seedSessionImageSession(t, "", sessionImageTestPNG, "image/png")
-	srv, _, seen := newRemoteSessionImageServer(t, hubcore.WebConfig{Past: past},
-		func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
-			return appwire.SessionImageResponse{}, &appwire.WireError{Code: appwire.CodeInternalError, Message: "the host must not be called for a local session"}
-		})
+	srv, seen := newRemoteSessionImageServer(t, hubcore.WebConfig{Past: past},
+		appwire.WireError{Code: appwire.CodeInternalError, Message: "the host must not be called for a local session"})
 
 	resp := getSessionImageRoute(t, srv, "/s/"+sessionImageTestSession+"/images/"+imageSha(sessionImageTestPNG))
 	defer resp.Body.Close()
@@ -211,11 +186,7 @@ func TestSessionImageRouteRefusesUnattachedHost(t *testing.T) {
 // falls back to a local read.
 func TestSessionImageRouteMapsHostRefusals(t *testing.T) {
 	t.Run("invalid params", func(t *testing.T) {
-		srv, _, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{},
-			func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
-				wire := appwire.InvalidParams("path escapes the session root")
-				return appwire.SessionImageResponse{}, &wire
-			})
+		srv, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{}, appwire.InvalidParams("path escapes the session root"))
 		resp := getSessionImageRoute(t, srv, "/doc/image?session=h1%3At1&path=../etc/passwd")
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
@@ -224,11 +195,7 @@ func TestSessionImageRouteMapsHostRefusals(t *testing.T) {
 	})
 
 	t.Run("resource not found", func(t *testing.T) {
-		srv, _, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{},
-			func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
-				wire := appwire.ResourceNotFound("no such image")
-				return appwire.SessionImageResponse{}, &wire
-			})
+		srv, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{}, appwire.ResourceNotFound("no such image"))
 		resp := getSessionImageRoute(t, srv, "/s/h1:t1/images/"+sessionImageRouteSha)
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusNotFound {
@@ -247,10 +214,7 @@ func TestSessionImageRouteMapsHostRefusals(t *testing.T) {
 	})
 
 	t.Run("malformed sha stays 400", func(t *testing.T) {
-		srv, _, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{},
-			func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
-				return appwire.SessionImageResponse{}, nil
-			})
+		srv, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{}, appwire.SessionImageResponse{})
 		resp := getSessionImageRoute(t, srv, "/s/h1:t1/images/nothex")
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusBadRequest {
@@ -259,10 +223,7 @@ func TestSessionImageRouteMapsHostRefusals(t *testing.T) {
 	})
 
 	t.Run("missing doc path stays 404", func(t *testing.T) {
-		srv, _, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{},
-			func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
-				return appwire.SessionImageResponse{}, nil
-			})
+		srv, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{}, appwire.SessionImageResponse{})
 		resp := getSessionImageRoute(t, srv, "/doc/image?session=h1%3At1")
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusNotFound {
@@ -271,10 +232,7 @@ func TestSessionImageRouteMapsHostRefusals(t *testing.T) {
 	})
 
 	t.Run("non-GET is 405", func(t *testing.T) {
-		srv, _, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{},
-			func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
-				return appwire.SessionImageResponse{}, nil
-			})
+		srv, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{}, appwire.SessionImageResponse{})
 		for _, path := range []string{"/s/h1:t1/images/" + sessionImageRouteSha, "/doc/image?session=h1%3At1&path=shot.png"} {
 			req, err := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(""))
 			if err != nil {
@@ -351,10 +309,7 @@ func TestSessionImageRouteMapsHostRefusals(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			srv, _, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{},
-				func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
-					return tt.resp, nil
-				})
+			srv, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{}, tt.resp)
 			resp := getSessionImageRoute(t, srv, "/doc/image?session=h1%3At1&path=shot.png")
 			defer resp.Body.Close()
 			if resp.StatusCode != http.StatusNotFound {
@@ -368,15 +323,12 @@ func TestSessionImageRouteMapsHostRefusals(t *testing.T) {
 	// would cache them under that URL's ETag).
 	t.Run("sha route refuses bytes that are not the requested sha", func(t *testing.T) {
 		other := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a, 'o', 't', 'h', 'e', 'r'}
-		srv, _, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{},
-			func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError) {
-				return appwire.SessionImageResponse{
-					MediaType: "image/png",
-					Size:      int64(len(other)),
-					SHA:       imageSha(other),
-					Data:      other,
-				}, nil
-			})
+		srv, _ := newRemoteSessionImageServer(t, hubcore.WebConfig{}, appwire.SessionImageResponse{
+			MediaType: "image/png",
+			Size:      int64(len(other)),
+			SHA:       imageSha(other),
+			Data:      other,
+		})
 		resp := getSessionImageRoute(t, srv, "/s/h1:t1/images/"+sessionImageRouteSha)
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusNotFound {

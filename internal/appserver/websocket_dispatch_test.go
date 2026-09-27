@@ -58,29 +58,35 @@ func waitFor[T any](t *testing.T, what string, ch <-chan T) T {
 	}
 }
 
-// dispatchSlowFastServer builds a server whose thread/read handler — a
-// slow-read method that dispatches concurrently — blocks until released, plus
-// an http server speaking AppWire over WebSocket. The returned release is
-// idempotent and also runs at test cleanup, so a parked handler can never
-// outlive the test.
-func dispatchSlowFastServer(t *testing.T) (*Server, *httptest.Server, chan struct{}, func()) {
+// parkedMethodServer builds a server whose method handler blocks until
+// released and then answers reply, plus an http server speaking AppWire over
+// WebSocket. The returned release is idempotent and also runs at test
+// cleanup, so a parked handler can never outlive the test.
+func parkedMethodServer[P, R any](t *testing.T, method string, reply R) (*Server, *httptest.Server, chan struct{}, func()) {
 	t.Helper()
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
 	handlerStarted := make(chan struct{})
 	releaseHandler := make(chan struct{})
-	HandleTyped(server.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	HandleTyped(server.Router(), method, func(_ context.Context, _ P) (R, error) {
 		select {
 		case <-handlerStarted:
 		default:
 			close(handlerStarted)
 		}
 		<-releaseHandler
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_held"}}, nil
+		return reply, nil
 	})
 	httpServer := serveWebSocketHTTP(t, server)
 	release := sync.OnceFunc(func() { close(releaseHandler) })
 	t.Cleanup(release)
 	return server, httpServer, handlerStarted, release
+}
+
+// dispatchSlowFastServer is parkedMethodServer for thread/read, a slow-read
+// method that dispatches concurrently.
+func dispatchSlowFastServer(t *testing.T) (*Server, *httptest.Server, chan struct{}, func()) {
+	t.Helper()
+	return parkedMethodServer[appwire.ThreadReadParams](t, appwire.MethodThreadRead, appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_held"}})
 }
 
 // TestServeWebSocketSlowHandlerDoesNotDelayPing pins the fix itself: with one
@@ -166,22 +172,12 @@ func TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns(t *testing.T) {
 // seconds on the same connection its sends ride, so an ordered request issued
 // behind a parked read must still run and answer.
 func TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests(t *testing.T) {
-	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
-	readStarted := make(chan struct{})
-	releaseRead := make(chan struct{})
-	HandleTyped(server.Router(), appwire.MethodEvenerActivityRead, func(_ context.Context, _ appwire.ActivityReadParams) (appwire.ActivityReadResponse, error) {
-		close(readStarted)
-		<-releaseRead
-		return appwire.ActivityReadResponse{Sessions: []appwire.SessionActivity{}}, nil
-	})
+	server, httpServer, readStarted, release := parkedMethodServer[appwire.ActivityReadParams](t, appwire.MethodEvenerActivityRead, appwire.ActivityReadResponse{Sessions: []appwire.SessionActivity{}})
 	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, nil
 	})
-	httpServer := serveWebSocketHTTP(t, server)
 	client := dialAppWireClient(t, httpServer)
 	ctx := context.Background()
-	release := sync.OnceFunc(func() { close(releaseRead) })
-	t.Cleanup(release)
 
 	readDone := make(chan error, 1)
 	go func() {
