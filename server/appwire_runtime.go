@@ -2522,6 +2522,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	supportsReasoning := envelope.SupportsReasoning
 	visionModel := envelope.VisionModel
 	lastTurnEndedAt := envelope.LastTurnEndedAt
+	lastMessage := envelope.LastMessage
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
 	if threadPreview == "" {
@@ -2569,6 +2570,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			SupportsReasoning:     supportsReasoning,
 			VisionModel:           visionModel,
 			LastTurnEndedAt:       lastTurnEndedAt,
+			LastMessage:           lastMessage,
 		},
 	}
 }

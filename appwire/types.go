@@ -934,6 +934,12 @@ type EvenerThread struct {
 	// Finished session from an Idle one. Snapshot-only: no notification
 	// carries it.
 	LastTurnEndedAt int64 `json:"lastTurnEndedAt,omitempty"`
+	// LastMessage is the opening of the session's last agent message (S1d):
+	// one line of at most MaxMessageExcerptRunes, the agent's own words only,
+	// never its reasoning or a tool's output. Absent until the session has
+	// written a message, and from an older daemon. Snapshot-only: no
+	// notification carries it.
+	LastMessage string `json:"lastMessage,omitempty"`
 	// Subagents tallies a live root session's whole delegate tree (S3), read
 	// from the root's delegate controller when the row is listed. It rides
 	// thread/list root rows only, when the tree has at least one subagent, and
