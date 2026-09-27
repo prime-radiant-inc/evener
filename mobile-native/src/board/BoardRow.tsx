@@ -229,14 +229,10 @@ export function BoardRow({
 	);
 }
 
-/** A glyph and a fact on the last line, which never wraps. Project and host
- * are short identifiers that hold their width; only `shrink` (the task line,
- * "Task 4 of 7 · " plus a title that can run long) gives up space under
- * pressure, so it eroding is what "the task's title truncates first" (spec
- * 7.2) means in practice: equal flexShrink on every fact would compress them
- * together instead of protecting the fixed ones. Tail ellipsis on the task's
- * one Text then erodes the title before the "Task 4 of 7 · " prefix, since
- * the title sits last in that string. */
+/** A glyph and a fact on the last line, which never wraps. A `shrink` fact
+ * gives up width when the line runs out of room, tail-truncating its text;
+ * the others keep theirs. Only the task line shrinks: its title comes after
+ * the "Task 4 of 7 · " prefix, so the title truncates first (spec 7.2). */
 function Fact({
 	glyph,
 	text,

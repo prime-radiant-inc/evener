@@ -255,7 +255,7 @@ describe("the task line (spec 7.2, S13)", () => {
 	});
 
 	it("has no line once every task is done or cancelled (current absent)", () => {
-		const finished = row("s", { tasks: { total: 3, done: 3 } });
+		const finished = row("s", { tasks: { total: 3, done: 2, cancelled: 1 } });
 		expect(taskLine(finished)).toBeNull();
 	});
 
@@ -290,7 +290,7 @@ describe("the last line prints project and host only when unusual", () => {
 		});
 	});
 
-	it("puts task progress ahead of project and host, the order spec 7.2 sets", () => {
+	it("carries task progress alongside an unusual project and host", () => {
 		const usual = usualPlace(fleet);
 		const withTask = row("d", {
 			project: "docs",

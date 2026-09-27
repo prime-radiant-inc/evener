@@ -187,10 +187,7 @@ describe("a Board row (spec 7.2)", () => {
 				tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
 			}),
 		});
-		const glyphs = symbols(tree);
-		expect(glyphs.indexOf("checklist")).toBeGreaterThanOrEqual(0);
-		expect(glyphs.indexOf("checklist")).toBeLessThan(glyphs.indexOf("folder"));
-		expect(glyphs.indexOf("folder")).toBeLessThan(glyphs.indexOf("server.rack"));
+		expect(symbols(tree).slice(-3)).toEqual(["checklist", "folder", "server.rack"]);
 	});
 
 	it("moves a working row in Live with the pulse meter, and shows a still dot elsewhere", () => {
