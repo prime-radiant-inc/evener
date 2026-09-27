@@ -32,9 +32,8 @@ func TestLocalJobRetainedReadsRefusePostLocateLeafSwap(t *testing.T) {
 				switch replacement {
 				case "symlink":
 					swapped := filepath.Join(filepath.Dir(target.OutputPath), "swapped.log")
-					if err := os.WriteFile(swapped, []byte("SWAPPED CONTENT\n"), 0o600); err != nil {
-						t.Fatalf("write swapped target: %v", err)
-					}
+					writeAttackerOutputFixture(t, swapped, "SWAPPED CONTENT\n")
+					copyOutputMetadata(t, swapped, target.OutputPath)
 					if err := os.Symlink(swapped, target.OutputPath); err != nil {
 						t.Skipf("symlinks unavailable: %v", err)
 					}
@@ -42,6 +41,9 @@ func TestLocalJobRetainedReadsRefusePostLocateLeafSwap(t *testing.T) {
 					if _, err := exec.LookPath("mkfifo"); err != nil {
 						t.Skip("mkfifo unavailable")
 					}
+					metadataSource := filepath.Join(filepath.Dir(target.OutputPath), "fifo-metadata-source.log")
+					writeAttackerOutputFixture(t, metadataSource, "")
+					copyOutputMetadata(t, metadataSource, target.OutputPath)
 					if out, err := exec.Command("mkfifo", target.OutputPath).CombinedOutput(); err != nil {
 						t.Skipf("mkfifo unavailable: %v (%s)", err, out)
 					}
@@ -89,6 +91,34 @@ func TestLocalJobRetainedReadsRefusePostLocateLeafSwap(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func writeAttackerOutputFixture(t *testing.T, path, content string) {
+	t.Helper()
+	output, err := jobstore.OpenOutputNoSync(path, 1024)
+	if err != nil {
+		t.Fatalf("open attacker output fixture: %v", err)
+	}
+	if content != "" {
+		if _, err := output.Append([]byte(content)); err != nil {
+			_ = output.Close()
+			t.Fatalf("append attacker output fixture: %v", err)
+		}
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("close attacker output fixture: %v", err)
+	}
+}
+
+func copyOutputMetadata(t *testing.T, sourceOutputPath, destinationOutputPath string) {
+	t.Helper()
+	metadata, err := os.ReadFile(sourceOutputPath + ".meta.json")
+	if err != nil {
+		t.Fatalf("read attacker output metadata: %v", err)
+	}
+	if err := os.WriteFile(destinationOutputPath+".meta.json", metadata, 0o600); err != nil {
+		t.Fatalf("replace output metadata: %v", err)
 	}
 }
 
