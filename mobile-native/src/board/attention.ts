@@ -64,15 +64,11 @@ export function approvalRefs(needsYouSection: readonly NavigationSessionSummary[
 	return refs;
 }
 
-export function boardState(
-	row: NavigationSessionSummary,
-	approval: boolean,
-	seen: boolean,
-): BoardState {
-	// A row from an offline source can't be reached, whatever state it last
-	// reported: it is never Working, Finished or Needs you.
-	if (row.offline) return "shutDown";
-	switch (row.state) {
+/** The Board state a hub state decides on its own, whatever flags ride
+ * along, or null for one that leaves it to the row's other facts. A Board
+ * row and a search result both start here. */
+export function decisiveState(state: string): BoardState | null {
+	switch (state) {
 		case "errored":
 			return "failed";
 		case "restartRequired":
@@ -83,6 +79,19 @@ export function boardState(
 		case "notLoaded":
 			return "shutDown";
 	}
+	return null;
+}
+
+export function boardState(
+	row: NavigationSessionSummary,
+	approval: boolean,
+	seen: boolean,
+): BoardState {
+	// A row from an offline source can't be reached, whatever state it last
+	// reported: it is never Working, Finished or Needs you.
+	if (row.offline) return "shutDown";
+	const decisive = decisiveState(row.state);
+	if (decisive) return decisive;
 	if (row.state === "awaiting" && row.ask_pending) return "question";
 	if (approval || row.approval_pending === true) return "approval";
 	if (row.state === "active") return "working";

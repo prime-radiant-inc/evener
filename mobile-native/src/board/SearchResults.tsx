@@ -5,7 +5,7 @@ import { useColors, useTextScale } from "../ui";
 import { stateWord } from "./attention";
 import { BandHeader, Hairline, spokenAge } from "./BoardRow";
 import { type SearchScope, type SearchSnapshot, searchResultMark, sessionResults } from "./boardSearch";
-import { StateMark } from "./StateMark";
+import { markFor, StateMark } from "./StateMark";
 
 export interface SearchResultsProps {
 	search: SearchSnapshot;
@@ -167,8 +167,8 @@ function ResultRow({
 	const scale = useTextScale();
 	const state = searchResultMark(result);
 	const title = result.title || "Untitled session";
-	// Idle and Shut down draw no mark, so the label names no state either.
-	const word = state === "idle" || state === "shutDown" ? null : stateWord(state);
+	// A state that draws no mark (Idle, Shut down) goes unnamed in the label too.
+	const word = markFor(state, false) ? stateWord(state) : null;
 	const label = [title, word, result.project, result.age && spokenAge(result.age)].filter(Boolean).join(", ");
 	return (
 		<Pressable

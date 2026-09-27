@@ -149,8 +149,6 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		setIdleFolded(folded);
 	};
 
-	// Where each section starts in the scroller, for the chips and the
-	// summary line to jump to. Bands measure inside the Live block.
 	const scroller = useRef<ScrollView>(null);
 	const search = useSearch(connected ? client : null);
 	const searchInput = useRef<TextInput>(null);
@@ -189,21 +187,20 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// A search result opens like its Board row when the Board lists it, so
 	// it's marked seen with the row's own hub timestamp. A session the Board
 	// doesn't list has no Finished state to clear.
-	const openResult = (result: { ref: string; title: string }) => {
-		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
-		if (row) openSession(row);
-		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
-	};
 	const openSearchResult = (result: SearchResult) => {
 		recent.add(search.snapshot.query);
 		setRecentList(recent.list());
-		openResult(result);
+		const row = loadedRows.find((loaded) => loaded.ref === result.ref);
+		if (row) openSession(row);
+		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
 	};
 	const clearRecent = () => {
 		recent.clear();
 		setRecentList(recent.list());
 	};
 
+	// Where each section starts in the scroller, for the chips and the
+	// summary line to jump to. Bands measure inside the Live block.
 	const offsets = useRef<Record<string, number>>({});
 	const liveEnd = useRef<number | null>(null);
 	const measure = (key: string) => (event: LayoutChangeEvent) => {

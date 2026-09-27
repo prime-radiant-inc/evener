@@ -1,4 +1,5 @@
 import type { AuthStatusResponse, NavigationSessionSummary, PluginEntry, Source } from "@evener/appwire-client";
+import { plural } from "./attention";
 
 /** A hub-level problem the Board shows under its chips (spec 7.1). The
  * subject's id routes the action; the text is only for reading. */
@@ -37,9 +38,7 @@ export function notices(input: {
 		result.push({
 			key: `host:${source.id}`,
 			kind: "host",
-			text: refs.size
-				? `${source.label} is offline · ${refs.size} session${refs.size === 1 ? "" : "s"}`
-				: `${source.label} is offline`,
+			text: refs.size ? `${source.label} is offline · ${plural(refs.size, "session")}` : `${source.label} is offline`,
 			action: "Details",
 			sourceId: source.id,
 		});

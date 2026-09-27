@@ -9,10 +9,11 @@ import { hubTime } from "./attention";
 const seenKey = (hubId: string) => `evener.native.seen.${hubId}`;
 const foldedKey = (hubId: string) => `evener.native.board-sections.${hubId}`;
 const organizeKey = (hubId: string) => `evener.native.board-organize.${hubId}`;
-export const recentSearchesKey = (hubId: string) => `evener.native.recent-searches.${hubId}`;
+const recentSearchesKey = (hubId: string) => `evener.native.recent-searches.${hubId}`;
 const MARK_LIMIT = 500;
+const RECENT_LIMIT = 8;
 
-export function readJson(storage: SyncStringStorage, key: string): unknown {
+function readJson(storage: SyncStringStorage, key: string): unknown {
 	try {
 		const raw = storage.getItemSync(key);
 		return raw ? JSON.parse(raw) : null;
@@ -20,7 +21,7 @@ export function readJson(storage: SyncStringStorage, key: string): unknown {
 		return null;
 	}
 }
-export function writeJson(storage: SyncStringStorage, key: string, value: unknown): void {
+function writeJson(storage: SyncStringStorage, key: string, value: unknown): void {
 	try {
 		storage.setItemSync(key, JSON.stringify(value));
 	} catch {
@@ -199,6 +200,38 @@ export class OrganizeByPreference {
 	set(value: OrganizeBy): void {
 		this.value = value;
 		writeJson(this.storage, organizeKey(this.hubId), value);
+	}
+}
+
+/** The last queries you searched and opened a result from, most recent
+ * first, per device and hub. */
+export class RecentSearches {
+	private queries: string[];
+
+	constructor(
+		private readonly storage: SyncStringStorage,
+		private readonly hubId: string,
+	) {
+		const value = readJson(storage, recentSearchesKey(hubId));
+		this.queries = Array.isArray(value)
+			? value.filter((query): query is string => typeof query === "string" && query !== "").slice(0, RECENT_LIMIT)
+			: [];
+	}
+
+	list(): string[] {
+		return this.queries;
+	}
+
+	add(text: string): void {
+		const query = text.trim();
+		if (!query) return;
+		this.queries = [query, ...this.queries.filter((other) => other !== query)].slice(0, RECENT_LIMIT);
+		writeJson(this.storage, recentSearchesKey(this.hubId), this.queries);
+	}
+
+	clear(): void {
+		this.queries = [];
+		writeJson(this.storage, recentSearchesKey(this.hubId), this.queries);
 	}
 }
 

@@ -872,10 +872,7 @@ it("scrolls to the top and focuses the field when you tap Search", async () => {
 	expect(focus).toHaveBeenCalledTimes(1);
 	// Cancelling tucks the field back out of view.
 	searchField(tree).focus();
-	const cancel = tree.root.find(
-		(node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel === "Cancel search",
-	);
-	act(() => cancel.props.onPress());
+	searchField(tree).cancel();
 	const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: height, animated: true });
 	// Off iOS the header draws its own Search button.
@@ -1712,8 +1709,7 @@ it("shows the hub's notices under the chips, above Live, after Update needed, an
 		"superpowers is brokenPlugins",
 	]);
 	// The notices sit in the scroller, before the Live block.
-	const scroller = tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
-	const order = scroller.findAll((node) => node.props.testID === "notice" || node.props.testID === "live-block");
+	const order = boardScroller(tree).findAll((node) => node.props.testID === "notice" || node.props.testID === "live-block");
 	expect(order.map((node) => node.props.testID)).toEqual(["notice", "notice", "notice", "live-block"]);
 	pressLabel(tree, "Sign in, openai sign-in expired");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Providers", { hubId: id });

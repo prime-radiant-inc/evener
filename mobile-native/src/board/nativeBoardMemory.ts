@@ -1,6 +1,5 @@
 import { Storage } from "expo-sqlite/kv-store";
-import { FoldedSections, forgetBoard, OrganizeByPreference, SeenMarkers } from "./boardMemory";
-import { RecentSearches } from "./boardSearch";
+import { FoldedSections, forgetBoard, OrganizeByPreference, RecentSearches, SeenMarkers } from "./boardMemory";
 
 /** One instance per hub, made on first use and dropped when the hub is forgotten. */
 function perHub<T>(make: (hubId: string) => T) {

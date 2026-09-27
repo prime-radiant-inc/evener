@@ -1,14 +1,12 @@
 // Board search (spec 7.4): evener/search behind a debounce, the All and Live
-// scopes, each result's state mark, and the queries this device searched
-// for. The Archived scope and "In sessions" hits wait for S14.
+// scopes, and each result's state mark. The queries this device searched for
+// are Board memory, in boardMemory.ts. The Archived scope and "In sessions"
+// hits wait for S14.
 import type { SearchResponse, SearchResult } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import type { SyncStringStorage } from "../syncStringStorage";
-import type { BoardState } from "./attention";
-import { readJson, recentSearchesKey, writeJson } from "./boardMemory";
+import { type BoardState, decisiveState } from "./attention";
 
 export const SEARCH_DEBOUNCE = 250;
-const RECENT_LIMIT = 8;
 
 export type SearchScope = "all" | "live";
 
@@ -47,9 +45,12 @@ export function createSearchController(): SearchController {
 		snapshot = { ...snapshot, ...next };
 		for (const listener of [...listeners]) listener();
 	};
-	const stopWaiting = () => {
+	/** Drops the query waiting out its debounce and the request out, whose
+	 * answer then never lands. */
+	const abandon = () => {
 		if (timer !== null) clearTimeout(timer);
 		timer = null;
+		request++;
 	};
 	const ask = () => {
 		timer = null;
@@ -76,8 +77,7 @@ export function createSearchController(): SearchController {
 		setClient(next) {
 			if (next === client) return;
 			client = next;
-			stopWaiting();
-			request++;
+			abandon();
 			// A failure belonged to the old client; with none, the screen says
 			// search waits for the hub instead.
 			if (snapshot.searching || snapshot.failed) publish({ searching: false, failed: false });
@@ -86,14 +86,12 @@ export function createSearchController(): SearchController {
 		setQuery(text) {
 			const query = text.trim();
 			if (query === snapshot.query) return;
-			stopWaiting();
-			request++;
+			abandon();
 			publish({ query, results: null, searching: false, failed: false });
 			if (query) timer = setTimeout(ask, SEARCH_DEBOUNCE);
 		},
 		dispose() {
-			stopWaiting();
-			request++;
+			abandon();
 			listeners.clear();
 		},
 	};
@@ -109,51 +107,10 @@ export function sessionResults(results: SearchResponse, scope: SearchScope): Sea
  * carries no timestamp and no seen state, so it is never Finished: without a
  * mark that fits, it has none. S4 brings the unseen flag. */
 export function searchResultMark(result: SearchResult): BoardState {
-	switch (result.state) {
-		case "errored":
-			return "failed";
-		case "restartRequired":
-			return "restartNeeded";
-		case "warning":
-			return "warning";
-		case "ended":
-		case "notLoaded":
-			return "shutDown";
-	}
+	const decisive = decisiveState(result.state);
+	if (decisive) return decisive;
 	if (result.askPending) return "question";
 	if (result.approvalPending) return "approval";
 	if (result.state === "active") return "working";
 	return "idle";
-}
-
-/** The last queries you searched and opened a result from, most recent
- * first, per device and hub. */
-export class RecentSearches {
-	private queries: string[];
-
-	constructor(
-		private readonly storage: SyncStringStorage,
-		private readonly hubId: string,
-	) {
-		const value = readJson(storage, recentSearchesKey(hubId));
-		this.queries = Array.isArray(value)
-			? value.filter((query): query is string => typeof query === "string" && query !== "").slice(0, RECENT_LIMIT)
-			: [];
-	}
-
-	list(): string[] {
-		return this.queries;
-	}
-
-	add(text: string): void {
-		const query = text.trim();
-		if (!query) return;
-		this.queries = [query, ...this.queries.filter((other) => other !== query)].slice(0, RECENT_LIMIT);
-		writeJson(this.storage, recentSearchesKey(this.hubId), this.queries);
-	}
-
-	clear(): void {
-		this.queries = [];
-		writeJson(this.storage, recentSearchesKey(this.hubId), this.queries);
-	}
 }
