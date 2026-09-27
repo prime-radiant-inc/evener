@@ -318,6 +318,8 @@ export function createBoardController(): BoardController {
 				? a.rows === b.rows || (!a.rows.length && !b.rows.length)
 				: a[field] === b[field],
 		);
+	// The same categories on the same pages. Their order needs no check: it
+	// follows pins.rows, which unchanged() compares on its own.
 	const sameCategories = (
 		a: BoardSnapshot["pinSections"],
 		b: BoardSnapshot["pinSections"],
@@ -325,7 +327,7 @@ export function createBoardController(): BoardController {
 		const ids = Object.keys(a);
 		return (
 			ids.length === Object.keys(b).length &&
-			ids.every((id, index) => Object.keys(b)[index] === id && samePage(a[id], b[id]))
+			ids.every((id) => Object.hasOwn(b, id) && samePage(a[id], b[id]))
 		);
 	};
 	const unchanged = (next: BoardSnapshot) =>
