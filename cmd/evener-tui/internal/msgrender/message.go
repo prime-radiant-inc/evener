@@ -10,15 +10,10 @@ import (
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/evener/agent/argrepair"
-	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/cmd/evener-tui/internal/toolsummary"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitext"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
-	"primeradiant.com/evener/internal/apptranscript"
-	"primeradiant.com/evener/llm"
 )
 
 var markdownRenderer *glamour.TermRenderer
@@ -454,175 +449,6 @@ func wrapText(text string, firstBudget, contBudget int) []string {
 	return lines
 }
 
-// historyToMessages converts session history turns into TUI chat messages
-// for display when resuming a session.
-func historyToMessages(turns []schema.Turn) []transcript.ChatMessage {
-	// Collect tool results keyed by call ID for matching with tool calls.
-	toolResults := make(map[string]llm.ToolResultData)
-	for _, t := range turns {
-		if t.Kind != schema.TurnToolResults && t.Kind != schema.TurnTool {
-			continue
-		}
-		for _, p := range t.Message.Content {
-			if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-				toolResults[p.ToolResult.ToolCallID] = *p.ToolResult
-			}
-		}
-	}
-
-	var msgs []transcript.ChatMessage
-	for _, t := range turns {
-		switch t.Kind {
-		case schema.TurnUserInput:
-			text := t.Message.Text()
-			if strings.TrimSpace(text) != "" {
-				msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgUser, Text: text})
-			}
-
-		case schema.TurnAssistant:
-			for _, p := range t.Message.Content {
-				switch p.Kind {
-				case llm.ContentText:
-					// Skip empty text (common in tool-only responses).
-					if strings.TrimSpace(p.Text) != "" {
-						msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgAssistant, Text: p.Text})
-					}
-
-				case llm.ContentToolCall:
-					if p.ToolCall == nil {
-						continue
-					}
-					tc := p.ToolCall
-					if tc.Name == "communicate" {
-						// Raw-arguments-aware display, mirroring the hub projection
-						// (agent/transcript_render.go writeAssistantContent +
-						// writeResultToolMessage):
-						//   - A runtime failure (IsError, !PrevalOnly) executed and
-						//     returned an error; its raw bytes are not the delivered
-						//     message. Skip the render so the TUI matches the hub
-						//     (transcript_render.go:975-977).
-						//   - A healed communicate (result is "ok") with malformed raw
-						//     bytes is repaired to recover the message it delivered
-						//     live.
-						//   - A PrevalOnly-rejected or pending communicate with
-						//     malformed raw bytes (RawArguments != "") renders the raw
-						//     bytes the model actually sent. When RawArguments is
-						//     empty (valid JSON, no message key), emit nothing — the
-						//     replay-safe {} placeholder is not meaningful chat text.
-						//     This differs from the hub's writeResultToolMessage,
-						//     which emits {} as its raw fallback; the TUI suppresses
-						//     it because a communicate chat message showing literal {}
-						//     is worse than dropping it (the pre-PR behavior).
-						result, hasResult := toolResults[tc.ID]
-						// Runtime failure: skip entirely, matching the hub guard.
-						if hasResult && result.IsError && !result.PrevalOnly {
-							continue
-						}
-						healed := hasResult && !result.IsError
-						msg := extractCommunicate(tc)
-						if msg == "" && healed && tc.RawArguments != "" {
-							msg = healedCommunicateMessage(tc)
-						}
-						if msg == "" && tc.RawArguments != "" {
-							// PrevalOnly-rejected or pending communicate with no
-							// recoverable message and malformed raw bytes: show the
-							// model's raw bytes (SentArguments), matching the hub's
-							// raw-arguments fallback. Gated on RawArguments != ""
-							// so the replay-safe {} placeholder (valid JSON, no
-							// message) is not emitted as chat text. Bound the
-							// fallback so a pathological one-line payload cannot
-							// dominate the chat view.
-							msg = oneLineTrunc(tc.SentArguments(), communicateRawFallbackMaxRunes)
-						}
-						if msg != "" {
-							msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgCommunicate, Text: msg})
-						}
-						continue
-					}
-
-					// Non-communicate tool call: show as collapsed tool entry.
-					// Use SentArguments so a call whose Arguments were replaced
-					// with the replay-safe {} placeholder after rejection still
-					// shows the model's original raw bytes, matching the hub's
-					// writeToolCardLine.
-					argsJSON := tc.SentArguments()
-					toolDesc, toolDetail := toolsummary.SummarizeTool(tc.Name, argsJSON)
-					result := toolResults[tc.ID]
-					output := fmt.Sprintf("%v", result.Content)
-					info := &transcript.ToolCallInfo{
-						Name:        tc.Name,
-						Description: toolDesc,
-						Detail:      toolDetail,
-						RawArgs:     argsJSON,
-						Output:      output,
-						Done:        true,
-						Expanded:    toolDetail != "",
-					}
-					if result.IsError {
-						info.Error = output
-					}
-					msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgTool, Tool: info})
-				}
-			}
-		}
-	}
-	return msgs
-}
-
-// extractCommunicate pulls the message field from a communicate tool call.
-func extractCommunicate(tc *llm.ToolCallData) string {
-	var args struct {
-		Message string `json:"message"`
-		Output  *struct {
-			Message string `json:"message"`
-		} `json:"output"`
-	}
-	// Parse SentArguments so a call whose Arguments were replaced with the
-	// replay-safe {} placeholder still extracts from the model's original
-	// bytes when they were valid JSON. When the raw bytes are malformed the
-	// unmarshal fails and the caller falls back to repair (healed) or the raw
-	// bytes (rejected/pending).
-	if err := json.Unmarshal(tc.SentArgumentsBytes(), &args); err == nil {
-		if args.Message != "" {
-			return args.Message
-		}
-		if args.Output != nil && args.Output.Message != "" {
-			return args.Output.Message
-		}
-	}
-	return ""
-}
-
-// communicateRawFallbackMaxRunes bounds the raw-arguments fallback for a
-// rejected/pending communicate so one pathological line cannot dominate the
-// chat view, mirroring the hub's resultLineMaxRunes limit.
-const communicateRawFallbackMaxRunes = 300
-
-// healedCommunicateMessage repairs a healed communicate's malformed raw
-// arguments and applies the communicate-specific normalization (promote
-// string output to object, copy output.message into message) so the rendered
-// message matches what live delivered. Mirrors writeResultToolMessage's
-// healed branch in agent/transcript_render.go.
-func healedCommunicateMessage(tc *llm.ToolCallData) string {
-	repaired := argrepair.RepairJSON([]byte(tc.RawArguments))
-	normalized := apptranscript.NormalizeCommunicateArguments(repaired)
-	var args struct {
-		Message string `json:"message"`
-		Output  *struct {
-			Message string `json:"message"`
-		} `json:"output"`
-	}
-	if err := json.Unmarshal(normalized, &args); err == nil {
-		if args.Message != "" {
-			return args.Message
-		}
-		if args.Output != nil && args.Output.Message != "" {
-			return args.Output.Message
-		}
-	}
-	return ""
-}
-
 // oneLineTrunc collapses newlines to spaces (so a multi-line raw payload does
 // not span the chat view) and truncates to at most limit runes, appending an
 // ellipsis when truncated. Mirrors the hub's oneLine+truncRunes bounding.
@@ -641,8 +467,7 @@ func oneLineTrunc(s string, limit int) string {
 // toolCardRawFallbackMaxRunes bounds the raw-arguments fallback for a
 // non-communicate tool-card row so one pathological line cannot dominate the
 // chat view, mirroring the hub's toolInputSummary 120-rune bound for tool
-// cards (agent/transcript_render.go:1600). The communicate fallback's 300
-// (communicateRawFallbackMaxRunes) is a separate site with a different limit.
+// cards (agent/transcript_render.go:1600).
 const toolCardRawFallbackMaxRunes = 120
 
 // parsesAsJSONObject reports whether s decodes as a JSON object. Returns
