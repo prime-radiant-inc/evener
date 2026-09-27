@@ -160,6 +160,50 @@ func TestServeWebSocketFastRequestCompletesWhileSlowHandlerRuns(t *testing.T) {
 	}
 }
 
+// TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests pins why
+// evener/activity/read dispatches concurrently: the hub's read can wait out
+// its per-host budget on a slow attached host, and a phone polls it every ten
+// seconds on the same connection its sends ride, so an ordered request issued
+// behind a parked read must still run and answer.
+func TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	readStarted := make(chan struct{})
+	releaseRead := make(chan struct{})
+	HandleTyped(server.Router(), appwire.MethodEvenerActivityRead, func(_ context.Context, _ appwire.ActivityReadParams) (appwire.ActivityReadResponse, error) {
+		close(readStarted)
+		<-releaseRead
+		return appwire.ActivityReadResponse{Sessions: []appwire.SessionActivity{}}, nil
+	})
+	HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(_ context.Context, _ appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		return appwire.EmptyResponse{}, nil
+	})
+	httpServer := serveWebSocketHTTP(t, server)
+	client := dialAppWireClient(t, httpServer)
+	ctx := context.Background()
+	release := sync.OnceFunc(func() { close(releaseRead) })
+	t.Cleanup(release)
+
+	readDone := make(chan error, 1)
+	go func() {
+		var out appwire.ActivityReadResponse
+		readDone <- client.Request(ctx, appwire.MethodEvenerActivityRead, appwire.ActivityReadParams{}, &out)
+	}()
+	waitFor(t, "the activity read to start", readStarted)
+
+	orderedDone := make(chan error, 1)
+	go func() {
+		orderedDone <- client.ThreadModelSet(ctx, appwire.ThreadModelSetParams{Ref: "local:th_1", ModelProvider: "p", Model: "m"})
+	}()
+	if err := waitFor(t, "an ordered request to answer while the activity read is parked", orderedDone); err != nil {
+		t.Fatalf("ordered request failed: %v", err)
+	}
+
+	release()
+	if err := waitFor(t, "the activity read to answer once released", readDone); err != nil {
+		t.Fatalf("activity read failed: %v", err)
+	}
+}
+
 // TestServeWebSocketRejectsRequestsBeforeInitialize pins the initialize
 // ordering invariant under concurrent dispatch over a real WebSocket: a
 // request that arrives before initialize completes is rejected ("initialize
@@ -312,6 +356,10 @@ func TestConcurrentDispatchMethodsAreExactlyTheSlowReads(t *testing.T) {
 		// lock fail a concurrent apply fast, and the restart waits on
 		// its own response flush rather than connection order.
 		appwire.MethodEvenerUpdateApply: true,
+		// evener/activity/read waits up to its per-host budget on each
+		// attached host; a phone polls it on the connection its sends ride
+		// (TestServeWebSocketSlowActivityReadDoesNotHoldOrderedRequests).
+		appwire.MethodEvenerActivityRead: true,
 	}
 	for _, spec := range appwire.Methods {
 		if got, want := concurrentDispatchMethod(spec.Name), slowReads[spec.Name]; got != want {
