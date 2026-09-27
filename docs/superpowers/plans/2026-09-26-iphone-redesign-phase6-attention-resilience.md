@@ -848,7 +848,7 @@ git commit -m "feat(native): Discard and Send now for your own undelivered messa
 **Requirements (spec 8.5, 14; rulings 14 to 16):**
 1. A message this phone hasn't handed to the hub yet (`state: "submitting"`, and an accepted send) reads "Sending…" while connected and "Will send when you're back online" while not.
 2. "Couldn't confirm this was sent" offers Check only while connected, and always Discard: on a lost send (`blockedUnknown`), on the unconfirmed draft and on a record the phone couldn't place (`orphaned`).
-3. A message a Stop held before it left the phone (`state: "canceled"`) shows as a held ghost: "Held · you stopped this turn", with "Send now" and "Cancel" as buttons. Another client's rows stay out. This is a record on the phone, which the hub never saw; the queue a Stop parks on the hub stays phase 3's (`queueGhosts`, through `isQueueParked`).
+3. A message a Stop held before it left the phone (`state: "canceled"`) shows as a held ghost: "Held · you stopped this turn", with "Send now" and "Cancel" as buttons. Another client's rows stay out. This is a record on the phone, which the hub never saw; the queue a Stop parks on the hub stays phase 3's (`queueGhosts`, through `isQueueParked`). Both use phase 3's own `"held"` ghost state and its caption (`GhostState` and `CAPTIONS.held` in `ghosts.ts`, which `pendingGhost` reads), so no state or caption is added.
 4. In the action handler, a ghost whose origin is `{ kind: "pending" }`:
    - Discard and Cancel call `getNativeMutationRuntime().discardUndelivered(clientMutationId, nativeMutationTargetKey(hubId, ref))`.
    - Send now calls `getNativeMutationRuntime().releaseCanceled(clientMutationId, nativeMutationTargetKey(hubId, ref))`.
@@ -1080,7 +1080,8 @@ it("starts or resumes a session with a send, fenced the same way", () => {
 - the session loads connected; the connection drops (the mocked connection reports `"reconnecting"`); typing "sent on the train" and pressing Send ("Send when you're back online") leaves the composer empty, stores one `turn/queue` record for `nativeMutationTargetKey("hub-1", ref)`, and shows a ghost reading "Will send when you're back online";
 - the connection returns (`"ready"`, the same client): the client receives that `turn/queue` exactly once, and the ghost goes when the read reflects it;
 - a screen that never read its session keeps Send disabled while offline, and the typed draft stays;
-- with a question pending and the connection down, the dock's Send reads "Send answer when you're back online", pressing it stores one record carrying the composed answer and marks the question's batch sent, and back online the client receives it exactly once.
+- with a question pending and the connection down, the dock's Send reads "Send answer when you're back online", pressing it stores one record carrying the composed answer and marks the question's batch sent, and back online the client receives it exactly once;
+- a session that restarted while the phone was offline: back online, the client answers the held `turn/queue` as the daemon answers a stale fence, `new WireError("thread instance is stale", -32013, { evenerErrorInfo: "conflict", clientMutationId, mutationOutcome: "notAccepted", retryDisposition: "none" })` (`MutationNotAccepted`, `server/appwire_runtime.go:2363-2365`). The client receives it exactly once, nothing retries it, and its ghost turns refused ("Couldn't send this · thread instance is stale") with Discard: the dispatcher moves a not-accepted record to recovery (`appwire-client/typescript/state/mutation/dispatcher.ts:212-216`).
 
 - [ ] **Step 2: Run them and watch them fail**
 
