@@ -73,7 +73,9 @@ func WithSymlinkPolicy(p SymlinkPolicy) func(*Options) {
 //
 // The caller is responsible for any prefix guards (symlinked evener/ or
 // evener/projects/ ancestors, pattern well-formedness); this function only
-// filters the glob's matches. Callers wrap the returned error themselves.
+// filters the glob's matches. Glob errors are returned already wrapped (as
+// "glob project buckets: %w"); the caller is responsible only for the prefix
+// guards and pattern well-formedness.
 func EnumerateBuckets(projects string, opts ...func(*Options)) ([]Bucket, error) {
 	o := Options{glob: filepath.Glob, symlinkPolicy: FollowSymlinks}
 	for _, opt := range opts {

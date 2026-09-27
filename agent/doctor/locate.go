@@ -205,7 +205,7 @@ func refFor(projectID, sid string) string {
 // covers non-canonical legacy names like hex-style bucket directories).
 // The grammar-safety check stays at each call site.
 func projRef(projectID, sid string) string {
-	return "proj:" + projectID + ":" + sid
+	return bucketref.ProjScheme + projectID + ":" + sid
 }
 
 // sessionInBucket reports whether the session's transcript file is present in b.

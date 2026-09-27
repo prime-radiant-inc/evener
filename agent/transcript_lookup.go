@@ -51,7 +51,7 @@ func resolveTranscript(selector, currentStateDir, currentSessionID string) (path
 	}
 
 	// Try explicit ref (local: or proj:).
-	if strings.HasPrefix(selector, "local:") || strings.HasPrefix(selector, "proj:") {
+	if strings.HasPrefix(selector, bucketref.LocalScheme) || strings.HasPrefix(selector, bucketref.ProjScheme) {
 		projectID, sessionID, decErr := decodeRef(selector)
 		if decErr != nil {
 			return "", "", decErr
@@ -464,7 +464,7 @@ func parentBucketAndID(selector, currentStateDir, currentSessionID string) (buck
 		}
 		return currentStateDir, currentSessionID, scopeCurrentProject, nil
 	}
-	if strings.HasPrefix(selector, "local:") || strings.HasPrefix(selector, "proj:") {
+	if strings.HasPrefix(selector, bucketref.LocalScheme) || strings.HasPrefix(selector, bucketref.ProjScheme) {
 		projectID, id, decErr := decodeRef(selector)
 		if decErr != nil {
 			return "", "", "", decErr
