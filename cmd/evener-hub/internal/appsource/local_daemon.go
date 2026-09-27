@@ -94,6 +94,11 @@ type LocalDaemonEntry struct {
 	// and the fallback takes over.
 	Capabilities      appwire.ThreadCapabilities
 	CapabilitiesKnown bool
+	// Subagents mirrors hubcore.LiveEntry.Subagents: the root's whole-tree
+	// subagent tally (S3). threadFromEntry carries it into
+	// appwire.EvenerThread.Subagents when the tree has a subagent. A read-only
+	// alias has none.
+	Subagents appwire.SubagentTally
 	// LastTurnEndedAt mirrors hubcore.LiveEntry.LastTurnEndedAt in Unix
 	// milliseconds: when the root's last turn ended (S4). threadFromEntry
 	// carries it into appwire.EvenerThread.LastTurnEndedAt so a controller
@@ -1154,6 +1159,9 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 			LastTurnEndedAt:    item.LastTurnEndedAt,
 		},
 		Status: appwire.ThreadStatus{Type: status},
+	}
+	if tally := item.Subagents; tally != (appwire.SubagentTally{}) {
+		thread.Evener.Subagents = &tally
 	}
 	if status == appwire.ThreadStatusRestartRequired {
 		// A restart-required session cannot act, but its saved notes are still

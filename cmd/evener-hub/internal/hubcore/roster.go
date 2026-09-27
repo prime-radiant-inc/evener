@@ -96,6 +96,10 @@ type LiveEntry struct {
 	// its bars move every minute a session works, and hashing them would bump
 	// navigation revisions and broadcast an invalidation on every probe.
 	Activity *appwire.ThreadActivity
+	// Subagents is the root's whole-tree subagent tally from its probe (S3). It
+	// renders on the row's last line and Subagents chip, so rosterFingerprint
+	// hashes it; the counts move only when a subagent's run starts or ends.
+	Subagents appwire.SubagentTally
 	// LastTurnEndedAt is when the session's last turn ended, stamped by its
 	// daemon at the turn boundary (S4). It decides Finished versus Idle against
 	// the hub's seen marker, so rosterFingerprint hashes it: a turn that starts
@@ -137,6 +141,9 @@ type ProbeResult struct {
 	// Activity is the root tree's pulse meter sample (S5), nil from a daemon
 	// that predates it. See LiveEntry.Activity.
 	Activity *appwire.ThreadActivity
+	// Subagents is the listed root's whole-tree subagent tally (S3); zero from
+	// a daemon that predates it and for a tree with no subagent.
+	Subagents appwire.SubagentTally
 	// LastTurnEndedAt is when the listed root's last turn ended (S4); zero from
 	// a daemon that predates it, or before any turn has ended.
 	LastTurnEndedAt time.Time
@@ -567,6 +574,12 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		// being cancelled or starting must move the fingerprint while the
 		// status holds still, or onChange never invalidates navigation.
 		writeTaskFingerprint(h, bySess[id].Tasks)
+		// A subagent failing or finishing changes the row's last line (S3).
+		tally := bySess[id].Subagents
+		for _, count := range []int{tally.Running, tally.Failed, tally.Done} {
+			_, _ = h.Write([]byte(strconv.Itoa(count)))
+			_, _ = h.Write([]byte{0})
+		}
 		_, _ = h.Write([]byte{0})
 		// A turn that starts and ends between two probes leaves Status where it
 		// was and moves only this, and it turns the row Finished (S4).
@@ -1372,6 +1385,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		ChildWatches:          result.ChildWatches,
 		Tasks:                 result.Tasks,
 		Activity:              result.Activity,
+		Subagents:             result.Subagents,
 		LastTurnEndedAt:       result.LastTurnEndedAt,
 	})
 }

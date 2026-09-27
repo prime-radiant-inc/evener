@@ -1839,6 +1839,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           optionalTime(node.UpdatedAt),
 		MoreSubagents:       node.MoreSubagents,
+		Subagents:           navigationSubagentTally(node.Subagents),
 		TurnEndedAt:         optionalTime(node.TurnEndedAt),
 		Unseen:              p.projection.unseen(ref, node.TurnEndedAt),
 		RunningJobs:         navigationJobs(node.RunningJobs),
@@ -1879,6 +1880,18 @@ func navigationTaskProgress(tasks *appwire.TaskAggregate) *hubapi.NavigationTask
 		return nil
 	}
 	return progress
+}
+
+// navigationSubagentTally is a root row's tally on the wire: absent when the
+// tree has no subagent, and dropped when the schema would refuse it (a
+// negative count, which only a malformed daemon answer can carry), the way
+// navigationTaskProgress drops bad progress rather than fail the resource.
+func navigationSubagentTally(tally appwire.SubagentTally) *hubapi.NavigationSubagentTally {
+	wire := hubapi.NavigationSubagentTally{Running: tally.Running, Failed: tally.Failed, Done: tally.Done}
+	if wire == (hubapi.NavigationSubagentTally{}) || !navigationSubagentTallyValid(wire) {
+		return nil
+	}
+	return &wire
 }
 
 // offlineSourceIDs indexes the manifest sources whose connection state is
@@ -2166,6 +2179,7 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 		clone.Watches[index].DeliveryTimes = append([]string(nil), watch.DeliveryTimes...)
 	}
 	clone.Tasks = clonePointer(summary.Tasks)
+	clone.Subagents = clonePointer(summary.Subagents)
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {
 		clone.Children[index] = cloneNavigationSummary(child)
@@ -2173,7 +2187,9 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 	return clone
 }
 
-// clonePointer returns a new pointer to a copy of *value, or nil for nil.
+// clonePointer returns a pointer to a shallow copy of *value; nil stays nil.
+// The summaries point only at values (a time, the task progress, the subagent
+// tally), so the copy shares nothing that can change.
 func clonePointer[T any](value *T) *T {
 	if value == nil {
 		return nil
