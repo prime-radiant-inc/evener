@@ -244,16 +244,14 @@ test.each(["pointer", "keyboard"] as const)(
       await user.keyboard("{Enter}");
     }
 
-    await waitFor(() => {
-      expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
-        {
-          method: "turn/start",
-          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "ok" }] }),
-        },
-      ]);
-      expect(message.textContent).toBe("");
-    });
     await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([
+      {
+        method: "turn/start",
+        params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "ok" }] }),
+      },
+    ]);
+    expect(message.textContent).toBe("");
     expect(message.getAttribute("contenteditable")).toBe("true");
     expect(send.disabled).toBe(true);
     // The contract is usable composer focus, not a jsdom-specific BODY blur.
@@ -315,17 +313,15 @@ test.each(["pointer", "keyboard"] as const)(
       expect(document.activeElement).toBe(send);
       await user.keyboard("{Enter}");
     }
-    await waitFor(() => {
-      expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([
-        {
-          method: "turn/queue",
-          params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "qf" }] }),
-        },
-      ]);
-      expect(message.textContent).toBe("");
-    });
-    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
     await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([
+      {
+        method: "turn/queue",
+        params: expect.objectContaining({ ref: "ref_a", input: [{ type: "text", text: "qf" }] }),
+      },
+    ]);
+    expect(message.textContent).toBe("");
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
     expect(message.getAttribute("contenteditable")).toBe("true");
     expect(send.disabled).toBe(true);
     await waitFor(() => expect(document.activeElement).toBe(message));
@@ -372,8 +368,8 @@ test.each(["other control", "sibling Composer", "replacement Composer"] as const
       }
       expect(document.activeElement).toBe(destinationElement);
       await act(async () => storage.release());
-      await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
       await flushPendingTurnsProjectionForTests();
+      expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
       if (destination !== "replacement Composer") await waitFor(() => expect(message.textContent).toBe(""));
       else expect(message.isConnected).toBe(false);
       expect(document.activeElement).toBe(destinationElement);
@@ -396,11 +392,9 @@ test("ordinary Send does not take another control's focus on programmatic form s
   await user.click(elsewhere);
   act(() => message.closest("form")!.requestSubmit(send));
   expect(document.activeElement).toBe(elsewhere);
-  await waitFor(() => {
-    expect(message.textContent).toBe("");
-    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
-  });
   await flushPendingTurnsProjectionForTests();
+  expect(message.textContent).toBe("");
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   expect(document.activeElement).toBe(elsewhere);
 });
 
@@ -411,11 +405,9 @@ test("ordinary Send preserves the textarea submission shortcut and next typing",
   const message = screen.getByRole("textbox", { name: "Message" }) as HTMLDivElement;
   await user.type(message, "sf");
   await user.keyboard("{Control>}{Enter}{/Control}");
-  await waitFor(() => {
-    expect(message.textContent).toBe("");
-    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
-  });
   await flushPendingTurnsProjectionForTests();
+  expect(message.textContent).toBe("");
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
   expect(document.activeElement).toBe(message);
   await user.keyboard("next draft");
   expect(message.textContent).toBe("next draft");
@@ -767,7 +759,7 @@ test.each(["storage", "composer"] as const)(
       expect(readDraft("ref_a")).toBe("");
       expect(screen.getByRole("region", { name: "Notifications" }).textContent).toBe("");
       expect(observed).toHaveBeenCalled();
-      await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1));
+      expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
       expect(report).toHaveBeenCalledWith(expect.any(String), failure);
     } finally {
       unsubscribeFailure();
@@ -789,7 +781,17 @@ test("the composer resends recovered text while recovery projection callbacks ar
   });
   await storage.transferToRecovery(original.clientMutationId, "rejected");
   const fake = await mountComposer("ref_a");
-  fake.on("turn/steer", () => new Promise<never>(() => undefined));
+  // The steer is awaited where it arrives: the recovery reads held below keep
+  // the projection work open, so a flush could not settle until they are
+  // released.
+  let markSteerSent!: () => void;
+  const steerSent = new Promise<void>((resolve) => {
+    markSteerSent = resolve;
+  });
+  fake.on("turn/steer", () => {
+    markSteerSent();
+    return new Promise<never>(() => undefined);
+  });
   await flushPendingTurnsProjectionForTests();
   expect(textarea()?.textContent).toBe("recover me");
   const getAll = IDBObjectStore.prototype.getAll;
@@ -806,7 +808,10 @@ test("the composer resends recovered text while recovery projection callbacks ar
     await user.click(composerSteerButton());
     await waitFor(() => expect(textarea()?.textContent).toBe(""));
     expect(await storage.getRecovery(original.clientMutationId)).toBeUndefined();
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1));
+    await act(async () => {
+      await steerSent;
+    });
+    expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
     const call = fake.calls.find((call) => call.method === "turn/steer");
     expect(call?.params).toEqual(expect.objectContaining({ input: [{ type: "text", text: "recover me edited" }] }));
   } finally {
@@ -858,7 +863,8 @@ test("rejected inline skill input restores its atoms and resends edited prose wi
   const editedInput = [{ type: "text", text: `${text} again` }, ...skills];
   expect((await storage.getRecovery(original.clientMutationId))?.payload.input).toEqual(editedInput);
   await user.click(composerSteerButton());
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/steer")).toHaveLength(1);
   expect(fake.calls.find((call) => call.method === "turn/steer")?.params).toEqual(
     expect.objectContaining({ input: editedInput }),
   );
@@ -901,7 +907,8 @@ test("the strip's drain-as-steer reads the composer's live text at click time, n
   await user.type(textarea() as HTMLDivElement, "st");
   await user.click(drainButton());
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true);
   const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "st" }] });
 });
@@ -1041,7 +1048,8 @@ test("queue edit restores inline selections that a nonempty composer drain sends
       .map((chip) => chip.textContent),
   ).toEqual(["/skill-1", "/skill-2", "/skill-1"]);
   await user.click(drainButton());
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/drainAsSteer")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/drainAsSteer")).toHaveLength(1);
   expect(fake.calls.find((call) => call.method === "turn/drainAsSteer")?.params).toEqual(
     expect.objectContaining({
       input: [
@@ -1178,7 +1186,8 @@ test("clicking Edit on a queued entry whose daemon skillNames slot is null resto
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
   expect((textarea() as HTMLDivElement).textContent).toBe("plain queued text");
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true);
 });
 
 test("clicking Edit appends the restored text after a blank line when the composer already has typed text", async () => {
@@ -1230,7 +1239,8 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
 
   await user.click(screen.getByRole("button", { name: /remove from queue/i }));
 
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true);
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
 });
@@ -1364,7 +1374,8 @@ test("while a strip-triggered drain is in flight, the composer's own classic ste
   expect(composerSteerButton().disabled).toBe(true);
 
   storage.release();
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true);
 });
 
 test("while the composer's own classic drain is in flight, the strip's Steer-now button is also disabled (shared busy gate)", async () => {
@@ -1395,7 +1406,8 @@ test("while the composer's own classic drain is in flight, the strip's Steer-now
   expect(drainButton().disabled).toBe(true);
 
   storage.release();
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true);
 });
 
 // --- pending-tracking uniformity (send/steer/queue/drain all register) ------
@@ -1498,7 +1510,8 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
 
   await user.click(screen.getByTestId("composer-submit"));
 
-  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
 });
 
 // --- T4: ask dock wiring ------------------------------------------------------
@@ -1654,7 +1667,8 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
 
   await user.type(textarea() as HTMLDivElement, "fq");
   await user.click(screen.getByTestId("composer-submit"));
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true);
   expect((textarea() as HTMLDivElement).textContent).toBe(""); // clears optimistically like any other successful submit
   const queueCall = fake.calls.find((c) => c.method === "turn/queue");
   const clientMutationId = (queueCall?.params as { clientMutationId?: string } | undefined)?.clientMutationId;
@@ -1697,7 +1711,8 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   await user.click(screen.getByRole("button", { name: /edit message/i }));
 
   expect((textarea() as HTMLDivElement).textContent).toBe("fq"); // restored into the (now empty) composer
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true);
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
 });

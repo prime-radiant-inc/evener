@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vi
 import "../../panes/sessionPanels";
 import { QUEUE_EMPTY, QUEUE_UNAVAILABLE, STEER_UNAVAILABLE } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { flushPendingTurnsProjectionForTests } from "../../panes/session/composer/queue/testing/flushPendingTurnsProjection";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
@@ -506,7 +507,8 @@ test("/steer sends turn/steer when a turn is active", async () => {
   const c = cmd("steer");
   if (c.args?.kind !== "free") throw new Error("expected free args");
   await c.args.run(runContext(), "go left");
-  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true);
   const call = fake.calls.find((call) => call.method === "turn/steer");
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "go left" }] });
 });
@@ -526,7 +528,8 @@ test("/steer sends turn/steer while the session is active with no open turn row 
   const c = cmd("steer");
   if (c.args?.kind !== "free") throw new Error("expected free args");
   await c.args.run(runContext(), "go left");
-  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true);
 });
 
 // The handler applies the same rule the menu does (Command.available, from
@@ -633,7 +636,8 @@ test("/interrupt sends turn/interrupt for a working session whose turn has no na
 
   await cmd("interrupt").run?.(runContext());
 
-  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/interrupt")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((call) => call.method === "turn/interrupt")).toBe(true);
   expect(fake.calls.find((call) => call.method === "turn/interrupt")?.params).toMatchObject({ ref: "ref_a" });
 });
 
