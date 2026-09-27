@@ -157,7 +157,7 @@ it("shows only the scope chips when the field is empty and there are no recent s
 	const { tree, props } = mount({ search: { query: "", results: null, searching: false, failed: false } });
 	expect(pressables(tree).map((node) => node.props.accessibilityLabel)).toEqual(["All", "Live"]);
 	expect(renderedText(tree)).not.toContain("RECENT");
-	// A scope chosen before typing holds for the query that follows.
+	// A scope can be picked before there's a query.
 	act(() => labelled(tree, "Live").props.onPress());
 	expect(props.onScope).toHaveBeenCalledWith("live");
 });

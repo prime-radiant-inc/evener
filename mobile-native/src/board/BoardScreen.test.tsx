@@ -683,6 +683,21 @@ it("narrows results to live sessions in the Live scope", async () => {
 	act(() => tree.unmount());
 });
 
+it("holds a scope picked before you type", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, searchOnly: [session("local:gone", { title: "Old report" })] }).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	pressLabel(tree, "Live");
+	await bar.type("report");
+	expect(resultTitles(tree)).toEqual([]);
+	expect(texts(tree)).toContain("No sessions match.");
+	act(() => tree.unmount());
+});
+
 it("says a failed search failed, and never asks you to retry", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
