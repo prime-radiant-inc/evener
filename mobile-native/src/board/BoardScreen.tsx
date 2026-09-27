@@ -450,6 +450,7 @@ function HubButton({
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
+	const { width } = useWindowDimensions();
 	const open = () => {
 		if (Platform.OS === "ios") {
 			ActionSheetIOS.showActionSheetWithOptions(
@@ -467,6 +468,8 @@ function HubButton({
 			);
 			return;
 		}
+		// An alert has no disabled buttons, so Hub settings leaves the list
+		// while the hub is out of reach.
 		Alert.alert(hubName, undefined, [
 			...(connected ? [{ text: "Hub settings", onPress: onSettings }] : []),
 			{ text: "Switch hub", onPress: onSwitch },
@@ -478,7 +481,16 @@ function HubButton({
 			accessibilityRole="button"
 			accessibilityLabel={`${hubName}, hub menu`}
 			onPress={open}
-			style={{ minHeight: 44, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", columnGap: 6 }}
+			style={{
+				// A custom header view sizes itself, so a long hub name needs a
+				// cap to truncate against instead of growing into Search.
+				maxWidth: Math.round(width * 0.6),
+				minHeight: 44,
+				paddingHorizontal: 12,
+				flexDirection: "row",
+				alignItems: "center",
+				columnGap: 6,
+			}}
 		>
 			<Text
 				allowFontScaling={Platform.OS !== "ios"}

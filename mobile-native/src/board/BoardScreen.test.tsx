@@ -14,7 +14,7 @@ import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-import { render, renderedText, screenConnection } from "../renderNative.testkit";
+import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
 import { BoardScreen } from "./BoardScreen";
 import { PulseMeter } from "./PulseMeter";
 import { seenMarkers } from "./nativeBoardMemory";
@@ -399,6 +399,37 @@ it("starts a fresh Board when you switch hubs, and stops the old hub's", async (
 	act(() => tree.unmount());
 });
 
+it("offers the hub menu as an alert off iOS, without Hub settings while the hub is out of reach", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	Platform.OS = "android";
+	try {
+		const buttonLabels = () => (alertRequests.at(-1)?.buttons ?? []).map((button) => button.text);
+		const pressHubButton = () => {
+			const hubButton = render(headerOptions(nav).unstable_headerLeftItems({})[0].element);
+			act(() => hubButton.root.findByType("Pressable" as never).props.onPress());
+			act(() => hubButton.unmount());
+		};
+		pressHubButton();
+		expect(alertRequests.at(-1)?.title).toBe("Work hub");
+		expect(buttonLabels()).toEqual(["Hub settings", "Switch hub", "Cancel"]);
+		act(() => alertRequests.at(-1)?.buttons?.[1].onPress?.());
+		expect(nav.navigate).toHaveBeenLastCalledWith("Hubs");
+		// An alert has no disabled buttons, so Hub settings leaves the list.
+		connect(id, null, "connecting");
+		rerender(tree, nav);
+		pressHubButton();
+		expect(buttonLabels()).toEqual(["Switch hub", "Cancel"]);
+	} finally {
+		Platform.OS = "ios";
+	}
+	act(() => tree.unmount());
+});
+
 it("opens a session after marking it seen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
@@ -588,6 +619,12 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	expect(hubButton.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual(["chevron.down"]);
 	const press = hubButton.root.findByType("Pressable" as never);
 	expect(press.props.accessibilityLabel).toBe("Work hub, hub menu");
+	// A long hub name truncates inside the capsule instead of growing it
+	// into Search (the window is 390pt wide here).
+	expect(press.props.style.maxWidth).toBeLessThanOrEqual(390 * 0.6);
+	const hubName = hubButton.root.findByType("Text" as never);
+	expect(hubName.props.numberOfLines).toBe(1);
+	expect(hubName.props.style).toMatchObject({ flexShrink: 1 });
 	act(() => press.props.onPress());
 	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
 	expect(sheet).toMatchObject({ options: ["Hub settings", "Switch hub", "Cancel"], cancelButtonIndex: 2 });
