@@ -115,6 +115,11 @@ it("draws the header as a band header: pin, the name in capitals, the hub's coun
 		["chevron.right", palette.inkLow],
 	]);
 	expect(textsOf(press)).toEqual(["Release", " · 2"]);
+	// The name and its count read as one label, "RELEASE · 2", as a band
+	// header's do: only the count's own spaces sit between them, so the row
+	// adds no gap and the pin keeps its distance with a margin of its own.
+	expect(flatten(press.props.style).columnGap ?? 0).toBe(0);
+	expect(press.findAllByType("SymbolView" as never)[0].props.style).toMatchObject({ marginRight: 6 });
 	const name = press.findAll((node) => node.type === ("Text" as never))[0];
 	// The name keeps the user's casing underneath, so VoiceOver reads it as
 	// written; only the drawing is in capitals.

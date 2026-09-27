@@ -95,11 +95,12 @@ export function PinnedSection({
 						paddingRight: onMenu ? 8 : 16,
 						flexDirection: "row",
 						alignItems: "center",
-						columnGap: 6,
 						backgroundColor: pressed ? palette.pressed : palette.page,
 					})}
 				>
-					<SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} />
+					{/* No gap between the name and its count, so they read as one
+					    label; the pin keeps its distance with its own margin. */}
+					<SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} style={{ marginRight: 6 }} />
 					<Text
 						allowFontScaling={Platform.OS !== "ios"}
 						numberOfLines={1}
