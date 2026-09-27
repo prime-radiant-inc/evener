@@ -138,6 +138,7 @@ no router (reserved).
 | `evener/session-pin/assign` | hub | `SessionPinAssignParams` | `SessionPinAssignResponse` | Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt. |
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
+| `evener/activity/read` | hub | `ActivityReadParams` | `ActivityReadResponse` | Reads the pulse meter (seven one-minute activity counts over the whole tree), running subagents and quiet time of the hub's live top-level sessions and its attached hosts' (S5). A client polls it while a Board or session is on screen; it is never part of navigation. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
 | `evener/update/check` | hub | `UpdateCheckParams` | `UpdateCheckResponse` | Compares the running hub build against a release channel's current commit; dev builds report applicable=false without a network request. |
@@ -254,6 +255,20 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 
 JSON fields of each params/result/payload type, reflected from the Go structs.
 An embedded type contributes its own fields inline.
+
+
+### `ActivityReadParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `refs` | `[]string` | yes |  |
+
+
+### `ActivityReadResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sessions` | `[]appwire.SessionActivity` |  |  |
 
 
 ### `AgentMessageDeltaParams`

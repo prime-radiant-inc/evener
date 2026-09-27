@@ -206,7 +206,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// either, and the fold would be announced and lost exactly as it is under
 	// poison. Both facts come from the one helper so the gate cannot know fewer
 	// than the claims do.
-	if refusal := refuseOnUnhealthyTranscript(s.attachedTranscript()); refusal != nil {
+	if refusal := s.refuseOnUnhealthyTranscript(s.attachedTranscript()); refusal != nil {
 		s.attentionMu.Unlock()
 		return nil, false, refusal
 	}

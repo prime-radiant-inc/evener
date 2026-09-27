@@ -600,6 +600,36 @@ func (s *RemoteHubSource) FetchSessionImage(ctx context.Context, params appwire.
 	return out, nil
 }
 
+// ReadSessionActivity reads the host's own live sessions' pulse meters for the
+// controller's evener/activity/read (S5). Refs are rewritten into the host's
+// namespace on the way out and back into the controller's on the way in; a
+// session the controller cannot address (one of the host's own hosts) is
+// dropped rather than failing the read.
+func (s *RemoteHubSource) ReadSessionActivity(ctx context.Context, params appwire.ActivityReadParams) (appwire.ActivityReadResponse, error) {
+	remote := appwire.ActivityReadParams{}
+	for _, raw := range params.Refs {
+		ref, err := s.toRemoteRef(raw, "")
+		if err != nil {
+			return appwire.ActivityReadResponse{}, err
+		}
+		remote.Refs = append(remote.Refs, ref.String())
+	}
+	var out appwire.ActivityReadResponse
+	if err := s.call(ctx, appwire.MethodEvenerActivityRead, remote, &out); err != nil {
+		return appwire.ActivityReadResponse{}, err
+	}
+	sessions := make([]appwire.SessionActivity, 0, len(out.Sessions))
+	for _, session := range out.Sessions {
+		ref, err := s.fromRemoteRefString(session.Ref)
+		if err != nil || ref == "" {
+			continue
+		}
+		session.Ref = ref
+		sessions = append(sessions, session)
+	}
+	return appwire.ActivityReadResponse{Sessions: sessions}, nil
+}
+
 func (s *RemoteHubSource) ListModels(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	var out appwire.ModelListResponse
 	if err := s.call(ctx, appwire.MethodModelList, params, &out); err != nil {

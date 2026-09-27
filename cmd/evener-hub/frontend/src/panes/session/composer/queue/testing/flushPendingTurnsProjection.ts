@@ -32,7 +32,12 @@ import { settlePendingTurnsProjectionForTests } from "../pendingTurnsStore";
 // So the hazard is the pattern, not that instance. A new path that registers
 // late reopens it as a load-sensitive false green rather than a failure.
 // pendingTurnsStore's "a flush cannot settle while a submit is still in
-// flight" pins the property for the paths there.
+// flight" pins the property for the paths there. A caller outside that file
+// must register its own durable work through trackProjectionWork from the
+// moment it starts. Composer's Stop button and typed built-ins do, and its
+// "a flush cannot settle while %s's durable write is still in flight" pins
+// both Stop routes. Issue #2571 lists the callers that do not register, and a
+// flush after one of their presses proves nothing about that press's write.
 export async function flushPendingTurnsProjectionForTests(): Promise<void> {
   for (let round = 0; round < 10; round += 1) {
     let awaited = 0;
@@ -42,4 +47,14 @@ export async function flushPendingTurnsProjectionForTests(): Promise<void> {
     if (awaited === 0) return;
   }
   throw new Error("pending-turns projection never settled");
+}
+
+// Gives a flush every chance to finish early: more macrotask hops than one of
+// its rounds takes to return when it finds nothing outstanding. So a flush
+// still pending afterwards is waiting on work registered with
+// trackProjectionWork.
+export async function outlastEmptyFlushRoundForTests(): Promise<void> {
+  for (let hop = 0; hop < 5; hop += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
 }
