@@ -379,6 +379,60 @@ func TestNavigationReadV2FitsProductionMaxFieldSectionToExactResponseBudget(t *t
 	}
 }
 
+// TestNavigationReadV2FitsMaxFieldSectionInFewEncodes pins the encode work of
+// one read of the largest section, the bulk of the hub's CPU per navigation
+// read. The projection fit and the v2 snapshot fit each start their search at
+// a size estimate and encode only a handful of ~2 MiB candidates, and the v2
+// fit encodes its response envelope once rather than around every candidate.
+func TestNavigationReadV2FitsMaxFieldSectionInFewEncodes(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Live = navigationMaxFieldSectionNodes(now)
+	source.mu.Unlock()
+	service := newTestNavigationService(t, source)
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+
+	encodes, encodedBytes := 0, 0
+	originalMarshal := navigationEnvelopeMarshal
+	navigationEnvelopeMarshal = func(value any) ([]byte, error) {
+		encoded, err := json.Marshal(value)
+		encodes++
+		encodedBytes += len(encoded)
+		return encoded, err
+	}
+	defer func() { navigationEnvelopeMarshal = originalMarshal }()
+
+	if _, err := service.readV2(t.Context(), key, nil); err != nil {
+		t.Fatal(err)
+	}
+	if encodes > 10 || encodedBytes > 8*maxNavigationResponseBytes {
+		t.Fatalf("one read encoded %d candidates, %d bytes; want at most 10 candidates and %d bytes", encodes, encodedBytes, 8*maxNavigationResponseBytes)
+	}
+}
+
+func BenchmarkNavigationReadV2MaxFieldSection(b *testing.B) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	source.mu.Lock()
+	source.inputs.Tree.Live = navigationMaxFieldSectionNodes(now)
+	source.mu.Unlock()
+	key := navigationResourceKey{Kind: navigationResourceLive, Limit: maxNavigationSectionRows}
+	service := newNavigationService(navigationServiceConfig{
+		Source:     source,
+		Generation: func() (string, error) { return "00112233445566778899aabbccddeeff", nil },
+		Now:        func() time.Time { return now },
+	})
+	b.ReportAllocs()
+	for b.Loop() {
+		// A nil base always serves a full snapshot, so every iteration runs
+		// both fits over the same retained projection.
+		if _, err := service.readV2(b.Context(), key, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestNavigationJobHeavyPageRejectsZeroProgress(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
 	source := newTestNavigationSource(now)
