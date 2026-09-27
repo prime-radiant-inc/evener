@@ -1623,7 +1623,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
 	// errored (broken beats blocked) > blocked on a question or an approval
 	// (blocked beats your-move) > your-move (a generic amber settle).
-	// AttentionRank isn't used here — it would also separate plain awaiting
+	// AttentionRank isn't used here: it would also separate plain awaiting
 	// from warning, which both belong in the your-move band unless blocked.
 	sort.SliceStable(needsYou, func(i, j int) bool {
 		a, b := &needsYou[i], &needsYou[j]

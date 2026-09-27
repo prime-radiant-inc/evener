@@ -29,7 +29,7 @@ func attentionLevel(normalized string) string {
 // for the tree's Live order and project rollups. DeriveAttention's summary
 // below and BuildTree's needs-you tier (tree.go) both call this single
 // function for their inclusion decision, so a live session can never light
-// one without the other — see AttentionSummary's doc.
+// one without the other; see AttentionSummary's doc.
 func promotedAttentionLevel(normalized string, pendingEscalation bool) string {
 	return attentionLevel(hubapi.AttentionState(normalized, pendingEscalation))
 }
