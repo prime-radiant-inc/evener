@@ -3106,7 +3106,14 @@ func (s *Session) collectLane(run worktree.GitRunner, metaDir, name, branch, pat
 		}
 	}
 	if _, err := run("branch", "-D", branch); err != nil {
-		return fmt.Errorf("deleting branch %q: %w", branch, err)
+		// Another path may have completed this deletion first (a dispose that
+		// deletes the branch before its worktree, or a collection whose sidecar
+		// outlived the branch). An already-absent branch is this step's success
+		// state, so continue to the sidecar delete; a branch that still exists is
+		// a real refusal and stays an error.
+		if branchExists(run, branch) {
+			return fmt.Errorf("deleting branch %q: %w", branch, err)
+		}
 	}
 	if err := s.deleteWorktreeSidecar(metaDir, name); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("deleting sidecar for %q: %w", name, err)
