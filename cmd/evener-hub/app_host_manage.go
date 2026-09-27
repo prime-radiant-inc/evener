@@ -2139,10 +2139,16 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	// revocation: the name stays live with no outstanding token, so the next
 	// deploy re-plans — the fail-closed direction, and the one that never leaves
 	// a live host a token that outlived its plan.
-	m.revokeHostTokens(host.Name)
 	// The mark fences the name for the window the mutex is about to release.
 	m.markMutating(host.Name)
 	m.cfg.mu.Unlock()
+	// The revocation itself runs after the mutation mutex is released: it is a
+	// whole-file store write, and the store's own mutex (innermost, per spec §4's
+	// lock order) already serializes it against every other store write, so
+	// holding the manager's mutex across that file I/O would stall every
+	// concurrent add/list/status on one host's removal for no ordering gain. The
+	// mark set just above still fences the name for this window.
+	m.revokeHostTokens(host.Name)
 
 	// Teardown, mutex-free: with a manager wired, RemoveHost drops the
 	// registry entry, stops the supervisor, and clears the channel under the

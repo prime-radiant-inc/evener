@@ -542,6 +542,10 @@ func TestTokenMintRefusesUnusableRequests(t *testing.T) {
 		"no facts capture":    func(r *MintRequest) { r.FactsCapturedAt = time.Time{} },
 		"no target path":      func(r *MintRequest) { r.TargetPath = "" },
 		"no controller rev":   func(r *MintRequest) { r.ControllerRevision = "" },
+		// The store's freshness unit is the whole second: a fractional bound is
+		// refused rather than truncated, so the persisted field can never claim
+		// a bound its deadline does not honour.
+		"a fractional bound": func(r *MintRequest) { r.FreshnessBound = 1500 * time.Millisecond },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

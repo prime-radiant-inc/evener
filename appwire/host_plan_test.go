@@ -148,6 +148,39 @@ func TestHostPlanArmsMarshalExactly(t *testing.T) {
 	}
 }
 
+// TestHostPlanUnionRefusesMalformedValues pins the fail-loud half of the union:
+// a result carrying both arms, one carrying none, and one whose discriminator
+// names nothing this protocol defines are all errors — never a silently chosen
+// arm or a zero-valued one, which is what "nothing is a programming error no
+// response may hide" has to mean in practice.
+func TestHostPlanUnionRefusesMalformedValues(t *testing.T) {
+	both := HostPlanResult{
+		HostPlanPlanned: &HostPlanPlanned{Outcome: HostPlanOutcomePlanned},
+		HostPlanNoToken: &HostPlanNoToken{Outcome: HostPlanOutcomeNoToken},
+	}
+	if _, err := json.Marshal(both); err == nil {
+		t.Fatal("marshaling a union carrying both arms succeeded, want an error")
+	}
+	if _, err := json.Marshal(HostPlanResult{}); err == nil {
+		t.Fatal("marshaling a union carrying no arm succeeded, want an error")
+	}
+	var decoded HostPlanResult
+	if err := json.Unmarshal([]byte(`{"outcome":"bogus"}`), &decoded); err == nil {
+		t.Fatal("unmarshaling an unknown outcome succeeded, want an error")
+	}
+	if decoded.HostPlanPlanned != nil || decoded.HostPlanNoToken != nil {
+		t.Fatalf("a refused decode set an arm: %+v", decoded)
+	}
+	// A null result is not an arm either: the decoder hands null to the union's
+	// own unmarshaller, which refuses it like any other value with no outcome.
+	if err := json.Unmarshal([]byte(`null`), &decoded); err == nil {
+		t.Fatal("unmarshaling a null result succeeded, want an error")
+	}
+	if decoded.HostPlanPlanned != nil || decoded.HostPlanNoToken != nil {
+		t.Fatalf("a refused null decode set an arm: %+v", decoded)
+	}
+}
+
 // assertJSONKeys marshals v and fails unless the JSON object carries exactly the
 // given keys, in sorted order.
 func assertJSONKeys(t *testing.T, v any, keys ...string) {

@@ -193,8 +193,13 @@ func (s *Store) MintToken(req MintRequest) (Token, error) {
 	if bound <= 0 {
 		bound = DefaultFreshnessBound
 	}
-	if bound < time.Second {
-		return Token{}, fmt.Errorf("%w: freshness bound %s is below the whole-second store unit", ErrInvalidToken, bound)
+	// The bound is persisted in whole seconds and the deadline is computed from
+	// the persisted unit, so a sub-second spelling is refused rather than rounded:
+	// truncating 1500ms to a stored `1` while granting a 1.5-second deadline
+	// would leave the row's own field disagreeing with its deadline, and deploy
+	// compares the token-bound bound.
+	if bound < time.Second || bound%time.Second != 0 {
+		return Token{}, fmt.Errorf("%w: freshness bound %s is not a whole number of seconds, the store's unit", ErrInvalidToken, bound)
 	}
 
 	s.cell.mu.Lock()

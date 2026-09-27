@@ -280,11 +280,13 @@ func TestHostPlanNoTokenArms(t *testing.T) {
 		terminal bool
 	}{
 		{
-			name:   "a controller built from a dirty tree",
-			seams:  planSeams{dirty: func() bool { return true }},
-			reason: appwire.HostPlanReasonControllerDirty,
-			// The dirty arm is read before any channel work, so it reports the
-			// host as not attached: nothing was looked at.
+			name:  "a controller built from a dirty tree",
+			seams: planSeams{dirty: func() bool { return true }},
+			// The refusal is about this hub, but the arm still reports the
+			// host's own attachment truthfully: a hard-coded false would send a
+			// client into a reconnect it does not need.
+			attached: true,
+			reason:   appwire.HostPlanReasonControllerDirty,
 			terminal: true,
 		},
 		{
@@ -542,14 +544,34 @@ func TestPlanNoTokenBuilderCoversTheSpecSet(t *testing.T) {
 		appwire.HostPlanReasonRemnantOpen:         false,
 	}
 	for reason, wantTerminal := range terminal {
-		result, err := planNoToken(reason, "because", true)
+		remnant := ""
+		if reason == appwire.HostPlanReasonRemnantOpen {
+			remnant = "remnant-1"
+		}
+		result, err := planNoToken(reason, "because", true, remnant)
 		if err != nil {
 			t.Fatalf("planNoToken(%q): %v", reason, err)
 		}
-		planNoTokenReasonOf(t, result, reason, wantTerminal)
+		arm := planNoTokenReasonOf(t, result, reason, wantTerminal)
+		if arm.RemnantID != remnant {
+			t.Fatalf("the %q arm carries remnantId %q, want %q", reason, arm.RemnantID, remnant)
+		}
 	}
-	if _, err := planNoToken("not-a-reason", "because", true); err == nil {
+	if _, err := planNoToken("not-a-reason", "because", true, ""); err == nil {
 		t.Fatal("planNoToken accepted a reason outside §10's set")
+	}
+	// §10's remnantId contract, both directions: present exactly on remnant-open,
+	// refused anywhere else.
+	if _, err := planNoToken(appwire.HostPlanReasonRemnantOpen, "because", true, ""); err == nil {
+		t.Fatal("the remnant-open arm rendered without the remnant it names")
+	}
+	for reason := range terminal {
+		if reason == appwire.HostPlanReasonRemnantOpen {
+			continue
+		}
+		if _, err := planNoToken(reason, "because", true, "remnant-1"); err == nil {
+			t.Fatalf("the %q arm accepted a remnantId §10 reserves for remnant-open", reason)
+		}
 	}
 }
 

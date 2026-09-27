@@ -743,20 +743,25 @@ func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, run
 }
 
 // DeployRunTargetFor resolves the run target a deploy would install to for host,
-// as a pure function of its entry and preflight facts: the configured
+// as a pure function of its entry and the host's home directory: the configured
 // evener_path — refused here when it cannot serve a hub (checkRunTarget) — or
-// the installer's default ~/.local/bin/evener under the host's home. It is
-// installerDirs' own rule, exported for evener/host/plan, which must name the
-// resolved deploy target it would deploy to (deploy pipeline 08b §6 step 1)
-// before anything dials: a plan that named a different path than the deploy
-// uses would be a plan for a different deploy.
+// the installer's default ~/.local/bin/evener under home. It is installerDirs'
+// own rule, exported for evener/host/plan, which must name the resolved deploy
+// target it would deploy to (deploy pipeline 08b §6 step 1) before anything
+// dials: a plan that named a different path than the deploy uses would be a plan
+// for a different deploy.
 //
 // The extra resolutions the deploy paths apply on top — the running hub's own
 // executable, then whatever `evener` resolves to on the remote PATH — need
 // remote commands and belong to the paths that dial, so a plan resolves the
 // entry-and-facts rule and the deploy re-resolves with what it finds live.
-func DeployRunTargetFor(host hostreg.Host, facts Preflight) (string, error) {
-	_, _, runTarget, err := installerDirs(host, facts)
+//
+// home is the only preflight fact this rule reads, so the parameter is the fact
+// itself rather than a whole Preflight a caller would have to reconstruct:
+// passing a partially-filled probe struct would invite a caller to leave a field
+// this rule silently depends on at its zero value.
+func DeployRunTargetFor(host hostreg.Host, home string) (string, error) {
+	_, _, runTarget, err := installerDirs(host, Preflight{Home: home})
 	return runTarget, err
 }
 

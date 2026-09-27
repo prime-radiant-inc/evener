@@ -77,14 +77,27 @@ var planNoTokenTerminal = map[string]bool{
 }
 
 // planNoToken builds §10's no-token arm: the refusal reason, its prose, whether
-// the host was attached when the plan refused, and whether the refusal is
-// terminal (§10's terminal set is exactly the four target/controller arms). A
-// reason outside the set is a programming error in this package, so it is
-// refused loudly rather than rendered with a wrong `terminal` flag.
-func planNoToken(reason, message string, attached bool) (appwire.HostPlanResult, error) {
+// the host was attached when the plan refused, whether the refusal is terminal
+// (§10's terminal set is exactly the four target/controller arms), and — exactly
+// on the `remnant-open` arm — the id of the remnant that fences the name.
+//
+// The two contract rules around remnantId are enforced here rather than left to
+// call sites: `remnant-open` without an id would render a refusal a client
+// cannot act on, and any other reason carrying one would attach an unrelated
+// remnant to a refusal that is not about remnants (§10: "remnantId present
+// exactly on remnant-open"). A violation, like a reason outside the set, is a
+// programming error in this package and is refused loudly rather than rendered.
+func planNoToken(reason, message string, attached bool, remnantID string) (appwire.HostPlanResult, error) {
 	terminal, known := planNoTokenTerminal[reason]
 	if !known {
 		return appwire.HostPlanResult{}, fmt.Errorf("hub: %q is not a plan no-token reason", reason)
+	}
+	switch {
+	case reason == appwire.HostPlanReasonRemnantOpen && remnantID == "":
+		return appwire.HostPlanResult{}, fmt.Errorf("hub: the %q arm needs the remnant it names", reason)
+	case reason != appwire.HostPlanReasonRemnantOpen && remnantID != "":
+		return appwire.HostPlanResult{}, fmt.Errorf("hub: the %q arm carries remnant %q, which §10 reserves for %q",
+			reason, remnantID, appwire.HostPlanReasonRemnantOpen)
 	}
 	return appwire.HostPlanResult{HostPlanNoToken: &appwire.HostPlanNoToken{
 		Outcome: appwire.HostPlanOutcomeNoToken,
@@ -93,7 +106,8 @@ func planNoToken(reason, message string, attached bool) (appwire.HostPlanResult,
 			Attached: attached,
 			Reason:   reason,
 		},
-		Terminal: terminal,
+		Terminal:  terminal,
+		RemnantID: remnantID,
 	}}, nil
 }
 
@@ -233,9 +247,15 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	if !ok {
 		return appwire.HostPlanResult{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
+	// The local attachment answer is resolved first so every arm this handler can
+	// emit reports it truthfully — including the controller-dirty refusal, which
+	// is about this hub but still tells a client whether its host is attached: a
+	// hard-coded false there would push a client into a reconnect it does not
+	// need. It reads the channel registry only; nothing here dials.
+	client, attached := m.attachedClient(entry)
 	if m.controllerDirty() {
 		return planNoToken(appwire.HostPlanReasonControllerDirty,
-			fmt.Sprintf("this controller was built from a dirty tree (version %q), so it cannot install its own build or prove a host's build matches it; rebuild the controller from a clean checkout", buildinfo.Version()), false)
+			fmt.Sprintf("this controller was built from a dirty tree (version %q), so it cannot install its own build or prove a host's build matches it; rebuild the controller from a clean checkout", buildinfo.Version()), attached, "")
 	}
 
 	// §6 step 2's local race scan: the position every terminal transition is
@@ -247,24 +267,23 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	}
 
 	// §6 step 1: refresh the facts with no gate held, on the attached channel.
-	client, attached := m.attachedClient(entry)
 	if !attached {
 		return planNoToken(appwire.HostPlanReasonUnattached,
-			fmt.Sprintf("host %q is not attached; connect it and plan again", name), false)
+			fmt.Sprintf("host %q is not attached; connect it and plan again", name), false, "")
 	}
 	if m.cfg.planFacts == nil {
 		return planNoToken(appwire.HostPlanReasonRefreshFailed,
-			fmt.Sprintf("no preflight-facts refresh is wired for host %q", name), attached)
+			fmt.Sprintf("no preflight-facts refresh is wired for host %q", name), attached, "")
 	}
 	facts, err := m.cfg.planFacts(ctx, entry)
 	if err != nil {
 		return planNoToken(appwire.HostPlanReasonRefreshFailed,
-			fmt.Sprintf("refreshing host %q's preflight facts failed: %v", name, err), attached)
+			fmt.Sprintf("refreshing host %q's preflight facts failed: %v", name, err), attached, "")
 	}
-	target, err := sshconn.DeployRunTargetFor(entry, sshconn.Preflight{Home: facts.Home})
+	target, err := sshconn.DeployRunTargetFor(entry, facts.Home)
 	if err != nil {
 		return planNoToken(appwire.HostPlanReasonTargetMissingPrereq,
-			fmt.Sprintf("host %q: %v", name, err), attached)
+			fmt.Sprintf("host %q: %v", name, err), attached, "")
 	}
 
 	// §6 step 2's gated running probe. The gate, the durable probe epoch and the
@@ -272,17 +291,17 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	// value and its two failure arms are this handler's.
 	if m.cfg.planProbe == nil {
 		return planNoToken(appwire.HostPlanReasonHandlerAbsent,
-			fmt.Sprintf("host %q's hub does not serve the deploy pipeline's running probe yet, so nothing could be probed; upgrade the host's build before planning", name), attached)
+			fmt.Sprintf("host %q's hub does not serve the deploy pipeline's running probe yet, so nothing could be probed; upgrade the host's build before planning", name), attached, "")
 	}
 	var probe hubcore.HostRuntimeProbe
 	probe, err = m.cfg.planProbe(ctx, entry, client)
 	if err != nil {
 		if errors.Is(err, errPlanHandlerAbsent) {
 			return planNoToken(appwire.HostPlanReasonHandlerAbsent,
-				fmt.Sprintf("host %q's hub predates the deploy pipeline's running probe: %v", name, err), attached)
+				fmt.Sprintf("host %q's hub predates the deploy pipeline's running probe: %v", name, err), attached, "")
 		}
 		return planNoToken(appwire.HostPlanReasonProbeFailed,
-			fmt.Sprintf("probing host %q's running state failed: %v", name, err), attached)
+			fmt.Sprintf("probing host %q's running state failed: %v", name, err), attached, "")
 	}
 
 	// §6 step 2's under-gate re-checks, as far as this slice can run them
@@ -333,7 +352,7 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 		// §3: stale facts at mint read as a refresh failure, and re-planning
 		// refreshes them — never an already-expired token.
 		return planNoToken(appwire.HostPlanReasonRefreshFailed,
-			fmt.Sprintf("host %q's refreshed facts went stale before the token was minted: %v", name, err), attached)
+			fmt.Sprintf("host %q's refreshed facts went stale before the token was minted: %v", name, err), attached, "")
 	}
 	if err != nil {
 		return appwire.HostPlanResult{}, appwire.InternalError(fmt.Sprintf("minting the confirmation token for host %q failed: %v", name, err))

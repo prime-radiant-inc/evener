@@ -89,6 +89,13 @@ func run(args []string, stderr *os.File, writeFile func(string, []byte, os.FileM
 			}
 			return ""
 		},
+		// tableCell escapes the one character a markdown table cannot carry
+		// unescaped: GFM splits a row on `|` even inside inline code, so a union
+		// result type joined with a pipe (or any prose that carries one) would
+		// silently add a column and shift the row.
+		"tableCell": func(text string) string {
+			return strings.ReplaceAll(text, "|", `\|`)
+		},
 	}).Parse(tmplText))
 
 	var buf strings.Builder
