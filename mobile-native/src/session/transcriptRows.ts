@@ -6,6 +6,7 @@
 // - a time marker introduces the first turn, a turn that starts after ten
 //   quiet minutes, and a new day.
 import { parseArgs, str, type TurnModel } from "@evener/appwire-client";
+import { hubTime } from "../board/attention";
 import { type RunStep, rowTurnId, type TimelineRow } from "../timeline";
 import { compactDuration } from "./format";
 
@@ -28,7 +29,7 @@ function inTray(row: TimelineRow): boolean {
 }
 
 export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTimes[], timeZone?: string): TimelineRow[] {
-	const byId = new Map(turns.map((turn, index) => [turn.id, index]));
+	const byId = new Map(turns.map((turn) => [turn.id, turn]));
 	const out: TimelineRow[] = [];
 	let run: RunRow | null = null;
 	let lastTurn: string | undefined;
@@ -36,7 +37,7 @@ export function sessionRows(rows: readonly TimelineRow[], turns: readonly TurnTi
 		if (inTray(row)) continue;
 		const turnId = rowTurnId(row);
 		if (turnId !== undefined && turnId !== lastTurn) {
-			const marker = timeMarker(turns, byId, turnId, lastTurn, timeZone);
+			const marker = timeMarker(byId, turnId, lastTurn, timeZone);
 			if (marker) out.push(marker);
 			// A run never spans a turn change, marked or not: an idle gap too
 			// short for a marker (a goal continuation) still ends the run, or its
@@ -81,12 +82,6 @@ export function liveRunId(rows: readonly TimelineRow[], activeTurnId: string | u
 		if (row.kind === "run" && row.turnId === activeTurnId) return row.id;
 	}
 	return undefined;
-}
-
-function timeOf(value: string | undefined): number | undefined {
-	if (!value) return undefined;
-	const time = Date.parse(value);
-	return Number.isFinite(time) ? time : undefined;
 }
 
 // Every Intl.DateTimeFormat this module needs, for one time zone. sessionRows
@@ -134,20 +129,17 @@ function dayNumber(at: number, timeZone: string | undefined): number {
 }
 
 function timeMarker(
-	turns: readonly TurnTimes[],
-	byId: ReadonlyMap<string, number>,
+	byId: ReadonlyMap<string, TurnTimes>,
 	turnId: string,
 	previousId: string | undefined,
 	timeZone?: string,
 ): TimeRow | null {
-	const index = byId.get(turnId);
-	const start = timeOf(index === undefined ? undefined : turns[index]?.startedAt);
-	if (start === undefined) return null;
-	const previousIndex = previousId === undefined ? undefined : byId.get(previousId);
-	const previous = previousIndex === undefined ? undefined : turns[previousIndex];
-	const previousEnd = timeOf(previous?.completedAt) ?? timeOf(previous?.startedAt);
+	const start = hubTime(byId.get(turnId)?.startedAt);
+	if (start === null) return null;
+	const previous = previousId === undefined ? undefined : byId.get(previousId);
+	const previousEnd = hubTime(previous?.completedAt) ?? hubTime(previous?.startedAt);
 	const show =
-		previousEnd === undefined || start - previousEnd >= TIME_GAP_MS || dayKey(start, timeZone) !== dayKey(previousEnd, timeZone);
+		previousEnd === null || start - previousEnd >= TIME_GAP_MS || dayKey(start, timeZone) !== dayKey(previousEnd, timeZone);
 	return show ? { kind: "time", id: `time:${turnId}`, turnId, at: start } : null;
 }
 
@@ -199,6 +191,13 @@ const FAMILIES: Record<string, Family> = {
 	web_search: "webSearch",
 	shell: "shell",
 };
+
+/** What a step acted on: the command for a shell step, else the file or path
+ * it named. */
+export function stepTarget(label: string, argumentsJSON: string | undefined): string | undefined {
+	const args = parseArgs(argumentsJSON);
+	return FAMILIES[label] === "shell" ? str(args, "command") : (str(args, "file_path") ?? str(args, "path"));
+}
 
 interface Group {
 	family: Family;
@@ -273,7 +272,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			failed += 1;
 		}
 		if (family === "shell") {
-			const program = programOf(str(parseArgs(step.detail.arguments), "command"));
+			const program = programOf(stepTarget(step.label, step.detail.arguments));
 			if (program) group.programs.add(program);
 			else group.unnamed += 1;
 		}

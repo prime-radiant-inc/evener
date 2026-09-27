@@ -882,12 +882,7 @@ function rowsForProjectedTurn(
 }
 
 // An attachments row's fields, before it takes its place in the timeline.
-type AttachmentsRowFields = {
-	id: string;
-	items: AttachmentRef[];
-	sourceTranscriptKey?: string;
-	turnId?: string;
-};
+type AttachmentsRowFields = Omit<Extract<MobileTimelineItem, { kind: "attachments" }>, "kind">;
 
 // The attachments row that follows the row which produced it. It points back at
 // its source by transcript key, so a page or a reread that reissues the source

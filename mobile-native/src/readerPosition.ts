@@ -1,5 +1,5 @@
 import type { SyncStringStorage } from "./syncStringStorage";
-import { rowTurnId, type RunStep, type TimelineRow } from "./timeline";
+import { rowTurnId, type TimelineRow } from "./timeline";
 
 export interface ReaderAnchor {
 	hubId: string;
@@ -88,12 +88,21 @@ export function comparePosition(
 	if (!b) return -1;
 	return a.entry - b.entry || a.item - b.item;
 }
-function matchesStep(step: RunStep, anchor: ReaderAnchor): boolean {
+// Whether the anchor was saved on this item, where the item has no row of its
+// own: a step folded into a run, or a member of a clustered activity row.
+function matchesAnchor(
+	item: {
+		id: string;
+		transcriptKey?: string;
+		position?: { entry: number; item: number };
+	},
+	anchor: ReaderAnchor,
+): boolean {
 	return (
-		(step.transcriptKey ?? step.id) === anchor.itemKey ||
+		(item.transcriptKey ?? item.id) === anchor.itemKey ||
 		(anchor.itemPosition !== undefined &&
-			step.position !== undefined &&
-			comparePosition(step.position, anchor.itemPosition) === 0)
+			item.position !== undefined &&
+			comparePosition(item.position, anchor.itemPosition) === 0)
 	);
 }
 
@@ -114,7 +123,7 @@ export function resolveReaderAnchor(
 	// A position saved on a step that now sits inside a folded run resolves to
 	// the run (Review Focus 4).
 	const inRun = rows.findIndex(
-		(row) => row.kind === "run" && row.steps.some((step) => matchesStep(step, anchor)),
+		(row) => row.kind === "run" && row.steps.some((step) => matchesAnchor(step, anchor)),
 	);
 	return inRun >= 0 ? inRun : null;
 }
@@ -155,13 +164,7 @@ export function isReaderAnchorLoaded(
 			return true;
 		if (
 			item.kind === "activity" &&
-			item.members?.some(
-				(member) =>
-					(member.transcriptKey ?? member.id) === anchor.itemKey ||
-					(anchor.itemPosition !== undefined &&
-						member.position !== undefined &&
-						comparePosition(anchor.itemPosition, member.position) === 0),
-			)
+			item.members?.some((member) => matchesAnchor(member, anchor))
 		)
 			return true;
 	}

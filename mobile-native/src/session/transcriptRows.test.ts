@@ -2,7 +2,7 @@ import type { TurnModel } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { MobileTimelineItem } from "../projectedRows";
 import type { RunStep, TimelineRow } from "../timeline";
-import { liveRunId, runSummary, runSummaryText, sessionRows, timeMarkerText } from "./transcriptRows";
+import { liveRunId, runSummary, runSummaryText, sessionRows, stepTarget, timeMarkerText } from "./transcriptRows";
 
 type Activity = Extract<MobileTimelineItem, { kind: "activity" }>;
 const step = (id: string, label: string, over: Partial<Activity> = {}): Activity => ({
@@ -117,10 +117,10 @@ describe("time markers", () => {
 		expect(rows.map((row) => row.kind)).toEqual(["time", "run", "time", "run"]);
 	});
 
-	// Coordinator note C: a goal continuation turn can start well inside the
-	// ten-minute window, so no marker separates it from the turn before it.
-	// The run still has to end at the turn change, or its steps mix two
-	// turns' worth of work under one id and duration.
+	// A goal continuation turn can start well inside the ten-minute window, so
+	// no marker separates it from the turn before it. The run still has to end
+	// at the turn change, or its steps mix two turns' worth of work under one
+	// id and duration.
 	it("ends a run at a turn change even without a marker (a goal continuation)", () => {
 		const rows = sessionRows(
 			[step("a", "read_file", { turnId: "turn_1" }), step("b", "grep", { turnId: "turn_2" })],
@@ -158,7 +158,7 @@ describe("time markers", () => {
 	});
 });
 
-describe("the live run (for Task 24)", () => {
+describe("the live run", () => {
 	it("finds the last run of the active turn among runs of two turns", () => {
 		const rows = sessionRows(
 			[
@@ -224,9 +224,9 @@ describe("a run's one line", () => {
 		expect(runSummary([shell("a", "ls -la")]).parts).toEqual([{ text: "ran ls", failed: 0 }]);
 	});
 
-	// Coordinator note B: a settled step at a compact detail level carries no
-	// clock times, so a duration read from only some steps would understate
-	// the run. It is said only when every step in the run carries both.
+	// A settled step at a compact detail level carries no clock times, so a
+	// duration read from only some steps would understate the run. It is said
+	// only when every step in the run carries both.
 	it("says how long only when every step carries its clock times", () => {
 		expect(
 			runSummary([
@@ -253,5 +253,23 @@ describe("a run's one line", () => {
 				(part) => part.text,
 			),
 		).toEqual(["fetched 1 page", "2 other steps", "searched the web once"]);
+	});
+});
+
+describe("a step's target", () => {
+	it.each([
+		["shell", { command: "go test ./agent/..." }, "go test ./agent/..."],
+		["shell", { file_path: "agent/session.go" }, undefined],
+		["read_file", { file_path: "agent/session.go" }, "agent/session.go"],
+		["edit_file", { file_path: "agent/session.go", path: "agent" }, "agent/session.go"],
+		["grep", { path: "agent", pattern: "Turn" }, "agent"],
+		["web_search", { query: "evener" }, undefined],
+	])("a %s step with %j reads %s", (label, args, target) => {
+		expect(stepTarget(label, JSON.stringify(args))).toBe(target);
+	});
+
+	it("reads nothing from arguments that are missing or don't parse", () => {
+		expect(stepTarget("read_file", undefined)).toBeUndefined();
+		expect(stepTarget("read_file", '{"file_path": "agent/sess')).toBeUndefined();
 	});
 });

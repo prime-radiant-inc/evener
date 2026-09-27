@@ -2,29 +2,23 @@
 // ("▸ 12 steps · 8m · read 6 files, ran go test (2 failed)"), and, expanded,
 // one line per step with its intent, its target and a status mark. A live run
 // (the last run of the turn in progress) never folds.
-import { parseArgs, str } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import { Fragment } from "react";
+import { Fragment, useMemo } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { typeRoles } from "../design/tokens";
 import type { RunStep, TimelineRow } from "../timeline";
 import { useColors, useTextScale } from "../ui";
-import { runHeadText, runPartFailedText, runSummary, runSummaryText } from "./transcriptRows";
+import { runHeadText, runPartFailedText, runSummary, runSummaryText, stepTarget } from "./transcriptRows";
 
 type Run = Extract<TimelineRow, { kind: "run" }>;
-
-/** What the step acted on: the command for a shell step, else the file or
- * path it named. */
-function stepTarget(step: RunStep): string | undefined {
-	const args = parseArgs(step.detail.arguments);
-	return step.label === "shell" ? str(args, "command") : (str(args, "file_path") ?? str(args, "path"));
-}
 
 function StepLine({ step, onStep }: { step: RunStep; onStep: (step: RunStep) => void }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	const intent = step.detail.description || step.label;
-	const target = stepTarget(step);
+	// Rows re-render on every publish; keyed on the arguments text, a settled
+	// step parses its arguments (up to 64 KiB) once rather than every time.
+	const target = useMemo(() => stepTarget(step.label, step.detail.arguments), [step.label, step.detail.arguments]);
 	const failed = step.state === "failed";
 	return (
 		<Pressable
