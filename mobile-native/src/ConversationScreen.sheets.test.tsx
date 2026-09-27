@@ -65,6 +65,7 @@ vi.mock("@react-navigation/native", async () => {
 			select(stack.state),
 	};
 });
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
