@@ -819,6 +819,11 @@ type EvenerThread struct {
 	// a model ref. Snapshot-only like the effort fields beside it; live updates
 	// arrive as thread/vision-model/changed.
 	VisionModel string `json:"visionModel,omitempty"`
+	// Subagents tallies a live root session's whole delegate tree (S3), read
+	// from the root's delegate controller when the row is listed. It rides
+	// thread/list root rows only, when the tree has at least one subagent, and
+	// never a thread/read snapshot: no notification announces its changes.
+	Subagents *SubagentTally `json:"subagents,omitempty"`
 }
 
 // SubagentTally counts a live root session's subagents, at every depth, by how

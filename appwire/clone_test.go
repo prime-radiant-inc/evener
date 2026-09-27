@@ -213,3 +213,15 @@ func TestCloneEvenerDiagnosticsOwnsWatches(t *testing.T) {
 		t.Fatal("CloneEvenerWatches(nil) must stay nil")
 	}
 }
+
+func TestCloneThreadOwnsTheSubagentTally(t *testing.T) {
+	original := Thread{Evener: EvenerThread{Subagents: &SubagentTally{Running: 1, Failed: 2, Done: 3}}}
+	clone := CloneThread(original)
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatal("clone changed values while copying")
+	}
+	clone.Evener.Subagents.Failed = 9
+	if original.Evener.Subagents.Failed != 2 {
+		t.Fatalf("the tally was changed through its clone: %+v", original.Evener.Subagents)
+	}
+}

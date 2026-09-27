@@ -398,13 +398,16 @@ type Server struct {
 	// on no row. An ID the answer omits keeps its cached projection, which is the
 	// historical behavior when no watch source is wired.
 	appDescendantLiveWatchesFunc func(threadIDs []string) map[string][]agent.WatchStatusInfo
-	retrySafeTurns               RetrySafeTurnFunctions
-	cancelFunc                   context.CancelFunc
-	steerFunc                    func(string) error
-	steerWithImagesFunc          func(string, []ImageAttachment) error
-	queueFunc                    func(string) error
-	queueWithImagesFunc          func(string, []ImageAttachment) error
-	goalFunc                     func(objective string) (bool, error)
+	// appSubagentTallyFunc reads the root session's whole-tree subagent tally
+	// for the thread list's root row (S3); nil disables it.
+	appSubagentTallyFunc func() (appwire.SubagentTally, bool)
+	retrySafeTurns       RetrySafeTurnFunctions
+	cancelFunc           context.CancelFunc
+	steerFunc            func(string) error
+	steerWithImagesFunc  func(string, []ImageAttachment) error
+	queueFunc            func(string) error
+	queueWithImagesFunc  func(string, []ImageAttachment) error
+	goalFunc             func(objective string) (bool, error)
 	// notesHumanSetFunc is called by the appwire notes/human/set method. The
 	// callback returns the full atomic acceptance result, including its receipt.
 	notesHumanSetFunc func(outerID, note string) (appwire.NotesHumanSetResponse, error)

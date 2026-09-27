@@ -112,6 +112,7 @@ func cloneEvenerThread(e EvenerThread) EvenerThread {
 	e.SessionURLs = append([]SessionURL(nil), e.SessionURLs...)
 	e.Usage = cloneEvenerUsage(e.Usage)
 	e.FailedToolCalls = cloneInt(e.FailedToolCalls)
+	e.Subagents = cloneSubagentTally(e.Subagents)
 	// Capabilities is all bools (value type) — no copy needed.
 	return e
 }
@@ -155,6 +156,14 @@ func cloneGoalState(value *GoalState) *GoalState {
 }
 
 func cloneEvenerUsage(value *EvenerUsage) *EvenerUsage {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneSubagentTally(value *SubagentTally) *SubagentTally {
 	if value == nil {
 		return nil
 	}
