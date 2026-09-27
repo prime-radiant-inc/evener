@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"reflect"
 	"strings"
@@ -19,15 +18,7 @@ func TestThreadSnapshotsCarryThePendingQuestion(t *testing.T) {
 	srv.SetAppIdentity("local", "root")
 	question := &appwire.PendingQuestion{Question: "Which datastore for the ingest path?", Options: []string{"Postgres", "SQLite"}, Count: 2}
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{question: question})
-	listed := func() appwire.EvenerThread {
-		t.Helper()
-		list, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{StatusOnly: true})
-		if err != nil {
-			t.Fatalf("thread/list: %v", err)
-		}
-		return list.Data[0].Evener
-	}
-	if got := listed(); !got.AskPending || !reflect.DeepEqual(got.PendingQuestion, question) {
+	if got := listedRootEvener(t, srv); !got.AskPending || !reflect.DeepEqual(got.PendingQuestion, question) {
 		t.Fatalf("listed ask = %v with question %+v, want the pending question %+v", got.AskPending, got.PendingQuestion, question)
 	}
 	if got := readThreadOverWire(t, srv, "local:root").Evener; !got.AskPending || !reflect.DeepEqual(got.PendingQuestion, question) {
@@ -38,7 +29,7 @@ func TestThreadSnapshotsCarryThePendingQuestion(t *testing.T) {
 	// re-samples the ask facet.
 	src.question = nil
 	BridgeEvent(srv, events.SessionEvent{Kind: events.EventUserInput, SessionID: "root", Data: events.UserInputData{Text: "Postgres"}}, nil)
-	got := listed()
+	got := listedRootEvener(t, srv)
 	if got.AskPending || got.PendingQuestion != nil {
 		t.Fatalf("after the answer ask = %v with question %+v, want neither", got.AskPending, got.PendingQuestion)
 	}

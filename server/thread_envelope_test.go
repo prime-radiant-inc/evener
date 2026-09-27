@@ -51,6 +51,17 @@ func readThreadOverWire(t *testing.T, srv *Server, ref string) appwire.Thread {
 	return read.Thread
 }
 
+// listedRootEvener returns the root thread's Evener block from a status-only
+// thread/list, the list-side counterpart of readThreadOverWire.
+func listedRootEvener(t *testing.T, srv *Server) appwire.EvenerThread {
+	t.Helper()
+	list, err := srv.handleAppThreadList(context.Background(), appwire.ThreadListParams{StatusOnly: true})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	return list.Data[0].Evener
+}
+
 // TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem is the freshness
 // contract for facetsByEvent, asserted one producer at a time against the wire.
 //

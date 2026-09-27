@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -57,27 +56,15 @@ func TestPendingQuestion_LeavesTheSessionBounded(t *testing.T) {
 // rebuilds the pending set through the parse the live call used (S1b).
 func TestPendingQuestion_SurvivesRestore(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
-	ask := askUserCall("ask1", askUserArgsValid())
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return toolCallResponse(ask) },
-	}})
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
+	// The durable-admission suite's harness: one live ask_user round
+	// (askUserArgsValid) in a session with a state dir.
+	sess := newDurableAdmissionAskSession(t, SessionConfig{})
+	seedDurableAdmissionAsk(t, sess)
 	want := &appwire.PendingQuestion{Question: "Which datastore for the ingest path?", Options: []string{"Postgres", "SQLite"}, Count: 1}
 	if got := sess.PendingQuestion(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("live PendingQuestion = %+v, want %+v", got, want)
 	}
-	meta := sess.Meta()
+	meta, dir := sess.Meta(), sess.stateDir
 	sess.Close()
 
 	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
