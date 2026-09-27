@@ -31,6 +31,7 @@ import {
   mergeSlashCommands,
   NO_ACTIVE_TURN,
   parseSlashToken,
+  SHUT_DOWN_STATUSES,
   type SlashMenuItem,
   type SlashToken,
   sessionActionError,
@@ -204,16 +205,6 @@ function settledInputAttachments(items: PendingAttachment[]): InputAttachment[] 
 // closing the race where both could otherwise fire drainAsSteer at once
 // (w5-integration-wiring-report.md's "two Steer buttons" concern).
 type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
-
-// The wire statuses that mean this session's story is over. "notLoaded" is the
-// shape a cold exited evener session actually arrives in (cmd/evener-hub/
-// app_threadread.go's pastEntryThread stamps it) and "closed" is a live session
-// that shut down in front of us; both are appwire's own vocabulary
-// (appwire/types.go's ThreadStatus* constants). "ended" is not one of them -
-// it never crosses the wire - but deriveSendQueueAvailability already treats it
-// as terminal, so it is matched here too rather than leaving the two modules
-// disagreeing about the same word.
-const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
 
 // The local recovery fence lives in stores/liveControls.ts (one predicate for
 // every surface that owes it - this module's availability/card/Steer gates and
@@ -828,7 +819,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // instead of `model.<field>` directly.
   const renderedModel: ThreadModel = model;
   const activeTurnId = model.activeTurnId;
-  const ended = ENDED_STATUSES.has(model.status.type);
+  const ended = SHUT_DOWN_STATUSES.has(model.status.type);
   // A stopped local session is recovery-fenced. It keeps its follow-up card so
   // the retained draft and the recovery notice's explicit Resume action stay
   // reachable, but Send and Queue are NOT offered: turn/start no longer carries
@@ -899,7 +890,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     // status' SECOND message back into the turn/start that bounces - the table
     // answers queue-mode there, for the whole time the resume takes to produce a
     // status frame, which for a session that has to spawn a daemon is seconds.
-    return ENDED_STATUSES.has(target.status.type) &&
+    return SHUT_DOWN_STATUSES.has(target.status.type) &&
       controlsFor(target).send &&
       !tableAvailability.canSend &&
       !tableAvailability.canQueue

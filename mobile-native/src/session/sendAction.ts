@@ -5,15 +5,12 @@
 //   as its tier 6;
 // - a paused session sends nothing until it is resumed;
 // - a finished session sends, and so resumes, when the hub says it can.
-import { deriveSendQueueAvailability, type ThreadModel } from "@evener/appwire-client";
+import { deriveSendQueueAvailability, SHUT_DOWN_STATUSES, type ThreadModel } from "@evener/appwire-client";
 import { ownPendingSend, type PendingTurnEntry } from "@evener/appwire-client/state/mutation";
 
 export type SendAction = "send" | "queue" | "resume" | "none";
 
 export type SendSource = Pick<ThreadModel, "status" | "capabilities" | "resumeRequired">;
-
-// The statuses of a session with no runtime: a first message resumes it.
-const ENDED = new Set(["ended", "closed", "notLoaded"]);
 
 export function sendAction(
 	conversation: SendSource,
@@ -28,7 +25,8 @@ export function sendAction(
 		hasPendingSend: ownPendingSend(pendingMutations),
 	});
 	if (availability.canQueue) return "queue";
-	const ended = ENDED.has(status);
+	// A shut-down session has no runtime: a first message resumes it.
+	const ended = SHUT_DOWN_STATUSES.has(status);
 	// Send offers only what the store's send() will take: it requires the
 	// hub's send capability whatever the status.
 	if (conversation.capabilities.send && (availability.canSend || ended)) return ended ? "resume" : "send";

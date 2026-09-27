@@ -131,6 +131,17 @@ export function isSessionResting(statusType: string): boolean {
   return statusType === "idle" || statusType === "systemError";
 }
 
+// The statuses of a session that has shut down: its runtime is gone, and a
+// first message resumes it. "notLoaded" is the shape a cold exited evener
+// session arrives in (cmd/evener-hub/app_threadread.go's
+// pastEntryThreadForList stamps it) and "closed" is a live session that shut
+// down in front of the client; both are appwire's own vocabulary
+// (appwire/types.go's ThreadStatus* constants). "ended" never crosses the
+// wire, but deriveSendQueueAvailability treats it as terminal, so it is
+// matched here too rather than leaving the two modules disagreeing about the
+// same word. One set for every client, so none keeps its own copy.
+export const SHUT_DOWN_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
+
 export function sessionControls(
   statusType: string,
   capabilities: ControlCapabilities,
