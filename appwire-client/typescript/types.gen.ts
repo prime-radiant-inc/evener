@@ -1215,6 +1215,18 @@ export interface HostRow {
   lastAttachError?: string;
   midAttach: boolean;
   removed: boolean;
+  /**
+   * RetainedRows and RowsTruncated are the tombstone row's retained-projection
+   * fields (registry spec 08 §11, §15): RetainedRows is present on tombstone
+   * rows only — the count of rows the tombstone's bounded projection kept —
+   * and RowsTruncated is present as true exactly on tombstone rows whose
+   * projection was truncated at the persistence bound (absent everywhere
+   * else, per the absent-when-unknown rule). A nil RetainedRows renders as an
+   * absent key, so a live row never claims a retained count and a tombstone
+   * with a zero-row projection still renders `retainedRows: 0`.
+   */
+  retainedRows?: number;
+  rowsTruncated?: boolean;
 }
 
 export interface HostRunningParams {

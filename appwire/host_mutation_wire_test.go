@@ -105,3 +105,81 @@ func TestConflictingMutationIDCarriesTheDiscriminatorOnly(t *testing.T) {
 		t.Fatalf("refusal bytes %s carry no discriminator", raw)
 	}
 }
+
+// TestHostRowTombstoneFields pins §11's S11 row fields: `retainedRows` is
+// present on tombstone rows only (a live row carries no key at all; a
+// tombstone with a zero-row projection still renders `retainedRows: 0`), and
+// `rowsTruncated` is present as true exactly on a truncated projection.
+func TestHostRowTombstoneFields(t *testing.T) {
+	live := HostRow{Name: "m4", Origin: "hub.toml", Generation: 7, IncarnationID: "inc-7"}
+	assertJSONKeys(t, live, "name", "origin", "attached", "midAttach", "removed", "generation", "incarnationId")
+
+	retained := 0
+	tombstone := HostRow{
+		Name: "gone", Origin: "hub.toml", Removed: true,
+		Generation: 3, IncarnationID: "inc-3",
+		RetainedRows: &retained,
+	}
+	assertJSONKeys(t, tombstone, "name", "origin", "attached", "midAttach", "removed", "generation", "incarnationId", "retainedRows")
+	raw, err := json.Marshal(tombstone)
+	if err != nil {
+		t.Fatalf("marshal tombstone row: %v", err)
+	}
+	if !strings.Contains(string(raw), `"retainedRows":0`) {
+		t.Fatalf("tombstone row %s carries no retainedRows:0", raw)
+	}
+	if strings.Contains(string(raw), "rowsTruncated") {
+		t.Fatalf("untruncated tombstone row %s carries rowsTruncated", raw)
+	}
+	truncated := tombstone
+	truncated.RowsTruncated = true
+	raw, err = json.Marshal(truncated)
+	if err != nil {
+		t.Fatalf("marshal truncated row: %v", err)
+	}
+	if !strings.Contains(string(raw), `"rowsTruncated":true`) {
+		t.Fatalf("truncated tombstone row %s carries no rowsTruncated:true", raw)
+	}
+}
+
+// TestTombstoneCapacityCarriesBoundAndBlockingNames pins §11/§12's
+// classification pair: conflict class, the tombstone-capacity discriminator,
+// and data `{bound, blockingNames}`.
+func TestTombstoneCapacityCarriesBoundAndBlockingNames(t *testing.T) {
+	refusal := TombstoneCapacity(TombstoneCapacityBoundCount, []string{"m4", "m5"},
+		`the tombstones in hub.toml would exceed the global count bound`)
+	if refusal.Code != CodeConflict {
+		t.Fatalf("code = %d, want %d", refusal.Code, CodeConflict)
+	}
+	data, ok := refusal.Data.(TombstoneCapacityErrorData)
+	if !ok {
+		t.Fatalf("data = %T, want TombstoneCapacityErrorData", refusal.Data)
+	}
+	if data.EvenerErrorInfo != ErrorTombstoneCapacity {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, ErrorTombstoneCapacity)
+	}
+	if data.Bound != TombstoneCapacityBoundCount {
+		t.Fatalf("bound = %q, want %q", data.Bound, TombstoneCapacityBoundCount)
+	}
+	if len(data.BlockingNames) != 2 || data.BlockingNames[0] != "m4" || data.BlockingNames[1] != "m5" {
+		t.Fatalf("blockingNames = %v, want the gated names", data.BlockingNames)
+	}
+	raw, err := json.Marshal(refusal)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{`"evenerErrorInfo":"tombstone-capacity"`, `"bound":"count"`, `"blockingNames":["m4","m5"]`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("refusal bytes %s carry no %s", raw, want)
+		}
+	}
+	// The copy the refusal carries is defensive: mutating the caller's slice
+	// must not reach the envelope.
+	names := []string{"m4"}
+	copied := TombstoneCapacity(TombstoneCapacityBoundBytes, names, "over")
+	names[0] = "mutated"
+	copiedData := copied.Data.(TombstoneCapacityErrorData)
+	if copiedData.BlockingNames[0] != "m4" {
+		t.Fatal("the envelope aliases the caller's blockingNames slice")
+	}
+}

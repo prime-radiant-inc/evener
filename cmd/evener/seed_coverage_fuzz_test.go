@@ -49,7 +49,7 @@ func FuzzRootCommandSeedCoverage(f *testing.F) {
 			{"serve missing model", TestRunServe_MissingModel},
 			{"serve env", TestPrintServeEnvVars_IncludesOpenAIResponsesContinuation},
 			{"serve rendezvous", TestServe_WritesAndRemovesRendezvousFile},
-			{"serve noninteractive", TestRunServeNonInteractiveFlagControlsPromptAddendum},
+			{"serve noninteractive", TestRunServeNonInteractiveFlagReachesTheSession},
 			{"serve shutdown", TestRunServeShutdownWaitsForInFlightInput},
 			{"serve api log", TestServeClient_APILogWritesJSONL},
 			{"status empty", TestAgentToServerDetailedStatus_Empty},
