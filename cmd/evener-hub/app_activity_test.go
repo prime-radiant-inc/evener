@@ -170,15 +170,23 @@ func TestActivityReadFansOutToAttachedHosts(t *testing.T) {
 		t.Fatalf("sessions = %+v, want %+v", got.Sessions, want)
 	}
 
-	if _, err := hubActivityRead(t.Context(), cfg, registry, appwire.ActivityReadParams{Refs: []string{"h1:r1"}}, activityReadNow); err != nil {
+	remoteOnly, err := hubActivityRead(t.Context(), cfg, registry, appwire.ActivityReadParams{Refs: []string{"h1:r1"}}, activityReadNow)
+	if err != nil {
 		t.Fatalf("filtered read: %v", err)
+	}
+	if !reflect.DeepEqual(remoteOnly.Sessions, want[:1]) {
+		t.Fatalf("remote-only sessions = %+v, want only h1:r1", remoteOnly.Sessions)
 	}
 	if reads := activityHostReads(t, calls()); len(reads) != 2 || reads[0].Refs != nil || !reflect.DeepEqual(reads[1].Refs, []string{"local:r1"}) {
 		t.Fatalf("host requests = %+v, want an unfiltered read, then local:r1", reads)
 	}
 	// A filter naming only local sessions never calls the host.
-	if _, err := hubActivityRead(t.Context(), cfg, registry, appwire.ActivityReadParams{Refs: []string{"local:01LOCAL"}}, activityReadNow); err != nil {
+	localOnly, err := hubActivityRead(t.Context(), cfg, registry, appwire.ActivityReadParams{Refs: []string{"local:01LOCAL"}}, activityReadNow)
+	if err != nil {
 		t.Fatalf("local-only read: %v", err)
+	}
+	if !reflect.DeepEqual(localOnly.Sessions, want[1:]) {
+		t.Fatalf("local-only sessions = %+v, want only local:01LOCAL", localOnly.Sessions)
 	}
 	if reads := activityHostReads(t, calls()); len(reads) != 2 {
 		t.Fatalf("host requests = %d, want still 2", len(reads))
