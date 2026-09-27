@@ -555,6 +555,20 @@ describe("the live overlay", () => {
     expect(textOf(next, second.key)).toBe("Hi");
   });
 
+  test("a stream's displayed item carries pendingText, so a live agentMessage/reasoning renderer has chunks to join", () => {
+    // AgentMessageItem/RawItemView only render a live (status inProgress)
+    // item from item.pendingText, never item.text (item.pendingText is a
+    // client-only field with no wire counterpart - types.gen.ts's ThreadItem
+    // has no such field - so an overlay stream's wire item can never carry it
+    // itself; the display conversion has to mint it).
+    const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
+    const stream = streamOverlay("t1", "r1", 0, "Hel");
+    let next = applyNotification(model, upserted(stream), NOW);
+    next = applyNotification(next, delta(stream.key, "lo"), NOW);
+    const shownItem = next.turns[0]?.items[1];
+    expect(shownItem?.pendingText).toEqual(["Hello"]);
+  });
+
   test("a stream is covered once history holds its round, and later deltas are ignored", () => {
     const model = hydrate([turn("t1", 1, [item("t1", 0)], "inProgress")], { activeTurnId: "t1" });
     const stream = streamOverlay("t1", "r1", 0, "Hello");

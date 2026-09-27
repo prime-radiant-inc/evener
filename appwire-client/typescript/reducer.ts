@@ -2367,6 +2367,12 @@ function overlayDisplayItem(overlayItem: OverlayItem, imageSessionRoute: string 
   item.overlayKey = overlayItem.key;
   if (item.turnId === "" && overlayItem.turnId) item.turnId = overlayItem.turnId;
   if (overlayItem.anchor) item.position = { ...overlayItem.anchor };
+  // A live (status inProgress) agentMessage/reasoning item renders only from
+  // pendingText (AgentMessageItem.tsx, RawItemView.tsx) - pendingText has no
+  // wire counterpart (types.gen.ts's ThreadItem carries none), so it never
+  // survives wireItemToModel above and has to be minted here, from the
+  // overlay's own accumulated text, every time this item is displayed.
+  if (item.status === "inProgress" && item.text) item.pendingText = [item.text];
   return item;
 }
 
