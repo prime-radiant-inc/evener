@@ -1,7 +1,6 @@
 package msgrender
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"sync"
@@ -10,10 +9,8 @@ import (
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/charmbracelet/glamour"
-	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
-	"primeradiant.com/evener/llm"
 )
 
 var renderReplayOnce sync.Once
@@ -236,24 +233,6 @@ func replayRenderSurface() {
 	_ = wrapText("abcdefgh", 4, 4)
 	_ = argsJSONFromDescription("plain")
 	_ = argsJSONFromDescription(" {\"x\":1}")
-
-	turns := []schema.Turn{
-		{Kind: schema.TurnUserInput, Message: llm.User(" ")},
-		{Kind: schema.TurnUserInput, Message: llm.User("user")},
-		{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{
-			{Kind: llm.ContentText, Text: " "},
-			{Kind: llm.ContentText, Text: "assistant"},
-			{Kind: llm.ContentToolCall},
-			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "comm-empty", Name: "communicate", Arguments: json.RawMessage(`{}`)}},
-			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "comm", Name: "communicate", Arguments: json.RawMessage(`{"output":{"message":"hello"}}`)}},
-			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "tool", Name: "shell", Arguments: json.RawMessage(`{"command":"ls"}`)}},
-		}}},
-		{Kind: schema.TurnTool, Message: llm.ToolResult("tool", "failed", true)},
-		{Kind: schema.TurnToolResults, Message: llm.ToolResult("other", "ok", false)},
-	}
-	_ = historyToMessages(turns)
-	_ = extractCommunicate(&llm.ToolCallData{Arguments: json.RawMessage("bad")})
-	_ = extractCommunicate(&llm.ToolCallData{Arguments: json.RawMessage(`{"message":"direct"}`)})
 }
 
 func replayChromaFailures() {

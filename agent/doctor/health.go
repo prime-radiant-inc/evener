@@ -252,7 +252,7 @@ func TranscriptHealth(stateBase, selector string) (HealthResult, error) {
 // session/runtime (see doctor.go's package doc). Hashes SentArguments so
 // distinct malformed calls get distinct signatures.
 func toolCallSignature(name string, tc *llm.ToolCallData) string {
-	sum := sha256.Sum256([]byte(tc.SentArguments()))
+	sum := sha256.Sum256(tc.SentArgumentsBytes())
 	return name + ":" + hex.EncodeToString(sum[:8])
 }
 
