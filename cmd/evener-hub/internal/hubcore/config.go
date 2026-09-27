@@ -220,6 +220,14 @@ type WebConfig struct {
 	HostRemnantAttemptMaxCount  int
 	HostRemnantTeardownTimeout  time.Duration
 	HostRemnantEscalationAge    time.Duration
+	// HostRemnantFence reports the open teardown remnant fencing a host name, if
+	// one does (registry spec 08 §6). It is installed by the host-management
+	// manager at construction (the manager owns the durable remnant records) and
+	// consulted by the attach path before any dial: an open remnant fences the
+	// name host-wide, so "attach (`attachUnderGate` reattach/attach-first and the
+	// Connect path) refuses the same way" as every other lifecycle path. Nil
+	// answers "no remnant".
+	HostRemnantFence func(name string) (string, bool)
 	// HubBootID identifies this controller process incarnation for the durable
 	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2,
 	// crash-fencing spec §4). Empty disables probe-epoch persistence, and a plan

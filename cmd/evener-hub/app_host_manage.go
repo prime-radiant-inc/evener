@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1434,6 +1435,18 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 	if hasFile {
 		collided = m.breakBootTombstoneCollision(fileRecords)
 	}
+	// Boot finalizes each staged-receipt marker by the persisted phase and flags
+	// (spec §5: "Boot finalizes each host entry by the persisted phase and flags
+	// ... and the receipt records `bootRecovered: true`"). A marker is the
+	// durable evidence of a commit whose post-commit write was lost, so boot
+	// runs the phase-aware recovery and finalizes from the observed result
+	// before the hub serves; a failure is logged and leaves the marker for the
+	// next mutation-path write or the next boot.
+	for _, name := range sortedStagedMarkerNames(m.cfg.store.stagedSnapshot()) {
+		if _, err := m.finalizeOrphanMarkerIfAny(context.Background(), name, true); err != nil {
+			m.logf("boot finalization of the staged receipt marker for %q refused: %v", name, err)
+		}
+	}
 	migrated, err := m.migrateLegacyHostSidecar()
 	if err != nil {
 		// Loud, not fatal: the hub.toml hosts still serve. The store stays
@@ -2532,4 +2545,15 @@ func (m *hubHostManager) stampRemnantRow(row *appwire.HostRow) {
 	if remnant, ok := m.cfg.store.remnantByID(remnantID); ok {
 		row.EscalationAgeSec = m.escalationAgeSec(remnant)
 	}
+}
+
+// sortedStagedMarkerNames returns a staged-marker set's host names in sorted
+// order, so the boot's finalization pass walks a deterministic order.
+func sortedStagedMarkerNames(markers map[string]HostStagedReceipt) []string {
+	names := make([]string, 0, len(markers))
+	for name := range markers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

@@ -1118,6 +1118,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.
+	// The host-management manager owns the durable teardown-remnant records; it
+	// is constructed after this line, so the attach handler reads the fence
+	// through a seam the constructor fills in below (hostManage installs it).
 	registerHostAttachHandler(server, cfg, sources, cfg.RemoteHostRegistry)
 	// Component 08's host registry surface (add/list/status/remove from slice
 	// 1; update from slice 2). Controller-local, never dials; add and remove
@@ -1131,6 +1134,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// placeholder. It returns the manager so newWebServer can expose it
 	// (main.go binds its event recorder to the SSH manager's lifecycle).
 	hostManage := registerHostManageHandlers(server, sources, cfg, cfg.RemoteHostRegistry, navigation, hubLogf)
+	// The remnant fence reaches the attach path through the WebConfig seam: the
+	// manager owns the records, and attach has no manager handle of its own.
+	cfg.HostRemnantFence = hostManage.openRemnantID
 	registerPluginAutoUpgradeHandlers(server, pluginsController.mgr)
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
