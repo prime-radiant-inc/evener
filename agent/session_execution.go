@@ -276,21 +276,14 @@ type recordedOrdinal struct {
 }
 
 // recordTranscriptOnlyAt records a transcript-only entry with the given
-// placement. It never enters history. A write that fails is reported as a
-// warning; nothing else depends on it. recordTranscriptOnlyAt is
-// recordTranscriptOnlyChecked with the outcome discarded, for callers that
-// have nothing further to decide from it.
-func (s *Session) recordTranscriptOnlyAt(turn schema.Turn, place transcript.Placement) {
-	s.recordTranscriptOnlyChecked(turn, place)
-}
-
-// recordTranscriptOnlyChecked is recordTranscriptOnlyAt reporting whether the
-// entry landed: true for an ordinary recorded write, and — since there is
-// nothing to fail — for a session with no writer at all, so a caller that only
-// announces once recorded still announces for it. A writer that exists but
-// would not record the entry (closed, poisoned, or any other write failure)
-// reports false, after the same warning as always.
-func (s *Session) recordTranscriptOnlyChecked(turn schema.Turn, place transcript.Placement) bool {
+// placement and reports whether it landed. It never enters history. A write
+// that fails is reported as a warning; most callers have nothing further to
+// decide from it and ignore the result. recorded is true for an ordinary
+// recorded write, and — since there is nothing to fail — for a session with
+// no writer at all, so a caller that only announces once recorded still
+// announces for it. A writer that exists but would not record the entry
+// (closed, poisoned, or any other write failure) reports false.
+func (s *Session) recordTranscriptOnlyAt(turn schema.Turn, place transcript.Placement) (recorded bool) {
 	if turn.Timestamp.IsZero() {
 		turn.Timestamp = s.sclock().Now().UTC()
 	}
@@ -303,7 +296,7 @@ func (s *Session) recordTranscriptOnlyChecked(turn schema.Turn, place transcript
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
-	return rec.Recorded || s.attachedTranscript() == nil
+	return rec.Recorded || !s.hasTranscriptWriter()
 }
 
 // recordNotice records a presentational notice, the history form of a live
@@ -317,7 +310,7 @@ func (s *Session) recordNotice(notice schema.NoticeInfo) {
 // delivered message is never missing from history.
 func (s *Session) deliverCommunicate(data events.CommunicateData) {
 	turn := schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}
-	if !s.recordTranscriptOnlyChecked(turn, transcript.PlaceSession) {
+	if !s.recordTranscriptOnlyAt(turn, transcript.PlaceSession) {
 		return
 	}
 	s.emit(events.EventCommunicate, data)
