@@ -15,7 +15,7 @@ const palette = paletteFor("light");
 const list: Notice[] = [
 	{ key: "signIn:openai", kind: "signIn", text: "openai sign-in expired", action: "Sign in", providerId: "openai" },
 	{ key: "host:studio", kind: "host", text: "Studio Mac is offline · 3 sessions", action: "Details", sourceId: "studio" },
-	{ key: "plugin:superpowers", kind: "plugin", text: "superpowers is broken", action: "Plugins", pluginId: "superpowers" },
+	{ key: "plugin:superpowers@evener", kind: "plugin", text: "superpowers is broken", action: "Plugins", pluginId: "superpowers" },
 ];
 
 function mount(notices: Notice[]) {
