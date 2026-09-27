@@ -146,7 +146,7 @@ Decisions this plan makes where the spec is silent, or where its data doesn't ex
 30. **A subagent's screen is its session** (Jesse, 2026-09-26: "users interact with whatever session they have open, whether it's an agent or a subagent", and "the hub supports messaging subagents").
     - The web does it this way. Its rail opens a subagent through `openSessionByRef` into its own session pane beside its owner (`cmd/evener-hub/frontend/src/shell/rail/Rail.tsx:1330-1331`, `shell/sessionPlacement.ts:10-26`, `shell/AppShell.tsx:284-289`). That pane mounts the ordinary composer (`panes/session/Session.tsx:621`), which sends `turn/start`, `turn/queue` or `turn/steer` with `{ ref, expectedInstanceId, input }` for the subagent's own ref (`composerMutationIntent`, `stores/threads.ts:1614-1665`). The hub resolves that ref like any other (`resolveTurnStartSource`, `cmd/evener-hub/app_rpc.go:171` and `:1533-1541`).
     - So the phone opens a subagent in phase 3's Session, on its own ref, and the composer sends to it (Task 8). Every control follows the subagent's capabilities, as on any session.
-    - **The server gap.** The hub takes a message for a subagent only once its run has ended: its read is then a past session's, which advertises `send` and `queue` (`pastThreadCapabilities`, `cmd/evener-hub/app_threadread.go:675-698` and `:806`), and a send resumes it. While a subagent runs inside its coordinator's process, the hub serves it as a read-only alias with no capabilities (`app_rpc.go:136-163`; `internal/appsource/local_daemon.go:51-54` and `:1180-1187`), and a mutation finds no target for it (`StartTurn`'s `entryForRef` skips aliases, `local_daemon.go:434-440`, `:1037-1039` and `:1066-1067`); the coordinator's daemon, too, takes mutations only for its own root (`requireRootMutationTarget`, `server/appwire_runtime.go:2307`). The web shows the same: its composer can't send to a running subagent. Messaging a running subagent is S6's second half (spec 18). Until it lands, a running subagent's screen holds `SubagentBar` ("Ask coordinator to stop it" and "Open coordinator") where the composer would be, and the composer returns when the subagent's run ends.
+    - **The server gap.** The hub takes a message for a subagent only once its run has ended: its read is then a past session's, which advertises `send` and `queue` (`pastThreadCapabilities`, `cmd/evener-hub/app_threadread.go:675-698` and `:806`), and a send resumes it. While a subagent runs inside its coordinator's process, the hub serves it as a read-only alias with no capabilities (`app_rpc.go:136-163`; `internal/appsource/local_daemon.go:51-54` and `:1180-1187`), and a mutation finds no target for it (`StartTurn`'s `entryForRef` skips aliases, `local_daemon.go:434-440`, `:1037-1039` and `:1066-1067`); the coordinator's daemon, too, takes mutations only for its own root (`requireRootMutationTarget`, `server/appwire_runtime.go:2307`). The web shows the same: its composer can't send to a running subagent. Messaging a running subagent was S6's second half (spec 18); Jesse tabled it 2026-09-27: "let's table 'become able to message subagents' for now." A running subagent's screen keeps its fallback, `SubagentBar` ("Ask coordinator to stop it" and "Open coordinator") where the composer would be, and the composer returns when the subagent's run ends.
 
 ## Questions for Jesse
 
@@ -196,14 +196,14 @@ PR 1 lands the pieces both lanes share: the device-storage helpers phase 2's Boa
 
 **Interfaces:**
 - Consumes: `SyncStringStorage` (`src/syncStringStorage.ts`), the kv-store's three sync methods, which #2536 made the app's one storage type.
-- Produces: `isRecord(value: unknown): value is Record<string, unknown>`, `readJson(storage: SyncStringStorage, key: string): unknown`, `writeJson(storage: SyncStringStorage, key: string, value: unknown): void`, `removeKeys(storage: SyncStringStorage, keys: readonly string[]): void`
+- Produces: `readJson(storage: SyncStringStorage, key: string): unknown`, `writeJson(storage: SyncStringStorage, key: string, value: unknown): void`, `removeKeys(storage: SyncStringStorage, keys: readonly string[]): void`
 
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
 // mobile-native/src/deviceStorage.test.ts
 import { expect, it } from "vitest";
-import { isRecord, readJson, removeKeys, writeJson } from "./deviceStorage";
+import { readJson, removeKeys, writeJson } from "./deviceStorage";
 import type { SyncStringStorage } from "./syncStringStorage";
 
 function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
@@ -241,16 +241,24 @@ it("writes JSON and keeps going when the store refuses", () => {
 	expect(() => writeJson(broken, "k", {})).not.toThrow();
 });
 
-it("removes every key it names and survives a store that throws", () => {
+it("removes every key it names, without throwing", () => {
 	const storage = memoryStorage(new Map([["a", "1"], ["b", "2"], ["c", "3"]]));
-	removeKeys(storage, ["a", "c"]);
+	expect(() => removeKeys(storage, ["a", "c"])).not.toThrow();
 	expect([...storage.values.keys()]).toEqual(["b"]);
-	expect(() => removeKeys(broken, ["a"])).not.toThrow();
 });
 
-it("knows a record from an array, null or a primitive", () => {
-	expect(isRecord({})).toBe(true);
-	expect([[], null, "x", 1].map(isRecord)).toEqual([false, false, false, false]);
+it("still removes the other keys when one's removal fails, then throws", () => {
+	const removed: string[] = [];
+	const storage: SyncStringStorage = {
+		getItemSync: () => null,
+		setItemSync: () => {},
+		removeItemSync: (key) => {
+			if (key === "a") throw new Error("disk");
+			removed.push(key);
+		},
+	};
+	expect(() => removeKeys(storage, ["a", "b"])).toThrow();
+	expect(removed).toEqual(["b"]);
 });
 ```
 
@@ -268,10 +276,6 @@ Expected: FAIL: `Cannot find module './deviceStorage'`.
 // requests you sent. Every read and write is guarded, because the store can
 // throw, and a record that doesn't parse reads as absent.
 import type { SyncStringStorage } from "./syncStringStorage";
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 export function readJson(storage: SyncStringStorage, key: string): unknown {
 	try {
@@ -291,12 +295,18 @@ export function writeJson(storage: SyncStringStorage, key: string, value: unknow
 }
 
 export function removeKeys(storage: SyncStringStorage, keys: readonly string[]): void {
+	let failed = false;
 	for (const key of keys)
 		try {
 			storage.removeItemSync(key);
 		} catch {
-			// Nothing stored to forget.
+			// Keep trying the other keys, the way forgetBoard does
+			// (board/boardMemory.ts): a storage failure orphans this one, but the
+			// caller must still hear about it, so it's reported once every key has
+			// been tried.
+			failed = true;
 		}
+	if (failed) throw new Error("removeKeys: could not remove one or more keys from storage");
 }
 ```
 
@@ -2273,7 +2283,7 @@ describe("the list's items", () => {
 - Test: `mobile-native/src/subagents/stopRequests.test.ts`
 
 **Interfaces:**
-- Consumes: the device-storage helpers (Task 1) over `SyncStringStorage` (`src/syncStringStorage.ts`); `SubagentRow` and `subtreeStopped` (Task 4).
+- Consumes: the device-storage helpers (Task 1) over `SyncStringStorage` (`src/syncStringStorage.ts`); `isPlainObject` from `@evener/appwire-client`; `SubagentRow` and `subtreeStopped` (Task 4).
 - Produces:
   - `type StopRequestView = "requested" | "stopped" | null`
   - `class StopRequests`: constructor `(storage: SyncStringStorage, hubId: string)`, `request(coordinatorRef: string, row: SubagentRow, now: number): void`, `view(row: SubagentRow): StopRequestView`, `reconcile(coordinatorRef: string, rows: readonly SubagentRow[]): SubagentRow[]`, `subscribe(listener): () => void`, `getRevision(): number`
@@ -2422,7 +2432,8 @@ Expected: FAIL: `Cannot find module './stopRequests'`.
 // coordinator" while the subagent still works, then "Stopped at your request"
 // once it (or something it started) stopped, so the request visibly completes
 // (round 4). A request whose subagent finished on its own is forgotten.
-import { isRecord, readJson, removeKeys, writeJson } from "../deviceStorage";
+import { isPlainObject } from "@evener/appwire-client";
+import { readJson, removeKeys, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 import { type SubagentRow, subtreeStopped } from "./subagentModel";
 
@@ -2447,9 +2458,9 @@ export class StopRequests {
 		private readonly hubId: string,
 	) {
 		const value = readJson(storage, storageKey(hubId));
-		if (isRecord(value))
+		if (isPlainObject(value))
 			for (const [id, record] of Object.entries(value))
-				if (isRecord(record) && typeof record.coordinatorRef === "string" && typeof record.requestedAt === "number")
+				if (isPlainObject(record) && typeof record.coordinatorRef === "string" && typeof record.requestedAt === "number")
 					this.records[id] = {
 						coordinatorRef: record.coordinatorRef,
 						requestedAt: record.requestedAt,
@@ -3244,7 +3255,7 @@ git commit -m "feat(native): split documents into blocks with the web's markdown
 - Test: `mobile-native/src/reader/documentMemory.test.ts` and `mobile-native/src/reader/documentChanges.test.ts`
 
 **Interfaces:**
-- Consumes: the device-storage helpers (Task 1) over `SyncStringStorage` (`src/syncStringStorage.ts`); `DocumentBlock` (Task 11).
+- Consumes: the device-storage helpers (Task 1) over `SyncStringStorage` (`src/syncStringStorage.ts`); `isPlainObject` from `@evener/appwire-client`; `DocumentBlock` (Task 11).
 - Produces, from `documentMemory.ts`:
   - `interface DocumentKey { sessionRef: string; path: string }`
   - `interface ReadingPosition { blockIndex: number; blockHash: string; offset: number; progress: number }`
@@ -3576,7 +3587,8 @@ export function restoreBlock(
 // review comments, and the Board's Continue reading trail. Kept in
 // expo-sqlite's kv-store under per-hub keys that ConnectionProvider.removeHub
 // clears.
-import { isRecord, readJson, removeKeys, writeJson } from "../deviceStorage";
+import { isPlainObject } from "@evener/appwire-client";
+import { readJson, removeKeys, writeJson } from "../deviceStorage";
 import type { SyncStringStorage } from "../syncStringStorage";
 
 export interface DocumentKey {
@@ -3658,7 +3670,7 @@ const isTime = (value: unknown): value is number => typeof value === "number" &&
 const isText = (value: unknown): value is string => typeof value === "string";
 
 function parsePosition(value: unknown): ReadingPosition | undefined {
-	if (!isRecord(value)) return undefined;
+	if (!isPlainObject(value)) return undefined;
 	const { blockIndex, blockHash, offset, progress } = value;
 	if (!isCount(blockIndex) || !isText(blockHash) || !isTime(offset) || offset < 0) return undefined;
 	if (!isTime(progress) || progress < 0 || progress > 1) return undefined;
@@ -3666,13 +3678,13 @@ function parsePosition(value: unknown): ReadingPosition | undefined {
 }
 
 function parseLastRead(value: unknown): LastRead | undefined {
-	if (!isRecord(value) || !Array.isArray(value.blocks) || !value.blocks.every(isText) || !isTime(value.readAt))
+	if (!isPlainObject(value) || !Array.isArray(value.blocks) || !value.blocks.every(isText) || !isTime(value.readAt))
 		return undefined;
 	return { blocks: value.blocks, readAt: value.readAt, ...(isText(value.updatedAt) ? { updatedAt: value.updatedAt } : {}) };
 }
 
 function parseComment(value: unknown): DocumentComment | undefined {
-	if (!isRecord(value)) return undefined;
+	if (!isPlainObject(value)) return undefined;
 	const { id, blockIndex, blockHash, quote, text, createdAt } = value;
 	if (!isText(id) || !isCount(blockIndex) || !isText(blockHash) || !isText(quote) || !isText(text) || !isTime(createdAt))
 		return undefined;
@@ -3681,9 +3693,9 @@ function parseComment(value: unknown): DocumentComment | undefined {
 
 function parseDocuments(value: unknown): Record<string, DocumentRecord> {
 	const documents: Record<string, DocumentRecord> = {};
-	if (!isRecord(value)) return documents;
+	if (!isPlainObject(value)) return documents;
 	for (const [key, raw] of Object.entries(value)) {
-		if (!isRecord(raw) || !isTime(raw.touchedAt)) continue;
+		if (!isPlainObject(raw) || !isTime(raw.touchedAt)) continue;
 		const position = parsePosition(raw.position);
 		const lastRead = parseLastRead(raw.lastRead);
 		const comments = Array.isArray(raw.comments)
@@ -3700,7 +3712,7 @@ function parseDocuments(value: unknown): Record<string, DocumentRecord> {
 }
 
 function parseTrail(value: unknown): ContinueReading | null {
-	if (!isRecord(value)) return null;
+	if (!isPlainObject(value)) return null;
 	const { sessionRef, path, title, reviewRef, reviewTitle, progress, leftAt, updatedAt } = value;
 	if (!isText(sessionRef) || !isText(path) || !isText(title) || !isText(reviewRef) || !isText(reviewTitle)) return null;
 	if (!isTime(progress) || !isTime(leftAt)) return null;
