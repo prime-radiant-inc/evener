@@ -395,13 +395,13 @@ describe("the Board's marks", () => {
 		return { markers, hub, calls, client: fakeClient("a", calls), seen: new BoardSeen(markers, hub) };
 	}
 
-	it("opens a hub row with a seen mark through its turn end, and any other row with the device's marker", () => {
+	it("marks a row read the way opening it does: a hub row through its turn end, any other with the device's marker", () => {
 		const { markers, calls, client, seen } = board();
-		seen.open(client, ended("hub", T, true));
+		seen.markRead(client, [ended("hub", T, true)]);
 		expect(calls.map((call) => call.sessions)).toEqual([[{ ref: "hub", seenThrough: T }]]);
 		expect(seen.isSeen(ended("hub", T, true))).toBe(true);
 		expect(markers.isSeen(row("hub"))).toBe(false);
-		seen.open(client, row("device"));
+		seen.markRead(client, [row("device")]);
 		expect(calls).toHaveLength(1);
 		expect(markers.isSeen(row("device"))).toBe(true);
 	});

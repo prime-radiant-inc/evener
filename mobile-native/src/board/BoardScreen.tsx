@@ -157,7 +157,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
-		seen.open(connected ? client : null, row);
+		seen.markRead(connected ? client : null, [row]);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
 	};
 	// A search result opens like its Board row when the Board lists it, so

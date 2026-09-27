@@ -176,8 +176,9 @@ export function forgetHubSeenMarks(hubId: string): void {
 
 /** The Board's seen state over both paths: the hub decides a row that
  * carries turn_ended_at, and the device's SeenMarkers decides any other.
- * Mark as read and Mark as unread (part 3's long-press menu and select mode)
- * call markRead and markUnread; each sends one call for all its hub rows. */
+ * Opening a row marks it read through the turn it showed. Mark as read and
+ * Mark as unread (part 3's long-press menu and select mode) call markRead
+ * and markUnread; each sends one call for all its hub rows. */
 export class BoardSeen {
 	constructor(
 		private readonly markers: SeenMarkers,
@@ -188,18 +189,13 @@ export class BoardSeen {
 		return this.hub.isSeenOnHub(row) ?? this.markers.isSeen(row);
 	}
 
-	/** Opening a row marks it seen through the turn it showed. */
-	open(client: ConversationClientLike | null, row: NavigationSessionSummary): void {
-		this.markRead(client, [row]);
-	}
-
 	markRead(client: ConversationClientLike | null, rows: readonly NavigationSessionSummary[]): void {
 		const marks: { ref: string; seenThrough: number }[] = [];
 		for (const row of rows) {
 			if (row.turn_ended_at) marks.push({ ref: row.ref, seenThrough: Date.parse(row.turn_ended_at) });
 			else this.markers.markSeen(row);
 		}
-		if (marks.length) this.hub.markSeen(client, marks);
+		this.hub.markSeen(client, marks);
 	}
 
 	markUnread(client: ConversationClientLike | null, rows: readonly NavigationSessionSummary[]): void {
@@ -208,6 +204,6 @@ export class BoardSeen {
 			if (row.turn_ended_at) refs.push(row.ref);
 			else this.markers.markUnread(row.ref);
 		}
-		if (refs.length) this.hub.markUnread(client, refs);
+		this.hub.markUnread(client, refs);
 	}
 }
