@@ -35,6 +35,23 @@ func TestLastAgentText_IsTheLastTextPart(t *testing.T) {
 	}
 }
 
+// A message with no text to report leaves the session's last agent message
+// standing: noteAgentMessageLocked only overwrites it when the new text has
+// something to say, so a reasoning-only response or a blank communicate never
+// erases what the session finished with (S1d).
+func TestNoteAgentMessageLocked_BlankTextLeavesThePreviousMessageStanding(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t)
+	sess.mu.Lock()
+	sess.noteAgentMessageLocked("Three layouts are ready for review.")
+	sess.noteAgentMessageLocked("   \n\t ")
+	got := sess.lastMessage
+	sess.mu.Unlock()
+	if got != "Three layouts are ready for review." {
+		t.Fatalf("lastMessage = %q, want the earlier message left standing", got)
+	}
+}
+
 // A turn's last agent message leaves its opening on the session as one line cut
 // to the wire's bound, and the turn's end persists it in the meta, so an ended
 // session and a restarted daemon still have it (S1d). The response's own text
