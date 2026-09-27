@@ -49,8 +49,8 @@ func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, 
 // Ensure validates against and AddHost/RemoveHost mutate — never a fresh copy
 // from the configured entries: a fresh copy alongside a manager would split
 // the surfaces, because the host-management surface commits runtime adds and
-// removals through the manager while boot sidecar entries load into whatever
-// registry it was handed (sidecar entries would land where the manager never
+// removals through the manager while the configured host entries load into
+// whatever registry it was handed (entries would land where the manager never
 // dials, Ensure answering ErrHostNotFound, and a runtime Add would insert
 // where host/list and host/attach never read).
 // A manager with no registry keeps the fresh copy: its AddHost and RemoveHost
