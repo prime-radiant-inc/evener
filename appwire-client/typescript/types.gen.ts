@@ -2596,6 +2596,22 @@ export interface SessionPinUnpinResponse {
   navigation: NavigationMutation;
 }
 
+export interface SessionSeenMark {
+  ref: string;
+  seenThrough?: number;
+  unread?: boolean;
+}
+
+export interface SessionSeenSetParams {
+  sessions: SessionSeenMark[];
+}
+
+export interface SessionSeenSetResponse {
+  ok: boolean;
+  changed: boolean;
+  navigation: NavigationMutation;
+}
+
 export interface SessionURL {
   id: string;
   url: string;
@@ -3637,6 +3653,7 @@ export const METHOD_NAMES = [
   "evener/pin-section/delete",
   "evener/session-pin/assign",
   "evener/session-pin/unpin",
+  "evener/session/seen/set",
   "evener/search",
   "evener/harnesses/list",
   "evener/upgrade",
@@ -3850,6 +3867,7 @@ export interface MethodTypes {
   "evener/pin-section/delete": { params: PinSectionDeleteParams; result: PinSectionDeleteResponse };
   "evener/session-pin/assign": { params: SessionPinAssignParams; result: SessionPinAssignResponse };
   "evener/session-pin/unpin": { params: SessionPinUnpinParams; result: SessionPinUnpinResponse };
+  "evener/session/seen/set": { params: SessionSeenSetParams; result: SessionSeenSetResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };

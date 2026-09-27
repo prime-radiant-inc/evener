@@ -137,6 +137,7 @@ no router (reserved).
 | `evener/pin-section/delete` | hub | `PinSectionDeleteParams` | `PinSectionDeleteResponse` | Deletes a named pin section and returns its removed membership and committed navigation receipt. |
 | `evener/session-pin/assign` | hub | `SessionPinAssignParams` | `SessionPinAssignResponse` | Assigns a top-level session to a named pin section and returns the canonical assignment and committed navigation receipt. |
 | `evener/session-pin/unpin` | hub | `SessionPinUnpinParams` | `SessionPinUnpinResponse` | Removes a top-level session's named pin assignment and returns its committed navigation receipt. |
+| `evener/session/seen/set` | hub | `SessionSeenSetParams` | `SessionSeenSetResponse` | Marks sessions seen through a turn end, or unread, on the hub (S4), and returns the committed navigation receipt. Live rows then carry unseen from the hub's marker. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
@@ -1824,6 +1825,22 @@ _(no fields)_
 | `ok` | `bool` |  |  |
 | `changed` | `bool` |  |  |
 | `assignment` | `appwire.SessionPinUnpinAssignment` |  |  |
+| `navigation` | `appwire.NavigationMutation` |  |  |
+
+
+### `SessionSeenSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `sessions` | `[]appwire.SessionSeenMark` |  |  |
+
+
+### `SessionSeenSetResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ok` | `bool` |  |  |
+| `changed` | `bool` |  |  |
 | `navigation` | `appwire.NavigationMutation` |  |  |
 
 

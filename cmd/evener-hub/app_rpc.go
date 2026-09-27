@@ -1107,6 +1107,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
+	registerSessionSeenHandler(server, cfg, navigation)
 	registerMiscHandlers(server, cfg, sources)
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
