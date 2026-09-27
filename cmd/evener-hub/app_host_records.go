@@ -226,7 +226,12 @@ func fileOnlyHostEntries(cfg Config, known, entries []hostreg.Host) []HostConfig
 // A nil known is the exact-write sentinel — the same one the entry rule uses —
 // so nothing the file holds is carried through and the tables are exactly what
 // this write derives.
-func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater map[string]HostGeneration) (map[string]HostRecord, map[string]HostGeneration) {
+//
+// purgedNames exempts names whose tombstone this write pruned (expiry, capacity
+// eviction, a live-name purge): their file generations entry is superseded by
+// the advanced mark the derivation is writing, so the older copy must not ride
+// back in through preservation.
+func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater map[string]HostGeneration, purgedNames map[string]struct{}) (map[string]HostRecord, map[string]HostGeneration) {
 	preserve := known != nil
 	owned := make(map[string]struct{}, len(known)+len(entries))
 	if preserve {
@@ -247,6 +252,12 @@ func hubTOMLRecordTables(cfg Config, entries, known []hostreg.Host, highWater ma
 		}
 		for name, mark := range cfg.Generations {
 			if _, ok := owned[name]; ok {
+				continue
+			}
+			if _, pruned := purgedNames[name]; pruned {
+				// The derivation pruned this name's tombstone and advanced its
+				// high-water triple in the same write: the file's older copy
+				// must not overwrite the advance.
 				continue
 			}
 			generations[name] = mark
@@ -309,7 +320,7 @@ func validateHostRecords(records map[string]HostRecord, generations map[string]H
 // rides through. known is always the store's non-nil snapshot on the mutation
 // and rollback paths; a nil known is the exact-write sentinel (both other
 // sentinels nil), which writes exactly the given set.
-func hubTOMLReceiptTables(cfg Config, entries, known []hostreg.Host, receipts map[string]HostMutationReceipt) map[string]HostMutationReceipt {
+func hubTOMLReceiptTables(cfg Config, entries, known []hostreg.Host, receipts map[string]HostMutationReceipt, dropped map[string]struct{}) map[string]HostMutationReceipt {
 	out := make(map[string]HostMutationReceipt, len(receipts)+len(cfg.MutationReceipts))
 	maps.Copy(out, receipts)
 	if known == nil {
@@ -332,7 +343,88 @@ func hubTOMLReceiptTables(cfg Config, entries, known []hostreg.Host, receipts ma
 		if _, carried := owned[scope.Name]; carried {
 			continue
 		}
+		if _, pruned := dropped[key]; pruned {
+			// The derivation dropped this receipt (compaction or a purge);
+			// preservation must not resurrect the file's older copy.
+			continue
+		}
 		out[key] = receipt
+	}
+	return out
+}
+
+// ownedRecordNames is the record tables' shared ownership rule: a name in
+// known or entries is the mutation's to change, while a record for any other
+// name is the file's data and rides through a rewrite. known nil is the
+// exact-write sentinel — preserve nothing.
+func ownedRecordNames(entries, known []hostreg.Host) map[string]struct{} {
+	if known == nil {
+		return nil
+	}
+	owned := make(map[string]struct{}, len(known)+len(entries))
+	for _, e := range known {
+		owned[e.Name] = struct{}{}
+	}
+	for _, e := range entries {
+		owned[e.Name] = struct{}{}
+	}
+	return owned
+}
+
+// hubTOMLTombstoneTables derives the tombstone tables a rewrite writes: the
+// set the write carries (already pruned and evicted by the derivation), with
+// every file tombstone for a name this write does not own preserved verbatim —
+// the same ownership rule the record and receipt tables apply, so a tombstone
+// the mutation does not own is not silently dropped by its rewrite. A nil known
+// is the exact-write sentinel, which writes exactly the given set.
+func hubTOMLTombstoneTables(cfg Config, entries, known []hostreg.Host, tombstones map[string]HostTombstone, dropped map[string]struct{}) map[string]HostTombstone {
+	out := make(map[string]HostTombstone, len(tombstones)+len(cfg.Tombstones))
+	maps.Copy(out, tombstones)
+	owned := ownedRecordNames(entries, known)
+	if owned == nil {
+		return out
+	}
+	for name, tombstone := range cfg.Tombstones {
+		if _, carried := owned[name]; carried {
+			continue
+		}
+		if _, pruned := dropped[name]; pruned {
+			// The derivation pruned this record (expiry, eviction, a live-name
+			// purge): it must not ride back in through preservation.
+			continue
+		}
+		out[name] = tombstone
+	}
+	return out
+}
+
+// hubTOMLPrunedReceiptTables derives the pruned-marker tables a rewrite
+// writes: the carried set plus every file marker whose scope names a host this
+// write does not own, preserved verbatim. The marker's owner is the name in its
+// scoped key — the name whose receipt history the marker bounds.
+func hubTOMLPrunedReceiptTables(cfg Config, entries, known []hostreg.Host, markers map[string]PrunedReceiptMarker, dropped map[string]struct{}) map[string]PrunedReceiptMarker {
+	out := make(map[string]PrunedReceiptMarker, len(markers)+len(cfg.PrunedReceipts))
+	maps.Copy(out, markers)
+	owned := ownedRecordNames(entries, known)
+	if owned == nil {
+		return out
+	}
+	for key, marker := range cfg.PrunedReceipts {
+		scope, ok := parseHostReceiptScopedKey(key)
+		if !ok {
+			// Unreachable: decodeHubTOMLForRewrite validates the section, so a
+			// key this build cannot parse already refused the write.
+			continue
+		}
+		if _, carried := owned[scope.Name]; carried {
+			continue
+		}
+		if _, pruned := dropped[key]; pruned {
+			// The derivation compacted this marker away; preservation must not
+			// resurrect it.
+			continue
+		}
+		out[key] = marker
 	}
 	return out
 }

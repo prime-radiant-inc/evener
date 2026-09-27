@@ -175,6 +175,11 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	// prune crosses the boundary as a callback wired the same way hostManage
 	// itself is: after construction, before the server can serve a remove.
 	hostManage.cfg.forgetLastGoodThreads = web.forgetLastGoodThreads
+	// The remove commit phase's capture of the rows a tombstone retains reads
+	// the same map through its getter: the finish phase's forget drops the
+	// rows, so the commit must capture them first, and both seams live here
+	// where the map does.
+	hostManage.cfg.lastGoodThreads = web.lastGoodThreadsForSource
 	// Wired here, after the server exists, rather than inside the
 	// constructor: this is the one place that both built cfg.PluginManager
 	// and now has a broadcaster to give it.

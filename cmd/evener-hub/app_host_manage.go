@@ -118,6 +118,14 @@ type hostManagerConfig struct {
 	// embedders without a web server): nothing was ever retained, so there
 	// is nothing to forget.
 	forgetLastGoodThreads func(sourceID string)
+	// lastGoodThreads is the getter twin of forgetLastGoodThreads: it returns a
+	// copy of the web server's retained last-known-good rows for a source.
+	// Remove calls it in its commit phase — before the finish phase's forget
+	// drops the rows — to capture the rows a removal's tombstone retains
+	// (registry spec 08 §15: the tombstone carries "the retained projection of
+	// the source's last-known-good rows"). Nil (tests, embedders without a web
+	// server): the tombstone is written with no retained rows.
+	lastGoodThreads func(sourceID string) []appwire.Thread
 	// manager owns every live SSH channel; removal goes through its atomic
 	// RemoveHost so a concurrent attach cannot publish past deregistration, and
 	// the row path resolves the entry's attached client through its
@@ -248,6 +256,15 @@ type hostManagerConfig struct {
 	// of the same name, so every mutation refuses a marked name until its own
 	// finish clears the mark. Guarded by mu.
 	mutating map[string]struct{}
+	// policy is the resolved host-record retention knob set (registry spec 08
+	// §6/§15): the tombstone retention and bounds and the superseded-receipt,
+	// pruned-marker, and keyless-audit bounds every hub.toml write and every
+	// boot derives by. hostRecordPolicyFor applies the documented defaults, so
+	// a zero WebConfig still prunes and evicts by the spec's numbers.
+	policy hostRecordPolicy
+	// now is the derivation's clock seam: nil means the wall clock, and a test
+	// can pin removal and prune instants against the retention period.
+	now func() time.Time
 }
 
 // pendingHostReceipt is one receipt a single hub.toml write carries beyond the
@@ -256,6 +273,16 @@ type hostManagerConfig struct {
 type pendingHostReceipt struct {
 	Key     string
 	Receipt HostMutationReceipt
+}
+
+// hostPersistChange is the set of machine records one hub.toml write stages
+// beyond the store's own set: the mutation's receipt and, for a removal, the
+// tombstone the write persists. The derivation merges both into the record set
+// it writes, and a successful write installs the derived set — so a failed
+// write, and a compensation behind it, leave the store exactly as it was.
+type hostPersistChange struct {
+	receipt   *pendingHostReceipt
+	tombstone *hostTombstoneStage
 }
 
 // hostStore is the durable host set: every live entry, in the order a rewrite
@@ -294,6 +321,18 @@ type hostStore struct {
 	// keyed by name alone: one name's receipts span its generations, and the
 	// scoped key is what dedup matches.
 	receipts map[string]HostMutationReceipt
+	// tombstones is the durable removed-host set the file carries, keyed by
+	// name (spec 08 §15; app_host_tombstones.go). Boot loads it from the
+	// file's [tombstones] tables (validated there), a removal's commit
+	// installs the tombstone its atomic write persisted, and a re-add or a
+	// retention/capacity purge removes it — so the map never names a tombstone
+	// the file does not carry.
+	tombstones map[string]HostTombstone
+	// prunedReceipts is the durable pruned-marker set the file carries, keyed
+	// by the full five-part scoped receipt key (spec 08 §6): the bounded proof
+	// that a superseded receipt was compacted away, so a replay naming the
+	// marked key refuses `stale-entry` instead of fresh-applying.
+	prunedReceipts map[string]PrunedReceiptMarker
 }
 
 // set installs entries as the store's contents; the constructor calls it once
@@ -303,17 +342,6 @@ func (s *hostStore) set(entries []hostreg.Host) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = entries
-}
-
-// setHighWater records name's generation high-water triple, replacing any
-// earlier value. Callers hold hostManagerConfig.mu.
-func (s *hostStore) setHighWater(name string, mark HostGeneration) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.highWater == nil {
-		s.highWater = map[string]HostGeneration{}
-	}
-	s.highWater[name] = mark
 }
 
 // clearHighWater drops name's high-water record: a removal that never
@@ -378,6 +406,73 @@ func (s *hostStore) receiptsSnapshot() map[string]HostMutationReceipt {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return maps.Clone(s.receipts)
+}
+
+// setRecordMaps installs the file's tombstone and pruned-marker sets at boot;
+// the constructor calls it once with the records the file carried. The caller
+// transfers ownership.
+func (s *hostStore) setRecordMaps(tombstones map[string]HostTombstone, prunedReceipts map[string]PrunedReceiptMarker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tombstones = tombstones
+	s.prunedReceipts = prunedReceipts
+}
+
+// tombstoneSnapshot returns a copy of the stored tombstone set, keyed by name.
+// It takes only the store's own mutex: `list`'s in-memory expiry filter and
+// the tree merge read it without the mutation lock (spec 08 §4: "list takes no
+// mutation lock").
+func (s *hostStore) tombstoneSnapshot() map[string]HostTombstone {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.tombstones)
+}
+
+// hasTombstone reports whether name is present solely as a tombstone — the
+// re-add condition an `add` checks under the mutation mutex before its write
+// purges the tombstone.
+func (s *hostStore) hasTombstone(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.tombstones[name]
+	return ok
+}
+
+// prunedReceiptSnapshot returns a copy of the stored pruned-marker set, keyed
+// by the full scoped receipt key.
+func (s *hostStore) prunedReceiptSnapshot() map[string]PrunedReceiptMarker {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.prunedReceipts)
+}
+
+// installRecords replaces the store's machine-record maps with the set one
+// successful hub.toml write persisted. The derivation and the write ran
+// together, so installing the same projection keeps the file and the store the
+// same set; a failed write installs nothing. The tombstone and marker maps are
+// always installed whole (the derivation owns them), while the high-water and
+// receipt maps are installed only when non-nil so a caller cannot silently
+// blank a section it did not derive. Callers hold hostManagerConfig.mu.
+func (s *hostStore) installRecords(records hostTOMLRecords) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tombstones = records.tombstones
+	s.prunedReceipts = records.prunedReceipts
+	if records.highWater != nil {
+		s.highWater = records.highWater
+	}
+	if records.receipts != nil {
+		s.receipts = records.receipts
+	}
+}
+
+// clearTombstone drops name's tombstone: a removal that un-commits after its
+// commit write landed must leave no tombstone behind, in memory or on disk.
+// Callers hold hostManagerConfig.mu.
+func (s *hostStore) clearTombstone(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.tombstones, name)
 }
 
 // poison records err as the reason the durable host set is not fully loaded.
@@ -562,6 +657,17 @@ func writeHubTOMLHostsMarked(path string, entries []hostreg.Host, migrated bool)
 // through untouched, exactly as its records do; a nil known is the exact-write
 // sentinel and the set is written as given, so nil there writes no section.
 func writeHubTOMLHostsKnown(path string, entries, known []hostreg.Host, highWater map[string]HostGeneration, receipts map[string]HostMutationReceipt, migrated bool) error {
+	return writeHubTOMLHostsRecords(path, entries, known, hostTOMLRecords{highWater: highWater, receipts: receipts}, migrated)
+}
+
+// writeHubTOMLHostsRecords is the one writer, carrying every machine-managed
+// record set this build writes: the per-host records and high-water marks, the
+// mutation receipts, the removed-host tombstones, and the pruned markers. The
+// manager's persist path builds the set with deriveHostTOMLRecords (which has
+// already applied retention, capacity, and compaction) and installs the same
+// set on success; the small wrappers above are the boot-migration and
+// exact-write entry points.
+func writeHubTOMLHostsRecords(path string, entries, known []hostreg.Host, records hostTOMLRecords, migrated bool) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
@@ -577,7 +683,7 @@ func writeHubTOMLHostsKnown(path string, entries, known []hostreg.Host, highWate
 	// exact-write sentinel (no snapshot: preserve nothing); an empty known is a
 	// real empty snapshot, and preservation still applies.
 	var fileCfg Config
-	if known != nil || highWater != nil {
+	if known != nil || records.highWater != nil {
 		fileCfg, err = decodeHubTOMLForRewrite(path, raw)
 		if err != nil {
 			return err
@@ -597,22 +703,34 @@ func writeHubTOMLHostsKnown(path string, entries, known []hostreg.Host, highWate
 	} else {
 		doc["hosts"] = tables
 	}
-	records, generations := hubTOMLRecordTables(fileCfg, entries, known, highWater)
-	if len(records) == 0 {
+	hostRecords, generations := hubTOMLRecordTables(fileCfg, entries, known, records.highWater, records.droppedTombstones)
+	if len(hostRecords) == 0 {
 		delete(doc, "host_records")
 	} else {
-		doc["host_records"] = records
+		doc["host_records"] = hostRecords
 	}
 	if len(generations) == 0 {
 		delete(doc, "generations")
 	} else {
 		doc["generations"] = generations
 	}
-	receiptTables := hubTOMLReceiptTables(fileCfg, entries, known, receipts)
+	receiptTables := hubTOMLReceiptTables(fileCfg, entries, known, records.receipts, records.droppedReceipts)
 	if len(receiptTables) == 0 {
 		delete(doc, "mutation_receipts")
 	} else {
 		doc["mutation_receipts"] = receiptTables
+	}
+	tombstoneTables := hubTOMLTombstoneTables(fileCfg, entries, known, records.tombstones, records.droppedTombstones)
+	if len(tombstoneTables) == 0 {
+		delete(doc, "tombstones")
+	} else {
+		doc["tombstones"] = tombstoneTables
+	}
+	prunedTables := hubTOMLPrunedReceiptTables(fileCfg, entries, known, records.prunedReceipts, records.droppedMarkers)
+	if len(prunedTables) == 0 {
+		delete(doc, "pruned_receipts")
+	} else {
+		doc["pruned_receipts"] = prunedTables
 	}
 	if migrated {
 		doc[legacySidecarMigratedKey] = true
@@ -1072,6 +1190,15 @@ func (s *hostAttachState) restore(name string, rec *hostAttachRecord) {
 // pinned by TestHostManageRefusesRemoteOrigin.
 type hubHostManager struct {
 	cfg *hostManagerConfig
+	// testOnlyRemnantGated, when non-nil, marks names the tombstone retention
+	// and capacity rules must treat as holding an open teardown remnant — the
+	// exemption and the tombstone-capacity refusal path. Remnants are S12's
+	// records and no remnant store exists yet, so production leaves this nil
+	// and remnantGated (app_host_record_pruning.go) answers from
+	// cfg.remnantFence when one is wired; S12 replaces this seam by wiring that
+	// fence to the real records. It exists so the gated paths are falsified
+	// NOW, the S10 testOnlyParkPostCommit precedent; nil in production.
+	testOnlyRemnantGated func(name string) bool
 	// testOnlyParkPostCommit, when non-nil, is called by Update and Remove after
 	// their durable commit, after the mutation mutex and the per-host gate
 	// reservation are released, and immediately before the post-commit live
@@ -1123,6 +1250,7 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		running:          newHostRunningConfig(cfg),
 		state:            newHostAttachState(),
 		mutating:         map[string]struct{}{},
+		policy:           hostRecordPolicyFor(cfg),
 		logf:             logf,
 	}}
 	if m.cfg.planFacts == nil && manager != nil {
@@ -1209,6 +1337,16 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 	// commit wrote.
 	m.cfg.store.setReceipts(fileRecords.MutationReceipts)
 	m.cfg.store.set(hosts.All())
+	// The file's tombstones and pruned markers are the other durable halves:
+	// decodeConfig validated every record (the same hard startup-error posture
+	// a corrupt host entry takes), so they are loaded as-is and restored
+	// alongside the host entries (spec §15: "boot restores them alongside the
+	// host entries, and they survive controller restarts").
+	m.cfg.store.setRecordMaps(fileRecords.Tombstones, fileRecords.PrunedReceipts)
+	collided := false
+	if hasFile {
+		collided = m.breakBootTombstoneCollision(fileRecords)
+	}
 	migrated, err := m.migrateLegacyHostSidecar()
 	if err != nil {
 		// Loud, not fatal: the hub.toml hosts still serve. The store stays
@@ -1218,11 +1356,94 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		m.cfg.store.poison(err)
 	}
 	if !migrated {
-		// The migration's own write records every live host's identity, so only
-		// a boot without that write can need the initial records.
-		m.materializeHostRecords(fileRecords, hasFile)
+		// The boot's durable prune: expired tombstones, a tombstone a live
+		// entry consumed, and any record compaction past its bound land in one
+		// atomic write before the hub serves requests (spec §15: "every boot
+		// prunes durably in the same atomic-write posture before serving
+		// requests"; §6: "every `hub.toml` mutation and every boot compacts
+		// markers past either bound in the same atomic write"). A boot with
+		// nothing to prune writes nothing, so an untouched file stays
+		// byte-identical. The migration's own write records every live host's
+		// identity, so only a boot without that write can need the initial
+		// records.
+		if attempted := m.reconcileBootRecords(hasFile, collided); !attempted {
+			m.materializeHostRecords(fileRecords, hasFile)
+		}
 	}
 	return m
+}
+
+// breakBootTombstoneCollision applies spec §15's boot collision rule: a
+// retained tombstone that collides with a newly live entry for the same name
+// is consumed by the live entry, and the live host is rebased as a new
+// incarnation — its restored generation set strictly above the tombstone's
+// high-water mark, with a fresh incarnation id — before any historical receipt
+// can be read as current. The tombstone itself drops in the boot's atomic
+// write (the derivation's live-name purge). It reports whether any name was
+// rebased, which forces the boot write.
+//
+// BOUNDARY (S12): §15's remnant arm of this rule — a colliding name that holds
+// an open teardown remnant excludes the live entry from the live set as
+// `blocked-pending-teardown` instead of rebasing — needs the remnant records
+// S12 owns. The gate below is empty today (remnantGated), so no colliding name
+// is skipped; S12 replaces it by wiring cfg.remnantFence.
+func (m *hubHostManager) breakBootTombstoneCollision(records Config) bool {
+	collided := false
+	for _, entry := range m.cfg.store.snapshot() {
+		if _, collides := records.Tombstones[entry.Name]; !collides {
+			continue
+		}
+		if m.remnantGated(entry.Name) {
+			// S12's fenced arm: a live entry must never be minted over an open
+			// remnant. Unreachable while the gated-name source is empty.
+			continue
+		}
+		rebased, err := m.cfg.hosts.RebaseBootCollision(entry.Name)
+		if err != nil {
+			m.logf("boot collision on host %q not rebased: %v", entry.Name, err)
+			continue
+		}
+		m.cfg.store.replace(rebased)
+		// The name's name-keyed attach state is process state a fresh boot
+		// cannot hold; nothing to clear here. The rebased pair is persisted by
+		// the boot write the caller forces.
+		collided = true
+	}
+	return collided
+}
+
+// reconcileBootRecords runs the boot's durable record reconciliation: it
+// derives the record set the file should hold (retention prune, live-name
+// tombstone consumption, receipt/marker/audit compaction), and when that set
+// differs from the store's — or a boot collision rebased a live entry, which
+// must reach the file before the hub serves — it persists it in one atomic
+// write. It reports whether a write was attempted, so the caller knows not to
+// run the separate materialize write.
+//
+// A derivation that refuses (a hand-edited file already over a global
+// tombstone cap with every candidate remnant-gated) is logged and leaves the
+// file alone; the next mutation surfaces the typed refusal to its caller.
+func (m *hubHostManager) reconcileBootRecords(hasFile bool, collided bool) bool {
+	if !hasFile || strings.TrimSpace(m.cfg.configPath) == "" || m.cfg.store.poisoned() != nil {
+		return false
+	}
+	entries := m.cfg.store.snapshot()
+	required := collided
+	if !required {
+		records, err := m.deriveHostTOMLRecords(entries, entries, hostPersistChange{})
+		if err != nil {
+			m.logf("boot host-record prune refused: %v", err)
+			return false
+		}
+		required = !sameHostTOMLRecords(records, m.cfg.store.recordsSnapshot())
+	}
+	if !required {
+		return false
+	}
+	if err := m.persistHosts(entries, entries, hostPersistChange{}); err != nil {
+		m.logf("boot host-record prune for %s not written: %v", m.cfg.configPath, err)
+	}
+	return true
 }
 
 // seedHighWater seeds the store's retained high-water records plus the
@@ -1264,7 +1485,7 @@ func (m *hubHostManager) materializeHostRecords(cfg Config, hasFile bool) {
 		// pair or the generation the next boot restores — so the boot write
 		// repairs the pair in the canonical shape instead of skipping it.
 		if !record.complete() || !mark.complete() {
-			if err := m.persistHosts(entries, entries, nil); err != nil {
+			if err := m.persistHosts(entries, entries, hostPersistChange{}); err != nil {
 				m.logf("host %q records for %s not recorded yet: %v", entry.Name, m.cfg.configPath, err)
 			}
 			return
@@ -1411,7 +1632,7 @@ func (m *hubHostManager) migrateLegacyHostSidecar() (wrote bool, err error) {
 		m.cfg.store.add(stored)
 		m.registerSource(e)
 	}
-	if err := m.persistHostsMarked(m.cfg.store.snapshot(), pre, nil, true); err != nil {
+	if err := m.persistHostsMarked(m.cfg.store.snapshot(), pre, hostPersistChange{}, true); err != nil {
 		return false, err
 	}
 	wrote = true
@@ -1957,6 +2178,11 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// back so a refusal below can put it back: a refused add commits nothing,
 	// the retained state included.
 	priorState := m.cfg.state.detach(entry.Name)
+	// A re-add — a name present solely as a tombstone — also clears the
+	// name-keyed caches for the new incarnation (spec §15). The tombstone's
+	// presence at this point is the condition: the derivation's purge removes
+	// it in the write below.
+	reAddedFromTombstone := m.cfg.store.hasTombstone(entry.Name)
 	// Mint the identity before the durable write. Spec 08 §15 requires the write
 	// that first records the host to also record its identity — "minted fresh on
 	// every add/re-add in the same atomic hub.toml write that mints the
@@ -1974,6 +2200,10 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// The receipt the commit's own atomic write persists: pinned to the
 	// identity this add mints, carrying the row the response renders.
 	receipt := newHostMutationReceipt(auditKey, hostMutationAdd, entry, time.Now())
+	// A keyless add is non-retryable as a continuation; its receipt is the
+	// server-keyed audit record spec §11 defines, and the audit marker is what
+	// selects the audit compaction bound instead of the keyed receipt rules.
+	receipt.Audit = params.MutationID == ""
 	receiptKey := hostMutationReceiptKey(auditKey, entry.Name, hostMutationAdd, hostMutationIdentity{
 		Generation:    entry.Generation,
 		IncarnationID: entry.IncarnationID,
@@ -1984,7 +2214,7 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// fail, the file must not keep the entry (a failed add resurrecting on
 	// the next start).
 	prev := m.cfg.store.snapshot()
-	if err := m.persistOrCompensate(append(prev, entry), prev, &pendingHostReceipt{Key: receiptKey, Receipt: receipt}); err != nil {
+	if err := m.persistOrCompensate(append(prev, entry), prev, hostPersistChange{receipt: &pendingHostReceipt{Key: receiptKey, Receipt: receipt}}); err != nil {
 		// A failure the rename already committed is compensated back to the
 		// pre-add contents (persistOrCompensate), so the refusal cannot stand
 		// as a pre-commit one and the next start cannot resurrect an add this
@@ -2021,6 +2251,25 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// and the live insert held, so a concurrent keyed replay finding it names
 	// a mutation that really committed.
 	m.cfg.store.addReceipt(receiptKey, receipt)
+	if reAddedFromTombstone {
+		// A re-add clears the name-keyed caches (spec 08 §15: "re-add also
+		// clears the name-keyed caches (snapshot rows and last-known preflight
+		// facts) as part of its staged commit — an in-flight refresh from the
+		// removed incarnation or a stale name-keyed cache entry can never
+		// republish rows for the new host"). The removal's own write captured
+		// the rows into its tombstone, so dropping them here loses nothing: the
+		// tree re-applies the tombstone's retained rows until the new
+		// incarnation's first successful walk replaces them. The cache drop
+		// retires the old registration generation before registerSource mints
+		// the new one, so a walk holding the old capture cannot publish under
+		// the re-added name.
+		if m.cfg.remoteCache != nil {
+			m.cfg.remoteCache.RemoveSource(entry.Name)
+		}
+		if m.cfg.forgetLastGoodThreads != nil {
+			m.cfg.forgetLastGoodThreads(entry.Name)
+		}
+	}
 	m.registerSource(entry)
 	m.cfg.mu.Unlock()
 	// The commit is complete, so the row reads a fully added host — the entry
@@ -2084,12 +2333,13 @@ func (m *hubHostManager) dropHostDerivedState(name string) {
 // and the file to stay in step — before returning the failure. A plain
 // pre-rename refusal wrote nothing and is returned unchanged.
 //
-// receipt, when set, is the receipt of the mutation this write is committing:
-// it rides the same atomic write as the commit (spec 08 §5) and a compensation
-// drops it again, because the mutation it names never committed. It reaches
-// the store's own set only after this call returns success.
-func (m *hubHostManager) persistOrCompensate(entries, previous []hostreg.Host, receipt *pendingHostReceipt) error {
-	if err := m.persistHosts(entries, previous, receipt); err != nil {
+// change carries the records the mutation this write commits stages beyond the
+// store's own set: its receipt (which rides the same atomic write as the
+// commit, spec 08 §5) and, for a removal, the tombstone its write persists. A
+// compensation drops them with the failed mutation, because nothing the
+// derivation wrote is installed until the write returns success.
+func (m *hubHostManager) persistOrCompensate(entries, previous []hostreg.Host, change hostPersistChange) error {
+	if err := m.persistHosts(entries, previous, change); err != nil {
 		if hubTOMLRenameCommitted(err) {
 			// The rollback restores previous while still carrying hand-added
 			// extras: the union of the before and after sets tells the writer
@@ -2132,32 +2382,38 @@ func unionHosts(a, b []hostreg.Host) []hostreg.Host {
 // instead of losing it. A failure the rename already committed
 // (hubTOMLPostRenameError) is not a plain refusal — the file holds the new
 // entries — so the callers compensate the live state before reporting it.
-func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, receipt *pendingHostReceipt) error {
-	return m.persistHostsMarked(entries, known, receipt, false)
+func (m *hubHostManager) persistHosts(entries, known []hostreg.Host, change hostPersistChange) error {
+	return m.persistHostsMarked(entries, known, change, false)
 }
 
 // persistHostsMarked is persistHosts with the migration's marker; only the
 // migration passes true. known is the store's pre-mutation snapshot.
-func (m *hubHostManager) persistHostsMarked(entries, known []hostreg.Host, receipt *pendingHostReceipt, migrated bool) error {
+//
+// The write is derive-then-install: the machine-record set is derived once
+// (deriveHostTOMLRecords applies every retention, capacity, and compaction
+// rule), that exact set is written, and only a successful write installs it
+// into the store — so a failed write leaves both the durable file and the
+// in-memory records untouched, and a compensation needs no staged-state
+// bookkeeping. A capacity refusal (spec §15's `tombstone-capacity`) is mapped
+// onto its wire envelope here, the one choke point every mutation path runs
+// through.
+func (m *hubHostManager) persistHostsMarked(entries, known []hostreg.Host, change hostPersistChange, migrated bool) error {
 	if err := m.cfg.store.poisoned(); err != nil {
 		return fmt.Errorf("hub.toml %s not rewritten: %w (fix the legacy host sidecar or remove its unloaded entries first)", m.cfg.configPath, err)
 	}
-	highWater := m.cfg.store.highWaterSnapshot()
-	receipts := m.cfg.store.receiptsSnapshot()
-	if receipt != nil {
-		if receipts == nil {
-			receipts = map[string]HostMutationReceipt{}
-		}
-		receipts[receipt.Key] = receipt.Receipt
+	records, err := m.deriveHostTOMLRecords(entries, known, change)
+	if err != nil {
+		return tombstoneCapacityRefusal(err)
 	}
-	if err := writeHubTOMLHostsKnown(m.cfg.configPath, entries, known, highWater, receipts, migrated); err != nil {
+	if err := writeHubTOMLHostsRecords(m.cfg.configPath, entries, known, records, migrated); err != nil {
 		return err
 	}
+	m.cfg.store.installRecords(records)
 	// The mirror rides behind the hub.toml commit: hub.toml is the authority
 	// and the two files cannot be one write, so the mirror is written last and
 	// a failure here leaves it behind the file rather than unwinding the
 	// commit. See mirrorBoundaries.
-	m.mirrorBoundaries(entries, known, highWater)
+	m.mirrorBoundaries(entries, known, records.highWater)
 	return nil
 }
 
@@ -2238,7 +2494,7 @@ func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, highWat
 // so the state agrees and only the rollback's crash durability is uncertain
 // — reported as landed beside the cause, never as a failed rollback.
 func (m *hubHostManager) rollbackHubTOML(previous, known []hostreg.Host, cause error) error {
-	if err := m.persistHosts(previous, known, nil); err != nil {
+	if err := m.persistHosts(previous, known, hostPersistChange{}); err != nil {
 		if hubTOMLRenameCommitted(err) {
 			// The rollback's own rename landed: the file holds previous, the
 			// content the rollback exists to restore, and only its
@@ -2282,9 +2538,33 @@ func (m *hubHostManager) List(ctx context.Context, _ appwire.EmptyParams) (appwi
 	// empty slice, and the wire type's non-nullable hosts array must never
 	// marshal as JSON null.
 	rows := make([]appwire.HostRow, 0, len(hosts))
+	live := make(map[string]struct{}, len(hosts))
 	for _, host := range hosts {
+		live[host.Name] = struct{}{}
 		rows = append(rows, m.hostRow(ctx, host))
 	}
+	// Tombstone rows render from the durable tombstone set: `removed: true`
+	// plus the retained-row count, from the tombstone's retained effective
+	// HostConfig with attached/midEnsure false and the removed entry's origin,
+	// generation, and incarnation id; the facts/error optionals stay absent
+	// (spec §4/§11). The expiry filter below is IN MEMORY only — `list` takes
+	// no mutation lock and prunes nothing durably (spec §15: "the read path
+	// omits it from the response without taking the lock, and the next
+	// mutation-path atomic hub.toml write under the lock prunes it durably");
+	// a tombstone whose name still holds an open teardown remnant is rendered
+	// even past its retention (the gate keeps it alive).
+	for name, tombstone := range m.cfg.store.tombstoneSnapshot() {
+		if _, isLive := live[name]; isLive {
+			// Defensive only: the derivation drops a live name's tombstone, so
+			// a loaded set cannot hold one.
+			continue
+		}
+		if !m.remnantGated(name) && tombstoneExpired(tombstone, m.nowTime(), m.cfg.policy.tombstoneRetention) {
+			continue
+		}
+		rows = append(rows, tombstoneRow(tombstone))
+	}
+	slices.SortStableFunc(rows, func(a, b appwire.HostRow) int { return strings.Compare(a.Name, b.Name) })
 	return appwire.HostListResponse{Hosts: rows}, nil
 }
 
@@ -2431,11 +2711,19 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 		m.cfg.mu.Unlock()
 		return appwire.HostRemoveResponse{}, fmt.Errorf("remove host %q: %w", name, err)
 	}
-	m.cfg.store.setHighWater(host.Name, HostGeneration{
-		Generation:    host.Generation,
-		IncarnationID: host.IncarnationID,
-		PresenceEpoch: advanced,
-	})
+	// The tombstone is built HERE, in the commit phase, and not in the finish
+	// phase that drops the derived state: its retained projection is the
+	// source's last-known-good rows, and the finish phase's
+	// forgetLastGoodThreads drops exactly those rows. Capturing after that
+	// forget would persist an empty projection for a host whose sessions were
+	// read a moment ago (spec 08 §15: "the retained projection of the source's
+	// last-known-good rows"). The projection is bounded newest-first here, so
+	// the write is one atomic record with the sizes its caps promise.
+	var retainedRows []appwire.Thread
+	if m.cfg.lastGoodThreads != nil {
+		retainedRows = m.cfg.lastGoodThreads(host.Name)
+	}
+	tombstone := newHostTombstone(host, advanced, retainedRows, m.nowTime(), m.cfg.policy)
 	// The receipt rides the removal's own atomic write, pinned to the removed
 	// incarnation's pair (a removal advances the presence epoch, never the
 	// generation), so the lost-response replay later hits under the very pair
@@ -2445,10 +2733,11 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 		Generation:    host.Generation,
 		IncarnationID: host.IncarnationID,
 	})
-	if err := m.persistOrCompensate(m.cfg.store.without(host.Name), m.cfg.store.snapshot(), &pendingHostReceipt{Key: receiptKey, Receipt: receipt}); err != nil {
-		// The removal committed nothing, so the name keeps its live record and
-		// the high-water entry this attempt staged goes with it.
-		m.cfg.store.clearHighWater(host.Name)
+	if err := m.persistOrCompensate(m.cfg.store.without(host.Name), m.cfg.store.snapshot(), hostPersistChange{receipt: &pendingHostReceipt{Key: receiptKey, Receipt: receipt}, tombstone: &hostTombstoneStage{Tombstone: tombstone}}); err != nil {
+		// The removal committed nothing: the write derived (and would have
+		// installed) the tombstone and its high-water twin, but a failed write
+		// installs nothing, so the name keeps its live record and the host
+		// stays fully intact.
 		m.cfg.mu.Unlock()
 		return appwire.HostRemoveResponse{}, err
 	}
@@ -2535,6 +2824,10 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 		// name is live again, and a mark left behind would claim an advance
 		// that never committed.
 		m.cfg.store.clearHighWater(host.Name)
+		// The tombstone the commit wrote goes with it too: the name is live
+		// again, so the rollback write must not leave a removed-host record (or
+		// a `list` row) for a host the live set holds.
+		m.cfg.store.clearTombstone(host.Name)
 		err := m.rollbackHubTOML(m.cfg.store.snapshot(), m.cfg.store.snapshot(), teardownErr)
 		m.cfg.mu.Unlock()
 		return appwire.HostRemoveResponse{}, err
@@ -2714,7 +3007,7 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 	// caller can retry. A failure the rename already committed leaves the file
 	// holding the edit while the live set still holds the old entry, so it is
 	// compensated back before the refusal returns.
-	if err := m.persistOrCompensate(m.cfg.store.withReplaced(entry), m.cfg.store.snapshot(), &pendingHostReceipt{Key: receiptKey, Receipt: receipt}); err != nil {
+	if err := m.persistOrCompensate(m.cfg.store.withReplaced(entry), m.cfg.store.snapshot(), hostPersistChange{receipt: &pendingHostReceipt{Key: receiptKey, Receipt: receipt}}); err != nil {
 		m.cfg.mu.Unlock()
 		return appwire.HostUpdateResponse{}, err
 	}
