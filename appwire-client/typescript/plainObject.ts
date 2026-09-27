@@ -16,13 +16,18 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 // Structural equality for JSON-shaped values: scalars, arrays and plain
 // objects, compared by content. Every read of stored or fetched data hands back
 // new objects even when nothing changed, so content is what tells a real change
-// from a fresh copy. Any other object (a Date, a Blob, a Map) keeps its content
-// out of its own keys, so it is the same value only as itself.
+// from a fresh copy. Any other object (a Date, a Blob, a class instance) keeps
+// its content out of its own keys, so it is the same value only as itself.
 export function sameJsonValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left) || Array.isArray(right)) {
     if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-    return left.every((item, index) => sameJsonValue(item, right[index]));
+    // Every index, holes included: every() skips a hole, which would make the
+    // answer depend on which side holds it.
+    for (let index = 0; index < left.length; index += 1) {
+      if (!sameJsonValue(left[index], right[index])) return false;
+    }
+    return true;
   }
   if (!isJsonObject(left) || !isJsonObject(right)) return false;
   const keys = Object.keys(left);
@@ -32,9 +37,12 @@ export function sameJsonValue(left: unknown, right: unknown): boolean {
   );
 }
 
-// A plain object from any realm. isPlainObject's prototype check would reject
-// one whose Object.prototype is another realm's, which is what a record read
-// back from the tests' fake-indexeddb carries, so this reads the object's tag.
+// A plain object from any realm: its prototype is null or some realm's
+// Object.prototype, whose own prototype is null. isPlainObject compares with
+// this realm's Object.prototype, which rejects a record read back from the
+// tests' fake-indexeddb, since that record carries another realm's.
 function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return Object.prototype.toString.call(value) === "[object Object]";
+  if (typeof value !== "object" || value === null) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === null || Object.getPrototypeOf(prototype) === null;
 }
