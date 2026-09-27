@@ -20,7 +20,7 @@ export function unmountEveryTree(cleanup: () => void, report: (error: unknown) =
   }
   report(
     new Error(
-      `Testing Library's cleanup() threw ${unmountAttemptsBeforeGivingUp} times running, so it is not getting past a tree whose unmount throws. That relies on React DOM's root.unmount() doing nothing for a root it has already unmounted; update unmountEveryTree in testUnmount.ts.`,
+      `Testing Library's cleanup() threw on ${unmountAttemptsBeforeGivingUp} runs in a row, so it is not getting past a tree whose unmount throws. That relies on React DOM's root.unmount() doing nothing for a root it has already unmounted; update unmountEveryTree in testUnmount.ts.`,
     ),
   );
 }
