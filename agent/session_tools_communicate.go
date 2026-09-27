@@ -75,6 +75,11 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				EndTurn: endTurn,
 				Message: message,
 			}); err != nil {
+				// The transcript refused the entry (a poisoned or closed
+				// writer, or a served session failing closed): nothing
+				// announced it, so the model must not be told it succeeded --
+				// a captured terminal message it believes delivered would
+				// otherwise never reach a client or history.
 				return nil, err
 			}
 

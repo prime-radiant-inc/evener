@@ -1,0 +1,58 @@
+// The pulse meter's data (spec 16.4) and the Quiet and May be stuck labels
+// (spec 13.1), read from evener/activity/read (server addition S5). Both apps
+// decode the read here and ask quietState which label a working session shows.
+import type { SessionActivity } from "./types.gen";
+
+/** A working session reads Quiet after three minutes without transcript motion. */
+export const QUIET_AFTER_MS = 3 * 60_000;
+/** A working session reads May be stuck after ten. */
+export const STUCK_AFTER_MS = 10 * 60_000;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+
+// One session entry, key by key as the navigation codec treats a value record:
+// the keys this client knows are validated and kept, and any other key is
+// dropped. A malformed entry is dropped alone, so one bad row never blanks
+// every meter.
+function sessionActivity(value: unknown): SessionActivity | null {
+  if (!isRecord(value)) return null;
+  const { ref, minutes, runningSubagents, quietForMs } = value;
+  if (typeof ref !== "string" || ref === "" || ref.length > 1024) return null;
+  if (!Array.isArray(minutes) || minutes.length === 0 || minutes.length > 60 || !minutes.every(count)) return null;
+  if (!count(runningSubagents)) return null;
+  if (quietForMs !== undefined && !count(quietForMs)) return null;
+  return { ref, minutes: [...minutes], runningSubagents, ...(quietForMs === undefined ? {} : { quietForMs }) };
+}
+
+/** Decodes an evener/activity/read result. A result that is not a session
+ * list throws, so a caller keeps the meters it has rather than drawing them
+ * flat. */
+export function decodeActivityRead(value: unknown): SessionActivity[] {
+  if (!isRecord(value) || !Array.isArray(value.sessions)) throw new Error("activity read: invalid response");
+  const sessions: SessionActivity[] = [];
+  for (const entry of value.sessions) {
+    const session = sessionActivity(entry);
+    if (session) sessions.push(session);
+  }
+  return sessions;
+}
+
+export type QuietState = "quiet" | "stuck";
+
+/** Whether a working session reads Quiet or May be stuck `sinceReadMs` after
+ * the read that returned `activity`, and how long it has been quiet; null when
+ * it reads neither. The hub withholds the quiet time while the session is not
+ * working or any of its subagents runs, and so does this: an agent waiting on
+ * subagents is never quiet or stuck (Jesse's ruling for S5). */
+export function quietState(
+  activity: SessionActivity,
+  sinceReadMs: number,
+): { state: QuietState; forMs: number } | null {
+  if (activity.quietForMs === undefined || activity.runningSubagents > 0) return null;
+  const forMs = activity.quietForMs + Math.max(0, sinceReadMs);
+  if (forMs >= STUCK_AFTER_MS) return { state: "stuck", forMs };
+  if (forMs >= QUIET_AFTER_MS) return { state: "quiet", forMs };
+  return null;
+}

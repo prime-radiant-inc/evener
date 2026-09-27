@@ -285,7 +285,8 @@ func TestFailingClosedInterruptsTheRunningExecution(t *testing.T) {
 
 // A communicate that lands after the session closed its transcript (a turn
 // finishing while the session shuts down) is not a writer failure: nothing
-// fails closed.
+// fails closed, and the unrecorded message is not announced either --
+// history would otherwise show a message the transcript never has.
 func TestACommunicateAfterTheTranscriptClosedDoesNotFailClosed(t *testing.T) {
 	s, adapter := newFailClosedSession(t, nil)
 	served := serveFailClosedSession(s)
@@ -296,9 +297,84 @@ func TestACommunicateAfterTheTranscriptClosedDoesNotFailClosed(t *testing.T) {
 		return communicateResponse(true, "after close"), nil
 	})
 	_, _ = s.ProcessInput(context.Background(), "talk", nil)
-	if got := failClosedDiagnostics(served.settle(s)); got != 0 {
+	evs := served.settle(s)
+	if got := failClosedDiagnostics(evs); got != 0 {
 		t.Fatalf("%d fail-closed diagnostics for a closed transcript, want 0", got)
 	}
+	if got := countKind(evs, events.EventCommunicate); got != 0 {
+		t.Fatalf("%d communicate events announced a message the closed writer never recorded", got)
+	}
+}
+
+// A served session with no transcript defensively fails closed if
+// deliverCommunicate is ever reached directly, even though admission (the
+// create-failure check in failClosedOnUnhealthyTranscript) already refuses
+// every input before any turn runs, so this path is not reachable through
+// ProcessInput today (TestAServedSessionWithNoTranscriptFailsClosed). Pinned
+// so deliverCommunicate stays correct on its own, independent of its callers.
+func TestDeliverCommunicateFailsClosedWithNoTranscript(t *testing.T) {
+	s, _ := newFailClosedSession(t, func(point string) error {
+		if point == "new_transcript" {
+			return errors.New("disk full")
+		}
+		return nil
+	})
+	served := serveFailClosedSession(s)
+	if s.attachedTranscript() != nil {
+		t.Fatal("setup: expected no writer")
+	}
+	if err := s.deliverCommunicate(events.CommunicateData{CallID: "comm-no-writer", EndTurn: true, Message: "lost"}); !errors.Is(err, errTranscriptFailedClosed) {
+		t.Fatalf("deliverCommunicate with no writer = %v, want the fail-closed refusal", err)
+	}
+	evs := served.settle(s)
+	if got := countKind(evs, events.EventCommunicate); got != 0 {
+		t.Fatalf("%d communicate events announced with no writer to record them", got)
+	}
+	if got := failClosedDiagnostics(evs); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1", got)
+	}
+}
+
+// A COMMUNICATE that reaches delivery after the session already failed
+// closed -- the running execution was cancelled but the tool call was
+// mid-flight -- is refused immediately, without a second attempt to record
+// or a second diagnostic.
+func TestDeliverCommunicateAfterAlreadyFailedClosedDoesNotReannounce(t *testing.T) {
+	s, _ := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	s.failClosed(errors.New("earlier cause"))
+	if err := s.deliverCommunicate(events.CommunicateData{CallID: "comm-late", EndTurn: true, Message: "too late"}); !errors.Is(err, errTranscriptFailedClosed) {
+		t.Fatalf("deliverCommunicate on an already failed-closed session = %v, want the fail-closed refusal", err)
+	}
+	evs := served.settle(s)
+	if got := countKind(evs, events.EventCommunicate); got != 0 {
+		t.Fatalf("%d communicate events announced after the session failed closed", got)
+	}
+	if got := failClosedDiagnostics(evs); got != 1 {
+		t.Fatalf("%d fail-closed diagnostics, want 1 (no re-announce)", got)
+	}
+}
+
+// trackExecutionCancel's cleanup only clears its own tracked cancel: a
+// finishing execution overlapping a newer one must not clear the newer
+// execution's cancel out from under it, or a later failClosed could not
+// interrupt the run still in flight.
+func TestTrackExecutionCancelDoesNotClearANewerExecutionsCancel(t *testing.T) {
+	s, _ := newFailClosedSession(t, nil)
+	served := serveFailClosedSession(s)
+	var firstCancelled, secondCancelled bool
+	stopFirst := s.trackExecutionCancel(func() { firstCancelled = true })
+	stopSecond := s.trackExecutionCancel(func() { secondCancelled = true })
+	stopFirst() // the first execution finishes while the second still runs
+	s.failClosed(errors.New("writer poisoned"))
+	if firstCancelled {
+		t.Fatal("the finished execution's own cancel ran")
+	}
+	if !secondCancelled {
+		t.Fatal("failClosed did not cancel the newer execution still tracked")
+	}
+	stopSecond()
+	served.settle(s)
 }
 
 // An unserved session keeps today's behavior: the message is announced and

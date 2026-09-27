@@ -40,7 +40,10 @@ import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
 import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } from "./draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
-import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
+import {
+  flushPendingTurnsProjectionForTests,
+  outlastEmptyFlushRoundForTests,
+} from "./queue/testing/flushPendingTurnsProjection";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
 
@@ -187,12 +190,24 @@ class PausedCommitStorage extends MutationOutboxIndexedDB {
     this.releaseCommit?.();
   }
 
-  override async enqueueIntent(
-    intent: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>[0],
+  override enqueueIntent(
+    ...args: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>
   ): ReturnType<MutationOutboxIndexedDB["enqueueIntent"]> {
+    return this.holdCommit(() => super.enqueueIntent(...args));
+  }
+
+  // Stop's write (the interrupt record and the cancellations it makes in the
+  // same transaction) is a local outbox commit too, held by the same gate.
+  override enqueueInterruptAndCancel(
+    ...args: Parameters<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]>
+  ): ReturnType<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]> {
+    return this.holdCommit(() => super.enqueueInterruptAndCancel(...args));
+  }
+
+  private async holdCommit<T>(commit: () => Promise<T>): Promise<T> {
     this.markCommitStarted?.();
     await this.commitGate;
-    return super.enqueueIntent(intent);
+    return commit();
   }
 }
 
@@ -2561,12 +2576,12 @@ test("an explicit rejection returns to the sole Composer textarea", async () => 
 });
 
 test("an occupied Composer is not overwritten by a later rejection", async () => {
+  const requested = deferred<string>();
   const rejection = deferred<never>();
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });
-  let clientMutationId = "";
   fake.on("turn/start", (params) => {
-    clientMutationId = String(params.clientMutationId);
+    requested.resolve(String(params.clientMutationId));
     return rejection.promise;
   });
 
@@ -2575,6 +2590,10 @@ test("an occupied Composer is not overwritten by a later rejection", async () =>
   await user.click(submitButton());
   await waitFor(() => expect(editor.textContent).toBe(""));
   await user.type(editor, "cw");
+  // The draft clears at the local commit, and the dispatcher sends turn/start
+  // a few IndexedDB steps later, so the rejection waits for the request it
+  // answers. Rejected any earlier, it names no mutation and settles nothing.
+  const clientMutationId = await act(() => requested.promise);
   act(() => rejection.reject(notAcceptedError(clientMutationId)));
 
   await waitFor(() => expect(screen.getByText("rd")).toBeTruthy());
@@ -3719,6 +3738,55 @@ test("a typed /interrupt on an active fenced session still mints its intent: Sto
   expect(getToasts().map((toast) => toast.text)).not.toContain(
     "/interrupt isn't available until this session is resumed",
   );
+});
+
+// The test above settles its press with the projection flush, which awaits
+// only what registered with the pending-turns work tracker. Both Stop routes
+// run fire-and-forget, the typed /interrupt from the form's submit and the
+// button from its click, and both enqueue through the threads store, where the
+// refreshes a commit starts register only once the write lands. Untracked, a
+// flush that begins first finds nothing outstanding and returns, and the late
+// commit's refreshes then render outside act. The fenced mount parks the
+// intent, so the held write is all of the press's durable work.
+test.each<[string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]>([
+  [
+    "a typed /interrupt",
+    async (user) => {
+      await user.type(textarea(), "/interrupt");
+      await user.keyboard("{Escape}");
+      await user.keyboard("{Meta>}{Enter}{/Meta}");
+    },
+  ],
+  [
+    "the Stop button",
+    async (user) => {
+      await user.click(stopButton());
+    },
+  ],
+])("a flush cannot settle while %s's durable write is still in flight", async (_route, press) => {
+  const storage = new PausedCommitStorage();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:active-fenced-interrupt-held";
+  await mountActiveFencedForTypedCommands(ref);
+  // Settle the mount's own projection work, so only the held write can keep
+  // the flush below open.
+  await flushPendingTurnsProjectionForTests();
+
+  await press(user);
+  await storage.commitStarted;
+
+  let flushResolved = false;
+  const flushing = flushPendingTurnsProjectionForTests().then(() => {
+    flushResolved = true;
+  });
+  // If the press is tracked, the flush cannot return here.
+  await outlastEmptyFlushRoundForTests();
+  expect(flushResolved).toBe(false);
+
+  storage.release();
+  await flushing;
+  expect((await parkedOutboxFor(ref)).map((record) => record.method)).toEqual(["turn/interrupt"]);
 });
 
 // --- interrupt ---------------------------------------------------------------

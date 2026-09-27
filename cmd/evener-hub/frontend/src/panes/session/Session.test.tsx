@@ -3456,6 +3456,7 @@ test("confirmed force stop refreshes the session and exposes explicit Resume", a
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   const resume = await screen.findByRole("button", { name: "Resume session" });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   await user.click(resume);
   await waitFor(() => expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("idle"));
@@ -3657,6 +3658,7 @@ test.each(["idle", "active"])(
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
     expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
       { method: "evener/thread/forceStop", params: { ref } },
     ]);
@@ -3744,6 +3746,7 @@ test.each(["pending", "failed"])(
           { method: "evener/thread/forceStop", params: { ref } },
         ]),
       );
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
     } finally {
       await act(async () => rejectRead(new Error("fixture cleanup")));
@@ -3984,6 +3987,14 @@ test.each(["model", "compact"])(
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
+      // Force stop's work runs past the click: the durable cancellation, the
+      // stop RPC (whose handler rejects the pending action), the recovery
+      // obligation, and the refresh after which the dialog closes. Awaiting
+      // the rejection alone would leave the rest to render outside act, so the
+      // test waits for the dialog to close and settles the projection reads
+      // that work started.
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await flushPendingTurnsProjectionForTests();
       await settled;
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
       await user.click(screen.getByRole("button", { name: /session actions/i }));
@@ -4050,6 +4061,7 @@ test.each(["idle", "active"])(
       await openForceStopDialog(user);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
       expect(await screen.findByRole("button", { name: "Resume session" })).toBeTruthy();
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
         { method: "evener/thread/forceStop", params: { ref } },
       ]);
@@ -4126,6 +4138,7 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
       { method: "evener/thread/forceStop", params: { ref } },
     ]),
   );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
 });
 

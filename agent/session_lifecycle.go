@@ -451,7 +451,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		emitEnd := emitTerminal || !s.sessionEndEmitted
 		s.sessionEndEmitted = true
 		if s.state == SessionProcessing {
-			s.accumulateWorkLocked() // dying turn's work counts (Decision 4/L3)
+			s.endTurnLocked() // dying turn's work counts and it ends now (Decision 4/L3)
 		}
 		s.closing = true
 		if !retirement {

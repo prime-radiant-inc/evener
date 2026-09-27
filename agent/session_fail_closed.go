@@ -72,15 +72,20 @@ func (s *Session) failClosed(cause error) error {
 // nil when it was recorded, or when the session is not served. A write the
 // placement declines without an error recorded nothing because there was
 // nothing to record (a completion of an execution that recorded nothing). A
-// closed writer is a session shutting down, not a writer failure. A session
-// with no writer at all is either one with no state directory, which no
-// daemon serves, or one whose transcript could not be created, which failed
-// closed at its first input (failClosedOnUnhealthyTranscript).
+// closed writer is a session shutting down, not a writer failure, so it is
+// exempted here too; a caller that must tell that case apart from a genuine
+// failure (deliverCommunicate, which must never announce a message a closed
+// writer silently dropped) checks Closed() itself before this runs. A missing
+// writer is a genuine failure the caller reached without checking first: the
+// ordinary path guards its call on attachedTranscript() != nil (a completion,
+// which records nothing when there is no writer to record it), so this only
+// fires for a caller that skipped that guard, such as deliverCommunicate,
+// which has no such guard because its synced write must never be held.
 func (s *Session) failClosedUnlessRecorded(rec transcript.Record, err error, what string) error {
 	if rec.Recorded || err == nil {
 		return nil
 	}
-	if writer := s.attachedTranscript(); writer == nil || writer.Closed() {
+	if writer := s.attachedTranscript(); writer != nil && writer.Closed() {
 		return nil
 	}
 	return s.failClosed(fmt.Errorf("%s was not recorded: %w", what, err))
@@ -122,11 +127,16 @@ func (s *Session) announceFailClosed() {
 }
 
 // trackExecutionCancel lets failClosed interrupt the execution whose context
-// cancel is; the returned func stops tracking it.
+// cancel is; the returned func stops tracking it. The cleanup only clears
+// the pointer it stored, by compare-and-swap: two executions can overlap
+// (one finishing while a newer one starts), and an unconditional clear would
+// let the finishing one erase the newer one's cancel, leaving failClosed
+// with nothing to interrupt the run still in flight.
 func (s *Session) trackExecutionCancel(cancel context.CancelFunc) func() {
-	s.failedClosed.cancelExecution.Store(&cancel)
+	tracked := &cancel
+	s.failedClosed.cancelExecution.Store(tracked)
 	if s.failedClosedRefusal() != nil {
 		cancel() // failed closed before this execution was tracked
 	}
-	return func() { s.failedClosed.cancelExecution.Store(nil) }
+	return func() { s.failedClosed.cancelExecution.CompareAndSwap(tracked, nil) }
 }

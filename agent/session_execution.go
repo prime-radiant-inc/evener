@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -137,8 +138,13 @@ func (s *Session) noteRecordedLocked(rec transcript.Record) {
 
 // noteRecordedExecutionLocked remembers that an execution turn is recorded,
 // so that it reopens if it runs again. Only a client-mutation name can run
-// again (every other execution runs under a fresh id), so the set stays
-// bounded by client turns. Callers hold s.mu.
+// again (every other execution runs under a fresh id), but every client-
+// mutation-spelled TurnID recorded is kept here for the life of the session,
+// including turn_m<N> names minted for a continuation or a notification wake
+// that never recur (mintRunningTurnID) — those are inserted and never
+// reclaimed, so the set grows with the session rather than staying bounded by
+// its client turns. Reopen still answers correctly (every TurnID is unique);
+// the cost is memory, slowly, over a very long session. Callers hold s.mu.
 func (s *Session) noteRecordedExecutionLocked(turnID string) {
 	if _, ok := clientMutationStartSequence(turnID); !ok {
 		return
@@ -346,6 +352,17 @@ func (s *Session) takeOpenPendingExecution(turnID string) bool {
 	return open
 }
 
+// hasOpenPendingExecution is takeOpenPendingExecution without forgetting: a
+// caller that still might not get to finish turnID (its own record of the
+// failure to complete it with may yet fail) checks here first and takes the
+// marker only once that record has actually succeeded, so a failed attempt
+// leaves it for the next one — never dropping it for good.
+func (s *Session) hasOpenPendingExecution(turnID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.openPendingExecutions[turnID]
+}
+
 // closeCrashedExecutionTargets is the open executions resume closes: every
 // open one but those pending work names, in TurnID order.
 func closeCrashedExecutionTargets(executions map[string]bool, pending map[string]bool) []string {
@@ -423,7 +440,35 @@ func (s *Session) recordNotice(notice schema.NoticeInfo) {
 // the refusal; a session with no transcript, or one nobody serves, announces
 // it as it always has.
 func (s *Session) deliverCommunicate(data events.CommunicateData) error {
+	// A session that already failed closed refuses immediately: its
+	// execution is being cancelled, but a tool call already in flight (this
+	// one) can still reach delivery before that lands, and it must not
+	// record or announce a message the session is refusing everything else
+	// for.
+	if refusal := s.failedClosedRefusal(); refusal != nil {
+		s.announceFailClosed()
+		return refusal
+	}
 	rec, err := s.recordTranscriptOnlyThrough(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}, transcript.DoorSynced, transcript.PlaceSession)
+	if !rec.Recorded && s.servedByDaemon() {
+		switch writer := s.attachedTranscript(); {
+		case writer != nil && writer.Closed():
+			// A closed writer is a session shutting down, not a writer
+			// failure: refuse so the model is not told an unrecorded message
+			// succeeded, but without the fail-closed diagnostic a genuine
+			// writer failure gets.
+			return errTranscriptClosed()
+		case writer == nil:
+			// No writer at all, recorded with no error (Record is nil-safe):
+			// a genuine failure this call reached without the completion
+			// path's attachedTranscript() != nil guard, since a synced write
+			// must never be held for one to appear later.
+			if refusal := s.failClosed(errors.New("a communicate message was not recorded: no transcript writer")); refusal != nil {
+				s.announceFailClosed()
+				return refusal
+			}
+		}
+	}
 	if refusal := s.failClosedUnlessRecorded(rec, err, "a communicate message"); refusal != nil {
 		s.announceFailClosed()
 		return refusal

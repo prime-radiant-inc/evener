@@ -5825,7 +5825,7 @@ func (s *Session) releaseChildCommittedSendStart(childSessionID string) {
 // and asks several questions of each row, so it must not re-snapshot the whole
 // controller to ask this one.
 func delegateRowStopGated(row delegateSnapshot) bool {
-	if row.currentRunOpen || row.lastOutcome == nil {
+	if !delegateRunTerminal(row.lastOutcome, row.currentRunOpen) {
 		return false
 	}
 	return row.lastOutcome.Status == delegatestore.OutcomeStopped && row.lastOutcome.Reason == "stopped_by_parent"

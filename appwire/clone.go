@@ -11,7 +11,7 @@ import (
 // Value-typed scalar fields are copied by value semantics.
 func CloneThread(t Thread) Thread {
 	t.Status = cloneThreadStatus(t.Status)
-	t.GitInfo = cloneGitInfo(t.GitInfo)
+	t.GitInfo = clonePointer(t.GitInfo)
 	t.Turns = cloneTurns(t.Turns)
 	t.Evener = cloneEvenerThread(t.Evener)
 	return t
@@ -20,14 +20,6 @@ func CloneThread(t Thread) Thread {
 func cloneThreadStatus(s ThreadStatus) ThreadStatus {
 	s.ActiveFlags = append([]string(nil), s.ActiveFlags...)
 	return s
-}
-
-func cloneGitInfo(g *GitInfo) *GitInfo {
-	if g == nil {
-		return nil
-	}
-	cp := *g
-	return &cp
 }
 
 func cloneTurns(turns []Turn) []Turn {
@@ -44,10 +36,10 @@ func cloneTurns(turns []Turn) []Turn {
 func cloneTurn(turn Turn) Turn {
 	turn.Items = cloneThreadItems(turn.Items)
 	turn.Error = cloneTurnError(turn.Error)
-	turn.StartedAt = cloneInt64(turn.StartedAt)
-	turn.CompletedAt = cloneInt64(turn.CompletedAt)
-	turn.DurationMS = cloneInt64(turn.DurationMS)
-	turn.Usage = cloneEvenerUsage(turn.Usage)
+	turn.StartedAt = clonePointer(turn.StartedAt)
+	turn.CompletedAt = clonePointer(turn.CompletedAt)
+	turn.DurationMS = clonePointer(turn.DurationMS)
+	turn.Usage = clonePointer(turn.Usage)
 	return turn
 }
 
@@ -65,14 +57,11 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 func cloneThreadItem(item ThreadItem) ThreadItem {
 	item.Images = cloneInputItems(item.Images)
 	item.OutputImages = CloneOutputImages(item.OutputImages)
-	if item.Position != nil {
-		position := *item.Position
-		item.Position = &position
-	}
-	item.StartedAt = cloneInt64(item.StartedAt)
-	item.CompletedAt = cloneInt64(item.CompletedAt)
-	item.DurationMS = cloneInt64(item.DurationMS)
-	item.ExitCode = cloneInt64(item.ExitCode)
+	item.Position = clonePointer(item.Position)
+	item.StartedAt = clonePointer(item.StartedAt)
+	item.CompletedAt = clonePointer(item.CompletedAt)
+	item.DurationMS = clonePointer(item.DurationMS)
+	item.ExitCode = clonePointer(item.ExitCode)
 	item.Raw = append(json.RawMessage(nil), item.Raw...)
 	return item
 }
@@ -104,10 +93,7 @@ func cloneTurnError(e *TurnError) *TurnError {
 		return nil
 	}
 	cp := *e
-	if cp.Cause != nil {
-		cause := *cp.Cause
-		cp.Cause = &cause
-	}
+	cp.Cause = clonePointer(cp.Cause)
 	cp.CodexErrorInfo = cloneCodexErrorInfo(e.CodexErrorInfo)
 	return &cp
 }
@@ -119,15 +105,20 @@ func cloneEvenerThread(e EvenerThread) EvenerThread {
 	e.PendingEscalations = append([]SandboxEscalationRequested(nil), e.PendingEscalations...)
 	e.ReasoningEffortLevels = append([]string(nil), e.ReasoningEffortLevels...)
 	e.Tasks = CloneTaskAggregate(e.Tasks)
-	e.Goal = cloneGoalState(e.Goal)
+	e.Goal = clonePointer(e.Goal)
 	e.SessionURLs = append([]SessionURL(nil), e.SessionURLs...)
-	e.Usage = cloneEvenerUsage(e.Usage)
-	e.FailedToolCalls = cloneInt(e.FailedToolCalls)
+	e.Usage = clonePointer(e.Usage)
+	e.FailedToolCalls = clonePointer(e.FailedToolCalls)
+	e.Activity = CloneThreadActivity(e.Activity)
+	e.Subagents = clonePointer(e.Subagents)
 	// Capabilities is all bools (value type) — no copy needed.
 	return e
 }
 
-func cloneInt(value *int) *int {
+// clonePointer returns a copy of *value that shares nothing with it; nil stays
+// nil. The copy is one level deep, so it is only for types whose fields are
+// all values.
+func clonePointer[T any](value *T) *T {
 	if value == nil {
 		return nil
 	}
@@ -135,11 +126,13 @@ func cloneInt(value *int) *int {
 	return &clone
 }
 
-func cloneInt64(value *int64) *int64 {
+// CloneThreadActivity deep-copies a pulse meter sample; nil stays nil.
+func CloneThreadActivity(value *ThreadActivity) *ThreadActivity {
 	if value == nil {
 		return nil
 	}
 	clone := *value
+	clone.Minutes = append([]int(nil), value.Minutes...)
 	return &clone
 }
 
@@ -150,26 +143,7 @@ func CloneTaskAggregate(value *TaskAggregate) *TaskAggregate {
 		return nil
 	}
 	clone := *value
-	if value.Current != nil {
-		current := *value.Current
-		clone.Current = &current
-	}
-	return &clone
-}
-
-func cloneGoalState(value *GoalState) *GoalState {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
-}
-
-func cloneEvenerUsage(value *EvenerUsage) *EvenerUsage {
-	if value == nil {
-		return nil
-	}
-	clone := *value
+	clone.Current = clonePointer(value.Current)
 	return &clone
 }
 
@@ -219,10 +193,7 @@ func CloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	cp.Jobs = CloneEvenerJobs(d.Jobs)
 	cp.Delegates = cloneDelegateInfos(d.Delegates)
 	cp.Watches = CloneEvenerWatches(d.Watches)
-	if d.TurnSlots != nil {
-		ts := *d.TurnSlots
-		cp.TurnSlots = &ts
-	}
+	cp.TurnSlots = clonePointer(d.TurnSlots)
 	cp.Agents = append([]string(nil), d.Agents...)
 	cp.DelegateDiagnostics = append([]string(nil), d.DelegateDiagnostics...)
 	cp.SkillDiagnostics = append([]EvenerSkillDiagnostic(nil), d.SkillDiagnostics...)
@@ -237,8 +208,8 @@ func CloneEvenerJobs(jobs []EvenerJobInfo) []EvenerJobInfo {
 	out := make([]EvenerJobInfo, len(jobs))
 	for i := range jobs {
 		out[i] = jobs[i]
-		out[i].Resumable = cloneBool(jobs[i].Resumable)
-		out[i].ExitCode = cloneInt(jobs[i].ExitCode)
+		out[i].Resumable = clonePointer(jobs[i].Resumable)
+		out[i].ExitCode = clonePointer(jobs[i].ExitCode)
 	}
 	return out
 }
@@ -284,28 +255,17 @@ func cloneDelegateInfos(delegates []EvenerDelegateInfo) []EvenerDelegateInfo {
 }
 
 func cloneDelegateInfo(d EvenerDelegateInfo) EvenerDelegateInfo {
-	d.RunningForMS = cloneInt64(d.RunningForMS)
-	d.QuietForMS = cloneInt64(d.QuietForMS)
-	d.DurationMS = cloneInt64(d.DurationMS)
-	d.StructuredValid = cloneBool(d.StructuredValid)
-	d.Usage = cloneEvenerUsage(d.Usage)
-	if d.Worktree != nil {
-		worktree := *d.Worktree
-		d.Worktree = &worktree
-	}
+	d.RunningForMS = clonePointer(d.RunningForMS)
+	d.QuietForMS = clonePointer(d.QuietForMS)
+	d.DurationMS = clonePointer(d.DurationMS)
+	d.StructuredValid = clonePointer(d.StructuredValid)
+	d.Usage = clonePointer(d.Usage)
+	d.Worktree = clonePointer(d.Worktree)
 	d.Warnings = append([]string(nil), d.Warnings...)
 	d.Diagnostics = append([]string(nil), d.Diagnostics...)
 	d.Message = append(json.RawMessage(nil), d.Message...)
 	d.StructuredResult = append(json.RawMessage(nil), d.StructuredResult...)
 	return d
-}
-
-func cloneBool(value *bool) *bool {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
 }
 
 func cloneQueueState(q QueueState) QueueState {
