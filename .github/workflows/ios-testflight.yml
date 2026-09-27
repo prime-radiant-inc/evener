@@ -318,14 +318,15 @@ jobs:
         run: |
           set -euo pipefail
           # A recovery run may be a manual dispatch from main or a version-tag
-          # push (the only other way this workflow starts). The tag-push branch
-          # re-checks that the run's commit is on main, because the run API does
-          # not carry the archive job's ancestry guarantee.
+          # push (the only other way this workflow starts). A tag push leaves
+          # head_branch null; a branch push names its branch, so the pre-change
+          # main-push lane cannot pass as a tag release.
           tag_push="$(ruby -rjson -e '
             run = JSON.parse(File.read(ENV.fetch("RUNNER_TEMP") + "/recovery-run.json"))
             abort "Recovery requires a run of this workflow" unless run["path"] == ".github/workflows/ios-testflight.yml"
             dispatch = run["event"] == "workflow_dispatch" && run["head_branch"] == "main"
-            tag_push = run["event"] == "push"
+            head_branch = run["head_branch"]
+            tag_push = run["event"] == "push" && (head_branch.nil? || head_branch.match?(/\Av[0-9]/))
             abort "Recovery requires a manual dispatch from main or a version-tag push run" unless dispatch || tag_push
             abort "Artifact source does not match the original run" unless File.read("build/source-revision.txt").strip == run.fetch("head_sha")
             puts(tag_push ? "true" : "false")
@@ -334,7 +335,14 @@ jobs:
             head_sha="$(ruby -rjson -e 'puts JSON.parse(File.read(ENV.fetch("RUNNER_TEMP") + "/recovery-run.json"))["head_sha"]')"
             [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "Recovery run has no valid commit sha" >&2; exit 1; }
             git fetch --no-tags origin main
-            git merge-base --is-ancestor "$head_sha" FETCH_HEAD || { echo "Recovery run commit $head_sha is not on main" >&2; exit 1; }
+            if ! git merge-base --is-ancestor "$head_sha" FETCH_HEAD; then
+              # This checkout is shallow, so an older commit can be missing from
+              # the object graph; deepen main before rejecting the run.
+              if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+                git fetch --no-tags --unshallow origin main
+              fi
+              git merge-base --is-ancestor "$head_sha" FETCH_HEAD || { echo "Recovery run commit $head_sha is not on main" >&2; exit 1; }
+            fi
           fi
           shasum -a 256 -c build/artifact-sha256.txt
           bundle exec ruby -rfastlane_core/ipa_file_analyser -e '

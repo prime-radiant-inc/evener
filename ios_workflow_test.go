@@ -81,7 +81,7 @@ func TestIOSWorkflowArchiveVerifiesTagOnMain(t *testing.T) {
 	}
 }
 
-func TestIOSWorkflowRecoveryAcceptsTagPushRuns(t *testing.T) {
+func TestIOSWorkflowRecoveryHandlesTagPushRuns(t *testing.T) {
 	workflow := readWorkflow(t, iosWorkflowPath)
 
 	job, ok := workflow.Jobs["verify-upload"]
@@ -90,6 +90,12 @@ func TestIOSWorkflowRecoveryAcceptsTagPushRuns(t *testing.T) {
 	}
 	if !workflowRuns(job.Steps, `run["event"] == "push"`) {
 		t.Error("verify-upload cannot recover a tag-push run, which is now the primary upload lane")
+	}
+	if !workflowRuns(job.Steps, "head_branch.match?") {
+		t.Error("verify-upload accepts any push run, including the pre-change main-branch lane")
+	}
+	if !workflowRuns(job.Steps, "git fetch --no-tags --unshallow origin main") {
+		t.Error("verify-upload rejects a valid tag whose commit is beyond the shallow checkout boundary")
 	}
 	if !workflowRuns(job.Steps, "git merge-base --is-ancestor") {
 		t.Error("verify-upload does not confirm a tag-push run's commit is on main")
