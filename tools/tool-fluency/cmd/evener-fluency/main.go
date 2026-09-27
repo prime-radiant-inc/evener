@@ -204,6 +204,12 @@ func (m *metricsSpec) UnmarshalYAML(node *yaml.Node) error {
 
 type fixtureSpec struct {
 	Files map[string]string `yaml:"files"`
+	// Git makes the work directory a repository on branch main whose first
+	// commit holds Files, so a task can check what the agent changed.
+	Git bool `yaml:"git,omitempty"`
+	// Untracked files are written after that commit, so a task can check
+	// that the agent leaves unrelated work alone.
+	Untracked map[string]string `yaml:"untracked,omitempty"`
 }
 
 type expectSpec struct {
@@ -1049,7 +1055,21 @@ func materializeFixture(workDir string, fixture fixtureSpec) error {
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return err
 	}
-	for rel, content := range fixture.Files {
+	if err := writeFixtureFiles(workDir, fixture.Files); err != nil {
+		return err
+	}
+	if fixture.Git {
+		if err := commitFixture(workDir); err != nil {
+			return err
+		}
+	}
+	return writeFixtureFiles(workDir, fixture.Untracked)
+}
+
+// writeFixtureFiles writes each file under workDir and refuses a path that
+// escapes it.
+func writeFixtureFiles(workDir string, files map[string]string) error {
+	for rel, content := range files {
 		path := filepath.Join(workDir, filepath.Clean(rel))
 		within, err := filepath.Rel(workDir, path)
 		if err != nil || strings.HasPrefix(within, "..") || filepath.IsAbs(within) {
@@ -1060,6 +1080,30 @@ func materializeFixture(workDir string, fixture fixtureSpec) error {
 		}
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// commitFixture makes workDir a repository on main with one commit holding
+// everything written so far. The identity lives in the repository, so the
+// agent's own commits work on a machine with no global identity. The
+// repository never signs and uses its own hooks directory, so the user's
+// global signing and hooks, which belong to their own work, stay out of it.
+func commitFixture(workDir string) error {
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"config", "user.name", "Evener Fixture"},
+		{"config", "user.email", "fixture@evener.test"},
+		{"config", "commit.gpgsign", "false"},
+		{"config", "core.hooksPath", ".git/hooks"},
+		{"add", "-A"},
+		{"commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = workDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 		}
 	}
 	return nil
