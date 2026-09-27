@@ -3,6 +3,7 @@ package google
 import (
 	"bytes"
 	"context"
+	"net/http"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -178,4 +179,82 @@ func TestRawArgs_Stream_FallbackOnNull(t *testing.T) {
 	}
 }
 
-// Ensure imports are used.
+func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	body := []byte(`{"candidates":[{"content":{"role":"model","parts":[` +
+		`{"functionCall":{"name":"first","args":` + first + `}},` +
+		`{"functionCall":{"name":"second","args":` + second + `}}` +
+		`]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2,"totalTokenCount":7}}`)
+
+	got := decodeRawArgsCompleteMany(t, body)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second)})
+}
+
+func TestRawArgs_Stream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	sseBody := "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[" +
+		`{"functionCall":{"name":"first","args":` + first + `}},` +
+		`{"functionCall":{"name":"second","args":` + second + `}}` +
+		"]}}]}\n\n" +
+		"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":2,\"totalTokenCount\":7}}\n\n"
+
+	got := decodeRawArgsStreamMany(t, sseBody)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second)})
+}
+
+func decodeRawArgsCompleteMany(t *testing.T, body []byte) [][]byte {
+	t.Helper()
+	srv, _ := protoServer(t, http.StatusOK, string(body))
+	res := protoLive(srv)
+	resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	return googleToolCallArguments(resp)
+}
+
+func decodeRawArgsStreamMany(t *testing.T, sseBody string) [][]byte {
+	t.Helper()
+	srv, _ := protoServer(t, http.StatusOK, sseBody)
+	res := protoLive(srv)
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(protoReq(""), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final *llm.Response
+	for ev := range s.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventFinish {
+			final = ev.Response
+		}
+	}
+	if final == nil {
+		t.Fatal("stream ended without a finish event")
+	}
+	return googleToolCallArguments(*final)
+}
+
+func googleToolCallArguments(resp llm.Response) [][]byte {
+	calls := resp.ToolCalls()
+	args := make([][]byte, len(calls))
+	for i := range calls {
+		args[i] = calls[i].Arguments
+	}
+	return args
+}
+
+func assertRawArgsByIndex(t *testing.T, got, want [][]byte) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d tool calls, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("tool call %d Arguments = %q (% x), want %q (% x)", i, got[i], got[i], want[i], want[i])
+		}
+	}
+}
