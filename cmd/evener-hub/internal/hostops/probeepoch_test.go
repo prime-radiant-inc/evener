@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -274,5 +275,48 @@ func TestGuardEpochAdmitsAndRefusesStaleEpochs(t *testing.T) {
 		if err := reopened.AdmitGuardEpoch(bad); !errors.Is(err, ErrInvalidGuardEpoch) {
 			t.Fatalf("AdmitGuardEpoch(%+v) = %v, want ErrInvalidGuardEpoch", bad, err)
 		}
+	}
+}
+
+// TestProbeEpochPostRenameFailureReturnsTheLandedRow pins the signal the plan's
+// refusal path keys on: a persist whose directory sync failed after its rename
+// landed returns the durable row (OpSeq non-zero) with a RenameLanded error, so
+// the caller can treat the epoch as written instead of leaving an epoch-only
+// row behind on the refusal path.
+func TestProbeEpochPostRenameFailureReturnsTheLandedRow(t *testing.T) {
+	path := StorePath(t.TempDir())
+	var syncErr error
+	store, err := openFS(afero.NewOsFs(), path, storeFaults{syncDir: func(_ afero.Fs, dir string) error {
+		if dir != filepath.Dir(path) {
+			return nil
+		}
+		return syncErr
+	}})
+	if err != nil {
+		t.Fatalf("openFS: %v", err)
+	}
+	// Only the persist below fails behind its rename.
+	syncErr = errors.New("directory sync fault")
+	epoch, err := store.PersistProbeEpoch(ProbeEpochRequest{Host: "m4", BootID: "boot-1", Generation: 7, IncarnationID: "inc-m4"})
+	if err == nil {
+		t.Fatal("a persist whose directory sync failed reported success")
+	}
+	if !RenameLanded(err) {
+		t.Fatalf("the post-rename failure is not distinguishable: %v", err)
+	}
+	if epoch.OpSeq == 0 || epoch.Host != "m4" {
+		t.Fatalf("the landed persist returned %+v, want the durable epoch row", epoch)
+	}
+	// The row is the file's contents: a fresh load carries it.
+	if err := forgetStore(path); err != nil {
+		t.Fatalf("forgetStore: %v", err)
+	}
+	reopened, err := openFS(afero.NewOsFs(), path, storeFaults{})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	row, ok := reopened.ProbeEpoch("m4")
+	if !ok || row != epoch {
+		t.Fatalf("reloaded epoch = %+v/%v, want the landed %+v", row, ok, epoch)
 	}
 }

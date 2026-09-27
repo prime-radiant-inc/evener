@@ -326,9 +326,19 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	// §6 step 2: the durable probe epoch first. Nothing is probed — and no
 	// remote write half can run — until the epoch is recoverable in the store.
 	epoch, err := m.persistPlanProbeEpoch(entry)
-	if err != nil {
+	switch {
+	case err != nil && !hostops.RenameLanded(err):
+		// Nothing was written: no epoch, no probe, nothing launched.
 		return planNoToken(appwire.HostPlanReasonProbeFailed,
 			fmt.Sprintf("host %q: the durable probe epoch could not be persisted, so nothing was probed: %v", name, err), true, "")
+	case err != nil:
+		// The rename landed and the store adopted the row, so the epoch is
+		// durable and memory agrees — only the directory sync behind it failed.
+		// This is the same landed-write posture the mint takes for its token
+		// (see hostops.RenameLanded): the plan proceeds with the durable epoch,
+		// and a later refusal drops it through the ordinary drop path rather
+		// than leaving an epoch-only row behind.
+		m.logf("host %q: the probe epoch's directory sync failed after its rename landed; the epoch is durable: %v", name, err)
 	}
 	result, err := m.probeAndMint(ctx, name, planMintInputs{
 		entry:          entry,
@@ -413,7 +423,7 @@ func (m *hubHostManager) acquireHostGate(name string, holder hostops.Holder) (fu
 // `host-busy-transient` with no operation reference for every other class. An
 // operation holder that carries no record id (a caller bug) renders the
 // transient form rather than an `operationId` no open/wait reference could
-// resolve — the same fallback BusyError.Error() takes.
+// resolve — the same fallback BusyError.Error() renders in prose.
 func hostBusyWireError(err error) error {
 	var busy *hostops.BusyError
 	if !errors.As(err, &busy) {

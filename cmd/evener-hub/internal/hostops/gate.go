@@ -66,16 +66,15 @@ type BusyError struct {
 
 // Error renders §5's two forms: the operation form names the operation, and the
 // transient form names the plan or the manager activity — never an operation id
-// it does not have.
+// it does not have. An operation holder that carries no record id is prose-wise
+// the transient form too, matching the wire mapping the hub applies (a refusal
+// whose message names an operation while its data carries no open/wait-able
+// reference would contradict itself).
 func (e *BusyError) Error() string {
-	switch e.Holder.Kind {
-	case HolderOperation:
-		id := strings.TrimSpace(e.Holder.OperationID)
-		if id == "" {
-			return fmt.Sprintf("host %q busy: an operation is in progress", e.Host)
-		}
-		return fmt.Sprintf("host %q busy: operation %s is in progress", e.Host, id)
-	case HolderPlan:
+	switch {
+	case e.Holder.Kind == HolderOperation && strings.TrimSpace(e.Holder.OperationID) != "":
+		return fmt.Sprintf("host %q busy: operation %s is in progress", e.Host, strings.TrimSpace(e.Holder.OperationID))
+	case e.Holder.Kind == HolderPlan:
 		return fmt.Sprintf("host %q busy (plan in progress)", e.Host)
 	default:
 		activity := strings.TrimSpace(e.Holder.Activity)

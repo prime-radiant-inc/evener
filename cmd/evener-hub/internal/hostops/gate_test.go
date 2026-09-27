@@ -112,3 +112,19 @@ func TestGateBusyErrorFallsOutsideErrorsIsTargets(t *testing.T) {
 		}
 	}
 }
+
+// TestBusyErrorRendersAnEmptyOperationHolderAsTransientProse pins the prose
+// half of the empty-id fallback: an operation holder without a record id must
+// not render prose naming an operation while its wire data carries no
+// open/wait-able reference.
+func TestBusyErrorRendersAnEmptyOperationHolderAsTransientProse(t *testing.T) {
+	err := Busy("m4", Holder{Kind: HolderOperation})
+	want := `host "m4" busy (another host operation in progress)`
+	if err.Error() != want {
+		t.Fatalf("empty-operation-holder prose = %q, want %q", err.Error(), want)
+	}
+	withID := Busy("m4", Holder{Kind: HolderOperation, OperationID: "op-1"})
+	if withID.Error() != `host "m4" busy: operation op-1 is in progress` {
+		t.Fatalf("operation-holder prose = %q", withID.Error())
+	}
+}
