@@ -157,7 +157,13 @@ export function BoardRow({
 			})}
 		>
 			<View style={{ height: lineOne, justifyContent: "center" }}>
-				<StateMark state={state} moving={moving} connected={connected} perMinute={activity?.minutes} />
+				<StateMark
+				state={state}
+				moving={moving}
+				connected={connected}
+				stuck={why?.tone === "attention"}
+				perMinute={activity?.minutes}
+			/>
 			</View>
 			<View style={{ flex: 1, minWidth: 0 }}>
 				<View style={{ flexDirection: "row", alignItems: "flex-start", columnGap: 8 }}>

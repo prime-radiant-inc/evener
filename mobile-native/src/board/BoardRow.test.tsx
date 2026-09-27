@@ -249,6 +249,26 @@ describe("a Board row (spec 7.2)", () => {
 		expect(tree.root.findByType(PulseMeter).props.tone).toBe("gray");
 	});
 
+	it("turns a stuck row's meter amber, unless the connection itself is down (spec 13.1, 16.4)", () => {
+		const stuckActivity = { ref: "local:fix", minutes: [0], runningSubagents: 0, quietForMs: 12 * 60_000 };
+		const stuck = mount({
+			item: item("working", { state: "active" }),
+			moving: true,
+			activity: stuckActivity,
+			msSinceRead: 0,
+		});
+		expect(stuck.root.findByType(PulseMeter).props.tone).toBe("attention");
+
+		const offlineButStuck = mount({
+			item: item("working", { state: "active" }),
+			moving: true,
+			connected: false,
+			activity: stuckActivity,
+			msSinceRead: 0,
+		});
+		expect(offlineButStuck.root.findByType(PulseMeter).props.tone).toBe("gray");
+	});
+
 	it("reads one label in order: title, state, reason, age", () => {
 		expect(pressable(mount()).props.accessibilityLabel).toBe(
 			"Fix Endless Provider Retry Loop, Failed, open the session to see what went wrong, 2 minutes",

@@ -37,6 +37,15 @@ describe("state marks pair shape with color (spec 13.1)", () => {
 		expect(tree.root.findByType(PulseMeter).props.perMinute).toEqual(minutes);
 	});
 
+	it("turns the meter amber for a stuck row, but gray wins while disconnected (spec 13.1, 16.4)", () => {
+		const alive = render(<StateMark state="working" moving />);
+		expect(alive.root.findByType(PulseMeter).props.tone).toBe("alive");
+		const stuck = render(<StateMark state="working" moving stuck />);
+		expect(stuck.root.findByType(PulseMeter).props.tone).toBe("attention");
+		const offlineAndStuck = render(<StateMark state="working" moving stuck connected={false} />);
+		expect(offlineAndStuck.root.findByType(PulseMeter).props.tone).toBe("gray");
+	});
+
 	it("names the state for VoiceOver and tints from the palette", () => {
 		const tree = render(<StateMark state="failed" />);
 		const symbol = tree.root.findByType("SymbolView" as never);
