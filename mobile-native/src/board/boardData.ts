@@ -409,9 +409,6 @@ export function createBoardController(): BoardController {
 			for (const stop of category.stop) stop();
 			category.pages.cancel();
 		}
-		// Every new reader is registered before any of them reads: a read's
-		// loading publish comes back through here.
-		const added: Array<NavigationPages<NavigationSessionSummary>> = [];
 		for (const id of listed) {
 			if (bound.categories.has(id)) continue;
 			const pages = new NavigationPages<NavigationSessionSummary>(
@@ -421,15 +418,16 @@ export function createBoardController(): BoardController {
 				sessionKey,
 				PAGE_LIMIT,
 			);
+			// A new reader reads before the Board subscribes to it, so its
+			// loading publish reaches no one; the publish() running this
+			// builds the reader's state into the snapshot next.
+			if (paused) pages.cancel();
+			else void pages.refresh();
 			bound.categories.set(id, {
 				pages,
 				stop: [followInFull(pages), pages.watch()],
 			});
-			added.push(pages);
 		}
-		for (const pages of added)
-			if (paused) pages.cancel();
-			else void pages.refresh();
 		const kept = Object.entries(retained.categories).filter(
 			([id]) =>
 				listed.has(id) && !bound.categories.get(id)?.pages.getSnapshot().loaded,
