@@ -150,6 +150,12 @@ const (
 	// remnant semantics are the registry spec's §6). Conflict class, with the
 	// blocking remnant's id in the data.
 	ErrorRemnantOpen ErrorInfo = "remnant-open"
+	// ErrorTombstoneCapacity marks a tombstone persist that fits only by
+	// evicting a remnant-gated tombstone (registry spec 08 §12, §15). Conflict
+	// class, with the exceeded bound and the blocking remnant-gated names in
+	// the data: the operator resolves a remnant through teardown-retry first,
+	// then retries the removal.
+	ErrorTombstoneCapacity ErrorInfo = "tombstone-capacity"
 )
 
 // StaleEntryBinding names which binding a stale-entry refusal fired on, exactly
@@ -268,6 +274,38 @@ func ConflictingMutationID(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorConflictingMutationID},
+	}
+}
+
+// The two bound values §15's `tombstone-capacity` data names: the global
+// tombstone-count cap or the global serialized-bytes cap.
+const (
+	TombstoneCapacityBoundCount = "count"
+	TombstoneCapacityBoundBytes = "bytes"
+)
+
+// TombstoneCapacityErrorData is §12's `tombstone-capacity` data: the bound the
+// persist would exceed and the remnant-gated names blocking every eviction
+// candidate.
+type TombstoneCapacityErrorData struct {
+	ErrorData
+	Bound         string   `json:"bound"`
+	BlockingNames []string `json:"blockingNames"`
+}
+
+// TombstoneCapacity is §12's `tombstone-capacity` refusal: a tombstone persist
+// that would exceed a global bound even after evicting every evictable
+// tombstone, because every remaining candidate but the incoming tombstone is
+// remnant-gated (§15). Conflict class.
+func TombstoneCapacity(bound string, blockingNames []string, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: TombstoneCapacityErrorData{
+			ErrorData:     ErrorData{EvenerErrorInfo: ErrorTombstoneCapacity},
+			Bound:         bound,
+			BlockingNames: append([]string(nil), blockingNames...),
+		},
 	}
 }
 

@@ -915,6 +915,59 @@ func (r *Registry) Remove(name string) error {
 	return nil
 }
 
+// RebaseBootCollision replaces the live entry under name with a fresh
+// incarnation minted strictly above every retained high-water mark, and
+// returns the entry as stored (spec 08 §15's boot collision: "when a retained
+// tombstone collides at boot with a newly live entry for the same name — a
+// hand edit or a re-add put the name back — the live host is treated as a new
+// incarnation: its restored generation is set strictly above the tombstone's
+// high-water mark before any historical receipts/remnants apply, so old
+// `host-removed` records stay at or below the mark and live records stay
+// unmarked — never a promotion of a pre-collision record into the current
+// generation"). The entry's configured content is preserved — the name is the
+// same host, only its identity is rebased — and the counters move above the
+// mint so no later path can reuse or fall below it. The caller persists the
+// returned triple in the boot's atomic write.
+//
+// A name the registry does not hold is ErrUnknownHost; a counter with no room
+// left refuses (ErrCounterExhausted) with the entry unchanged.
+func (r *Registry) RebaseBootCollision(name string) (Host, error) {
+	name = strings.TrimSpace(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.hosts[name]
+	if !ok {
+		return Host{}, fmt.Errorf("%w: %q", ErrUnknownHost, name)
+	}
+	generation, err := r.nextGenerationLocked()
+	if err != nil {
+		return Host{}, err
+	}
+	presence, err := r.nextPresenceLocked(name)
+	if err != nil {
+		return Host{}, err
+	}
+	incarnation, err := mintIncarnationID()
+	if err != nil {
+		return Host{}, err
+	}
+	entry.Generation = generation
+	entry.IncarnationID = incarnation
+	entry.PresenceEpoch = presence
+	if generation > r.gen {
+		r.gen = generation
+	}
+	if presence > r.presence[name] {
+		r.presence[name] = presence
+	}
+	r.hosts[name] = entry
+	// A pending stamp describes the pre-collision identity; it must not be
+	// consumed by a later insert, which would re-adopt a generation at or
+	// below the collision bump.
+	delete(r.pending, name)
+	return cloneHost(entry), nil
+}
+
 // mintIncarnationID mints one incarnation id: spec 08 §1's "opaque
 // server-generated string minted beside the generation on every add/re-add,
 // never derived from it and never reused: at most 128 bytes, and the generator

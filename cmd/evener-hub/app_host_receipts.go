@@ -13,16 +13,19 @@ package hub
 // drops its receipt with the rollback write — a refusal, and an un-committed
 // mutation, leave no receipt behind.
 //
-// DEFERRED (S12/S11): §5's two-write staged-marker protocol
+// CLOSED BY S11: §6's receipt compaction, the bounded pruned markers, and the
+// pruned-receipt refusal arm all live in app_host_record_pruning.go; the
+// lookup's marker arm below is the frozen key whose receipt a count/TTL
+// compaction or a tombstone purge dropped (spec §6: "a replay naming a marked
+// key refuses as `stale-entry` (pruned-generation)").
+//
+// DEFERRED (S12): §5's two-write staged-marker protocol
 // (pending_mutation/finalizing_mutation, swapStarted/teardownStarted, the
 // runtime phase, attempt tokens, foreign-marker finalization, boot recovery)
-// and §6's receipt compaction and pruned markers are later slices' seams. The
-// single-write receipt is safe for this slice because no post-commit failure
-// path exists yet: teardowns are best-effort and un-commit on failure, exactly
-// as today, and the rollback drops the receipt with the entry. §5's
-// pruned-receipt refusal arm (the same key whose receipt is gone) therefore
-// cannot arise yet either: nothing prunes a receipt, and nothing but an
-// un-commit drops one, which is not a committed mutation to replay.
+// is the later slice's seam. The single-write receipt is safe for this slice
+// because no post-commit failure path exists yet: teardowns are best-effort
+// and un-commit on failure, exactly as today, and the rollback drops the
+// receipt with the entry.
 
 import (
 	"fmt"
@@ -100,6 +103,13 @@ type HostMutationReceipt struct {
 	IncarnationID string `toml:"incarnation_id"`
 	// CommittedAt is the UTC RFC3339 instant the commit's atomic write landed.
 	CommittedAt string `toml:"committed_at"`
+	// Audit marks a keyless-add audit record (spec §11: "a keyless `add`
+	// commits the server-keyed audit record with no client idempotency
+	// semantics"). It is written exactly on the receipt a keyless add commits
+	// under its server-generated key, and it selects the audit compaction
+	// bound (at most 64 newest per name under the owner-set audit TTL, §11)
+	// instead of the keyed receipts' superseded/current rules.
+	Audit bool `toml:"audit,omitempty"`
 }
 
 // hostReceiptScope is a scoped receipt key's five parts (spec §6: "mutation-id
@@ -456,6 +466,13 @@ type hostReceiptHit struct {
 //   - the superseded hit — the same name, kind, and mutationId pinned to
 //     another generation or incarnation — returns the recorded outcome for
 //     recovery only, never authorizing work;
+//   - a mutationId whose key survives only as a pruned marker — the receipt
+//     was compacted by the count/TTL bound or dropped with its tombstone — is
+//     refused as the typed `stale-entry` (pruned-generation): the marker is
+//     the backstop that keeps a same-key replay from fresh-applying against a
+//     re-added incarnation (spec §6: "a replay naming a marked key refuses as
+//     `stale-entry` (pruned-generation); a key with neither a retained receipt
+//     nor a pruned marker commits fresh by the commits-fresh clause");
 //   - no match returns nil, and the caller may open fresh.
 //
 // The "current pair" of a receipt's own name is the registry's live pair, or
@@ -524,7 +541,35 @@ func (m *hubHostManager) lookupHostMutationReceipt(q hostReceiptQuery) (*hostRec
 		}
 		return &hostReceiptHit{Receipt: newest.receipt, Scope: newest.scope}, nil
 	}
+	// No retained receipt survives for the key: a pruned marker naming it is
+	// the backstop refusal, never a fresh apply. The marker's scope names the
+	// mutation the receipt belonged to; a replay is the same mutation id, name,
+	// and kind — the generation the marker pins is exactly the generation the
+	// replay must not act on, and the client's (expectedGeneration,
+	// expectedIncarnationId) pair cannot override it.
+	if marked, ok := m.cfg.store.prunedMarkerFor(q.MutationID, q.Name, q.Kind); ok {
+		return nil, appwire.StaleEntry(appwire.StaleEntryBindingPrunedGeneration, fmt.Sprintf(
+			"host %q: mutation %q's %s receipt for generation %d (incarnation %q) was pruned; the mutation must not re-apply — mint a fresh mutationId",
+			q.Name, q.MutationID, q.Kind, marked.Generation, marked.IncarnationID))
+	}
 	return nil, nil
+}
+
+// prunedMarkerFor reports whether a pruned marker survives for one
+// (mutationId, name, kind) triple — the identity half of the five-part scoped
+// key — returning the scope it pins. Marker maps are small (bounded per name)
+// and the lookup is a read, so it takes only the store's own mutex.
+func (s *hostStore) prunedMarkerFor(mutationID, name string, kind hostMutationKind) (hostReceiptScope, bool) {
+	for key := range s.prunedReceiptSnapshot() {
+		scope, ok := parseHostReceiptScopedKey(key)
+		if !ok {
+			continue
+		}
+		if scope.MutationID == mutationID && scope.Name == name && scope.Kind == kind {
+			return scope, true
+		}
+	}
+	return hostReceiptScope{}, false
 }
 
 // currentHostIdentity returns name's current (generation, incarnation id) pair:
