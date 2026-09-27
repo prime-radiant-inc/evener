@@ -694,6 +694,106 @@ func TestRosterFingerprintIncludesPendingAskAndPendingEscalation(t *testing.T) {
 	}
 }
 
+// A row names the oldest pending card's action and target. A card replaced
+// while another stays pending leaves PendingEscalation set, so the cards have to
+// move the fingerprint too, or navigation keeps showing the card that is gone.
+func TestRosterFingerprintMovesWhenAnEscalationCardIsReplaced(t *testing.T) {
+	cards := func(ids ...string) []appwire.SandboxEscalationRequested {
+		out := make([]appwire.SandboxEscalationRequested, 0, len(ids))
+		for _, id := range ids {
+			out = append(out, appwire.SandboxEscalationRequested{EscalationID: id})
+		}
+		return out
+	}
+	entry := func(ids ...string) map[string]LiveEntry {
+		return map[string]LiveEntry{"parent": {Status: "active", PendingEscalation: true, PendingEscalations: cards(ids...)}}
+	}
+	base := rosterFingerprint(entry("esc_1", "esc_2"))
+	if again := rosterFingerprint(entry("esc_1", "esc_2")); again != base {
+		t.Fatal("the same cards must hash the same")
+	}
+	if replaced := rosterFingerprint(entry("esc_2", "esc_3")); replaced == base {
+		t.Fatal("roster fingerprint must change when the first card is replaced while another stays pending")
+	}
+	if rosterFingerprint(entry("esc_1")) == base {
+		t.Fatal("roster fingerprint must change when a second card is raised behind the first")
+	}
+}
+
+// The probe-to-roster hop for the cards: Refresh publishes what the prober
+// read, so a row can name the card, and a replaced card fires onChange even
+// though the flag holds still.
+func TestRosterRefreshCarriesEscalationCardsAndFiresOnAReplacedCard(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+	first := appwire.SandboxEscalationRequested{EscalationID: "esc_1", Tool: "write_file", DeniedPath: "/srv/docs/a.md"}
+	prober := &runningSubagentProber{result: ProbeResult{
+		SessionID:          "01PARENT",
+		Status:             "active",
+		PendingEscalation:  true,
+		PendingEscalations: []appwire.SandboxEscalationRequested{first},
+		OK:                 true,
+	}}
+	r := NewRoster(dir, prober)
+	r.Refresh()
+	live, ok := r.Find("01PARENT")
+	if !ok || !slices.Equal(live.PendingEscalations, []appwire.SandboxEscalationRequested{first}) {
+		t.Fatalf("published entry = %+v, want the probe's card", live)
+	}
+	// The roster owns its copy: editing the probe's card after Refresh must
+	// not reach the published entry.
+	prober.result.PendingEscalations[0].DeniedPath = "mutated"
+	if live, _ := r.Find("01PARENT"); live.PendingEscalations[0].DeniedPath != first.DeniedPath {
+		t.Fatalf("published card changed through the probe result: %+v", live.PendingEscalations)
+	}
+
+	changes := 0
+	r.SetOnChange(func() { changes++ })
+	prober.result.PendingEscalations = []appwire.SandboxEscalationRequested{{EscalationID: "esc_2", Tool: "edit_file", DeniedPath: "/srv/docs/b.md"}}
+	r.Refresh()
+	if changes != 1 {
+		t.Fatalf("a replaced card fired onChange %d times, want 1", changes)
+	}
+	if live, _ := r.Find("01PARENT"); len(live.PendingEscalations) != 1 || live.PendingEscalations[0].EscalationID != "esc_2" {
+		t.Fatalf("published cards = %+v, want only the replacement", live.PendingEscalations)
+	}
+}
+
+// Every roster hand-off goes through CloneLiveEntry, so a caller that edits a
+// card it was handed must not reach the roster's copy.
+func TestCloneLiveEntryOwnsPendingEscalations(t *testing.T) {
+	original := LiveEntry{PendingEscalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", DeniedPath: "/srv/docs/a.md"}}}
+	clone := CloneLiveEntry(original)
+	original.PendingEscalations[0].DeniedPath = "mutated"
+	if clone.PendingEscalations[0].DeniedPath != "/srv/docs/a.md" {
+		t.Fatalf("clone card changed through the original: %+v", clone.PendingEscalations)
+	}
+}
+
+// ReadSpawnedThread publishes a fresh daemon from the caller's own read, not
+// the prober, so the cards on that read must reach the roster by this path too.
+func TestRosterReadSpawnedThreadPublishesEscalationCards(t *testing.T) {
+	r := NewRoster(t.TempDir(), nil)
+	entry := rendezvous.Entry{
+		PID: 1001, SourceID: "local", Protocol: appwire.ProtocolVersion,
+		Endpoint: "ws://127.0.0.1:50001/rpc", ThreadID: "01SPAWNED", SessionID: "01SPAWNED",
+	}
+	card := appwire.SandboxEscalationRequested{EscalationID: "esc_1", Tool: "write_file", DeniedPath: "/srv/docs/a.md"}
+	if _, err := r.ReadSpawnedThread(t.Context(), entry, func(context.Context) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: "01SPAWNED", SessionID: "01SPAWNED",
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+			Evener: appwire.EvenerThread{PendingEscalations: []appwire.SandboxEscalationRequested{card}},
+		}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	live, ok := r.Find("01SPAWNED")
+	if !ok || !live.PendingEscalation || !slices.Equal(live.PendingEscalations, []appwire.SandboxEscalationRequested{card}) {
+		t.Fatalf("published entry = %+v, want the read's card and the flag", live)
+	}
+}
+
 // The observable half: an escalation arriving or resolving must fire
 // onChange through a real Refresh — both transitions change the Clear bit
 // list rows advertise, so a silent refresh leaves clients acting on the

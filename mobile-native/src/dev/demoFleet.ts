@@ -605,22 +605,30 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		return inTier.map(rowOf);
 	}
 
+	// A value the wire's own uint32 field could actually carry: a safe integer
+	// (so a float that already lost integer precision, like a MAX_SAFE_INTEGER
+	// overflow, is refused) no greater than 2**32-1.
+	function fitsWireUint32(value: number): boolean {
+		return Number.isSafeInteger(value) && value <= 0xffffffff;
+	}
+
 	// Mirrors cmd/evener-hub/app_navigation.go's navigationReadPage: offset and
 	// limit are validated, never clamped -- a negative offset (the wire's own
 	// uint32 field can't even decode one), a zero or negative limit, or a
 	// limit over the resource's own maximum are all hard errors, the same as
 	// an unrecognized resource elsewhere in this file. The wire's uint32 also
-	// can't carry a fractional or NaN value, so both are required to be
-	// finite integers here too -- otherwise they'd pass the comparisons below
-	// (NaN fails every relational operator) and produce a truncated page or a
-	// NaN remaining count instead of an error.
+	// can't carry a fractional, NaN, or out-of-range value, so both are
+	// required to fit it here too -- otherwise they'd pass the comparisons
+	// below (NaN fails every relational operator, and an out-of-range integer
+	// would still slice and subtract as if it were valid) and produce a
+	// truncated page or a nonsensical remaining count instead of an error.
 	function page<T>(items: T[], params: NavigationReadParams, maximum: number): { page: T[]; remaining: number } {
 		const offset = params.offset ?? 0;
-		if (!Number.isInteger(offset)) throw new Error(`offset must be an integer: ${offset}`);
+		if (!fitsWireUint32(offset)) throw new Error(`offset must be an integer the wire can carry: ${offset}`);
 		if (offset < 0) throw new Error(`offset must not be negative: ${offset}`);
 		let limit = maximum;
 		if (params.limit !== undefined) {
-			if (!Number.isInteger(params.limit)) throw new Error(`limit must be an integer: ${params.limit}`);
+			if (!fitsWireUint32(params.limit)) throw new Error(`limit must be an integer the wire can carry: ${params.limit}`);
 			if (params.limit <= 0) throw new Error("limit must be greater than zero");
 			if (params.limit > maximum) throw new Error(`limit exceeds maximum of ${maximum}`);
 			limit = params.limit;

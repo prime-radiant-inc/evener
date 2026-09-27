@@ -1453,7 +1453,7 @@ git commit -m "refactor(appwire-client): mergeDraftText moves into the package f
 ### Task 7: The ghosts above the composer
 
 **Files:**
-- Modify: `appwire-client/typescript/submitRouting.ts` (add `isQueueParked`; `sessionControls` at `:132` and `canDrainQueue` at `:169` call it) and `appwire-client/typescript/index.ts:396-411` (export it)
+- Modify: `appwire-client/typescript/submitRouting.ts` (add `isQueueParked`; `sessionControls` at `:140` and `canDrainQueue` at `:177` call it) and `appwire-client/typescript/index.ts:396-412` (export it)
 - Test: `appwire-client/typescript/submitRouting.test.ts`
 - Create: `mobile-native/src/session/ghosts.ts`
 - Test: `mobile-native/src/session/ghosts.test.ts`
@@ -1463,7 +1463,7 @@ git commit -m "refactor(appwire-client): mergeDraftText moves into the package f
   - `sessionControls` from `@evener/appwire-client`;
   - `PendingTurnEntry` and `pendingEntryPreview` from `@evener/appwire-client/state/mutation`;
   - the type `NativeMutationRecoveryRow` from `src/MutationRecoveryPanel.tsx:35-56`.
-- Produces, in the package: `isQueueParked(statusType: string, queueDepth: number): boolean`. It is the one place the package decides a Stop parked the queue. `submitRouting.ts` spells that rule twice today (`:132` and `:169`), and the ghosts would make a third copy. The server plan's PR 2 (failed turns settle to `systemError`) makes every resting check treat `systemError` like `idle`; with one function, that change reaches the ghosts too.
+- Produces, in the package: `isQueueParked(statusType: string, queueDepth: number): boolean`. It is the one place the package decides a Stop parked the queue. `submitRouting.ts` spells that rule twice today (`:140` and `:177`), and the ghosts would make a third copy. The server plan's PR 2 (failed turns settle to `systemError`) has landed and makes every resting check treat `systemError` like `idle`; with one function, that change reaches the ghosts too.
 - Produces, in the app (all exported):
   - `type GhostState = "steering" | "queued" | "held" | "sending" | "unconfirmed" | "refused"`
   - `type GhostAction = "steerNow" | "sendNow" | "edit" | "cancel" | "check" | "discard"`
@@ -1482,6 +1482,8 @@ In `appwire-client/typescript/submitRouting.test.ts`, add `isQueueParked` to the
 ```ts
 test("isQueueParked: a resting session with messages still queued, which only a Stop leaves", () => {
   expect(isQueueParked("idle", 2)).toBe(true);
+  // A Stop's parked queue survives a failed turn.
+  expect(isQueueParked("systemError", 1)).toBe(true);
   expect(isQueueParked("idle", 0)).toBe(false);
   // Queued behind a running turn or a pending question is waiting, not parked.
   expect(isQueueParked("active", 2)).toBe(false);
@@ -1719,7 +1721,7 @@ In `appwire-client/typescript/submitRouting.ts`, add after `isTurnActive`:
 // question is waiting, not parked). The one statement of that rule, for the
 // controls here and for surfaces that show a parked queue.
 export function isQueueParked(statusType: string, queueDepth: number): boolean {
-  return statusType === "idle" && queueDepth > 0;
+  return isSessionResting(statusType) && queueDepth > 0;
 }
 ```
 

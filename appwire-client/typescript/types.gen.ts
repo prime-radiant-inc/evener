@@ -2076,6 +2076,18 @@ export interface NavigationSessionSummary {
    * is in NeedsYou, beside AskPending for a question.
    */
   approval_pending?: boolean;
+  /**
+   * ApprovalTool and ApprovalTarget say what the oldest pending escalation
+   * asks for, so the row can say why it waits ("wants to write outside the
+   * workspace: ~/sites/docs"): the tool that was denied, which a client maps
+   * to a verb, and the escalation's full literal denied path. The path is
+   * shown for informed consent (appwire.SandboxEscalationRequested) and
+   * reaches human clients only, as thread/read's cards already do. Both are
+   * absent unless ApprovalPending is set; the tool is cut to the identity
+   * bound and the target to the label bound.
+   */
+  approval_tool?: string;
+  approval_target?: string;
   dormant?: boolean;
   /**
    * Offline marks a row folded into the merged list from a source that is
@@ -3531,6 +3543,7 @@ export interface WarningParams {
   ref: string;
   message?: string;
   source?: string;
+  code?: string;
   title?: string;
   hint?: string;
   warning?: unknown;

@@ -28,6 +28,7 @@ native:.:./appwire:FuzzTranscriptItemLimitNormalization
 native:.:./appwire:FuzzMethodParams
 native:.:./appwire:FuzzWireTypes
 native:.:./internal/appitempaging:FuzzCursorCodec
+native:.:./internal/transcriptindex:FuzzReadMeta
 native:execsupport:./valueexpr:FuzzValueexprScan
 native:execsupport:./valueexpr:FuzzValueexprTokenExpiry
 native:.:./cmd/evener-migrate:FuzzConvertProvidersConfig
@@ -444,6 +445,7 @@ native:.:./cmd/evener-hub/internal/fspaths:FuzzFSPathsBehaviorProgram
 native:.:./cmd/evener-hub/internal/fspaths:FuzzAppPathsBehaviorProgram
 native:.:./cmd/evener-hub/internal/hostlock:FuzzAcquireLock
 native:.:./cmd/evener-hub/internal/hostlock:FuzzHostLockBehaviorProgram
+native:.:./cmd/evener-hub/internal/hostops:FuzzLoadStore
 native:.:./cmd/evener-hub/internal/httpsec:FuzzCSPMiddleware
 native:.:./cmd/evener-hub/internal/hubedge:FuzzAuthGuard
 native:.:./cmd/evener-hub/internal/hubedge:FuzzHandleAuth
