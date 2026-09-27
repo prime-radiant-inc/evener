@@ -2508,6 +2508,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
 	visionModel := envelope.VisionModel
+	lastTurnEndedAt := envelope.LastTurnEndedAt
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
 	if threadPreview == "" {
@@ -2553,6 +2554,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			ReasoningEffortLevels: reasoningEffortLevels,
 			SupportsReasoning:     supportsReasoning,
 			VisionModel:           visionModel,
+			LastTurnEndedAt:       lastTurnEndedAt,
 		},
 	}
 }

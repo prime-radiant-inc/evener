@@ -859,6 +859,12 @@ type EvenerThread struct {
 	// changes to a subscriber; the hub serves it through evener/activity/read,
 	// never navigation. Absent on descendant rows and from an older daemon.
 	Activity *ThreadActivity `json:"activity,omitempty"`
+	// LastTurnEndedAt is when the session's last turn ended, in Unix
+	// milliseconds (S4); absent before any turn has ended and from an older
+	// daemon. The hub compares it with its seen-through marker to tell a
+	// Finished session from an Idle one. Snapshot-only: no notification
+	// carries it.
+	LastTurnEndedAt int64 `json:"lastTurnEndedAt,omitempty"`
 }
 
 // ThreadActivity is one pulse meter sample. Minutes holds seven one-minute

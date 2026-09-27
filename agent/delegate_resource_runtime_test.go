@@ -1819,11 +1819,12 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 	t.Parallel()
 	var captured any
 	deps := &toolDeps{
-		emit:            func(events.EventKind, events.EventData) {},
-		abort:           func(context.Context) error { return nil },
-		drainSteering:   func() []steeringMessage { return nil },
-		prependSteering: func([]steeringMessage) {},
-		resultToolName:  func() string { return "communicate" },
+		emit:               func(events.EventKind, events.EventData) {},
+		deliverCommunicate: func(events.CommunicateData) bool { return true },
+		abort:              func(context.Context) error { return nil },
+		drainSteering:      func() []steeringMessage { return nil },
+		prependSteering:    func([]steeringMessage) {},
+		resultToolName:     func() string { return "communicate" },
 		setCommunicateTerminal: func(_ context.Context, _, _, _ string, raw any) bool {
 			captured = raw
 			return true
