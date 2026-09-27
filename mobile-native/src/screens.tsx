@@ -932,7 +932,7 @@ export function ConversationScreen({
 			}
 		});
 		return () => subscription.remove();
-	}, [navigation]);
+	}, [navigation, route.key]);
 	const [refreshing, setRefreshing] = useState(false);
 	const [queueOpen, setQueueOpen] = useState(false);
 	const [recoveryOpen, setRecoveryOpen] = useState(false);
