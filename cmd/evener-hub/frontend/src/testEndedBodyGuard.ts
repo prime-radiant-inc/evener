@@ -68,10 +68,11 @@ function jestFakeTimersAreEnabled(): boolean {
 // user-event call runs through, with its own steps in its own order, so a live
 // test's waits settle exactly as before: even one more await here reorders the
 // updates a wait lets land with React's act environment off, and
-// Spawn.test.tsx's fake-timer tests fail on that. The one addition is the check
-// after the macrotask the wrapper waits out before it returns (the next test
-// can start during it): a stopped wait never reaches the restore of the act
-// environment. Events go through Testing Library's own eventWrapper.
+// Spawn.test.tsx's fake-timer tests fail on that. It adds checks, never awaits:
+// on entry, and before it returns or rethrows, which for a return is after the
+// macrotask it waits out (the next test can start during it). A stopped wait
+// never reaches the restore of the act environment. Events go through Testing
+// Library's own eventWrapper.
 export function guardTestingLibraryAgainstEndedBodies(): void {
   configure((testingLibrary) => ({
     asyncWrapper: async (callback) => {
