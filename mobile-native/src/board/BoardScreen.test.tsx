@@ -378,6 +378,13 @@ const pinSection = (tree: ReactTestRenderer, name: string) =>
 			node.findAll((child) => child.props.testID === "pin-header" && child.props.accessibilityLabel.startsWith(`${name}, `))
 				.length > 0,
 	);
+const opacity = (tree: ReactTestRenderer, name: string) => pinSection(tree, name).props.style.opacity;
+/** Opens a category's menu and chooses Delete; returns the confirmation. */
+function confirmDelete(tree: ReactTestRenderer, name: string) {
+	pressLabel(tree, `${name}, category menu`);
+	act(() => harness.actionSheet.mock.calls.at(-1)?.[1](1));
+	return alertRequests.at(-1);
+}
 
 it("shows chips for the sections that have sessions, and each pinned category inline with its sessions", async () => {
 	const id = hubId();
@@ -482,10 +489,7 @@ it("deletes a category after the spec's confirmation", async () => {
 	const fake = hub(fleet);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	pressLabel(tree, "Mine, category menu");
-	const [, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
-	act(() => choose(1));
-	const confirm = alertRequests.at(-1);
+	const confirm = confirmDelete(tree, "Mine");
 	expect(confirm?.title).toBe("Delete “Mine”?");
 	expect(confirm?.message).toBe("Its sessions stay; they're only unpinned.");
 	expect(confirm?.buttons?.map((button) => [button.text, button.style])).toEqual([
@@ -506,9 +510,7 @@ it("sends no delete for a category that left the catalog while its confirmation 
 	const fake = hub(shape);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	pressLabel(tree, "Mine, category menu");
-	act(() => harness.actionSheet.mock.calls.at(-1)?.[1](1));
-	const confirm = alertRequests.at(-1);
+	const confirm = confirmDelete(tree, "Mine");
 	shape.pins = [fleet.pins[1]];
 	// This fake hub answers every read at revision 1, so the change names none.
 	act(() => fake.invalidate(1, [{ kind: "pin_catalog" }]));
@@ -551,9 +553,7 @@ it("hides ⋯ while disconnected, and a confirmation answered after the drop sen
 	connect(id, fake.client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
-	pressLabel(tree, "Mine, category menu");
-	act(() => harness.actionSheet.mock.calls.at(-1)?.[1](1));
-	const confirm = alertRequests.at(-1);
+	const confirm = confirmDelete(tree, "Mine");
 	connect(id, null, "reconnecting");
 	rerender(tree, nav);
 	expect(menuLabels(tree)).toEqual([]);
@@ -572,15 +572,9 @@ it("dims a category while its change is on its way, and hides every ⋯ until it
 	const fake = hub(fleet, undefined, undefined, { holdChanges: true });
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	const opacity = (name: string) => pinSection(tree, name).props.style.opacity;
-	expect(opacity("Mine")).toBe(1);
-	const confirmDelete = (name: string) => {
-		pressLabel(tree, `${name}, category menu`);
-		act(() => harness.actionSheet.mock.calls.at(-1)?.[1](1));
-		return alertRequests.at(-1);
-	};
-	const mine = confirmDelete("Mine");
-	const empty = confirmDelete("Empty");
+	expect(opacity(tree, "Mine")).toBe(1);
+	const mine = confirmDelete(tree, "Mine");
+	const empty = confirmDelete(tree, "Empty");
 	act(() => mine?.buttons?.[1].onPress?.());
 	await settle();
 	// The second confirmation was up before the first change went out;
@@ -588,12 +582,12 @@ it("dims a category while its change is on its way, and hides every ⋯ until it
 	act(() => empty?.buttons?.[1].onPress?.());
 	await settle();
 	expect(fake.mutations).toEqual([{ method: "evener/pin-section/delete", params: { sectionId: "pins-1" } }]);
-	expect(opacity("Mine")).toBe(0.5);
-	expect(opacity("Empty")).toBe(1);
+	expect(opacity(tree, "Mine")).toBe(0.5);
+	expect(opacity(tree, "Empty")).toBe(1);
 	expect(menuLabels(tree)).toEqual([]);
 	fake.release();
 	await settle();
-	expect(opacity("Mine")).toBe(1);
+	expect(opacity(tree, "Mine")).toBe(1);
 	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
 	act(() => tree.unmount());
 });
@@ -604,9 +598,8 @@ it("never shows the journal's error, and hides ⋯ while a change can't be confi
 	const fake = hub(fleet, undefined, undefined, { refuse: true });
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	pressLabel(tree, "Mine, category menu");
-	act(() => harness.actionSheet.mock.calls.at(-1)?.[1](1));
-	act(() => alertRequests.at(-1)?.buttons?.[1].onPress?.());
+	const confirm = confirmDelete(tree, "Mine");
+	act(() => confirm?.buttons?.[1].onPress?.());
 	await settle();
 	expect(fake.mutations).toHaveLength(1);
 	expect(menuLabels(tree)).toEqual([]);
@@ -614,7 +607,6 @@ it("never shows the journal's error, and hides ⋯ while a change can't be confi
 	expect(opacity(tree, "Mine")).toBe(1);
 	act(() => tree.unmount());
 });
-const opacity = (tree: ReactTestRenderer, name: string) => pinSection(tree, name).props.style.opacity;
 
 it("gives every control a touch target at least 44pt tall", async () => {
 	const id = hubId();
