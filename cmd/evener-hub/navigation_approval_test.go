@@ -88,7 +88,7 @@ func assertNavigationApprovalJSON(t *testing.T, row hubapi.NavigationSessionSumm
 // bound arrives cut to that, so one long path cannot make the hub's schema, and
 // then the client's codec, refuse the whole section and every other row in it.
 func TestNavigationProjectionTruncatesTheApprovalDetail(t *testing.T) {
-	rows := liveTaskRows(t, []hubcore.TreeNode{{
+	rows := liveNavigationRows(t, []hubcore.TreeNode{{
 		ID: "session-approval", Title: "approval", Kind: "session", State: "active", ApprovalPending: true,
 		ApprovalTool:   strings.Repeat("t", maxNavigationIdentityBytes+10),
 		ApprovalTarget: strings.Repeat("é", 600),
