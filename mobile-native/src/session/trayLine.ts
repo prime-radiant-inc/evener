@@ -47,8 +47,12 @@ export function trayLine(session: TraySource, now: number): TrayLine | null {
 	// A retry the hub reported explains the silence (modelRetry deliberately
 	// leaves lastFrameAt alone, model.ts), so it wins, as on the web
 	// (liveness.ts's describeLiveness). Past ten minutes the line adds the
-	// silence and turns amber, as the web's stalled level does.
-	if (session.modelRetry) {
+	// silence and turns amber, as the web's stalled level does. A first
+	// attempt is gated behind the ordinary quiet threshold too (the web's
+	// retryKnownEarly = retry.attempt >= 2): a retry that resolves on its
+	// next try shouldn't flash across the tray, but from the second attempt
+	// on, the retry is known information and always wins.
+	if (session.modelRetry && (silence >= QUIET_AFTER_MS || session.modelRetry.attempt >= 2)) {
 		const retry = retryText(session.modelRetry);
 		return silence >= STUCK_AFTER_MS
 			? { text: `${retry} · no updates for ${compactDuration(silence)}`, attention: true }

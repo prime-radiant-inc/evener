@@ -111,6 +111,23 @@ describe("the tray's line (spec 8.3)", () => {
 		expect(trayLine(session({ ...silent, turns: [turn([running])] }), NOW)?.attention).toBe(false);
 	});
 
+	it("waits for the quiet threshold before explaining a first retry", () => {
+		const retry: ModelRetryState = {
+			attempt: 1,
+			maxAttempts: 11,
+			attemptCap: 4,
+			delayMs: 30_000,
+			errorClass: "rate_limit",
+			groupElapsedMs: 5_000,
+			receivedAt: NOW,
+		};
+		const reply = item({ type: "agentMessage", status: "inProgress" });
+		const withRetry = (lastFrameAt: number) =>
+			session({ modelRetry: retry, turns: [turn([reply])], lastFrameAt });
+		expect(trayLine(withRetry(NOW - 5_000), NOW)?.text).toBe("Writing…");
+		expect(trayLine(withRetry(NOW - 25_000), NOW)?.text).toBe("Retrying · rate limited · attempt 1 of 4");
+	});
+
 	it("explains a retry with its cause and place in the budget", () => {
 		const retry: ModelRetryState = {
 			attempt: 3,
