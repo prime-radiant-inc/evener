@@ -38,15 +38,10 @@ func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
 }
 
 // OpenRegularBeneathRootNoFollow is the best available portable fallback for
-// refusing a symlinked root. Platforms in this file have no O_NOFOLLOW, so the
-// root Lstat and path open cannot be made atomic.
+// refusing a symlinked root or first walked directory component. Platforms in
+// this file have no O_NOFOLLOW, so the root and component Lstats cannot be
+// bound atomically to the path open. The guarantee is deterministic refusal
+// only: either component can still be swapped between validation and open.
 func OpenRegularBeneathRootNoFollow(path, root string) (*os.File, error) {
-	info, err := os.Lstat(root)
-	if err != nil {
-		return nil, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, &os.PathError{Op: "open root without symlinks", Path: root, Err: ErrNonTraversableRoot}
-	}
-	return OpenRegularBeneathRoot(path, root)
+	return openRegularBeneathRootNoFollowPortable(path, root, OpenRegularBeneathRoot)
 }
