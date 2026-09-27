@@ -2,8 +2,8 @@ import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import type { ReactElement } from "react";
-import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
-import { useColors } from "../ui";
+import { Platform, Pressable, Text, View } from "react-native";
+import { useColors, useTextScale } from "../ui";
 import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, whyLine } from "./attention";
 import { StateMark } from "./StateMark";
 
@@ -23,6 +23,10 @@ export interface BoardRowProps {
 	onOpen: (row: NavigationSessionSummary) => void;
 }
 
+/** Where a row's title starts: its 16pt padding, the 28pt mark column and
+ * the 10pt gap. */
+export const TITLE_INSET = 16 + 28 + 10;
+
 const UNITS: Record<string, string> = { m: "minute", h: "hour", d: "day" };
 
 /** relativeAge's "2m" as VoiceOver should say it: "2 minutes". */
@@ -34,7 +38,7 @@ function spokenAge(age: string): string {
 }
 
 /** One Board row (spec 7.2). It draws no separator: the list draws hairlines
- * between rows, inset to the title (16 + 28 + 10 = 54pt). */
+ * between rows, inset to the title at TITLE_INSET. */
 export function BoardRow({
 	item,
 	variant,
@@ -47,8 +51,7 @@ export function BoardRow({
 	onOpen,
 }: BoardRowProps): ReactElement {
 	const { palette } = useColors();
-	const { fontScale } = useWindowDimensions();
-	const scale = Platform.OS === "ios" ? fontScale : 1;
+	const scale = useTextScale();
 	const { row, state } = item;
 	const signal = variant === "signal";
 	const needsYou = signal && bandOf(state) === "needsYou";

@@ -26,9 +26,18 @@ import { reconnectDelay } from "../hubConnection";
 import { drafts } from "../nativeDrafts";
 import { RosterSearch } from "../rosterSearch";
 import type { Routes } from "../screens";
-import { Action, Copy, styles, useColors } from "../ui";
-import { type Band, type ClassifiedRow, liveBands, liveSummary, summaryText, usualPlace } from "./attention";
-import { BoardRow } from "./BoardRow";
+import { Action, Copy, styles, useColors, useTextScale } from "../ui";
+import {
+	type Band,
+	type ClassifiedRow,
+	type LiveSummary,
+	liveBands,
+	liveSummary,
+	summaryText,
+	usualPlace,
+} from "./attention";
+import type { SeenMarkers } from "./boardMemory";
+import { BoardRow, TITLE_INSET } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { foldedSections, seenMarkers } from "./nativeBoardMemory";
@@ -39,9 +48,6 @@ type Navigation = Props["navigation"];
 
 const SEARCH_PAGE_SIZE = 50;
 const MINUTE = 60_000;
-/** Rows are drawn without separators; the list draws hairlines inset to the
- * title (16 padding + 28 mark + 10 gap). */
-const TITLE_INSET = 54;
 const INCOMPATIBLE =
 	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
 const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
@@ -346,11 +352,7 @@ function readDraftRefs(hubId: string): Set<string> {
  * attention, not time, so a newer row can sit on a later page: until the
  * epoch is adopted, keep reading Live's pages. Until then isSeen counts
  * every row as seen, so nothing flashes Finished. */
-function useFirstRun(
-	board: BoardController,
-	markers: ReturnType<typeof seenMarkers>,
-	snapshot: ReturnType<BoardController["getSnapshot"]>,
-) {
+function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: BoardSnapshot) {
 	useEffect(() => {
 		if (markers.adopted) return;
 		const { loaded, retained, live, needsYou } = snapshot;
@@ -504,11 +506,6 @@ function HubButton({
 	);
 }
 
-function useTextScale() {
-	const { fontScale } = useWindowDimensions();
-	return Platform.OS === "ios" ? fontScale : 1;
-}
-
 function Hairline({ inset = 0 }: { inset?: number }) {
 	const { palette } = useColors();
 	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
@@ -618,7 +615,7 @@ function SummaryLine({
 	connected,
 	onJump,
 }: {
-	summary: NonNullable<ReturnType<typeof liveSummary>>;
+	summary: LiveSummary;
 	connected: boolean;
 	onJump: (band: Band) => void;
 }) {

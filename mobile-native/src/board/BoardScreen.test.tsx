@@ -41,27 +41,22 @@ vi.mock("react-native-safe-area-context", () => ({
 // the real hook, the effect runs on focus and its cleanup on blur.
 vi.mock("@react-navigation/native", async () => {
 	const { useEffect, useState } = await import("react");
+	const useIsFocused = () => {
+		const [focused, setFocused] = useState(harness.focused);
+		useEffect(() => {
+			harness.focusListeners.add(setFocused);
+			return () => {
+				harness.focusListeners.delete(setFocused);
+			};
+		}, []);
+		return focused;
+	};
 	return {
 		useFocusEffect: (effect: () => undefined | (() => void)) => {
-			const [focused, setFocused] = useState(harness.focused);
-			useEffect(() => {
-				harness.focusListeners.add(setFocused);
-				return () => {
-					harness.focusListeners.delete(setFocused);
-				};
-			}, []);
+			const focused = useIsFocused();
 			useEffect(() => (focused ? effect() : undefined), [focused, effect]);
 		},
-		useIsFocused: () => {
-			const [focused, setFocused] = useState(harness.focused);
-			useEffect(() => {
-				harness.focusListeners.add(setFocused);
-				return () => {
-					harness.focusListeners.delete(setFocused);
-				};
-			}, []);
-			return focused;
-		},
+		useIsFocused,
 	};
 });
 vi.mock("expo-sqlite/kv-store", () => ({
@@ -269,25 +264,22 @@ function joinedText(node: ReactTestInstance): string {
 function bandHeaders(tree: ReactTestRenderer): string[] {
 	return tree.root.findAll((node) => node.props.testID === "band-header").map(joinedText);
 }
+/** Whether a node is the Board row with this title. */
+const isRowTitled = (title: string) => (node: ReactTestInstance) =>
+	node.type === ("Pressable" as never) &&
+	typeof node.props.accessibilityLabel === "string" &&
+	node.props.accessibilityLabel.startsWith(`${title}, `);
 /** A Board row, found by its title. */
 function rowTitled(tree: ReactTestRenderer, title: string) {
-	return tree.root.find(
-		(node) =>
-			node.type === ("Pressable" as never) &&
-			typeof node.props.accessibilityLabel === "string" &&
-			node.props.accessibilityLabel.startsWith(`${title}, `),
-	);
+	return tree.root.find(isRowTitled(title));
 }
 function hasRow(tree: ReactTestRenderer, title: string) {
-	return (
-		tree.root.findAll(
-			(node) =>
-				node.type === ("Pressable" as never) &&
-				typeof node.props.accessibilityLabel === "string" &&
-				node.props.accessibilityLabel.startsWith(`${title}, `),
-		).length > 0
-	);
+	return tree.root.findAll(isRowTitled(title)).length > 0;
 }
+/** The Draft tags a row draws. */
+const draftTags = (row: ReactTestInstance) =>
+	row.findAll((node) => node.type === ("Text" as never) && node.props.children === "Draft");
+const skeletonRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "skeleton-row");
 /** Presses the one control with this label, leaving out the chips, which
  * share their labels with the section rows they scroll to. */
 function pressLabel(tree: ReactTestRenderer, label: string) {
@@ -550,10 +542,10 @@ it("shows three skeleton rows until the first read lands", async () => {
 	const fake = hub(fleet, () => true);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
-	expect(tree.root.findAll((node) => node.props.testID === "skeleton-row")).toHaveLength(3);
+	expect(skeletonRows(tree)).toHaveLength(3);
 	fake.release();
 	await settle();
-	expect(tree.root.findAll((node) => node.props.testID === "skeleton-row")).toHaveLength(0);
+	expect(skeletonRows(tree)).toHaveLength(0);
 	act(() => tree.unmount());
 });
 
@@ -566,9 +558,7 @@ it("says Update needed and why when no retry can fix the close", async () => {
 	connect(id, null, "closed", { fatal: true });
 	rerender(tree, nav);
 	expect(texts(tree)).toContain("Update needed");
-	expect(texts(tree)).toContain(
-		"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.",
-	);
+	expect(texts(tree)).toContain(INCOMPATIBLE_TEXT);
 	expect(hasRow(tree, "Build docs")).toBe(true);
 	act(() => tree.unmount());
 });
@@ -598,11 +588,8 @@ it("shows the Draft tag on sessions with a saved draft", async () => {
 	harness.drafts.set(id, new Set(["local:work"]));
 	connect(id, hub(fleet).client, "ready");
 	const tree = await mount(navigation());
-	const drafted = rowTitled(tree, "Build docs");
-	expect(drafted.findAll((node) => node.type === ("Text" as never) && node.props.children === "Draft")).toHaveLength(1);
-	expect(
-		rowTitled(tree, "Ship it").findAll((node) => node.type === ("Text" as never) && node.props.children === "Draft"),
-	).toHaveLength(0);
+	expect(draftTags(rowTitled(tree, "Build docs"))).toHaveLength(1);
+	expect(draftTags(rowTitled(tree, "Ship it"))).toHaveLength(0);
 	act(() => tree.unmount());
 });
 
@@ -656,7 +643,6 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 
 const liveReads = (fake: ReturnType<typeof hub>) =>
 	fake.requests.filter((read) => read.section === "live").map((read) => read.offset ?? 0);
-const skeletonRows = (tree: ReactTestRenderer) => tree.root.findAll((node) => node.props.testID === "skeleton-row");
 const FIRST_READ_FAILED = "Couldn't load this hub's sessions. Trying again shortly.";
 async function advance(ms: number) {
 	act(() => {
@@ -927,10 +913,8 @@ it("reads nothing while blurred, and on refocus catches up and re-reads drafts",
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	const manifestReads = () => fake.requests.filter((read) => read.resource === "manifest").length;
-	const draftTags = () =>
-		rowTitled(tree, "Build docs").findAll((node) => node.type === ("Text" as never) && node.props.children === "Draft");
 	expect(manifestReads()).toBe(1);
-	expect(draftTags()).toHaveLength(0);
+	expect(draftTags(rowTitled(tree, "Build docs"))).toHaveLength(0);
 	setFocused(false);
 	act(() => fake.invalidate(1, [{ kind: "manifest", revision: 2 }]));
 	await settle();
@@ -939,6 +923,6 @@ it("reads nothing while blurred, and on refocus catches up and re-reads drafts",
 	setFocused(true);
 	await settle();
 	expect(manifestReads()).toBe(2);
-	expect(draftTags()).toHaveLength(1);
+	expect(draftTags(rowTitled(tree, "Build docs"))).toHaveLength(1);
 	act(() => tree.unmount());
 });

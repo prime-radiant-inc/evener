@@ -6,8 +6,10 @@ import type {
 } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
+	matchingTargets,
 	materializeSnapshot,
 	navigationParamsToResourceKey,
+	requiredRevision,
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { NavigationPages } from "../navigationPages";
@@ -106,19 +108,19 @@ class ManifestReader {
 		this.request++;
 	}
 	private invalidate(payload: NavigationInvalidatedPayload) {
-		const targets = payload.targets.filter(
-			(target) => target.kind === "manifest",
-		);
+		const targets = matchingTargets(MANIFEST_KEY, payload.targets);
 		if (!targets.length) return;
 		if (payload.generationId !== this.generation) {
 			this.generation = payload.generationId;
 			this.required = 0;
 		}
 		this.invalidations++;
-		for (const target of targets)
-			if (target.revision === undefined)
-				this.unversionedAt = this.invalidations;
-			else this.required = Math.max(this.required, target.revision);
+		if (targets.some((target) => target.revision === undefined))
+			this.unversionedAt = this.invalidations;
+		this.required = Math.max(
+			this.required,
+			requiredRevision(MANIFEST_KEY, payload.targets),
+		);
 		this.owed = true;
 		this.drain();
 	}

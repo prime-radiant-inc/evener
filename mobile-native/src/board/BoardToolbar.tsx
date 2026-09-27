@@ -1,9 +1,9 @@
 import type { ConnectionState } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { useEffect, useState } from "react";
-import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useColors } from "../ui";
+import { useColors, useTextScale } from "../ui";
 import { connectionStatus, OFFLINE_AFTER_MS, RECONNECTING_AFTER_MS } from "./connectionStatus";
 
 const MINUTE = 60_000;
@@ -29,8 +29,7 @@ export function BoardToolbar({
 	onNewSession: () => void;
 }) {
 	const { palette } = useColors();
-	const { fontScale } = useWindowDimensions();
-	const scale = Platform.OS === "ios" ? fontScale : 1;
+	const scale = useTextScale();
 	const { bottom } = useSafeAreaInsets();
 	const live = state === "ready";
 	const [down, setDown] = useState<Down | null>(() => (live ? null : { since: Date.now(), lastLiveAt: null }));
