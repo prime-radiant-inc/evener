@@ -611,7 +611,7 @@ func TestHostRemoveRevokesOutstandingTokens(t *testing.T) {
 	if _, ok := store.OutstandingToken("m4"); !ok {
 		t.Fatal("the mint stored no token")
 	}
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "m4"}); err != nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "m4")); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 	if _, ok := store.OutstandingToken("m4"); ok {

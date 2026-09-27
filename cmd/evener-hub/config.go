@@ -78,6 +78,12 @@ type Config struct {
 	// the records existed — see app_host_records.go.
 	HostRecords map[string]HostRecord     `toml:"host_records"`
 	Generations map[string]HostGeneration `toml:"generations"`
+	// MutationReceipts is hub.toml's durable mutation-receipt section (registry
+	// spec 08 §5/§6), keyed by the five-part scoped receipt key. Like the two
+	// records above it lives beside [[hosts]] and survives every host edit; the
+	// absent value is the compatibility default for a file written before
+	// receipts existed.
+	MutationReceipts map[string]HostMutationReceipt `toml:"mutation_receipts"`
 
 	// PluginAutoUpgrade is the global on/off switch for the background plugin
 	// auto-upgrade daemon (design doc §9.1). Defaults to on: the meaningful
@@ -278,6 +284,14 @@ func decodeConfig(name, data string) (Config, error) {
 	if err := validateHostRecords(cfg.HostRecords, cfg.Generations); err != nil {
 		return cfg, fmt.Errorf("validate host records: %w", err)
 	}
+	// The mutation receipts are the other machine-managed section this build
+	// decodes: a record whose key or shape this build cannot decode, or whose
+	// fields disagree with its key, is refused loudly before any rewrite
+	// (registry spec 08 §6's reserved-namespace rule) — never read as a
+	// half-understood record, and never dropped by the next rewrite.
+	if err := validateHostMutationReceipts(cfg.MutationReceipts); err != nil {
+		return cfg, fmt.Errorf("validate mutation receipts: %w", err)
+	}
 	// Every field of a reserved record must decode: the two tables are decoded
 	// into typed structs and rebuilt on every rewrite, so a field this build does
 	// not know would be silently dropped by the next write. Spec 08 §6 is
@@ -287,7 +301,7 @@ func decodeConfig(name, data string) (Config, error) {
 	// preserve or drop it. Unknown keys outside the reserved set stay the
 	// operator's data and are not this check's business.
 	for _, key := range metadata.Undecoded() {
-		if len(key) > 1 && (key[0] == "host_records" || key[0] == "generations") {
+		if len(key) > 1 && (key[0] == "host_records" || key[0] == "generations" || key[0] == "mutation_receipts") {
 			return cfg, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
 		}
 	}
