@@ -2935,11 +2935,11 @@ test("explicit Resume follows the returned identity through transcript and new s
   expect(await mutationStorage.listOutbox(currentRef)).toHaveLength(0);
   await user.type(screen.getByRole("textbox", { name: /^message$/i }), "Follow up on current transcript");
   await user.click(screen.getByRole("button", { name: "Send" }));
-  await waitFor(() => expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1);
   expect(requests.find(({ method }) => method === "turn/start")?.params).toEqual(
     expect.objectContaining({ ref: currentRef }),
   );
-  await flushPendingTurnsProjectionForTests();
 });
 
 // RoboRev finding on the reduced branch: the explicit Resume passed
@@ -3268,11 +3268,10 @@ test.each(["success", "refused"])("hydrated restart recovery works without navig
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   // forceStop writes its cancellation durably before the RPC, so the call can
   // land after the click resolves; wait for it rather than racing the write.
-  await waitFor(() =>
-    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
-      { method: "evener/thread/forceStop", params: { ref } },
-    ]),
-  );
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+    { method: "evener/thread/forceStop", params: { ref } },
+  ]);
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
   if (outcome === "refused") {
     expect(await screen.findByText("Couldn't force stop session: no direct daemon ownership claim")).toBeTruthy();
@@ -3405,7 +3404,8 @@ test.each(["notLoaded", "active", "idle"])(
       releaseReads();
       await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
       fireEvent.click(resume);
-      await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
+      await flushPendingTurnsProjectionForTests();
+      expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined();
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
       expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
     } finally {
@@ -3483,7 +3483,8 @@ test.each(["active", "idle"])("retained %s child preserves uncertainty until its
   const resume = await screen.findByRole("button", { name: "Resume session" });
   await waitFor(() => expect((resume as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(resume);
-  await waitFor(async () => expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined());
+  await flushPendingTurnsProjectionForTests();
+  expect(await mutationStorage.getOutbox(mutationId)).toBeUndefined();
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
 });
@@ -3610,11 +3611,10 @@ test.each(["pending", "failed"])(
       await openForceStopDialog(user);
       expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toHaveLength(0);
       await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
-      await waitFor(() =>
-        expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
-          { method: "evener/thread/forceStop", params: { ref } },
-        ]),
-      );
+      await flushPendingTurnsProjectionForTests();
+      expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+        { method: "evener/thread/forceStop", params: { ref } },
+      ]);
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
       expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
     } finally {
@@ -3778,7 +3778,8 @@ test.each(["pending", "failed"])(
       await waitFor(() => expect(daemonStarted).toBe(true));
       if (outcome === "failed") {
         await act(async () => rejectRead(blocked()));
-        await waitFor(async () => expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown"));
+        await flushPendingTurnsProjectionForTests();
+        expect((await mutationStorage.getOutbox(mutationId))?.state).toBe("blockedUnknown");
       }
       expect(threadsStore.getState().threads.get(ref)?.status.type).toBe("notLoaded");
       await openForceStopDialog(user);
@@ -4002,11 +4003,10 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   await user.click(menuTrigger);
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
-  await waitFor(() =>
-    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
-      { method: "evener/thread/forceStop", params: { ref } },
-    ]),
-  );
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+    { method: "evener/thread/forceStop", params: { ref } },
+  ]);
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
 });

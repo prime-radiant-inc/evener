@@ -21,6 +21,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import "../../sessionPanels";
+import { flushPendingTurnsProjectionForTests } from "../composer/queue/testing/flushPendingTurnsProjection";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";
 
 const CAPABILITIES: ThreadCapabilities = {
@@ -468,11 +469,10 @@ test.each(["success", "failure"])("force stop requires confirmation and waits fo
   await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }));
   // forceStop writes its cancellation durably before the RPC, so the call can
   // land after the click resolves; wait for it rather than racing the write.
-  await waitFor(() =>
-    expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
-      expect.objectContaining({ params: { ref } }),
-    ]),
-  );
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "evener/thread/forceStop")).toEqual([
+    expect.objectContaining({ params: { ref } }),
+  ]);
   expect(
     (within(screen.getByRole("dialog")).getByRole("button", { name: "Force stop" }) as HTMLButtonElement).disabled,
   ).toBe(true);
