@@ -95,6 +95,5 @@ vi.mock("./src/NativePreferencesProvider", () => ({
 
 it("roots the whole app in a full-screen GestureHandlerRootView", () => {
 	const root = render(<App />).toJSON();
-	expect(Array.isArray(root)).toBe(false);
 	expect(root).toMatchObject({ type: "GestureHandlerRootView", props: { style: { flex: 1 } } });
 });
