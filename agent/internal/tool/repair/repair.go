@@ -88,8 +88,10 @@ func applyAliases(params, args map[string]any) []Change {
 }
 
 func schemaProps(params map[string]any) map[string]any {
-	p, _ := params["properties"].(map[string]any)
-	return p
+	// Normalize the property map: hand-built schemas also carry typed maps such
+	// as map[string]map[string]any, which a plain assertion would drop
+	// (issue #622 review).
+	return schemaChildMap(params["properties"])
 }
 
 func isPropDeclared(params map[string]any, key string) bool {
