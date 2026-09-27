@@ -96,6 +96,16 @@ type hostRecordPolicy struct {
 	prunedTTL            time.Duration
 	auditMaxCount        int
 	auditTTL             time.Duration
+	// The teardown-repair bounds (spec §6/§11): the cleared-remnant marker
+	// bounds, the recovery-marker bounds, the attempt-history bound per remnant,
+	// and the retry's bounded execution deadline.
+	clearedMaxCount  int
+	clearedTTL       time.Duration
+	recoveryMaxCount int
+	recoveryTTL      time.Duration
+	attemptMaxCount  int
+	teardownTimeout  time.Duration
+	escalationAge    time.Duration
 }
 
 // hostTOMLRecords is the machine-record set one hub.toml write carries: the
@@ -121,6 +131,21 @@ type hostTOMLRecords struct {
 	// set a dropped receipt's older file copy would ride back in and a restart
 	// would serve it as the recorded outcome.
 	droppedReceipts map[string]struct{}
+	// remnants, stagedReceipts, and attempts are the teardown-repair record sets
+	// (registry spec 08 §5/§6; app_host_remnants.go): the open remnants whose
+	// fence the derivation honours, the resolved-remnant markers it bounds, the
+	// staged-receipt markers a commit's step-(2) write carries, and the attempt
+	// records a claim writes.
+	remnants       map[string]HostTeardownRemnant
+	stagedReceipts map[string]HostStagedReceipt
+	attempts       map[string]HostTeardownAttempt
+	// droppedRemnants, droppedStaged, and droppedAttempts name the
+	// teardown-repair records this derivation dropped (a re-add purge, a
+	// tombstone purge, or a bounded compaction), so the writer's preservation
+	// rule cannot ride the file's older copy back in.
+	droppedRemnants map[string]struct{}
+	droppedStaged   map[string]struct{}
+	droppedAttempts map[string]struct{}
 }
 
 // hostTombstoneStage is the tombstone a removal stages into the very write

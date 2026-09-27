@@ -1,4 +1,10 @@
-import type { AppwireClientLike, HostEntry, HostRow } from "@evener/appwire-client";
+import type {
+  AppwireClientLike,
+  HostEntry,
+  HostMutationResult,
+  HostRow,
+  RemovedRow,
+} from "@evener/appwire-client";
 import { errorText, WireError } from "@evener/appwire-client";
 import { create, useStore } from "zustand";
 import { connectedClientPort, connectionStore } from "./connection";
@@ -181,6 +187,47 @@ async function pairForMutation(name: string): Promise<HostMutationPair> {
     throw new Error(`host "${name}" is not listed, so there is no guarded pair to send with the request`);
   }
   return reread;
+}
+
+/** committedMutationRow narrows the mutation-result union to the row a
+ * successful mutation committed. The union's other arms are NOT success and
+ * must never read as one (registry spec 08 §11): a
+ * `committed-with-teardown-failure` arm names a committed mutation whose rebind
+ * needs forward repair through `evener/host/teardown-retry` with the
+ * `remnantId` it carries; a `collision-dropped` arm names a foreign hub.toml
+ * edit that won the race, so nothing the caller asked for landed; and a
+ * keyless add's `ambiguous` arm claims no commit at all. Each throws, naming
+ * what happened, so the caller's failure path runs instead of its success path.
+ * The retry/recover affordances themselves are slice 16's. */
+function committedMutationRow(result: HostMutationResult, method: string): HostRow {
+  switch (result.outcome) {
+    case "committed":
+      return result.host as HostRow;
+    case "committed-with-teardown-failure":
+      throw new Error(
+        `${method}: the mutation committed but its ${result.seam} teardown failed; the entry is committed and its repair handle is remnantId ${result.remnantId}`,
+      );
+    case "collision-dropped":
+      throw new Error(
+        `${method}: a concurrent hub.toml edit won the race, so nothing the caller asked for landed; re-read the host list`,
+      );
+    case "ambiguous":
+      throw new Error(
+        `${method}: the row already exists and this keyless retry cannot tell whether it committed it; re-read the host list`,
+      );
+    default:
+      throw new Error(`${method}: the response carries no arm this client knows`);
+  }
+}
+
+/** committedRemovedRow is committedMutationRow for `remove`, whose committed arm
+ * carries the dedicated removed-row shape. */
+function committedRemovedRow(result: HostMutationResult, method: string): RemovedRow {
+  if (result.outcome === "committed") {
+    return result.host as RemovedRow;
+  }
+  committedMutationRow(result, method);
+  throw new Error(`${method}: unreachable`);
 }
 
 /** guardedMutation sends a guarded update/remove and implements the UI retry
@@ -533,7 +580,11 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     // straight through rather than picking three fields out of it. The
     // mutationId is the add's client idempotency key (registry spec 08 §4):
     // a keyed add is dedup-safe, so a transport-level retry cannot double-add.
-    const row = await requireClient().request("evener/host/add", { entry, mutationId: createSecureUUID() });
+    const result = await requireClient().request("evener/host/add", { entry, mutationId: createSecureUUID() });
+    // The result is the mutation-result union (registry spec 08 §11), so the
+    // store narrows it explicitly: only the committed arm is a success, and the
+    // teardown-failure, collision-dropped, and ambiguous arms throw.
+    const row = committedMutationRow(result, "evener/host/add");
     // Re-read quietly rather than appending: the server owns ordering and
     // the row's attached state, and the list read is cheap and never dials.
     await reReadAfterMutation();
@@ -547,7 +598,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
     // user saw, and a refusal means that row moved (guardedMutation retries
     // once with the re-read pair).
     const row = await guardedMutation(params.name, async (pair, mutationId) => {
-      const { host } = await requireClient().request(
+      const result = await requireClient().request(
         "evener/host/update",
         {
           name: params.name,
@@ -558,7 +609,7 @@ export const hostsStore = create<HostsStoreState>((set) => ({
         },
         { timeoutMs: HOST_GATE_TIMEOUT_MS },
       );
-      return host;
+      return committedMutationRow(result, "evener/host/update");
     });
     await reReadAfterMutation();
     return row;
@@ -573,8 +624,8 @@ export const hostsStore = create<HostsStoreState>((set) => ({
   },
 
   remove: async (name) => {
-    await guardedMutation(name, (pair, mutationId) =>
-      requireClient().request(
+    await guardedMutation(name, async (pair, mutationId) => {
+      const result = await requireClient().request(
         "evener/host/remove",
         {
           name,
@@ -583,8 +634,9 @@ export const hostsStore = create<HostsStoreState>((set) => ({
           expectedIncarnationId: pair.incarnationId,
         },
         { timeoutMs: HOST_GATE_TIMEOUT_MS },
-      ),
-    );
+      );
+      return committedRemovedRow(result, "evener/host/remove");
+    });
     await reReadAfterMutation();
   },
 

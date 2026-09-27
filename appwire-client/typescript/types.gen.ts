@@ -1103,6 +1103,43 @@ export interface HostListResponse {
   hosts: HostRow[];
 }
 
+export interface HostMutationAmbiguous {
+  outcome: string;
+  observedRow: HostRow;
+}
+
+export interface HostMutationCollisionDropped {
+  outcome: string;
+  droppedEntry: HostRow;
+  winningFingerprint: string;
+  host?: HostRow;
+  removed?: boolean;
+}
+
+export interface HostMutationCommitted {
+  outcome: string;
+  host: HostRow;
+}
+
+export interface HostMutationCommittedRemoved {
+  outcome: string;
+  host: RemovedRow;
+}
+
+export interface HostMutationTeardownFailure {
+  outcome: string;
+  seam: string;
+  remnantId: string;
+  host: HostRow;
+}
+
+export interface HostMutationTeardownFailureRemoved {
+  outcome: string;
+  seam: string;
+  remnantId: string;
+  host: RemovedRow;
+}
+
 export interface HostNotificationParams {
   host: string;
   method: string;
@@ -1161,10 +1198,6 @@ export interface HostRemoveParams {
   mutationId: string;
   expectedGeneration: number;
   expectedIncarnationId: string;
-}
-
-export interface HostRemoveResponse {
-  host: HostRow;
 }
 
 export interface HostRequestParams {
@@ -1227,6 +1260,19 @@ export interface HostRow {
    */
   retainedRows?: number;
   rowsTruncated?: boolean;
+  /**
+   * OpenRemnantID is present exactly on rows — live or tombstone — whose name
+   * holds an open remnant: the blocking remnant's id the remnant fence's
+   * `remnant-open` refusal also names (registry spec 08 §11).
+   */
+  openRemnantId?: string;
+  /**
+   * EscalationAgeSec is present only on rows — live or tombstone — whose name
+   * holds an open remnant past the escalation bound: the escalation age the
+   * expiry-escalation rule promises, in whole seconds. Absent everywhere else
+   * per the absent-when-unknown rule.
+   */
+  escalationAgeSec?: number;
 }
 
 export interface HostRunningParams {
@@ -1247,16 +1293,85 @@ export interface HostStatusResponse {
   host: HostRow;
 }
 
+export interface HostTeardownAttestation {
+  operator: string;
+  statement: string;
+  observedAt: string;
+}
+
+export interface HostTeardownRecoverParams {
+  remnantId: string;
+  attestation: HostTeardownAttestation;
+}
+
+export interface HostTeardownRecoverResult {
+  outcome: string;
+  remnantId: string;
+  clearedName: string;
+  clearedAt: string;
+  hostKind: string;
+}
+
+export interface HostTeardownRetryClearedLive {
+  outcome: string;
+  hostKind: string;
+  host: HostRow;
+  remnantId: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryClearedRemoved {
+  outcome: string;
+  hostKind: string;
+  host: RemovedRow;
+  remnantId: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryCompleteLive {
+  outcome: string;
+  hostKind: string;
+  host: HostRow;
+  remnantId: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryCompleteRemoved {
+  outcome: string;
+  hostKind: string;
+  host: RemovedRow;
+  remnantId: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryFailedLive {
+  outcome: string;
+  hostKind: string;
+  host: HostRow;
+  remnantId: string;
+  seam: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryFailedRemoved {
+  outcome: string;
+  hostKind: string;
+  host: RemovedRow;
+  remnantId: string;
+  seam: string;
+  escalationAgeSec?: number;
+}
+
+export interface HostTeardownRetryParams {
+  remnantId: string;
+}
+
 export interface HostUpdateParams {
   name: string;
   entry: HostEntry;
   mutationId: string;
   expectedGeneration: number;
   expectedIncarnationId: string;
-}
-
-export interface HostUpdateResponse {
-  host: HostRow;
 }
 
 export interface InitializeParams {
@@ -2609,6 +2724,47 @@ export interface ReasoningSummaryDeltaParams {
   delta: string;
 }
 
+export interface RemovedRow {
+  name: string;
+  address?: string;
+  user?: string;
+  keyPath?: string;
+  evenerPath?: string;
+  configPath?: string;
+  addr?: string;
+  roots?: string[];
+  origin: string;
+  /**
+   * Generation and IncarnationID are the removed entry's pair — what a
+   * re-add mints strictly above.
+   */
+  generation: number;
+  incarnationId: string;
+  /**
+   * Removed is always true on this arm; Attached and MidEnsure are always
+   * false, per `list`'s tombstone values.
+   */
+  removed: boolean;
+  attached: boolean;
+  midEnsure: boolean;
+  /**
+   * RetainedRows is the tombstone's retained-projection count; a nil renders
+   * as an absent key, exactly as HostRow's tombstone arm does.
+   */
+  retainedRows?: number;
+  rowsTruncated?: boolean;
+  /**
+   * EscalationAgeSec is present only when the row's name holds an escalated
+   * open remnant, mirroring HostRow.
+   */
+  escalationAgeSec?: number;
+  /**
+   * OpenRemnantID is present exactly on rows whose name holds an open
+   * remnant, mirroring HostRow.
+   */
+  openRemnantId?: string;
+}
+
 export interface RepoLaunchConfigStatus {
   path: string;
   hash?: string;
@@ -3894,6 +4050,8 @@ export const METHOD_NAMES = [
   "evener/host/status",
   "evener/host/remove",
   "evener/host/update",
+  "evener/host/teardown-retry",
+  "evener/host/teardown-recover",
   "evener/host/plan",
   "evener/host/deploy",
   "evener/host/restart",
@@ -4108,11 +4266,13 @@ export interface MethodTypes {
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
   "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
-  "evener/host/add": { params: HostAddParams; result: HostRow };
+  "evener/host/add": { params: HostAddParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
   "evener/host/list": { params: EmptyParams; result: HostListResponse };
   "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
-  "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
-  "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
+  "evener/host/remove": { params: HostRemoveParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
+  "evener/host/update": { params: HostUpdateParams; result: HostMutationCommitted | HostMutationCommittedRemoved | HostMutationTeardownFailure | HostMutationTeardownFailureRemoved | HostMutationCollisionDropped | HostMutationAmbiguous };
+  "evener/host/teardown-retry": { params: HostTeardownRetryParams; result: HostTeardownRetryCompleteLive | HostTeardownRetryCompleteRemoved | HostTeardownRetryClearedLive | HostTeardownRetryClearedRemoved | HostTeardownRetryFailedLive | HostTeardownRetryFailedRemoved };
+  "evener/host/teardown-recover": { params: HostTeardownRecoverParams; result: HostTeardownRecoverResult };
   "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
   "evener/host/deploy": { params: HostDeployParams; result: HostDeployResponse };
   "evener/host/restart": { params: HostRestartParams; result: HostRestartResponse };

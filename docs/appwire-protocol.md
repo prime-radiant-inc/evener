@@ -196,11 +196,13 @@ no router (reserved).
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
 | `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 | `evener/host/attach` | hub | `HostAttachParams` | `HostAttachResponse` | Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state. |
-| `evener/host/add` | hub | `HostAddParams` | `HostRow` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. |
+| `evener/host/add` | hub | `HostAddParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Registers one host entry (its full entry: name, ssh address, user, key path, and the host's paths and roots) into the machine-managed hub.toml; validates like hub.toml loading and refuses a name the live set already holds. Result is the mutation-result union: committed, committed-with-teardown-failure, collision-dropped, or the keyless-add ambiguous arm. |
 | `evener/host/list` | hub | `EmptyParams` | `HostListResponse` | Lists every known host with truthful online state; never dials — attached rows read the live channel, offline rows render last-known state. |
 | `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
-| `evener/host/remove` | hub | `HostRemoveParams` | `HostRemoveResponse` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. |
-| `evener/host/update` | hub | `HostUpdateParams` | `HostUpdateResponse` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. |
+| `evener/host/remove` | hub | `HostRemoveParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. Result is the mutation-result union, whose committed and teardown-failure arms carry the dedicated removed row. |
+| `evener/host/update` | hub | `HostUpdateParams` | `HostMutationCommitted \| HostMutationCommittedRemoved \| HostMutationTeardownFailure \| HostMutationTeardownFailureRemoved \| HostMutationCollisionDropped \| HostMutationAmbiguous` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. Result is the mutation-result union. |
+| `evener/host/teardown-retry` | hub | `HostTeardownRetryParams` | `HostTeardownRetryCompleteLive \| HostTeardownRetryCompleteRemoved \| HostTeardownRetryClearedLive \| HostTeardownRetryClearedRemoved \| HostTeardownRetryFailedLive \| HostTeardownRetryFailedRemoved` | Resumes one named teardown remnant by its opaque id: gate first, claim under the mutation lock, the pinned teardown run to completion with a bounded deadline, then finalization from the observed result. Result is the six-arm outcome x hostKind union; an unknown or purged id is the typed teardown-unknown-key refusal. |
+| `evener/host/teardown-recover` | hub | `HostTeardownRecoverParams` | `HostTeardownRecoverResult` | Clears an open remnant whose pinned target is unresolvable, on an authenticated operator's audited teardown-verified-absent attestation: gate first, the safety checks immediately before the clearing write, the attestation recorded on the original receipt beside remnantResolvedAt, and a typed resolved-remnant record persisted in the same atomic write. |
 | `evener/host/plan` | hub | `HostPlanParams` | `HostPlanPlanned \| HostPlanNoToken` | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
 | `evener/host/deploy` | hub | `HostDeployParams` | `HostDeployResponse` | Consumes a plan's confirmation token and starts the deploy operation it names: dedup-first on the client operation ID, then the token's single-use consume under the host gate after the running probe and under-gate re-resolution, and a durable pending operation record whose worker runs the 04b deploy path outside the RPC. |
 | `evener/host/restart` | hub | `HostRestartParams` | `HostRestartResponse` | Starts a restart operation for one named host: dedup on the client operation ID and the intended (generation, incarnation id) pair, the gated under-gate re-resolution and terminal-operation scan, then a durable pending operation record whose worker runs the 04b restart path outside the RPC. |
@@ -889,6 +891,61 @@ _(no fields)_
 | `hosts` | `[]appwire.HostRow` |  |  |
 
 
+### `HostMutationAmbiguous`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `observedRow` | `appwire.HostRow` |  |  |
+
+
+### `HostMutationCollisionDropped`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `droppedEntry` | `appwire.HostRow` |  |  |
+| `winningFingerprint` | `string` |  |  |
+| `host` | `*appwire.HostRow` | yes |  |
+| `removed` | `bool` | yes |  |
+
+
+### `HostMutationCommitted`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `host` | `appwire.HostRow` |  |  |
+
+
+### `HostMutationCommittedRemoved`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `host` | `appwire.RemovedRow` |  |  |
+
+
+### `HostMutationTeardownFailure`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `seam` | `string` |  |  |
+| `remnantId` | `string` |  |  |
+| `host` | `appwire.HostRow` |  |  |
+
+
+### `HostMutationTeardownFailureRemoved`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `seam` | `string` |  |  |
+| `remnantId` | `string` |  |  |
+| `host` | `appwire.RemovedRow` |  |  |
+
+
 ### `HostNotificationParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -976,13 +1033,6 @@ _(no fields)_
 | `expectedIncarnationId` | `string` |  |  |
 
 
-### `HostRemoveResponse`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `host` | `appwire.HostRow` |  |  |
-
-
 ### `HostRequestParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1009,34 +1059,6 @@ _(no fields)_
 | `id` | `string` |  |  |
 | `clientOperationId` | `string` |  |  |
 | `state` | `appwire.OperationState` |  |  |
-
-
-### `HostRow`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `name` | `string` |  |  |
-| `address` | `string` | yes |  |
-| `user` | `string` | yes |  |
-| `keyPath` | `string` | yes |  |
-| `evenerPath` | `string` | yes |  |
-| `configPath` | `string` | yes |  |
-| `addr` | `string` | yes |  |
-| `roots` | `[]string` | yes |  |
-| `origin` | `string` |  |  |
-| `generation` | `uint64` |  |  |
-| `incarnationId` | `string` |  |  |
-| `attached` | `bool` |  |  |
-| `serverName` | `string` | yes |  |
-| `serverVersion` | `string` | yes |  |
-| `hubVersion` | `string` | yes |  |
-| `os` | `string` | yes |  |
-| `arch` | `string` | yes |  |
-| `lastAttachError` | `string` | yes |  |
-| `midAttach` | `bool` |  |  |
-| `removed` | `bool` |  |  |
-| `retainedRows` | `*int` | yes |  |
-| `rowsTruncated` | `bool` | yes |  |
 
 
 ### `HostRunningParams`
@@ -1069,6 +1091,100 @@ _(no fields)_
 | `host` | `appwire.HostRow` |  |  |
 
 
+### `HostTeardownRecoverParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `remnantId` | `string` |  |  |
+| `attestation` | `appwire.HostTeardownAttestation` |  |  |
+
+
+### `HostTeardownRecoverResult`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `remnantId` | `string` |  |  |
+| `clearedName` | `string` |  |  |
+| `clearedAt` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+
+
+### `HostTeardownRetryClearedLive`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.HostRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryClearedRemoved`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.RemovedRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryCompleteLive`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.HostRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryCompleteRemoved`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.RemovedRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryFailedLive`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.HostRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `seam` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryFailedRemoved`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `hostKind` | `string` |  |  |
+| `host` | `appwire.RemovedRow` |  |  |
+| `remnantId` | `string` |  |  |
+| `seam` | `string` |  |  |
+| `escalationAgeSec` | `*int64` | yes |  |
+
+
+### `HostTeardownRetryParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `remnantId` | `string` |  |  |
+
+
 ### `HostUpdateParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1078,13 +1194,6 @@ _(no fields)_
 | `mutationId` | `string` |  |  |
 | `expectedGeneration` | `uint64` |  |  |
 | `expectedIncarnationId` | `string` |  |  |
-
-
-### `HostUpdateResponse`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `host` | `appwire.HostRow` |  |  |
 
 
 ### `InitializeParams`

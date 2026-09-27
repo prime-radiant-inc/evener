@@ -803,6 +803,18 @@ name = "side"
 		{
 			name: "unknown outcome",
 			section: fmt.Sprintf(`[mutation_receipts.%q]
+outcome = "torn-write"
+generation = 2
+incarnation_id = "inc-1"
+committed_at = "2026-09-27T12:00:00Z"
+[mutation_receipts.%q.row]
+name = "side"
+`, validKey, validKey),
+			want: `outcome "torn-write"`,
+		},
+		{
+			name: "collision-dropped without its fields",
+			section: fmt.Sprintf(`[mutation_receipts.%q]
 outcome = "collision-dropped"
 generation = 2
 incarnation_id = "inc-1"
@@ -810,7 +822,7 @@ committed_at = "2026-09-27T12:00:00Z"
 [mutation_receipts.%q.row]
 name = "side"
 `, validKey, validKey),
-			want: `outcome "collision-dropped"`,
+			want: "with no dropped_entry",
 		},
 		{
 			name: "unknown field",
@@ -819,7 +831,7 @@ outcome = "committed"
 generation = 2
 incarnation_id = "inc-1"
 committed_at = "2026-09-27T12:00:00Z"
-winning_fingerprint = "deadbeef"
+superseded_token = "deadbeef"
 [mutation_receipts.%q.row]
 name = "side"
 `, validKey, validKey),

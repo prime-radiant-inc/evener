@@ -30,6 +30,9 @@ func (s *hostStore) recordsSnapshot() hostTOMLRecords {
 		receipts:       s.receiptsSnapshot(),
 		tombstones:     s.tombstoneSnapshot(),
 		prunedReceipts: s.prunedReceiptSnapshot(),
+		remnants:       s.remnantSnapshot(),
+		stagedReceipts: s.stagedSnapshot(),
+		attempts:       s.attemptsSnapshot(),
 	}
 }
 
@@ -65,6 +68,24 @@ func nonNilRecords(records hostTOMLRecords) hostTOMLRecords {
 	if records.droppedReceipts == nil {
 		records.droppedReceipts = map[string]struct{}{}
 	}
+	if records.remnants == nil {
+		records.remnants = map[string]HostTeardownRemnant{}
+	}
+	if records.stagedReceipts == nil {
+		records.stagedReceipts = map[string]HostStagedReceipt{}
+	}
+	if records.attempts == nil {
+		records.attempts = map[string]HostTeardownAttempt{}
+	}
+	if records.droppedRemnants == nil {
+		records.droppedRemnants = map[string]struct{}{}
+	}
+	if records.droppedStaged == nil {
+		records.droppedStaged = map[string]struct{}{}
+	}
+	if records.droppedAttempts == nil {
+		records.droppedAttempts = map[string]struct{}{}
+	}
 	return records
 }
 
@@ -84,6 +105,13 @@ func hostRecordPolicyFor(cfg hubcore.WebConfig) hostRecordPolicy {
 		prunedTTL:            cfg.HostPrunedReceiptTTL,
 		auditMaxCount:        cfg.HostKeylessAuditMaxCount,
 		auditTTL:             cfg.HostKeylessAuditTTL,
+		clearedMaxCount:      cfg.HostRemnantClearedMaxCount,
+		clearedTTL:           cfg.HostRemnantClearedTTL,
+		recoveryMaxCount:     cfg.HostRemnantRecoveryMaxCount,
+		recoveryTTL:          cfg.HostRemnantRecoveryTTL,
+		attemptMaxCount:      cfg.HostRemnantAttemptMaxCount,
+		teardownTimeout:      cfg.HostRemnantTeardownTimeout,
+		escalationAge:        cfg.HostRemnantEscalationAge,
 	}
 	if policy.tombstoneRetention <= 0 {
 		policy.tombstoneRetention = DefaultHostTombstoneRetention
@@ -117,6 +145,27 @@ func hostRecordPolicyFor(cfg hubcore.WebConfig) hostRecordPolicy {
 	}
 	if policy.auditTTL <= 0 {
 		policy.auditTTL = DefaultHostKeylessAuditTTL
+	}
+	if policy.clearedMaxCount <= 0 {
+		policy.clearedMaxCount = DefaultHostRemnantClearedMaxCount
+	}
+	if policy.clearedTTL <= 0 {
+		policy.clearedTTL = DefaultHostRemnantClearedTTL
+	}
+	if policy.recoveryMaxCount <= 0 {
+		policy.recoveryMaxCount = DefaultHostRemnantRecoveryMaxCount
+	}
+	if policy.recoveryTTL <= 0 {
+		policy.recoveryTTL = DefaultHostRemnantRecoveryTTL
+	}
+	if policy.attemptMaxCount <= 0 {
+		policy.attemptMaxCount = DefaultHostRemnantAttemptMaxCount
+	}
+	if policy.teardownTimeout <= 0 {
+		policy.teardownTimeout = DefaultHostRemnantTeardownTimeout
+	}
+	if policy.escalationAge <= 0 {
+		policy.escalationAge = DefaultHostRemnantEscalationAge
 	}
 	return policy
 }
@@ -198,6 +247,9 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		receipts:       m.cfg.store.receiptsSnapshot(),
 		tombstones:     m.cfg.store.tombstoneSnapshot(),
 		prunedReceipts: m.cfg.store.prunedReceiptSnapshot(),
+		remnants:       m.cfg.store.remnantSnapshot(),
+		stagedReceipts: m.cfg.store.stagedSnapshot(),
+		attempts:       m.cfg.store.attemptsSnapshot(),
 	}
 	if records.highWater == nil {
 		records.highWater = map[string]HostGeneration{}
@@ -219,6 +271,43 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	}
 	if records.droppedReceipts == nil {
 		records.droppedReceipts = map[string]struct{}{}
+	}
+	if records.remnants == nil {
+		records.remnants = map[string]HostTeardownRemnant{}
+	}
+	if records.stagedReceipts == nil {
+		records.stagedReceipts = map[string]HostStagedReceipt{}
+	}
+	if records.attempts == nil {
+		records.attempts = map[string]HostTeardownAttempt{}
+	}
+	if records.droppedRemnants == nil {
+		records.droppedRemnants = map[string]struct{}{}
+	}
+	if records.droppedStaged == nil {
+		records.droppedStaged = map[string]struct{}{}
+	}
+	if records.droppedAttempts == nil {
+		records.droppedAttempts = map[string]struct{}{}
+	}
+	if change.dropMarker != "" {
+		delete(records.stagedReceipts, change.dropMarker)
+		records.droppedStaged[change.dropMarker] = struct{}{}
+	}
+	if change.marker != nil {
+		records.stagedReceipts[change.marker.Name] = change.marker.Marker
+	}
+	if change.remnant != nil {
+		records.remnants[change.remnant.RemnantID] = change.remnant.Remnant
+	}
+	if change.resolved != nil {
+		records.remnants[change.resolved.RemnantID] = change.resolved.Remnant
+	}
+	if change.fencedAttempt != nil {
+		records.attempts[change.fencedAttempt.AttemptID] = change.fencedAttempt.Attempt
+	}
+	if change.attempt != nil {
+		records.attempts[change.attempt.AttemptID] = change.attempt.Attempt
 	}
 	if change.tombstone != nil {
 		tombstone := change.tombstone.Tombstone
@@ -257,6 +346,13 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		records.droppedTombstones[name] = struct{}{}
 		delete(records.highWater, name)
 		m.purgeNameReceipts(records, name, purgeRetainNewestRemove, protectedKey, now)
+		// Re-add purges the name's stale remnants and staged markers: spec §6
+		// "only after that name's open remnants are resolved ... its stale
+		// remnants are dropped in the same atomic write that mints the new
+		// generation". The fence refuses a re-add while one is open, so in
+		// practice only resolved records are here; an open one is kept either
+		// way, because dropping it would strand a live teardown handle.
+		m.purgeNameTeardownRecords(records, name)
 	}
 
 	// Expiry prune: past the retention period the tombstone is dropped in this
@@ -282,6 +378,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		delete(records.tombstones, name)
 		records.droppedTombstones[name] = struct{}{}
 		m.purgeNameReceipts(records, name, purgeDropAll, protectedKey, now)
+		m.purgeNameTeardownRecords(records, name)
 	}
 
 	// Receipt compaction for every name the write's receipt set carries — the
@@ -316,7 +413,117 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	// same atomic write (§6: "every `hub.toml` mutation and every boot
 	// compacts markers past either bound in the same atomic write").
 	m.compactPrunedMarkers(records, now)
+	// The teardown-repair records compact last for the same reason the markers
+	// do: a purge above drops whole names' remnants, and those drops must meet
+	// their bounds in this same atomic write (§6: every `hub.toml` mutation and
+	// every boot compacts past either bound in the same atomic write).
+	m.compactTeardownRecords(records, now)
 	return records, nil
+}
+
+// purgeNameTeardownRecords drops one name's resolved remnants and every staged
+// marker the name holds. An open remnant is never dropped: it is the forward
+// repair handle, and dropping it would lose the only way to finish the
+// teardown (spec §6: "a remnant never depends on the live registry to execute"
+// — but only the record itself can name it).
+func (m *hubHostManager) purgeNameTeardownRecords(records hostTOMLRecords, name string) {
+	for id, remnant := range records.remnants {
+		if remnant.Host != name || remnant.open() {
+			continue
+		}
+		delete(records.remnants, id)
+		records.droppedRemnants[id] = struct{}{}
+	}
+	for hostName := range records.stagedReceipts {
+		if hostName != name {
+			continue
+		}
+		delete(records.stagedReceipts, hostName)
+		records.droppedStaged[hostName] = struct{}{}
+	}
+}
+
+// compactTeardownRecords applies the teardown-repair bounds: cleared-remnant
+// markers compact under their own TTL and at-most-64-newest-per-name count
+// bound, recovery markers under theirs, and the attempt set drops attempts
+// whose remnant is gone and keeps at most attemptMaxCount newest per remnant —
+// all in the same atomic write that carries the rest of the derivation (spec
+// §6: "every boot and every `hub.toml` mutation compacts retry records past
+// either bound in the same atomic write").
+func (m *hubHostManager) compactTeardownRecords(records hostTOMLRecords, now time.Time) {
+	policy := m.cfg.policy
+	type candidate struct {
+		id        string
+		clearedAt time.Time
+	}
+	retry := map[string][]candidate{}
+	recoveries := map[string][]candidate{}
+	for id, remnant := range records.remnants {
+		resolved := remnant.Resolved
+		if resolved == nil {
+			continue
+		}
+		clearedAt, _ := time.Parse(time.RFC3339, resolved.ClearedAt)
+		switch resolved.ResolutionKind {
+		case hostRemnantResolutionRetry:
+			retry[remnant.Host] = append(retry[remnant.Host], candidate{id: id, clearedAt: clearedAt})
+		case hostRemnantResolutionRecover:
+			recoveries[remnant.Host] = append(recoveries[remnant.Host], candidate{id: id, clearedAt: clearedAt})
+		}
+	}
+	compact := func(byName map[string][]candidate, maxCount int, ttl time.Duration) {
+		for _, candidates := range byName {
+			sort.SliceStable(candidates, func(i, j int) bool {
+				if !candidates[i].clearedAt.Equal(candidates[j].clearedAt) {
+					return candidates[i].clearedAt.After(candidates[j].clearedAt)
+				}
+				return candidates[i].id < candidates[j].id
+			})
+			for i, candidate := range candidates {
+				tooOld := !candidate.clearedAt.IsZero() && candidate.clearedAt.Add(ttl).Before(now)
+				if i < maxCount && !tooOld {
+					continue
+				}
+				delete(records.remnants, candidate.id)
+				records.droppedRemnants[candidate.id] = struct{}{}
+			}
+		}
+	}
+	compact(retry, policy.clearedMaxCount, policy.clearedTTL)
+	compact(recoveries, policy.recoveryMaxCount, policy.recoveryTTL)
+	// Attempts belong to a remnant: a dropped remnant takes its attempts with
+	// it, and a remnant keeps at most attemptMaxCount newest.
+	perRemnant := map[string][]candidate{}
+	for id, attempt := range records.attempts {
+		if _, alive := records.remnants[attempt.RemnantID]; !alive {
+			delete(records.attempts, id)
+			records.droppedAttempts[id] = struct{}{}
+			continue
+		}
+		startedAt, _ := time.Parse(time.RFC3339, attempt.StartedAt)
+		perRemnant[attempt.RemnantID] = append(perRemnant[attempt.RemnantID], candidate{id: id, clearedAt: startedAt})
+	}
+	for _, candidates := range perRemnant {
+		sort.SliceStable(candidates, func(i, j int) bool {
+			if !candidates[i].clearedAt.Equal(candidates[j].clearedAt) {
+				return candidates[i].clearedAt.After(candidates[j].clearedAt)
+			}
+			return candidates[i].id < candidates[j].id
+		})
+		for i, candidate := range candidates {
+			// A still-open attempt is never compacted away: it is the fence the
+			// name reads, and dropping it would let a lifecycle path start over
+			// possibly-live cleanup (spec §6: "The open attempt record is an
+			// attempt fence").
+			if records.attempts[candidate.id].open() {
+				continue
+			}
+			if i >= policy.attemptMaxCount {
+				delete(records.attempts, candidate.id)
+				records.droppedAttempts[candidate.id] = struct{}{}
+			}
+		}
+	}
 }
 
 // advancedPresenceEpoch returns name's next presence epoch as of this write:
@@ -689,6 +896,7 @@ func (m *hubHostManager) enforceTombstoneCaps(records hostTOMLRecords, change ho
 		delete(records.tombstones, candidate.name)
 		records.droppedTombstones[candidate.name] = struct{}{}
 		m.purgeNameReceipts(records, candidate.name, purgeDropAll, protectedKey, now)
+		m.purgeNameTeardownRecords(records, candidate.name)
 	}
 	if fits() {
 		return nil
