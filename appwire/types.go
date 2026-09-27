@@ -902,6 +902,11 @@ type EvenerThread struct {
 	// absent from an older daemon. Snapshot-only: thread/status/changed
 	// carries AskPending, and nothing carries the question's text.
 	PendingQuestion *PendingQuestion `json:"pendingQuestion,omitempty"`
+	// Failure summarizes the failed turn the session rests on (S1c). It is
+	// present only while the thread's status is systemError, and absent from
+	// an older daemon and for a failure that recorded no diagnostic.
+	// Snapshot-only: no notification carries it.
+	Failure *ThreadFailure `json:"failure,omitempty"`
 	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
 	// cards for any sandbox-exemption escalations currently blocked on this session,
 	// so a client entering / reconnecting to / not-having-seen-live this session

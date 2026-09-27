@@ -33,6 +33,7 @@ type stubThreadEnvelopeSource struct {
 	failuresMeasured bool
 	askPending       bool
 	question         *appwire.PendingQuestion
+	failure          *appwire.ThreadFailure
 	escalations      []appwire.SandboxEscalationRequested
 	reasoningEffort  string
 	reasoningLevels  []string
@@ -91,6 +92,8 @@ func (s *stubThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, i
 func (s *stubThreadEnvelopeSource) FailedToolCalls() (int, bool) {
 	return s.failedToolCalls, s.failuresMeasured
 }
+
+func (s *stubThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure { return s.failure }
 
 func (s *stubThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
 	return append([]appwire.SandboxEscalationRequested(nil), s.escalations...)

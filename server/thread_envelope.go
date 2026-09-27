@@ -81,6 +81,9 @@ type threadEnvelope struct {
 	ActiveTurnStartedAt   int64
 	FailedToolCalls       *int
 	PendingQuestion       *appwire.PendingQuestion
+	// Failure summarizes the failed turn the session rests on (S1c). The
+	// snapshot shows it only while the status is systemError.
+	Failure               *appwire.ThreadFailure
 	PendingEscalations    []appwire.SandboxEscalationRequested
 	ReasoningEffort       string
 	ReasoningEffortLevels []string
@@ -130,6 +133,9 @@ type ThreadEnvelopeSource interface {
 	// PendingQuestion is the first question of the session's pending ask, nil
 	// while none waits. The thread's AskPending is its presence.
 	PendingQuestion() *appwire.PendingQuestion
+	// RestingFailure summarizes the failed turn the session rests on, nil
+	// when it rests on none.
+	RestingFailure() *appwire.ThreadFailure
 	PendingEscalations() []appwire.SandboxEscalationRequested
 	ReasoningInfo() (effort string, levels []string, supportsReasoning bool)
 	VisionModel() string
@@ -158,13 +164,19 @@ const (
 	facetReasoning
 	facetVision
 	facetMeta
+	// facetTurnFailure is the summary of the failed turn the session rests on
+	// (S1c). No row of facetsByEvent names it on its own: a failed turn ends
+	// with TURN_ENDED, which samples every facet (the failed-turn path emits
+	// nothing else), and a snapshot shows the summary only while the status
+	// is systemError, so one left over once the next turn starts is never read.
+	facetTurnFailure
 )
 
 // facetAll is every facet. Used for the seed at identity install, which is the
 // one moment every value changes at once because the session itself changed.
 const facetAll = facetContext | facetDiagnostics | facetQueue | facetTasks |
 	facetGoal | facetWork | facetFailures | facetAsk | facetEscalations |
-	facetReasoning | facetVision | facetMeta
+	facetReasoning | facetVision | facetMeta | facetTurnFailure
 
 // facetsByEvent maps a session event to the envelope facets it can have moved.
 //
@@ -378,6 +390,9 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	if facets&facetAsk != 0 {
 		next.PendingQuestion = src.PendingQuestion()
 	}
+	if facets&facetTurnFailure != 0 {
+		next.Failure = src.RestingFailure()
+	}
 	if facets&facetEscalations != 0 {
 		next.PendingEscalations = src.PendingEscalations()
 		// Stamp each card with this thread's identifiers HERE, at the write, so
@@ -511,6 +526,9 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notes
 	}
 	if facets&facetAsk != 0 {
 		e.PendingQuestion = next.PendingQuestion
+	}
+	if facets&facetTurnFailure != 0 {
+		e.Failure = next.Failure
 	}
 	if facets&facetEscalations != 0 {
 		e.PendingEscalations = next.PendingEscalations

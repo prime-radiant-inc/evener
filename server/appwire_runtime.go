@@ -2517,6 +2517,14 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	askPending := envelope.PendingQuestion != nil
 	pendingQuestion := envelope.PendingQuestion
 	pendingEscalations := envelope.PendingEscalations
+	statusType := appStatus(status.State, processing, turnReserved)
+	// A failure summary describes the failed turn the session rests on, so it
+	// shows only while the status says so: the next turn moves the status
+	// before any facet re-samples the summary (S1c).
+	var failure *appwire.ThreadFailure
+	if statusType == appwire.ThreadStatusSystemError {
+		failure = envelope.Failure
+	}
 	reasoningEffort := envelope.ReasoningEffort
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
@@ -2533,7 +2541,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		Name:          threadName,
 		Preview:       threadPreview,
 		ModelProvider: status.Model,
-		Status:        appwire.ThreadStatus{Type: appStatus(status.State, processing, turnReserved)},
+		Status:        appwire.ThreadStatus{Type: statusType},
 		CWD:           status.WorkingDir,
 		Path:          filepath.Base(status.WorkingDir),
 		Source:        sourceID,
@@ -2563,6 +2571,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			FailedToolCalls:       failedToolCalls,
 			AskPending:            askPending,
 			PendingQuestion:       pendingQuestion,
+			Failure:               failure,
 			PendingEscalations:    pendingEscalations,
 			ReasoningEffort:       reasoningEffort,
 			ReasoningEffortLevels: reasoningEffortLevels,

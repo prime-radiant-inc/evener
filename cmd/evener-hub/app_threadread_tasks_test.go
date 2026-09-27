@@ -215,6 +215,9 @@ func (s sessionTaskEnvelopeSource) PendingEscalations() []appwire.SandboxEscalat
 func (s sessionTaskEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
 	return nil
 }
+func (s sessionTaskEnvelopeSource) RestingFailure() *appwire.ThreadFailure {
+	return nil
+}
 func (s sessionTaskEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {
 	return appwire.QueueState{}, nil
 }

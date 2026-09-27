@@ -23,6 +23,7 @@ import (
 // the zero value a daemon with nothing to say reports.
 type wireProbeEnvelopeSource struct {
 	askPending  bool
+	failure     *appwire.ThreadFailure
 	escalations []appwire.SandboxEscalationRequested
 	detailed    server.DetailedStatus
 	tasks       *appwire.TaskAggregate
@@ -144,6 +145,7 @@ func (s wireProbeEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
 	}
 	return nil
 }
+func (s wireProbeEnvelopeSource) RestingFailure() *appwire.ThreadFailure { return s.failure }
 func (s wireProbeEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
 	return s.escalations
 }
