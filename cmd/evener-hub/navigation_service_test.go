@@ -692,11 +692,8 @@ func TestNavigationCatalogPagesEncodeEachRowOnce(t *testing.T) {
 	}
 }
 
-// TestNavigationCatalogPageSizeIsEmptyPagePlusRows pins the premise
-// navigationCatalogRowsThatFit sizes pages by: a catalog page encodes to its
-// empty page plus each row's own encoding plus a comma between rows, for rows
-// with escaped, multibyte, and nested-array fields alike.
-// unencodableNavigationRow is a catalog row whose encoding always fails.
+// unencodableNavigationRow is a catalog row that fails to encode unless
+// encodable is set.
 type unencodableNavigationRow struct{ encodable bool }
 
 func (row unencodableNavigationRow) MarshalJSON() ([]byte, error) {
@@ -719,6 +716,10 @@ func TestNavigationCatalogRowsThatFitStopsAtAnUnencodableRow(t *testing.T) {
 	}
 }
 
+// TestNavigationCatalogPageSizeIsEmptyPagePlusRows pins the premise
+// navigationCatalogRowsThatFit sizes pages by: a catalog page encodes to its
+// empty page plus each row's own encoding plus a comma between rows, for rows
+// with escaped, multibyte, and nested-array fields alike.
 func TestNavigationCatalogPageSizeIsEmptyPagePlusRows(t *testing.T) {
 	rows := hubapi.NavigationArray[hubapi.NavigationProjectSummary]{
 		{Key: "a", Name: "<b>&\"quoted\"\u2028😀", WorkingDir: `C:\work`, Sources: hubapi.NavigationArray[string]{"local", "host<1>"}, SessionCount: 3},
