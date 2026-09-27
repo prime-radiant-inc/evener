@@ -53,6 +53,10 @@ func run(args []string) error {
 		return runCatalog(args[1:])
 	case "run":
 		return runSuite(args[1:])
+	case "prose-stats":
+		return runProseStats(args[1:])
+	case "prose-count":
+		return runProseCount(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -68,6 +72,8 @@ func usage() {
 USAGE
   evener-fluency catalog [--model provider/model] [--json]
   evener-fluency run [--model provider/model] [--probe id] [--build]
+  evener-fluency prose-stats --results LABEL=DIR [--results LABEL=DIR ...] [--channel to_user|all] [--json]
+  evener-fluency prose-count FILE...
 
 `)
 }
@@ -1045,6 +1051,12 @@ func unavailableFinding(probe probeFile, available map[string]bool) *finding {
 // transcript. The tool-count aggregation walks every transcript through this
 // enumeration; the phase metrics read the root session's transcript directly.
 func walkTranscripts(stateDir string, fn func(doctor.TranscriptResult) error) error {
+	return walkTranscriptsWith(stateDir, doctor.TranscriptOpts{}, fn)
+}
+
+// walkTranscriptsWith is walkTranscripts with render options, for callers
+// that need each turn's whole text.
+func walkTranscriptsWith(stateDir string, opts doctor.TranscriptOpts, fn func(doctor.TranscriptResult) error) error {
 	matches, err := filepath.Glob(filepath.Join(stateDir, "sessions", "*.transcript.jsonl"))
 	if err != nil {
 		return err
@@ -1055,7 +1067,7 @@ func walkTranscripts(stateDir string, fn func(doctor.TranscriptResult) error) er
 		if !ok || id == "" {
 			continue
 		}
-		tr, err := runnerReadTranscript(stateDir, id, doctor.TranscriptOpts{})
+		tr, err := runnerReadTranscript(stateDir, id, opts)
 		if err != nil {
 			return err
 		}
