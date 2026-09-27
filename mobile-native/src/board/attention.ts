@@ -3,8 +3,9 @@
 // don't carry yet, the fallback from spec 18 lives here, and each server
 // addition replaces its fallback in this file: S1 (why text), S2 (approval
 // flag), S3 (subagent counts), S5 (activity), S13 (tasks). S4's seen marker
-// lives in hubSeen.ts, beside boardMemory.ts's fallback. Subagent failures never appear
-// on a Board row; they show only in the session's Subagents chip and list.
+// lives in hubSeen.ts, beside boardMemory.ts's fallback. Subagent failures
+// never appear on a Board row; they show only in the session's Subagents chip
+// and list.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 
 export type BoardState =
