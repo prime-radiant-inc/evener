@@ -126,16 +126,16 @@ func referenceTurns(t testing.TB, path string) []appwire.Turn {
 	// matching what every production reader does (server/appwire_turns.go,
 	// cmd/evener-hub/app_threadread.go): reg still holds its CommRawArgs, and
 	// FlushUnpairedCommunicates appends the delivered message to the last
-	// turn. Re-key the flushed item(s) in this package's v2 scheme —
-	// FlushUnpairedCommunicates sets appitempaging's v1 key, matching its own
-	// production callers, not this file's ItemKey.
+	// turn. Reposition the flushed item(s) into this package's v2 scheme —
+	// FlushUnpairedCommunicates's own dense count is production's v1
+	// contract, not a safe v2 position (see remapFlushPositions) — the same
+	// remap pendingFlush applies, so the oracle cannot mask the same
+	// collision the index would otherwise reproduce.
 	if len(turns) > 0 {
-		before := len(turns[len(turns)-1].Items)
+		last := &turns[len(turns)-1]
+		before := len(last.Items)
 		if apptranscript.FlushUnpairedCommunicates(&turns, reg) {
-			last := &turns[len(turns)-1]
-			for i := before; i < len(last.Items); i++ {
-				last.Items[i].TranscriptKey = ItemKey(last.ID, *last.Items[i].Position)
-			}
+			remapFlushPositions(last.ID, last.Items[before:])
 		}
 	}
 	return turns

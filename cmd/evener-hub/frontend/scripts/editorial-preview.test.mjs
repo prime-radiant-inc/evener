@@ -98,7 +98,11 @@ test("normal app-route reloads remain fixture-backed; backend and outside files 
     phase("close:start");
     await server.close();
     phase("close:done");
-    await rm(scratch, { recursive: true, force: true });
+    // Closing cancels the dependency optimizer, but its bundler can still be
+    // writing into the private cache's deps_temp directory after close
+    // resolves (Vite's cancel does not await the in-flight write), so a
+    // removal can race it and fail with ENOTEMPTY. rm retries that.
+    await rm(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     phase("scratch:removed");
   }
 });

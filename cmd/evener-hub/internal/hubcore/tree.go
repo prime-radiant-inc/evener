@@ -1314,22 +1314,23 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// Rollup: highest-attention state (for the dot fallback) plus the
 		// magnitude counts the header renders. Each top-level session and its
 		// children form one task tree: child activity keeps the project working,
-		// but cannot inflate the count beyond one for that task tree. A node
-		// blocked on an approval weighs in as its hubapi.AttentionState, so the
-		// task needs you rather than reading as working.
+		// but cannot inflate the count beyond one for that task tree. A
+		// descendant (any depth) can only ever raise the task tree's state to
+		// "active"; only the top-level session's own state can raise the
+		// rollup into an attention state (#2557). That state is read through
+		// hubapi.AttentionState, so a session blocked on an approval needs you
+		// rather than reading as working. Subagent failures still show in the
+		// session's own Subagents chip and list.
 		rollup := ""
 		rollupLive, rollupAttn := 0, 0
 		for _, s := range sessions {
 			taskState := hubapi.AttentionState(s.State, s.ApprovalPending)
 			var includeDescendants func(TreeNode)
 			includeDescendants = func(node TreeNode) {
-				if len(node.RunningJobs) > 0 && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
+				if (node.State == "active" || len(node.RunningJobs) > 0) && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
 					taskState = "active"
 				}
 				for _, child := range node.Children {
-					if childState := hubapi.AttentionState(child.State, child.ApprovalPending); hubapi.RollupRank(childState) > hubapi.RollupRank(taskState) {
-						taskState = childState
-					}
 					includeDescendants(child)
 				}
 			}
