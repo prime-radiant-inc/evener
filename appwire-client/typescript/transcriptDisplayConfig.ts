@@ -156,7 +156,8 @@ export function presetContent(level: ContentLevel): ContentVector {
 
 /** The one rule both the transcript projector and this module's category
  * inventory answer from: informational notices (coded "no action needed"
- * warnings) are high-verbosity content. expandByDefault is the content-vector
+ * warnings, and tool-repair notices - the repair already succeeded) are
+ * high-verbosity content. expandByDefault is the content-vector
  * field that marks the high levels - it is on exactly for the activity and
  * full presets, the sole field separating tools from activity - and a custom
  * vector opts the notices in by opting into default expansion. */
