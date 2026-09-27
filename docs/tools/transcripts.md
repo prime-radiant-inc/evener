@@ -82,6 +82,8 @@ canonical project ID. The main checkout and linked worktrees share a bucket; a d
 clone gets a distinct bucket. Discovery scope is `current_project` (this bucket; the default) or `all_projects`
 (sibling buckets). Under a flat state dir with no project root, `all_projects` degrades to
 `current_project` and says so via `scope_applied`.
+A symlinked `evener/` or `evener/projects/` layout prefix causes `all_projects` to
+return an error rather than silently degrading to `current_project`.
 
 **Result tool.** The `communicate`-style tool whose call carries a session's final answer.
 Its name comes from session metadata (default `communicate`); the renderer shows that
@@ -110,7 +112,7 @@ children-of-a-parent are just which filters you set, and all return the same rec
 
 ```
 { "matches": [ {
-    "transcript_ref", "kind", "title", "updated_at", "approx_turns",
+    "transcript_ref"?, "kind", "title", "updated_at", "approx_turns",
     "parent_ref"?, "project"?, "is_current"?, "snippets"? } ... ],
   "scope_applied": "current_project" | "all_projects",
   "scanned"?: int, "scan_truncated"?: bool }
@@ -123,11 +125,17 @@ children-of-a-parent are just which filters you set, and all return the same rec
   raw-text scan (200 newest). When the scan stops early, `scan_truncated:true` reports the
   partial coverage; `snippets` carries the matching excerpts (search results only).
 - With **`children_of`**, results are restricted to sessions whose parent is that ref's
-  session. The parent's bucket and ID come from the ref alone — **no transcript is opened,
-  not even the parent's** — and children are looked up in the parent's own bucket, so a
-  `proj:` parent finds its children in that sibling project.
-- Only sessions that are actually readable (have a transcript on disk) are returned, so a
-  match is always a `read`-able ref.
+  session. A `local:` or `proj:` ref resolves the parent's bucket and ID from the ref
+  alone — **no transcript is opened, not even the parent's** — and children are looked up
+  in the parent's own bucket, so a `proj:` parent finds its children in that sibling
+  project. A bare session ID is resolved cross-bucket via the same shared search
+  `find` uses (`findBareIDBuckets`), so a parent whose transcript lives in a sibling
+  or legacy-named bucket is found without a ref.
+- Only sessions that are actually readable (have a transcript on disk) are returned.
+  `transcript_ref` is present for matches in a grammar-valid bucket, but omitted
+  (omitempty) for a match in a legacy-named bucket whose name fails
+  `ValidateProjectID` — no `proj:` ref can address it, though a bare ID or
+  `local:` ref (when it is the current bucket) still resolves.
 - `kind` is one of `root` / `subagent` / `fork`. `parent_ref` (a `transcript_ref`, present
   only for non-root sessions) is the lineage handle — pass it back to `read` or as a
   `children_of` filter. `approx_turns` is the metadata turn count and is deliberately
@@ -156,8 +164,9 @@ stable delegate's session `transcript_ref` from `delegate`, `job_status`, or
 
 Registered `strict:false`, so every parameter is optional. The three formats are one
 escalating ladder — outline to see the shape, markdown to read it, JSONL to inspect its structure —
-and each session read returns the same envelope skeleton (`transcript_ref`, `format`,
-`content`, format-specific `meta`). A shell-job ref defaults to bounded markdown;
+and each session read returns the same envelope skeleton (`transcript_ref`?, `format`,
+`content`, format-specific `meta`); `transcript_ref` is omitted when the session lives in a
+legacy-named bucket whose name is not a valid project ID. A shell-job ref defaults to bounded markdown;
 an explicit `offset_bytes` returns a fixed 16 KiB raw page, and `output_match`
 returns bounded exact line matches. An `artifact:<id>` ref reads the same paged or
 searched evidence shape without job status. API-log selectors are not part of
@@ -180,7 +189,7 @@ One line per turn: far more scannable than the body, and the right first look at
 *shape* of a session.
 
 ```
-{ "transcript_ref", "format":"outline", "turns_total",
+{ "transcript_ref"?, "format":"outline", "turns_total",
   "content": "<one line per turn>", "truncated", "elided_turns", "hint" }
 ```
 
@@ -209,7 +218,7 @@ conversation budget it keeps a head and tail of lines and drops the middle under
 Condensed conversation: assistant text and thinking in full, tool results truncated.
 
 ```
-{ "transcript_ref", "format":"markdown", "content_type":"text/markdown",
+{ "transcript_ref"?, "format":"markdown", "content_type":"text/markdown",
   "content": "<markdown>",
   "meta": { "turns_total", "range", "turns_rendered", "truncated", "elided_turns",
             "skipped_corrupt_lines"?, "range_warning"? } }
@@ -244,7 +253,7 @@ This is rarely what you want: reserve it for debugging transcript structure. For
 comprehension, use markdown; for provider forensics, use `evener doctor apilog <selector>`.
 
 ```
-{ "transcript_ref", "format":"jsonl", "content_type":"application/x-ndjson",
+{ "transcript_ref"?, "format":"jsonl", "content_type":"application/x-ndjson",
   "content": "<raw lines>",
   "meta": { "lines_returned", "truncated", "skipped_corrupt_lines",
             "hint":"semantic transcript JSONL; for comprehension, re-read with format=markdown.",

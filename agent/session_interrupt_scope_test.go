@@ -42,6 +42,7 @@ func runningStartTurn(t *testing.T, sess *Session, clientMutationID, text string
 // the session running, so no id any client holds names the turn that is over.
 // Stop has to work anyway -- the user can see the session working.
 func TestInterruptStopsATurnItCannotName(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -92,6 +93,7 @@ func TestInterruptStopsATurnItCannotName(t *testing.T) {
 // not supply a target, so the fence takes the id the durable store is holding
 // and terminalizes exactly that turn's pending execution.
 func TestInterruptFenceRecordsTheTurnItCancelled(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -145,6 +147,7 @@ func TestInterruptFenceRecordsTheTurnItCancelled(t *testing.T) {
 // quiesced. A claimed turn is work in progress even before the model round
 // starts, and cancelling it is exactly what the user asked for.
 func TestInterruptStopsAClaimedTurnBeforeTheSessionIsProcessing(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -189,6 +192,7 @@ func TestInterruptStopsAClaimedTurnBeforeTheSessionIsProcessing(t *testing.T) {
 // and an accepted interrupt would clear a turn identity out from under whatever
 // claims it next.
 func TestInterruptIsRefusedOnASettledSession(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -215,6 +219,7 @@ func TestInterruptIsRefusedOnASettledSession(t *testing.T) {
 // clientMutationId must replay the first interrupt's receipt, not cancel
 // whatever turn happens to be running when the retry lands.
 func TestInterruptRetryStopsNothingTwice(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 

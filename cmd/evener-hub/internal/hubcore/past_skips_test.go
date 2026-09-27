@@ -2,7 +2,6 @@ package hubcore
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,29 +12,31 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
 
-// captureSkipReport runs fn with os.Stderr redirected to a pipe and returns the
-// past-index lines written to it. Other hubcore machinery logs to the same
-// stream from background goroutines, so the result is filtered to this
-// reporter's prefix rather than returned raw. Output is small enough to fit the
-// pipe buffer, so fn never blocks on a reader.
+// captureSkipReport runs fn with os.Stderr redirected to a temp file and
+// returns the past-index lines written to it. Other hubcore machinery logs to
+// the same stream from background goroutines, so the result is filtered to
+// this reporter's prefix rather than returned raw. It captures to a file, not
+// a pipe: a pipe's writer blocks when its buffer fills, and on a busy Mac that
+// buffer is 512 bytes (#2495).
 func captureSkipReport(t *testing.T, fn func()) string {
 	t.Helper()
-	original := os.Stderr
-	r, w, err := os.Pipe()
+	stderr, err := os.CreateTemp(t.TempDir(), "skip-report-stderr-")
 	if err != nil {
-		t.Fatalf("Pipe: %v", err)
+		t.Fatalf("CreateTemp: %v", err)
 	}
-	os.Stderr = w
+	original := os.Stderr
+	os.Stderr = stderr
+	// Deferred so a t.Fatalf inside fn still restores stderr.
+	defer func() {
+		os.Stderr = original
+		_ = stderr.Close()
+	}()
 
 	fn()
 
-	os.Stderr = original
-	if err := w.Close(); err != nil {
-		t.Fatalf("close pipe writer: %v", err)
-	}
-	raw, err := io.ReadAll(r)
+	raw, err := os.ReadFile(stderr.Name())
 	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
+		t.Fatalf("ReadFile: %v", err)
 	}
 
 	var report strings.Builder

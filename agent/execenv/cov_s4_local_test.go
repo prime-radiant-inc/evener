@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
+	"primeradiant.com/evener/execsupport/procgroup"
 	"primeradiant.com/evener/fuzz/fault"
-	"primeradiant.com/evener/internal/procgroup"
 )
 
 // --- Glob (was 0%) -------------------------------------------------------

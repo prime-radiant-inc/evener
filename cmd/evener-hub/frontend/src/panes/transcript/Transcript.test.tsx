@@ -93,13 +93,6 @@ afterEach(() => {
   if (offsetHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
-  // The beforeEach above only resets threadsStore/workspaceStore BEFORE each
-  // test - nothing restores them after the LAST test, so a pane this file
-  // opened (pointing at a tracked "ref_parent" ref) stays open and focused
-  // for whichever file runs next under isolate:false.
-  resetThreadsStoreForTests();
-  resetSubagentModuleStoreForTests();
-  resetWorkspaceStoreForTests();
 });
 
 test("shows a loading placeholder before the thread hydrates", async () => {

@@ -48,7 +48,7 @@ func TestProjectTurnUserInputTextOmitsSystemNotificationParts(t *testing.T) {
 			},
 		},
 	}
-	items := ProjectTurn("turn_1", 0, turn, map[string]string{}, nil, nil)
+	items := ProjectTurn("turn_1", 0, turn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want 1 userMessage item", items)
 	}
@@ -73,7 +73,7 @@ func TestProjectTurnSteeringTextOmitsSystemNotificationParts(t *testing.T) {
 			},
 		},
 	}
-	items := ProjectTurn("turn_1", 0, turn, map[string]string{}, nil, nil)
+	items := ProjectTurn("turn_1", 0, turn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want 1 steering item", items)
 	}
@@ -94,7 +94,7 @@ func TestProjectTurnUserInputKeepsTextMentioningSystemNotificationTags(t *testin
 		Kind:    schema.TurnUserInput,
 		Message: llm.User(prose),
 	}
-	items := ProjectTurn("turn_1", 0, turn, map[string]string{}, nil, nil)
+	items := ProjectTurn("turn_1", 0, turn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want 1 userMessage item", items)
 	}
@@ -114,7 +114,7 @@ func TestProjectTurnUserInputImageOnlyWithNoteProjectsEmptyText(t *testing.T) {
 			Content: imageOnlyPlusNoteContent(),
 		},
 	}
-	items := ProjectTurn("turn_1", 0, turn, map[string]string{}, nil, nil)
+	items := ProjectTurn("turn_1", 0, turn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want 1 userMessage item", items)
 	}
@@ -137,7 +137,7 @@ func TestProjectTurnSteeringFlaggedMachineryOnlyKeepsFullText(t *testing.T) {
 			Content: []llm.ContentPart{flaggedNotificationPart()},
 		},
 	}
-	items := ProjectTurn("turn_1", 0, turn, map[string]string{}, nil, nil)
+	items := ProjectTurn("turn_1", 0, turn, NewToolCallRegistry(), nil, nil)
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want 1 steering item", items)
 	}

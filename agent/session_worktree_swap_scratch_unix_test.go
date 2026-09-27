@@ -440,7 +440,7 @@ func TestWorktreeSwap_CloseAfterTheEnterRetainsTheParkedEnvironmentScratch(t *te
 	// The close drained its fence join instead of giving up on it. Both of
 	// these are tripwires for the same regression — a hook that holds the
 	// dispatch admission until the close returns — which costs the whole
-	// LaneClosePassBudget and reports work it walked past that was never
+	// close-cascade budget and reports work it walked past that was never
 	// stuck. A healthy run here is well under a second.
 	if got := fenceWarnings(<-warnings); len(got) != 0 {
 		t.Errorf("the close gave up on its environment-work fence: %q", got)

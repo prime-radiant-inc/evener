@@ -245,3 +245,94 @@ describe("native demonstration hub", () => {
 		}
 	});
 });
+
+describe("native demonstration hub's redesign fleet", () => {
+	it("answers no navigation, search, auth or plugin method without EVENER_DEMO_FLEET", async () => {
+		const hub = await createDemoHub(0);
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		try {
+			const handshake = await client.connect();
+			expect(handshake.navigation).toBeUndefined();
+			expect(handshake.features.auth).toBe(false);
+			await expect(
+				client.request("evener/navigation/read", {
+					representationVersion: 2,
+					resource: "manifest",
+				}),
+			).rejects.toThrow();
+			await expect(client.request("evener/search", {})).rejects.toThrow();
+			await expect(client.request("evener/auth/list", {})).rejects.toThrow();
+			await expect(client.request("evener/plugin/list", {})).rejects.toThrow();
+			// The flag being off doesn't touch the existing demo flows.
+			const roster = await client.request("thread/list", { limit: 5 });
+			expect(roster.data.map((thread) => thread.evener.ref)).toContain(
+				"demo:playground",
+			);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("serves the redesign's fleet once EVENER_DEMO_FLEET is on, alongside the existing demo thread", async () => {
+		const hub = await createDemoHub(0, undefined, {});
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		try {
+			const handshake = await client.connect();
+			expect(handshake.navigation).toMatchObject({ version: 1, readVersions: [2] });
+			expect(handshake.features.auth).toBe(true);
+			const manifest = await client.request("evener/navigation/read", {
+				representationVersion: 2,
+				resource: "manifest",
+			});
+			expect(manifest.status).toBe("ok");
+			const search = await client.request("evener/search", { query: "" });
+			expect(search).toHaveProperty("live");
+			const auth = await client.request("evener/auth/list", {});
+			expect(auth.providers).toHaveLength(1);
+			const plugins = await client.request("evener/plugin/list", {});
+			expect(plugins.plugins).toHaveLength(14);
+			const roster = await client.request("thread/list", { limit: 5 });
+			expect(roster.data.map((thread) => thread.evener.ref)).toContain(
+				"demo:playground",
+			);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+
+	it("marks paradise-park's manifest source offline when the fleet starts with offlineHost", async () => {
+		const hub = await createDemoHub(0, undefined, { offlineHost: true });
+		const client = createHubClient(
+			hub.origin,
+			"",
+			(url) => new WebSocket(url) as unknown as WebSocketLike,
+		);
+		try {
+			await client.connect();
+			const manifest = await client.request("evener/navigation/read", {
+				representationVersion: 2,
+				resource: "manifest",
+			});
+			const snapshot = manifest.data as {
+				metadata: { sources: { id: string; online: boolean }[] };
+			};
+			expect(
+				snapshot.metadata.sources.find((source) => source.id === "paradise-park")
+					?.online,
+			).toBe(false);
+		} finally {
+			client.close();
+			await hub.close();
+		}
+	});
+});

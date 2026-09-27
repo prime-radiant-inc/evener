@@ -8,7 +8,7 @@ import (
 	_ "embed"
 	"strconv"
 
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // Script is the reviewed installer, compiled into this binary: a byte-for-byte
@@ -42,7 +42,7 @@ var Script []byte
 // so the host fetches nothing to execute: its only network use is install.sh's
 // own archive and checksums.txt download. The installer runs with the variables
 // passed to `env` (not to sh), and every value is rendered as one shell word by
-// internal/shellquote.
+// execsupport/shellquote.
 //
 // The command writes the script to a temp file and runs it only after that
 // write succeeds AND the file's byte count matches Script's length, rather

@@ -18,6 +18,7 @@ require (
 	primeradiant.com/evener v0.0.0
 	primeradiant.com/evener/auth v0.1.0
 	primeradiant.com/evener/envvars v0.0.0
+	primeradiant.com/evener/execsupport v0.0.0
 	primeradiant.com/evener/fuzz v0.0.0
 	primeradiant.com/evener/identifier v0.0.0
 	primeradiant.com/evener/invariant v0.0.0

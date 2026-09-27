@@ -118,6 +118,16 @@ func call(id, name, args string) llm.ContentPart {
 	return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: id, Name: name, Arguments: json.RawMessage(args)}}
 }
 
+// callRaw is a communicate call whose arguments arrived malformed: Arguments
+// is {} and rawArgs is the bare bytes the model actually sent. The assistant
+// turn alone cannot tell whether this will be rejected or healed-and-executed
+// (see apptranscript.TestProjectTurn_RejectedCommunicateRendersAsToolError and
+// TestProjectTurn_HealedCommunicateRendersDeliveredMessage); the paired result
+// entry's IsError/PrevalOnly disambiguates.
+func callRaw(id, name, rawArgs string) llm.ContentPart {
+	return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: id, Name: name, Arguments: json.RawMessage(`{}`), RawArguments: rawArgs}}
+}
+
 func result(id, name, content string) llm.ContentPart {
 	return llm.ContentPart{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: id, Name: name, Content: content}}
 }
@@ -162,6 +172,79 @@ func fixtures() []fixture {
 		entryLine(results(result("k1", "communicate", "delivered"))),
 		entryLine(assistant(call("k2", "communicate", `{"output":{"message":"a fresh message"}}`))),
 		entryLine(results(result("k2", "", "delivered"))),
+	}
+
+	// communicateRejected: a communicate call rejected at prevalidation
+	// (IsError=true, PrevalOnly=true). Live never delivered it, so the index
+	// must render it as a failed commandExecution (the raw bytes), not
+	// silently drop it — and it must do so even though the ASSISTANT entry
+	// that carries the deferred raw bytes is not the item's own entry, and a
+	// standalone turn closes the group between the call and its result.
+	rejected := result("k3", "communicate", "")
+	rejected.ToolResult.IsError = true
+	rejected.ToolResult.PrevalOnly = true
+	communicateRejected := []fixtureLine{
+		entryLine(user("reject")),
+		entryLine(assistant(callRaw("k3", "communicate", `{message: "bad"}`))),
+		entryLine(standalone(schema.TurnHookCompleted, "unrelated")),
+		entryLine(results(rejected)),
+	}
+
+	// communicateDistant: the healed message's echo check needs
+	// LastAssistantText from an assistant entry that is NEITHER the call's
+	// opener NOR in the same group as the result — the text lives in an
+	// earlier entry of the SAME group the call opened, which a
+	// TurnHookCompleted then closes before the result arrives in a new
+	// group. The index must reconstruct that text (not just the call's own
+	// opener entry) to reproduce the same echo decision the whole-file
+	// projection makes.
+	distant := result("k4", "communicate", "delivered")
+	communicateDistant := []fixtureLine{
+		entryLine(user("distant")),
+		entryLine(assistant(text("intro"))),
+		entryLine(assistant(callRaw("k4", "communicate", `{message: "hi"}`))),
+		entryLine(standalone(schema.TurnHookCompleted, "closes the group")),
+		entryLine(results(distant)),
+	}
+
+	// communicateUnpaired: the transcript ends on a communicate call with no
+	// result — the daemon crashed or the session simply stopped there. The
+	// whole-file projection's FlushUnpairedCommunicates renders it as the
+	// last turn's trailing agentMessage (using CommRawArgs, never consumed
+	// by a paired result), and every production reader calls it; the index
+	// must reproduce it on a read that reaches the transcript's true end.
+	communicateUnpaired := []fixtureLine{
+		entryLine(user("never resolved")),
+		entryLine(assistant(callRaw("k5", "communicate", `{message: "still going"}`))),
+	}
+
+	// communicateLaterPaired: a call left pending for one entry (a standalone
+	// turn in between, so it is genuinely unpaired at that point, not merely
+	// mid-entry) before its result actually arrives — the index must NOT
+	// flush it once a later entry pairs it; the flush applies only when a
+	// read reaches the transcript's true end with the call still unpaired.
+	communicateLaterPaired := []fixtureLine{
+		entryLine(user("paired eventually")),
+		entryLine(assistant(callRaw("k6", "communicate", `{message: "on it"}`))),
+		entryLine(standalone(schema.TurnHookCompleted, "still working")),
+		entryLine(results(result("k6", "communicate", "delivered"))),
+	}
+
+	// communicateRejectedUnpaired: the transcript ends on a REJECTED
+	// communicate's tail — not the call itself (which is already covered by
+	// communicateUnpaired), but the fixture corpus should also exercise a
+	// flush landing right after a rejected communicate elsewhere, so a
+	// rejected-communicate item and the flush mechanism are both present in
+	// the same transcript.
+	rejectedTail := result("k7", "communicate", "")
+	rejectedTail.ToolResult.IsError = true
+	rejectedTail.ToolResult.PrevalOnly = true
+	communicateRejectedUnpaired := []fixtureLine{
+		entryLine(user("reject then never resolve")),
+		entryLine(assistant(callRaw("k7", "communicate", `{message: "rejected"}`))),
+		entryLine(standalone(schema.TurnHookCompleted, "unrelated")),
+		entryLine(results(rejectedTail)),
+		entryLine(assistant(callRaw("k9", "communicate", `{message: "then this one hangs"}`))),
 	}
 
 	orphans := []fixtureLine{
@@ -247,6 +330,9 @@ func fixtures() []fixture {
 		{name: "communicate", header: header, lines: communicate},
 		{name: "orphans", header: header, lines: orphans},
 		{name: "communicate names", header: header, lines: communicateNames},
+		{name: "communicate rejected", header: header, lines: communicateRejected},
+		{name: "communicate distant echo", header: header, lines: communicateDistant},
+		{name: "communicate later paired", header: header, lines: communicateLaterPaired},
 		{name: "reused call ids", header: header, lines: reused},
 		{name: "steering", header: header, lines: steerings},
 		{name: "failures", header: header, lines: failures},
@@ -254,6 +340,13 @@ func fixtures() []fixture {
 		{name: "transcript only", header: header, lines: interleaveTranscriptOnly(append(append([]fixtureLine(nil), basic...), communicate...))},
 		// Last: its final entry sits in the validated tail of "everything".
 		{name: "ordinals", header: header, lines: ordinals},
+		// Last two: each leaves a communicate call permanently unpaired, so
+		// nothing in "everything" follows them (see needsCommunicateHistory
+		// and TestAppendEntryByEntryMatchesTheReference) — a reopen after
+		// this point correctly rebuilds (meta.PendingCommunicate), but nothing
+		// downstream would spuriously trigger the same rebuild.
+		{name: "communicate rejected unpaired", header: header, lines: communicateRejectedUnpaired},
+		{name: "communicate unpaired", header: header, lines: communicateUnpaired},
 	}
 	var everything []fixtureLine
 	for _, set := range sets {

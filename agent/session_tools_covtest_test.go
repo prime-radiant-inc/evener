@@ -6,6 +6,7 @@ import (
 
 // TestResultToolName_Default covers the default name (line 233-234).
 func TestResultToolName_Default(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if got := s.resultToolName(); got != "communicate" {
 		t.Fatalf("resultToolName = %q, want 'communicate'", got)
@@ -14,6 +15,7 @@ func TestResultToolName_Default(t *testing.T) {
 
 // TestResultToolName_Custom covers the custom name (line 231-232).
 func TestResultToolName_Custom(t *testing.T) {
+	t.Parallel()
 	s := &Session{cfg: SessionConfig{ResultToolName: "custom_result"}}
 	if got := s.resultToolName(); got != "custom_result" {
 		t.Fatalf("resultToolName = %q, want 'custom_result'", got)
@@ -23,6 +25,7 @@ func TestResultToolName_Custom(t *testing.T) {
 // TestQueueDelegateDeliveryCommit_NilSession covers the nil-session guard
 // (line 852-853).
 func TestQueueDelegateDeliveryCommit_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	s.queueDelegateDeliveryCommit("call1", nil) // should not panic
 }
@@ -30,6 +33,7 @@ func TestQueueDelegateDeliveryCommit_NilSession(t *testing.T) {
 // TestQueueDelegateDeliveryCommit_EmptyCallID covers the empty-callID guard
 // (line 852).
 func TestQueueDelegateDeliveryCommit_EmptyCallID(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.queueDelegateDeliveryCommit("", nil) // should not panic
 }
@@ -37,6 +41,7 @@ func TestQueueDelegateDeliveryCommit_EmptyCallID(t *testing.T) {
 // TestQueueDelegateDeliveryCommit_NilCommit covers the nil-commit guard
 // (line 852).
 func TestQueueDelegateDeliveryCommit_NilCommit(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.queueDelegateDeliveryCommit("call1", nil) // should not panic
 }
@@ -44,12 +49,14 @@ func TestQueueDelegateDeliveryCommit_NilCommit(t *testing.T) {
 // TestAbortDelegateDeliveryCommits_NilSession covers the nil-session guard
 // (line 872-873).
 func TestAbortDelegateDeliveryCommits_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	s.abortDelegateDeliveryCommits() // should not panic
 }
 
 // TestAbortDelegateDeliveryCommits_Empty covers the empty case (no commits).
 func TestAbortDelegateDeliveryCommits_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.abortDelegateDeliveryCommits() // should not panic
 }

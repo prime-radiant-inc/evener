@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -664,15 +665,21 @@ func TestRunAudit_SinceAuditsLegacyNamedBuckets(t *testing.T) {
 	}
 }
 
-// TestRunAudit_LegacyBucketEvidenceNamesSessions covers the evidence path
-// round 4 left raw: a check tripping in sessions whose bucket names earn no
-// emitted ref (legacy-named bucket) must name EVERY affected session by
-// bare id — not collapse them into one empty-string entry — so the
-// affected-session count, the --sessions reproduction line, and a re-run of
-// that line against RunAudit all keep working.
+// TestRunAudit_LegacyBucketEvidenceNamesSessions covers the evidence path for
+// buckets whose directory names fail every qualifier: refFor emits no
+// TranscriptRef (identifier.ValidateProjectID rejects the backslash), and
+// safeTokenForRepro also rejects the backslash (path separator), so
+// followSelector falls back to a bare id — the pre-FU2 behavior, now
+// scoped to this reproduction-unsafe class only. (Shell-safe legacy names
+// like "0123456789abcdef" now get proj: refs via safeTokenForRepro — see
+// TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs.) A check tripping
+// in such sessions must name EVERY affected session by bare id — not
+// collapse them into one empty-string entry — so the affected-session
+// count, the --sessions reproduction line, and a re-run of that line
+// against RunAudit all keep working.
 func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
 	base := t.TempDir()
-	legacyBucket := stateHomeBucket(base, "0123456789abcdef")
+	legacyBucket := stateHomeBucket(base, "back\\slash-bucket")
 	writeAuditSession(t, legacyBucket, sidA, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidA))
 	writeAuditSession(t, legacyBucket, sidB, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidB))
 
@@ -715,6 +722,782 @@ func TestRunAudit_LegacyBucketEvidenceNamesSessions(t *testing.T) {
 		if res2.SessionsChecked != 2 || len(res2.Unreadable) != 0 {
 			t.Errorf("re-running %q evidence refs: SessionsChecked=%d Unreadable=%+v, want 2 and none", f.Title, res2.SessionsChecked, res2.Unreadable)
 		}
+	}
+}
+
+// TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth is the FU2 RED case: when
+// the SAME session id is present in two different project buckets whose
+// directory names pass identifier.ValidateProjectID (so refFor emits proj:
+// refs and followSelector returns them), each row is addressed precisely
+// via locateInBucket, so both audit and evidence names each by its proj:
+// ref. ListSessions coverage (two rows, one per bucket) must match audit
+// coverage (two checked).
+//
+// Note: refFor already emitted proj: refs for ValidateProjectID-valid names
+// before FU2, so this test is base-immune — it passes on pre-FU2 code. It
+// guards the feature (proj: ref routing for duplicate SIDs across valid
+// buckets) by failing if followSelector were changed to return bare ids:
+// SessionsChecked would drop to 0 (bare id ambiguous across two buckets).
+// The companion TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback guards
+// the other side of the boundary (safeTokenForRepro-unsafe names → bare
+// id → both Unreadable). TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs
+// guards the middle branch (shell-safe non-canonical names → proj: refs).
+func TestRunAudit_DuplicateSIDAcrossBucketsAuditsBoth(t *testing.T) {
+	base := t.TempDir()
+	// Both names pass identifier.ValidateProjectID (readable-<10 base62>
+	// structure), so refFor emits proj: refs and followSelector returns them
+	// — addressing each row precisely via locateInBucket.
+	bucketA := stateHomeBucket(base, hash1)
+	bucketB := stateHomeBucket(base, hash2)
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	// ListSessions enumerates one row per (bucket, session): two rows for the
+	// duplicate sid across two buckets — the coverage the audit must match.
+	sweep, err := ListSessions(base, SessionsOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sweep.Sessions) != 2 {
+		t.Fatalf("ListSessions enumerated %d rows, want 2 (one per bucket for the duplicate sid)", len(sweep.Sessions))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Base-immune: hash1/hash2 are ValidateProjectID-valid, so refFor
+	// already emitted proj: refs before FU2 — both rows always audited
+	// here. The test guards that followSelector keeps routing them via
+	// proj: refs (not bare ids, which would be ambiguous across two
+	// buckets and drop SessionsChecked to 0).
+	if res.SessionsChecked != 2 {
+		t.Fatalf("SessionsChecked = %d, want 2 — the duplicate sid across two selector-safe buckets must both audit (FU2)", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("Unreadable = %+v, want none — neither row should be skipped as ambiguous", res.Unreadable)
+	}
+	// Coverage match: audit checks exactly the sessions the sweep enumerated.
+	if res.SessionsChecked != len(sweep.Sessions) {
+		t.Errorf("audit coverage %d != ListSessions coverage %d", res.SessionsChecked, len(sweep.Sessions))
+	}
+	// The run-timeout check trips in both; evidence must name each by its
+	// bucket-qualified proj: ref, not collapse to one bare-id entry.
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	if len(runTimeout.Evidence.SessionRefs) != 2 {
+		t.Fatalf("run-timeout finding SessionRefs = %v, want 2 (one proj: ref per bucket)", runTimeout.Evidence.SessionRefs)
+	}
+	wantA := "proj:" + hash1 + ":" + sidA
+	wantB := "proj:" + hash2 + ":" + sidA
+	refs := map[string]bool{}
+	for _, ref := range runTimeout.Evidence.SessionRefs {
+		refs[ref] = true
+	}
+	if !refs[wantA] || !refs[wantB] {
+		t.Errorf("run-timeout SessionRefs = %v, want both %q and %q", runTimeout.Evidence.SessionRefs, wantA, wantB)
+	}
+	// The reproduction line must re-run: feeding the evidence refs back as
+	// --sessions audits both again, with no unreadable rows.
+	res2, err := RunAudit(base, rb, AuditOpts{Sessions: runTimeout.Evidence.SessionRefs})
+	if err != nil {
+		t.Fatalf("re-running evidence refs: %v", err)
+	}
+	if res2.SessionsChecked != 2 || len(res2.Unreadable) != 0 {
+		t.Errorf("re-running evidence refs: SessionsChecked=%d Unreadable=%+v, want 2 and none", res2.SessionsChecked, res2.Unreadable)
+	}
+}
+
+// TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback guards the feature
+// boundary: the same session id in two buckets whose names FAIL
+// safeTokenForRepro (so followSelector falls back to the bare session id).
+// The bare id is ambiguous across the two buckets, so both rows land
+// Unreadable and SessionsChecked=0 — the pre-FU2 behavior this boundary
+// preserves. This negative case contrasts with
+// TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs (shell-safe legacy
+// names → proj: refs → both audit). Together they guard both sides of the
+// feature: safe names get precise proj: refs, unsafe names fall back to
+// bare ids.
+func TestRunAudit_DuplicateSIDAcrossBucketsBareIDFallback(t *testing.T) {
+	base := t.TempDir()
+	// Both names fail safeTokenForRepro: backslash is a path separator, so
+	// followSelector falls back to the bare session id.
+	bucketA := stateHomeBucket(base, "back\\slash-a")
+	bucketB := stateHomeBucket(base, "back\\slash-b")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The bare id is ambiguous across the two buckets: both rows Unreadable.
+	if res.SessionsChecked != 0 {
+		t.Fatalf("SessionsChecked = %d, want 0 — the bare id is ambiguous across two safeTokenForRepro-unsafe buckets, so both rows must land Unreadable", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 2 {
+		t.Fatalf("Unreadable = %d rows, want 2 (one per bucket)", len(res.Unreadable))
+	}
+}
+
+// TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames is the roborev fix
+// round 1 RED case: projectTokenOK admits commas, spaces, and shell
+// metacharacters in legacy bucket names, so followSelector emits a proj: ref
+// the CLI splits --sessions on ',' (cmd/evener-doctor/main.go:524), so a ref
+// containing a comma breaks the reproduction line (it splits into two
+// invalid selectors), and a name with a space or shell metacharacter is a
+// shell injection vector. The fix narrows followSelector's proj: emission to
+// names that safely round-trip the comma-joined --sessions reproduction
+// line (safeTokenForRepro: comma-free, whitespace-free, free of shell
+// metacharacters, non-empty, not a path separator or NUL); everything else
+// falls back to the bare session id — the pre-FU2 behavior for those names.
+// This test exercises the comma-join + CLI-split layer (not the structured
+// slice) and must fail on current head (the comma-bucket ref enters
+// DoctorCommand).
+func TestRunAudit_DoctorCommandCommaSafeForUnsafeBucketNames(t *testing.T) {
+	// Bucket names that pass projectTokenOK but are unsafe in a comma-joined
+	// --sessions reproduction line: a comma (CLI splits it), a space, vertical
+	// tab, or form feed (shell word-break), a '$' (shell expansion), a '*'
+	// (shell glob), a '%' (cmd.exe variable expansion), and a '^' (cmd.exe
+	// escape character).
+	for _, bucketName := range []string{"a,b", "has space", "dollar$bucket", "a*b", "a%PATH%b", "a^b", "a\x0bb", "a\x0cb"} {
+		t.Run(bucketName, func(t *testing.T) {
+			base := t.TempDir()
+			bucket := stateHomeBucket(base, bucketName)
+			writeAuditSession(t, bucket, sidA, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidA))
+
+			rb := mustParseFixtureRunbook(t)
+			res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.SessionsChecked != 1 {
+				t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
+			}
+			if len(res.Findings) == 0 {
+				t.Fatalf("no findings — the check should trip")
+			}
+			dc := res.Findings[0].Evidence.DoctorCommand
+
+			// Extract the --sessions value from DoctorCommand and split it
+			// the way the CLI does: plain strings.Split on ','. Each element
+			// must resolve back to the session via Locate, or the
+			// reproduction line is broken.
+			//   evener doctor audit --runbook NAME --sessions <value>
+			prefix := "evener doctor audit --runbook fixture-runbook --sessions "
+			if !strings.HasPrefix(dc, prefix) {
+				t.Fatalf("DoctorCommand = %q, want prefix %q", dc, prefix)
+			}
+			sessionsValue := strings.TrimPrefix(dc, prefix)
+			splitRefs := strings.Split(sessionsValue, ",")
+			for _, ref := range splitRefs {
+				if _, err := Locate(base, ref); err != nil {
+					t.Errorf("DoctorCommand %q: splitting --sessions on ',' yields %q, which does not resolve: %v (comma-join + CLI-split layer is broken)", dc, ref, err)
+				}
+			}
+			// The ref must not contain a comma (which would split into an
+			// invalid selector) or a space/shell metacharacter (injection).
+			for _, ref := range splitRefs {
+				if strings.ContainsAny(ref, ", \t\x0b\x0c$\x00*?[]%^") {
+					t.Errorf("DoctorCommand %q: ref %q contains a character unsafe for the CLI's comma-joined --sessions grammar", dc, ref)
+				}
+			}
+		})
+	}
+}
+
+// TestRunAudit_ColonNamedBucketRoundTripsViaProjRef verifies that a bucket
+// name containing a colon (e.g. "a:b") — which passes safeTokenForRepro
+// because the colon is the proj:<id>:<sid> grammar separator, not a shell
+// or comma-joined-grammar injection vector — emits a proj:a:b:<sid> ref in
+// DoctorCommand that round-trips through Locate. The selector parser cuts at
+// the LAST colon (parseSelector, selector.go), so proj:a:b:<sid> parses to
+// projectID="a:b", sid=<sid> — the colon in the bucket name is preserved.
+// Round 14 finding 1 incorrectly added ':' to safeTokenForRepro's reject
+// set; this test (and the removal of ':' from that set) inverts that error.
+func TestRunAudit_ColonNamedBucketRoundTripsViaProjRef(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, "a:b")
+	writeAuditSession(t, bucket, sidA, fourIdenticalFailingShellTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
+	}
+	if len(res.Findings) == 0 {
+		t.Fatalf("no findings — the check should trip")
+	}
+	dc := res.Findings[0].Evidence.DoctorCommand
+
+	// DoctorCommand must carry proj:a:b:<sid> — the colon in the bucket
+	// name is the grammar separator, not an injection vector.
+	wantRef := "proj:a:b:" + sidA
+	prefix := "evener doctor audit --runbook fixture-runbook --sessions "
+	if !strings.HasPrefix(dc, prefix) {
+		t.Fatalf("DoctorCommand = %q, want prefix %q", dc, prefix)
+	}
+	sessionsValue := strings.TrimPrefix(dc, prefix)
+	if sessionsValue != wantRef {
+		t.Fatalf("DoctorCommand --sessions = %q, want %q (colon-named bucket should emit proj:a:b:<sid>)", sessionsValue, wantRef)
+	}
+	// The ref must round-trip through Locate: parseSelector cuts at the last
+	// colon, so proj:a:b:<sid> resolves to projectID="a:b", sid=<sid>.
+	if _, err := Locate(base, wantRef); err != nil {
+		t.Errorf("Locate(base, %q) failed: %v (proj: ref with colon in bucket name must round-trip)", wantRef, err)
+	}
+}
+
+// TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs verifies that
+// hex-style legacy bucket names (e.g. 0123456789abcdef) — shell- and
+// comma-safe but failing identifier.ValidateProjectID — are audited via
+// followSelector's middle branch (safeTokenForRepro): the DoctorCommand
+// reproduction line carries doctor-consumable proj:<hex>:<sid> refs that
+// the doctor CLI round-trips fine. Round 6 (finding 3) decoupled
+// SessionRefs from DoctorCommand: SessionRefs now carries the honest
+// session identifier (the bare session id — agent-side read_transcript
+// rejects proj:<hex>:<sid> via ValidateProjectID), because the
+// proj:<hex>:<sid> form is rejected by the agent's transcript tools
+// (ValidateProjectID fails for hex names). The bare id is the honest
+// session handle and a doctor-CLI/human identifier on this tree
+// (cross-bucket agent resolution arrives with #2205). It is shared
+// across both buckets, so it appears once (deduped); the true count (2)
+// is in the Description and Summary, and the DoctorCommand carries both
+// proj: refs for reproduction.
+func TestRunAudit_HexNamedLegacyBucketsAuditedWithProjRefs(t *testing.T) {
+	base := t.TempDir()
+	// Hex-style legacy bucket names: shell- and comma-safe, but fail
+	// ValidateProjectID (no readable-<10 base62> structure).
+	bucketA := stateHomeBucket(base, "0123456789abcdef")
+	bucketB := stateHomeBucket(base, "fedcba9876543210")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both rows must audit — the hex names are safe enough for proj: refs.
+	if res.SessionsChecked != 2 {
+		t.Fatalf("SessionsChecked = %d, want 2 — hex-named legacy buckets should both audit via proj: refs", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("Unreadable = %+v, want none", res.Unreadable)
+	}
+	// Evidence must name each by its bucket-qualified proj: ref.
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	// SessionRefs carries the honest session identifier: the bare session
+	// id (the proj:<hex>:<sid> form is rejected by agent-side read_transcript
+	// because ValidateProjectID fails for hex names — finding 3). The bare
+	// id is the honest session handle and a doctor-CLI/human identifier on
+	// this tree (cross-bucket agent resolution arrives with #2205). It is
+	// shared across both buckets, so it appears once (deduped).
+	if len(runTimeout.Evidence.SessionRefs) != 1 || runTimeout.Evidence.SessionRefs[0] != sidA {
+		t.Errorf("run-timeout SessionRefs = %v, want [%q] (honest bare id, deduped across both hex buckets)", runTimeout.Evidence.SessionRefs, sidA)
+	}
+	// The summary count must reflect 2 sessions, not 1 (the bare id is
+	// deduped in SessionRefs, but both sessions were audited).
+	for _, s := range res.Summary {
+		if strings.Contains(s.Title, "Run-timeout") && s.Sessions != 2 {
+			t.Errorf("summary %q sessions = %d, want 2 — both hex-named sessions were audited (finding 2)", s.Title, s.Sessions)
+		}
+	}
+	// DoctorCommand keeps the doctor-consumable proj:<hex>:<sid> form for
+	// both buckets — the doctor CLI round-trips it fine (finding 3).
+	dc := runTimeout.Evidence.DoctorCommand
+	wantA := "proj:0123456789abcdef:" + sidA
+	wantB := "proj:fedcba9876543210:" + sidA
+	if !strings.Contains(dc, wantA) || !strings.Contains(dc, wantB) {
+		t.Errorf("DoctorCommand %q must carry both %q and %q (doctor-consumable proj: refs)", dc, wantA, wantB)
+	}
+	// The reproduction line must re-run: feeding the DoctorCommand's
+	// --sessions refs back audits both again, with no unreadable rows.
+	prefix := "evener doctor audit --runbook fixture-runbook --sessions "
+	sessionsValue, ok := strings.CutPrefix(dc, prefix)
+	if !ok {
+		t.Fatalf("DoctorCommand %q missing prefix %q", dc, prefix)
+	}
+	reproRefs := strings.Split(sessionsValue, ",")
+	res2, err := RunAudit(base, rb, AuditOpts{Sessions: reproRefs})
+	if err != nil {
+		t.Fatalf("re-running evidence refs: %v", err)
+	}
+	if res2.SessionsChecked != 2 || len(res2.Unreadable) != 0 {
+		t.Errorf("re-running evidence refs: SessionsChecked=%d Unreadable=%+v, want 2 and none", res2.SessionsChecked, res2.Unreadable)
+	}
+}
+
+// TestRunAudit_ExplicitProjSelectorForLegacyBucket verifies that an
+// explicit --sessions proj:<legacy-name>:<sid> selector audits the
+// selected session (Locate resolves it; the reads use the user-supplied
+// selector). Round 3 fixed the discard bug (the selector is preserved for
+// reading). Round 6 (finding 3) decoupled SessionRefs from DoctorCommand:
+// SessionRefs carries the honest bare sid (the proj:<hex>:<sid>
+// form is rejected by agent-side read_transcript), while DoctorCommand
+// carries the doctor-consumable proj: ref.
+func TestRunAudit_ExplicitProjSelectorForLegacyBucket(t *testing.T) {
+	base := t.TempDir()
+	// Hex-style legacy bucket name: shell- and comma-safe, but fails
+	// ValidateProjectID, so refFor emits no ref.
+	bucket := stateHomeBucket(base, "0123456789abcdef")
+	writeAuditSession(t, bucket, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	// Also seed a second bucket with the same sid to make the bare id
+	// ambiguous — proving the discard bug.
+	bucket2 := stateHomeBucket(base, "fedcba9876543210")
+	writeAuditSession(t, bucket2, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	sel := "proj:0123456789abcdef:" + sidA
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The explicitly selected session must audit — the selector already
+	// resolved via Locate, so RunAudit must not discard it.
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1 — the explicit proj:<legacy>:<sid> selector should audit exactly that session", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("Unreadable = %+v, want none — the explicitly selected session must not be reported unreadable", res.Unreadable)
+	}
+	// Evidence must carry the original proj: selector, not a bare id.
+	if len(res.Findings) == 0 {
+		t.Fatalf("no findings — the run-timeout check should trip")
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	// SessionRefs carries the honest bare sid (the proj:<hex>:<sid>
+	// form is rejected by agent-side read_transcript — finding 3).
+	if len(runTimeout.Evidence.SessionRefs) != 1 || runTimeout.Evidence.SessionRefs[0] != sidA {
+		t.Errorf("run-timeout SessionRefs = %v, want [%q] — the honest bare id (finding 3)", runTimeout.Evidence.SessionRefs, sidA)
+	}
+	// DoctorCommand carries the doctor-consumable proj: ref.
+	if !strings.Contains(runTimeout.Evidence.DoctorCommand, sel) {
+		t.Errorf("DoctorCommand %q must carry the doctor-consumable %q (finding 3)", runTimeout.Evidence.DoctorCommand, sel)
+	}
+}
+
+// TestRunAudit_ExplicitUnsafeSelectorEmitsSafeEvidence is the roborev fix
+// round 4 RED case: when an explicit --sessions proj:<unsafe-name>:<sid>
+// selector is supplied (a name that passes projectTokenOK so parseSelector
+// and Locate accept it, but fails safeTokenForRepro so it is unsafe in the
+// comma-joined --sessions reproduction line), RunAudit reads the session
+// via the user-supplied ref (honoring the selection) but must NOT emit the
+// raw selector into SessionRefs or DoctorCommand — it would word-split (a
+// space), comma-split (the CLI), or shell-expand ($, backtick, ;) in the
+// "runnable" reproduction line. The fix derives the evidence selector from
+// paths via followSelector (same safe proj:/bare form the sweep emits).
+func TestRunAudit_ExplicitUnsafeSelectorEmitsSafeEvidence(t *testing.T) {
+	// Bucket names that pass projectTokenOK but fail safeTokenForRepro:
+	// a space (shell word-break), a '$' (shell expansion).
+	for _, bucketName := range []string{"has space", "dollar$bucket"} {
+		t.Run(bucketName, func(t *testing.T) {
+			base := t.TempDir()
+			bucket := stateHomeBucket(base, bucketName)
+			writeAuditSession(t, bucket, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+			rb := mustParseFixtureRunbook(t)
+			sel := "proj:" + bucketName + ":" + sidA
+			res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The explicitly selected session must still be read — the
+			// user's selection is honored via Locate.
+			if res.SessionsChecked != 1 {
+				t.Fatalf("SessionsChecked = %d, want 1 — the explicitly selected session must still be audited", res.SessionsChecked)
+			}
+			if len(res.Unreadable) != 0 {
+				t.Fatalf("Unreadable = %+v, want none", res.Unreadable)
+			}
+			// The DoctorCommand reproduction line must be shell-safe.
+			if len(res.Findings) == 0 {
+				t.Fatalf("no findings — the run-timeout check should trip")
+			}
+			var runTimeout *Finding
+			for i := range res.Findings {
+				if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+					runTimeout = &res.Findings[i]
+				}
+			}
+			if runTimeout == nil {
+				t.Fatalf("no run-timeout finding: %+v", res.Findings)
+			}
+			dc := runTimeout.Evidence.DoctorCommand
+			prefix := "evener doctor audit --runbook fixture-runbook --sessions "
+			if !strings.HasPrefix(dc, prefix) {
+				t.Fatalf("DoctorCommand = %q, want prefix %q", dc, prefix)
+			}
+			sessionsValue := strings.TrimPrefix(dc, prefix)
+			// The --sessions value must survive the CLI's comma-split and
+			// contain no shell-word-break or shell-expansion characters.
+			for ref := range strings.SplitSeq(sessionsValue, ",") {
+				if strings.ContainsAny(ref, ", \t\r\n$`;|&()<>=!#~\"'{}*?[]") {
+					t.Errorf("DoctorCommand %q: ref %q contains a character unsafe for a shell reproduction line", dc, ref)
+				}
+			}
+			// The evidence SessionRefs must likewise be safe.
+			for _, ref := range runTimeout.Evidence.SessionRefs {
+				if strings.ContainsAny(ref, ", \t\r\n$`;|&()<>=!#~\"'{}*?[]") {
+					t.Errorf("SessionRefs %q contains a character unsafe for a shell reproduction line", ref)
+				}
+			}
+		})
+	}
+}
+
+// TestRunAudit_ExplicitAmbiguousUnsafeBucketOmitsNonReproducingToken is the
+// roborev fix round 5 RED case: when a bucket name fails safeTokenForRepro
+// (e.g. a space that word-breaks a shell line) AND the same session id
+// exists in multiple such buckets, an explicit --sessions proj:<unsafe-name>:<sid>
+// audit reads the session fine (Locate resolves the proj: selector via
+// locateInBucket) but evidenceSel downgrades to the bare sid — which is
+// ambiguous across the buckets. The DoctorCommand reproduction line carries
+// that bare sid, which cannot reproduce the selected session (Locate
+// returns an ambiguity error). The fix must omit the misleading token from
+// DoctorCommand and disclose the non-reproducibility honestly (bucket names
+// as context, never as fake refs — mirroring FU3 round 2's ambiguity-as-
+// context pattern).
+func TestRunAudit_ExplicitAmbiguousUnsafeBucketOmitsNonReproducingToken(t *testing.T) {
+	base := t.TempDir()
+	// Two buckets whose names pass projectTokenOK (so parseSelector and
+	// Locate accept proj:<name>:<sid>) but fail safeTokenForRepro (space
+	// word-breaks in a shell line), both containing the same session id.
+	// The bare sid is ambiguous across the two buckets.
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	// Explicitly select the session in bucketA via proj:<unsafe-name>:<sid>.
+	// parseSelector accepts the space-containing name via projectTokenOK
+	// (space is not a path separator or NUL), and Locate resolves it via
+	// locateInBucket.
+	sel := "proj:" + "has space-a" + ":" + sidA
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The explicitly selected session must be audited (reading via the
+	// user's selector is honored).
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1 — the explicitly selected session must be audited", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("Unreadable = %+v, want none", res.Unreadable)
+	}
+	if len(res.Findings) == 0 {
+		t.Fatal("no findings — the run-timeout check should trip")
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	dc := runTimeout.Evidence.DoctorCommand
+
+	// The DoctorCommand must not carry a token that cannot reproduce the
+	// session. When non-empty, extract the --sessions value and verify every
+	// ref resolves via Locate — the bare sid is ambiguous across two buckets
+	// and would error on re-run. When all sessions are non-reproducible,
+	// DoctorCommand is empty (round 9 finding 2: no # shell comment, which
+	// cmd.exe ignores).
+	prefix := "evener doctor audit --runbook fixture-runbook --sessions "
+	if sessionsValue, ok := strings.CutPrefix(dc, prefix); ok {
+		for ref := range strings.SplitSeq(sessionsValue, ",") {
+			ref = strings.TrimSpace(ref)
+			if ref == "" {
+				continue
+			}
+			if _, err := Locate(base, ref); err != nil {
+				t.Errorf("DoctorCommand %q: ref %q does not resolve via Locate: %v (reproduction line carries a non-reproducing token)", dc, ref, err)
+			}
+		}
+	}
+	// The non-reproducibility disclosure must live in Description prose
+	// (round 9 finding 2: moved from DoctorCommand's # comment to Description).
+	if !strings.Contains(runTimeout.Description, "not reproducible") && !strings.Contains(runTimeout.Description, "ambiguous") {
+		t.Errorf("Description %q must disclose the non-reproducible session (bucket name is shell-unsafe, bare id is ambiguous)", runTimeout.Description)
+	}
+}
+
+// TestRunAudit_AllNonReproducibleOmitsEmptySessionsFlag is the roborev fix
+// round 6 finding-1 RED case: when EVERY affected session of a finding is
+// non-reproducible (bare sid ambiguous across buckets), reproRefs is empty
+// and strings.Join(nil, ",") yields "", so the command becomes
+// "evener doctor audit --runbook X --sessions  # not reproducible: ..." —
+// the --sessions flag has no value and the parser rejects it. The fix must
+// omit the --sessions segment entirely (empty DoctorCommand, not a # shell
+// comment — round 9 finding 2: cmd.exe does not treat # as a comment) so
+// the command is never mistaken for runnable with an empty flag value.
+func TestRunAudit_AllNonReproducibleOmitsEmptySessionsFlag(t *testing.T) {
+	base := t.TempDir()
+	// Two unsafe buckets with the same sid — explicit selection of one
+	// makes it non-reproducible (bare sid ambiguous across buckets).
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	sel := "proj:has space-a:" + sidA
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1 — the explicitly selected session must be audited", res.SessionsChecked)
+	}
+	if len(res.Findings) == 0 {
+		t.Fatal("no findings — the run-timeout check should trip")
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	dc := runTimeout.Evidence.DoctorCommand
+	// When all sessions are non-reproducible, DoctorCommand must be empty
+	// (round 9 finding 2: no # shell comment, which cmd.exe ignores). When
+	// non-empty, the --sessions flag must not carry an empty value (the
+	// parser rejects a flag with no value).
+	if dc != "" {
+		runnablePrefix := "evener doctor audit --runbook fixture-runbook --sessions "
+		if rest, ok := strings.CutPrefix(dc, runnablePrefix); ok {
+			if strings.TrimSpace(rest) == "" {
+				t.Fatalf("DoctorCommand %q has --sessions with empty value — the parser rejects a flag with no value (finding 1)", dc)
+			}
+		} else {
+			t.Fatalf("DoctorCommand %q must be empty (all sessions non-reproducible) or a runnable command (round 9 finding 2)", dc)
+		}
+	}
+	// The non-reproducibility disclosure must live in Description prose
+	// (round 9 finding 2: moved from DoctorCommand's # comment to Description).
+	if !strings.Contains(runTimeout.Description, "not reproducible") {
+		t.Errorf("Description %q must disclose non-reproducibility (finding 1)", runTimeout.Description)
+	}
+}
+
+// TestRunAudit_DistinctSessionsSharingSIDAcrossUnsafeBucketsEachCounted is
+// the roborev fix round 6 finding-2 RED case: distinct sessions sharing one
+// SID across multiple shell-unsafe buckets all downgrade to the same bare
+// SID in evidenceSel, and appendUniqueString collapses them — the audit
+// checked two sessions while SessionRefs (and the summary count) show one,
+// and the disclosure comment names the SID once. The fix tracks each
+// non-reproducible session individually (with bucket context) so the count
+// and disclosure reflect both.
+func TestRunAudit_DistinctSessionsSharingSIDAcrossUnsafeBucketsEachCounted(t *testing.T) {
+	base := t.TempDir()
+	// Two unsafe buckets with the same sid: both explicitly selected, both
+	// non-reproducible (bare sid ambiguous across the two buckets).
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{
+		"proj:has space-a:" + sidA,
+		"proj:has space-b:" + sidA,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 2 {
+		t.Fatalf("SessionsChecked = %d, want 2 — both explicitly selected sessions must be audited", res.SessionsChecked)
+	}
+	if len(res.Findings) == 0 {
+		t.Fatal("no findings — the run-timeout check should trip")
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	// The summary count must reflect 2 sessions, not 1 (appendUniqueString
+	// collapses the shared bare SID, but both sessions were audited).
+	for _, s := range res.Summary {
+		if strings.Contains(s.Title, "Run-timeout") && s.Sessions != 2 {
+			t.Errorf("summary %q sessions = %d, want 2 — two distinct sessions sharing one SID across different unsafe buckets must each be counted (finding 2)", s.Title, s.Sessions)
+		}
+	}
+	// The disclosure must name each session with its bucket, not the SID
+	// once — two distinct sessions are non-reproducible. Round 9 finding 2
+	// moved the disclosure to Description prose.
+	desc := runTimeout.Description
+	if !strings.Contains(desc, "has space-a") || !strings.Contains(desc, "has space-b") {
+		t.Errorf("Description %q must disclose each non-reproducible session with its bucket name so two sessions sharing one SID are distinguishable (finding 2)", desc)
+	}
+}
+
+// TestRunAudit_SessionRefsHonestFormForNonCanonicalBuckets verifies that
+// hex-style legacy bucket names (e.g. 0123456789abcdef) — shell- and
+// comma-safe but failing identifier.ValidateProjectID — produce a bare
+// session id in SessionRefs (the honest session identifier and a
+// doctor-CLI/human handle on this tree) while DoctorCommand keeps the
+// proj:<hex>:<sid> form (the doctor CLI round-trips it fine). The
+// proj:<hex>:<sid> form is rejected by agent-side read_transcript
+// (ValidateProjectID fails for hex names), so it must NOT appear in
+// SessionRefs. Cross-bucket agent resolution of bare sids from
+// non-canonical buckets arrives when #2205 (fu-transcript-lookup)
+// removes the ValidateProjectID filter from enumerateBuckets.
+func TestRunAudit_SessionRefsHonestFormForNonCanonicalBuckets(t *testing.T) {
+	base := t.TempDir()
+	// Hex-style legacy bucket names: shell- and comma-safe, but fail
+	// ValidateProjectID (no readable-<10 base62> structure).
+	bucketA := stateHomeBucket(base, "0123456789abcdef")
+	bucketB := stateHomeBucket(base, "fedcba9876543210")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 2 {
+		t.Fatalf("SessionsChecked = %d, want 2 — hex-named legacy buckets should both audit via proj: refs", res.SessionsChecked)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	// SessionRefs must carry the honest session identifier: the bare
+	// session id. The proj:<hex>:<sid> form is rejected by the agent's
+	// transcript tools (ValidateProjectID fails for hex names), so it must
+	// NOT appear in SessionRefs (finding 3).
+	for _, ref := range runTimeout.Evidence.SessionRefs {
+		if strings.HasPrefix(ref, "proj:") {
+			t.Errorf("SessionRef %q is a proj: ref — agent-side read_transcript rejects non-canonical project ids; SessionRefs must carry the bare session id for non-canonical buckets (finding 3)", ref)
+		}
+	}
+	// The bare session id must be present (the sessions were audited).
+	found := false
+	for _, ref := range runTimeout.Evidence.SessionRefs {
+		if ref == sidA {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("SessionRefs %v must contain the honest bare session id %q (finding 3)", runTimeout.Evidence.SessionRefs, sidA)
+	}
+	// DoctorCommand must keep the proj:<hex>:<sid> form (the doctor CLI
+	// round-trips it fine — finding 3).
+	dc := runTimeout.Evidence.DoctorCommand
+	wantA := "proj:0123456789abcdef:" + sidA
+	wantB := "proj:fedcba9876543210:" + sidA
+	if !strings.Contains(dc, wantA) || !strings.Contains(dc, wantB) {
+		t.Errorf("DoctorCommand %q must carry the doctor-consumable proj: refs %q and %q (finding 3)", dc, wantA, wantB)
+	}
+}
+
+// TestRunAudit_DoctorCommandCappedAtEvidenceSessionRefCap is the roborev
+// fix round 7 finding-1 RED case: DoctorCommand is built from
+// doctorRefsBySig, which is never capped. Before round 6 it was built from
+// f.Evidence.SessionRefs AFTER the evidenceSessionRefCap truncation, so it
+// was bounded to 200 refs. A fleet-wide finding (evidenceSessionRefCap+5
+// sessions in one canonical bucket, each with a distinct proj: ref) now
+// emits a DoctorCommand with all 205 comma-joined selectors — the mid-JSON
+// overflow the cap exists to prevent. The fix must cap reproRefs at
+// evidenceSessionRefCap before joining, with an honest omission note.
+func TestRunAudit_DoctorCommandCappedAtEvidenceSessionRefCap(t *testing.T) {
+	base := t.TempDir()
+	// One canonical bucket (ValidateProjectID-valid) with cap+5 distinct
+	// sessions — each gets a unique proj: ref via refFor, so doctorRefsBySig
+	// grows to cap+5 entries (all reproducible, no non-reproducible).
+	bucket := stateHomeBucket(base, hash1)
+	const extra = 5
+	total := evidenceSessionRefCap + extra
+	sids := make([]string, total)
+	for i := range sids {
+		sids[i] = newSessionsTestSID(t)
+		writeAuditSession(t, bucket, sids[i], oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sids[i]))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != total {
+		t.Fatalf("SessionsChecked = %d, want %d", res.SessionsChecked, total)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	dc := runTimeout.Evidence.DoctorCommand
+	// DoctorCommand is a pure runnable command (round 9 finding 2: no #
+	// shell comment). Extract the --sessions value directly.
+	prefix := "evener doctor audit --runbook fixture-runbook --sessions "
+	sessionsValue, ok := strings.CutPrefix(dc, prefix)
+	if !ok {
+		t.Fatalf("DoctorCommand %q missing prefix %q", dc, prefix)
+	}
+	sessionsValue = strings.TrimSpace(sessionsValue)
+	refs := strings.Split(sessionsValue, ",")
+	// DoctorCommand must be capped: at most evidenceSessionRefCap refs in
+	// the --sessions value, not all cap+5.
+	if len(refs) > evidenceSessionRefCap {
+		t.Errorf("DoctorCommand --sessions has %d refs, want <= %d (evidenceSessionRefCap) — DoctorCommand must be bounded like SessionRefs (round 7 finding 1)", len(refs), evidenceSessionRefCap)
+	}
+	// The cap must be disclosed in Description prose (round 9 finding 2/3:
+	// moved from DoctorCommand's # comment to Description's "…and N more"
+	// marker) so the finding is not mistaken for a complete reproduction.
+	if !strings.Contains(runTimeout.Description, "more") {
+		t.Errorf("Description %q must disclose that reproducible refs were omitted past the cap (round 7 finding 1)", runTimeout.Description)
 	}
 }
 
@@ -795,5 +1578,762 @@ func TestRenderAudit_HealthyRunSaysSo(t *testing.T) {
 	out := RenderAudit(res)
 	if !strings.Contains(out, "healthy") {
 		t.Errorf("rendered audit for a healthy session should say so:\n%s", out)
+	}
+}
+
+// TestRunAudit_R9F1_SinceUnsafeBucketCollisionAudited is the roborev round 9
+// finding-1 RED case: a --since audit of two sessions sharing one SID across
+// two shell-unsafe buckets (names passing projectTokenOK but failing
+// safeTokenForRepro) currently yields both as Unreadable because
+// followSelector falls back to the bare SID, which is ambiguous. After the
+// fix, the internal read selector uses the bucket-qualified form
+// (proj:<name>:<sid>) that Locate accepts, so both sessions are audited.
+// DoctorCommand still uses the shell-safe emission selector (bare SID, since
+// the bucket name is unsafe for a shell line).
+func TestRunAudit_R9F1_SinceUnsafeBucketCollisionAudited(t *testing.T) {
+	base := t.TempDir()
+	// Dollar-sign bucket names: pass projectTokenOK (no path separators),
+	// fail safeTokenForRepro ($ is a shell metacharacter), so followSelector
+	// falls back to the bare session id. The bare id is ambiguous across
+	// the two buckets, so both rows currently land Unreadable.
+	bucketA := stateHomeBucket(base, "dollar$bucket-a")
+	bucketB := stateHomeBucket(base, "dollar$bucket-b")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	// Verify Locate accepts the bucket-qualified form for these names.
+	if _, err := Locate(base, "proj:dollar$bucket-a:"+sidA); err != nil {
+		t.Fatalf("Locate should accept proj:dollar$bucket-a:%s but got: %v (verify-first: projectTokenOK admits $)", sidA, err)
+	}
+	if _, err := Locate(base, "proj:dollar$bucket-b:"+sidA); err != nil {
+		t.Fatalf("Locate should accept proj:dollar$bucket-b:%s but got: %v", sidA, err)
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// After the fix, both sessions must be audited, not Unreadable.
+	if res.SessionsChecked != 2 {
+		t.Fatalf("SessionsChecked = %d, want 2 — both colliding unsafe-bucket sessions must be audited via the bucket-qualified internal read selector (round 9 finding 1)", res.SessionsChecked)
+	}
+	if len(res.Unreadable) != 0 {
+		t.Fatalf("Unreadable = %+v, want none — the bucket-qualified read selector resolves each session unambiguously (round 9 finding 1)", res.Unreadable)
+	}
+}
+
+// TestRunAudit_R9F2_DoctorCommandRunnableOrEmpty is the roborev round 9
+// finding-2 RED case: the non-reproducibility disclosure uses # shell
+// comments inside DoctorCommand, but Windows cmd.exe does not treat # as a
+// comment. After the fix, DoctorCommand is either a pure runnable command
+// or EMPTY when nothing is reproducible; the disclosure moves to the
+// Description prose.
+func TestRunAudit_R9F2_DoctorCommandRunnableOrEmpty(t *testing.T) {
+	base := t.TempDir()
+	// Two unsafe buckets with the same sid — explicit selection makes the
+	// bare sid ambiguous, so all sessions are non-reproducible.
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	sel := "proj:has space-a:" + sidA
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
+	}
+	if len(res.Findings) == 0 {
+		t.Fatal("no findings — the run-timeout check should trip")
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	dc := runTimeout.Evidence.DoctorCommand
+	// DoctorCommand must NOT start with # — cmd.exe does not treat # as a
+	// comment and would attempt to execute it.
+	if strings.HasPrefix(dc, "#") {
+		t.Errorf("DoctorCommand %q starts with '#' — cmd.exe does not treat '#' as a comment (round 9 finding 2); must be empty when nothing is reproducible", dc)
+	}
+	// When all sessions are non-reproducible, DoctorCommand must be empty
+	// (the disclosure moves to the Description prose).
+	if dc != "" {
+		t.Errorf("DoctorCommand %q must be empty when nothing is reproducible (round 9 finding 2); disclosure moves to Description", dc)
+	}
+	// The non-reproducibility disclosure must appear in the Description.
+	if !strings.Contains(runTimeout.Description, "not reproducible") {
+		t.Errorf("Description %q must disclose non-reproducibility (round 9 finding 2)", runTimeout.Description)
+	}
+}
+
+// TestRunAudit_R9F2_DoctorCommandNoShellCommentInRunnable is the roborev
+// round 9 finding-2 RED case for the mixed form: when some sessions are
+// reproducible and some are not, the current code appends a # comment to
+// the runnable command. On Windows cmd.exe, the # is not a comment — it
+// breaks the command. After the fix, the # comment must not appear in
+// DoctorCommand; the disclosure moves to the Description.
+func TestRunAudit_R9F2_DoctorCommandNoShellCommentInRunnable(t *testing.T) {
+	base := t.TempDir()
+	// One safe bucket (canonical name, reproducible) + one unsafe bucket
+	// with a shared sid (non-reproducible: bare sid ambiguous).
+	bucketSafe := stateHomeBucket(base, hash1)
+	bucketUnsafe := stateHomeBucket(base, "has space")
+	writeAuditSession(t, bucketSafe, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketUnsafe, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 2 {
+		t.Fatalf("SessionsChecked = %d, want 2", res.SessionsChecked)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	dc := runTimeout.Evidence.DoctorCommand
+	// DoctorCommand must be a pure runnable command with no # comment.
+	if strings.Contains(dc, "#") {
+		t.Errorf("DoctorCommand %q contains '#' — cmd.exe does not treat '#' as a comment (round 9 finding 2); disclosure must move to Description, not the command", dc)
+	}
+	// The non-reproducibility disclosure must be in Description.
+	if !strings.Contains(runTimeout.Description, "not reproducible") {
+		t.Errorf("Description %q must disclose non-reproducibility (round 9 finding 2)", runTimeout.Description)
+	}
+}
+
+// TestRunAudit_R9F3_DescriptionEmitsCapMarker is the roborev round 9
+// finding-3 RED case: the caller truncates SessionRefs to
+// evidenceSessionRefCap before calling joinSessionRefs, so the
+// "…and N more" marker is never emitted in Description. A 205-session
+// finding reads "…in 205 session(s): <200 refs>" with no cut marker.
+// After the fix, Description is built from the pre-truncation list so the
+// marker is emitted.
+func TestRunAudit_R9F3_DescriptionEmitsCapMarker(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	const extra = 5
+	total := evidenceSessionRefCap + extra
+	sids := make([]string, total)
+	for i := range sids {
+		sids[i] = newSessionsTestSID(t)
+		writeAuditSession(t, bucket, sids[i], oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sids[i]))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != total {
+		t.Fatalf("SessionsChecked = %d, want %d", res.SessionsChecked, total)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding: %+v", res.Findings)
+	}
+	// The Description must carry a cut marker when the session count exceeds
+	// the cap. Currently the marker is unreachable because SessionRefs is
+	// truncated before joinSessionRefs.
+	if !strings.Contains(runTimeout.Description, "and ") || !strings.Contains(runTimeout.Description, " more") {
+		t.Errorf("Description %q must emit a cut marker (…and N more) when session count exceeds the cap (round 9 finding 3)", runTimeout.Description)
+	}
+}
+
+// TestRunAudit_R10F1_CmdExeMetacharactersRejectedFromDoctorCommand is the
+// roborev round 10 finding-1 RED case: safeTokenForRepro's ContainsAny set
+// lacks '%' and '^'. A bucket named "%PATH%" or "a^b" passes BOTH
+// projectTokenOK (only rejects /, \, NUL) and safeTokenForRepro (no % or ^
+// in the reject set), so followSelector emits proj:%PATH%:<sid> or
+// proj:a^b:<sid> into DoctorCommand's --sessions value. On cmd.exe, %VAR%
+// is expanded and ^ escapes the next char, silently altering the
+// reproduction line. After the fix, safeTokenForRepro rejects % and ^ so
+// followSelector falls back to the bare sid (non-reproducible, disclosed).
+func TestRunAudit_R10F1_CmdExeMetacharactersRejectedFromDoctorCommand(t *testing.T) {
+	// %VAR% and ^ are cmd.exe metacharacters that pass the current
+	// safeTokenForRepro predicate.
+	for _, bucketName := range []string{"%PATH%", "a^b"} {
+		t.Run(bucketName, func(t *testing.T) {
+			base := t.TempDir()
+			bucket := stateHomeBucket(base, bucketName)
+			writeAuditSession(t, bucket, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+			rb := mustParseFixtureRunbook(t)
+			res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.SessionsChecked != 1 {
+				t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
+			}
+			if len(res.Findings) == 0 {
+				t.Fatalf("no findings — the run-timeout check should trip")
+			}
+			dc := res.Findings[0].Evidence.DoctorCommand
+			// The bucket name must NOT appear in DoctorCommand: % and ^ are
+			// cmd.exe metacharacters. If safeTokenForRepro accepted the name,
+			// followSelector emitted proj:<bucket>:<sid> and the bucket name
+			// is in the command.
+			if strings.Contains(dc, bucketName) {
+				t.Errorf("DoctorCommand %q contains bucket name %q with cmd.exe metacharacters — safeTokenForRepro must reject %% and ^ (round 10 finding 1)", dc, bucketName)
+			}
+		})
+	}
+}
+
+// TestRunAudit_R10F2_EmptyDoctorCommandAlwaysSerialized is the roborev
+// round 10 finding-2 RED case: the DoctorCommand field carries omitempty,
+// so when all sessions are non-reproducible (DoctorCommand is ""), the
+// field is dropped from JSON output entirely. finding-contract.md says
+// "Always include doctorCommand" — the field must be present (empty
+// string), not absent. After the fix, omitempty is dropped and the JSON
+// always contains "doctorCommand":"".
+func TestRunAudit_R10F2_EmptyDoctorCommandAlwaysSerialized(t *testing.T) {
+	base := t.TempDir()
+	// Two unsafe buckets with the same sid: all sessions non-reproducible,
+	// so DoctorCommand is empty.
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	writeAuditSession(t, bucketA, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+	writeAuditSession(t, bucketB, sidA, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sidA))
+
+	rb := mustParseFixtureRunbook(t)
+	sel := "proj:has space-a:" + sidA
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{sel}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Findings) == 0 {
+		t.Fatal("no findings")
+	}
+	dc := res.Findings[0].Evidence.DoctorCommand
+	if dc != "" {
+		t.Fatalf("DoctorCommand = %q, want empty (all sessions non-reproducible)", dc)
+	}
+	// Marshal the finding and verify doctorCommand is present in JSON
+	// (not omitted by omitempty when empty).
+	b, err := json.Marshal(res.Findings[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	evidence, _ := m["evidence"].(map[string]any)
+	if _, ok := evidence["doctorCommand"]; !ok {
+		t.Errorf("Finding JSON %s omits doctorCommand — the field must always be present (round 10 finding 2: omitempty drops empty)", b)
+	}
+}
+
+// TestRunAudit_R10F3_DescriptionSharedBudgetForReproAndNonRepro is the
+// roborev round 10 finding-3 RED case: Description independently includes
+// up to 200 reproducible session refs (joinSessionRefs cap) AND up to 200
+// non-reproducible disclosures (formatNonReproSessions cap), so a finding
+// with 150 reproducible + 100 non-reproducible sessions renders all 250
+// session entries in Description. The documented cap is 200 total. After
+// the fix, a single shared budget of 200 covers both, with a combined
+// omission count. Finding 4 (command-side omission disclosure) also
+// applies when the reproducible selector count exceeds the command cap
+// but SessionRefs dedups to fewer entries.
+func TestRunAudit_R10F3_DescriptionSharedBudgetForReproAndNonRepro(t *testing.T) {
+	base := t.TempDir()
+	// 150 reproducible sessions in a canonical bucket (hash1):
+	// followSelector emits proj:hash1:<sid>, all resolve via Locate.
+	reproBucket := stateHomeBucket(base, hash1)
+	const reproCount = 150
+	for range reproCount {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+
+	// 100 non-reproducible sessions across two unsafe buckets sharing
+	// the same sid: followSelector falls back to bare sid, ambiguous
+	// across buckets, non-reproducible. Each has its own sid so we
+	// create 50 distinct sids, each in both buckets = 100 sessions.
+	const nonReproPairs = 50
+	nonReproBucketA := stateHomeBucket(base, "has space-a")
+	nonReproBucketB := stateHomeBucket(base, "has space-b")
+	for range nonReproPairs {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, nonReproBucketA, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+		writeAuditSession(t, nonReproBucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	totalSessions := reproCount + nonReproPairs*2
+	if res.SessionsChecked != totalSessions {
+		t.Fatalf("SessionsChecked = %d, want %d", res.SessionsChecked, totalSessions)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// The Description must not exceed a single 200-entry budget for
+	// session references. Currently joinSessionRefs emits up to 200
+	// reproducible refs AND formatNonReproSessions emits up to 200
+	// non-reproducible entries independently, so 150+100=250 entries
+	// appear — 50 over the 200 cap with no honest omission count.
+	//
+	// Count how many "in bucket" entries appear in the non-repro
+	// section (each non-reproducible session is "sid in bucket \"name\"").
+	// Plus the reproducible refs before the non-repro section.
+	// The total must not exceed evidenceSessionRefCap.
+	// Count reproducible refs in Description: the comma-separated refs
+	// before the "not reproducible" section (if any).
+	reproPart := desc
+	nonReproEntries := 0
+	if idx := strings.Index(desc, "not reproducible"); idx >= 0 {
+		reproPart = desc[:idx]
+		nonReproEntries = strings.Count(desc[idx:], " in bucket \"")
+	}
+	// Count comma-separated refs in the reproducible portion.
+	reproEntries := strings.Count(reproPart, ", ") + 1
+	if reproPart == "" {
+		reproEntries = 0
+	}
+	totalEntries := reproEntries + nonReproEntries
+	if totalEntries > evidenceSessionRefCap {
+		t.Errorf("Description has %d total session entries (%d repro + %d non-repro), want <= %d — a single shared budget must cover both reproducible and non-reproducible session references (round 10 finding 3)", totalEntries, reproEntries, nonReproEntries, evidenceSessionRefCap)
+	}
+}
+
+// TestRunAudit_R11F1_NoSpuriousCapMarkerForAllNonRepro is the round 11
+// finding-1 RED case: when ALL sessions are non-reproducible, reproBudget=0
+// but preCapRefs (f.Evidence.SessionRefs) carries the non-reproducible bare
+// sids. joinSessionRefs(preCapRefs, 0) emits " …and N more" for refs that
+// are already fully disclosed in the "not reproducible" portion — a
+// spurious marker that misleads consumers into thinking sessions were
+// omitted from the Description when none were. After the fix, the
+// reproducible portion uses reproRefs (empty when all non-repro) so no
+// marker fires.
+func TestRunAudit_R11F1_NoSpuriousCapMarkerForAllNonRepro(t *testing.T) {
+	base := t.TempDir()
+	// 3 distinct sids, each in 2 unsafe buckets = 6 sessions, all
+	// non-reproducible (bare sid ambiguous across the two buckets).
+	bucketA := stateHomeBucket(base, "has space-a")
+	bucketB := stateHomeBucket(base, "has space-b")
+	for i := range 3 {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, bucketA, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+		writeAuditSession(t, bucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+		_ = i
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 6 {
+		t.Fatalf("SessionsChecked = %d, want 6", res.SessionsChecked)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// The Description must NOT contain a spurious ref-portion cap marker
+	// ("…and N more") when all sessions are non-reproducible. Those refs
+	// are fully disclosed in the "not reproducible" portion, so the
+	// ref-portion marker is spurious.
+	if strings.Contains(desc, "…and") {
+		t.Errorf("Description %q contains a spurious ref-portion cap marker (…and N more) — all sessions are non-reproducible and fully disclosed in the not-reproducible portion; no reproducible refs are omitted (round 11 finding 1)", desc)
+	}
+}
+
+// TestRunAudit_R11F3_CommandSideOmissionWithDedupedSessionRefs is the
+// round 11 finding-3 test: when >200 reproducible selectors exist but
+// duplicate SIDs across safe-but-noncanonical buckets keep SessionRefs
+// deduped and small, the command-side omission (DoctorCommand truncates
+// reproRefs at evidenceSessionRefCap independently) must be disclosed in
+// the Description with the correct count. This scenario was previously
+// untested: the R10F3 test covers the shared-budget limit but not the
+// command-side omission with deduped SessionRefs.
+func TestRunAudit_R11F3_CommandSideOmissionWithDedupedSessionRefs(t *testing.T) {
+	base := t.TempDir()
+	// 2 safe-but-noncanonical buckets: "safe_a" and "safe_b" pass
+	// safeTokenForRepro (no shell metacharacters) but fail
+	// ValidateProjectID (underscore not in [A-Za-z0-9-]). So:
+	//   agentSel = bare sid (refFor returns "" for non-canonical)
+	//   doctorSel = proj:safe_a:<sid> / proj:safe_b:<sid>
+	//   nonReproducible = false (doctorSel != bare sid)
+	// 101 distinct sids × 2 buckets = 202 sessions:
+	//   doctorRefsBySig has 202 distinct proj: selectors
+	//   SessionRefs has 101 deduped bare sids
+	//   reproCount = 202 > 200 → cmdOmitted = 2
+	bucketA := stateHomeBucket(base, "safe_a")
+	bucketB := stateHomeBucket(base, "safe_b")
+	const sids = 101
+	for range sids {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, bucketA, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+		writeAuditSession(t, bucketB, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const totalSessions = sids * 2
+	if res.SessionsChecked != totalSessions {
+		t.Fatalf("SessionsChecked = %d, want %d", res.SessionsChecked, totalSessions)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// The reproducible-over-cap omission is disclosed once by the
+	// reproducible-portion cap marker (joinSessionRefs' "…and N more").
+	// 202 reproducible selectors exceed the 200-entry cap, so 2 are
+	// omitted — the marker must carry exactly that count (round 14
+	// finding 2: the separate "omitted from command" clause is gone;
+	// the single marker discloses the omission from both the Description
+	// ref list and the DoctorCommand --sessions value).
+	wantOmitted := totalSessions - evidenceSessionRefCap
+	wantMarker := fmt.Sprintf("…and %d more", wantOmitted)
+	if !strings.Contains(desc, wantMarker) {
+		t.Errorf("Description %q must contain the reproducible-portion cap marker %q (round 14 finding 2: single-disclosure contract)", desc, wantMarker)
+	}
+	// No separate command-side omission clause — it would double-report.
+	if strings.Contains(desc, "omitted from command") {
+		t.Errorf("Description %q must not contain a separate command-side omission clause — the reproducible-portion cap marker is the sole disclosure (round 14 finding 2)", desc)
+	}
+	// The command itself must carry at most 200 selectors.
+	dc := runTimeout.Evidence.DoctorCommand
+	if dc != "" {
+		runnablePrefix := "evener doctor audit --runbook fixture-runbook --sessions "
+		if rest, ok := strings.CutPrefix(dc, runnablePrefix); ok {
+			cmdSelectors := strings.Count(rest, ",") + 1
+			if cmdSelectors > evidenceSessionRefCap {
+				t.Errorf("DoctorCommand has %d selectors, want <= %d (round 11 finding 3)", cmdSelectors, evidenceSessionRefCap)
+			}
+		}
+	}
+}
+
+// TestRunAudit_R12F1_NoCollidingBareSidInSessionRefs is the round 12
+// finding-1 RED case: when a session in a non-canonical (hex) bucket trips
+// a finding, agentSel is the bare sid (refFor returns "" for non-canonical
+// names). If that sid also exists in a canonical bucket, the agent-side
+// bare-id resolver (enumerateBuckets filters by ValidateProjectID, skipping
+// hex buckets) resolves current-bucket-first to the WRONG session silently
+// — no ambiguity error. The audit presents the bare sid in SessionRefs as
+// if it uniquely re-addresses the session, but it does not. After the fix,
+// the colliding bare sid must not appear in SessionRefs, and the
+// Description must disclose the session with bucket context instead.
+func TestRunAudit_R12F1_NoCollidingBareSidInSessionRefs(t *testing.T) {
+	base := t.TempDir()
+	// Hex bucket: non-canonical name that fails ValidateProjectID
+	// (no "-" separator with 10-char suffix) but passes safeTokenForRepro
+	// (no shell metacharacters) and projectTokenOK (no path separators).
+	hexBucket := stateHomeBucket(base, "0123456789abcdef")
+	// Canonical bucket: the consuming agent's current bucket.
+	canonicalBucket := stateHomeBucket(base, hash1)
+
+	sid := newSessionsTestSID(t)
+	// Hex session trips the run_timeout finding.
+	writeAuditSession(t, hexBucket, sid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sid))
+	// Canonical session is healthy — does NOT trip the finding.
+	// Same sid creates the collision: agent bare-id resolution finds
+	// only the canonical session (enumerateBuckets skips hex buckets).
+	writeAuditSession(t, canonicalBucket, sid, oneCleanReadFileTurns(), nil)
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 2 {
+		t.Fatalf("SessionsChecked = %d, want 2", res.SessionsChecked)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+
+	// The colliding bare sid must NOT appear in SessionRefs. The
+	// agent-side resolver would silently resolve it to the wrong
+	// (canonical) session. The Description must disclose the session
+	// with bucket context instead.
+	for _, ref := range runTimeout.Evidence.SessionRefs {
+		if ref == sid {
+			t.Errorf("SessionRefs contains bare sid %q that collides with a canonical bucket session — agent-side bare-id resolution would silently resolve to the wrong session (round 12 finding 1)", ref)
+		}
+	}
+
+	// The Description must disclose the hex-bucket session with bucket
+	// context so the finding is traceable without the colliding bare sid.
+	if !strings.Contains(runTimeout.Description, sid) {
+		t.Errorf("Description %q must name the session sid %q (round 12 finding 1)", runTimeout.Description, sid)
+	}
+	if !strings.Contains(runTimeout.Description, "0123456789abcdef") {
+		t.Errorf("Description %q must name the hex bucket \"0123456789abcdef\" for the colliding session (round 12 finding 1)", runTimeout.Description)
+	}
+}
+
+// TestRunAudit_R12F2_NoMalformedNonReproClauseAtZeroBudget is the round 12
+// finding-2 RED case: when reproducible refs fill the shared cap
+// (reproCount >= 200) and non-reproducible sessions exist,
+// formatNonReproSessions gets budget==0, slices to zero entries, but still
+// returns the trailing parenthetical " (bucket name shell-unsafe, bare id
+// ambiguous across buckets)" with no session listed — producing
+// "… not reproducible:  (bucket name…)": a clause naming no session and a
+// double space. After the fix, when the capped list is empty,
+// formatNonReproSessions returns "" so the caller's omission count carries
+// the disclosure alone.
+func TestRunAudit_R12F2_NoMalformedNonReproClauseAtZeroBudget(t *testing.T) {
+	base := t.TempDir()
+	// 200 reproducible sessions in a canonical bucket (fill the cap).
+	reproBucket := stateHomeBucket(base, hash1)
+	const reproCount = 200
+	for range reproCount {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+	// 2 non-reproducible sessions in unsafe buckets sharing one sid
+	// (bare sid ambiguous across the two unsafe buckets).
+	nonReproBucketA := stateHomeBucket(base, "has space-a")
+	nonReproBucketB := stateHomeBucket(base, "has space-b")
+	nonReproSid := newSessionsTestSID(t)
+	writeAuditSession(t, nonReproBucketA, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
+	writeAuditSession(t, nonReproBucketB, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// The non-reproducible portion must not contain a malformed clause
+	// with no session listed (empty list + trailing parenthetical).
+	// Look for the "not reproducible:" marker and check the text after it.
+	if idx := strings.Index(desc, "not reproducible:"); idx >= 0 {
+		afterMarker := desc[idx+len("not reproducible: "):]
+		// The first character after the marker should not be a space
+		// (double space from empty list join) or the parenthetical.
+		if strings.HasPrefix(afterMarker, " (bucket name") {
+			t.Errorf("Description %q has malformed non-reproducible clause: empty session list with trailing parenthetical (round 12 finding 2)", desc)
+		}
+		// No clause naming zero sessions should appear — the omission
+		// count should carry the disclosure alone.
+		if strings.Contains(afterMarker, "  ") {
+			t.Errorf("Description %q has double space in non-reproducible clause (round 12 finding 2)", desc)
+		}
+	}
+}
+
+// TestRunAudit_R13F2_ResolveBucketsErrorFailsClosed is the round 13 finding-2
+// RED case: the colliding-bare-sid check at audit.go:841 ignores
+// resolveBuckets' error (`buckets, _, _`). On glob failure, buckets is nil,
+// the loop doesn't execute, and collidingBareSid stays false — the bare sid
+// stays in SessionRefs as if it were a safe handle, but we could not verify
+// it. Fix: fail closed — treat the sid as colliding and omit it from
+// SessionRefs when the bucket enumeration errors.
+func TestRunAudit_R13F2_ResolveBucketsErrorFailsClosed(t *testing.T) {
+	base := t.TempDir()
+	hexBucket := stateHomeBucket(base, "0123456789abcdef")
+	canonicalBucket := stateHomeBucket(base, hash1)
+
+	sid := newSessionsTestSID(t)
+	// Hex session trips the run_timeout finding.
+	writeAuditSession(t, hexBucket, sid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(sid))
+	// Canonical session is healthy — does NOT trip the finding.
+	writeAuditSession(t, canonicalBucket, sid, oneCleanReadFileTurns(), nil)
+
+	// Mock globProjectBuckets to fail on the 3rd call:
+	//   call 1: Locate(base, "proj:0123456789abcdef:sid") at line 762
+	//   call 2: Locate(base, bareSid) at line 837 → ambiguity error
+	//   call 3: resolveBuckets(base) at line 841 ← FAIL
+	//   call 4: TranscriptHealth → Locate → resolveBuckets
+	originalGlob := globProjectBuckets
+	callCount := 0
+	globProjectBuckets = func(pattern string) ([]string, error) {
+		callCount++
+		if callCount == 3 {
+			return nil, errors.New("scripted glob failure")
+		}
+		return originalGlob(pattern)
+	}
+	t.Cleanup(func() { globProjectBuckets = originalGlob })
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Sessions: []string{"proj:0123456789abcdef:" + sid}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SessionsChecked != 1 {
+		t.Fatalf("SessionsChecked = %d, want 1", res.SessionsChecked)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	// On resolveBuckets error, the bare sid must NOT appear in SessionRefs —
+	// fail closed. The error means we could not verify the sid is safe.
+	for _, ref := range runTimeout.Evidence.SessionRefs {
+		if ref == sid {
+			t.Errorf("SessionRefs contains bare sid %q despite resolveBuckets error in colliding-bare-sid check — fail closed: omit the sid when bucket enumeration errors (round 13 finding 2)", ref)
+		}
+	}
+}
+
+// TestRunAudit_R13F4_OmissionWordingMatchesNonReproDesc is the round 13
+// finding-4 RED case: the "; N more non-reproducible sessions omitted (cap X)"
+// disclosure fires whenever totalOmitted > 0, but in the zero-budget case
+// the non-repro list above is empty — "more" implies a preceding list the
+// reader never saw. Fix: choose wording by nonReproDesc's presence —
+// "N non-reproducible sessions omitted (cap X)" when nothing was listed,
+// "N more …" only when some entries were shown.
+func TestRunAudit_R13F4_OmissionWordingMatchesNonReproDesc(t *testing.T) {
+	base := t.TempDir()
+	// 200 reproducible sessions in a canonical bucket (fill the cap).
+	reproBucket := stateHomeBucket(base, hash1)
+	const reproCount = 200
+	for range reproCount {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, reproBucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+	// 2 non-reproducible sessions in unsafe buckets sharing one sid
+	// (bare sid ambiguous across the two unsafe buckets).
+	nonReproBucketA := stateHomeBucket(base, "has space-a")
+	nonReproBucketB := stateHomeBucket(base, "has space-b")
+	nonReproSid := newSessionsTestSID(t)
+	writeAuditSession(t, nonReproBucketA, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
+	writeAuditSession(t, nonReproBucketB, nonReproSid, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(nonReproSid))
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// When no non-reproducible sessions were listed (zero budget), the
+	// omission wording must NOT say "more" — there is no preceding list.
+	if strings.Contains(desc, "more non-reproducible sessions omitted") {
+		t.Errorf("Description %q says 'more non-reproducible sessions omitted' but no non-reproducible sessions were listed (zero budget) — the wording implies a preceding list the reader never saw (round 13 finding 4)", desc)
+	}
+	// The omission must still be disclosed.
+	if !strings.Contains(desc, "non-reproducible sessions omitted") {
+		t.Errorf("Description %q must disclose the non-reproducible session omission (round 13 finding 4)", desc)
+	}
+}
+
+// TestRunAudit_R14F2_NoDoubleReportReproducibleOmission is the round 14
+// finding-2 RED case: when reproCount > evidenceSessionRefCap and there are
+// zero non-reproducible sessions, the cmdOmitted clause (audit.go:1029-1035)
+// reports "N sessions omitted from command (cap X)" for the same N = reproCount
+// - cap already disclosed by joinSessionRefs' "…and N more" marker. A consumer
+// tallying omissions double-counts (2N instead of N). Fix: remove the
+// cmdOmitted clause — the "…and N more" marker from joinSessionRefs is the sole
+// disclosure of the reproducible-over-cap omission.
+func TestRunAudit_R14F2_NoDoubleReportReproducibleOmission(t *testing.T) {
+	base := t.TempDir()
+	// 201 reproducible sessions in one canonical bucket (cap+1), zero
+	// non-reproducible.
+	bucket := stateHomeBucket(base, hash1)
+	const extra = 1
+	total := evidenceSessionRefCap + extra
+	for range total {
+		s := newSessionsTestSID(t)
+		writeAuditSession(t, bucket, s, oneCleanReadFileTurns(), fiveRunTimeoutJobsFor(s))
+	}
+
+	rb := mustParseFixtureRunbook(t)
+	res, err := RunAudit(base, rb, AuditOpts{Since: 24 * time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runTimeout *Finding
+	for i := range res.Findings {
+		if strings.Contains(res.Findings[i].Title, "Run-timeout") {
+			runTimeout = &res.Findings[i]
+		}
+	}
+	if runTimeout == nil {
+		t.Fatalf("no run-timeout finding")
+	}
+	desc := runTimeout.Description
+	// The omission MUST be disclosed (joinSessionRefs' "…and N more" marker).
+	if !strings.Contains(desc, "more") {
+		t.Errorf("Description %q must disclose the reproducible-over-cap omission via the …and N more marker (round 14 finding 2)", desc)
+	}
+	// The cmdOmitted clause double-reports the same N. Pre-fix, it fires
+	// "N sessions omitted from command (cap X)" alongside the "…and N more"
+	// marker — a consumer tallying omissions double-counts.
+	if strings.Contains(desc, "omitted from command") {
+		t.Errorf("Description %q double-reports the reproducible-over-cap omission: 'omitted from command' clause alongside the …and N more marker — one disclosure must carry the omission (round 14 finding 2)", desc)
 	}
 }

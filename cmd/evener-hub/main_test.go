@@ -132,7 +132,7 @@ func newTraceMainTestDeps(t *testing.T) (string, Config, mainDeps) {
 	ctx := t.Context()
 	deps := mainDeps{
 		loadRegistry:    hermeticRegistryLoader,
-		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		loadConfig:      func(string, bool) (Config, error) { return cfg, nil },
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },
@@ -368,7 +368,7 @@ func TestRunMainLeavesAnAbsentProvidersConfigAlone(t *testing.T) {
 	served := false
 	deps := mainDeps{
 		loadRegistry:    hermeticRegistryLoader,
-		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		loadConfig:      func(string, bool) (Config, error) { return cfg, nil },
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },
@@ -478,7 +478,7 @@ func TestRunMainDegradesOnAnOldSchemaProvidersConfig(t *testing.T) {
 	var web *WebServer
 	deps := mainDeps{
 		loadRegistry:    hermeticRegistryLoader,
-		loadConfig:      func(string) (Config, error) { return cfg, nil },
+		loadConfig:      func(string, bool) (Config, error) { return cfg, nil },
 		ensureDirs:      func() error { return nil },
 		acquireLock:     func(string) (func(), error) { return func() {}, nil },
 		newToken:        func() (string, error) { return "hub-token", nil },

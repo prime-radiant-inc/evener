@@ -11,6 +11,19 @@ func TestThreadStatusHelpersUseCodexVocabulary(t *testing.T) {
 	}
 }
 
+func TestIsRestingThreadStatus(t *testing.T) {
+	for _, status := range []string{ThreadStatusIdle, ThreadStatusSystemError} {
+		if !IsRestingThreadStatus(status) {
+			t.Errorf("%q should be resting", status)
+		}
+	}
+	for _, status := range []string{ThreadStatusActive, ThreadStatusAwaiting, ThreadStatusWarning, ThreadStatusClosed, ThreadStatusNotLoaded, ThreadStatusRestartRequired, ""} {
+		if IsRestingThreadStatus(status) {
+			t.Errorf("%q should not be resting", status)
+		}
+	}
+}
+
 func TestTurnStatusHelpersUseCodexVocabulary(t *testing.T) {
 	if !IsActiveTurnStatus(TurnStatusInProgress) {
 		t.Fatal("inProgress should be active")

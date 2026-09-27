@@ -11,6 +11,7 @@ import (
 // The delegate brief parameter is `prompt`; `task_list` seeds the delegate's
 // task list. Both decode from the raw tool args.
 func TestDecodeDelegateArgs_PromptAndTaskList(t *testing.T) {
+	t.Parallel()
 	a, err := decodeDelegateArgs(map[string]any{
 		"prompt": "do work",
 		"task_list": []any{
@@ -39,6 +40,7 @@ func TestDecodeDelegateArgs_PromptAndTaskList(t *testing.T) {
 }
 
 func TestDecodeDelegateArgs_TaskListRejectsMalformed(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		args map[string]any
@@ -64,6 +66,7 @@ func TestDecodeDelegateArgs_TaskListRejectsMalformed(t *testing.T) {
 // The parent's task_list is frozen into the delegate descriptor at creation,
 // so launch and every later resume seed the child's task list from it.
 func TestCreateDelegate_TaskListFreezesIntoDescriptor(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	parent := []taskpkg.TaskTemplate{
 		{Title: "inspect", Prompt: "read the spec"},
@@ -99,6 +102,7 @@ func TestCreateDelegate_TaskListFreezesIntoDescriptor(t *testing.T) {
 // An empty brief is an error at decode time: a delegate started without input
 // sits idle, which hangs whoever waits on it.
 func TestDecodeDelegateArgs_RejectsEmptyPrompt(t *testing.T) {
+	t.Parallel()
 	for _, args := range []map[string]any{{}, {"prompt": "   "}, {"task": "old key"}} {
 		_, err := decodeDelegateArgs(args)
 		if err == nil || !strings.Contains(err.Error(), "invalid_request: prompt is required") {
@@ -111,6 +115,7 @@ func TestDecodeDelegateArgs_RejectsEmptyPrompt(t *testing.T) {
 // parent's delegation_allowance decides whether it may delegate: granted, the
 // child registers delegate; not granted, it stays a leaf.
 func TestBuiltinAgents_SubagentCarriesDelegationTools(t *testing.T) {
+	t.Parallel()
 	agents, err := builtinAgents()
 	if err != nil {
 		t.Fatalf("builtinAgents: %v", err)
@@ -130,6 +135,7 @@ func TestBuiltinAgents_SubagentCarriesDelegationTools(t *testing.T) {
 // own task_list: PopulateFromTemplates is a no-op on a non-empty store, so the
 // items would vanish silently. Refuse at creation instead.
 func TestCreateDelegate_TaskListRejectedWhenSharingTaskStore(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	root.cfg.ShareTasksWithChildren = true
 	result := root.createDelegate(context.Background(), delegateArgs{Task: "brief", TaskList: []taskpkg.TaskTemplate{{Title: "inspect", Prompt: "read the spec"}}})

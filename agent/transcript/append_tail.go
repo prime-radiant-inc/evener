@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 
 	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // appendTail is the one sequence allocator and append point of a transcript
@@ -111,7 +113,18 @@ func createAppendTail(path string, create func() (afero.File, error)) (afero.Fil
 	if openInProcess(path) {
 		return nil, nil, fmt.Errorf("create transcript file: %s is open in this process", path)
 	}
-	return attachLocked(create, "create transcript file")
+	f, tail, err := attachLocked(create, "create transcript file")
+	if err != nil {
+		return nil, nil, err
+	}
+	// The transcript is fresh, so its startup entries form the prelude until
+	// the first execution begins. Decided here, before attachMu lets another
+	// writer onto the tail: one that opens the file once its header lands
+	// scans it, and the creating writer can no longer tell it is fresh.
+	tail.mu.Lock()
+	tail.turns.prelude = openTurn{id: appwire.SystemPreludeTurnID, fresh: true}
+	tail.mu.Unlock()
+	return f, tail, nil
 }
 
 // openAppendTail opens an existing transcript through open and registers its

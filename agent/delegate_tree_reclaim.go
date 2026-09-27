@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -31,6 +32,12 @@ type delegateRuntimeReclamationEntry struct {
 	childSessionID string
 	runtime        *Session
 	ownerRuntime   *Session
+	// depth is the member's depth in the durable tree, computed under the
+	// controller mutex when the claim builds its entries. The idle
+	// teardown groups members into depth waves — deepest first — so
+	// same-depth members settle concurrently while a member never starts
+	// before every deeper descendant has finished.
+	depth int
 }
 
 type delegateRuntimeReclamationClaim struct {
@@ -306,6 +313,7 @@ func (c *delegateTreeController) runtimeReclamationEntryLocked(id string) delega
 	if aggregate != nil {
 		entry.childSessionID = aggregate.Descriptor.ChildSessionID
 		entry.ownerRuntime = c.ownerRuntimeLocked(aggregate)
+		entry.depth = c.delegateDepthLocked(id)
 	}
 	if live != nil {
 		entry.runtime = live.runtime
@@ -671,27 +679,106 @@ func (s *Session) releaseIdleRuntimeAfterFinalize() bool {
 	}
 	completed = true
 
-	for _, entry := range claim.entries {
-		// A released runtime's manager can hold children the durable
-		// subtree never tracked. No production spawn creates such records
-		// today — every manager insertion is the stable-delegate machinery —
-		// but a record landing there by any other route must not outlive the
-		// release: settle it the way this runtime's own close would have,
-		// terminal teardown with the scratch retained for the handoff.
-		if entry.runtime.subagents != nil {
-			for _, sub := range entry.runtime.subagents.drainForClose() {
-				teardownChildSession(context.Background(), sub.sess, retainChildScratch)
+	// Members settle in depth waves, deepest first, with same-depth members
+	// torn down concurrently under a bounded cap. A member teardown is
+	// wait-dominated — signaling processes and honoring bounded closes,
+	// where a stdio MCP member's close can take seconds — and the members
+	// share no locks here: the unhook and the claim completion above are
+	// already done, and each member's body keeps exactly the context and
+	// close budget the serial loop gave it (one Background context, its
+	// own close cascade). Batches inside a wave cap how many of those
+	// waits overlap; a wave drains completely before the next one starts,
+	// which is what keeps a member from beginning before every descendant
+	// of a deeper wave has settled.
+	limit := s.idleTeardownConcurrency()
+	for _, wave := range reclamationTeardownWaves(claim.entries) {
+		for start := 0; start < len(wave); start += limit {
+			var wg sync.WaitGroup
+			for _, entry := range wave[start:min(start+limit, len(wave))] {
+				wg.Go(func() {
+					s.teardownReclaimedRuntimeEntry(entry)
+				})
 			}
+			wg.Wait()
 		}
-		// A teardown error after the pre-gates leaves the pass spent — this
-		// runtime instance can never be warm-resumed — so unhooking is the
-		// consistent outcome either way: durable state and scratch pins survive
-		// for a cold restore, and the teardown body emits its own warnings for
-		// the settlements that did not complete, the same contract
-		// reclaimDelegateRuntimeCapacity's teardowns already follow.
-		_ = entry.runtime.releaseChildRuntimeForRetirement(context.Background())
 	}
 	return true
+}
+
+// delegateTeardownConcurrencyDefault caps how many same-depth members the
+// idle release tears down at once. The wait-dominated teardown means a
+// modest bound already collapses a wide subtree's wall clock — the members
+// overlap their waits rather than add work — without contending the machine.
+// Tests override it via testOnly.idleTeardownConcurrency.
+const delegateTeardownConcurrencyDefault = 8
+
+// idleTeardownConcurrency is how many same-depth members the idle release
+// may tear down concurrently.
+func (s *Session) idleTeardownConcurrency() int {
+	if override := s.cfg.testOnly.idleTeardownConcurrency; override != nil && *override > 0 {
+		return *override
+	}
+	return delegateTeardownConcurrencyDefault
+}
+
+// reclamationTeardownWaves groups reclamation entries into depth waves:
+// members are sorted deepest-first with delegate-id order breaking ties —
+// the same ordering memberIDsLeafFirstLocked pins for the claim — and then
+// split on depth boundaries. Within a wave every member sits at the same
+// depth, so tearing the wave's members down concurrently cannot let a
+// member start before a descendant settles: every descendant lives in a
+// deeper wave, which the caller drains to completion first.
+func reclamationTeardownWaves(entries []delegateRuntimeReclamationEntry) [][]delegateRuntimeReclamationEntry {
+	sorted := make([]delegateRuntimeReclamationEntry, len(entries))
+	copy(sorted, entries)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].depth != sorted[j].depth {
+			return sorted[i].depth > sorted[j].depth
+		}
+		return sorted[i].delegateID < sorted[j].delegateID
+	})
+	var waves [][]delegateRuntimeReclamationEntry
+	for start := 0; start < len(sorted); {
+		end := start + 1
+		for end < len(sorted) && sorted[end].depth == sorted[start].depth {
+			end++
+		}
+		waves = append(waves, sorted[start:end])
+		start = end
+	}
+	return waves
+}
+
+// teardownReclaimedRuntimeEntry settles one reclaimed member's process-local
+// resources after the claim completed: the runtime's manager-held children
+// the durable subtree never tracked, then the runtime itself, non-terminally.
+func (s *Session) teardownReclaimedRuntimeEntry(entry delegateRuntimeReclamationEntry) {
+	if hook := s.cfg.testOnly.idleTeardownMemberStarted; hook != nil {
+		hook(entry.runtime)
+	}
+	defer func() {
+		if hook := s.cfg.testOnly.idleTeardownMemberSettled; hook != nil {
+			hook(entry.runtime)
+		}
+	}()
+	// A released runtime's manager can hold children the durable
+	// subtree never tracked. No production spawn creates such records
+	// today — every manager insertion is the stable-delegate machinery —
+	// but a record landing there by any other route must not outlive the
+	// release: settle it the way this runtime's own close would have,
+	// terminal teardown with the scratch retained for the handoff.
+	if entry.runtime.subagents != nil {
+		for _, sub := range entry.runtime.subagents.drainForClose() {
+			teardownChildSession(context.Background(), sub.sess, retainChildScratch)
+		}
+	}
+	// A teardown error after the pre-gates leaves the pass spent — this
+	// runtime instance can never be warm-resumed — so unhooking is the
+	// consistent outcome either way: durable state and scratch pins survive
+	// for a cold restore, and the teardown body emits its own warnings for
+	// the settlements that did not complete, the same contract
+	// reclaimDelegateRuntimeCapacity's teardowns already follow.
+	_ = entry.runtime.releaseChildRuntimeForRetirement(context.Background())
 }
 
 // scheduleIdleRuntimeRelease arms the idle release for this just-finalized

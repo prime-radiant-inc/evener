@@ -1587,14 +1587,18 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 }
 
 // worktreeCleanupRun is worktreeControlRun on a context of its own, bounded by
-// LaneClosePassBudget — the budget the close disposal pass spends
+// close-cascade budget — the budget the close disposal pass spends
 // (session_worktree_close.go); the close-time cleanup runners themselves are
 // deliberately unbudgeted. A rollback of a refused or failed op must not
 // inherit the request context, which the close that refused the swap has
 // already cancelled. The returned done cancels the context and disposes the
 // control environment; the caller runs it when the rollback is over.
 func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, func(), error) {
-	ctx, cancel := context.WithTimeout(context.Background(), LaneClosePassBudget)
+	s.closeCtxMu.RLock()
+	closeCtx := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	budget := closePassBudget(closeCtx)
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	run, dispose, err := s.worktreeControlRun(ctx, mainRepoRoot)
 	if err != nil {
 		cancel()
@@ -2508,10 +2512,10 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// Step 8: remove the worktree itself. --force covers git's own
 	// dirty/untracked refusal — never locks, which step 3 already resolved
 	// (spec §5 remove step 8). A dirty tree only reaches here under
-	// force_dirty (step 6), so git's --force is needed whenever either flag is
-	// set.
+	// force_dirty (step 6), so force alone must leave Git's final dirty check
+	// active.
 	rmArgs := []string{"worktree", "remove"}
-	if force || forceDirty {
+	if forceDirty {
 		rmArgs = append(rmArgs, "--force")
 	}
 	rmArgs = append(rmArgs, "--", target)

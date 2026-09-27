@@ -27,6 +27,7 @@
 agent 94.7
 auth 100.0
 envvars 100.0
+execsupport 92.3
 fuzz 100.0
 identifier 99.2
 invariant 100.0

@@ -8,7 +8,7 @@
 // field, rather than to a derivation that only lowercases one letter.
 import type { InstanceEditParams } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import { CLEAR_FIELD_NAMES, changedFields } from "./InstanceSheet";
+import { CLEAR_FIELD_NAMES, changedFields } from "./instanceLanding";
 
 describe("changedFields maps each clear flag to its entry field", () => {
   test("clearApiKeyEnv normalizes to the camel-cased entry field apiKeyEnv", () => {

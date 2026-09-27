@@ -10,6 +10,7 @@ import (
 // TestOpenDelegateTreeController_NilStore covers the nil-store validation
 // (lines 189-190).
 func TestOpenDelegateTreeController_NilStore(t *testing.T) {
+	t.Parallel()
 	_, err := openDelegateTreeController(delegateTreeControllerConfig{
 		rootSessionID: "root",
 		now:           func() time.Time { return testTime },
@@ -41,6 +42,7 @@ func TestOpenDelegateTreeController_EmptyRootSessionID(t *testing.T) {
 // (lines 195-211): nil now, turnLimit <= 0, driveLimit <= 0, maxRetainedTerminal <= 0,
 // nil newDelegateID, nil attentionOpen.
 func TestOpenDelegateTreeController_Defaults(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	store, err := delegatestore.Open(dir + "/delegates.jsonl")
 	if err != nil {

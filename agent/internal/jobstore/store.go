@@ -22,12 +22,17 @@ var ErrStoreClosed = errors.New("jobstore: store closed")
 // monotonic Seq to each appended event, fsyncs, and reconstructs records via
 // Fold. It is safe for concurrent use.
 type Store struct {
-	mu     sync.Mutex
-	path   string
-	fs     afero.Fs
-	f      afero.File
-	seq    int64
-	closed bool
+	mu   sync.Mutex
+	path string
+	fs   afero.Fs
+	f    afero.File
+	seq  int64
+	// unusable is sticky after an append error whose rollback could not
+	// establish the previous durable prefix. The journal bytes are then
+	// uncertain, so no operation may acknowledge or consume more state until
+	// a fresh store is opened against the on-disk bytes.
+	unusable error
+	closed   bool
 
 	// foldGen advances every time the durable journal bytes the store has
 	// accounted for change: on every successful append or batch append, on
@@ -228,6 +233,14 @@ func (s *Store) Append(e Event) error {
 // unchanged.
 func (s *Store) AppendBatch(events []Event) error {
 	if len(events) == 0 {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.closed {
+			return nil
+		}
+		if s.unusable != nil {
+			return s.unusable
+		}
 		return nil
 	}
 	s.mu.Lock()
@@ -733,6 +746,9 @@ func (s *Store) ensureOpenLocked() error {
 	if s.closed {
 		return ErrStoreClosed
 	}
+	if s.unusable != nil {
+		return s.unusable
+	}
 	return nil
 }
 
@@ -761,6 +777,7 @@ func (s *Store) writeLineLocked(line []byte) error {
 
 func (s *Store) appendFailureLocked(operation string, err error, startOffset int64) error {
 	if rollbackErr := s.rollbackAppendLocked(startOffset); rollbackErr != nil {
+		s.unusable = fmt.Errorf("jobstore: store unusable after failed rollback: %w", errors.Join(err, rollbackErr))
 		return fmt.Errorf("jobstore: %s: %w; rollback failed: %w", operation, err, rollbackErr)
 	}
 	return fmt.Errorf("jobstore: %s: %w", operation, err)
@@ -795,8 +812,8 @@ func (s *Store) rollbackAppendLocked(startOffset int64) error {
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.ensureOpenLocked(); err != nil {
-		return err
+	if s.closed {
+		return ErrStoreClosed
 	}
 	if err := s.f.Close(); err != nil {
 		return fmt.Errorf("jobstore: close %s: %w", s.path, err)

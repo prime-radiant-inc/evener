@@ -9,9 +9,11 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -103,7 +105,7 @@ func FuzzThreadDataPass5(f *testing.F) {
 				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call", Name: "view", Content: "ok", ImageData: []byte("png")}},
 			}
 			turn := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}}
-			items := appItemsFromReplayTurn("turn", 2, turn, map[string]string{})
+			items := appItemsFromReplayTurn("turn", 2, turn, apptranscript.NewToolCallRegistry())
 			if len(items) == 0 {
 				t.Fatal("replay projected no items")
 			}

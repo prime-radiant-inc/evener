@@ -124,7 +124,7 @@ func TestFileProjectionPassesOverTranscriptOnlyEntries(t *testing.T) {
 
 func TestProjectTurnPartsProjectsNothingForTranscriptOnlyKinds(t *testing.T) {
 	for _, sample := range schematest.TranscriptOnlySamples() {
-		if items, parts := ProjectTurnParts("turn_1", 1, sample, map[string]string{}, nil, nil); len(items) != 0 || len(parts) != 0 {
+		if items, parts := ProjectTurnParts("turn_1", 1, sample, NewToolCallRegistry(), nil, nil); len(items) != 0 || len(parts) != 0 {
 			t.Errorf("%s projected %v", sample.Kind, items)
 		}
 	}

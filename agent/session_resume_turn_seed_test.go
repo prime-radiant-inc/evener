@@ -29,6 +29,7 @@ import (
 // still pass here — TestRestoreSessionStartTranscriptEntryCountExceedsTurns
 // below is the one that forces the distinction.
 func TestRestoreSessionStartCarriesTranscriptEntryCount(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	id := "01RESUMETURNSEED0000001"
 
@@ -83,6 +84,7 @@ func TestRestoreSessionStartCarriesTranscriptEntryCount(t *testing.T) {
 // see 1, not the 2 the reload path's entry-index numbering would actually
 // reach for this same file.
 func TestRestoreSessionStartTranscriptEntryCountExceedsTurns(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	id := "01RESUMETURNSEED0000002"
 

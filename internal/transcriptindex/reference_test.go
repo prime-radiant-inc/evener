@@ -73,7 +73,7 @@ func referenceTurns(t testing.TB, path string) []appwire.Turn {
 	}
 	var groups []*group
 	var grouper apptranscript.TurnGrouper
-	toolNames := map[string]string{}
+	reg := apptranscript.NewToolCallRegistry()
 	for i, entry := range entries {
 		entryIndex := i + 1
 		if entry.Kind.TranscriptOnly() {
@@ -85,7 +85,7 @@ func referenceTurns(t testing.TB, path string) []appwire.Turn {
 		}
 		g := groups[len(groups)-1]
 		g.entries = append(g.entries, entry)
-		items, parts := apptranscript.ProjectTurnParts(id, entryIndex, entry, toolNames, nil, apptranscript.ToolResultOutputImages)
+		items, parts := apptranscript.ProjectTurnParts(id, entryIndex, entry, reg, nil, apptranscript.ToolResultOutputImages)
 		for j, item := range items {
 			if apptranscript.MergesByCallID(item) {
 				if at, ok := g.calls[item.CallID]; ok {
@@ -121,6 +121,22 @@ func referenceTurns(t testing.TB, path string) []appwire.Turn {
 		turn.Items = g.items
 		apptranscript.StampGroupedTurn(&turn, g.entries)
 		turns = append(turns, turn)
+	}
+	// Flush a communicate call the transcript ends on with no result yet,
+	// matching what every production reader does (server/appwire_turns.go,
+	// cmd/evener-hub/app_threadread.go): reg still holds its CommRawArgs, and
+	// FlushUnpairedCommunicates appends the delivered message to the last
+	// turn. Re-key the flushed item(s) in this package's v2 scheme —
+	// FlushUnpairedCommunicates sets appitempaging's v1 key, matching its own
+	// production callers, not this file's ItemKey.
+	if len(turns) > 0 {
+		before := len(turns[len(turns)-1].Items)
+		if apptranscript.FlushUnpairedCommunicates(&turns, reg) {
+			last := &turns[len(turns)-1]
+			for i := before; i < len(last.Items); i++ {
+				last.Items[i].TranscriptKey = ItemKey(last.ID, *last.Items[i].Position)
+			}
+		}
 	}
 	return turns
 }
@@ -158,13 +174,17 @@ func TestReferenceEqualsTodaysFileProjectionApartFromPositions(t *testing.T) {
 	for _, fx := range fixtures() {
 		t.Run(fx.name, func(t *testing.T) {
 			path := writeFixture(t, fx)
-			toolNames := map[string]string{}
+			reg := apptranscript.NewToolCallRegistry()
 			today, err := apptranscript.ItemTurnsFromFile(path, testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-				return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+				return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Every production caller flushes after projecting (e.g.
+			// server/appwire_turns.go's appTurnProjectionFromTranscriptFile);
+			// ItemTurnsFromFile alone does not, so match that here too.
+			apptranscript.FlushUnpairedCommunicates(&today, reg)
 			reference := referenceTurns(t, path)
 			if len(reference) == 0 {
 				t.Fatal("fixture projected no turns")

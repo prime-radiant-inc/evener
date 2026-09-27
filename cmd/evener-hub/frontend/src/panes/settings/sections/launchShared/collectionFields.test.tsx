@@ -10,15 +10,9 @@ import { EnvMapField, McpServerListField, ModelListField, PathListField } from "
 
 // modelList adds come from the shared searchable ModelCatalog picker, which
 // calls model/list; the wire loader is mocked so these stay hermetic.
-//
-// vi.spyOn, not vi.mock: see ModelField.test.tsx's own comment on this exact
-// pattern - under a shared module registry (isolate:false), a vi.mock()
-// factory registered here only replaces what THIS file's own import
-// resolves to, not what an already-loaded importer calls internally.
-// Spying on the real module's own export patches the one binding every
-// importer actually shares, regardless of import order. No test in this
-// file overrides the resolved value afterward, so the spy is installed
-// fresh each time without keeping a reference to it.
+// The spy is installed fresh before each test and afterEach's
+// vi.restoreAllMocks removes it. No test in this file overrides the resolved
+// value afterward, so no reference to it is kept.
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetExtensionsStoreForTests();

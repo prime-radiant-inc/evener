@@ -127,7 +127,7 @@ func TestBoundedReadNamesAnEntryTheSameWayIndexingAndProjecting(t *testing.T) {
 	)
 
 	seen := map[int][]string{}
-	recording := func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	recording := func(turn schema.Turn, turnID string, turnIndex int, toolNames *ToolCallRegistry) []appwire.ThreadItem {
 		seen[turnIndex] = append(seen[turnIndex], turnID)
 		return boundedTestProjector(turn, turnID, turnIndex, toolNames)
 	}

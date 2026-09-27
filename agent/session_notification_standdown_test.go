@@ -187,6 +187,7 @@ func (h *standDownHarness) standDown(t *testing.T) {
 // The loop below IS the serve loop: each iteration is one dequeue of a wake the
 // previous stand-down asked for. A kick per iteration means it never terminates.
 func TestNotificationStandDownDoesNotSpinWhileWritesFail(t *testing.T) {
+	t.Parallel()
 	h := newStandDownHarness(t)
 	h.seedOwnedRunningTurn(t)
 	h.failWrites(t)
@@ -224,6 +225,7 @@ func TestNotificationStandDownDoesNotSpinWhileWritesFail(t *testing.T) {
 // one transient write error left delegate attention waiting on a wake that was
 // never coming.
 func TestNotificationStandDownRetriesAfterAStorageFailure(t *testing.T) {
+	t.Parallel()
 	h := newStandDownHarness(t)
 	h.failWrites(t)
 
@@ -256,6 +258,7 @@ func TestNotificationStandDownRetriesAfterAStorageFailure(t *testing.T) {
 // releasing, or a release write that failed. Waiting on it IS the hot loop the
 // guard exists for, so that case still says so once and stops.
 func TestNotificationStandDownStillRefusesToWaitOnAnOwnerlessName(t *testing.T) {
+	t.Parallel()
 	h := newStandDownHarness(t)
 	if err := h.sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		snapshot.NextTurnSequence++
@@ -296,6 +299,7 @@ func TestNotificationStandDownStillRefusesToWaitOnAnOwnerlessName(t *testing.T) 
 // stale-name arm: a warning about a name that is not held, and no re-arm. The
 // fence clears two durable writes later — the name is coming back.
 func TestNotificationStandDownRetriesUnderAnInterruptFence(t *testing.T) {
+	t.Parallel()
 	h := newStandDownHarness(t)
 	if err := h.sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		snapshot.InterruptFence = &clientMutationInterruptFence{
@@ -342,6 +346,7 @@ func TestNotificationStandDownRetriesUnderAnInterruptFence(t *testing.T) {
 // user-visible warning and a hook SUBPROCESS every few seconds for the life of
 // the daemon. The diagnostic is worth saying; it is worth saying once.
 func TestNotificationStandDownWarnsOncePerStorageEpisode(t *testing.T) {
+	t.Parallel()
 	h := newStandDownHarness(t)
 	h.failWrites(t)
 

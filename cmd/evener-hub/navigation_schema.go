@@ -289,6 +289,13 @@ func validateNavigationEntity(key navigationResourceKey, metadata any, entity hu
 	return value.Ref, false, nil
 }
 
+// strictNavigationDecode refuses unknown fields. The hub validates what it
+// produces, so an unknown field here is a hub bug: a map built by hand, or a
+// field added to a navigation type without its bound below. The client codec
+// deliberately accepts and drops unknown value-record fields
+// (appwire-client/typescript/state/navigation/codec.ts), so an older app keeps
+// reading pages that carry a field added after it was built; the two agree on
+// every known field's bounds.
 func strictNavigationDecode(raw json.RawMessage, required []string, destination any) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
@@ -415,6 +422,8 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		!navigationSchemaIdentity(value.Kind, false) || len(value.Project) > maxNavigationIdentityBytes ||
 		!utf8.ValidString(value.Project) || utf8.RuneCountInString(value.Title) > maxNavigationTitleRunes ||
 		utf8.RuneCountInString(value.Branch) > maxNavigationLabelRunes || len(value.Children) != 0 ||
+		!navigationSchemaIdentity(value.ApprovalTool, true) ||
+		utf8.RuneCountInString(value.ApprovalTarget) > maxNavigationLabelRunes ||
 		!navigationIntCount(value.ClusterCount) || !navigationIntCount(value.MoreSubagents) ||
 		!navigationIntCount(value.OmittedDescendants) || !navigationIntCount(value.OmittedWatches) ||
 		!navigationIntCount(value.OmittedArmedWatches) || value.OmittedArmedWatches > value.OmittedWatches {
@@ -435,7 +444,18 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 			return false
 		}
 	}
-	return true
+	return value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)
+}
+
+// navigationTaskProgressValid mirrors the web codec's tasksValue: every count is
+// a safe non-negative integer, no more tasks are done and cancelled than exist,
+// and the current task's description fits the label bound. The projector drops
+// progress this refuses rather than failing the whole resource over it.
+func navigationTaskProgressValid(tasks hubapi.NavigationTaskProgress) bool {
+	return navigationIntCount(tasks.Total) && navigationIntCount(tasks.Done) &&
+		navigationIntCount(tasks.Cancelled) && navigationIntCount(tasks.CurrentID) &&
+		tasks.Done <= tasks.Total && tasks.Cancelled <= tasks.Total-tasks.Done &&
+		utf8.RuneCountInString(tasks.Current) <= maxNavigationLabelRunes
 }
 
 // navigationWatchValueValid mirrors the web codec's watch row validation for one

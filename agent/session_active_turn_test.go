@@ -27,6 +27,7 @@ func serveSession(t *testing.T, s *Session) {
 // this, replacing processOneInput's mint with "" leaves every other test green
 // while every mid-turn control silently breaks on goal turns.
 func TestGoalContinuationTurnCarriesItsNameOnTheOpeningEvent(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 
 	var mu sync.Mutex
@@ -69,6 +70,7 @@ func TestGoalContinuationTurnCarriesItsNameOnTheOpeningEvent(t *testing.T) {
 // still gets one from the single mint site, and it is the durable value the
 // preconditions compare against.
 func TestMintRunningTurnIDNamesAnAgentStartedTurn(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 
@@ -95,6 +97,7 @@ func TestMintRunningTurnIDNamesAnAgentStartedTurn(t *testing.T) {
 // is set and mintRunningTurnID refuses to name the next agent turn, so an id
 // held past its turn wedges the session for the life of the process.
 func TestGoalContinuationTurnReleasesItsTurnID(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 
@@ -119,6 +122,7 @@ func TestGoalContinuationTurnReleasesItsTurnID(t *testing.T) {
 // turn would die with Conflict("turn is not active") -- the exact bug class this
 // work exists to close.
 func TestReleaseRunningTurnIDLeavesAnotherOwnersTurnAlone(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 
@@ -150,6 +154,7 @@ func TestReleaseRunningTurnIDLeavesAnotherOwnersTurnAlone(t *testing.T) {
 // aimed at it would cancel the agent turn while marking the user's never-run
 // message "interrupted".
 func TestMintRunningTurnIDRefusesWhenATurnIsAlreadyNamed(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -184,6 +189,7 @@ func TestMintRunningTurnIDRefusesWhenATurnIsAlreadyNamed(t *testing.T) {
 // session_client_mutation_queue.go:119,322,389,494), which all refuse while
 // an interrupt is pending.
 func TestMintRunningTurnIDRefusesUnderAnInterruptFence(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -215,6 +221,7 @@ func TestMintRunningTurnIDRefusesUnderAnInterruptFence(t *testing.T) {
 // clear it, and AcceptClientMutationStart's "turn is already active" guard
 // (session_client_mutation.go:206) rejects every later turn forever.
 func TestLoadClearsARunningTurnNoPendingExecutionOwns(t *testing.T) {
+	t.Parallel()
 	const sessionID = "sess-crash"
 	dir := t.TempDir()
 	fs := afero.NewMemMapFs()
@@ -242,6 +249,7 @@ func TestLoadClearsARunningTurnNoPendingExecutionOwns(t *testing.T) {
 // pending execution still names is a turn/start the restore path reclaims and
 // re-runs, so clearing it would lose the client's compare-and-commit target.
 func TestLoadKeepsARunningTurnAPendingExecutionOwns(t *testing.T) {
+	t.Parallel()
 	const sessionID = "sess-owned"
 	dir := t.TempDir()
 	fs := afero.NewMemMapFs()

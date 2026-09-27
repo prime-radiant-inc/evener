@@ -27,8 +27,14 @@ func toolCall(name, args string) llm.ContentPart {
 // JSON: Arguments holds the replay-safe {} placeholder while raw_arguments
 // carries the model's bytes.
 func rejectedToolCall(name, raw string) llm.ContentPart {
+	return rejectedToolCallWithID("tc-"+name, name, raw)
+}
+
+// rejectedToolCallWithID is rejectedToolCall with an explicit ID, for fixtures
+// holding several distinct rejected calls to the same tool.
+func rejectedToolCallWithID(id, name, raw string) llm.ContentPart {
 	return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-		ID: "tc-" + name, Name: name, Arguments: json.RawMessage(`{}`), RawArguments: raw}}
+		ID: id, Name: name, Arguments: json.RawMessage(`{}`), RawArguments: raw}}
 }
 
 func toolResult(name string, content any, isError bool) llm.ContentPart {

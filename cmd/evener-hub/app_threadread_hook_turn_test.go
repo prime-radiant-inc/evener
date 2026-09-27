@@ -4,7 +4,9 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -44,7 +46,7 @@ func TestReplayedCleanHookKeepsItsZeroExit(t *testing.T) {
 	persisted := schema.NewTurn(schema.TurnHookCompleted, llm.System("SessionStart hook exit 0"))
 	persisted.Hook = &schema.HookInfo{Event: "SessionStart", ExitCode: 0}
 
-	items := appItemsFromReplayTurn("turn_1", 1, hubDecodedTurn(t, persisted), map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, hubDecodedTurn(t, persisted), apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 {
 		t.Fatalf("items = %+v, want exactly one", items)

@@ -31,6 +31,7 @@ func TestPluginSelectionHistoricalSnapshotPreservesDirs(t *testing.T) {
 }
 
 func TestPluginSelectionRestorePreservesPersistedDirs(t *testing.T) {
+	t.Parallel()
 	pluginDir := makePluginDir(t, "restore-selected")
 	stateDir := t.TempDir()
 	workDir := t.TempDir()

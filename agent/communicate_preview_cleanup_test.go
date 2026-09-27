@@ -15,6 +15,7 @@ import (
 )
 
 func TestProcessInputRetryDiscardsFailedPreviewAndCommitsFinalOnce(t *testing.T) {
+	t.Parallel()
 	var attempts atomic.Int32
 	client := llm.NewClient()
 	client.Register(&streamingAdapter{name: "openai", streamScript: func(st *llm.ChanStream) {
@@ -70,6 +71,7 @@ func TestProcessInputRetryDiscardsFailedPreviewAndCommitsFinalOnce(t *testing.T)
 }
 
 func TestCallModelRetryResetsReusedPreviewCallIDGeneration(t *testing.T) {
+	t.Parallel()
 	var attempts atomic.Int32
 	client := llm.NewClient()
 	client.Register(&streamingAdapter{name: "openai", streamScript: func(st *llm.ChanStream) {
@@ -114,6 +116,7 @@ func TestCallModelRetryResetsReusedPreviewCallIDGeneration(t *testing.T) {
 }
 
 func TestContentFilterRecoveryResetsReusedPreviewCallIDGeneration(t *testing.T) {
+	t.Parallel()
 	contentFilterErr := llm.ErrorFromHTTPStatus(
 		"openai", 400, "content filter triggered",
 		map[string]any{"error": map[string]any{"code": "invalid_prompt"}},
@@ -172,6 +175,7 @@ func TestContentFilterRecoveryResetsReusedPreviewCallIDGeneration(t *testing.T) 
 }
 
 func TestContinuationRecoveryDiscardsFailedCommunicatePreview(t *testing.T) {
+	t.Parallel()
 	var attempts atomic.Int32
 	continuationErr := llm.ErrorFromHTTPStatus("openai", 404, "Previous response not found", map[string]any{
 		"error": map[string]any{"code": "previous_response_not_found", "message": "Previous response not found"},
@@ -262,6 +266,7 @@ func TestCallModelPanicAfterConsumeResetsTransferredPreview(t *testing.T) {
 }
 
 func TestCallModelWithFallbackRetainsOnlyActivePreviewIDs(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		fallbackID string
@@ -367,6 +372,7 @@ func TestCallModelWithFallbackPanicResetsTransferredPrimaryExactlyOnce(t *testin
 }
 
 func TestCommunicatePreviewResetsWhenCallerAbortsAfterStream(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	call := communicateCall("call-1", "preview")
 	client := llm.NewClient()

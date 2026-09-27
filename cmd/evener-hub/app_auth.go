@@ -16,8 +16,8 @@ import (
 	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -1018,7 +1018,7 @@ func openAIStateDirFromEnv(env map[string]string) string {
 }
 
 func openAIStatusFromRecord(now time.Time, record authopenai.AuthRecord) authopenai.AuthStatus {
-	needsLogin := !record.Expiry.IsZero() && !record.Expiry.After(now)
+	needsLogin := record.NeedsLogin(now)
 	return authopenai.AuthStatus{
 		SignedIn:     !needsLogin,
 		Source:       record.Source,

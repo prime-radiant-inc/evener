@@ -54,6 +54,7 @@ func evalSyms(t *testing.T, p string) string {
 // the CONTROL policy (main repo + registry writable, config/hooks denied), NOT the
 // current worktree's tool policy.
 func TestWorktreeControlEnvUsesControlPolicy(t *testing.T) {
+	t.Parallel()
 	main, laneA, _, home := sbxMainAndLanes(t)
 	facts := sbxBwrapFacts(home)
 
@@ -91,6 +92,7 @@ func TestWorktreeControlEnvUsesControlPolicy(t *testing.T) {
 // session sandbox to that worktree; exiting restores the pre-worktree env with its
 // original roots.
 func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
+	t.Parallel()
 	_, laneA, laneB, home := sbxMainAndLanes(t)
 	facts := sbxBwrapFacts(home)
 
@@ -128,6 +130,7 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 // re-root error and leaves the session in its prior confined env, never running
 // unconfined in the new worktree (the cardinal fail-open).
 func TestEnterWorktreeRefusesUnsatisfiableReRoot(t *testing.T) {
+	t.Parallel()
 	_, laneA, laneB, _ := sbxMainAndLanes(t)
 
 	s := sbxWorktreeSession(t)

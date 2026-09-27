@@ -388,6 +388,7 @@ func copyWorktreeBaseRepoFrom(t *testing.T, base, dst string) {
 }
 
 func TestWorktreeFixturePublishesAfterSeedMaintenance(t *testing.T) {
+	t.Parallel()
 	probe := newWorktreeMaintenanceProbe()
 	base, _, err := buildWorktreeBaseRepo(probe.run(runWorktreeGit))
 	if base != "" {
@@ -419,6 +420,7 @@ func TestWorktreeFixturePublishesAfterSeedMaintenance(t *testing.T) {
 }
 
 func TestWorktreeMaintenanceProbeUsesEffectiveBoolean(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		args   []string
@@ -485,6 +487,7 @@ func TestWorktreeMaintenanceProbeUsesEffectiveBoolean(t *testing.T) {
 }
 
 func TestWorktreeFixtureSetupErrorRetainsCleanupRoot(t *testing.T) {
+	t.Parallel()
 	base, _, err := buildWorktreeBaseRepo(func(string, ...string) (string, error) {
 		return "", errors.New("injected setup error")
 	})
@@ -1278,5 +1281,6 @@ func branchExistsInRepo(t *testing.T, root, name string) bool {
 // TestMainAppliesTheShardRunFile pins the TestMain wiring evener dev
 // agent-shards depends on to hand each shard its tests.
 func TestMainAppliesTheShardRunFile(t *testing.T) {
+	t.Parallel()
 	shardrun.RequireTestMainAppliesRunFile(t)
 }

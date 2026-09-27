@@ -107,6 +107,7 @@ func requireNoDelegatePreRepairState(t *testing.T, s *Session) {
 }
 
 func TestExecTool_UnsupportedHostRejectsExplicitSandboxControlsBeforeRepair(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name              string
 		args              map[string]any
@@ -138,6 +139,7 @@ func TestExecTool_UnsupportedHostRejectsExplicitSandboxControlsBeforeRepair(t *t
 }
 
 func TestExecTool_UnsupportedHostPreservesBenignRepairWithSandboxControlsOmitted(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
 	result := execDelegateForContract(t, s, map[string]any{
@@ -160,6 +162,7 @@ func TestExecTool_UnsupportedHostPreservesBenignRepairWithSandboxControlsOmitted
 }
 
 func TestExecTool_SupportedHostPreservesExplicitSandboxControls(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		parentMode  sandbox.Mode
@@ -226,6 +229,7 @@ func TestExecTool_SupportedHostPreservesExplicitSandboxControls(t *testing.T) {
 }
 
 func TestStableDelegateCreateTool_UnsupportedSandboxReportsInvalidParameters(t *testing.T) {
+	t.Parallel()
 	_, home := sbxLane(t)
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
 
@@ -331,6 +335,7 @@ func requireDelegateSchemaValidation(t *testing.T, compiled *jsonschema.Schema, 
 }
 
 func TestDelegateSchemaOmitsUnsupportedSandboxControls(t *testing.T) {
+	t.Parallel()
 	_, home := sbxLane(t)
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
 	params := delegateDefinitionParameters(t, s)
@@ -345,6 +350,7 @@ func TestDelegateSchemaOmitsUnsupportedSandboxControls(t *testing.T) {
 }
 
 func TestDelegateSchemaHonorsParentConfinementAndNetwork(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name               string
 		parentMode         sandbox.Mode
@@ -402,6 +408,7 @@ func TestDelegateSchemaHonorsParentConfinementAndNetwork(t *testing.T) {
 }
 
 func TestExecTool_WriteBlockedParentSchemaAndRuntimeContract(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts)
@@ -495,6 +502,7 @@ func setParentSandboxForContractWithWriteBlocked(t *testing.T, s *Session, facts
 }
 
 func TestStableDelegateCreateTool_RejectsAffectedSandboxCombinations(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name              string
 		parentMode        sandbox.Mode
@@ -539,6 +547,7 @@ func TestStableDelegateCreateTool_RejectsAffectedSandboxCombinations(t *testing.
 }
 
 func TestStableDelegateCreateTool_UnsupportedHostRejectsNetworkOnly(t *testing.T) {
+	t.Parallel()
 	_, home := sbxLane(t)
 	s := sbxDelegateSession(t, sandbox.HostFacts{OS: "linux", Home: home})
 	_, err := stableDelegateCreateTool(context.Background(), s, map[string]any{

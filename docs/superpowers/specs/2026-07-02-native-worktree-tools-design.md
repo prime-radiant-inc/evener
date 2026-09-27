@@ -679,7 +679,7 @@ a bug — report it.
    from under the session. If a later step fails, the session is safely at the
    main root and the worktree still exists — state stays consistent.
 8. Run `git worktree remove [--force] -- <path>` through the git control env.
-   `--force` is included only when `force: true` (and only covers git's
+   `--force` is included only when `force_dirty: true` (and only covers git's
    dirty/untracked refusal — never locks, per step 3).
 9. If `delete_branch: true` without `force`: delete the branch only if evener's
    **own merged check** passes — the branch tip is `unchanged` (== recorded

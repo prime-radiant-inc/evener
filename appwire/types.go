@@ -182,6 +182,12 @@ const (
 	// methods, and the host's own conditional set does the write. See
 	// HostPushCredentialsParams.
 	MethodEvenerHostPushCredentials = "evener/host/pushCredentials"
+	// MethodEvenerSessionImage fetches one image out of the recipient hub's own
+	// local session state (multi-host component 05). The controller's
+	// host-qualified image routes proxy through it when the route id names
+	// another source, so bytes stamped by a remote hub never resolve against
+	// the controller's filesystem. See SessionImageParams.
+	MethodEvenerSessionImage = "evener/session/image"
 )
 
 const (
@@ -1643,6 +1649,34 @@ type ThreadTurnItemsListResponse struct {
 	NextCursor string       `json:"nextCursor,omitempty"`
 }
 
+// SessionImageParams selects one image from the recipient hub's own local
+// session state. Exactly one selector must be set, matching the two URL forms a
+// hub stamps into its own thread snapshots:
+//
+//   - SHA addresses the replayed-input form /s/<session>/images/<sha>, whose
+//     bytes are re-scanned out of the session transcript;
+//   - Path is a session-relative file path for the file-backed form
+//     /doc/image?session=<session>&path=<rel>, resolved inside the session's
+//     working directory.
+//
+// Both set, or neither, is InvalidParams. SessionID names the session in the
+// recipient hub's own namespace; it is never a routing field for another source.
+type SessionImageParams struct {
+	SessionID string `json:"sessionId"`
+	SHA       string `json:"sha,omitempty"`
+	Path      string `json:"path,omitempty"`
+}
+
+// SessionImageResponse is one session image: the raw bytes (base64 inside the
+// JSON frame), their re-derived media type, the byte length, and the lowercase
+// hex sha256 of Data. The media type is never the value stored in a transcript.
+type SessionImageResponse struct {
+	MediaType string `json:"mediaType"`
+	Size      int64  `json:"size"`
+	SHA       string `json:"sha,omitempty"`
+	Data      []byte `json:"data"`
+}
+
 type ThreadTranscriptListParams struct {
 	Ref string `json:"ref"`
 }
@@ -2750,6 +2784,7 @@ type WarningParams struct {
 	Ref      string           `json:"ref"`
 	Message  string           `json:"message,omitempty"`
 	Source   string           `json:"source,omitempty"`
+	Code     string           `json:"code,omitempty"`
 	Title    string           `json:"title,omitempty"`
 	Hint     string           `json:"hint,omitempty"`
 	Warning  any              `json:"warning,omitempty"`

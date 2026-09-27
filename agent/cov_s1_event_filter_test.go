@@ -7,6 +7,7 @@ import (
 )
 
 func TestS1Cov_watchEventFilterMatches(t *testing.T) {
+	t.Parallel()
 	toolEnd := func(name, errText string) events.SessionEvent {
 		return events.SessionEvent{
 			Kind: events.EventToolCallEnd,

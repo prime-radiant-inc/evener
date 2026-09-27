@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 )
@@ -36,7 +37,12 @@ func outputImagesForToolCall(sessionID, cwd, toolName, argumentsJSON, output str
 	}
 	var candidates []candidate
 	var args map[string]any
-	_ = json.Unmarshal([]byte(argumentsJSON), &args)
+	// Repair malformed bytes before parsing (F5 round 6): the live path
+	// emits byte-faithful ArgumentsJSON, so a repairable-malformed
+	// read_file/write_file call carries invalid JSON. The live path already
+	// repaired the same bytes to dispatch the call; repair here too so the
+	// file-backed thumbnail recovers the path instead of producing nothing.
+	_ = json.Unmarshal(argrepair.RepairJSON([]byte(argumentsJSON)), &args)
 	addArgPath := func(key, source string) {
 		if v, ok := args[key].(string); ok && strings.TrimSpace(v) != "" {
 			candidates = append(candidates, candidate{path: v, source: source})

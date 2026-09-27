@@ -50,7 +50,7 @@ func TestGoalContinuationPersistsDisplayAndModelInput(t *testing.T) {
 	if notice.Text == "" || notice.StableTurnID != turnID {
 		t.Fatal("continuation event lost its notice or reserved turn identity")
 	}
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}

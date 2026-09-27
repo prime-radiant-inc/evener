@@ -13,8 +13,10 @@ import (
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/schema"
+
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -113,9 +115,9 @@ func covThreadReadSeed(t *testing.T) {
 		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c", ImageData: []byte("img")}},
 	}
 	turn := schema.Turn{Kind: "assistant", Message: llm.Message{Role: "assistant", Content: parts}}
-	_ = appItemsFromReplayTurn("turn", 0, turn, map[string]string{})
-	_ = appItemsFromReplayTurn("user", 1, schema.Turn{Kind: "USER_INPUT", Message: llm.Message{Role: "user", Content: []llm.ContentPart{{Kind: "image", Image: &llm.ImageData{}}, {Kind: "image", Image: &llm.ImageData{Data: []byte("named")}}}}}, map[string]string{})
-	_ = appItemsFromReplayTurn("tool", 2, schema.Turn{Kind: "TOOL_RESULTS", Message: llm.Message{Role: "tool", Content: []llm.ContentPart{{Kind: "tool_result"}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{}}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{ImageData: []byte("x"), ImageMediaType: "image/jpeg"}}}}}, map[string]string{})
+	_ = appItemsFromReplayTurn("turn", 0, turn, apptranscript.NewToolCallRegistry())
+	_ = appItemsFromReplayTurn("user", 1, schema.Turn{Kind: "USER_INPUT", Message: llm.Message{Role: "user", Content: []llm.ContentPart{{Kind: "image", Image: &llm.ImageData{}}, {Kind: "image", Image: &llm.ImageData{Data: []byte("named")}}}}}, apptranscript.NewToolCallRegistry())
+	_ = appItemsFromReplayTurn("tool", 2, schema.Turn{Kind: "TOOL_RESULTS", Message: llm.Message{Role: "tool", Content: []llm.ContentPart{{Kind: "tool_result"}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{}}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{ImageData: []byte("x"), ImageMediaType: "image/jpeg"}}}}}, apptranscript.NewToolCallRegistry())
 
 	_ = enrichThreadFileBackedOutputImages(appwire.Thread{})
 	_ = enrichThreadFileBackedOutputImages(appwire.Thread{ID: "x"})

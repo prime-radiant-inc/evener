@@ -242,6 +242,7 @@ func TestDelegateSurfaceUsesAgentRegistryCapabilities(t *testing.T) {
 }
 
 func TestDelegateCallResponseReportsSelectedAgentCapabilities(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	wantTools := delegateToolsForRegisteredAgent(t, root, "explorer")
 

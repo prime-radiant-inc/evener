@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { expect, test } from "vitest";
 import type { ActivityDelegate } from "./activityData";
 import { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";

@@ -1,8 +1,11 @@
 package transcript
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/afero"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -171,5 +174,42 @@ func TestPlacementStateAdvancesOnlyForRecordedEntries(t *testing.T) {
 	w.mu.Unlock()
 	if got := recordPlaced(t, w, steeringTurn("first recorded"), PlaceSession); got.TurnKind != schema.TurnSpanExecution {
 		t.Fatalf("the first recorded entry must carry the TurnKind the lost one never recorded: %+v", got)
+	}
+}
+
+func TestPreludeSurvivesAResumeBetweenHeaderAndTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	var resumed *Writer
+	fs := afterFirstWriteFs{Fs: afero.NewOsFs(), afterFirstWrite: func() {
+		var err error
+		if resumed, _, err = OpenWriterForSession(path, sharedFileHeader.SessionID); err != nil {
+			t.Fatalf("resume a transcript while it is created: %v", err)
+		}
+	}}
+	w, err := newWriterFS(fs, path, sharedFileHeader, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	t.Cleanup(func() { _ = resumed.Close() })
+	if p := recordPlaced(t, w, steeringTurn("x"), PlaceSession); p.TurnID != appwire.SystemPreludeTurnID {
+		t.Fatalf("a new transcript's first entry is in turn %q (%s), want the prelude", p.TurnID, p.TurnKind)
+	}
+}
+
+func TestPlaceInTurnRefusesAnEmptyTurnID(t *testing.T) {
+	w := newPlacementWriter(t)
+	r, err := w.Record(steeringTurn("x"), RecordOptions{Door: DoorBuffered, Place: PlaceInTurn("")})
+	if err == nil || r.Recorded {
+		t.Fatalf("an entry placed in an unnamed turn = %+v, %v; want refused", r, err)
+	}
+}
+
+func TestBeginExecutionIgnoresAnEmptyTurnID(t *testing.T) {
+	w := newPlacementWriter(t)
+	w.BeginExecution("turn_m1", false)
+	w.BeginExecution("", false)
+	if got := w.RunningTurnID(); got != "turn_m1" {
+		t.Fatalf("running = %q after an unnamed BeginExecution, want turn_m1", got)
 	}
 }

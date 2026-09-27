@@ -930,8 +930,12 @@ func TestNavigationProjectionPinsDecorationsAndOrder(t *testing.T) {
 			"session-a":        true,
 			"session-dangling": true,
 		},
-		PinSections:    []hubcore.PinSection{{ID: "pin", Name: "Pinned", MemberCount: 3}, {ID: "empty", Name: "Empty", MemberCount: 0}},
-		PinAssignments: map[string]hubcore.SessionPin{"session-a": {SectionID: "pin"}, "session-z": {SectionID: "pin"}, "session-dangling": {SectionID: "missing"}},
+		PinSections: []hubcore.PinSection{{ID: "pin", Name: "Pinned", MemberCount: 3}, {ID: "empty", Name: "Empty", MemberCount: 0}},
+		PinAssignments: map[hubcore.ArchiveKey]hubcore.SessionPin{
+			hubcore.SessionPinKey("", "session-a"):        {SectionID: "pin"},
+			hubcore.SessionPinKey("", "session-z"):        {SectionID: "pin"},
+			hubcore.SessionPinKey("", "session-dangling"): {SectionID: "missing"},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1186,7 +1190,7 @@ func TestNavigationProjectionCapsChildrenAndPreservesRowFields(t *testing.T) {
 		children[index] = hubcore.TreeNode{ID: fmt.Sprintf("session-child-%03d", index), Title: "child", Kind: "subagent", State: "ended"}
 	}
 	updated := time.Unix(123, 0).UTC()
-	root := hubcore.TreeNode{ID: "session-root", Title: "title", Project: "project", Branch: "branch", State: "awaiting", Kind: "session", ClusterCount: 2, AskPending: true, Dormant: true, UpdatedAt: updated, MoreSubagents: 3, Children: children}
+	root := hubcore.TreeNode{ID: "session-root", Title: "title", Project: "project", Branch: "branch", State: "awaiting", Kind: "session", ClusterCount: 2, AskPending: true, ApprovalPending: true, Dormant: true, UpdatedAt: updated, MoreSubagents: 3, Children: children}
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{root}}, Live: map[string]bool{"session-root": true}, Renameable: map[string]bool{"session-root": true}, SessionFavorite: map[string]bool{"session-root": true}})
 	if err != nil {
 		t.Fatal(err)
@@ -1195,7 +1199,7 @@ func TestNavigationProjectionCapsChildrenAndPreservesRowFields(t *testing.T) {
 	if len(row.Children) != maxNavigationChildren || row.OmittedDescendants != 1 {
 		t.Fatalf("children=%d omitted=%d", len(row.Children), row.OmittedDescendants)
 	}
-	if row.Ref != "local:session-root" || row.HostID != "local" || row.SessionID != "session-root" || row.Title != root.Title || row.Project != root.Project || row.State != root.State || row.Kind != root.Kind || row.Branch != root.Branch || row.ClusterCount != root.ClusterCount || !row.Favorite || !row.Rename || !row.Live || !row.AskPending || !row.Dormant || row.UpdatedAt == nil || !row.UpdatedAt.Equal(updated) || row.MoreSubagents != root.MoreSubagents {
+	if row.Ref != "local:session-root" || row.HostID != "local" || row.SessionID != "session-root" || row.Title != root.Title || row.Project != root.Project || row.State != root.State || row.Kind != root.Kind || row.Branch != root.Branch || row.ClusterCount != root.ClusterCount || !row.Favorite || !row.Rename || !row.Live || !row.AskPending || !row.ApprovalPending || !row.Dormant || row.UpdatedAt == nil || !row.UpdatedAt.Equal(updated) || row.MoreSubagents != root.MoreSubagents {
 		t.Fatalf("row fields diverged: %#v", row)
 	}
 }
@@ -1369,6 +1373,39 @@ func TestCloneNavigationLiveEntriesOwnsWatches(t *testing.T) {
 	}
 	if cloneNavigationLiveEntries(nil) != nil {
 		t.Fatal("cloneNavigationLiveEntries(nil) must stay nil")
+	}
+}
+
+// TestCloneNavigationLiveEntriesOwnsPendingEscalations: the navigation inputs
+// own their escalation cards, so a roster refresh that edits its copy cannot
+// change a projection built from the earlier one.
+func TestCloneNavigationLiveEntriesOwnsPendingEscalations(t *testing.T) {
+	original := []hubcore.LiveEntry{{
+		PendingEscalation:  true,
+		PendingEscalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "write_file", DeniedPath: "/srv/docs/a.md"}},
+	}}
+	clone := cloneNavigationLiveEntries(original)
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatalf("clone = %+v, want a copy of %+v", clone, original)
+	}
+	original[0].PendingEscalations[0].DeniedPath = "mutated"
+	if clone[0].PendingEscalations[0].DeniedPath != "/srv/docs/a.md" {
+		t.Fatalf("clone card changed through the original: %+v", clone[0].PendingEscalations)
+	}
+}
+
+// The navigation inputs own their live entries' task progress too: a shared
+// aggregate would let the roster's next probe rewrite a built projection's
+// current task.
+func TestCloneNavigationLiveEntriesOwnsTasks(t *testing.T) {
+	original := []hubcore.LiveEntry{{Tasks: &appwire.TaskAggregate{
+		Total: 2, Remaining: 2, Current: &appwire.TaskSummary{ID: 1, Description: "first"},
+	}}}
+	clone := cloneNavigationLiveEntries(original)
+	original[0].Tasks.Total = 9
+	original[0].Tasks.Current.Description = "mutated"
+	if clone[0].Tasks.Total != 2 || clone[0].Tasks.Current.Description != "first" {
+		t.Fatalf("clone task progress changed through the original: %+v %+v", clone[0].Tasks, clone[0].Tasks.Current)
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 // gave that nothing else will deliver.
 
 func TestSystemSteeringDoesNotProvokeATurn(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -54,6 +55,7 @@ func TestSystemSteeringDoesNotProvokeATurn(t *testing.T) {
 // level up: the wake itself must not fire, or the daemon submits work the
 // session then declines to do, once per registration.
 func TestSystemSteeringDoesNotWakeThePendingUserInputPath(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -72,6 +74,7 @@ func TestSystemSteeringDoesNotWakeThePendingUserInputPath(t *testing.T) {
 // TestUserSteeringStillProvokesATurn keeps the fix from swallowing the case it
 // was built for: a steer the user sent, with no turn to land in, still runs.
 func TestUserSteeringStillProvokesATurn(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -108,6 +111,7 @@ func TestUserSteeringStillProvokesATurn(t *testing.T) {
 // thread/start returns "turn is already active", the web UI stays on the spawn
 // screen, and the session runs with only the daemon's own turn in it.
 func TestNoTurnRunsBeforeTheUsersFirstPrompt(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -146,6 +150,7 @@ func TestNoTurnRunsBeforeTheUsersFirstPrompt(t *testing.T) {
 // steering pending can be the daemon's own. Waking there would start a turn to
 // carry context that is meant to ride the next real one.
 func TestDaemonSteeringAloneNeverWakes(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {

@@ -278,6 +278,21 @@ func (s *RemoteHubSource) ShutdownThread(ctx context.Context, params appwire.Thr
 	return s.call(ctx, appwire.MethodThreadShutdown, remote, nil)
 }
 
+// ForceStopThread forwards evener/thread/forceStop with the ref translated into
+// this remote hub's own "local:" spelling, so the force-stop reaches the hub
+// that owns the daemon process (component 07, §"Dedicated ref-translating
+// dispatch (evener/thread/forceStop)"). It is deliberately outside the
+// evener/host/request allow-list.
+func (s *RemoteHubSource) ForceStopThread(ctx context.Context, params appwire.ThreadForceStopParams) error {
+	ref, err := s.toRemoteRef(params.Ref, "")
+	if err != nil {
+		return err
+	}
+	remote := params
+	remote.Ref = ref.String()
+	return s.call(ctx, appwire.MethodEvenerThreadForceStop, remote, nil)
+}
+
 func (s *RemoteHubSource) SetThreadModel(ctx context.Context, params appwire.ThreadModelSetParams) error {
 	ref, err := s.toRemoteRef(params.Ref, "")
 	if err != nil {

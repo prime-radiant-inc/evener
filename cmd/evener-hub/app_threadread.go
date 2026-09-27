@@ -1093,13 +1093,19 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 // wire turns.
 func computePastEntryTurns(cfg hubcore.WebConfig, entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
-	toolNames := map[string]string{}
+	reg := apptranscript.NewToolCallRegistry()
 	turns, err := pastTranscriptCache.ItemTurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		return appItemsFromReplayTurn(turnID, entryIndex, turn, toolNames)
+		return appItemsFromReplayTurn(turnID, entryIndex, turn, reg)
 	})
 	if err != nil {
 		return nil, err
 	}
+	// Flush unpaired communicates the way the server's full read does
+	// (server/appwire_turns.go): a session whose last assistant turn issues a
+	// communicate call with no paired result turn must render the trailing
+	// agentMessage. The paged read (pastEntryLatestItems) flushes internally via
+	// the item-window path; the full read must flush explicitly so both agree.
+	apptranscript.FlushUnpairedCommunicates(&turns, reg)
 	stampSessionImageURLs(entry.Meta.ID, turns)
 	// ItemTurnsFromFile only has the per-round usage persisted in the transcript;
 	// it doesn't know the session's instance and model, so the cost estimate
@@ -1116,8 +1122,8 @@ var pastEntryTurns = computePastEntryTurns
 // projectBoundedPastTranscriptTurn projects an already-decoded transcript turn
 // (decoded once by apptranscript's own reader, not here — kata j13r) into
 // AppWire items.
-func projectBoundedPastTranscriptTurn(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	return appItemsFromReplayTurn(turnID, entryIndex, turn, toolNames)
+func projectBoundedPastTranscriptTurn(turn schema.Turn, turnID string, entryIndex int, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
+	return appItemsFromReplayTurn(turnID, entryIndex, turn, reg)
 }
 
 // decodeTranscriptTurn reads one saved transcript line into the turn the daemon
@@ -1144,8 +1150,8 @@ func reconcileAndEnrichPastThread(entry hubcore.PastEntry, thread appwire.Thread
 	return enrichThreadFileBackedOutputImages(thread)
 }
 
-func appItemsFromReplayTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string) []appwire.ThreadItem {
-	return apptranscript.ProjectTurn(turnID, turnIndex, turn, toolNames, projectReplayInputImage, apptranscript.ToolResultOutputImages)
+func appItemsFromReplayTurn(turnID string, turnIndex int, turn schema.Turn, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
+	return apptranscript.ProjectTurn(turnID, turnIndex, turn, reg, projectReplayInputImage, apptranscript.ToolResultOutputImages)
 }
 
 // projectReplayInputImage stamps the sha and size the client needs to fetch an
