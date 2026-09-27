@@ -727,7 +727,8 @@ test.each([
     const expectedDraft = edited === "same" ? "original message" : edited ? "new draft" : "";
     expect(textarea()?.textContent).toBe(expectedDraft);
     expect(readDraft("ref_a")).toBe(expectedDraft);
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1));
+    // The flush in the finally above has seen the dispatch out.
+    expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1);
   },
 );
 

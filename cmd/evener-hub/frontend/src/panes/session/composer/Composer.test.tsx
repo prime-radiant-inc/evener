@@ -4043,7 +4043,8 @@ test.each([
     expect(readDraft("ref_a")).toBe(remainingText);
     const retainedAttachment = remount ? "replacement.png" : originalAttachment;
     expect(screen.queryByRole("button", { name: `Remove ${retainedAttachment}` }) !== null).toBe(remount);
-    await waitFor(() => expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1));
+    // The flush after the release has seen the dispatch out.
+    expect(fake.calls.filter((call) => call.method === method)).toHaveLength(1);
   },
 );
 
