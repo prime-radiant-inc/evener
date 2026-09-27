@@ -340,13 +340,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
 
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "anthropic"})
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withAdapter(&fakeAdapter{name: "anthropic"}), withProfile(newAnthropicProfile("claude-test")), withDir(root))
 
 	data := sess.buildPromptData(sess.currentEnv())
 	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool {
@@ -362,22 +356,17 @@ func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
 
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withDir(root))
 
 	data := sess.buildPromptData(sess.currentEnv())
 	if !data.HasUseSkill {
 		t.Fatal("HasUseSkill = false, want true on the openai surface")
 	}
 	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool {
-		return s.CatalogNameOrName() == "greet" && strings.HasSuffix(s.Dir, filepath.Join("skills", "greet"))
+		return s.CatalogNameOrName() == "greet" && s.Description == "Greeting skill" &&
+			strings.HasSuffix(s.Dir, filepath.Join("skills", "greet"))
 	}) {
-		t.Fatalf("prompt skills = %+v, want greet with its skill directory", data.Skills)
+		t.Fatalf("prompt skills = %+v, want greet with its description and skill directory", data.Skills)
 	}
 }
 
@@ -395,13 +384,10 @@ func TestOpenAI_PluginSkillCatalogUsesNamespacedName(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{PluginDirs: []string{pluginDir}})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withDir(root), withConfig(SessionConfig{
+		PluginDirs:    []string{pluginDir},
+		AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+	}))
 
 	data := sess.buildPromptData(sess.currentEnv())
 	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool { return s.CatalogNameOrName() == "skill-plugin:my-skill" }) {

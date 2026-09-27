@@ -351,8 +351,6 @@ func TestSession_PluginAgentOverridesBuiltin(t *testing.T) {
 	}
 }
 
-// --- available-agents section tag ---
-
 type releaseAdapter struct {
 	name    string
 	started chan struct{}
@@ -472,45 +470,6 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 	// Should have used the explorer's system prompt.
 	if !strings.Contains(subagentSystemPrompt, "workspace scout") {
 		t.Errorf("subagent should use explorer prompt, got:\n%.200s...", subagentSystemPrompt)
-	}
-}
-
-func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-
-	var subagentSystemPrompt string
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				for _, m := range req.Messages {
-					if m.Role == llm.RoleSystem {
-						subagentSystemPrompt = m.Text()
-					}
-				}
-				return finalResponse("done")
-			},
-		},
-	}
-	c.Register(adapter)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-		testOnly:         testConfig{sandboxProber: bwrapCapableProber(dir)},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	agentID := spawnRuntimeAgent(t, sess, "survey the project", "", 0, "explorer", "", nil)
-	waitForRuntimeSubagent(t, sess, agentID)
-
-	// Subagent prompt should contain the agent-specific prompt.
-	if !strings.Contains(subagentSystemPrompt, "workspace scout") {
-		t.Error("subagent prompt should contain agent-specific prompt (explorer)")
 	}
 }
 

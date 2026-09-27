@@ -70,7 +70,7 @@ func TestLinuxEnforcedSandboxKeepsTrustedResourcesOutsideModelShellMask(t *testi
 	if warning != "" {
 		t.Fatalf("render system prompt: %s", warning)
 	}
-	caps, ok := promptResourceCaps(t, sess, local)
+	caps, ok := promptResourceCaps(t, sess)
 	if !ok {
 		t.Fatal("rendered environment omitted finite resource payload")
 	}

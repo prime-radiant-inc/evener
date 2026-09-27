@@ -4272,16 +4272,6 @@ func TestAskUser_RestoreRebuildsPendingThenReplyClears(t *testing.T) {
 	}
 }
 
-// --- Task 10: the ask-user prompt-section gate (spec §4.5, §7) ---
-//
-// These tests render the system prompt directly (session_surface_behavior_test.go's
-// sess.renderSystemPrompt(sess.env) pattern) rather than driving a full
-// ProcessInput round trip: the gate under test is template composition, not
-// turn machinery. The three cases mirror the invisibility semantics already
-// proven for the tool's own registration above (TestAskUser_VisibleInteractiveRoot
-// / _InvisibleNonInteractive / _InvisibleForSubagent): the guidance section
-// shows exactly when ask_user is registered.
-
 // --- Shorthand form (question + options) tests ---
 
 // askUserArgsShorthand builds a single ask_user call using the shorthand form

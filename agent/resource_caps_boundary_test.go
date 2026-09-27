@@ -19,9 +19,9 @@ type renderedResourceCaps struct {
 
 // promptResourceCaps decodes the resource caps the environment block renders,
 // from the typed prompt input; ok is false when the session renders none.
-func promptResourceCaps(t *testing.T, s *Session, env execenv.ExecutionEnvironment) (renderedResourceCaps, bool) {
+func promptResourceCaps(t *testing.T, s *Session) (renderedResourceCaps, bool) {
 	t.Helper()
-	data := s.buildPromptData(env)
+	data := s.buildPromptData(s.env)
 	if data.ResourceCapsJSON == "" {
 		return renderedResourceCaps{}, false
 	}
@@ -68,7 +68,7 @@ func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t
 	if warning != "" {
 		t.Fatalf("render system prompt: %s", warning)
 	}
-	caps, ok := promptResourceCaps(t, sess, sess.env)
+	caps, ok := promptResourceCaps(t, sess)
 	if !ok {
 		t.Fatal("rendered environment omitted finite resource payload")
 	}
@@ -99,7 +99,7 @@ func TestRenderedEnvironmentOmitsUnknownOrUnlimitedResources(t *testing.T) {
 			if warning != "" {
 				t.Fatalf("render system prompt: %s", warning)
 			}
-			if caps, ok := promptResourceCaps(t, sess, sess.env); ok {
+			if caps, ok := promptResourceCaps(t, sess); ok {
 				t.Fatalf("rendered environment resource payload for %s resources: %+v", name, caps)
 			}
 		})

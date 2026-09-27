@@ -28,22 +28,88 @@ const (
 
 // promptConfig is one real session whose system prompt the assembly tests
 // render. Together the configurations execute every body in the prompt
-// template; a new template branch needs a configuration that runs it.
+// template; a new template branch needs a configuration that runs it. check
+// pins the typed inputs that send the configuration down its branches (see the
+// branch map in the collapse plan).
 type promptConfig struct {
 	name  string
 	build func(t *testing.T) *Session
+	check func(t *testing.T, d promptData)
 }
 
 func promptConfigs() []promptConfig {
 	return []promptConfig{
-		{"root interactive anthropic", buildRootInteractiveAnthropicSession},
-		{"root headless openai coordinator", buildRootHeadlessCoordinatorSession},
-		{"root with overrides", buildRootWithOverridesSession},
-		{"delegate that can delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 1, "") }},
-		{"leaf delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "") }},
-		{"explorer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "explorer") }},
-		{"implementer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "implementer") }},
-		{"delegate with role override and preloaded skills", buildDelegateWithRoleOverrideSession},
+		{"root interactive anthropic", buildRootInteractiveAnthropicSession, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "HasAskUser", d.HasAskUser, true)
+			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
+			checkPromptInput(t, "NonInteractive", d.NonInteractive, false)
+			checkPromptInput(t, "HasUseSkill", d.HasUseSkill, true)
+			checkPromptInput(t, "skills present", len(d.Skills) > 0, true)
+			checkPromptInput(t, "IsGitRepo", d.IsGitRepo, true)
+			checkPromptInput(t, "commit titles present", len(d.GitRecentCommitTitles) > 0, true)
+			checkPromptInput(t, "workspace tree present", d.WorkspaceTree != "", true)
+			checkPromptInput(t, "build info present", d.BuildInfo != "", true)
+			checkPromptInput(t, "resource caps present", d.ResourceCapsJSON != "", true)
+			checkPromptInput(t, "capabilities present", len(d.Capabilities) > 0, true)
+			checkPromptInput(t, "len(ProjectDocs)", len(d.ProjectDocs), 2)
+			for _, doc := range d.ProjectDocs {
+				checkPromptInput(t, "project doc path set", doc.Path != "", true)
+			}
+			var withTasks, withoutTasks, insertsParentTasks bool
+			for _, a := range d.AvailableAgents {
+				if len(a.TaskList) == 0 {
+					withoutTasks = true
+				}
+				for _, entry := range a.TaskList {
+					withTasks = true
+					if entry.ReplacedByParentTasks {
+						insertsParentTasks = true
+					}
+				}
+			}
+			checkPromptInput(t, "an available agent with tasks", withTasks, true)
+			checkPromptInput(t, "an available agent without tasks", withoutTasks, true)
+			checkPromptInput(t, "a task that inserts parent tasks", insertsParentTasks, true)
+			for _, name := range []string{"read_transcript", "find_session_transcripts", "job_watch", "compact_context", "apply_patch"} {
+				checkPromptInput(t, "HasTool "+name, d.HasTool(name), true)
+			}
+		}},
+		{"root headless openai coordinator", buildRootHeadlessCoordinatorSession, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
+			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
+			checkPromptInput(t, "HasTool apply_patch", d.HasTool("apply_patch"), true)
+			checkPromptInput(t, "IsGitRepo", d.IsGitRepo, false)
+			checkPromptInput(t, "workspace tree present", d.WorkspaceTree != "", true)
+			checkPromptInput(t, "build info present", d.BuildInfo != "", false)
+		}},
+		{"root with overrides", buildRootWithOverridesSession, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, sentinelBaseInstructions)
+			checkPromptInput(t, "UserInstructionOverride", d.UserInstructionOverride, sentinelUserInstructions)
+			checkPromptInput(t, "CLIAppends holds the append file", len(d.CLIAppends) == 1 && d.CLIAppends[0] == sentinelAppend+"\n", true)
+			checkPromptInput(t, "workspace block empty", d.WorkspaceTree == "" && d.BuildInfo == "", true)
+		}},
+		{"delegate that can delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 1, "") }, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
+			checkPromptInput(t, "DelegationAllowance", d.DelegationAllowance, 1)
+			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
+		}},
+		{"leaf delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "") }, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
+			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
+		}},
+		{"explorer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "explorer") }, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
+			checkPromptInput(t, "sandbox line present", d.Sandbox != "", true)
+			checkPromptInput(t, "unavailable profile tools listed", len(d.UnavailableProfileToolNames) > 0, true)
+		}},
+		{"implementer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "implementer") }, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
+		}},
+		{"delegate with role override and preloaded skills", buildDelegateWithRoleOverrideSession, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
+			checkPromptInput(t, "ActivatedSkillBodies holds the preloaded body",
+				len(d.ActivatedSkillBodies) == 1 && d.ActivatedSkillBodies[0] == sentinelActivatedSkill, true)
+		}},
 	}
 }
 
@@ -60,8 +126,7 @@ func buildRootInteractiveAnthropicSession(t *testing.T) *Session {
 	personalDoc := filepath.Join(t.TempDir(), "AGENTS.md")
 	writeTestFile(t, personalDoc, sentinelPersonalDoc+"\n")
 	skills := t.TempDir()
-	writeTestFile(t, filepath.Join(skills, "fixture-skill", "SKILL.md"),
-		"---\nname: fixture-skill\ndescription: "+sentinelSkill+"\n---\nBody.\n")
+	writeSkillDirect(t, skills, "fixture-skill", "---\nname: fixture-skill\ndescription: "+sentinelSkill+"\n---\nBody.\n")
 	return newSession(t,
 		withAdapter(&fakeAdapter{name: "anthropic"}),
 		withProfile(newAnthropicProfile("claude-test")),
@@ -202,93 +267,16 @@ func TestSystemPromptRendersForEveryConfiguration(t *testing.T) {
 // template body (see the branch map in the collapse plan).
 func TestPromptDataTypedInputs(t *testing.T) {
 	t.Parallel()
-	cases := []struct {
-		name  string
-		build func(*testing.T) *Session
-		check func(*testing.T, promptData)
-	}{
-		{"root interactive anthropic", buildRootInteractiveAnthropicSession, func(t *testing.T, d promptData) {
-			checkPromptInput(t, "HasAskUser", d.HasAskUser, true)
-			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
-			checkPromptInput(t, "NonInteractive", d.NonInteractive, false)
-			checkPromptInput(t, "HasUseSkill", d.HasUseSkill, true)
-			checkPromptInput(t, "skills present", len(d.Skills) > 0, true)
-			checkPromptInput(t, "IsGitRepo", d.IsGitRepo, true)
-			checkPromptInput(t, "commit titles present", len(d.GitRecentCommitTitles) > 0, true)
-			checkPromptInput(t, "workspace tree present", d.WorkspaceTree != "", true)
-			checkPromptInput(t, "build info present", d.BuildInfo != "", true)
-			checkPromptInput(t, "resource caps present", d.ResourceCapsJSON != "", true)
-			checkPromptInput(t, "capabilities present", len(d.Capabilities) > 0, true)
-			checkPromptInput(t, "project and personal docs present", len(d.ProjectDocs) == 2, true)
-			for _, doc := range d.ProjectDocs {
-				checkPromptInput(t, "project doc path set", doc.Path != "", true)
-			}
-			var withTasks, withoutTasks, insertsParentTasks bool
-			for _, a := range d.AvailableAgents {
-				if len(a.TaskList) == 0 {
-					withoutTasks = true
-				}
-				for _, entry := range a.TaskList {
-					withTasks = true
-					if entry.ReplacedByParentTasks {
-						insertsParentTasks = true
-					}
-				}
-			}
-			checkPromptInput(t, "an available agent with tasks", withTasks, true)
-			checkPromptInput(t, "an available agent without tasks", withoutTasks, true)
-			checkPromptInput(t, "a task that inserts parent tasks", insertsParentTasks, true)
-			for _, name := range []string{"read_transcript", "find_session_transcripts", "job_watch", "compact_context", "apply_patch"} {
-				checkPromptInput(t, "HasTool "+name, d.HasTool(name), true)
-			}
-		}},
-		{"root headless openai coordinator", buildRootHeadlessCoordinatorSession, func(t *testing.T, d promptData) {
-			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
-			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
-			checkPromptInput(t, "HasTool apply_patch", d.HasTool("apply_patch"), true)
-			checkPromptInput(t, "IsGitRepo", d.IsGitRepo, false)
-			checkPromptInput(t, "workspace tree present", d.WorkspaceTree != "", true)
-			checkPromptInput(t, "build info present", d.BuildInfo != "", false)
-		}},
-		{"root with overrides", buildRootWithOverridesSession, func(t *testing.T, d promptData) {
-			checkPromptInput(t, "BaseInstructionsOverride is the file", d.BaseInstructionsOverride == sentinelBaseInstructions, true)
-			checkPromptInput(t, "UserInstructionOverride is the config value", d.UserInstructionOverride == sentinelUserInstructions, true)
-			checkPromptInput(t, "CLIAppends holds the append file", len(d.CLIAppends) == 1 && d.CLIAppends[0] == sentinelAppend+"\n", true)
-			checkPromptInput(t, "workspace block empty", d.WorkspaceTree == "" && d.BuildInfo == "", true)
-		}},
-		{"delegate that can delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 1, "") }, func(t *testing.T, d promptData) {
-			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
-			checkPromptInput(t, "DelegationAllowance is 1", d.DelegationAllowance == 1, true)
-			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
-		}},
-		{"leaf delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "") }, func(t *testing.T, d promptData) {
-			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
-			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
-		}},
-		{"explorer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "explorer") }, func(t *testing.T, d promptData) {
-			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
-			checkPromptInput(t, "sandbox line present", d.Sandbox != "", true)
-			checkPromptInput(t, "unavailable profile tools listed", len(d.UnavailableProfileToolNames) > 0, true)
-		}},
-		{"implementer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "implementer") }, func(t *testing.T, d promptData) {
-			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
-		}},
-		{"delegate with role override and preloaded skills", buildDelegateWithRoleOverrideSession, func(t *testing.T, d promptData) {
-			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
-			checkPromptInput(t, "ActivatedSkillBodies holds the preloaded body",
-				len(d.ActivatedSkillBodies) == 1 && d.ActivatedSkillBodies[0] == sentinelActivatedSkill, true)
-		}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, cfg := range promptConfigs() {
+		t.Run(cfg.name, func(t *testing.T) {
 			t.Parallel()
-			s := tc.build(t)
-			tc.check(t, s.buildPromptData(s.env))
+			s := cfg.build(t)
+			cfg.check(t, s.buildPromptData(s.env))
 		})
 	}
 }
 
-func checkPromptInput(t *testing.T, name string, got, want bool) {
+func checkPromptInput[T comparable](t *testing.T, name string, got, want T) {
 	t.Helper()
 	if got != want {
 		t.Errorf("%s = %v, want %v", name, got, want)

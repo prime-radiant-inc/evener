@@ -1476,7 +1476,7 @@ func bundledAgentBody(t *testing.T, name string) string {
 }
 ```
 
-and add these lines to the `check` functions in `TestPromptDataTypedInputs`:
+and add these lines to the `check` functions in `promptConfigs()`, which `TestPromptDataTypedInputs` runs:
 
 - `root interactive anthropic`:
   ```go

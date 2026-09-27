@@ -69,11 +69,11 @@ func TestShippedPromptsOnlyNameToolsTheSessionHas(t *testing.T) {
 		if strings.TrimSpace(prompt) == "" {
 			t.Fatalf("%s: rendered no system prompt to sweep", source)
 		}
-		for _, name := range mentionedToolNames(prompt, parent.reg.RegisteredNames()) {
+		for name, n := range toolMentionCounts(prompt, parent.reg.RegisteredNames()) {
 			if surface[name] || hasString(mentionsAllowedWithoutTheTool[source], name) {
 				continue
 			}
-			if n := countToolMentions(prompt, name); n > mentionCapWithoutTheTool[name] {
+			if n > mentionCapWithoutTheTool[name] {
 				findings = append(findings, fmt.Sprintf("%s (%s): %s, named %d time(s), audited cap %d",
 					source, agentType, name, n, mentionCapWithoutTheTool[name]))
 			}
@@ -135,33 +135,20 @@ func stripToolInventory(prompt string) string {
 	return strings.Join(out, "\n")
 }
 
-// mentionedToolNames returns the registered tool names a prompt body names.
-func mentionedToolNames(body string, registered map[string]bool) []string {
-	seen := map[string]bool{}
-	var out []string
+// toolMentionCounts counts, by name, how often a prompt body names each
+// registered tool.
+func toolMentionCounts(body string, registered map[string]bool) map[string]int {
+	counts := map[string]int{}
 	for _, m := range toolShapedMention.FindAllStringSubmatch(body, -1) {
 		name := m[1]
 		if name == "" {
 			name = m[2]
 		}
-		if !registered[name] || seen[name] {
-			continue
-		}
-		seen[name] = true
-		out = append(out, name)
-	}
-	return out
-}
-
-// countToolMentions returns how many times a prompt body names the tool.
-func countToolMentions(body, name string) int {
-	n := 0
-	for _, m := range toolShapedMention.FindAllStringSubmatch(body, -1) {
-		if m[1] == name || m[2] == name {
-			n++
+		if registered[name] {
+			counts[name]++
 		}
 	}
-	return n
+	return counts
 }
 
 // TestBundledPromptBodiesOnlyNameToolsTheirAgentHas keeps the cheap, direct
@@ -174,7 +161,7 @@ func TestBundledPromptBodiesOnlyNameToolsTheirAgentHas(t *testing.T) {
 	var findings []string
 	for source, agent := range bundledTypedAgentsForTest(t) {
 		surface := bundledAgentSurfaceForTest(agent, registered)
-		for _, name := range mentionedToolNames(agent.SystemPrompt, registered) {
+		for name := range toolMentionCounts(agent.SystemPrompt, registered) {
 			if surface[name] || hasString(mentionsAllowedWithoutTheTool[source], name) {
 				continue
 			}

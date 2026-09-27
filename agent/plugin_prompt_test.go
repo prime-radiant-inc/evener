@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -19,15 +20,9 @@ import (
 // delegation allowance; allowedTools, when set, restricts its tool surface.
 func availableAgentEntriesForTest(t *testing.T, agents map[string]plugin.Agent, allowance int, allowedTools []string) []agentEntry {
 	t.Helper()
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai"})
-	cfg := SessionConfig{}
+	cfg := SessionConfig{AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md")}
 	cfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withDir(t.TempDir()), withConfig(cfg))
 	if allowance >= 0 {
 		sess.mu.Lock()
 		sess.delegationAllowance = allowance
@@ -42,21 +37,16 @@ func availableAgentEntriesForTest(t *testing.T, agents map[string]plugin.Agent, 
 // delegation allowance and, when allowedTools is set, that tool surface.
 func depthOneSubagentForTest(t *testing.T, allowance int, allowedTools []string) *Session {
 	t.Helper()
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai"})
 	cfg := SessionConfig{
 		StateDir:         t.TempDir(),
 		NoProjectPrompts: true,
+		AgentsDocPath:    filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
 	}
 	cfg.spawn.depth = 1
 	cfg.spawn.parentSessionID = "parent-session"
 	cfg.spawn.delegationAllowance = allowance
 	cfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(func() { sess.Close() })
+	sess := newSession(t, withDir(t.TempDir()), withConfig(cfg))
 	if sess.depth == 0 {
 		t.Fatal("expected a depth > 0 subagent session, got depth 0")
 	}
@@ -136,10 +126,8 @@ func TestUntypedDelegatingSubagentUsesDelegatingRolePrompt(t *testing.T) {
 
 func TestAvailableAgentsSection_NoAgents(t *testing.T) {
 	t.Parallel()
-	for _, agents := range []map[string]plugin.Agent{nil, {}} {
-		if got := availableAgentEntriesForTest(t, agents, -1, nil); len(got) != 0 {
-			t.Errorf("available agents for %v = %+v, want none", agents, got)
-		}
+	if got := availableAgentEntriesForTest(t, nil, -1, nil); len(got) != 0 {
+		t.Errorf("available agents = %+v, want none", got)
 	}
 }
 

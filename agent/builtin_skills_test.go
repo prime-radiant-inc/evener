@@ -102,13 +102,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	root := t.TempDir()
 	markGitRoot(t, root)
 
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "anthropic"})
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withAdapter(&fakeAdapter{name: "anthropic"}), withProfile(newAnthropicProfile("claude-test")), withDir(root))
 
 	data := sess.buildPromptData(sess.currentEnv())
 	if !data.HasUseSkill {
@@ -116,32 +110,6 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	}
 	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool { return s.CatalogNameOrName() == "doctoring-evener" }) {
 		t.Fatalf("prompt skills = %+v, want the embedded doctoring-evener skill", data.Skills)
-	}
-}
-
-func TestOpenAI_SkillsWithUseSkillInSystemPrompt(t *testing.T) {
-	t.Parallel()
-	root := t.TempDir()
-	markGitRoot(t, root)
-	writeSkillMD(t, root, "my-skill",
-		"---\nname: my-skill\ndescription: \"Test skill\"\n---\nBody.\n")
-
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	data := sess.buildPromptData(sess.currentEnv())
-	if !data.HasUseSkill {
-		t.Fatal("HasUseSkill = false, want true on the openai surface")
-	}
-	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool {
-		return s.CatalogNameOrName() == "my-skill" && s.Description == "Test skill" && s.Dir != ""
-	}) {
-		t.Fatalf("prompt skills = %+v, want my-skill with its description and directory", data.Skills)
 	}
 }
 
