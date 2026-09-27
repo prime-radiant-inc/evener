@@ -182,6 +182,44 @@ type hostManagerConfig struct {
 	// build and process identity, the local restart-required predicate's roster,
 	// and the state roots the write probe checks.
 	running hostRunningConfig
+	// deployHost and restartHost are the 04b execution seams the operation
+	// workers run (deploy pipeline 08b §6): the deploy step with its guards and
+	// the restart step, both called while the worker holds the host's gate. In
+	// production they are the sshconn Manager's DeployForOperation and
+	// RestartForOperation; a nil pair (tests, embedders) fails the operation's
+	// worker with the refusal the missing seam means.
+	deployHost  func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) (string, sshconn.Preflight, error)
+	restartHost func(ctx context.Context, host hostreg.Host, facts sshconn.Preflight) error
+	// attachedFacts returns the attached channel's captured preflight facts —
+	// the deploy path's facts source, since deploy runs no fresh preflight of
+	// its own (§6 step 3), and the interim reattach wait's attachment probe.
+	// Nil (tests, embedders with no manager) leaves the workers to their own
+	// seam.
+	attachedFacts func(name string) (sshconn.Preflight, bool)
+	// awaitReattach, when set, is the test/embedder override for waiting on the
+	// host's channel after a restart released the gate; production with a
+	// manager polls the manager's own attachment.
+	awaitReattach func(ctx context.Context, entry hostreg.Host) (*appwire.Client, bool)
+	// remnantFence reports the open teardown remnant fencing a host name, if
+	// one does: §6 step 2's `remnant-open` refusal is emitted from here, past
+	// the dedup check and before any probe or acquisition. Remnant semantics
+	// are S12's (registry spec §6); no remnant store exists yet, so a nil seam
+	// answers "no remnant".
+	remnantFence func(name string) (string, bool)
+	// lastKnownPublish, when set, publishes the post-operation refresh's
+	// verified facts into the (generation, incarnation id)-scoped last-known
+	// store (§6 seam (c)'s second half). That store is its own slice's and is
+	// not built here: the seam is the routing point, and nil is the honest
+	// "nowhere to publish yet".
+	lastKnownPublish func(entry hostreg.Host, probe hubcore.HostRuntimeProbe, facts hubcore.HostPlanFacts) error
+	// opsCtx is the controller-lifetime context the deploy/restart workers run
+	// under (created on first use), opsCancel cancels it, and opsWG is the
+	// workers' wait group the shutdown path waits on. opsMu guards the lazy
+	// creation and the shutdown's read.
+	opsCtx    context.Context
+	opsCancel context.CancelFunc
+	opsWG     sync.WaitGroup
+	opsMu     sync.Mutex
 	// runningProbeMu serializes evener/host/running's admission-plus-probe
 	// window: the guard epoch row is hub-wide, so a concurrent call must not
 	// advance the admitted epoch while another call is still probing under the
@@ -1050,6 +1088,31 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		m.cfg.planProbe = func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
 			return probeHostRunning(ctx, manager, host, client, epoch, m.cfg.probeTimeout)
 		}
+	}
+	if manager != nil {
+		// The Ensure path's deploy step is recorded as a durable operation
+		// (deploy pipeline 08b §6): the hub's recorder mints the record and
+		// publishes it as the gate holder, so an Ensure-triggered deploy is
+		// fenced and named exactly like a user one.
+		manager.SetEnsureDeployHook(m.EnsureDeploy)
+	}
+	if m.cfg.deployHost == nil && manager != nil {
+		// The production deploy step (deploy pipeline 08b §6): the 04b deploy
+		// path with its guards intact, run by the operation's worker while it
+		// holds the host's gate.
+		m.cfg.deployHost = manager.DeployForOperation
+	}
+	if m.cfg.restartHost == nil && manager != nil {
+		// The production restart step: the 04b restart path — user-versus-system
+		// unit decision and the proven-replacement wait — run by the worker
+		// under the same gate.
+		m.cfg.restartHost = manager.RestartForOperation
+	}
+	if m.cfg.attachedFacts == nil && manager != nil {
+		// The attached channel's captured preflight is the deploy path's facts
+		// source (deploy runs no fresh preflight of its own) and the interim
+		// reattach wait's attachment probe. PreflightIfAttached never dials.
+		m.cfg.attachedFacts = manager.PreflightIfAttached
 	}
 	// The file's records are read once, before anything else can mint: its
 	// retained marks seed the counters, so a host folded in below mints above

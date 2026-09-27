@@ -644,6 +644,12 @@ func (m *hubHostManager) controllerDirty() bool {
 // request, and the handler itself holds nothing.
 func (m *hubHostManager) registerOpsHandlers(server *appserver.Server) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostPlan, hostManageHandler(m.Plan))
+	// deploy and restart are mutations of the same surface and the same
+	// admission: the edge's auth admits the connection, the registration-time
+	// origin guard refuses a remote-originated request, and each handler runs
+	// its own fixed processing order (app_host_deploy.go).
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostDeploy, hostManageHandler(m.Deploy))
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostRestart, hostManageHandler(m.Restart))
 }
 
 // revokeHostTokens drops name's outstanding confirmation tokens (§3's live
