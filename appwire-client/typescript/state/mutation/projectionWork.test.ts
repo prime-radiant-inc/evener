@@ -50,8 +50,8 @@ describe("createMutationProjectionWorkTracker", () => {
 
   // Durable work that starts a few microtasks after the operation before it
   // finished (a receipt write after its RPC answers, a refresh after a commit's
-  // notify) registers during a round that began with nothing outstanding. The
-  // round must report it, or its caller stops looking with that work in flight.
+  // notify) registers during a settle that began with nothing outstanding. The
+  // settle must report it or its caller stops looking with that work in flight.
   test("settle reports work registered while it runs", async () => {
     const tracker = createMutationProjectionWorkTracker(realPorts());
     const settling = tracker.settle();

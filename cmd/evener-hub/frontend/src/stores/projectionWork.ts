@@ -33,10 +33,8 @@ export function trackProjectionWork<T>(work: Promise<T>): Promise<T> {
   return projectionWorkTracker.track(work);
 }
 
-// Waits until no tracked work is outstanding and reports how much the round
-// saw. Callers repeat until it reports zero, flushing React in between: the
-// components start this work from effects, so only a flush can reveal whether
-// anything is left.
+// Settles the tracker once (MutationProjectionWorkTracker.settle says what that
+// waits for and reports). flushPendingTurnsProjectionForTests repeats it.
 export function settleProjectionWorkForTests(): Promise<number> {
   return projectionWorkTracker.settle();
 }
