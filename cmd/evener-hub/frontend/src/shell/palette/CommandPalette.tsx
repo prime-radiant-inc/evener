@@ -1002,10 +1002,13 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
     <>
       {/* SearchResult lives in package appwire (camelCase askPending /
           approvalPending), unlike NavigationSessionSummary's snake_case, so
-          the fields are renamed here rather than spread. A result carries no
-          `kind`: search never surfaces a subagent as its own hit, so
-          "session" is always the right value for displayState's
-          subagent-only collapse rule to skip. */}
+          the fields are renamed here rather than spread. SearchResult carries
+          no `kind` at all (an orphaned subagent can be its own search hit,
+          same as its own top-level Live row), so "session" is the only value
+          available; it only skips displayState's subagent-only collapse rule,
+          which is unreachable here anyway without a real kind. This matches
+          the row's pre-existing behavior (cadenceStateFor(state) directly),
+          not a regression. */}
       <StatusDot
         state={cadenceStateFor(
           displayState({
