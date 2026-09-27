@@ -638,7 +638,7 @@ func TestTurnCacheGrowthRewriteAnchorMismatchRebuilds(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if fileIdentity(before) != fileIdentity(after) || after.Size() <= before.Size() {
+			if FileIdentity(before) != FileIdentity(after) || after.Size() <= before.Size() {
 				t.Fatalf("fixture identity/growth invalid: before=%d after=%d", before.Size(), after.Size())
 			}
 			if fresh {
@@ -957,8 +957,8 @@ func TestTurnCacheRebuildsIndexAfterSameSizeMiddleReplacementWithRestoredModTime
 	if after.Size() != before.Size() || !after.ModTime().Equal(before.ModTime()) {
 		t.Fatalf("rewrite identity=(size=%d, mod=%v) want=(size=%d, mod=%v)", after.Size(), after.ModTime(), before.Size(), before.ModTime())
 	}
-	if fileIdentity(after) != fileIdentity(before) {
-		t.Fatalf("rewrite replaced inode: before=%q after=%q", fileIdentity(before), fileIdentity(after))
+	if FileIdentity(after) != FileIdentity(before) {
+		t.Fatalf("rewrite replaced inode: before=%q after=%q", FileIdentity(before), FileIdentity(after))
 	}
 
 	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())

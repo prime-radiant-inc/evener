@@ -15,6 +15,12 @@ availability, while one hub presents the fleet. The unit of remoteness is the
 
 These are Jesse's calls, recorded so the specs do not relitigate them.
 
+- **`hub.toml` is machine-managed (Jesse, 2026-09-26).** The hub rewrites the
+  selected `hub.toml` in place: UI-added and UI-edited hosts live in it, the
+  file carries a banner that comments and formatting are not preserved, and an
+  older `hub.hosts.json` sidecar migrates into the file once at boot (component
+  08 §6/§19). Hosts are therefore all UI-editable; the split's refuse-to-edit
+  rules are retired.
 - **Topology**: any hub can act as a controller for hosts it can see. A static
   per-hub host list in config. No multi-master, no leader election, no shared
   state. A hub can also be a host. **Cycle rejection in v1 does not run from the
@@ -180,10 +186,11 @@ Ordered by dependency; each is independently reviewable and landable.
 ## 5. Interfaces
 
 - **Host config entry** (`hub.toml`): `{ name, ssh, user?, evener_path?,
-  roots[], config_path?, addr? }` — name is the source ID used in refs and
-  URLs; `config_path`/`addr` are the host's own `hub.toml` and hub loopback
-  address, which the bridge and the manager's restart/health path must agree on
-  (component 03, §"`config_path` / `addr`").
+  roots[], config_path?, addr?, key_path? }` — name is the source ID used in
+  refs and URLs; `config_path`/`addr` are the host's own `hub.toml` and hub
+  loopback address, which the bridge and the manager's restart/health path must
+  agree on (component 03, §"`config_path` / `addr`"); `key_path` is the SSH
+  identity file the dial uses (component 03's schema, component 08 §6).
 - **Remote source ID**: the host `name`; refs surface as `name:<sessionID>`.
 - **Capability probe** — **not** one round trip: a short sequence of hub-scoped
   RPCs over the already-open channel after attach (`evener/launch/getLayer`,

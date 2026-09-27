@@ -422,6 +422,8 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		!navigationSchemaIdentity(value.Kind, false) || len(value.Project) > maxNavigationIdentityBytes ||
 		!utf8.ValidString(value.Project) || utf8.RuneCountInString(value.Title) > maxNavigationTitleRunes ||
 		utf8.RuneCountInString(value.Branch) > maxNavigationLabelRunes || len(value.Children) != 0 ||
+		!navigationSchemaIdentity(value.ApprovalTool, true) ||
+		utf8.RuneCountInString(value.ApprovalTarget) > maxNavigationLabelRunes ||
 		!navigationIntCount(value.ClusterCount) || !navigationIntCount(value.MoreSubagents) ||
 		!navigationIntCount(value.OmittedDescendants) || !navigationIntCount(value.OmittedWatches) ||
 		!navigationIntCount(value.OmittedArmedWatches) || value.OmittedArmedWatches > value.OmittedWatches {

@@ -10,7 +10,7 @@ import { HOST_POLL_MS, HostsSection } from "./hosts";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   return {
-    origin: "sidecar",
+    origin: "hub.toml",
     attached: false,
     midAttach: false,
     removed: false,
@@ -44,12 +44,13 @@ test("lists hosts with online/offline state chips", async () => {
   expect(await screen.findByText("beta")).toBeTruthy();
   expect(screen.getByText("online")).toBeTruthy();
   expect(screen.getByText("offline")).toBeTruthy();
-  // hub.toml rows show the address and origin; no Remove for hub.toml rows.
+  // Every row shows the address and the one origin; every live host is
+  // editable and removable (the file is machine-managed).
   expect(screen.getByText(/a\.example/)).toBeTruthy();
   const alphaRow = screen.getByText("alpha").closest("li")!;
-  expect(within(alphaRow).queryByRole("button", { name: "Remove" })).toBeNull();
+  expect(within(alphaRow).getByRole("button", { name: "Remove" })).toBeTruthy();
+  expect(within(alphaRow).getByRole("button", { name: "Edit" })).toBeTruthy();
   const betaRow = screen.getByText("beta").closest("li")!;
-  // beta is a sidecar row: it offers both Connect and Remove.
   expect(within(betaRow).getByRole("button", { name: "Remove" })).toBeTruthy();
   expect(within(betaRow).getByRole("button", { name: "Connect" })).toBeTruthy();
 });
@@ -105,7 +106,7 @@ test("the add dialog submits every entry field", async () => {
   });
 });
 
-test("a sidecar row offers Edit, prefills the whole entry, and sends no name input", async () => {
+test("a host row offers Edit, prefills the whole entry, and sends no name input", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({
@@ -136,12 +137,13 @@ test("a sidecar row offers Edit, prefills the whole entry, and sends no name inp
   });
 });
 
-test("a hub.toml row offers no Edit action", async () => {
+test("a hub.toml row offers Edit and Remove like every other row", async () => {
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({ hosts: [row({ name: "alpha", address: "a.example", origin: "hub.toml" })] }));
   render(<HostsSection sectionId="hosts" />);
   const rowEl = (await screen.findByText("alpha")).closest("li")!;
-  expect(within(rowEl).queryByRole("button", { name: "Edit" })).toBeNull();
+  expect(within(rowEl).getByRole("button", { name: "Edit" })).toBeTruthy();
+  expect(within(rowEl).getByRole("button", { name: "Remove" })).toBeTruthy();
 });
 
 test("a validation refusal lands on the input the hub blamed", async () => {

@@ -189,13 +189,51 @@ func TestClearRecoveryOnPanicRollsBackBusyFlagBeforeRepanicking(t *testing.T) {
 				t.Fatal("clearRecoveryOnPanic swallowed the panic instead of letting it continue to the caller's own barrier")
 			}
 		}()
-		conn.clearRecoveryOnPanic(func() { panic("enqueue blew up before reaching the send channel") })
+		conn.clearRecoveryOnPanic("some-response-id", func() { panic("enqueue blew up before reaching the send channel") })
 	}()
 
 	conn.mu.RLock()
 	defer conn.mu.RUnlock()
 	if conn.recoveryRunning || conn.recoveryClearID != "" {
 		t.Fatal("busy flag/clear id were not rolled back before the panic propagated: the connection would refuse every future force stop")
+	}
+}
+
+// TestClearRecoveryOnPanicLeavesNewerForceStopAlone pins a roborev finding
+// against clearRecoveryOnPanic: it cleared recoveryRunning/recoveryClearID
+// unconditionally, keyed to nothing. enqueueResponse enqueues the response
+// before running hydration bookkeeping (finalizer.commit,
+// commitAfterRelease, beforeHydrationCommit), so a panic in one of those
+// post-send steps can fire after the send loop already dequeued and
+// transmitted force stop A's response (running beforeSend/afterSend, which
+// cleared both fields for A) and admission already let a second force stop B
+// in (recoveryRunning = true, recoveryClearID = B's id). A's panicking
+// goroutine must not roll back B's in-flight state — only a rollback keyed
+// to A's own response id should clear anything, exactly like beforeSend and
+// afterSend already compare before clearing.
+func TestClearRecoveryOnPanicLeavesNewerForceStopAlone(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
+	conn := server.NewConnection("c1")
+
+	// B has already been admitted by the time A's rollback runs.
+	conn.mu.Lock()
+	conn.recoveryRunning = true
+	conn.recoveryClearID = "B-response-id"
+	conn.mu.Unlock()
+
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("clearRecoveryOnPanic swallowed the panic instead of letting it continue to the caller's own barrier")
+			}
+		}()
+		conn.clearRecoveryOnPanic("A-response-id", func() { panic("A's enqueue blew up after B was already admitted") })
+	}()
+
+	conn.mu.RLock()
+	defer conn.mu.RUnlock()
+	if !conn.recoveryRunning || conn.recoveryClearID != "B-response-id" {
+		t.Fatal("A's rollback cleared B's in-flight force-stop state: a third force stop could now be admitted while B is still running")
 	}
 }
 
