@@ -12,22 +12,18 @@ export type ProjectCatalog = "projects" | "archived_projects" | "test_runs";
  * "Today"), recent, and archived. */
 export type ProjectSessionTier = "current" | "recent" | "archived";
 const TIERS: readonly ProjectSessionTier[] = ["current", "recent", "archived"];
-type PageSnapshot = ReturnType<
-	NavigationPages<NavigationSessionSummary>["getSnapshot"]
->;
+type PageSnapshot<T> = ReturnType<NavigationPages<T>["getSnapshot"]>;
 export interface ProjectBrowserGroup {
 	project: NavigationProjectSummary;
 	expanded: boolean;
-	current: PageSnapshot;
-	recent: PageSnapshot;
-	archived: PageSnapshot;
+	current: PageSnapshot<NavigationSessionSummary>;
+	recent: PageSnapshot<NavigationSessionSummary>;
+	archived: PageSnapshot<NavigationSessionSummary>;
 	/** The current and recent rows, without duplicates. */
 	sessions: NavigationSessionSummary[];
 }
 export interface ProjectBrowserSnapshot {
-	projects: ReturnType<
-		NavigationPages<NavigationProjectSummary>["getSnapshot"]
-	>;
+	projects: PageSnapshot<NavigationProjectSummary>;
 	groups: ProjectBrowserGroup[];
 }
 export interface ProjectBrowserController {
@@ -73,7 +69,6 @@ export function createProjectBrowserController(
 	const groups = new Map<string, Group>();
 	let disposed = false;
 	let paused = false;
-	let epoch = 0;
 	const inFlightPages = new Set<string>();
 	const unsubs = new Set<() => void>();
 	let unwatchCatalog = () => {};
@@ -110,6 +105,10 @@ export function createProjectBrowserController(
 			}),
 		};
 	};
+	// Each page publishes every change to its own state, and the controller
+	// subscribes to every page (in groupFor, and to the catalog at the end),
+	// so it publishes on its own only for the one thing no page carries: a
+	// project's expanded flag.
 	const publish = () => {
 		if (disposed) return;
 		rebuildSnapshot();
@@ -149,7 +148,6 @@ export function createProjectBrowserController(
 	const loadExpanded = async (key: string, force = false) => {
 		const group = groups.get(key);
 		if (!group || disposed || !group.expanded) return;
-		const currentEpoch = epoch;
 		await Promise.all(
 			tierPages(group).map((page) =>
 				force || !page.getSnapshot().loaded
@@ -157,9 +155,13 @@ export function createProjectBrowserController(
 					: Promise.resolve(),
 			),
 		);
-		if (disposed || currentEpoch !== epoch) return;
-		publish();
 	};
+	const reloadExpanded = () =>
+		Promise.all(
+			[...groups.values()]
+				.filter((group) => group.expanded)
+				.map((group) => loadExpanded(group.project.key, true)),
+		);
 	const controller: ProjectBrowserController = {
 		getSnapshot: () => cachedSnapshot,
 		subscribe(listener) {
@@ -177,10 +179,7 @@ export function createProjectBrowserController(
 				unwatchCatalog = catalog.watch();
 				catalogWatchStarted = true;
 			}
-			const currentEpoch = epoch;
 			await catalog.refresh();
-			if (disposed || currentEpoch !== epoch) return;
-			publish();
 		},
 		async expand(key) {
 			if (disposed) return;
@@ -217,7 +216,6 @@ export function createProjectBrowserController(
 			} finally {
 				inFlightPages.delete("catalog");
 			}
-			publish();
 		},
 		async loadMoreSessions(key, tier) {
 			const group = groups.get(key);
@@ -238,7 +236,6 @@ export function createProjectBrowserController(
 			} finally {
 				inFlightPages.delete(pageKey);
 			}
-			publish();
 		},
 		async retry(projectKey, tier) {
 			if (disposed) return;
@@ -253,7 +250,6 @@ export function createProjectBrowserController(
 						return state.loaded ? page.more() : page.refresh();
 					}),
 				);
-				publish();
 				return;
 			}
 			if (catalog.getSnapshot().error) {
@@ -261,26 +257,15 @@ export function createProjectBrowserController(
 				if (state.loading) return;
 				if (state.loaded && state.rows.length > 0) await catalog.more();
 				else await catalog.refresh();
-				publish();
 				return;
 			}
-			await Promise.all(
-				[...groups.values()]
-					.filter((group) => group.expanded)
-					.map((group) => loadExpanded(group.project.key, true)),
-			);
-			publish();
+			await reloadExpanded();
 		},
 		async refresh() {
 			if (disposed) return;
 			await catalog.refresh();
 			if (disposed) return;
-			await Promise.all(
-				[...groups.values()]
-					.filter((group) => group.expanded)
-					.map((group) => loadExpanded(group.project.key, true)),
-			);
-			publish();
+			await reloadExpanded();
 		},
 		pause() {
 			paused = true;
@@ -293,7 +278,6 @@ export function createProjectBrowserController(
 		dispose() {
 			if (disposed) return;
 			disposed = true;
-			epoch++;
 			for (const unsubscribe of unsubs) unsubscribe();
 			unwatchCatalog();
 			unsubs.clear();
