@@ -447,15 +447,20 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		// surface already keeps it (deny-list path), so a typed role's tools:
 		// list must not silently take it away.
 		allowed = appendUniqueStrings(allowed, "use_skill")
-		// Root-only job and delegation tools in a typed role's list are
-		// allowance-gated: granted, the role keeps them and gains job_watch
-		// to supervise its delegates; a leaf loses them, on every spawn
+		// job_watch supervises a session's OWN jobs, not a delegate's: any
+		// session that can run jobs can watch them at any depth, so it is not
+		// a capability a role opts into and a tools: list must not take it
+		// away. Every cross-session source authorizes itself — source="parent"
+		// requires delegate(watch_parent=true), and a concrete job id must be
+		// owned by the watching session — so a leaf gains no reach over its
+		// parent's jobs. Without it, a long foreground command promoted to a
+		// background job leaves the delegate no way to await it, and the
+		// one-shot drain kills it (#2645).
+		allowed = appendUniqueStrings(allowed, "job_watch")
+		// Delegation tools in a typed role's list are allowance-gated: a role
+		// granted delegation keeps delegate; a leaf loses it on every spawn
 		// path, exactly as the untyped surface does.
-		if canDelegate {
-			if hasString(allowed, "delegate") {
-				allowed = appendUniqueStrings(allowed, "job_watch")
-			}
-		} else {
+		if !canDelegate {
 			allowed = removeRootOnlySubagentTools(allowed)
 		}
 		return false, allowed, nil

@@ -151,12 +151,12 @@ func assertSubagentPolicyHelpers(t *testing.T, selector byte) {
 		wantDeny    bool
 	}{
 		{agent: &plugin.Agent{AllTools: true}, wantAll: true},
-		// task_list, compact_context, and use_skill ride along on every explicit
-		// allow-list: compact_context is context hygiene and use_skill is the
-		// skill-activation capability — neither is an opt-in capability (commits
-		// cec0b9bb5, "fix(subagents): compact_context in the default surface",
-		// and #1427, "delegates keep use_skill so skill-directed briefs work").
-		{agent: &plugin.Agent{Tools: []string{"read_file"}}, wantAllow: []string{"read_file", "task_list", "compact_context", "use_skill"}},
+		// task_list, compact_context, use_skill, and job_watch ride along on
+		// every explicit allow-list: none is an opt-in capability (commits
+		// cec0b9bb5, "fix(subagents): compact_context in the default surface";
+		// #1427, "delegates keep use_skill so skill-directed briefs work"; and
+		// #2645, "subagents keep job_watch so a promoted shell job is awaitable").
+		{agent: &plugin.Agent{Tools: []string{"read_file"}}, wantAllow: []string{"read_file", "task_list", "compact_context", "use_skill", "job_watch"}},
 		{canDelegate: true},
 		{wantDeny: true},
 	}
