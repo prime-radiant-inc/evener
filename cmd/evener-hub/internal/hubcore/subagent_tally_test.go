@@ -41,7 +41,8 @@ func fuzzScenarioRoster_FingerprintMovesWithTheSubagentTally(t *testing.T) {
 }
 
 // fuzzScenarioBuildTree_RootRowsCarryTheTreesSubagentTally: a live root's
-// Live, project and NeedsYou rows carry its tally from one closure; its
+// Live, project and NeedsYou rows carry its tally from one closure, and so does
+// the flat Live row of a live session the past index has no meta for yet; its
 // subagent rows and an ended session carry none.
 func fuzzScenarioBuildTree_RootRowsCarryTheTreesSubagentTally(t *testing.T) {
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
@@ -51,8 +52,21 @@ func fuzzScenarioBuildTree_RootRowsCarryTheTreesSubagentTally(t *testing.T) {
 		{ID: "01CHILD", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, ParentSessionID: "01ROOT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "01ENDED", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
-	live := []LiveEntry{{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusAwaiting, RunningSubagentIDs: []string{"01CHILD"}, Subagents: tally}}
+	metaless := appwire.SubagentTally{Done: 4}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusAwaiting, RunningSubagentIDs: []string{"01CHILD"}, Subagents: tally},
+		{PID: 2, SessionID: "01METALESS", Status: appwire.ThreadStatusIdle, Subagents: metaless},
+	}
 	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
+	leafTally, leafListed := appwire.SubagentTally{}, false
+	for _, row := range tree.Live {
+		if row.ID == "01METALESS" {
+			leafTally, leafListed = row.Subagents, true
+		}
+	}
+	if !leafListed || leafTally != metaless {
+		t.Fatalf("meta-less Live row tally = %+v (listed %v), want %+v", leafTally, leafListed, metaless)
+	}
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01ROOT")
 	if !inLive || !inProject || len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "01ROOT" {
 		t.Fatalf("rows of the awaiting root: live=%v project=%v needsYou=%+v", inLive, inProject, tree.NeedsYou)

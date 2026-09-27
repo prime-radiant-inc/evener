@@ -21,21 +21,24 @@ func TestNavigationRowsCarryTheWholeTreesSubagentTally(t *testing.T) {
 		{ID: "01ROOT", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "01QUIET", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
+	var childIDs []string
 	for i := range 60 {
+		childID := fmt.Sprintf("01CHILD%02d", i)
+		childIDs = append(childIDs, childID)
 		metas = append(metas, schema.SessionMeta{
-			ID: fmt.Sprintf("01CHILD%02d", i), CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Duration(i) * time.Second),
+			ID: childID, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Duration(i) * time.Second),
 			ParentSessionID: "01ROOT", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"},
 		})
 	}
 	tally := appwire.SubagentTally{Running: 2, Failed: 1, Done: 57}
 	live := []hubcore.LiveEntry{
-		{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusActive, Subagents: tally},
+		{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusActive, RunningSubagentIDs: childIDs, Subagents: tally},
 		{PID: 2, SessionID: "01QUIET", Status: appwire.ThreadStatusIdle},
 	}
 	rows := liveTaskRows(t, hubcore.BuildTreeAt(metas, live, nil, now).Live)
 	root := rows["01ROOT"]
-	if len(root.Children) >= 60 {
-		t.Fatalf("root row carries %d children; the fixture must exceed the row's cap", len(root.Children))
+	if len(root.Children) == 0 || len(root.Children) >= 60 {
+		t.Fatalf("root row carries %d children; the fixture must reach the row's children cap without showing all 60", len(root.Children))
 	}
 	if want := (hubapi.NavigationSubagentTally{Running: 2, Failed: 1, Done: 57}); root.Subagents == nil || *root.Subagents != want {
 		t.Fatalf("root tally = %+v, want %+v", root.Subagents, want)
@@ -71,6 +74,14 @@ func TestNavigationSchemaRefusesANegativeSubagentCount(t *testing.T) {
 	session.Subagents = &hubapi.NavigationSubagentTally{Failed: -1}
 	if navigationSessionValueValid(session) {
 		t.Fatal("a negative subagent count was accepted")
+	}
+	session.Subagents = &hubapi.NavigationSubagentTally{Done: int(maxNavigationSafeInteger)}
+	if !navigationSessionValueValid(session) {
+		t.Fatal("a count at the largest safe integer was refused")
+	}
+	session.Subagents = &hubapi.NavigationSubagentTally{Done: int(maxNavigationSafeInteger) + 1}
+	if navigationSessionValueValid(session) {
+		t.Fatal("a count past the largest safe integer was accepted")
 	}
 }
 
