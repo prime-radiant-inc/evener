@@ -59,17 +59,21 @@ const tasks = {
   ],
 } as unknown as InstanceListResponse;
 
-it("renders the Completed line for done rows only, never a stamped cancellation", async () => {
-  const { client } = scriptedClient(tasks);
-  const tree = render(
+function taskList(client: ConversationClientLike, connected: boolean) {
+  return (
     <TaskList
-      client={client as ConversationClientLike}
+      client={client}
       sessionRef="local:s"
       threadId="s"
       hasTasks
-      connected
-    />,
+      connected={connected}
+    />
   );
+}
+
+it("renders the Completed line for done rows only, never a stamped cancellation", async () => {
+  const { client } = scriptedClient(tasks);
+  const tree = render(taskList(client, true));
   // Let the initial read (store.watch's own refresh) land.
   await act(async () => {});
 
@@ -100,6 +104,23 @@ it("renders the Completed line for done rows only, never a stamped cancellation"
   // Exactly one Completed line: the done row's. A cancelled row carrying the
   // new settle stamp must not claim it.
   expect(text.match(/Completed/g)?.length).toBe(1);
+});
+
+it("keeps its last list through a dropped connection", async () => {
+  const { client } = scriptedClient(tasks);
+  const tree = render(taskList(client, true));
+  await act(async () => {});
+  expect(renderedText(tree)).toContain("Done · settled · 2");
+
+  await act(async () => {
+    tree.update(taskList(client, false));
+  });
+
+  // The connection dropped, but the store's last loaded rows are untouched:
+  // the list is still there, alongside the note explaining why it may be
+  // stale.
+  expect(renderedText(tree)).toContain("Done · settled · 2");
+  expect(renderedText(tree)).toContain("Disconnected");
 });
 
 type TasksSheetProps = ComponentProps<typeof TasksSheet>;
