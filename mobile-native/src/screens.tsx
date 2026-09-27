@@ -819,6 +819,11 @@ export function SessionsScreen({
 // never fires on iOS, and subscribing there raises a dev-mode red box), so
 // the subscription itself is Android-only. Extracted so this is testable
 // without mounting the whole screen.
+//
+// It asks for real focus, not whether the screen is in front
+// (useScreenInFront): the keyboard belongs to the screen the person is looking
+// at, so a session under one of its own sheets never pulls focus into its
+// composer.
 export function useFocusAfterModal(
 	navigation: { isFocused: () => boolean },
 	focusAfterModal: RefObject<boolean>,
