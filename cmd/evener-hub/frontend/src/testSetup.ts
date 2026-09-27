@@ -1,6 +1,7 @@
 import { cleanup } from "@testing-library/react";
 import * as React from "react";
 import { afterAll, afterEach, beforeAll } from "vitest";
+import { awaitActScopeClosed } from "./testActScopeGuard";
 import { guardConsoleOutput } from "./testConsoleGuard";
 
 // Every test file must get its own VM context: stores, pane registrations and
@@ -73,4 +74,33 @@ Object.defineProperty(reactInternals, "recentlyCreatedOwnerStacks", {
   get: () => Number.POSITIVE_INFINITY,
   set: () => {},
   configurable: true,
+});
+
+// A test that timed out inside act() leaves React's act scope open, and the
+// next test would run inside it (testActScopeGuard.ts). Registered after the
+// unmount so it runs before it: an unmount inside the open scope would only be
+// queued there. The timers and clock are captured here, before any test can
+// fake them. A scope still open after the bound stays open for the rest of the
+// file, so it is reported once rather than blamed on every later test. React
+// keeps the open scope's queue on its internals; if an upgrade drops it, this
+// throws rather than guarding nothing.
+if (!("actQueue" in reactInternals)) {
+  throw new Error("React no longer exposes actQueue; update or remove the act-scope guard in testSetup.ts.");
+}
+const realSetTimeout = globalThis.setTimeout;
+const realNow = performance.now.bind(performance);
+let stuckActScopeReported = false;
+afterEach(async () => {
+  if (stuckActScopeReported) return;
+  const leak = await awaitActScopeClosed(
+    {
+      actScopeOpen: () => reactInternals.actQueue !== null,
+      nextTurn: () => new Promise<void>((resolve) => realSetTimeout(resolve, 0)),
+      now: realNow,
+    },
+    20_000,
+  );
+  if (leak === undefined) return;
+  stuckActScopeReported = reactInternals.actQueue !== null;
+  throw new Error(leak);
 });
