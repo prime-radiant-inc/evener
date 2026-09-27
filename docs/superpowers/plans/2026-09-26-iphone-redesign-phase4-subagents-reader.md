@@ -3466,6 +3466,8 @@ describe("what the phone remembers about a document", () => {
 		const offline = new DocumentMemory(broken, "hub-1", () => 1);
 		offline.left(plan, leaving(0.5));
 		expect(offline.continueReading()?.path).toBe(plan.path);
+		expect(() => offline.opened(plan)).not.toThrow();
+		expect(offline.continueReading()).toBeNull();
 	});
 
 	it("keeps hubs apart, and forgets a removed hub", () => {
@@ -3838,7 +3840,17 @@ export class DocumentMemory {
 	private setTrail(trail: ContinueReading | null): void {
 		this.trail = trail;
 		if (trail) writeJson(this.storage, trailKey(this.hubId), trail);
-		else removeKeys(this.storage, [trailKey(this.hubId)]);
+		else {
+			// Opening or finishing a document is routine reading activity, not a
+			// hub removal: unlike forgetDocuments below, a storage failure here
+			// must not interrupt it. The in-memory trail is already cleared;
+			// only the stored copy might outlive it.
+			try {
+				removeKeys(this.storage, [trailKey(this.hubId)]);
+			} catch {
+				// Best effort, as writeJson above already is for the other branch.
+			}
+		}
 		this.changed();
 	}
 
