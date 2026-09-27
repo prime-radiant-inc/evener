@@ -109,6 +109,7 @@ import {
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   subscribeComposerSubmissionCommitted,
+  trackProjectionWork,
   updateRecoveryPendingTurn,
   useComposerSubmitting,
   useRecoveryEntries,
@@ -1361,7 +1362,10 @@ export function Composer({ ref, focused }: ComposerProps) {
     if (!hasAttachments && skillNames.length === 0) {
       const match = matchBuiltinInvocation(text, sessionBuiltins);
       if (match) {
-        void handleBuiltinSubmit(match);
+        // Tracked from the press: a built-in's run can enqueue durably
+        // through the threads store (/interrupt does), which registers
+        // nothing with the pending-turns projection until the write lands.
+        void trackProjectionWork(handleBuiltinSubmit(match));
         return;
       }
     }

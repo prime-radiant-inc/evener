@@ -87,7 +87,14 @@ const projectionWorkTracker = createMutationProjectionWorkTracker({
     }),
 });
 
-function trackProjectionWork<T>(work: Promise<T>): Promise<T> {
+// A caller that starts durable work outside the paths in this file registers
+// it here from the moment it starts, as Composer's typed built-ins do: their
+// run enqueues straight through the threads store. The refreshes a commit
+// starts register only once its write lands, so until then a flush would find
+// nothing outstanding and declare the projection settled with the write in
+// flight - the window submitWithPendingTracking avoids by tracking its whole
+// duration (kata 3p22).
+export function trackProjectionWork<T>(work: Promise<T>): Promise<T> {
   return projectionWorkTracker.track(work);
 }
 

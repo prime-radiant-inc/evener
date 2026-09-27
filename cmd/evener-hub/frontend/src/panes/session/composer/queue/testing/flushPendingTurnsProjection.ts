@@ -32,7 +32,11 @@ import { settlePendingTurnsProjectionForTests } from "../pendingTurnsStore";
 // So the hazard is the pattern, not that instance. A new path that registers
 // late reopens it as a load-sensitive false green rather than a failure.
 // pendingTurnsStore's "a flush cannot settle while a submit is still in
-// flight" pins the property for the paths there.
+// flight" pins the property for the paths there. A caller outside that file
+// registers its own durable work through trackProjectionWork from the moment
+// it starts, as Composer's typed built-ins do (their run enqueues through the
+// threads store); Composer's "a flush cannot settle while a typed built-in's
+// durable write is still in flight" pins that one.
 export async function flushPendingTurnsProjectionForTests(): Promise<void> {
   for (let round = 0; round < 10; round += 1) {
     let awaited = 0;

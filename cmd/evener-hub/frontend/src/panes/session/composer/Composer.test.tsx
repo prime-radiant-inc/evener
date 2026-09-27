@@ -194,6 +194,16 @@ class PausedCommitStorage extends MutationOutboxIndexedDB {
     await this.commitGate;
     return super.enqueueIntent(intent);
   }
+
+  // Stop's write (the interrupt record and the cancellations it makes in the
+  // same transaction) is a local outbox commit too, held by the same gate.
+  override async enqueueInterruptAndCancel(
+    intent: Parameters<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]>[0],
+  ): ReturnType<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]> {
+    this.markCommitStarted?.();
+    await this.commitGate;
+    return super.enqueueInterruptAndCancel(intent);
+  }
 }
 
 class PausedRecoveryReadStorage extends MutationOutboxIndexedDB {
@@ -3719,6 +3729,45 @@ test("a typed /interrupt on an active fenced session still mints its intent: Sto
   expect(getToasts().map((toast) => toast.text)).not.toContain(
     "/interrupt isn't available until this session is resumed",
   );
+});
+
+// The test above settles its press with the projection flush, which awaits
+// only what registered with the pending-turns work tracker. A typed built-in
+// runs fire-and-forget from the form's submit and enqueues through the threads
+// store, and the refreshes its commit starts register only once the write
+// lands. Untracked, a flush that begins first finds nothing outstanding and
+// returns, and the late commit's refreshes then render outside act. The
+// fenced mount parks the intent, so the held write is all of the run's
+// durable work.
+test("a flush cannot settle while a typed built-in's durable write is still in flight", async () => {
+  const storage = new PausedCommitStorage();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:active-fenced-typed-interrupt-held";
+  await mountActiveFencedForTypedCommands(ref);
+  // Settle the mount's own projection work, so only the held write can keep
+  // the flush below open.
+  await flushPendingTurnsProjectionForTests();
+
+  await user.type(textarea(), "/interrupt");
+  await user.keyboard("{Escape}");
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await storage.commitStarted;
+
+  let flushResolved = false;
+  const flushing = flushPendingTurnsProjectionForTests().then(() => {
+    flushResolved = true;
+  });
+  // Give the flush every chance to finish early: more macrotask hops than its
+  // own settle round takes. If the typed run is tracked, it cannot return here.
+  for (let hop = 0; hop < 5; hop += 1) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  expect(flushResolved).toBe(false);
+
+  storage.release();
+  await flushing;
+  expect((await parkedOutboxFor(ref)).map((record) => record.method)).toEqual(["turn/interrupt"]);
 });
 
 // --- interrupt ---------------------------------------------------------------
