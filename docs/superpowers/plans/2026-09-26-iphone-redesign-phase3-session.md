@@ -50,7 +50,7 @@ Related plans:
     - "Couldn't confirm this was sent", with "Check" and "Discard".
   - Dock:
     - questions: "Question 1 of 2", "· Recommended", "Other answer…", "Next question", "Send answer" / "Send answers", and the folded bar "Answer 2 questions";
-    - approvals: "Allow this file only" / "It will ask again for the next one", "Allow once · Just this action", "Deny", "Tell the agent something else…";
+    - approvals: "Allow this file only" / "It will ask again for the next one", "Allow once · Just this action", "Deny";
     - toasts: "Answer sent", "Answers sent", "Allowed once".
   - Detail level: the picker's header "How much of the agent's work this session shows".
   - ⋯ menu: "Detail level", "Find in session", "Subagents", "Tasks", "Notes & links", "Session info", "Ask aside…" with "A side question in its own session; this one keeps working", "Pin to category…", "Archive", "Shut down".
@@ -229,15 +229,11 @@ Decisions this plan makes where the spec is silent, contradicts itself, or asks 
     - **Unsaved input.** The Session sheet's title edit is this plan's one sheet input that can be lost: swiping it away with a changed name asks "Discard the new name?". Notes & links saves as it closes, so it never asks.
     - **One layout.** A sheet's header holds whatever is pinned, so the Model sheet's search field and its Effort control sit under its title, where spec 8.5 puts Effort at the bottom. A formSheet sizes one scroll view under one header, and has no pinned footer (phase 2's ruling 28).
     - **What stays an RN `Modal`:** the full-screen views, which are the composer's expanded editor (Task 5), a message's Select text (Task 24), the log viewer (Task 26) and the image viewer (Task 29); and today's `ActivitySheet` until phase 4 retires it (ruling 7).
+38. **Approvals have no redirect.** The dock offers Allow and Deny only, exactly as the web's approval card (`cmd/evener-hub/frontend/src/panes/session/transcript/tools/sandboxEscalation.tsx:106-113`). Jesse, 2026-09-26, revisiting question 2: "I don't think we actually have approvals in real use." There is no "Tell the agent something else…" and no "Deny and send": the composer never shows while an approval is pending. This supersedes question 2's provisional Deny-and-send behavior.
 
 ## Questions for Jesse
 
-Jesse answered all three on 2026-09-26. Question 1 (detail levels) is now ruling 8, and question 3 (what Retry sends) is ruling 26. Question 2 stays open, because its answer names behavior the web doesn't have.
-
-2. **"Tell the agent something else…" during an approval.** The agent is blocked mid-step, so a queued message would wait behind the very turn it is trying to redirect. What should that composer's Send do?
-   - Jesse answered: "during an approval, 'tell the agent something else' does what it does on the web. it says that the user picked 'Do something else' and said '....'"
-   - The web has no such path for an approval. Its approval card offers only Allow and Deny (`cmd/evener-hub/frontend/src/panes/session/transcript/tools/sandboxEscalation.tsx:106-113`), and `evener/sandbox/escalation/resolve` carries nothing but `approve` (`appwire/types.go:1021-1026`); the TUI offers the same two (`cmd/evener-tui/hub_escalation.go:137`). The web's "Something else…" belongs to the question dock (`panes/session/composer/askDock/AskQuestionCard.tsx:182-195`), whose free-text answer goes out as `1. [Header] → free text: "…"` (`appwire-client/typescript/askAnswers.ts:74,95`).
-   - Until Jesse says what an approval's redirect sends, Task 11 keeps its provisional behavior: it denies the request and steers your text in, so the agent reads the denial and your message together at its next step, with the accessibility label "Deny and send".
+None open. Jesse answered all three on 2026-09-26: question 1 (detail levels) is ruling 8, question 3 (what Retry sends) is ruling 26, and question 2 (the approval redirect) is ruling 38.
 
 ## Review Focus
 
@@ -2020,7 +2016,7 @@ git commit -m "feat(native): the ghosts above the composer, from the queue, the 
 ---
 ## PR 3: The ask dock
 
-PR 3 turns questions and approvals into the ask dock: an amber-edged card that replaces the tray and becomes the input while it is open. The composer steps aside, and comes back through "Other answer…", "Tell the agent something else…", or folding the dock. `QuestionSheet` and `ApprovalSheet` go.
+PR 3 turns questions and approvals into the ask dock: an amber-edged card that replaces the tray and becomes the input while it is open. For a question, the composer steps aside and comes back through "Other answer…" or folding the dock; for an approval, it never comes back (ruling 38). `QuestionSheet` and `ApprovalSheet` go.
 
 ### Task 9: The dock's words and what your text answers
 
@@ -2359,7 +2355,7 @@ git commit -m "feat(native): the ask dock's words, and what your text answers"
 **Interfaces:**
 - Consumes: Task 9's `approvalCard`, and `ApprovalControls` (`src/approvalControls.ts`). `resolve` returns nothing: a decision succeeded when, after it settles, `controls.getSnapshot().error` is null.
 - Produces:
-  - `<ApprovalDock request={SandboxEscalationRequested} controls={ApprovalControls} onDecided={(allowed: boolean) => void} onSomethingElse={() => void} />`
+  - `<ApprovalDock request={SandboxEscalationRequested} controls={ApprovalControls} onDecided={(allowed: boolean) => void} />`
   - The visibility rule:
 
     ```ts
@@ -2372,29 +2368,24 @@ git commit -m "feat(native): the ask dock's words, and what your text answers"
     }): { dock: "approval" | "question" | "foldedQuestion" | null; tray: boolean; composer: boolean; modelChip: boolean }
     ```
 
-**Requirements (spec 8.4, ruling 12, Question 2):**
+**Requirements (spec 8.4, rulings 12 and 38):**
 1. **When it shows.** While `conversation.pendingEscalations` is non-empty, the dock shows the first one (raise order) in the tray's place, so the tray and its Stop hide. Its card matches the question dock's (1pt `attentionEdge`, `surface`). It has no header.
 2. **Content, top to bottom:**
    - `hand.raised.circle.fill` in `attention`, then `wants` in SF Pro semibold 17/22;
    - `${tool}  ${target}` in Menlo 13/18 `inkMid` (the tool alone when `target` is empty), wrapping only at slashes: put a zero-width space after each "/";
    - `scope` 15/20 `inkMid`, followed by "Part of this may already have run." when `partiallyRan`;
    - the primary button: filled `accentFill`, `primary.label` 17 semibold in `onFill`, `primary.detail` 13 in `onFill` beneath, a 44pt minimum;
-   - "Deny", a plain text button in `inkHi`;
-   - "Tell the agent something else…" in `accentInk`.
+   - "Deny", a plain text button in `inkHi`.
 3. **Deciding.**
    - The primary calls `controls.resolve(request, true)`, and Deny calls `controls.resolve(request, false)`. They are disabled while `state.pending` or `state.refreshing`.
    - A successful decision shows the toast "Allowed once" or "Denied". `ApprovalControls` re-reads the session itself.
    - An error shows `state.error` as one line in the dock, and the dock calls `controls.refresh()` once on its own. There is no refresh button.
-4. **"Tell the agent something else…"** (Question 2, provisional) brings the composer back and focuses it. While an approval is pending and the composer is back:
-   - Send is labelled "Deny and send".
-   - Pressing it calls `controls.resolve(request, false)`. If that succeeds, it sends the text with `store.getState().steer(service, input)` when `conversationControls(conversation).steer`, and with `store.getState().queue(service, input)` otherwise, through `document.submit` as Send does.
-   - The toast "Denied" follows.
-5. **Visibility,** one rule for the bottom of the screen, `bottomStack`:
-   - With a pending approval: the approval dock, and the composer only after "Tell the agent something else…".
+4. **Visibility,** one rule for the bottom of the screen, `bottomStack`:
+   - With a pending approval: the approval dock. The composer never shows.
    - With a pending question: the question dock (or its folded bar), and the composer when it is folded or after "Other answer…".
    - Otherwise: the tray while `trayLine` is non-null, then the composer.
    - The model chip hides whenever a dock is open and the composer has come back.
-   - The "composer came back" state resets when the pending question batch or the first escalation id changes.
+   - The "composer came back" state resets when the pending question batch changes.
 
    Test `bottomStack` as a table.
 - [ ] **Step 1: Write the failing tests**
@@ -2402,17 +2393,15 @@ git commit -m "feat(native): the ask dock's words, and what your text answers"
     - the words for a named path and for `<denied>`;
     - the primary calls `resolve(request, true)` and, after it settles, `onDecided(true)`;
     - Deny calls `resolve(request, false)`;
-    - an error line triggers one `refresh()`;
-    - "Tell the agent something else…" calls `onSomethingElse`.
+    - an error line triggers one `refresh()`.
   - `bottomStack` as a table test in `src/session/bottomStack.test.ts`.
   - `ConversationScreen.send.test.tsx`, for an active thread with one entry in `pendingEscalations`:
-    - the dock shows, with no "Stop";
-    - "Allow this file only" sends `evener/sandbox/escalation/resolve` with `{ ref, escalationId, approve: true }`;
-    - "Tell the agent something else…", then typing and "Deny and send", sends the resolve with `approve: false` and then `turn/steer`.
+    - the dock shows, with no "Stop", and no field labelled "Message";
+    - "Allow this file only" sends `evener/sandbox/escalation/resolve` with `{ ref, escalationId, approve: true }`.
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/ApprovalDock.test.tsx src/session/bottomStack.test.ts src/approvals.test.ts src/ConversationScreen.send.test.tsx`
 - [ ] **Step 3: Implement**, then delete `ApprovalSheet.tsx`.
 - [ ] **Step 4: Run them and watch them pass**, then run `npm run check`. Build Release in the simulator and answer a real question and a real approval.
-- [ ] **Step 5: Commit** (`feat(native): the approval dock, and the composer steps aside for the dock`). Then open PR 3: "feat(native): the ask dock (phase 3, PR 3)". The description quotes Question 2 and says the Deny-and-send behavior is provisional.
+- [ ] **Step 5: Commit** (`feat(native): the approval dock, and the composer steps aside for the dock`). Then open PR 3: "feat(native): the ask dock (phase 3, PR 3)". The description notes the approval dock offers Allow and Deny only, as the web does (ruling 38).
 
 ---
 ## PR 4: The nav bar, the ⋯ menu with detail levels, the context chips, and the connection bar
@@ -5892,7 +5881,7 @@ The demo fleet (phase 2 PR B, #2471, on main as `mobile-native/src/dev/demoFleet
   - Next capsule: Tasks 32-33 (and ruling 11).
 - **8.4:**
   - question: Tasks 9-10 (rulings 13-14);
-  - approval: Tasks 9 and 11 (ruling 12; Question 2).
+  - approval: Tasks 9 and 11 (rulings 12 and 38).
 - **8.5:**
   - layout and Send: Tasks 3 and 5; + menu: Tasks 5 and 30 (ruling 16);
   - model chip and sheet: Tasks 19 and 21; commands and skills: Task 30 (ruling 15);
