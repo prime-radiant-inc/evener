@@ -134,6 +134,16 @@ func resolveBuckets(stateBase string) ([]bucket, string, error) {
 // filtering on identifier.ValidateProjectID would hide a legacy- or
 // foreign-named bucket that holds real sessions — a forensic sweep must see
 // what is on disk.
+//
+// Symlink policy: globBuckets follows symlinks deliberately. Its isDir helper
+// uses os.Stat (which follows), so a symlinked bucket dir under projects/ is
+// enumerated like any other. The doctor is a user-facing diagnostic tool and
+// must see symlinked state layouts an operator has wired up; the agent's
+// model-facing transcript read paths (agent/transcript_lookup.go's
+// enumerateBuckets) refuse symlinked resolution paths as a security boundary
+// (#2205). That divergence is by owner ruling, recorded in issue #2275
+// ("this is a user tool. allow symlinked buckets.") — do not "harmonize" the
+// two without the owner.
 func globBuckets(projects string) ([]bucket, error) {
 	matches, err := globProjectBuckets(filepath.Join(projects, "*"))
 	if err != nil {
@@ -186,6 +196,16 @@ func refFor(projectID, sid string) string {
 	if identifier.ValidateProjectID(projectID) != nil {
 		return ""
 	}
+	return projRef(projectID, sid)
+}
+
+// projRef builds the proj:<projectID>:<sid> selector form. refFor calls
+// it after identifier.ValidateProjectID accepts the name (the canonical
+// [A-Za-z0-9-] alphabet); followSelector calls it after safeTokenForRepro
+// accepts the name (a wider comma- and shell-safety check that also
+// covers non-canonical legacy names like hex-style bucket directories).
+// The grammar-safety check stays at each call site.
+func projRef(projectID, sid string) string {
 	return "proj:" + projectID + ":" + sid
 }
 

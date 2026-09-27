@@ -280,17 +280,19 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 				if params.Status.Type == appwire.ThreadStatusActive {
 					ranTurn = true
 				}
-				if params.Status.Type == appwire.ThreadStatusIdle &&
+				// A failed turn rests the session on systemError (agent
+				// RestingWireState) until the next turn starts.
+				if params.Status.Type == appwire.ThreadStatusSystemError &&
 					params.Capabilities != nil && params.Capabilities.ChangeModel && ranTurn {
-					// Boot parks the thread idle with ChangeModel too, and on a
+					// Boot parks the thread with ChangeModel too, and on a
 					// starved runner that status notification is still draining
-					// when the subscribe cut lands. An idle published before
-					// the failing turn ran proves nothing about restoration, so
-					// only one after the turn went active counts. Its history
-					// (the failed turn) is published from the recorded entries
-					// on its own schedule, so the two milestones are awaited in
-					// either order.
-					record("idle with model capability")
+					// when the subscribe cut lands. A resting status published
+					// before the failing turn ran proves nothing about
+					// restoration, so only one after the turn went active
+					// counts. Its history (the failed turn) is published from
+					// the recorded entries on its own schedule, so the two
+					// milestones are awaited in either order.
+					record("resting with model capability")
 				}
 			}
 		}
@@ -306,16 +308,16 @@ func TestServeModelSwitch_ProviderFailureRestoresCapability(t *testing.T) {
 		t.Fatalf("TurnStart (failed provider): %v", err)
 	}
 
-	if err := waitServeMilestonesInAnyOrder(ctx, milestones, "failed turn", "idle with model capability"); err != nil {
-		t.Fatalf("wait failed turn and idle capability: %v", err)
+	if err := waitServeMilestonesInAnyOrder(ctx, milestones, "failed turn", "resting with model capability"); err != nil {
+		t.Fatalf("wait failed turn and resting capability: %v", err)
 	}
 
 	read, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
 		t.Fatalf("ThreadRead after provider failure: %v", err)
 	}
-	if read.Thread.Status.Type != appwire.ThreadStatusIdle {
-		t.Fatalf("thread/read status = %q, want idle", read.Thread.Status.Type)
+	if read.Thread.Status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("thread/read status = %q, want systemError", read.Thread.Status.Type)
 	}
 	if !read.Thread.Evener.Capabilities.ChangeModel {
 		t.Fatal("thread/read ChangeModel = false, want true after provider failure")

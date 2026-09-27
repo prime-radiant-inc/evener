@@ -12,6 +12,7 @@ import (
 
 // TestValidGrantRange covers the validGrantRange function (lines 150-154).
 func TestValidGrantRange(t *testing.T) {
+	t.Parallel()
 	if got := validGrantRange(0); got != "0" {
 		t.Fatalf("validGrantRange(0) = %q, want '0'", got)
 	}
@@ -26,6 +27,7 @@ func TestValidGrantRange(t *testing.T) {
 // TestValidateDelegateGrant covers the validateDelegateGrant function
 // (lines 157-158).
 func TestValidateDelegateGrant(t *testing.T) {
+	t.Parallel()
 	// requested < own: valid.
 	ok, rangeStr := validateDelegateGrant(2, 5)
 	if !ok || rangeStr != "0..4" {
@@ -41,6 +43,7 @@ func TestValidateDelegateGrant(t *testing.T) {
 // TestDelegateStartFailed covers the delegateStartFailed constructor
 // (lines 161-167).
 func TestDelegateStartFailed(t *testing.T) {
+	t.Parallel()
 	err := errors.New("boom")
 	result := delegateStartFailed(err)
 	if result.Type != delegateResourceType || result.Status != jobstore.StatusFailed || result.Reason != "start_failed" || !errors.Is(result.Err, err) {
@@ -51,6 +54,7 @@ func TestDelegateStartFailed(t *testing.T) {
 // TestSendMessageFailed covers the sendMessageFailed constructor
 // (lines 170-175).
 func TestSendMessageFailed(t *testing.T) {
+	t.Parallel()
 	err := errors.New("send failed")
 	result := sendMessageFailed("caller", err)
 	if result.Target != "caller" || !errors.Is(result.Err, err) {
@@ -61,6 +65,7 @@ func TestSendMessageFailed(t *testing.T) {
 // TestSandboxHostFacts_NilSession covers the nil-session path in
 // sandboxHostFacts (lines 137-138).
 func TestSandboxHostFacts_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	facts := s.sandboxHostFacts()
 	// Should return real prober facts, not panic.
@@ -70,6 +75,7 @@ func TestSandboxHostFacts_NilSession(t *testing.T) {
 // TestDelegateWorktreeReport_NilSession covers the nil-session path in
 // delegateWorktreeReport (line 186).
 func TestDelegateWorktreeReport_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	if got := s.delegateWorktreeReport("worktree", "/some/path"); got != nil {
 		t.Fatalf("expected nil for nil session, got %+v", got)
@@ -79,6 +85,7 @@ func TestDelegateWorktreeReport_NilSession(t *testing.T) {
 // TestDelegateWorktreeReport_NonWorktreeIsolation covers the non-worktree
 // isolation path (line 186-187).
 func TestDelegateWorktreeReport_NonWorktreeIsolation(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if got := s.delegateWorktreeReport("none", "/some/path"); got != nil {
 		t.Fatalf("expected nil for non-worktree isolation, got %+v", got)
@@ -88,6 +95,7 @@ func TestDelegateWorktreeReport_NonWorktreeIsolation(t *testing.T) {
 // TestDelegateWorktreeReport_EmptyWorkDir covers the empty working-directory
 // path (line 189-191).
 func TestDelegateWorktreeReport_EmptyWorkDir(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	if got := s.delegateWorktreeReport("worktree", ""); got != nil {
 		t.Fatalf("expected nil for empty workdir, got %+v", got)
@@ -100,6 +108,7 @@ func TestDelegateWorktreeReport_EmptyWorkDir(t *testing.T) {
 // TestStableDelegateDisposalHint_NilSession covers the nil-session path
 // (line 241).
 func TestStableDelegateDisposalHint_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	desc := delegatestore.Descriptor{}
 	if got := s.stableDelegateDisposalHint(desc, "dlg_123"); got != "" {
@@ -110,6 +119,7 @@ func TestStableDelegateDisposalHint_NilSession(t *testing.T) {
 // TestStableDelegateDisposalHint_OwnerMismatch covers the owner mismatch
 // path (line 241).
 func TestStableDelegateDisposalHint_OwnerMismatch(t *testing.T) {
+	t.Parallel()
 	s := &Session{id: "sess123"}
 	desc := delegatestore.Descriptor{OwnerSessionID: "other"}
 	if got := s.stableDelegateDisposalHint(desc, "dlg_123"); got != "" {
@@ -120,6 +130,7 @@ func TestStableDelegateDisposalHint_OwnerMismatch(t *testing.T) {
 // TestStableDelegateDisposalHint_NonDelegateID covers the non-delegate-ID
 // path (line 241).
 func TestStableDelegateDisposalHint_NonDelegateID(t *testing.T) {
+	t.Parallel()
 	s := &Session{id: "sess123"}
 	desc := delegatestore.Descriptor{OwnerSessionID: "sess123"}
 	if got := s.stableDelegateDisposalHint(desc, "not-a-delegate-id"); got != "" {

@@ -7,7 +7,7 @@ import {
   mergeSlashCommands,
 } from "@evener/appwire-client";
 import type { ThreadClearResponse } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import type { MobileConversation } from "./projectedRows";
 import { type ControlsSource, conversationControls } from "./conversationControls";
 import type {
   ConversationClearActions,

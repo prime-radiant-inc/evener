@@ -89,6 +89,15 @@ type referenceTurn struct {
 // opened it and versioned by the latest entry that contributed to it.
 func referenceProjection(t testing.TB, path string) []referenceTurn {
 	t.Helper()
+	out, _ := referenceProjectionAndRegistry(t, path)
+	return out
+}
+
+// referenceProjectionAndRegistry is referenceProjection plus the
+// ToolCallRegistry state the scan ended on, which flushProjection needs to
+// reproduce a trailing unpaired communicate call.
+func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn, *apptranscript.ToolCallRegistry) {
+	t.Helper()
 	header, entries, unreadable := readFixtureFile(t, path)
 	type turnState struct {
 		id        string
@@ -116,7 +125,7 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 	var turns []*turnState
 	byID := map[string]*turnState{}
 	var grouper apptranscript.TurnGrouper
-	legacyNames := map[string]string{}
+	reg := apptranscript.NewToolCallRegistry()
 	add := func(s *turnState, item appwire.ThreadItem, entryIndex, part int) int {
 		item.Version = uint64(entryIndex)
 		s.items = append(s.items, item)
@@ -155,7 +164,7 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 			if entry.Model != "" {
 				s.model = entry.Model
 			}
-			items, parts := apptranscript.ProjectTurnParts(id, entryIndex, entry, legacyNames, nil, apptranscript.ToolResultOutputImages)
+			items, parts := apptranscript.ProjectTurnParts(id, entryIndex, entry, reg, nil, apptranscript.ToolResultOutputImages)
 			for j, item := range items {
 				if apptranscript.MergesByCallID(item) {
 					if at, ok := s.calls[item.CallID]; ok {
@@ -232,7 +241,7 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 			apptranscript.EchoesAssistantText(referenceLastTextRun(s.awaiting.Message.Content), entry.Communicate.Message) {
 			continue
 		}
-		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, seed, nil, apptranscript.ToolResultOutputImages)
+		items, parts := apptranscript.ProjectEntryParts(s.id, entryIndex, entry, &apptranscript.ToolCallRegistry{Names: seed}, nil, apptranscript.ToolResultOutputImages)
 		added := map[int]int{} // part -> item
 		for j, item := range items {
 			if entry.Kind == schema.TurnTool || entry.Kind == schema.TurnToolResults {
@@ -315,6 +324,59 @@ func referenceProjection(t testing.TB, path string) []referenceTurn {
 		}
 		out = append(out, referenceTurn{turn: turn, model: s.model})
 	}
+	return out, reg
+}
+
+// flushProjection is projection plus a communicate call the transcript ends
+// on with no result yet, matching what every production reader does
+// (server/appwire_turns.go, cmd/evener-hub/app_threadread.go): reg still
+// holds its CommRawArgs, and FlushUnpairedCommunicates appends the delivered
+// message to the last WIRE-VISIBLE turn (a production turns list never
+// carries one with no items yet, unlike allTurns/candidatesOf's raw
+// projection). Reposition the flushed item(s) into this package's v2 scheme
+// — FlushUnpairedCommunicates's own dense count is production's v1 contract,
+// not a safe v2 position (see remapFlushPositions) — the same remap
+// pendingFlush applies, so the oracle cannot mask the same collision the
+// index would otherwise reproduce.
+//
+// Deliberately not folded into referenceProjection itself: ChangedSince never
+// sees a flushed item (it has no itemRecord or update-log entry to begin
+// with), so updates_test.go's candidatesOf/shownTurns/allTurns compare
+// against the unflushed projection, matching that ground truth. Only
+// referenceCandidates/referenceTurns — checked against Latest/Before, which
+// do include the flush — apply it, on a copy so they never mutate the
+// projection those other callers share.
+func flushProjection(reg *apptranscript.ToolCallRegistry, projection []referenceTurn) []referenceTurn {
+	out := append([]referenceTurn(nil), projection...)
+	// lastShown is the turn the transcript's tail item belongs to: the one
+	// whose Version (the latest entry that contributed to it) is highest, not
+	// the slot latest in display order. A shared turn ID two non-adjacent
+	// entries revisit (a gap-turn samples cycle back to) keeps its
+	// first-appearance slot, so a slice walk from the end would land on
+	// whatever turn happens to sit after that slot instead of the one the
+	// file's last entry actually touched — matching production's
+	// lastCandidate, which finds the last recorded ITEM, not the last slot.
+	lastShown := -1
+	var lastVersion uint64
+	for i, rt := range out {
+		if len(rt.turn.Items) == 0 {
+			continue
+		}
+		if lastShown < 0 || rt.turn.Version >= lastVersion {
+			lastShown, lastVersion = i, rt.turn.Version
+		}
+	}
+	if lastShown < 0 {
+		return out
+	}
+	last := out[lastShown]
+	wireTurns := []appwire.Turn{last.turn}
+	before := len(last.turn.Items)
+	if apptranscript.FlushUnpairedCommunicates(&wireTurns, reg) {
+		remapFlushPositions(wireTurns[0].ID, wireTurns[0].Items[before:])
+		last.turn = wireTurns[0]
+		out[lastShown] = last
+	}
 	return out
 }
 
@@ -344,7 +406,8 @@ func referenceLastTextRun(content []llm.ContentPart) string {
 // the turns a reader sees.
 func referenceTurns(t testing.TB, path string) []appwire.Turn {
 	t.Helper()
-	return shownTurns(referenceProjection(t, path))
+	projection, reg := referenceProjectionAndRegistry(t, path)
+	return shownTurns(flushProjection(reg, projection))
 }
 
 func shownTurns(projection []referenceTurn) []appwire.Turn {
@@ -373,7 +436,8 @@ func allTurns(projection []referenceTurn) []appwire.Turn {
 // reporting whether the neighbouring item belongs to the same turn.
 func referenceCandidates(t testing.TB, path string) []appitempaging.TranscriptItemCandidate {
 	t.Helper()
-	return candidatesOf(referenceProjection(t, path))
+	projection, reg := referenceProjectionAndRegistry(t, path)
+	return candidatesOf(flushProjection(reg, projection))
 }
 
 func candidatesOf(projection []referenceTurn) []appitempaging.TranscriptItemCandidate {
@@ -433,13 +497,17 @@ func TestReferenceEqualsTodaysFileProjectionApartFromPositions(t *testing.T) {
 		}
 		t.Run(fx.name, func(t *testing.T) {
 			path := writeFixture(t, fx)
-			toolNames := map[string]string{}
+			reg := apptranscript.NewToolCallRegistry()
 			today, err := apptranscript.ItemTurnsFromFile(path, testMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-				return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, apptranscript.ToolResultOutputImages)
+				return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Every production caller flushes after projecting (e.g.
+			// server/appwire_turns.go's appTurnProjectionFromTranscriptFile);
+			// ItemTurnsFromFile alone does not, so match that here too.
+			apptranscript.FlushUnpairedCommunicates(&today, reg)
 			reference := referenceTurns(t, path)
 			if len(reference) == 0 {
 				t.Fatal("fixture projected no turns")

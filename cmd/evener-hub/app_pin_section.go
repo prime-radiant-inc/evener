@@ -12,7 +12,25 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 )
 
-type topLevelSessionResolver func(context.Context, string) (string, bool)
+// pinSession is one pinnable session's source-qualified identity: the owning
+// source (empty for the controller's own sessions) and the session's bare ID.
+// The pin store keys on exactly this pair.
+type pinSession struct {
+	source    string
+	sessionID string
+}
+
+// pinSessionRef is the canonical ref a pin's identity is spelled with: the
+// name a client can address the session by ("local:<id>" for the controller's
+// own, "<host>:<id>" for a remote source).
+func (p pinSession) ref() hubapi.Ref {
+	if p.source == "" {
+		return hubapi.LocalRef(p.sessionID)
+	}
+	return hubapi.Ref{HostID: p.source, SessionID: p.sessionID}
+}
+
+type topLevelSessionResolver func(context.Context, string) (pinSession, error)
 
 func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig, navigation *NavigationService, resolve topLevelSessionResolver) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPinSectionRename, func(ctx context.Context, params appwire.PinSectionRenameParams) (appwire.PinSectionRenameResponse, error) {
@@ -52,7 +70,7 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		if cfg.PinSections == nil {
 			return appwire.SessionPinAssignResponse{}, appwire.InternalError("pin section store not configured")
 		}
-		sessionID, err := resolvePinSession(ctx, resolve, params.SessionRef, "sessionRef")
+		session, err := resolvePinSession(ctx, resolve, params.SessionRef, "sessionRef")
 		if err != nil {
 			return appwire.SessionPinAssignResponse{}, err
 		}
@@ -60,9 +78,9 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		var section hubcore.PinSection
 		var changed bool
 		if params.SectionID != nil {
-			section, changed, err = cfg.PinSections.Assign(*params.SectionID, sessionID, time.Now())
+			section, changed, err = cfg.PinSections.Assign(*params.SectionID, session.source, session.sessionID, time.Now())
 		} else {
-			section, changed, err = cfg.PinSections.CreateOrReuseAndAssign(*params.SectionName, sessionID, time.Now())
+			section, changed, err = cfg.PinSections.CreateOrReuseAndAssign(*params.SectionName, session.source, session.sessionID, time.Now())
 		}
 		if err != nil {
 			return appwire.SessionPinAssignResponse{}, pinSectionAppWireError(err)
@@ -73,7 +91,7 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		}
 		return appwire.SessionPinAssignResponse{
 			OK: true, Changed: changed, Navigation: mutation,
-			Assignment: appwire.SessionPinAssignment{SessionRef: hubRefFromTreeNodeID(sessionID).String(), Section: pinSectionForAppWire(section)},
+			Assignment: appwire.SessionPinAssignment{SessionRef: session.ref().String(), Section: pinSectionForAppWire(section)},
 		}, nil
 	})
 
@@ -81,11 +99,11 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		if cfg.PinSections == nil {
 			return appwire.SessionPinUnpinResponse{}, appwire.InternalError("pin section store not configured")
 		}
-		sessionID, err := resolvePinSession(ctx, resolve, params.SessionRef, "sessionRef")
+		session, err := resolvePinSession(ctx, resolve, params.SessionRef, "sessionRef")
 		if err != nil {
 			return appwire.SessionPinUnpinResponse{}, err
 		}
-		changed, err := cfg.PinSections.Unpin(sessionID)
+		changed, err := cfg.PinSections.Unpin(session.source, session.sessionID)
 		if err != nil {
 			return appwire.SessionPinUnpinResponse{}, pinSectionAppWireError(err)
 		}
@@ -95,20 +113,23 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		}
 		return appwire.SessionPinUnpinResponse{
 			OK: true, Changed: changed, Navigation: mutation,
-			Assignment: appwire.SessionPinUnpinAssignment{SessionRef: hubRefFromTreeNodeID(sessionID).String()},
+			Assignment: appwire.SessionPinUnpinAssignment{SessionRef: session.ref().String()},
 		}, nil
 	})
 }
 
-func resolvePinSession(ctx context.Context, resolve topLevelSessionResolver, requested, field string) (string, error) {
+func resolvePinSession(ctx context.Context, resolve topLevelSessionResolver, requested, field string) (pinSession, error) {
 	if resolve == nil {
-		return "", appwire.InternalError("top-level session resolver not configured")
+		return pinSession{}, appwire.InternalError("top-level session resolver not configured")
 	}
-	sessionID, ok := resolve(ctx, requested)
-	if !ok {
-		return "", appwire.InvalidParams(field + " must name a real top-level session")
+	session, err := resolve(ctx, requested)
+	if err != nil {
+		return pinSession{}, err
 	}
-	return sessionID, nil
+	if session.sessionID == "" {
+		return pinSession{}, appwire.InvalidParams(field + " must name a real top-level session")
+	}
+	return session, nil
 }
 
 func commitPinNavigation(ctx context.Context, cfg hubcore.WebConfig, navigation *NavigationService, changed bool) (appwire.NavigationMutation, error) {
@@ -143,9 +164,13 @@ func pinSectionAppWireError(err error) error {
 	}
 }
 
-func (s *WebServer) resolveTopLevelSessionRef(ctx context.Context, requested string) (string, bool) {
+// resolveTopLevelSessionRef resolves a requested session ref to the
+// source-qualified identity a pin is keyed by. A "host:<id>" ref names that
+// host's session and a bare/"local:" ref the controller's own, so one host's
+// ref can never address another source's row that shares its bare ID.
+func (s *WebServer) resolveTopLevelSessionRef(ctx context.Context, requested string) (pinSession, error) {
 	if strings.HasPrefix(requested, "cluster:") {
-		return "", false
+		return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
 	}
 	metas, live, _ := s.navigationTreeInputs(ctx)
 	ids := hubcore.TopLevelSessionIDs(metas)
@@ -166,10 +191,23 @@ func (s *WebServer) resolveTopLevelSessionRef(ctx context.Context, requested str
 	}
 	for id := range ids {
 		if sessionRefMatchesID(requested, id) {
-			return id, true
+			key := hubcore.SessionPinIdentity(id)
+			return pinSession{source: key.Source, sessionID: key.ID}, nil
 		}
 	}
-	return "", false
+	// Nothing matched. A host-qualified ref that names a source the tree
+	// carries rows for is a missing session on that source; a ref that names
+	// no source at all is refused as an unknown source instead of being
+	// resolved against the controller's own rows.
+	if ref, err := hubapi.ParseRef(strings.TrimSpace(requested)); err == nil && hubcore.NormalizeDecisionSource(ref.HostID) != "" {
+		for id := range ids {
+			if hubRefFromTreeNodeID(id).HostID == ref.HostID {
+				return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
+			}
+		}
+		return pinSession{}, appwire.InvalidParams("unknown source: " + ref.HostID)
+	}
+	return pinSession{}, appwire.InvalidParams("sessionRef must name a real top-level session")
 }
 
 func sessionRefMatchesID(requested, actual string) bool {

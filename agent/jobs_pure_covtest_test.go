@@ -15,6 +15,7 @@ import (
 // TestCovTerminalRecordPersistError covers terminalRecordPersistError.Error
 // and Unwrap (jobs.go lines 56-62).
 func TestCovTerminalRecordPersistError(t *testing.T) {
+	t.Parallel()
 	inner := errors.New("disk full")
 	e := &terminalRecordPersistError{status: jobstore.StatusFailed, err: inner}
 	if got := e.Error(); !strings.Contains(got, "persist terminal job record") || !strings.Contains(got, "disk full") {
@@ -27,6 +28,7 @@ func TestCovTerminalRecordPersistError(t *testing.T) {
 
 // TestCovJobsDir covers jobsDir (jobs.go lines 534-539).
 func TestCovJobsDir(t *testing.T) {
+	t.Parallel()
 	got := jobsDir("/state", "SESS")
 	if got != "/state/sessions/SESS" {
 		t.Fatalf("jobsDir with stateDir = %q", got)
@@ -45,6 +47,7 @@ func TestCovJobsDir(t *testing.T) {
 // TestCovKeepListedJobRow exercises all filter branches of keepListedJobRow
 // (jobs.go lines 991-1007).
 func TestCovKeepListedJobRow(t *testing.T) {
+	t.Parallel()
 	sessionID := "sess1"
 	owningSession := "sess1"
 
@@ -109,6 +112,7 @@ func TestCovKeepListedJobRow(t *testing.T) {
 
 // TestCovStatusAllowed covers statusAllowed (jobs.go lines 1010-1012).
 func TestCovStatusAllowed(t *testing.T) {
+	t.Parallel()
 	allowed := []jobstore.Status{jobstore.StatusRunning, jobstore.StatusCompleted}
 	if !statusAllowed(jobstore.StatusRunning, allowed) {
 		t.Fatal("running should be allowed")
@@ -120,6 +124,7 @@ func TestCovStatusAllowed(t *testing.T) {
 
 // TestCovTypeAllowed covers typeAllowed (jobs.go lines 1014-1016).
 func TestCovTypeAllowed(t *testing.T) {
+	t.Parallel()
 	allowed := []jobstore.JobType{jobstore.JobShell}
 	if !typeAllowed(jobstore.JobShell, allowed) {
 		t.Fatal("shell should be allowed")
@@ -132,6 +137,7 @@ func TestCovTypeAllowed(t *testing.T) {
 
 // TestCovOutputPathForJob covers outputPathForJob (jobs.go lines 1436-1441).
 func TestCovOutputPathForJob(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{dir: "/test"}
 	// Record with OutputPath — use that.
 	rec := &jobstore.JobRecord{OutputPath: "/custom/path.log"}
@@ -154,6 +160,7 @@ func TestCovOutputPathForJob(t *testing.T) {
 // TestCovNoteJobActivity_NilAndEmpty covers noteJobActivity nil/empty guards
 // (jobs.go lines 380-395).
 func TestCovNoteJobActivity_NilAndEmpty(t *testing.T) {
+	t.Parallel()
 	var jm *jobManager
 	jm.noteJobActivity("job1", "phase") // nil manager — no panic
 
@@ -188,6 +195,7 @@ func TestCovNoteJobActivity_NilAndEmpty(t *testing.T) {
 
 // TestCovJobListFilterFromArgs covers jobListFilterFromArgs (session_tools_jobs.go lines 1664-1698).
 func TestCovJobListFilterFromArgs(t *testing.T) {
+	t.Parallel()
 	// Default filter.
 	f, err := jobListFilterFromArgs(map[string]any{})
 	if err != nil || f.Limit != defaultJobListLimit || f.Offset != 0 {
@@ -236,6 +244,7 @@ func TestCovJobListFilterFromArgs(t *testing.T) {
 
 // TestCovJobListItemActivity covers jobListItemActivity (session_tools_jobs.go lines 720-736).
 func TestCovJobListItemActivity(t *testing.T) {
+	t.Parallel()
 	// LatestActivitySortAt set — returned directly.
 	sortAt := time.Date(2026, 8, 24, 12, 4, 0, 123, time.UTC)
 	lastAt := time.Date(2026, 8, 24, 12, 3, 0, 456, time.UTC)
@@ -294,6 +303,7 @@ func TestCovJobListItemActivity(t *testing.T) {
 // TestCovStableJobListItemMatches covers stableJobListItemMatches
 // (session_tools_jobs.go lines 702-718).
 func TestCovStableJobListItemMatches(t *testing.T) {
+	t.Parallel()
 	item := jobListEntry{Status: "running", Type: "shell"}
 
 	// No filter — passes.
@@ -345,6 +355,7 @@ func TestCovStableJobListItemMatches(t *testing.T) {
 
 // TestCovFormatJobWatchList covers formatJobWatchList (session_tools_jobs.go lines 1590-1613).
 func TestCovFormatJobWatchList(t *testing.T) {
+	t.Parallel()
 	// Empty watches.
 	if got := formatJobWatchList(jobWatchListToolResult{}); got != "no watches" {
 		t.Fatalf("empty = %q", got)
@@ -369,6 +380,7 @@ func TestCovFormatJobWatchList(t *testing.T) {
 // TestCovFormatJobWatchEventFilter covers formatJobWatchEventFilter
 // (session_tools_jobs.go lines 1573-1588).
 func TestCovFormatJobWatchEventFilter(t *testing.T) {
+	t.Parallel()
 	// Nil filter.
 	if got := formatJobWatchEventFilter(nil); got != "" {
 		t.Fatalf("nil = %q", got)
@@ -400,6 +412,7 @@ func TestCovFormatJobWatchEventFilter(t *testing.T) {
 
 // TestCovFormatJobStop covers formatJobStop (session_tools_jobs.go lines 1208-1248).
 func TestCovFormatJobStop(t *testing.T) {
+	t.Parallel()
 	// Shell job.
 	reason := "done"
 	got := formatJobStop(jobStopResult{ID: "job1", Type: "shell", Status: "completed", Outcome: "done", Reason: &reason})

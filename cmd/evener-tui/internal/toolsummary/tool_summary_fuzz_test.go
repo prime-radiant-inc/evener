@@ -21,8 +21,8 @@ func FuzzSummarizeTool(f *testing.F) {
 		{"edit_file", `{"file_path":"/a.go","old_string":"foo","new_string":"bar"}`},
 		{"glob", `{"pattern":"**/*.go","path":"/src"}`},
 		{"grep", `{"pattern":"TODO","path":"/src"}`},
-		{"task_list", `{"action":"append","tasks":[{"description":"d","prompt":"p\nq"}]}`},
-		{"task_list", `{"action":"update","updates":[{"id":1,"status":"done"}]}`},
+		{"task_list", `{"add":[{"description":"d","prompt":"p\nq"}]}`},
+		{"task_list", `{"update":[{"id":1,"status":"done"}]}`},
 		{"web_search", `{"query":"go fuzzing"}`},
 		{"delegate", `{"prompt":"do a thing\nover two lines"}`},
 		{"communicate", `{"message":"hi"}`},
@@ -34,7 +34,7 @@ func FuzzSummarizeTool(f *testing.F) {
 		// unchecked m["id"].(float64) assertion in renderTaskUpdate; the fix
 		// (idF, _ := m["id"].(float64)) makes it a no-op. Kept as a seed so the
 		// fix stays regression-guarded by the corpus, not only under -fuzz.
-		{"task_list", `{"action":"update","updates":[{}]}`},
+		{"task_list", `{"update":[{}]}`},
 		{"write_file", `{"file_path":"","content":""}`},
 		{"glob", `{"pattern":"*.go"}`},
 		{"grep", `{"pattern":"TODO"}`},
@@ -45,10 +45,10 @@ func FuzzSummarizeTool(f *testing.F) {
 		{"use_skill", `{"skill_name":"testing"}`},
 		{"communicate", `{}`},
 		{"some_mcp__op", `{"long":"abcdefghijklmnopqrstuvwxyzabcdefghijklmno","nested":{},"items":[]}`},
-		{"task_list", `{"action":"append","tasks":[null,{"description":"d","prompt":"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"}]}`},
-		{"task_list", `{"action":"append","tasks":[]}`},
-		{"task_list", `{"action":"update","updates":[null,{"id":2,"status":"unknown"}]}`},
-		{"task_list", `{"action":"update","updates":[]}`},
+		{"task_list", `{"add":[null,{"description":"d","prompt":"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"}]}`},
+		{"task_list", `{"add":[]}`},
+		{"task_list", `{"update":[null,{"id":2,"status":"unknown"}]}`},
+		{"task_list", `{"update":[]}`},
 	}
 	for _, s := range seeds {
 		f.Add(s.tool, s.args)

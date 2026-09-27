@@ -362,18 +362,26 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 }
 
 // remoteSourceFor returns the attached component-05 source for host, or the
-// typed refusal for a host that cannot serve a proxied call. A host configured
-// but not registered as a source (component 04 wired no client) is as
-// unavailable as one whose channel is down: neither may fall back to local
-// execution.
+// typed refusal for a host that cannot serve a proxied call (the shared
+// attachedRemoteHostSource rule).
 func (c *hubHostAdminController) remoteSourceFor(host string) (*appsource.RemoteHubSource, error) {
+	return attachedRemoteHostSource(c.sources, host)
+}
+
+// attachedRemoteHostSource returns host's attached component-05 source, or the
+// typed Unavailable refusal for a host that cannot serve a remote call. A host
+// configured but not registered as a source (component 04 wired no client) is
+// as unavailable as one whose channel is down: neither may fall back to local
+// execution. It is the one offline rule shared by the admin proxy and the
+// non-local force-stop branch.
+func attachedRemoteHostSource(sources *appsource.Registry, host string) (*appsource.RemoteHubSource, error) {
 	// Some embedders and tests build a hub server with no source registry at
 	// all (newHubAppServerWithNavigation(cfg, nil, …)); with no sources there is
 	// no attached channel either.
-	if c.sources == nil {
+	if sources == nil {
 		return nil, appwire.Unavailable(fmt.Sprintf("host %q is not attached", host))
 	}
-	source, ok := c.sources.Source(host)
+	source, ok := sources.Source(host)
 	if !ok {
 		return nil, appwire.Unavailable(fmt.Sprintf("host %q is not attached", host))
 	}

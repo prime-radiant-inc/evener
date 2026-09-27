@@ -30,6 +30,7 @@ import (
 // compatibility path, or writable authority.
 
 func TestDelegateLegacyDormancy_NoDelegateJobRecordCanBeCreated(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	root.cfg.testOnly.subagentPrepareFault = func(point string) error {
 		if point == "new_session" {
@@ -71,6 +72,7 @@ func TestDelegateLegacyDormancy_NoDelegateJobRecordCanBeCreated(t *testing.T) {
 }
 
 func TestDelegateLegacyDormancy_NoActivationAliasResolvesForLiveControl(t *testing.T) {
+	t.Parallel()
 	root := newSession(t, withoutGitSnapshot())
 	const delegateID = "dlg_live_without_activation"
 	seedStableToolRunningDelegate(t, root, delegateID, "", time.Unix(10, 0).UTC())

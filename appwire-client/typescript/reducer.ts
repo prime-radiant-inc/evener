@@ -3165,6 +3165,7 @@ export interface WarningFold {
   title?: string;
   hint?: string;
   source?: string;
+  code?: string;
 }
 
 export function foldWarningParams(params: WarningParams): WarningFold {
@@ -3172,6 +3173,7 @@ export function foldWarningParams(params: WarningParams): WarningFold {
   const title = boundedWarningText(params.title);
   const hint = boundedWarningText(params.hint);
   const source = boundedWarningText(params.source);
+  const code = boundedWarningText(params.code);
   const foldedText = text || (title !== undefined || hint !== undefined ? "" : rawWarningFrame(params));
   return {
     // warningMessage and rawWarningFrame already bound the selected text;
@@ -3188,6 +3190,7 @@ export function foldWarningParams(params: WarningParams): WarningFold {
     title,
     hint,
     source,
+    code,
   };
 }
 
@@ -3478,7 +3481,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
             type: "warning",
             text: folded.text,
             status: "completed",
-            warning: { source: folded.source, title: folded.title, hint: folded.hint },
+            warning: { source: folded.source, title: folded.title, hint: folded.hint, code: folded.code },
           };
           return { ...turn, items: [...turn.items, item] };
         }),

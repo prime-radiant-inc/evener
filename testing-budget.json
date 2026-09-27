@@ -16,6 +16,7 @@
   "primeradiant.com/evener/cmd/evener-hub": 67.09,
   "primeradiant.com/evener/cmd/evener-hub/internal/appsource": 0.1,
   "primeradiant.com/evener/cmd/evener-hub/internal/hostlock": 0.01,
+  "primeradiant.com/evener/cmd/evener-hub/internal/hostops": 2.54,
   "primeradiant.com/evener/cmd/evener-hub/internal/httpsec": 0.0,
   "primeradiant.com/evener/cmd/evener-hub/internal/hubcore": 4.67,
   "primeradiant.com/evener/cmd/evener-hub/internal/hubtest": 0.2,
@@ -52,6 +53,7 @@
   "primeradiant.com/evener/internal/credentials": 0.11,
   "primeradiant.com/evener/internal/plugins": 31.94,
   "primeradiant.com/evener/internal/selfupdate": 0.56,
+  "primeradiant.com/evener/internal/transcriptindex": 9.41,
   "primeradiant.com/evener/rendezvous": 0.22,
   "primeradiant.com/evener/server": 9.31,
   "primeradiant.com/evener/test/e2e/fake429": 0.0,
@@ -119,6 +121,11 @@
   "primeradiant.com/evener/envvars": 0.0,
   "primeradiant.com/evener/invariant": 0.0,
   "primeradiant.com/evener/identifier": 0.45,
-  "web": 90.77
+  "web": 90.77,
+  "primeradiant.com/evener/execsupport/orphanpipe": 2.0,
+  "primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest": 0.0,
+  "primeradiant.com/evener/execsupport/procgroup": 0.0,
+  "primeradiant.com/evener/execsupport/shellquote": 0.02,
+  "primeradiant.com/evener/execsupport/valueexpr": 3.05
  }
 }

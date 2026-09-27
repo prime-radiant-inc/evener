@@ -173,6 +173,7 @@ func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
 }
 
 func TestCommunicate_EndTurnDoesNotWarnForExitedDetachedProcess(t *testing.T) {
+	t.Parallel()
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,

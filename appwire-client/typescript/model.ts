@@ -132,7 +132,7 @@ export interface ItemModel {
   observedCompletedAt?: string;
   // Populated only by the reducer's `case "warning"` fold (see reducer.ts);
   // undefined for every other item.
-  warning?: { source?: string; title?: string; hint?: string };
+  warning?: { source?: string; title?: string; hint?: string; code?: string };
   /** The wire ThreadItem.version: the highest contributing entry ordinal + 1.
    * Merges keep the higher version; undefined on overlay items and on items
    * from a pre-v6 read. */

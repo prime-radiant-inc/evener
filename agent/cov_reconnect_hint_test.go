@@ -6,6 +6,7 @@ import (
 )
 
 func TestReconnectRecoveryWarningKeepsRecoveryHint(t *testing.T) {
+	t.Parallel()
 	in := reconnectRecoveryWarning("linear")
 	out := enrichWarningData(in)
 	if strings.Contains(strings.ToLower(out.Hint), "failed to connect") {

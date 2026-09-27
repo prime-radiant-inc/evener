@@ -13,7 +13,7 @@ import (
 func (s *Session) snapshotDelegateContext() ([]transcript.Entry, error) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	data, err := readStrictChildTranscript(transcriptPath(s.stateDir, s.id), s.id, s.strictTranscriptMaxLineBytes)
+	data, err := readStrictChildTranscript(transcriptPath(s.stateDir, s.id), s.stateDir, s.id, s.strictTranscriptMaxLineBytes)
 	if err != nil {
 		return nil, fmt.Errorf("fork delegate context: %w", err)
 	}

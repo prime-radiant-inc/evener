@@ -39,6 +39,7 @@ func (a *modelAvailabilityAdapter) LiveModels(ctx context.Context) ([]registry.M
 }
 
 func TestNewSessionReusesValidatedModelsAndBoundsDelegateSchema(t *testing.T) {
+	t.Parallel()
 	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
 	for i := range models {
 		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
@@ -68,6 +69,7 @@ func TestNewSessionReusesValidatedModelsAndBoundsDelegateSchema(t *testing.T) {
 }
 
 func TestNewSessionEnumeratesOtherProvidersUnderLifetimeContext(t *testing.T) {
+	t.Parallel()
 	type ownerContextKey struct{}
 	const ownerMarker = "one-shot-run"
 
@@ -98,6 +100,7 @@ func TestNewSessionEnumeratesOtherProvidersUnderLifetimeContext(t *testing.T) {
 }
 
 func TestRestoreSessionReusesSelectedModelsAndAdvertisesSnapshot(t *testing.T) {
+	t.Parallel()
 	type ownerContextKey struct{}
 	const ownerMarker = "restored-run"
 
@@ -164,6 +167,7 @@ func TestRestoreSessionReusesSelectedModelsAndAdvertisesSnapshot(t *testing.T) {
 }
 
 func TestSessionsWithoutDelegateCapabilitySkipModelAvailabilityCapture(t *testing.T) {
+	t.Parallel()
 	newClient := func() (*llm.Client, *modelAvailabilityAdapter, *modelAvailabilityAdapter) {
 		selected := &modelAvailabilityAdapter{models: []registry.Model{{ID: "gpt-5.5"}}}
 		selected.name = "openai"
@@ -299,6 +303,7 @@ func TestSessionsWithoutDelegateCapabilitySkipModelAvailabilityCapture(t *testin
 // tool-less is never offered as a delegate choice (spec §5). The rule lives in
 // Client.Models, so the session must not need a second filter of its own.
 func TestNewSessionSnapshotOmitsInvisibleRows(t *testing.T) {
+	t.Parallel()
 	selected := &modelAvailabilityAdapter{models: []registry.Model{{ID: "gpt-5.5"}}}
 	selected.name = "openai"
 	other := &modelAvailabilityAdapter{models: []registry.Model{
@@ -324,6 +329,7 @@ func TestNewSessionSnapshotOmitsInvisibleRows(t *testing.T) {
 }
 
 func TestNewSessionBoundedSnapshotRetainsSelectedProvider(t *testing.T) {
+	t.Parallel()
 	const selectedName = "zz-selected-provider"
 	selected := &modelAvailabilityAdapter{models: []registry.Model{{ID: "gpt-5.5"}}}
 	selected.name = selectedName
@@ -353,6 +359,7 @@ func TestNewSessionBoundedSnapshotRetainsSelectedProvider(t *testing.T) {
 }
 
 func TestModelListToolReturnsEveryChoiceExactlyOnceWithinPageBound(t *testing.T) {
+	t.Parallel()
 	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
 	for i := range models {
 		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
@@ -404,6 +411,7 @@ func TestModelListToolReturnsEveryChoiceExactlyOnceWithinPageBound(t *testing.T)
 }
 
 func TestModelListToolPreservesJSONUnderConfiguredOutputLimit(t *testing.T) {
+	t.Parallel()
 	models := make([]registry.Model, modelavailability.DefaultInlineMaxCount)
 	for i := range models {
 		models[i].ID = fmt.Sprintf("model-%02d-%s", i, strings.Repeat("x", 12))
@@ -436,6 +444,7 @@ func TestModelListToolPreservesJSONUnderConfiguredOutputLimit(t *testing.T) {
 }
 
 func TestModelListToolReturnsBoundedEmptyTerminalPage(t *testing.T) {
+	t.Parallel()
 	adapter := &modelAvailabilityAdapter{listErr: errors.New("enumeration unavailable")}
 	adapter.name = "openai"
 	client := llm.NewClient()

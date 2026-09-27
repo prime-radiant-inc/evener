@@ -8,6 +8,7 @@ import (
 
 // TestExactLeaseLocked_NilAggregate covers the nil-aggregate branch.
 func TestExactLeaseLocked_NilAggregate(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{durable: map[string]*delegatestore.Aggregate{}}
 	_, _, err := c.exactLeaseLocked(delegateLease{delegateID: "dlg_1", generation: 1})
 	if err == nil {
@@ -17,6 +18,7 @@ func TestExactLeaseLocked_NilAggregate(t *testing.T) {
 
 // TestExactLeaseLocked_GenerationMismatch covers the generation-mismatch branch.
 func TestExactLeaseLocked_GenerationMismatch(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Generation: 2, CurrentRunOpen: true},
@@ -30,6 +32,7 @@ func TestExactLeaseLocked_GenerationMismatch(t *testing.T) {
 
 // TestExactLeaseLocked_RunNotOpen covers the run-not-open branch.
 func TestExactLeaseLocked_RunNotOpen(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Generation: 1, CurrentRunOpen: false},
@@ -43,6 +46,7 @@ func TestExactLeaseLocked_RunNotOpen(t *testing.T) {
 
 // TestExactLeaseLocked_NilLive covers the nil-live branch.
 func TestExactLeaseLocked_NilLive(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Generation: 1, CurrentRunOpen: true},
@@ -57,6 +61,7 @@ func TestExactLeaseLocked_NilLive(t *testing.T) {
 
 // TestExactLeaseLocked_NilBinding covers the nil-binding branch.
 func TestExactLeaseLocked_NilBinding(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Generation: 1, CurrentRunOpen: true},
@@ -73,6 +78,7 @@ func TestExactLeaseLocked_NilBinding(t *testing.T) {
 
 // TestExactLeaseLocked_LeaseMismatch covers the binding-lease-mismatch branch.
 func TestExactLeaseLocked_LeaseMismatch(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Generation: 1, CurrentRunOpen: true},
@@ -89,6 +95,7 @@ func TestExactLeaseLocked_LeaseMismatch(t *testing.T) {
 
 // TestExactLeaseLocked_Success covers the success path.
 func TestExactLeaseLocked_Success(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
@@ -109,6 +116,7 @@ func TestExactLeaseLocked_Success(t *testing.T) {
 
 // TestAdmitLeaseLocked_Closing covers the closing branch.
 func TestAdmitLeaseLocked_Closing(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		closing: true,
 		durable: map[string]*delegatestore.Aggregate{
@@ -126,6 +134,7 @@ func TestAdmitLeaseLocked_Closing(t *testing.T) {
 
 // TestAdmitLeaseLocked_ReclamationCovers covers the reclamation-covers branch.
 func TestAdmitLeaseLocked_ReclamationCovers(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
@@ -144,6 +153,7 @@ func TestAdmitLeaseLocked_ReclamationCovers(t *testing.T) {
 
 // TestAdmitLeaseLocked_RecoveryRequired covers the recovery-required branch.
 func TestAdmitLeaseLocked_RecoveryRequired(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
@@ -161,6 +171,7 @@ func TestAdmitLeaseLocked_RecoveryRequired(t *testing.T) {
 
 // TestAdmitLeaseLocked_PendingStopSeq covers the pending-stop-seq branch.
 func TestAdmitLeaseLocked_PendingStopSeq(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
@@ -178,6 +189,7 @@ func TestAdmitLeaseLocked_PendingStopSeq(t *testing.T) {
 
 // TestAdmitLeaseLocked_NotResumable covers the not-resumable branch.
 func TestAdmitLeaseLocked_NotResumable(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
@@ -195,6 +207,7 @@ func TestAdmitLeaseLocked_NotResumable(t *testing.T) {
 
 // TestAdmitLeaseLocked_BindingNotReady covers the binding-not-ready branch.
 func TestAdmitLeaseLocked_BindingNotReady(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
@@ -212,6 +225,7 @@ func TestAdmitLeaseLocked_BindingNotReady(t *testing.T) {
 
 // TestDelegateActorDescribe covers the describe method on delegateActor.
 func TestDelegateActorDescribe(t *testing.T) {
+	t.Parallel()
 	t.Run("with lease", func(t *testing.T) {
 		lease := delegateLease{delegateID: "dlg_1", generation: 1}
 		a := delegateActor{lease: &lease}

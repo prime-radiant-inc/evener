@@ -16,7 +16,7 @@ func TestParseLintConfigDefaults(t *testing.T) {
 	}
 	// fuzz included: every Go module in the workspace is linted, unlike the
 	// test gate, which the fuzz module sits out.
-	wantModules := []string{".", "agent", "llm", "auth", "envvars", "invariant", "identifier", "fuzz"}
+	wantModules := []string{".", "agent", "llm", "auth", "envvars", "invariant", "identifier", "execsupport", "fuzz"}
 	if !reflect.DeepEqual(cfg.Modules, wantModules) {
 		t.Errorf("default modules = %v, want %v", cfg.Modules, wantModules)
 	}

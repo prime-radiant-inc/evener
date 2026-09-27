@@ -12,6 +12,7 @@ import "testing"
 // Both already reject any source that is not "prompt"/"compaction", so a
 // "user" source falls out as suppressed for free.
 func TestRenameSetsUserSourceAndSurvivesCompaction(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	if err := sess.Rename("my chosen title"); err != nil {
 		t.Error(err)

@@ -3,6 +3,8 @@
 // projection call this one module, so the same settled command can never
 // classify one way in the browser and another on the phone.
 
+import type { TurnError } from "./types.gen";
+
 /**
  * The item fields this classification reads. Both the wire `ThreadItem` and
  * the projected `ItemModel` satisfy it structurally, so neither client has to
@@ -21,6 +23,18 @@ export interface ItemFailureSignals {
 // undefined — never conflate the two.
 export function isNonZeroExit(item: ItemFailureSignals): boolean {
   return typeof item.exitCode === "number" && item.exitCode !== 0;
+}
+
+// Whether a turn's `unknown` error (model.ts deliberately keeps it
+// wire-type-free) is a real wire TurnError by its one required field. The
+// projector's terminal fallback and the web's end-cap renderer
+// (turnFailure.ts's asTurnError) both gate on this one narrowing, so a
+// malformed or absent error can never count as renderable in one consumer
+// and not the other. The daemon always sends a well-formed TurnError on a
+// failed turn; an interrupted turn carries none, and anything else is a
+// malformed frame treated as no error at all.
+export function isTurnError(error: unknown): error is TurnError {
+  return error !== null && typeof error === "object" && typeof (error as { message?: unknown }).message === "string";
 }
 
 // The item's own status settled as a failure. The wire projects status

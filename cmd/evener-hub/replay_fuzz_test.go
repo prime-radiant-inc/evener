@@ -38,6 +38,32 @@ var replayFuzzSeeds = []string{
 	`{"kind":"entry","seq":6,"turn":{"kind":"STEERING","steering_source":"user","message":{"role":"user","content":[{"kind":"text","text":"new worktree"}]},"timestamp":"2026-06-01T10:00:05Z"}}`,
 	// Daemon nudge: same turn kind, deliberately no provenance.
 	`{"kind":"entry","seq":7,"turn":{"kind":"STEERING","message":{"role":"user","content":[{"kind":"text","text":"<SYSTEM-REMINDER>nudge</SYSTEM-REMINDER>"}]},"timestamp":"2026-06-01T10:00:06Z"}}`,
+	// Assistant turn with a rejected tool call: Arguments is the replay-safe {}
+	// placeholder, RawArguments preserves the model's original malformed bytes.
+	`{"kind":"entry","seq":9,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"running it"},{"kind":"tool_call","tool_call":{"id":"c4","name":"shell","arguments":{},"raw_arguments":"{command: \"ls\", }"}}]},"timestamp":"2026-06-01T10:00:08Z"}}`,
+	// Assistant turn with a repairable-malformed tool call: bare keys that
+	// RepairJSON can heal. Like the rejected seed, Arguments is {} and
+	// RawArguments preserves the original bytes — the live emitter now uses
+	// the original bytes too, so live and reload agree.
+	`{"kind":"entry","seq":10,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"calling it"},{"kind":"tool_call","tool_call":{"id":"c5","name":"shell","arguments":{},"raw_arguments":"{command: \"ls\"}"}}]},"timestamp":"2026-06-01T10:00:09Z"}}`,
+	// Assistant turn with a rejected communicate: Arguments is the replay-safe
+	// {} placeholder, RawArguments preserves the model's original malformed
+	// bytes. Live emits nothing (CommunicateMessageFromArguments({}) is ""),
+	// and reload now defers the raw fallback to the paired result, so the
+	// assistant turn alone renders nothing on both sides.
+	`{"kind":"entry","seq":11,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c6","name":"communicate","arguments":{},"raw_arguments":"{message: \"hi\"}"}}]},"timestamp":"2026-06-01T10:00:10Z"}}`,
+	// Tool-results turn for the rejected communicate: IsError=true surfaces the
+	// raw bytes deferred from the assistant turn. Used in the multi-entry
+	// metamorphic test (not the single-entry fuzz, which processes one entry).
+	`{"kind":"entry","seq":12,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c6","name":"communicate","content":"invalid","is_error":true}}]},"timestamp":"2026-06-01T10:00:11Z"}}`,
+	// Assistant turn with a healed communicate: Arguments is {} and
+	// RawArguments preserves the malformed original, but the call was repaired
+	// and executed successfully. Live delivered the healed message; reload now
+	// renders nothing from the raw bytes (the result confirms success).
+	`{"kind":"entry","seq":13,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c7","name":"communicate","arguments":{},"raw_arguments":"{message: \"hello\"}"}}]},"timestamp":"2026-06-01T10:00:12Z"}}`,
+	// Tool-results turn for the healed communicate: IsError=false, so the raw
+	// fallback does not fire — matching live, which delivered the healed message.
+	`{"kind":"entry","seq":14,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c7","name":"communicate","content":"{\"accepted\":true}","is_error":false}}]},"timestamp":"2026-06-01T10:00:13Z"}}`,
 	`{}`,
 	`null`,
 	`not json`,
@@ -86,8 +112,31 @@ func FuzzHubReplayLiveVsReload(f *testing.F) {
 // replayExecution is the execution the fuzzed entry is recorded in.
 const replayExecution = "turn_m1"
 
-// checkLiveVsReload runs the live-vs-reload differential on one entry's JSON.
-// Shared by the raw-byte target above and the structure-aware target below.
+// TestHubReplay_RejectedCallLiveVsReload verifies the live-vs-reload
+// metamorphic agrees for a rejected-call tool_call: both sides must surface
+// the model's raw argument bytes (SentArguments precedence) and skip the
+// Description (intent) for rejected calls. Before the fix, synthesizeLiveEvents
+// used Arguments (the {} placeholder) while ProjectTurn used SentArguments
+// (the raw bytes), diverging.
+func TestHubReplay_RejectedCallLiveVsReload(t *testing.T) {
+	const rawArgs = `{command: "ls", }` // malformed JSON — the rejected-call shape
+	entryJSON := `{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"running it"},{"kind":"tool_call","tool_call":{"id":"c4","name":"shell","arguments":{},"raw_arguments":` + `"` + strings.ReplaceAll(rawArgs, `"`, `\"`) + `"` + `}}]},"timestamp":"2026-06-01T10:00:00Z"}}`
+	checkLiveVsReload(t, []byte(entryJSON))
+}
+
+// checkLiveVsReloadMultiEntry runs the live-vs-reload metamorphic across TWO
+// entries (an assistant turn followed by its paired tool-results turn), sharing
+// one toolNames map on the reload side the way the hub's full read does. This is
+// where the communicate raw fallback's result-gating is exercised: the assistant
+// turn defers the raw bytes, and the result turn's IsError determines whether
+// they surface. The single-entry checkLiveVsReload cannot test this because it
+// projects one turn in isolation.
+//
+// commRawArgs threads the assistant turn's raw communicate bytes into the live
+// side: a rejected communicate surfaces them as a settled failed
+// commandExecution (modeled live), matching the reload side's result-gated raw
+// fallback. A healed communicate (IsError=false) renders the delivered message
+// on both sides.
 func checkLiveVsReload(t *testing.T, raw []byte) {
 	t.Helper()
 	var e transcript.Entry
@@ -248,3 +297,4 @@ func buildReplayEntry(turnSel, partsSel byte, text, think, query, name, cmd stri
 		`","message":{"role":"` + role + `","content":[` + strings.Join(parts, ",") +
 		`]},"timestamp":"2026-06-01T10:00:00Z"}}`)
 }
+

@@ -390,7 +390,7 @@ func (s *Session) prepareSkillActivations(ctx context.Context, invocations []ski
 			}
 			descriptor = resolved
 		}
-		loaded, diagnostics, err := skill.Load(descriptor)
+		loaded, diagnostics, err := loadSkillInvocationSource(invocation, descriptor)
 		if err != nil {
 			code := "invalid_metadata"
 			for _, diagnostic := range diagnostics {

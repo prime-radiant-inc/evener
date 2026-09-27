@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -19,14 +20,14 @@ const testMaxLineBytes = 1 << 20
 // sequentialTestProjector adapts boundedTestProjector into an EntryProjector,
 // threading one tool-name resolver across a whole file read.
 func sequentialTestProjector() EntryProjector {
-	toolNames := map[string]string{}
+	reg := NewToolCallRegistry()
 	return func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return boundedTestProjector(turn, turnID, turnIndex, toolNames)
+		return boundedTestProjector(turn, turnID, turnIndex, reg)
 	}
 }
 
-func boundedTestProjector(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	return ProjectTurn(turnID, turnIndex, turn, toolNames, nil, nil)
+func boundedTestProjector(turn schema.Turn, turnID string, turnIndex int, reg *ToolCallRegistry) []appwire.ThreadItem {
+	return ProjectTurn(turnID, turnIndex, turn, reg, nil, nil)
 }
 
 // requireItemTurnsFromFile is the one full-projection entry point every
@@ -38,6 +39,28 @@ func requireItemTurnsFromFile(t testing.TB, path string, maxLineBytes int, proje
 		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
 	return turns
+}
+
+// allTurnsItems flattens every turn's items, in turn order, for assertions
+// that don't care which turn an item belongs to.
+func allTurnsItems(turns []appwire.Turn) []appwire.ThreadItem {
+	var out []appwire.ThreadItem
+	for _, turn := range turns {
+		out = append(out, turn.Items...)
+	}
+	return out
+}
+
+// findAnyFlushedCommunicateItem finds the first item FlushUnpairedCommunicates
+// seeded (ID prefix "item_assistant_flushed_"), reporting false when none of
+// items carries one.
+func findAnyFlushedCommunicateItem(items []appwire.ThreadItem) (appwire.ThreadItem, bool) {
+	for _, item := range items {
+		if strings.HasPrefix(item.ID, "item_assistant_flushed_") {
+			return item, true
+		}
+	}
+	return appwire.ThreadItem{}, false
 }
 
 func writeEntries(t testing.TB, entries ...transcript.Entry) string {

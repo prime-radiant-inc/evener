@@ -15,6 +15,7 @@ import (
 // size accounting used by searchRetainedOutput is IDENTICAL to
 // retainedMatchesSerializedSize (and to the actual wire bytes) at every step.
 func TestRetainedMatchesAccumulatorParity(t *testing.T) {
+	t.Parallel()
 	rng := rand.New(rand.NewSource(1))
 	fragments := []string{
 		"plain line",

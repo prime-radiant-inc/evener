@@ -124,6 +124,9 @@ func TestRound12PreflightProbesInstallerDefaultWithoutADeploy(t *testing.T) {
 		case strings.Contains(joined, " evener launch-check"):
 			// The non-interactive PATH carries no evener.
 			return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
+		case strings.Contains(joined, executableProbeRemote("evener")):
+			// The dedicated executable probe: absent.
+			return nil, exitStatus(t, 1)
 		case strings.Contains(joined, "[ -f ") && strings.Contains(joined, ".local/bin/evener"):
 			return []byte(resolved + "\n"), nil
 		default:
@@ -276,6 +279,10 @@ func restartBareFixture(port string, script restartBareScript) *fakeRunner {
 	return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		joined := strings.Join(argv, " ")
 		switch {
+		case strings.Contains(joined, "id -un"):
+			return []byte("dev\n"), nil
+		case strings.Contains(joined, pidOwnerRemote("4242")):
+			return []byte("dev\n"), nil
 		case strings.Contains(joined, "lsof -ti :"+port):
 			return script.portProbe(), nil
 		case strings.Contains(joined, "-ww -o "):

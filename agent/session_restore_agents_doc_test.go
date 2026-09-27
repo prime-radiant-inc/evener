@@ -19,6 +19,7 @@ import (
 // personal doc on resume, matching what Settings reports and what its fresh
 // sessions do, and never a path a departed hub left behind.
 func TestRestoreSessionAppliesTheAgentsDocOverride(t *testing.T) {
+	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	persisted := SessionConfig{AgentsDocPath: "/old/AGENTS.md"}.toSnapshot()
@@ -43,6 +44,7 @@ func TestRestoreSessionAppliesTheAgentsDocOverride(t *testing.T) {
 // frozen: after a resume through a hub whose config root moved, a root session
 // and its delegates would otherwise load different personal instructions.
 func TestFrozenDescriptorTakesTheAgentsDocPathFromTheLiveParent(t *testing.T) {
+	t.Parallel()
 	frozen := SessionConfig{AgentsDocPath: "/old/AGENTS.md", NoProjectPrompts: true}.toSnapshot()
 	got := subagentConfigFromFrozenDescriptor(frozen, SessionConfig{AgentsDocPath: "/hub/AGENTS.md"})
 	if got.AgentsDocPath != "/hub/AGENTS.md" {

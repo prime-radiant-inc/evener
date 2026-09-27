@@ -210,7 +210,7 @@ func TestNotificationTurnOwnsDurableReminderAndPendingClientSteering(t *testing.
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
 	owner := starts[0].TurnID
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestNotificationTurnOwnsDaemonSteeringAfterCompletedUserTurn(t *testing.T) 
 	if len(starts) != 1 || starts[0].TurnID == "" {
 		t.Fatalf("notification EventTurnStarted = %#v, want one nonempty owner", starts)
 	}
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 		t.Fatalf("notification EventTurnStarted = %#v, want one named boundary", starts)
 	}
 
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatalf("read transcript: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 		t.Fatalf("direct steering owner=%q, want notification turn %q and not prior user turn %q", persistedOwner, starts[0].TurnID, priorTurnID)
 	}
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, nil, nil, nil)
+		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
 	}
 	liveEntries := make([]transcript.Entry, len(liveHistory))
 	for i, turn := range liveHistory {

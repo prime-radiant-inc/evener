@@ -130,7 +130,14 @@ func TestUpgradeInstallsReleaseArchive(t *testing.T) {
 
 	binDir := filepath.Join(prefix, "bin")
 	shareBinDir := filepath.Join(prefix, "share", "evener", "bin")
-	for _, bin := range installBinaries {
+	// evener-dev rides in the archive only for older clients; an upgrade
+	// installs evener alone.
+	for _, dir := range []string{shareBinDir, binDir} {
+		if _, err := os.Lstat(filepath.Join(dir, "evener-dev")); !os.IsNotExist(err) {
+			t.Fatalf("upgrade installed evener-dev into %s (err=%v); it is dev tooling, not part of an install", dir, err)
+		}
+	}
+	for _, bin := range []string{"evener"} {
 		installed := filepath.Join(shareBinDir, bin)
 		info, err := os.Stat(installed)
 		if err != nil {
@@ -155,6 +162,28 @@ func TestUpgradeInstallsReleaseArchive(t *testing.T) {
 		if target != installed {
 			t.Fatalf("symlink %s -> %s, want %s", link, target, installed)
 		}
+	}
+}
+
+// Once releases stop carrying evener-dev, an archive with evener alone must
+// still upgrade: nothing requires the dev binary.
+func TestUpgradeInstallsAnArchiveWithoutEvenerDev(t *testing.T) {
+	archive := releaseArchiveWith(t, "evener_linux_amd64", "evener")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+			sum := sha256.Sum256(archive)
+			_, _ = fmt.Fprintf(w, "%x  evener_linux_amd64.tar.gz\n", sum)
+			return
+		}
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(server.Close)
+	prefix := filepath.Join(t.TempDir(), ".local")
+	if _, err := Upgrade(t.Context(), Options{CurrentChannel: "snapshot", Prefix: prefix, GOOS: "linux", GOARCH: "amd64", RepoURL: server.URL}); err != nil {
+		t.Fatalf("Upgrade from an archive without evener-dev: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(prefix, "share", "evener", "bin", "evener")); err != nil {
+		t.Fatalf("evener not installed: %v", err)
 	}
 }
 
@@ -295,13 +324,22 @@ func TestStageExecutableConcurrentStagesNeverMix(t *testing.T) {
 	}
 }
 
+// releaseArchive is a release archive as releases currently ship it: evener,
+// plus evener-dev, which the archive keeps carrying through the transition so
+// older installed versions (which require it) can still upgrade into it.
 func releaseArchive(t *testing.T, root string) []byte {
+	t.Helper()
+	return releaseArchiveWith(t, root, "evener", "evener-dev")
+}
+
+// releaseArchiveWith is a release archive holding exactly bins under root.
+func releaseArchiveWith(t *testing.T, root string, bins ...string) []byte {
 	t.Helper()
 
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	for _, bin := range installBinaries {
+	for _, bin := range bins {
 		body := fmt.Sprintf("#!/bin/sh\necho archive %s\n", bin)
 		header := &tar.Header{
 			Name: filepath.ToSlash(filepath.Join(root, bin)),

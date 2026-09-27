@@ -10,7 +10,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
-import { boundQuestion } from "../../mobile/src/conversation/project";
+import { boundQuestion } from "./projectedRows";
 import type { DraftDestination } from "./draftRepository";
 import { nativeDrafts } from "./nativeDrafts";
 import {

@@ -14,6 +14,7 @@ import (
 // restore also opens the client-mutation snapshot and the task store, so a
 // corrupt one must block retirement here rather than fail the later restore.
 func TestRetirementColdEvidenceValidatesRestoreCriticalStores(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID  = "cold-restore-critical"
 		delegateID = "dlg_cold_restore_critical"

@@ -217,7 +217,7 @@ The `agent/doctor` package does not re-parse anything — it imports the real fo
 
 ### Shared conventions
 
-- First positional arg is a **session selector** in the form the running agent's `read_session_transcript` accepts: `""`/`current`, `local:<SID>`, `proj:<hash>:<SID>`, or a bare `<SID>` (searched across buckets; ambiguity reported with candidate refs). `evener doctor locate` is the shared resolver the other three reuse (same in-process resolution) so there is no second selector dialect.
+- First positional arg is a **session selector** in the form the running agent's `read_session_transcript` accepts: `""`/`current`, `local:<SID>`, `proj:<hash>:<SID>`, or a bare `<SID>` (searched across buckets; ambiguity reported with the buckets it was found in). `evener doctor locate` is the shared resolver the other three reuse (same in-process resolution) so there is no second selector dialect.
 - `--json` emits the underlying struct as JSON for machine consumers; default is a human summary.
 - `--state-dir` overrides the resolved root (mirrors `evener --state-dir`), so the tools work against an E2E scratch root. Base precedence matches evener (§8.4): `--state-dir` › `EVENER_STATE_DIR` › `$XDG_STATE_HOME` › `~/.local/state`.
 
@@ -285,7 +285,7 @@ A Finding is the atomic output of a `doctor` audit — structured, emitted as JS
 | `category` | enum | yes | evener-adapted category bucket (below). |
 | `title` | string | yes | one-line label. |
 | `description` | string | yes | what was observed + why it is a problem. |
-| `evidence` | object | yes | at least one sub-field populated: `sessionRefs[]`, `watchIds[]`, `deliveryIds[]`, `transcriptTurns[]`, `doctorCommand` (the `evener doctor <cmd> …` invocation that surfaces it), `logSnippets[]`. |
+| `evidence` | object | yes | carries the always-present `doctorCommand` (the `evener doctor <cmd> …` invocation that surfaces it; empty when every affected session is non-reproducible) plus the other sub-fields when they apply: `sessionRefs[]`, `watchIds[]`, `deliveryIds[]`, `transcriptTurns[]`, `logSnippets[]`. An all-non-reproducible finding therefore has NO populated sub-field, and that is not malformation — `description` is the disclosure channel; a machine consumer treats the empty-evidence finding as valid, keying on `category`/`signature` per the contract. |
 | `suggestedFix` | object | yes | the **routing** directive (below). |
 
 - **Category set** — adopt Contract 3's diagnostic categories where they apply (`validation`, `policy_denied`, `unavailable`, `timeout`, `cancellation`, `provider_error`, `hook_blocked`, `hook_failed`, `transcript_unavailable`) plus the forensic shapes the taxonomy adds (`watch_self_loop`, `dropped_delivery`, `provenance_gap`, `stuck_processing`, `orphaned_runtime`). The category routes and groups.

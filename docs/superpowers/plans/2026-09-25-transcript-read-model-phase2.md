@@ -227,7 +227,7 @@ func (w *Writer) Record(turn schema.Turn, opts RecordOptions) (Record, error)
 func (w *Writer) RecordedLength() int64
 ```
 
-  `Append`, `AppendDurable`, `AppendSynced` become `Record` with `PlaceSession` (Task 4 defines placements; until then the zero `Placement` stamps nothing) and keep their error contracts. A nil writer, and a closed writer through the buffered and durable doors, return `(Record{}, nil)`: not recorded, no error — today's no-op made explicit.
+  `Append`, `AppendDurable`, `AppendSynced` become `Record` with the zero placement (`PlaceVerbatim`, which stamps nothing), so 2a and 2b change no session write; Task 19 (2c) moves session writes to `Record` with `PlaceSession` at their call sites. The doors keep their error contracts. A nil writer, and a closed writer through the buffered and durable doors, return `(Record{}, nil)`: not recorded, no error — today's no-op made explicit.
 - appendTail gains `nextOrdinal uint64` and `recordedLength int64`. `newWriterFS` sets them from the header line; `resumeWriter` sets them from the scan (`len(entries)`, valid length after crash-tail truncation) under the tail lock, never lowering a shared tail's values.
 
 - [ ] **Step 1: Write the failing test**

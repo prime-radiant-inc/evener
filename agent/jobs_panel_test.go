@@ -13,6 +13,7 @@ import (
 )
 
 func TestProjectActivityJobFields(t *testing.T) {
+	t.Parallel()
 	started := time.Date(2026, 7, 31, 12, 0, 0, 0, time.FixedZone("offset", 2*60*60))
 	ended := started.Add(time.Minute)
 	exit := 1
@@ -54,6 +55,7 @@ func TestProjectActivityJobFields(t *testing.T) {
 // validation on the call, so a traversal-shaped ID must be refused before
 // that join.
 func TestLoadSessionJobOutputTailRejectsUnsafeSessionID(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	_, found, err := LoadSessionJobOutputTail(dir, "../escaped", "job_x", 0, 4)
 	if !errors.Is(err, schema.ErrInvalidSessionID) {
@@ -67,6 +69,7 @@ func TestLoadSessionJobOutputTailRejectsUnsafeSessionID(t *testing.T) {
 // Paging: beforeBytes reads the window ending at that lifetime offset, and
 // HasEarlier tells the client whether another page exists.
 func TestLoadSessionJobOutputTailPagesBackwards(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	logDir := filepath.Join(jobsDir(dir, sessionID), "jobs")
@@ -122,6 +125,7 @@ func TestLoadSessionJobOutputTailPagesBackwards(t *testing.T) {
 // RetainedStart still names the first byte actually sent, so the caption's
 // TotalBytes - RetainedStart is exactly the tail's length.
 func TestLoadSessionJobOutputTailAlignsMultiByteWindow(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	logDir := filepath.Join(jobsDir(dir, sessionID), "jobs")
@@ -160,6 +164,7 @@ func TestLoadSessionJobOutputTailAlignsMultiByteWindow(t *testing.T) {
 }
 
 func TestLoadSessionJobOutputTailMissingOutputFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	logDir := filepath.Join(jobsDir(dir, sessionID), "jobs")
@@ -188,6 +193,7 @@ func TestLoadSessionJobOutputTailMissingOutputFile(t *testing.T) {
 }
 
 func TestSessionJobOutputTailNilManager(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	if _, found, err := s.JobOutputTail("job_1", 0, 0); err != nil || found {
 		t.Errorf("nil session JobOutputTail: found=%v err=%v", found, err)

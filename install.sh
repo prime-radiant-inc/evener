@@ -2,7 +2,9 @@
 set -eu
 
 repo="https://github.com/prime-radiant-inc/evener"
-bins="evener evener-dev"
+# evener-dev, the dev tooling binary, still rides in release archives so older
+# versions (which required it) can upgrade into them, but is not installed.
+bins="evener"
 
 if [ -n "${PREFIX:-}" ]; then
 	prefix=$PREFIX

@@ -5204,6 +5204,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 // history with a TurnEnvironment turn sitting between a resolving
 // TurnUserInput entry and the round's own TurnAssistant/TurnToolResults pair.
 func TestRoundEntryResolvesAskBoundary_SkipsBookkeepingTurnsToFindTheRealEntry(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?")),
 		schema.NewTurn(schema.TurnEnvironment, llm.User("cwd: /repo")),
@@ -5216,6 +5217,7 @@ func TestRoundEntryResolvesAskBoundary_SkipsBookkeepingTurnsToFindTheRealEntry(t
 }
 
 func TestRoundEntryResolvesAskBoundary_SkipsNonCarrierFailureToFindTheRealEntry(t *testing.T) {
+	t.Parallel()
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("which db should we use?")),
 		{Kind: schema.TurnFailure, Message: llm.System("provider failed"), Error: &schema.TurnFailureInfo{Message: "provider failed"}},

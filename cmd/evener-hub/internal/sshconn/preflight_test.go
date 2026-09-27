@@ -309,6 +309,9 @@ func TestPreflightMissingExecutableCarriesTheDeployRemedy(t *testing.T) {
 				return []byte("1000\n"), nil
 			case strings.Contains(joined, "launch-check"):
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
+			case strings.Contains(joined, executableProbeRemote("evener")):
+				// The dedicated executable probe: absent.
+				return nil, exitStatus(t, 1)
 			case strings.Contains(joined, `if [ -n "${HOME-}" ]`):
 				return nil, nil // nothing at the installer default either
 			default:
@@ -334,5 +337,155 @@ func TestPreflightMissingExecutableCarriesTheDeployRemedy(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "set Options.BuildSource") {
 		t.Fatalf("refusal does not keep the library's remedy for an embedder with no flags: %v", err)
+	}
+}
+
+// TestPreflightExecutableMissingComesFromTheProbe pins spec 04's "Missing
+// executable" contract: the verified absent result comes from a dedicated
+// executable probe's own sentinel (exit 0 present / exit 1 absent), never from
+// the failed launch-check's exit status or its not-found text. ssh writes its
+// own diagnostics and the remote command's stderr to one merged stream, so the
+// text is not separable evidence; and ssh exits 255 for its own failures, so a
+// 255 or a spawn failure is a transport failure, while only the probe's 1 is the
+// verified absent result. Anything else leaves the launch-check failure in its
+// retryable class and never runs the installer.
+func TestPreflightExecutableMissingComesFromTheProbe(t *testing.T) {
+	const target = "/opt/evener/bin/evener"
+	const notFound = "sh: 1: " + target + ": not found\n"
+	cases := []struct {
+		name        string
+		launchOut   []byte
+		launchErr   error
+		probeOut    []byte
+		probeErr    error
+		wantMissing bool
+		deploy      bool
+	}{
+		{
+			// The launch-check's 127 and its text are deliberately not
+			// not-found shaped: only the probe proves absence now.
+			name:        "the probe's own 1 verifies absence without not-found text",
+			launchOut:   []byte("evener: launch failed\n"),
+			launchErr:   exitStatus(t, 127),
+			probeErr:    exitStatus(t, 1),
+			wantMissing: true,
+		},
+		{
+			name:        "not-found text is not read when the probe proves presence",
+			launchOut:   []byte(notFound),
+			launchErr:   exitStatus(t, 127),
+			probeOut:    []byte(target + "\n"),
+			wantMissing: false,
+		},
+		{
+			name:        "ssh's own 255 is a transport failure, not absence",
+			launchOut:   []byte(notFound),
+			launchErr:   exitStatus(t, 127),
+			probeErr:    exitStatus(t, 255),
+			wantMissing: false,
+		},
+		{
+			name:        "a probe that cannot run is not absence",
+			launchOut:   []byte(notFound),
+			launchErr:   exitStatus(t, 127),
+			probeErr:    errors.New("fork/exec ssh: no such file or directory"),
+			wantMissing: false,
+		},
+		{
+			name:        "verified absence with a deploy configured defers to the install ladder",
+			launchOut:   []byte("evener: launch failed\n"),
+			launchErr:   exitStatus(t, 127),
+			probeErr:    exitStatus(t, 1),
+			wantMissing: true,
+			deploy:      true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: target}
+			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
+				joined := strings.Join(argv, " ")
+				switch {
+				case strings.HasSuffix(joined, "uname -s"):
+					return []byte("Linux\n"), nil
+				case strings.HasSuffix(joined, "uname -m"):
+					return []byte("x86_64\n"), nil
+				case strings.Contains(joined, "XDG_STATE_HOME"):
+					return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
+				case strings.HasSuffix(joined, "id -u"):
+					return []byte("1000\n"), nil
+				case strings.Contains(joined, "launch-check"):
+					return tc.launchOut, tc.launchErr
+				case strings.Contains(joined, executableProbeRemote(target)):
+					return tc.probeOut, tc.probeErr
+				case strings.Contains(joined, `if [ -n "${HOME-}" ]`):
+					return nil, nil // nothing at the installer default either
+				default:
+					return nil, fmt.Errorf("unexpected remote command: %v", argv)
+				}
+			}}
+			opts := Options{DeployHelp: "deploy help"}
+			if tc.deploy {
+				opts.BuildBinary = writeStageBinary
+			}
+			m := newTestManager(t, testRegistry(t, host), fr, opts)
+
+			pf, err := m.preflight(context.Background(), host)
+			if tc.wantMissing {
+				if tc.deploy {
+					if err != nil {
+						t.Fatalf("preflight err = %v, want the deploy ladder to defer the verified missing executable", err)
+					}
+					if !pf.ExecutableMissing {
+						t.Fatal("Preflight.ExecutableMissing = false, want the verified fact recorded")
+					}
+					return
+				}
+				if !errors.Is(err, ErrExecutableMissing) {
+					t.Fatalf("preflight err = %v, want ErrExecutableMissing from the probe's 1", err)
+				}
+				if !pf.ExecutableMissing {
+					t.Fatal("Preflight.ExecutableMissing = false, want the verified fact recorded")
+				}
+				var probed bool
+				for _, argv := range fr.recordedRuns() {
+					if strings.Contains(strings.Join(argv, " "), executableProbeRemote(target)) {
+						probed = true
+					}
+				}
+				if !probed {
+					t.Fatalf("preflight did not run the dedicated executable probe: %v", fr.recordedRuns())
+				}
+				return
+			}
+			if errors.Is(err, ErrExecutableMissing) {
+				t.Fatalf("preflight err = %v; a missing executable must be verified by the probe, not by the launch-check's status or text", err)
+			}
+			if !errors.Is(err, ErrSSHStart) {
+				t.Fatalf("preflight err = %v, want the retryable ErrSSHStart class", err)
+			}
+		})
+	}
+}
+
+// TestExecutableProbeRemote pins the dedicated probe's shape and quoting: the
+// answer is the 0/1 exit status alone for both forms (test -x for a path,
+// command -v for a bare name), and a run target carrying a space or a shell
+// metacharacter reaches the remote shell as one literal word.
+func TestExecutableProbeRemote(t *testing.T) {
+	cases := []struct {
+		target string
+		want   string
+	}{
+		{"/opt/evener/bin/evener", "if test -x /opt/evener/bin/evener; then exit 0; else exit 1; fi"},
+		{"/opt/my evener/bin/evener", "if test -x '/opt/my evener/bin/evener'; then exit 0; else exit 1; fi"},
+		{"/opt/evener/bin/evener; rm -rf /", "if test -x '/opt/evener/bin/evener; rm -rf /'; then exit 0; else exit 1; fi"},
+		{"evener", "if command -v evener >/dev/null 2>&1; then exit 0; else exit 1; fi"},
+		{"my evener", "if command -v 'my evener' >/dev/null 2>&1; then exit 0; else exit 1; fi"},
+	}
+	for _, tc := range cases {
+		if got := executableProbeRemote(tc.target); got != tc.want {
+			t.Errorf("executableProbeRemote(%q) =\n %q\nwant %q", tc.target, got, tc.want)
+		}
 	}
 }

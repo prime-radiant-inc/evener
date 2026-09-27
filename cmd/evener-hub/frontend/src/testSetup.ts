@@ -1,4 +1,7 @@
-import { afterAll, beforeAll } from "vitest";
+import { cleanup } from "@testing-library/react";
+import * as React from "react";
+import { afterAll, afterEach, beforeAll } from "vitest";
+import { guardConsoleOutput } from "./testConsoleGuard";
 
 // Every test file must get its own VM context: stores, pane registrations and
 // module mocks are module-scoped. Vitest's vmThreads pool gives each file one
@@ -13,6 +16,26 @@ if (contextMarker.__evenerTestContextInUse) {
   );
 }
 contextMarker.__evenerTestContextInUse = true;
+
+// Guarded here at module scope, before the test file loads, so a file that
+// captures console.error at its own module scope captures the guarded method.
+// This file's hooks register first, so they run after the test file's own
+// afterEach and afterAll: output from its cleanup (unmounts) counts too.
+const consoleGuard = guardConsoleOutput(console);
+
+function failOnUnexpectedConsoleOutput() {
+  const unexpected = consoleGuard.takeUnexpectedOutput();
+  if (unexpected !== undefined) throw new Error(unexpected);
+}
+
+afterEach(failOnUnexpectedConsoleOutput);
+afterAll(failOnUnexpectedConsoleOutput);
+
+// Testing Library registers its automatic unmount only when vitest exposes a
+// global afterEach, which it does not here, so a test's rendered trees and
+// hooks would otherwise stay mounted into the next test. Registered after the
+// console check so it runs before it: output from the unmount counts.
+afterEach(cleanup);
 
 const reactEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 let previousActEnvironment: boolean | undefined;
@@ -30,4 +53,24 @@ afterAll(() => {
   } else {
     reactEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
   }
+});
+
+// React's development build captures an owner stack for every JSX element it
+// creates - an Error() plus a console.createTask - up to 10,000 a second. That
+// was 7% of the suite's CPU, and it buys only richer component stacks in React
+// warnings, which no test reads. React has no switch for it, so the counter
+// that caps it is pinned past the cap: every element takes the shared "unknown
+// owner" stack instead. If a React upgrade drops the counter, this throws
+// rather than silently losing the saving; update or delete this block then.
+const reactInternals = (React as unknown as Record<string, Record<string, unknown> | undefined>)
+  .__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+if (reactInternals === undefined || !("recentlyCreatedOwnerStacks" in reactInternals)) {
+  throw new Error(
+    "React no longer exposes recentlyCreatedOwnerStacks; update or remove the owner-stack cap in testSetup.ts.",
+  );
+}
+Object.defineProperty(reactInternals, "recentlyCreatedOwnerStacks", {
+  get: () => Number.POSITIVE_INFINITY,
+  set: () => {},
+  configurable: true,
 });

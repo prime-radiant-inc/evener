@@ -165,6 +165,38 @@ func (r *wtRepo) commitInMainCheckout(t *testing.T, branch, name, content, msg s
 	return strings.TrimSpace(wtGit(t, r.mainRoot, "rev-parse", "HEAD"))
 }
 
+// addOrphanedBranchLaneFixture registers a managed worktree whose sidecar
+// records branch, which does not exist: the state a delegate dispose, or an
+// earlier collection whose worktree remove survived a crash, leaves behind. The
+// worktree is detached, so it can be removed without the missing branch.
+func (r *wtRepo) addOrphanedBranchLaneFixture(t *testing.T, name, branch string) string {
+	t.Helper()
+	canonicalMain := r.canonicalMain(t)
+	path := r.managedPath(t, canonicalMain, name)
+	metaDir := r.metaDir(t, canonicalMain)
+	if err := os.MkdirAll(metaDir, 0o755); err != nil {
+		t.Fatalf("mkdir metaDir: %v", err)
+	}
+	mergeTarget := strings.TrimSpace(wtGit(t, r.mainRoot, "branch", "--show-current"))
+	sc := worktree.Sidecar{
+		Name:           name,
+		Branch:         branch,
+		BaseSHA:        r.head,
+		MergeTarget:    mergeTarget,
+		OriginalRoot:   canonicalMain,
+		CreatorSession: r.s.id,
+		CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := worktree.WriteSidecarExcl(metaDir, name, sc); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir worktree parent: %v", err)
+	}
+	wtGit(t, r.mainRoot, "worktree", "add", "--detach", "--", path, r.head)
+	return path
+}
+
 // ============================================================
 // list
 // ============================================================
@@ -571,6 +603,198 @@ func TestWorktreePrune_Sweep1_BranchDeleteFailsDuringCollect(t *testing.T) {
 	_, err := r.pruneOp(t)
 	if err == nil || !strings.Contains(err.Error(), "deleting branch") {
 		t.Fatalf("prune with the branch -D failing: err = %v, want the deleting-branch error", err)
+	}
+}
+
+// TestWorktreePrune_Sweep1_GoneBranchLaneCollected: a managed lane whose
+// recorded branch was already deleted must still be collected. Deleting an
+// already-absent branch is that deletion's success state, not a mutation
+// failure; before the fix collectLane returned the deleting-branch error and,
+// under prune's abort-on-error policy, aborted the whole pass.
+func TestWorktreePrune_Sweep1_GoneBranchLaneCollected(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	path := r.addOrphanedBranchLaneFixture(t, "gone-branch-lane", "already-deleted-branch")
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune with an already-gone branch: %v", err)
+	}
+	e := findPruneEntry(t, pruneEntries(t, out, "removed"), "gone-branch-lane")
+	if e == nil {
+		t.Fatalf("gone-branch-lane not collected: %+v", out)
+	}
+	if e["sidecar_removed"] != true {
+		t.Errorf("gone-branch-lane sidecar_removed = %v, want true", e["sidecar_removed"])
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("gone-branch-lane worktree survived prune: err=%v", statErr)
+	}
+	if _, scErr := worktree.ReadSidecar(metaDir, "gone-branch-lane"); !os.IsNotExist(scErr) {
+		t.Errorf("gone-branch-lane sidecar survived: err=%v", scErr)
+	}
+}
+
+// TestWorktreePrune_Sweep1_GoneBranchLaneDoesNotBlockOtherLanes pins the
+// regression that bit us: one lane whose branch is already gone must not abort
+// the pass and leave every other prunable lane uncollected. The stale lane is
+// named to sort first, so an abort would strand the ordinary lane behind it.
+func TestWorktreePrune_Sweep1_GoneBranchLaneDoesNotBlockOtherLanes(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	stalePath := r.addOrphanedBranchLaneFixture(t, "aaa-gone-branch-lane", "already-deleted-branch")
+	ordinaryPath := r.addManagedWorktreeFixture(t, "zzz-ordinary-lane")
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	removed := pruneEntries(t, out, "removed")
+	if findPruneEntry(t, removed, "aaa-gone-branch-lane") == nil {
+		t.Fatalf("gone-branch lane not collected: %+v", out)
+	}
+	if findPruneEntry(t, removed, "zzz-ordinary-lane") == nil {
+		t.Fatalf("ordinary lane left uncollected; a stale lane blocked the pass: %+v", removed)
+	}
+	for _, p := range []string{stalePath, ordinaryPath} {
+		if _, statErr := os.Stat(p); !os.IsNotExist(statErr) {
+			t.Errorf("worktree %s survived prune: err=%v", p, statErr)
+		}
+	}
+	if _, scErr := worktree.ReadSidecar(metaDir, "zzz-ordinary-lane"); !os.IsNotExist(scErr) {
+		t.Errorf("ordinary-lane sidecar survived: err=%v", scErr)
+	}
+}
+
+// TestWorktreePrune_Sweep1_BranchDeleteRealFailureStillAborts is the negative
+// guard for the gone-branch tolerance: a branch that still exists and whose
+// deletion is genuinely refused must still abort the pass with the
+// deleting-branch error, leaving the sidecar in place. The sidecar names "main"
+// (checked out at the main root), so `git branch -D main` is really refused
+// while the branch exists.
+func TestWorktreePrune_Sweep1_BranchDeleteRealFailureStillAborts(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	r.addOrphanedBranchLaneFixture(t, "blocked-lane", "main")
+
+	_, err := r.pruneOp(t)
+	if err == nil || !strings.Contains(err.Error(), "deleting branch") {
+		t.Fatalf("prune with a real branch-delete refusal: err = %v, want the deleting-branch error", err)
+	}
+	if !branchExistsInRepo(t, r.mainRoot, "main") {
+		t.Error("main branch was deleted by the failure path")
+	}
+	if _, scErr := worktree.ReadSidecar(metaDir, "blocked-lane"); scErr != nil {
+		t.Errorf("blocked-lane sidecar removed despite the real branch-delete failure: %v", scErr)
+	}
+}
+
+// TestWorktreePrune_Sweep1_GoneBranchPrefixCollisionCollected: git's
+// for-each-ref matches a literal pattern as a prefix up to a slash, so
+// refs/heads/foo also matches refs/heads/foo/bar. A lane whose branch foo is
+// already gone must still be collected when a sibling branch foo/bar exists;
+// reading the descendant match as "foo present" would re-abort the very pass
+// this fix exists to unblock.
+func TestWorktreePrune_Sweep1_GoneBranchPrefixCollisionCollected(t *testing.T) {
+	t.Parallel()
+	r := newWorktreeRepo(t)
+	canonicalMain := r.canonicalMain(t)
+	metaDir := r.metaDir(t, canonicalMain)
+	// git forbids foo and foo/bar from coexisting, so foo is genuinely absent
+	// while foo/bar exists — the shape that makes for-each-ref over-match.
+	wtGit(t, r.mainRoot, "branch", "gone-prefix-lane/child", r.head)
+	path := r.addOrphanedBranchLaneFixture(t, "gone-prefix-lane", "gone-prefix-lane")
+
+	out, err := r.pruneOp(t)
+	if err != nil {
+		t.Fatalf("prune with a gone branch that prefixes an existing branch: %v", err)
+	}
+	e := findPruneEntry(t, pruneEntries(t, out, "removed"), "gone-prefix-lane")
+	if e == nil {
+		t.Fatalf("gone-prefix-lane not collected: %+v", out)
+	}
+	if e["sidecar_removed"] != true {
+		t.Errorf("gone-prefix-lane sidecar_removed = %v, want true", e["sidecar_removed"])
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("gone-prefix-lane worktree survived prune: err=%v", statErr)
+	}
+	if _, scErr := worktree.ReadSidecar(metaDir, "gone-prefix-lane"); !os.IsNotExist(scErr) {
+		t.Errorf("gone-prefix-lane sidecar survived: err=%v", scErr)
+	}
+	if !branchExistsInRepo(t, r.mainRoot, "gone-prefix-lane/child") {
+		t.Error("the sibling branch gone-prefix-lane/child was deleted; it must be kept")
+	}
+}
+
+// TestP3CollectLane_GoneBranchStillDeletesSidecar: under the P3
+// skip-and-continue policy a lane whose branch is already gone must still have
+// its sidecar deleted. Before the fix collectLane returned a deleting-branch
+// error that the policy turned into a "collect race" skip *before* the sidecar
+// delete, leaking the sidecar — the accumulation the stale
+// sdk-migration-successor sidecar shows.
+func TestP3CollectLane_GoneBranchStillDeletesSidecar(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
+	metaDir := metaDirForLane(path)
+	delete(r.git.branches, id) // the lane's branch is already gone
+
+	run, done, err := r.s.worktreeControlRun(context.Background(), r.mainRoot)
+	if err != nil {
+		t.Fatalf("worktreeControlRun: %v", err)
+	}
+	defer done()
+	if err := r.s.collectLane(run, metaDir, id, id, path, true, r.s.residueSweepPolicy()); err != nil {
+		t.Fatalf("collectLane on an already-gone branch: %v", err)
+	}
+	if r.lanePresent(path) {
+		t.Error("lane survived collection")
+	}
+	if _, scErr := worktree.ReadSidecar(metaDir, id); !os.IsNotExist(scErr) {
+		t.Errorf("sidecar leaked for an already-gone branch: err=%v", scErr)
+	}
+}
+
+// TestP3CollectLane_BranchProbeFailureIsNotAbsence: when the branch-existence
+// probe itself fails, the collector must treat it as doubt, not as "the branch
+// is gone" — deleting the sidecar off a failed probe orphans a branch that may
+// still exist, with no metadata for a later sweep to reconcile. Both the branch
+// delete and the existence probe are forced to fail, so collectLane must return
+// the deleting-branch error and leave the sidecar in place. The probe failure
+// is injected for both probe shapes (show-ref and for-each-ref) so the case is
+// red whichever command the collector probes with.
+func TestP3CollectLane_BranchProbeFailureIsNotAbsence(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
+	metaDir := metaDirForLane(path)
+	r.wrapRunner(func(next worktree.GitRunner, args []string) (string, error) {
+		fail := (len(args) == 3 && args[0] == "branch" && args[1] == "-D" && args[2] == id) ||
+			(len(args) == 4 && args[0] == "show-ref" && args[3] == "refs/heads/"+id) ||
+			(len(args) == 3 && args[0] == "for-each-ref" && args[2] == "refs/heads/"+id)
+		if fail {
+			return "", fmt.Errorf("injected probe failure for %s", id)
+		}
+		return next(args...)
+	})
+
+	run, done, err := r.s.worktreeControlRun(context.Background(), r.mainRoot)
+	if err != nil {
+		t.Fatalf("worktreeControlRun: %v", err)
+	}
+	defer done()
+	if err := r.s.collectLane(run, metaDir, id, id, path, true, r.s.residueSweepPolicy()); err == nil {
+		t.Fatal("collectLane returned nil after a failed branch probe; want the deleting-branch error")
+	}
+	if _, scErr := worktree.ReadSidecar(metaDir, id); scErr != nil {
+		t.Errorf("sidecar deleted off a failed branch probe: %v", scErr)
 	}
 }
 

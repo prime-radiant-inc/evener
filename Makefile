@@ -2,7 +2,7 @@
 # per-module, so gates and lint must loop modules explicitly. Fuzz targets and
 # the fuzz toolkit module run through the explicit fuzz targets below, not the
 # regular test gate.
-GO_MODULES := . agent llm auth envvars invariant identifier
+GO_MODULES := . agent llm auth envvars invariant identifier execsupport
 FUZZ_GO_MODULES := $(GO_MODULES) fuzz
 
 # golangci-lint caches raw findings before path-based suppressions and

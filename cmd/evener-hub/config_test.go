@@ -122,6 +122,61 @@ func TestLoadConfig_Hosts(t *testing.T) {
 			wantErr: hostreg.ErrEmptyRoot,
 		},
 		{
+			name:    "config_path without addr",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\n",
+			wantErr: ErrHostAddrPair,
+		},
+		{
+			name:    "addr without config_path",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\naddr = \"127.0.0.1:9180\"\n",
+			wantErr: ErrHostAddrPair,
+		},
+		{
+			name:    "non-loopback addr",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"10.0.0.5:9180\"\n",
+			wantErr: ErrHostAddr,
+		},
+		{
+			name:    "non-loopback named addr",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"hub.example:9180\"\n",
+			wantErr: ErrHostAddr,
+		},
+		{
+			name:    "addr without a port",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.1\"\n",
+			wantErr: ErrHostAddr,
+		},
+		{
+			name:    "addr with an out-of-range port",
+			toml:    "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.1:70000\"\n",
+			wantErr: ErrHostAddr,
+		},
+		{
+			// addr reaches an SSH-side curl probe and the restart identity
+			// check, so it must be loopback or a wildcard that normalizes to
+			// loopback: every spelling the shipped probe accepts
+			// (sshconn.validateHubAddr) must load, including other loopback
+			// literals such as 127.0.0.2 and the empty host of ":port".
+			name: "loopback and wildcard addrs load",
+			toml: "[[hosts]]\nname = \"a\"\nssh = \"a.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.1:9180\"\n\n" +
+				"[[hosts]]\nname = \"b\"\nssh = \"b.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"127.0.0.2:9180\"\n\n" +
+				"[[hosts]]\nname = \"c\"\nssh = \"c.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"[::1]:9180\"\n\n" +
+				"[[hosts]]\nname = \"d\"\nssh = \"d.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"localhost:9180\"\n\n" +
+				"[[hosts]]\nname = \"e\"\nssh = \"e.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"0.0.0.0:9180\"\n\n" +
+				"[[hosts]]\nname = \"f\"\nssh = \"f.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \"[::]:9180\"\n\n" +
+				"[[hosts]]\nname = \"g\"\nssh = \"g.local\"\nconfig_path = \"/etc/evener/hub.toml\"\naddr = \":9180\"\n",
+			check: func(t *testing.T, cfg Config) {
+				if len(cfg.Hosts) != 7 {
+					t.Fatalf("Hosts = %+v, want 7", cfg.Hosts)
+				}
+				for i, want := range []string{"127.0.0.1:9180", "127.0.0.2:9180", "[::1]:9180", "localhost:9180", "0.0.0.0:9180", "[::]:9180", ":9180"} {
+					if cfg.Hosts[i].Addr != want {
+						t.Fatalf("host %d addr = %q, want %q", i, cfg.Hosts[i].Addr, want)
+					}
+				}
+			},
+		},
+		{
 			name: "multiple hosts preserve order",
 			toml: "[[hosts]]\nname = \"m4\"\nssh = \"m4.local\"\n\n[[hosts]]\nname = \"studio\"\nssh = \"studio.local\"\n",
 			check: func(t *testing.T, cfg Config) {

@@ -186,6 +186,21 @@ test("a queue parked by Stop (idle, depth > 0) makes drain available and nothing
   expect(c.reason.drain).toBeUndefined();
 });
 
+// A failed turn leaves the session resting like an idle one: the daemon
+// reports systemError until the next turn starts (agent RestingWireState).
+test("a session resting on a failed turn offers send, and drain for a parked queue", () => {
+  expect(sessionControls("systemError", ALL, 0)).toMatchObject({
+    stop: false,
+    steer: false,
+    drain: false,
+    queue: false,
+    send: true,
+  });
+  const parked = sessionControls("systemError", ALL, 2);
+  expect(parked).toMatchObject({ drain: true, drainQueue: true, send: true });
+  expect(parked.reason.drain).toBeUndefined();
+});
+
 test("a harness without steer names the capability, not the status, for steer and drain", () => {
   const c = sessionControls("active", { ...ALL, steer: false }, 1);
   expect(c).toMatchObject({ steer: false, drain: false });

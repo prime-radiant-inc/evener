@@ -162,6 +162,7 @@ func TestScriptedWorktreeGitRefusesUnmodeledMergeVerdicts(t *testing.T) {
 }
 
 func TestScriptedWorktreeSessionPreservesLockAndRestoreInvariants(t *testing.T) {
+	t.Parallel()
 	h := newScriptedWorktreeSession(t)
 
 	first, err := h.exec(map[string]any{"operation": "create", "name": "alpha"})
@@ -416,7 +417,7 @@ func (g *scriptedWorktreeGit) run(args ...string) (string, error) {
 		// worktree is already gone. Resolution is the same as --verify.
 		return g.resolveRef(args[1])
 	case len(args) == 3 && args[0] == "for-each-ref":
-		return "", nil
+		return g.forEachRef(args[2]), nil
 	case len(args) == 4 && args[0] == "merge-base" && args[1] == "--is-ancestor",
 		len(args) == 4 && args[0] == "cherry":
 		// Ancestry and patch-equivalence are verdicts over a commit graph the
@@ -624,6 +625,20 @@ func (g *scriptedWorktreeGit) resolveRef(ref string) (string, error) {
 		return ref + "\n", nil
 	}
 	return "", fmt.Errorf("scripted git: ref %q does not exist", ref)
+}
+
+// forEachRef answers the pattern forms evener reaches: an exact refs/heads/<name>
+// (the branch-existence probe) from the model's own ref set. Remote-tracking
+// patterns are not modeled and match nothing.
+func (g *scriptedWorktreeGit) forEachRef(pattern string) string {
+	name, ok := strings.CutPrefix(pattern, "refs/heads/")
+	if !ok {
+		return ""
+	}
+	if _, exists := g.branches[name]; exists {
+		return "refs/heads/" + name + "\n"
+	}
+	return ""
 }
 
 func (g *scriptedWorktreeGit) porcelain() string {

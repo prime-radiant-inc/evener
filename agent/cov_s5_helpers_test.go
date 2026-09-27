@@ -11,6 +11,7 @@ import (
 )
 
 func TestS5Cov_SummarizeTaskPrompt(t *testing.T) {
+	t.Parallel()
 	if got := summarizeTaskPrompt(""); got != "(no description)" {
 		t.Errorf("empty → %q, want (no description)", got)
 	}
@@ -28,6 +29,7 @@ func TestS5Cov_SummarizeTaskPrompt(t *testing.T) {
 }
 
 func TestS5Cov_ToolDefinitionHelpers(t *testing.T) {
+	t.Parallel()
 	defs := []llm.ToolDefinition{
 		{Name: "a", Description: "does a"},
 		{Name: "b"}, // no description
@@ -55,6 +57,7 @@ func TestS5Cov_ToolDefinitionHelpers(t *testing.T) {
 }
 
 func TestS5Cov_LiveModelFor(t *testing.T) {
+	t.Parallel()
 	models := []registry.Resolved{{ModelID: "gpt-5"}, {ModelID: "Claude-X"}}
 	if _, ok := liveModelFor(models, ""); ok {
 		t.Error("empty model should not match")
@@ -71,6 +74,7 @@ func TestS5Cov_LiveModelFor(t *testing.T) {
 }
 
 func TestLiveModelFor_PrefersExactIDBeforeWhitespaceNormalization(t *testing.T) {
+	t.Parallel()
 	models := []registry.Resolved{
 		{ModelID: "gpt-5", WireID: "normalized"},
 		{ModelID: "gpt-5 ", WireID: "exact"},
@@ -83,12 +87,14 @@ func TestLiveModelFor_PrefersExactIDBeforeWhitespaceNormalization(t *testing.T) 
 }
 
 func TestS5Cov_ResolveLiveModelProfile_NilGuards(t *testing.T) {
+	t.Parallel()
 	if got := resolveLiveModelProfile(context.TODO(), nil, nil); got != nil {
 		t.Error("nil client+profile should return the (nil) profile")
 	}
 }
 
 func TestS5Cov_EnrichDiagnosticData(t *testing.T) {
+	t.Parallel()
 	// Warning value + pointer.
 	w := enrichDiagnosticData(events.EventWarning, events.WarningData{Message: "rate limit hit"})
 	if wd, ok := w.(events.WarningData); !ok || wd.Source == "" {
@@ -123,6 +129,7 @@ func TestS5Cov_EnrichDiagnosticData(t *testing.T) {
 }
 
 func TestS5Cov_ProviderCauseFromError(t *testing.T) {
+	t.Parallel()
 	if providerCauseFromError(nil, "m") != nil {
 		t.Error("nil error → nil cause")
 	}

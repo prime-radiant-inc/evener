@@ -1845,7 +1845,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			// the latest history this relay forwarded, and at the start of history
 			// only when it forwarded none.
 			//
-			// Both frames name the relay's target. Without the status frame the
+			// Both frames name the relay's target. The synthesized failure is the
+			// turn's; the session STATUS is thread/status/changed's, never
+			// turn/completed's — the daemon's real failure exit emits the same
+			// pair (agent/session_lifecycle.go's endInputAtTurnFailure announces
+			// EventSessionEnd{Reason:"turn_failed"} as
+			// thread/status/changed(systemError)). The synthesized frame keeps
+			// idle: a lost connection is not a recorded turn failure, and the
+			// roster marks a dead daemon errored. Without the status frame the
 			// client would keep the session active with Stop and Steer still
 			// showing and Send withheld — the exact stall this exists to end. The
 			// capabilities are the hub's own answer for a session whose daemon is

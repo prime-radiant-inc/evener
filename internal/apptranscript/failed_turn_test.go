@@ -24,7 +24,7 @@ func TestProjectTurnRendersFailedTurn(t *testing.T) {
 			Hint:    "check the API key",
 			Cause:   &schema.TurnFailureCause{Kind: "provider", Provider: "openai", Model: "gpt-5.2", Status: 403},
 		},
-	}, nil, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 
 	if len(out) != 1 {
 		t.Fatalf("items = %+v, want exactly one", out)
@@ -56,7 +56,7 @@ func TestProjectTurnRendersFailedTurnWithoutDiagnostic(t *testing.T) {
 	out := ProjectTurn("turn_1", 1, schema.Turn{
 		Kind:    schema.TurnFailure,
 		Message: llm.System("something broke"),
-	}, nil, nil, nil)
+	}, NewToolCallRegistry(), nil, nil)
 
 	if len(out) != 1 {
 		t.Fatalf("items = %+v, want exactly one", out)
@@ -72,7 +72,7 @@ func TestProjectTurnRendersFailedTurnWithoutDiagnostic(t *testing.T) {
 // A failure carrying no text anywhere still produces a visible item rather
 // than vanishing the way a blank model-switch marker does.
 func TestProjectTurnRendersFailedTurnWithNoText(t *testing.T) {
-	out := ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnFailure}, nil, nil, nil)
+	out := ProjectTurn("turn_1", 1, schema.Turn{Kind: schema.TurnFailure}, NewToolCallRegistry(), nil, nil)
 	if len(out) != 1 {
 		t.Fatalf("items = %+v, want exactly one", out)
 	}
@@ -118,7 +118,7 @@ func writeFailureTranscript(t *testing.T) string {
 }
 
 func failureProjector(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-	return ProjectTurn(turnID, entryIndex, turn, map[string]string{}, nil, nil)
+	return ProjectTurn(turnID, entryIndex, turn, NewToolCallRegistry(), nil, nil)
 }
 
 // The reloaded turn wrapping a persisted failure reports the same

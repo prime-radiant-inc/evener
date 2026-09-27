@@ -36,7 +36,7 @@ function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name"
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   return {
-    origin: "sidecar",
+    origin: "hub.toml",
     attached: false,
     midAttach: false,
     removed: false,

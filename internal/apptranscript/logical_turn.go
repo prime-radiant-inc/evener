@@ -127,8 +127,12 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 }
 
 // appendProjectedEntry projects one entry through the EntryProjector under
-// its per-entry turn id (the per-entry contract unchanged) and buffers the
-// result for grouping.
+// its logical-turn id (the group's turn id, matching the bounded read's
+// group.turnID and the live projector's activeTurnID) and buffers the
+// result for grouping. Using the group's turn id — not the per-entry
+// persistedTurnID — keeps LastAssistantTurnID consistent across entries
+// in the same logical turn, so the healed-communicate echo check scopes
+// correctly on the full read (where per-entry IDs differ within a group).
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
 	if turn.Kind.TranscriptOnly() {
 		// Written for the history projection phase 3 introduces. Today's
@@ -136,7 +140,12 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		// projects nothing, though its line still takes an entry index.
 		return
 	}
-	turnID := persistedTurnID(turn, entryIndex)
+	// Project under the id of the group appendEntry will buffer the entry
+	// into: the same grouping decision, made on a copy so appendEntry still
+	// places the entry itself. A steering opener takes its own group's id,
+	// not the previously open group's (#2432).
+	probe := acc.grouper
+	turnID, _ := probe.Place(&turn, entryIndex)
 	var items []appwire.ThreadItem
 	if project != nil {
 		items = project(turn, turnID, entryIndex)

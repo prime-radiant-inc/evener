@@ -24,6 +24,14 @@ func isCursorStale(err error) bool {
 // end), and HasOlder to say whether items remain before them.
 func assertWindow(t testing.TB, label string, window Window, want []appitempaging.TranscriptItemCandidate, end, limit int) {
 	t.Helper()
+	// Independent of the reference: a flushed item positioned the same way
+	// the reference derives it can still collide with a real item's
+	// position (roborev finding on PR #2303) and pass a diff against a
+	// reference that collides identically. ValidateCandidates catches that
+	// regardless of what the reference says.
+	if err := appitempaging.ValidateCandidates(window.Candidates); err != nil {
+		t.Fatalf("%s (end %d, limit %d): %v", label, end, limit, err)
+	}
 	start := max(0, end-limit)
 	if expected := want[start:end]; !reflect.DeepEqual(window.Candidates, expected) {
 		t.Fatalf("%s (end %d, limit %d): window diverges from the reference\n got: %s\nwant: %s", label, end, limit, dump(window.Candidates), dump(expected))

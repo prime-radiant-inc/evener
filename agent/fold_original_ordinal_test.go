@@ -47,7 +47,7 @@ func TestFoldCopiesRecordTheOrdinalOfTheirOriginal(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), "")
 	if err != nil {
 		t.Fatal(err)
 	}

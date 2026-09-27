@@ -1677,7 +1677,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// makes this exact synchronous call after a runtime model switch.
 	p := sess.Profile()
 	srv.UpdateSessionInfo(sess.ID(), p.Model(), p.ID())
-	srv.SetState(string(sess.State()))
+	srv.SetState(sess.WireState())
 	if deps.observeCallbacks != nil {
 		deps.observeCallbacks(serveCallbackObserver{
 			notify:          notifyCallback,

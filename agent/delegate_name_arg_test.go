@@ -21,6 +21,7 @@ import (
 // rollback must really delete it.
 
 func TestDecodeDelegateArgs_Name(t *testing.T) {
+	t.Parallel()
 	// Absent name stays empty: the lane branch defaults to the delegate id.
 	absent, err := decodeDelegateArgs(map[string]any{"prompt": "p"})
 	if err != nil {

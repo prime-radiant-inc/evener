@@ -117,6 +117,7 @@ func unhealthyChainRequest() llm.Request {
 // replace the verdict with a later group's failure. An unhealthy verdict
 // indicts the provider's transport, which every same-provider fallback shares.
 func TestFallbackChain_MidChainProviderUnhealthyAbortsWalk(t *testing.T) {
+	t.Parallel()
 	permErr := llm.ErrorFromHTTPStatus("openai", 403, "primary denied", nil, nil)
 	midStreamErr := llm.ErrorFromHTTPStatus("openai", 503, "upstream stream died", nil, nil)
 	a := &scriptedStreamAdapter{
@@ -158,6 +159,7 @@ func TestFallbackChain_MidChainProviderUnhealthyAbortsWalk(t *testing.T) {
 // so the fallback's text replaces rather than appends to the primary's
 // dangling partial.
 func TestFallbackChain_ResetsAssistantTextBetweenGroups(t *testing.T) {
+	t.Parallel()
 	permErr := llm.ErrorFromHTTPStatus("openai", 403, "primary denied", nil, nil)
 	stop := llm.FinishReason{Reason: llm.FinishReasonStop, Raw: "stop"}
 	a := &scriptedStreamAdapter{
@@ -214,6 +216,7 @@ func TestFallbackChain_ResetsAssistantTextBetweenGroups(t *testing.T) {
 // this is the case that actually discriminates a guarded reset from an
 // unconditional one.
 func TestFallbackChain_NoResetWhenNoGroupProducedOutput(t *testing.T) {
+	t.Parallel()
 	permErr := llm.ErrorFromHTTPStatus("openai", 403, "primary denied", nil, nil)
 	stop := llm.FinishReason{Reason: llm.FinishReasonStop, Raw: "stop"}
 	a := &scriptedStreamAdapter{
@@ -285,6 +288,7 @@ func continuationRecoveryRequest() llm.Request {
 // spends a second full retry group against a provider RetryStream just declared
 // unhealthy. Exactly one group must run.
 func TestContinuationRecovery_SkippedOnProviderUnhealthyVerdict(t *testing.T) {
+	t.Parallel()
 	// A mid-stream in-band failure whose text names the anchor as missing: the
 	// only error shape that reaches the recovery predicate through the verdict.
 	midStreamErr := llm.ErrorFromHTTPStatus("openai", 503, "previous_response resp_anchor not found", nil, nil)
@@ -327,6 +331,7 @@ func TestContinuationRecovery_SkippedOnProviderUnhealthyVerdict(t *testing.T) {
 // visible through the verdict. The verdict is a decision about the provider's
 // transport, not about the anchor, and must not be read as one.
 func TestShouldRetryResponsesContinuationAsFullHistory_UnhealthyVerdict(t *testing.T) {
+	t.Parallel()
 	anchorMissing := llm.ErrorFromHTTPStatus("openai", 404, "previous_response resp_anchor not found", nil, nil)
 	req := continuationRecoveryRequest()
 
@@ -344,6 +349,7 @@ func TestShouldRetryResponsesContinuationAsFullHistory_UnhealthyVerdict(t *testi
 // delta paired with none must decline rather than dispatch a message-less
 // round.
 func TestContinuationRecovery_SkippedWithoutRetainedHistory(t *testing.T) {
+	t.Parallel()
 	anchorMissing := llm.ErrorFromHTTPStatus("openai", 404, "previous_response resp_anchor not found", nil, nil)
 	a := &scriptedStreamAdapter{
 		provider: "openai",
@@ -374,6 +380,7 @@ func TestContinuationRecovery_SkippedWithoutRetainedHistory(t *testing.T) {
 // model fallbacks. The model does not speak the protocol, so no amount of
 // retrying the same request helps; the next model is the only way forward.
 func TestModelFallbackEligible_ResponsesEmptyStream(t *testing.T) {
+	t.Parallel()
 	err := llm.NewUnsupportedEndpointError("openai", "responses stream closed with no events", nil)
 	if !modelFallbackEligible(err, llm.DefaultRetryPolicy()) {
 		t.Fatalf("modelFallbackEligible(%v) = false, want true", err)
@@ -386,6 +393,7 @@ func TestModelFallbackEligible_ResponsesEmptyStream(t *testing.T) {
 // permanent-class one reports the chain eligible (the case that fails without
 // the arm), and a retryable-class one only happens to report non-eligible.
 func TestModelFallbackEligible_ProviderUnhealthy(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		lastErr error

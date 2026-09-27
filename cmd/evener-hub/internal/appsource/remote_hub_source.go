@@ -585,6 +585,21 @@ func (s *RemoteHubSource) ListTurns(ctx context.Context, params appwire.ThreadTu
 	return out, nil
 }
 
+// FetchSessionImage fetches one image out of the owning host's own local
+// session state, for the controller routes that serve a remote session's
+// host-qualified image URLs (multi-host component 05). It resolves the
+// attached-only client like every other remote call — an unattached or unknown
+// host is refused typed and never dialed, so this path can never fall back to a
+// local read — and the response needs no translation: it carries bytes and a
+// media type, not refs.
+func (s *RemoteHubSource) FetchSessionImage(ctx context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
+	var out appwire.SessionImageResponse
+	if err := s.call(ctx, appwire.MethodEvenerSessionImage, params, &out); err != nil {
+		return appwire.SessionImageResponse{}, err
+	}
+	return out, nil
+}
+
 func (s *RemoteHubSource) ListModels(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	var out appwire.ModelListResponse
 	if err := s.call(ctx, appwire.MethodModelList, params, &out); err != nil {

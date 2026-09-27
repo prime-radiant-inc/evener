@@ -28,6 +28,7 @@ import (
 )
 
 func TestDelegateResourceCreate_IsolationFailurePublishesNothing(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	wantErr := errors.New("injected sandbox isolation failure")
 	root.cfg.testOnly.subagentPrepareFault = func(point string) error {
@@ -56,6 +57,7 @@ func TestDelegateResourceCreate_IsolationFailurePublishesNothing(t *testing.T) {
 }
 
 func TestDelegateResourceCreate_StableRouteSkipsLegacyRetentionReservation(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	legacyReservationCalled := false
 	root.cfg.testOnly.subagentReserveSlot = func(*Session) ([]*subagent, error) {
@@ -76,6 +78,7 @@ func TestDelegateResourceCreate_StableRouteSkipsLegacyRetentionReservation(t *te
 }
 
 func TestDelegateResourceCreate_StableIdentityCommitsBeforeRuntimeLaunch(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	wantErr := errors.New("injected child construction failure")
 	var committedID string
@@ -109,6 +112,7 @@ func TestDelegateResourceCreate_StableIdentityCommitsBeforeRuntimeLaunch(t *test
 }
 
 func TestDelegateResourceCreate_CommittedUpdatePrecedesConstruction(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	constructorEntered := make(chan struct{})
 	releaseConstructor := make(chan struct{})
@@ -167,6 +171,7 @@ func TestDelegateResourceCreate_CommittedUpdatePrecedesConstruction(t *testing.T
 }
 
 func TestDelegateResourceCreate_PostCommitConstructionFailureClosesResumability(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	wantErr := errors.New("injected permanent child construction failure")
 	root.cfg.testOnly.subagentPrepareFault = func(point string) error {
@@ -196,6 +201,7 @@ func TestDelegateResourceCreate_PostCommitConstructionFailureClosesResumability(
 }
 
 func TestDelegateResourceCreate_RegisteredPostCommitFailureRetainsStableIdentityWithinMinimumLimit(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	root.reg.OverrideLimits(map[string]schema.ToolOutputLimit{
 		"delegate": {MaxChars: 1, Strategy: schema.TruncTail},
@@ -319,6 +325,7 @@ func TestDelegateResourceCreate_RegisteredResultPreservesWorktreeAndModelFallbac
 }
 
 func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
+	t.Parallel()
 	t.Run("stop wins before attach", func(t *testing.T) {
 		root, _, _ := newDelegateResourceBootstrapSession(t)
 		constructionErr := errors.New("construction cancelled after committed stop")
@@ -396,6 +403,7 @@ func TestDelegateResourceCreate_ResultMatchesCommittedSnapshot(t *testing.T) {
 }
 
 func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
+	t.Parallel()
 	root, client, profile := newDelegateResourceBootstrapSession(t)
 	adapter := newTask6FrozenDescriptorAdapter()
 	client.Register(adapter)
@@ -621,6 +629,7 @@ func TestDelegateResourceCreate_UsesFrozenDescriptorAfterCommit(t *testing.T) {
 }
 
 func TestDelegateResourceCreate_PreservesCompleteNamedAgentWorkflowAfterCommit(t *testing.T) {
+	t.Parallel()
 	root, client, _ := newDelegateResourceBootstrapSession(t)
 	adapter := newTask6FrozenDescriptorAdapter()
 	client.Register(adapter)
@@ -718,6 +727,7 @@ func TestDelegateResourceCreate_PreservesCompleteNamedAgentWorkflowAfterCommit(t
 }
 
 func TestDelegateResourceCreate_ToolCapabilityCeiling(t *testing.T) {
+	t.Parallel()
 	requestToolNames := func(request llm.Request) map[string]bool {
 		names := make(map[string]bool, len(request.Tools))
 		for _, definition := range request.Tools {
@@ -866,6 +876,7 @@ func TestDelegateResourceCreate_ToolCapabilityCeiling(t *testing.T) {
 }
 
 func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *testing.T) {
+	t.Parallel()
 	const (
 		startupMarker = "TASK6 STARTUP CHILD HOOK"
 		resumeMarker  = "TASK6 RESUME CHILD HOOK"
@@ -962,6 +973,7 @@ func TestDelegateResourceCreate_RestoredRootStartsNewChildWithStartupHooks(t *te
 }
 
 func TestDelegateResourceCreate_PostCommitFailureRemainsInspectableAfterRestart(t *testing.T) {
+	t.Parallel()
 	root, client, profile := newDelegateResourceBootstrapSession(t)
 	wantErr := errors.New("injected permanent child construction failure")
 	root.cfg.testOnly.subagentPrepareFault = func(point string) error {
@@ -998,6 +1010,7 @@ func TestDelegateResourceCreate_PostCommitFailureRemainsInspectableAfterRestart(
 }
 
 func TestDelegateResourceCreate_MissingRestoreInputsCloseResumabilityBeforeCleanup(t *testing.T) {
+	t.Parallel()
 	root, client, profile := newDelegateResourceBootstrapSession(t)
 	descriptor := task6DelegateDescriptor("missing restore transcript")
 	descriptor.Isolation = "worktree"
@@ -1042,6 +1055,7 @@ func TestDelegateResourceCreate_MissingRestoreInputsCloseResumabilityBeforeClean
 }
 
 func TestDelegateResourceCreate_ResumabilityAppendFailureDestroysNothing(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	wantErr := errors.New("injected permanent child construction failure")
 	var artifactPath string
@@ -1095,6 +1109,7 @@ func TestDelegateResourceCreate_ResumabilityAppendFailureDestroysNothing(t *test
 }
 
 func TestDelegateResourceCreate_StopBeforeAttachDisposesUnadoptedSession(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	runtime, started, isolation, prepared := prepareCommittedUnadoptedDelegate(t, root, "stop before parent attach")
 	_, cancelPlan, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), started.lease.delegateID)
@@ -1151,6 +1166,7 @@ func TestDelegateResourceCreate_StopBeforeAttachDisposesUnadoptedSession(t *test
 }
 
 func TestDelegateResourceCreate_StopSettlementTransfersRuntimeBeforeUpdateEmission(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	runtime, started, isolation, prepared := prepareCommittedUnadoptedDelegate(t, root, "stop settlement runtime transfer")
 	_, cancelPlan, _, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), started.lease.delegateID)
@@ -1242,6 +1258,7 @@ func TestDelegateResourceCreate_StopSettlementTransfersRuntimeBeforeUpdateEmissi
 }
 
 func TestDelegateResourceCreate_CloseAfterDrainRefusesFailedStartRetention(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	runtime, started, isolation, prepared := prepareCommittedUnadoptedDelegate(t, root, "close after manager drain")
 	root.subagents.drainForClose()
@@ -1315,6 +1332,7 @@ func prepareCommittedUnadoptedDelegate(t *testing.T, root *Session, task string)
 }
 
 func TestDelegateResourceCreate_DescendantEventCallbackSurvivesSpawnConfig(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	observed := make(chan events.SessionEvent, 1)
 	var callbackMu sync.Mutex
@@ -1362,6 +1380,7 @@ func TestDelegateResourceCreate_DescendantEventCallbackSurvivesSpawnConfig(t *te
 }
 
 func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	workspace := t.TempDir()
 	adapter := newTask6TranscriptBarrierAdapter()
@@ -1401,7 +1420,7 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 	case <-time.After(30 * time.Second):
 		t.Fatal("provider was not reached")
 	}
-	_, entries, _, err := readTranscript(filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl"))
+	_, entries, _, err := readTranscript(filepath.Join(stateDir, "", sessionsSubdir, childID+".transcript.jsonl"), "")
 	if err != nil {
 		t.Fatalf("read child transcript at provider boundary: %v", err)
 	}
@@ -1418,6 +1437,7 @@ func TestDelegateResourceCreate_ChildTranscriptIsPreseededBeforeRun(t *testing.T
 }
 
 func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t *testing.T) {
+	t.Parallel()
 	root, client, _ := newDelegateResourceBootstrapSession(t)
 	adapter := newTask6TranscriptBarrierAdapter()
 	client.Register(adapter)
@@ -1454,7 +1474,7 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 	if providerChildID != childID {
 		t.Fatalf("provider child = %q, want registered child %q", providerChildID, childID)
 	}
-	_, entries, _, err := readTranscript(filepath.Join(root.stateDir, sessionsSubdir, childID+".transcript.jsonl"))
+	_, entries, _, err := readTranscript(filepath.Join(root.stateDir, "", sessionsSubdir, childID+".transcript.jsonl"), "")
 	if err != nil {
 		t.Fatalf("read real child transcript at provider boundary: %v", err)
 	}
@@ -1471,6 +1491,7 @@ func TestDelegateResourceCreate_InputTranscriptAppendRunsAfterControllerUnlock(t
 }
 
 func TestDelegateResourceCreate_RegisteredToolReturnsOnlyStableDelegateIdentity(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	result := executeTask6RegisteredDelegate(context.Background(), t, root, "registered stable identity", 0)
 
@@ -1499,6 +1520,7 @@ func TestDelegateResourceCreate_RegisteredToolReturnsOnlyStableDelegateIdentity(
 }
 
 func TestDelegateResourceCreate_RegisteredSchemaOmitsCreationMaxWait(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	for _, tc := range []struct {
 		name        string
@@ -1526,6 +1548,7 @@ func TestDelegateResourceCreate_RegisteredSchemaOmitsCreationMaxWait(t *testing.
 }
 
 func TestDelegateResourceCreate_RegisteredRejectsCreationMaxWait(t *testing.T) {
+	t.Parallel()
 	root, client, _ := newDelegateResourceBootstrapSession(t)
 	provider := newTask6TranscriptBarrierAdapter()
 	client.Register(provider)
@@ -1604,6 +1627,7 @@ func TestDelegateResourceCreate_RegisteredRejectsCreationMaxWait(t *testing.T) {
 }
 
 func TestDelegateResourceCreate_RegisteredToolUsesRootController(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	wantID := identifier.MustNewDelegateID()
 	root.delegateController.mu.Lock()
@@ -1626,6 +1650,7 @@ func TestDelegateResourceCreate_RegisteredToolUsesRootController(t *testing.T) {
 }
 
 func TestDelegateResourceCreate_RegisteredNestedCreateUsesCurrentLease(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	parentResult := executeTask6RegisteredDelegate(context.Background(), t, root, "registered parent", 1)
 	parentID, _ := parentResult["delegate_id"].(string)
@@ -1811,6 +1836,7 @@ func task6CommunicateOutputSchema(t *testing.T, request llm.Request) any {
 // allocation (release the lease, keep the directory), exactly as the
 // restore-path teardowns do.
 func TestDelegateResourceCreate_FailedConstructionRetainsPinnedScratch(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 	owner, ok := root.scratchRetentionOwner()
 	if !ok {

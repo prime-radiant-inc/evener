@@ -20,6 +20,7 @@ import (
 )
 
 func TestLoadSessionJobActivityTree_FollowsOnlyStableDelegateChildren(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "rootpast"
 	childID := "childpast"
@@ -65,6 +66,7 @@ func TestLoadSessionJobActivityTree_FollowsOnlyStableDelegateChildren(t *testing
 }
 
 func TestLoadSessionJobActivityTree_RejectsOutOfStateDirChild(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "rootboundary"
 	childID := "childboundary"
@@ -105,6 +107,7 @@ func TestLoadSessionJobActivityTree_RejectsOutOfStateDirChild(t *testing.T) {
 }
 
 func TestLoadSessionJobActivityTree_UsesMaxPersistedRootRevisionAcrossDescendants(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "rootrevision"
 	childID := "childrevision"
@@ -240,6 +243,7 @@ func TestLoadSessionJobActivityTree_StopsOpeningLaterSessionsAfterCancellation(t
 // ResumeIndex == activityMaxWorkUnits, not an opaque token a client can't
 // reason about.
 func TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "rootbudget"
 	started := time.Unix(500, 0).UTC()
@@ -558,6 +562,7 @@ func TestLoadSessionJobActivityTree_BoundsRecursionDepth(t *testing.T) {
 // reading of "how deep beneath the page I'm resuming into" -- allows a
 // full activityMaxNewDepth further beneath the target.
 func TestLoadSessionJobActivityTree_ContinuationAtMaxDepthLoadsTargetsOwnChildren(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	started := time.Unix(700, 0).UTC()
 
@@ -713,6 +718,7 @@ func TestLoadSessionJobActivityTree_PropagatesCancellationFromDescendant(t *test
 // buildActivityFullSnapshot's recursion, which this path-following code
 // doesn't go through).
 func TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth(t *testing.T) {
+	t.Parallel()
 	// activityMaxContinuationPathLength (activityMaxNewDepth+1), not
 	// activityMaxNewDepth itself, is the real limit: the extra hop is slack
 	// this build still accepts (see that constant's doc comment), so this
@@ -738,6 +744,7 @@ func TestDecodeActivityContinuation_RejectsPathLongerThanMaxDepth(t *testing.T) 
 // exhausted before ANY hop is resolved must stop immediately, never
 // reaching loadActivityBase for even the first one.
 func TestBuildActivityContinuationAt_ExhaustedBudgetStopsBeforeLoadingMoreHops(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "budgetpathroot"
 	childID := "budgetpathchild"
@@ -883,6 +890,7 @@ func savePastActivityMeta(t *testing.T, stateDir, sessionID, name string) {
 // 0 cannot pass -- must be stable on every page AND inside every minted
 // continuation.
 func TestLoadSessionJobActivityTree_WorkContinuationWalksRetainedJobsOnce(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "workbudgetwalkroot"
 	const jobCount = activityMaxWorkUnits + 1
@@ -1005,6 +1013,7 @@ func writeRawSessionMeta(t *testing.T, path string, meta schema.SessionMeta) {
 // walking every page via its own minted continuation delivers each job
 // exactly once, in order, with zero overlap and zero gap.
 func TestLoadSessionJobActivityTree_SizeTrimResumesAfterRemovedEntriesWithoutOverlap(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "sizetrimroot"
 	const jobCount = 20
@@ -1074,6 +1083,7 @@ func TestLoadSessionJobActivityTree_SizeTrimResumesAfterRemovedEntriesWithoutOve
 // followed by an ordinary one; walking every minted continuation must reach
 // the ordinary job exactly once and terminate.
 func TestLoadSessionJobActivityTree_SizeTrimAdvancesPastEntryLargerThanAPage(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "oversizedentryroot"
 	oversizedStarted := time.Unix(3000, 0).UTC()
@@ -1150,6 +1160,7 @@ func TestLoadSessionJobActivityTree_SizeTrimAdvancesPastEntryLargerThanAPage(t *
 // sized so a size trim lands on a page that is itself a resume, which a
 // two-page walk never reaches.
 func TestLoadSessionJobActivityTree_SizeTrimResumesAtAbsoluteIndexOnLaterPages(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "absoluteresumeroot"
 	const jobCount = 60
@@ -1219,6 +1230,7 @@ func TestLoadSessionJobActivityTree_SizeTrimResumesAtAbsoluteIndexOnLaterPages(t
 // The fixture is a root shell job just under the limit followed by a
 // delegate whose child holds one small job.
 func TestLoadSessionJobActivityTree_SizeTrimKeepsNestedEntryOverflowedByASibling(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "siblingoverageroot"
 	childID := "siblingoveragechild"
@@ -1288,6 +1300,7 @@ func TestLoadSessionJobActivityTree_SizeTrimKeepsNestedEntryOverflowedByASibling
 // only re-targets the child. The page that re-targets it carries nothing but
 // that entry, which is where "too large" becomes a fact rather than a guess.
 func TestLoadSessionJobActivityTree_SizeTrimSkipsNestedEntryLargerThanAPage(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "nestedoversizedroot"
 	childID := "nestedoversizedchild"
@@ -1399,6 +1412,7 @@ func (w *pastActivityWalk) record(branch appwire.JobActivityBranchState) {
 // generation when a journal is rewritten rather than appended to, so the
 // fixture warms them and then rewrites the delegate journal in place.
 func TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "epochfilterroot"
 	childID := "epochfilterchild"
@@ -1516,6 +1530,7 @@ func TestLoadSessionJobActivityTree_NestedContinuationSurvivesNonzeroFoldEpochs(
 // the oversized one lands on page 2, with a tail job behind it that only a
 // correctly advanced position can reach.
 func TestLoadSessionJobActivityTree_SizeTrimSkipsOversizedEntryOnAResumedPage(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "resumedskiproot"
 	const fillerCount = 20
@@ -1618,6 +1633,7 @@ func TestLoadSessionJobActivityTree_SizeTrimSkipsOversizedEntryOnAResumedPage(t 
 // TestTrimActivityTreeToFit_EnvelopeTooLargeLeavesConsistentCounts and
 // TestMarkActivityEnvelopeTooLarge_WithdrawsTheContinuation.)
 func TestLoadSessionJobActivityTree_CapsAnOversizedPromptLabel(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "oversizedlabelroot"
 	started := time.Unix(11000, 0).UTC()
@@ -1674,6 +1690,7 @@ func TestLoadSessionJobActivityTree_CapsAnOversizedPromptLabel(t *testing.T) {
 // child is trimmed to empty, the delegate is dropped next, and the owner's
 // remaining entries are trimmed after it.
 func TestLoadSessionJobActivityTree_TrimmingADelegateKeepsItsChildReachable(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "strandroot"
 	childID := "strandchild"
@@ -1767,6 +1784,7 @@ func TestLoadSessionJobActivityTree_TrimmingADelegateKeepsItsChildReachable(t *t
 // reachable, the page hands back a token its own decoder refuses and the
 // subtree below it is stranded.
 func TestLoadSessionJobActivityTree_ResumedPageMintsADecodablePath(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	started := time.Unix(800, 0).UTC()
 	const chainLen = activityMaxNewDepth + 3
@@ -1908,6 +1926,7 @@ func seedAbsentJournalActivityRoot(t *testing.T, stateDir, rootID string, delega
 // absent journal leaves everything past the first page unreachable forever,
 // since the journal is never going to appear.
 func TestLoadSessionJobActivityTree_PaginatesWithNoJobJournal(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "nojobsroot"
 	_, want := seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
@@ -1960,6 +1979,7 @@ func walkActivityDelegatesToExhaustion(t *testing.T, stateDir, rootID string, wa
 // continuation on the request that carries it: the walk would never move
 // past page two, and the delegates would be unreachable for good.
 func TestLoadSessionJobActivityTree_PaginatesAfterTheJobJournalIsDeleted(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "deletedjobsroot"
 	rootJobsPath, want := seedAbsentJournalActivityRoot(t, stateDir, rootID, 12)
@@ -1986,6 +2006,7 @@ func TestLoadSessionJobActivityTree_PaginatesAfterTheJobJournalIsDeleted(t *test
 // generations and is compared the same way: a journal that appeared, or one
 // that went away, moves the entries the position counts against.
 func TestLoadSessionJobActivityTree_RefusesWhenJournalPresenceChanges(t *testing.T) {
+	t.Parallel()
 	t.Run("job journal appears after the mint", func(t *testing.T) {
 		stateDir := t.TempDir()
 		rootID := "appearsroot"

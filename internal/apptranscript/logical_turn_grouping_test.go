@@ -110,7 +110,7 @@ func TestItemReadersStampInterruptedSteeringOnGroupedTurn(t *testing.T) {
 				entries = append(entries, transcript.Entry{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnFailure, Error: &schema.TurnFailureInfo{Message: "provider failed"}}})
 			}
 			path := writeEntries(t, entries...)
-			names := map[string]string{}
+			names := NewToolCallRegistry()
 			full := requireItemTurnsFromFile(t, path, testMaxLineBytes, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 				return ProjectTurn(turnID, turnIndex, turn, names, nil, nil)
 			})

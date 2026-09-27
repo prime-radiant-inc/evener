@@ -22,26 +22,20 @@ function isOpen(item: HTMLElement): boolean {
   return item.querySelector('[data-testid="tool-row-trigger"]')?.getAttribute("aria-expanded") === "true";
 }
 
-test("renders the shared deterministic fixture through the preview surface", () => {
+// Read-only checks of one render: the fixture's content, both tool-row
+// outcomes, and the absence of live timing markers.
+test("renders the shared deterministic fixture with fixed timestamps and both tool outcomes", () => {
   render(<TranscriptSurfaceSection />);
   expect(screen.getAllByText("Inspect the transcript display flow").length).toBeGreaterThan(0);
   expect(screen.getAllByText("The transcript display flow is ready.").length).toBeGreaterThan(0);
   expect(screen.getAllByText("I will inspect the display projection and its test coverage.").length).toBeGreaterThan(0);
   expect(screen.getAllByText("Working tree environment is ready.").length).toBeGreaterThan(0);
-});
 
-test("renders both successful and failed production tool rows", () => {
-  render(<TranscriptSurfaceSection />);
   expect(rowFor("read_file")).toBeTruthy();
   const failed = rowFor("shell");
   expect(failed.dataset.failed).toBe("true");
   expect(isOpen(failed)).toBe(true);
-});
 
-test("uses fixed fixture timestamps and no live streaming markers", () => {
-  render(<TranscriptSurfaceSection />);
-  const rows = screen.getAllByTestId("tool-call-item");
-  expect(rows.length).toBeGreaterThan(0);
   expect(screen.queryByText(/elapsed|streaming/i)).toBeNull();
 });
 

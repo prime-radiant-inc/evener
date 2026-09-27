@@ -260,7 +260,7 @@ func TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary(t *tes
 	}
 }
 
-// TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus covers kata
+// TestSession_GenuineTurnFailureEmitsSessionEndWithFailedStatus covers kata
 // hen0: kata r6y9 already made a genuine (non-cancelled) turn failure correct
 // the session's own State() to idle, but processInputKindWithProvenance's
 // genuine-failure fall-through emitted no EventSessionEnd to carry that
@@ -268,8 +268,10 @@ func TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary(t *tes
 // the loop (the cancellation branch right above it, and the successful-settle
 // tail), which each emit one. A live subscriber saw turn/completed(Failed)
 // and then silence; its belief that a turn was still running leaked until it
-// left and re-entered the session.
-func TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus(t *testing.T) {
+// left and re-entered the session. The failure exit announces systemError: the
+// session is idle inside and takes the next message, and the wire reports it
+// resting on a failed turn (RestingWireState).
+func TestSession_GenuineTurnFailureEmitsSessionEndWithFailedStatus(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -313,23 +315,23 @@ func TestSession_GenuineTurnFailureEmitsSessionEndRestoringIdleStatus(t *testing
 	if found == nil {
 		t.Fatalf("expected a SESSION_END with Reason=turn_failed restoring status, got events=%+v", *eventsPtr)
 	}
-	if found.State != string(SessionIdle) {
-		t.Fatalf("turn_failed SESSION_END State=%q, want %q", found.State, SessionIdle)
+	if found.State != appwire.ThreadStatusSystemError {
+		t.Fatalf("turn_failed SESSION_END State=%q, want %q", found.State, appwire.ThreadStatusSystemError)
 	}
 	if found.Interrupted {
 		t.Fatalf("genuine failure incorrectly marked Interrupted=true: %+v", *found)
 	}
 }
 
-// TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus is the
+// TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfFailedStatus is the
 // end-to-end kata hen0 repro: it feeds the session's real events through the
 // real appwire projector, exactly as server.RecordAppEvent does for a live
-// subscriber, and asserts a thread/status/changed(idle) notification follows
-// the failed execution -- without re-reading the thread. It also pins that the
-// specific failure text reaches clients unaltered (Jesse, 2026-07-30): the status
-// notification carries no message of its own, so there is nothing to bury or
-// duplicate it with.
-func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing.T) {
+// subscriber, and asserts a thread/status/changed(systemError) notification
+// follows the failed execution -- without re-reading the thread. It also pins
+// that the specific failure text reaches clients unaltered (Jesse,
+// 2026-07-30): the status notification carries no message of its own, so
+// there is nothing to bury or duplicate it with.
+func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfFailedStatus(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -357,9 +359,9 @@ func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing
 		t.Fatal("expected genuine provider failure")
 	}
 	// Close so doneCh signals the collector has drained every buffered event
-	// (the established race-free pattern in this file); the projector below
-	// sees Close()'s own session_closed SESSION_END too, harmless since it
-	// projects a "closed" status, not "idle".
+	// (the established race-free pattern in this file). Close() emits no
+	// session_closed SESSION_END here: the failure exit's turn_failed
+	// SESSION_END already claimed the sessionEndEmitted gate.
 	sess.Close()
 	<-doneCh
 
@@ -398,8 +400,8 @@ func TestSession_GenuineTurnFailureNotifiesLiveSubscriberOfIdleStatus(t *testing
 	if !ended {
 		t.Fatal("the failed execution never ended")
 	}
-	if len(afterEnd) == 0 || afterEnd[0] != appwire.ThreadStatusIdle || slices.Contains(afterEnd, appwire.ThreadStatusActive) {
-		t.Fatalf("statuses after the failed execution ended = %v, want idle and never active again", afterEnd)
+	if len(afterEnd) == 0 || afterEnd[0] != appwire.ThreadStatusSystemError || slices.Contains(afterEnd, appwire.ThreadStatusActive) {
+		t.Fatalf("statuses after the failed execution ended = %v, want systemError and never active again", afterEnd)
 	}
 }
 
@@ -1835,6 +1837,7 @@ func TestSession_TerminalBoundaryReachesNoJobWatch(t *testing.T) {
 // strand an entry no wake will ever run again. It runs, awaiting or not, and
 // outranks a pending notification the way a text entry does.
 func TestSelectDrainNextActionRunsASkillOnlyQueuedEntry(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   drainInputs
@@ -1861,6 +1864,7 @@ func TestSelectDrainNextActionRunsASkillOnlyQueuedEntry(t *testing.T) {
 // is still live. The seam runs on the joining goroutine just before it blocks,
 // so ending the second admission there is the only way the join returns.
 func TestEnvWorkJoinOutlastsARepeatedEnd(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 	first, ok := s.beginEnvWork("first")
@@ -1897,6 +1901,7 @@ func TestEnvWorkJoinOutlastsARepeatedEnd(t *testing.T) {
 // warning, while a join that fired the seam and then walked on would return
 // with the work still held and say nothing.
 func TestEnvWorkJoinWaitsAfterSignallingUntilItsBudgetEnds(t *testing.T) {
+	t.Parallel()
 	s := newQueuePersistTestSession(t, t.TempDir())
 	defer s.Close()
 	held, ok := s.beginEnvWork("held work")

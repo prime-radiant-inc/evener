@@ -36,12 +36,16 @@ import {
 	humanizeState,
 	parseSlashToken,
 	spliceSlashCommand,
+	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
 import { createConversationStore } from "../../mobile/src/state/conversation";
-import type { ConversationMutationSubmitter } from "../../mobile/src/state/conversationMutation";
+import {
+	createConversationMutationPendingPort,
+	type ConversationMutationSubmitter,
+} from "../../mobile/src/state/conversationMutation";
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
@@ -77,7 +81,10 @@ import {
 	createDurableSubmitter,
 	type NativeMutationHost,
 } from "./nativeMutationHost";
-import { getNativeMutationRuntime } from "./nativeMutationRuntime";
+import {
+	getNativeMutationRuntime,
+	nativeMutationTargetKey,
+} from "./nativeMutationRuntime";
 import { readerPositions } from "./nativeReaderPosition";
 import { locateSession, type SessionLocation } from "./navigationReveal";
 import { ProjectSessionsList } from "./ProjectSessionsList";
@@ -835,15 +842,38 @@ export function ConversationScreen({
 		() => createDurableSubmitter(() => mutationHostRef.current),
 		[],
 	);
+	// The transcript display config the conversation projects at (the hub's
+	// evener/settings/transcriptDisplay settings; the shipped mobile default
+	// — intent — when the hub stores none). The store owns the level it
+	// projects at and re-projects through its display boundary when it
+	// changes; the service reads the CURRENT value at each read it projects,
+	// so the ref (not the render value) is what it closes over — the store is
+	// not recreated per config change.
+	const preferences = useNativePreferences();
+	const displayConfig =
+		preferences.hubId === route.params.hubId ? preferences.config : null;
+	const displayConfigRef = useRef<TranscriptDisplayConfigV1 | null>(displayConfig);
+	displayConfigRef.current = displayConfig;
+	const resolveDisplayConfig = useCallback(
+		() => displayConfigRef.current,
+		[],
+	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Each route destination owns an independent conversation binding.
 	const store = useMemo(
 		() =>
 			createConversationStore({
 				mutationHubId: route.params.hubId,
 				mutationSubmitter,
+				displayConfig,
 			}),
 		[mutationSubmitter, route.params.hubId, route.params.ref],
 	);
+	// A config change reaches the live store as a level change, not a
+	// rebinding: setDisplayConfig re-projects the conversation at the new
+	// level through the same display boundary (an equal value is a no-op).
+	useEffect(() => {
+		store.getState().setDisplayConfig(displayConfig);
+	}, [store, displayConfig]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Activity lifetime follows its conversation binding.
 	const activity = useMemo(() => createActivityStore(), [store]);
 	// The conversation store validates the exact bound sink object on refresh.
@@ -852,13 +882,14 @@ export function ConversationScreen({
 		() =>
 			client
 				? createConversationService(client, {
+						resolveDisplayConfig,
 						onReadStart: (ref, expectedThreadId) =>
 							mutationHostRef.current?.beginRead(ref, expectedThreadId),
 						onReadComplete: (lease, response) =>
 							mutationHostRef.current?.reconcileRead(lease, response),
 					})
 				: null,
-		[client],
+		[client, resolveDisplayConfig],
 	);
 	const currentDestination = useRef({ store, client });
 	currentDestination.current = { store, client };
@@ -1033,12 +1064,53 @@ export function ConversationScreen({
 		if (!service || !connected || !focused) return;
 		void store
 			.getState()
-			.resumeProjected(service, activitySink, route.params.ref);
+			.resumeProjected(service, activitySink, route.params.ref)
+			.catch((error) => {
+				// The store surfaces a failed resume in its own state; this only
+				// keeps the rejection from going unobserved.
+				console.error("ConversationScreen: resume failed", error);
+			});
 		return () => {
 			store.getState().suspendProjected();
 			service.close();
 		};
 	}, [service, store, activitySink, connected, focused, route.params.ref]);
+	// The durable pending-row seam. The store retires it on EVERY thread open,
+	// and `openProjected` runs from more than the resume effect: the /clear
+	// command's cleared callback, the refresh paths, and resumeProjected's own
+	// fall-through all reopen the thread. Key the rebind on the conversation
+	// generation so any host-initiated (re)open re-establishes the seam once the
+	// store has retired it, while a suspend/rehydrate generation bump that did
+	// not retire it leaves the live subscription untouched (the store's
+	// bindPendingMutationsIfUnbound is idempotent). The store's own close/reset
+	// retires the seam on unmount, so this effect needs no cleanup.
+	useEffect(() => {
+		if (!client || !connected || !focused) return;
+		try {
+			store.getState().bindPendingMutationsIfUnbound(
+				createConversationMutationPendingPort(
+					getNativeMutationRuntime(),
+					nativeMutationTargetKey(route.params.hubId, route.params.ref),
+				),
+			);
+		} catch (error) {
+			// The mutations database could not be opened. The conversation stays
+			// usable; a later reconnect or remount retries, and the failure is
+			// logged so it is not silent.
+			console.error(
+				"ConversationScreen: durable pending seam bind failed",
+				error,
+			);
+		}
+	}, [
+		store,
+		client,
+		connected,
+		focused,
+		route.params.hubId,
+		route.params.ref,
+		snapshot.conversationGeneration,
+	]);
 	async function refresh() {
 		if (!service || !connected || !focused || refreshing) return;
 		setRefreshing(true);
@@ -1317,14 +1389,13 @@ export function ConversationScreen({
 			navigation.setParams({ title: currentName });
 	}, [navigation, currentName, route.params.title]);
 	const conversation = snapshot.conversation;
-	const preferences = useNativePreferences();
+	// The conversation's rows are already level-correct: the store projected
+	// them at displayConfig (D24-6's seam routing), so the presentation layer
+	// only reshapes (member unrolling, attachment adjacency) and computes the
+	// footer's accounting — no second, screen-level projection.
 	const presentation = useMemo(
-		() =>
-			projectNativeTranscript(
-				conversation,
-				preferences.hubId === route.params.hubId ? preferences.config : null,
-			),
-		[conversation, preferences.hubId, preferences.config, route.params.hubId],
+		() => projectNativeTranscript(conversation, displayConfig),
+		[conversation, displayConfig],
 	);
 	const timelineRows = useMemo(
 		() => groupTimeline(presentation.items),

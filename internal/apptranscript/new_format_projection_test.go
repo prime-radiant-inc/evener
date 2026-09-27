@@ -33,7 +33,7 @@ func newFormatAssistantEntry(format int) schema.Turn {
 }
 
 func TestNewFormatAssistantProjectsTextRunsReasoningAndHidesCommunicate(t *testing.T) {
-	items, parts := ProjectEntryParts("t_1", 3, newFormatAssistantEntry(schema.TurnFormatIdentity), map[string]string{}, nil, nil)
+	items, parts := ProjectEntryParts("t_1", 3, newFormatAssistantEntry(schema.TurnFormatIdentity), NewToolCallRegistry(), nil, nil)
 	if !reflect.DeepEqual(parts, []int{0, 2, 3, 5}) {
 		t.Fatalf("parts = %v, want [0 2 3 5]", parts)
 	}
@@ -134,22 +134,22 @@ func TestNewFormatRedactedThinkingJoinsTheReasoningItem(t *testing.T) {
 }
 
 // A legacy entry keeps today's projection: one agentMessage per text part,
-// the communicate call as an agentMessage, and no round id.
+// the communicate call deferred to its result turn (hidden here), and no
+// round id.
 func TestNewFormatLegacyEntryProjectsAsToday(t *testing.T) {
-	items, parts := ProjectEntryParts("turn_3", 3, newFormatAssistantEntry(0), map[string]string{}, nil, nil)
-	todayItems, todayParts := ProjectTurnParts("turn_3", 3, newFormatAssistantEntry(0), map[string]string{}, nil, nil)
+	items, parts := ProjectEntryParts("turn_3", 3, newFormatAssistantEntry(0), NewToolCallRegistry(), nil, nil)
+	todayItems, todayParts := ProjectTurnParts("turn_3", 3, newFormatAssistantEntry(0), NewToolCallRegistry(), nil, nil)
 	if !reflect.DeepEqual(items, todayItems) || !reflect.DeepEqual(parts, todayParts) {
 		t.Fatalf("ProjectEntryParts of a legacy entry differs from ProjectTurnParts")
 	}
-	if !reflect.DeepEqual(parts, []int{0, 1, 2, 3, 4, 5}) {
-		t.Fatalf("parts = %v, want [0 1 2 3 4 5]", parts)
+	if !reflect.DeepEqual(parts, []int{0, 1, 2, 3, 5}) {
+		t.Fatalf("parts = %v, want [0 1 2 3 5]", parts)
 	}
 	want := []struct{ typ, id, text string }{
 		{"agentMessage", "item_assistant_3_0", "a"},
 		{"agentMessage", "item_assistant_3_1", "b"},
 		{"reasoning", "item_reasoning_3_2", "think"},
 		{"agentMessage", "item_assistant_3_3", "c"},
-		{"agentMessage", "item_assistant_3_4", "m"},
 		{"commandExecution", "item_tool_3_5", ""},
 	}
 	if len(items) != len(want) {
@@ -244,7 +244,7 @@ func TestNewFormatStatusEntriesAndFoldCopiesProjectNothing(t *testing.T) {
 		"reopen":     {Format: schema.TurnFormatIdentity, TurnID: "t_1", Kind: schema.TurnReopen},
 		"fold copy":  foldCopy,
 	} {
-		if items, parts := ProjectEntryParts("t_1", 9, entry, map[string]string{}, nil, nil); len(items) != 0 || len(parts) != 0 {
+		if items, parts := ProjectEntryParts("t_1", 9, entry, NewToolCallRegistry(), nil, nil); len(items) != 0 || len(parts) != 0 {
 			t.Fatalf("%s projected %+v / %v, want nothing", name, items, parts)
 		}
 	}
@@ -256,7 +256,7 @@ func TestNewFormatStatusEntriesAndFoldCopiesProjectNothing(t *testing.T) {
 // and a new-format ASSISTANT entry still projects as today there.
 func TestNewFormatRulesApplyOnlyThroughProjectEntryParts(t *testing.T) {
 	for _, sample := range schematest.TranscriptOnlySamples() {
-		items, parts := ProjectEntryParts("t_1", 1, sample, map[string]string{}, nil, nil)
+		items, parts := ProjectEntryParts("t_1", 1, sample, NewToolCallRegistry(), nil, nil)
 		switch sample.Kind {
 		case schema.TurnCommunicate, schema.TurnNotice:
 			if len(items) != 1 || !reflect.DeepEqual(parts, []int{0}) {
@@ -268,8 +268,8 @@ func TestNewFormatRulesApplyOnlyThroughProjectEntryParts(t *testing.T) {
 			}
 		}
 	}
-	newFormat, parts := ProjectTurnParts("turn_3", 3, newFormatAssistantEntry(schema.TurnFormatIdentity), map[string]string{}, nil, nil)
-	legacy, legacyParts := ProjectTurnParts("turn_3", 3, newFormatAssistantEntry(0), map[string]string{}, nil, nil)
+	newFormat, parts := ProjectTurnParts("turn_3", 3, newFormatAssistantEntry(schema.TurnFormatIdentity), NewToolCallRegistry(), nil, nil)
+	legacy, legacyParts := ProjectTurnParts("turn_3", 3, newFormatAssistantEntry(0), NewToolCallRegistry(), nil, nil)
 	if !reflect.DeepEqual(newFormat, legacy) || !reflect.DeepEqual(parts, legacyParts) {
 		t.Fatalf("ProjectTurnParts applied the new-format rules:\n got %+v\nwant %+v", newFormat, legacy)
 	}

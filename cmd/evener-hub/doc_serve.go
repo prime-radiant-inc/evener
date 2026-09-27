@@ -9,7 +9,9 @@ import (
 	"strconv"
 	"strings"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 var docStat = os.Stat
@@ -78,9 +80,12 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 	writeDocFileRaw(w, data, docRawTotalSize(abs, len(data)))
 }
 
-// handleDocImage serves a validated image file inside a LOCAL session's working
+// handleDocImage serves a validated image file inside a session's working
 // directory. It mirrors /doc/file's containment boundary, but only streams v1
-// supported image media types for inline output-image previews.
+// supported image media types for inline output-image previews. A
+// host-qualified session id names a session on another host, so its file is
+// fetched from the owning host instead; a local id reads this hub's own
+// filesystem exactly as before.
 func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
@@ -90,6 +95,10 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 	rel := r.URL.Query().Get("path")
 	if session == "" || rel == "" {
 		http.NotFound(w, r)
+		return
+	}
+	if ref, ok := hostQualifiedImageRef(session); ok {
+		s.serveRemoteSessionImage(w, r, ref, appwire.SessionImageParams{SessionID: ref.ThreadID, Path: rel})
 		return
 	}
 
@@ -130,11 +139,19 @@ func (s *WebServer) handleDocImage(w http.ResponseWriter, r *http.Request) {
 // index or live roster. /doc/image is local-session-only; non-local refs return
 // false.
 func (s *WebServer) localSessionCWD(session string) (string, bool) {
+	return sessionCWD(s.cfg, session)
+}
+
+// sessionCWD resolves a session's working directory from the past index or live
+// roster. A non-local route id — the "<sourceID>:<threadID>" form a remote
+// session is addressed by — returns false, so a caller that reads files under
+// this directory can never be aimed at another host's session.
+func sessionCWD(cfg hubcore.WebConfig, session string) (string, bool) {
 	if !isLocalRouteID(session) {
 		return "", false
 	}
-	if s.cfg.Past != nil {
-		pe, ok := s.cfg.Past.Find(session)
+	if cfg.Past != nil {
+		pe, ok := cfg.Past.Find(session)
 		if ok {
 			cwd := strings.TrimSpace(pe.Meta.EnvInfo.WorkingDir)
 			if cwd != "" {
@@ -142,8 +159,8 @@ func (s *WebServer) localSessionCWD(session string) (string, bool) {
 			}
 		}
 	}
-	if s.cfg.Roster != nil {
-		live, ok := s.cfg.Roster.Find(session)
+	if cfg.Roster != nil {
+		live, ok := cfg.Roster.Find(session)
 		if ok {
 			cwd := strings.TrimSpace(live.WorkingDir)
 			if cwd != "" {

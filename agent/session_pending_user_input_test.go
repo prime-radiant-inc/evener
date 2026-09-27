@@ -19,6 +19,7 @@ import (
 // the wake arrives as.
 
 func TestQueuedInputRunsWhileAQuestionIsPending(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -51,6 +52,7 @@ func TestQueuedInputRunsWhileAQuestionIsPending(t *testing.T) {
 // it fires unconditionally on acceptance and on replay, so it lands on an empty
 // queue routinely and must not manufacture a turn out of nothing.
 func TestProcessPendingUserInputIsANoOpWithAnEmptyQueue(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -71,6 +73,7 @@ func TestProcessPendingUserInputIsANoOpWithAnEmptyQueue(t *testing.T) {
 // turn and wire cancellation to it -- the same contract
 // ProcessClientMutationStart has.
 func TestProcessPendingUserInputReportsTheTurnItClaims(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -93,6 +96,7 @@ func TestProcessPendingUserInputReportsTheTurnItClaims(t *testing.T) {
 }
 
 func TestQueuedInputWakeReachesTheDaemon(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -118,6 +122,7 @@ func TestQueuedInputWakeReachesTheDaemon(t *testing.T) {
 // turn is starting -- so an empty user turn is what carries it, and that turn
 // has to get past the same gate a queued message does.
 func TestSteeringIsDeliveredWhileAQuestionIsPending(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -145,6 +150,7 @@ func TestSteeringIsDeliveredWhileAQuestionIsPending(t *testing.T) {
 // TestSteeringWakeReachesTheDaemon pins the routing: steering's wake has to go
 // to the user-input path, not the notification one the entry gate refuses.
 func TestSteeringWakeReachesTheDaemon(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {

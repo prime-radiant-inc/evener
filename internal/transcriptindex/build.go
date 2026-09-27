@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"sort"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -26,6 +27,16 @@ var errRebuild = errors.New("transcript index needs a full rebuild")
 type toolName struct {
 	name    string
 	present bool
+}
+
+// commState is the deferred-communicate state for one open call: the raw
+// argument bytes ProjectTurn's ToolCallRegistry.CommRawArgs would hold for it,
+// the assistant entry that set them (for the paired result's Context), and
+// the logical turn id that entry projected under.
+type commState struct {
+	rawArgs string
+	pos     contributor
+	turnID  string
 }
 
 // builder applies entries, in file order, to the index's records.
@@ -62,10 +73,43 @@ type builder struct {
 	assistant       *schema.Turn
 	assistantOffset int64
 	models          map[string]strRef
+
+	// commCalls and the lastAssistant* fields mirror ProjectTurn's
+	// ToolCallRegistry.CommRawArgs/LastAssistantText/LastAssistantTurnID:
+	// unlike names/calls, they are NOT reset at a new open legacy group,
+	// because a communicate call's deferred state legitimately crosses
+	// logical-turn/group boundaries (e.g. a standalone HOOK_COMPLETED
+	// closing the assistant's group before its result arrives) — matching
+	// the full read's single registry, threaded for the whole scan. This
+	// state applies to legacy entries only (applyLegacy): a new-format
+	// COMMUNICATE entry carries its message explicitly, so applyIdentity
+	// never needs it. An item's own Context (see itemRecord) persists only
+	// the position each is at, not the projected item content: the reader
+	// replays the referenced raw entries to reconstruct the values, so build
+	// time only needs enough to decide the affected items' structure
+	// (existence/parts). meta.CommCalls/LastAssistant* separately persist
+	// this whole struct's values, for restoreBuilder to reconstruct it
+	// without a rebuild.
+	commCalls           map[string]commState // call id -> its deferred communicate state
+	lastAssistantText   string
+	lastAssistantTurnID string
+	lastAssistantPos    contributor
+	// lastAssistantKnown is true once the sticky value above is
+	// authoritative: always, for a full build (correct from its first
+	// entry — "no text yet" is the ground truth, not an unknown), and for
+	// restoreBuilder once it has restored meta.LastAssistantKnown. A
+	// communicate call becoming pending while this is still false means the
+	// echo check's prior text is unrecoverable without a rebuild (see
+	// seed); kept as a defensive fallback now that restoreBuilder
+	// ordinarily restores it.
+	lastAssistantKnown bool
 }
 
 func newBuilder(x *Index) builder {
-	return builder{x: x, calls: map[string]uint64{}, names: map[string]toolName{}, open: map[string]uint64{}, models: map[string]strRef{}}
+	return builder{
+		x: x, calls: map[string]uint64{}, names: map[string]toolName{}, open: map[string]uint64{}, models: map[string]strRef{},
+		commCalls: map[string]commState{},
+	}
 }
 
 // apply indexes the entry at ordinal, whose line is length bytes at offset.
@@ -122,10 +166,17 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 	if err != nil {
 		return err
 	}
-	items, parts := apptranscript.ProjectEntryParts(turnID, entryIndex, *entry, maps.Clone(seed), apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
+	reg := &apptranscript.ToolCallRegistry{
+		Names:               maps.Clone(seed),
+		CommRawArgs:         b.commRawArgsSnapshot(),
+		LastAssistantText:   b.lastAssistantText,
+		LastAssistantTurnID: b.lastAssistantTurnID,
+	}
+	items, parts := apptranscript.ProjectEntryParts(turnID, entryIndex, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	b.recordNames(entry, seed)
+	base := contributor{Offset: offset, Ordinal: ordinal, Length: length}
 	for i, item := range items {
-		c := contributor{Offset: offset, Ordinal: ordinal, Length: length}
+		c := base
 		merges := apptranscript.MergesByCallID(item)
 		if merges {
 			if name, ok := seed[item.CallID]; ok {
@@ -140,7 +191,13 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 				continue
 			}
 		}
-		slot, err := b.appendItem(item, parts[i], b.turnSlot, c)
+		var context strRef
+		if callID, ok := communicateResultCallID(entry, parts[i], seed); ok {
+			if context, err = b.communicateContext(callID); err != nil {
+				return err
+			}
+		}
+		slot, err := b.appendItemWithContext(item, parts[i], b.turnSlot, c, context)
 		if err != nil {
 			return err
 		}
@@ -148,7 +205,130 @@ func (b *builder) applyLegacy(ordinal uint64, offset int64, length uint32, entry
 			b.calls[item.CallID] = slot
 		}
 	}
+	b.recordCommState(entry, turnID, seed, base)
 	return b.stampTurn(b.turnSlot, entry, ordinal, offset, length)
+}
+
+// commRawArgsSnapshot is the real CommRawArgs values ProjectTurn's registry
+// needs to correctly decide, at build time, which items a communicate result
+// entry projects (see commCalls' doc comment: build time needs values, not
+// just positions).
+func (b *builder) commRawArgsSnapshot() map[string]string {
+	snapshot := make(map[string]string, len(b.commCalls))
+	for id, state := range b.commCalls {
+		snapshot[id] = state.rawArgs
+	}
+	return snapshot
+}
+
+// communicateResultCallID reports the call id a TOOL/TOOL_RESULTS entry's
+// content part projects a communicate item for (a rejected or healed
+// communicate result), matching the name resolution apptranscript.ProjectTurn
+// itself applies (an explicit Name, or the seed's resolution of a blank one).
+func communicateResultCallID(entry *schema.Turn, part int, seed map[string]string) (string, bool) {
+	if entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults {
+		return "", false
+	}
+	if part < 0 || part >= len(entry.Message.Content) {
+		return "", false
+	}
+	content := entry.Message.Content[part]
+	if content.Kind != llm.ContentToolResult || content.ToolResult == nil {
+		return "", false
+	}
+	name := content.ToolResult.Name
+	if name == "" {
+		name = seed[content.ToolResult.ToolCallID]
+	}
+	if name != "communicate" {
+		return "", false
+	}
+	return content.ToolResult.ToolCallID, true
+}
+
+// communicateContext builds the Context an item at communicateResultCallID
+// needs: the assistant entry that set CommRawArgs for the call (always, if
+// known) and, when it differs, the assistant entry that most recently set
+// LastAssistantText (needed only by the healed-communicate echo check, but
+// harmless to include for a rejected one too) — sorted in file order, so a
+// reader replays them in the order they actually happened.
+func (b *builder) communicateContext(callID string) (strRef, error) {
+	var list []contextEntry
+	seen := map[int64]bool{}
+	add := func(pos contributor, turnID string) error {
+		if pos.Length == 0 || seen[pos.Offset] {
+			return nil
+		}
+		seen[pos.Offset] = true
+		ref, err := b.x.strings.put([]byte(turnID))
+		if err != nil {
+			return err
+		}
+		list = append(list, contextEntry{contributor: pos, TurnID: ref})
+		return nil
+	}
+	if state, ok := b.commCalls[callID]; ok {
+		if err := add(state.pos, state.turnID); err != nil {
+			return strRef{}, err
+		}
+	}
+	if b.lastAssistantKnown {
+		if err := add(b.lastAssistantPos, b.lastAssistantTurnID); err != nil {
+			return strRef{}, err
+		}
+	}
+	if len(list) == 0 {
+		return strRef{}, nil
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].Ordinal < list[j].Ordinal })
+	return b.x.strings.put(encodeContextEntries(list))
+}
+
+// recordCommState applies the entry's effects on the deferred-communicate
+// state ProjectTurn's ToolCallRegistry threads — the same effects
+// recordNames applies to tool names, kept separate because unlike names this
+// state is never reset at a legacy group boundary (see the builder doc
+// comment). Called after the entry's items are recorded, so
+// communicateContext above still sees the state as it stood when this entry
+// was projected.
+func (b *builder) recordCommState(entry *schema.Turn, turnID string, seed map[string]string, c contributor) {
+	if entry.Kind == schema.TurnAssistant {
+		var lastText string
+		for _, part := range entry.Message.Content {
+			switch part.Kind {
+			case llm.ContentText:
+				if part.Text != "" {
+					lastText = strings.TrimSpace(part.Text)
+				}
+			case llm.ContentToolCall:
+				if part.ToolCall != nil && part.ToolCall.Name == "communicate" {
+					b.commCalls[part.ToolCall.ID] = commState{rawArgs: part.ToolCall.SentArguments(), pos: c, turnID: turnID}
+				}
+			}
+		}
+		// Mirrors ProjectTurn: only a non-empty text updates the sticky
+		// value, and only the entry's own trailing text (never a healed
+		// communicate — main's fix defers that entirely to the result turn).
+		if lastText != "" {
+			b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantPos, b.lastAssistantKnown = lastText, turnID, c, true
+		}
+		return
+	}
+	if entry.Kind != schema.TurnTool && entry.Kind != schema.TurnToolResults {
+		return
+	}
+	for _, part := range entry.Message.Content {
+		if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
+			continue
+		}
+		name := part.ToolResult.Name
+		if name == "" {
+			name = seed[part.ToolResult.ToolCallID]
+		}
+		if name == "communicate" {
+			delete(b.commCalls, part.ToolResult.ToolCallID)
+		}
+	}
 }
 
 // applyIdentity indexes a new-format entry: it joins the turn its TurnID
@@ -395,7 +575,11 @@ func (b *builder) interruptAwaitedCalls(summary turnRecord, completion contribut
 // item absorb (when set) does not take. seed names the entry's nameless tool
 // results.
 func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, seed map[string]string, absorb func(appwire.ThreadItem) (bool, error)) error {
-	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, seed, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
+	// New-format entries never need CommRawArgs/LastAssistantText: a
+	// COMMUNICATE entry carries its message explicitly, so seed's tool
+	// names are all this registry ever needs.
+	reg := &apptranscript.ToolCallRegistry{Names: seed}
+	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
 	for i, item := range items {
 		if absorb != nil {
 			absorbed, err := absorb(item)
@@ -415,8 +599,15 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 
 // appendItem appends the record of an item the entry c opens at part.
 func (b *builder) appendItem(item appwire.ThreadItem, part int, turnSlot uint64, c contributor) (uint64, error) {
+	return b.appendItemWithContext(item, part, turnSlot, c, strRef{})
+}
+
+// appendItemWithContext is appendItem plus an explicit Context: only
+// applyLegacy's deferred communicate results ever need one (see
+// communicateContext); every other caller passes the zero strRef.
+func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnSlot uint64, c contributor, context strRef) (uint64, error) {
 	version := c.Ordinal + 1
-	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c}
+	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, Context: context}
 	if apptranscript.MergesByCallID(item) {
 		var err error
 		if record.Call, err = b.x.strings.put([]byte(item.CallID)); err != nil {
@@ -517,16 +708,36 @@ func (b *builder) seed(entry *schema.Turn) (map[string]string, error) {
 	}
 	seed := map[string]string{}
 	for _, part := range entry.Message.Content {
-		if part.Kind != llm.ContentToolResult || part.ToolResult == nil || part.ToolResult.Name != "" {
+		if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
 			continue
 		}
 		id := part.ToolResult.ToolCallID
-		name, known := b.lookup(id)
-		if !known {
+		name := part.ToolResult.Name
+		if name == "" {
+			resolved, known := b.lookup(id)
+			if !known {
+				return nil, errRebuild
+			}
+			if resolved.present {
+				seed[id] = resolved.name
+				name = resolved.name
+			}
+		}
+		if name != "communicate" {
+			continue
+		}
+		// A rebuild-free extend also needs the deferred-communicate state
+		// this call's result reads (see recordCommState/communicateContext):
+		// known always during a full build (b.global set), and otherwise
+		// only within the current scan's own local state.
+		state, ok := b.commCalls[id]
+		if !ok && b.global == nil {
 			return nil, errRebuild
 		}
-		if name.present {
-			seed[id] = name.name
+		// The healed (non-error) branch alone reads LastAssistantText, and
+		// only once it has non-empty raw args to repair into a message.
+		if !part.ToolResult.IsError && state.rawArgs != "" && !b.lastAssistantKnown && b.global == nil {
+			return nil, errRebuild
 		}
 	}
 	return seed, nil

@@ -1,0 +1,22 @@
+
+p1
+  T5   success    8 actions
+  T12  success    9 actions
+  T16  success    2 actions
+
+p2
+  T1   success    5 actions
+  T12  success    7 actions
+  T15  success   32 actions
+
+p3
+  T6   success    5 actions
+  T10  success   18 actions
+  T11  success    2 actions
+
+p4
+  T2b  success   16 actions
+  T4   success   17 actions
+  T15  partial   32 actions
+
+total: 11 success, 1 partial, 0 fail

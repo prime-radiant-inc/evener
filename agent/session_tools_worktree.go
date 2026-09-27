@@ -1587,14 +1587,18 @@ func (s *Session) worktreeControlRun(ctx context.Context, mainRepoRoot string) (
 }
 
 // worktreeCleanupRun is worktreeControlRun on a context of its own, bounded by
-// LaneClosePassBudget — the budget the close disposal pass spends
+// close-cascade budget — the budget the close disposal pass spends
 // (session_worktree_close.go); the close-time cleanup runners themselves are
 // deliberately unbudgeted. A rollback of a refused or failed op must not
 // inherit the request context, which the close that refused the swap has
 // already cancelled. The returned done cancels the context and disposes the
 // control environment; the caller runs it when the rollback is over.
 func (s *Session) worktreeCleanupRun(mainRepoRoot string) (worktree.GitRunner, func(), error) {
-	ctx, cancel := context.WithTimeout(context.Background(), LaneClosePassBudget)
+	s.closeCtxMu.RLock()
+	closeCtx := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	budget := closePassBudget(closeCtx)
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	run, dispose, err := s.worktreeControlRun(ctx, mainRepoRoot)
 	if err != nil {
 		cancel()
@@ -2508,10 +2512,10 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 	// Step 8: remove the worktree itself. --force covers git's own
 	// dirty/untracked refusal — never locks, which step 3 already resolved
 	// (spec §5 remove step 8). A dirty tree only reaches here under
-	// force_dirty (step 6), so git's --force is needed whenever either flag is
-	// set.
+	// force_dirty (step 6), so force alone must leave Git's final dirty check
+	// active.
 	rmArgs := []string{"worktree", "remove"}
-	if force || forceDirty {
+	if forceDirty {
 		rmArgs = append(rmArgs, "--force")
 	}
 	rmArgs = append(rmArgs, "--", target)
@@ -3102,7 +3106,16 @@ func (s *Session) collectLane(run worktree.GitRunner, metaDir, name, branch, pat
 		}
 	}
 	if _, err := run("branch", "-D", branch); err != nil {
-		return fmt.Errorf("deleting branch %q: %w", branch, err)
+		// Another path may have completed this deletion first (a dispose that
+		// deletes the branch before its worktree, or a collection whose sidecar
+		// outlived the branch). An already-absent branch is this step's success
+		// state, so continue to the sidecar delete. Doubt is non-destructive, as
+		// in the worktree remove above: a branch that still exists, or a probe
+		// that could not answer, stays a real failure.
+		gone, probeErr := branchGone(run, branch)
+		if probeErr != nil || !gone {
+			return fmt.Errorf("deleting branch %q: %w", branch, err)
+		}
 	}
 	if err := s.deleteWorktreeSidecar(metaDir, name); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("deleting sidecar for %q: %w", name, err)
@@ -3315,6 +3328,27 @@ func resolveBaseFromActiveRoot(run worktree.GitRunner, activeRoot, baseRef strin
 func branchExists(run worktree.GitRunner, name string) bool {
 	_, err := run("show-ref", "--verify", "--quiet", "refs/heads/"+name)
 	return err == nil
+}
+
+// branchGone reports whether refs/heads/<name> is confirmed absent. It uses
+// for-each-ref, which exits 0 when the pattern matches nothing, so a non-nil
+// error means the probe itself could not answer and callers must treat it as
+// doubt, not as absence: unlike branchExists, this distinguishes the two.
+func branchGone(run worktree.GitRunner, name string) (bool, error) {
+	out, err := run("for-each-ref", "--format=%(refname)", "refs/heads/"+name)
+	if err != nil {
+		return false, err
+	}
+	// for-each-ref also matches a literal pattern as a prefix up to a slash, so
+	// refs/heads/foo matches refs/heads/foo/bar. Only an exact refname line means
+	// the branch itself still exists; a descendant line means foo is gone.
+	want := "refs/heads/" + name
+	for line := range strings.SplitSeq(out, "\n") {
+		if strings.TrimSpace(line) == want {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // managedWorktreeExists reports whether a managed worktree already lives at

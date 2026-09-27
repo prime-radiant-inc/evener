@@ -64,7 +64,7 @@ func TestRunGitFallsBackToShellWithoutArgvExecutor(t *testing.T) {
 // on a platform whose shell cannot honor ShellEscapeArgs' POSIX quoting:
 // cmd.exe treats a single quote as an ordinary character and still expands
 // %VAR%, so rendering "a & calc &" as "'a & calc &'" is not quoting there (see
-// internal/shellquote's "POSIX shells only" contract). An environment that
+// execsupport/shellquote's "POSIX shells only" contract). An environment that
 // reports Windows and lacks ArgvExecutor must get an error instead of a command
 // line — never ExecCommand("git " + ShellEscapeArgs(args...)). The refusal
 // returns the zero ExecResult with the error: a caller that checks ExitCode

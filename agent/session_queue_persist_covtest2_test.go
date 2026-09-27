@@ -13,6 +13,7 @@ import (
 // (session_queue_persist.go:57-58): a Remove error that is not IsNotExist
 // surfaces an error.
 func TestSaveQueuesFS_RemoveNonNotExistError(t *testing.T) {
+	t.Parallel()
 	// Pre-create the queue file so Remove is attempted, then fails because
 	// the FS is read-only.
 	base := afero.NewMemMapFs()
@@ -37,6 +38,7 @@ func TestSaveQueuesFS_RemoveNonNotExistError(t *testing.T) {
 // TestSaveQueuesFS_WriteTempError covers the write-temp-file error path
 // (session_queue_persist.go:72-73): writing the temp file fails.
 func TestSaveQueuesFS_WriteTempError(t *testing.T) {
+	t.Parallel()
 	base := afero.NewMemMapFs()
 	if err := base.MkdirAll("/state/sessions/sid1", 0o755); err != nil {
 		t.Fatal(err)
@@ -66,6 +68,7 @@ func (fs *errorWriteFileFs) OpenFile(name string, flag int, perm os.FileMode) (a
 // (session_queue_persist.go:75-77): renaming the temp file on a read-only FS
 // fails. We need the WriteFile to succeed but Rename to fail. Use a custom FS.
 func TestSaveQueuesFS_RenameError(t *testing.T) {
+	t.Parallel()
 	base := afero.NewMemMapFs()
 	if err := base.MkdirAll("/state/sessions/sid1", 0o755); err != nil {
 		t.Fatal(err)
@@ -94,6 +97,7 @@ func (fs *noRenameFs) Rename(old, newName string) error {
 // (session_queue_persist.go:99-100): a ReadFile error that is not IsNotExist
 // surfaces an error.
 func TestLoadQueuesFS_ReadError(t *testing.T) {
+	t.Parallel()
 	// Use a custom wrapper where Open fails with a non-NotExist error.
 	errFs := &errorOpenFs{Fs: afero.NewMemMapFs()}
 	_, _, err := loadQueuesFS(errFs, "/state", "sid1")

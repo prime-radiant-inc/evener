@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -35,7 +36,7 @@ const (
 	// untruncated command. Generous rather than label-tight: a tooltip can
 	// wrap, but it must not lie — a cut-off "full" command is worse than a
 	// long one. Still bounded so one pathological command cannot dominate
-	// the response's byte budget (navigationJSONFits).
+	// the response's byte budget (navigationEncodedSize).
 	maxNavigationFullCommandRunes = 4_096
 	maxNavigationIdentityBytes    = 1_024
 	maxNavigationWorkingDirBytes  = 4_096
@@ -101,16 +102,16 @@ type navigationBuildInputs struct {
 
 	// These maps are decorations captured with Tree. IDs may be a node ID or its
 	// canonical ref; projection checks both without consulting a live roster.
-	Live                map[string]bool
-	Renameable          map[string]bool
-	SessionFavorite     map[string]bool
-	ProjectFavorite     map[string]bool
-	PinSectionBySession map[string]string
-
+	Live            map[string]bool
+	Renameable      map[string]bool
+	SessionFavorite map[string]bool
+	ProjectFavorite map[string]bool
 	// PinSections and PinAssignments are used when callers retain the durable
-	// pin snapshot instead of precomputing PinSectionBySession.
+	// pin snapshot. PinAssignments is keyed by the (source, session id) pair a
+	// pin is stored under, so one source's pin never decorates another source's
+	// row that shares its bare ID.
 	PinSections    []hubcore.PinSection
-	PinAssignments map[string]hubcore.SessionPin
+	PinAssignments map[hubcore.ArchiveKey]hubcore.SessionPin
 }
 
 type navigationProjection struct {
@@ -124,6 +125,10 @@ type navigationProjection struct {
 	projects      map[string]hubcore.TreeProject
 	catalogs      map[navigationResourceKind][]hubcore.TreeProject
 	locations     map[string]hubapi.NavigationSessionLocation
+	// offlineSources is the set of manifest source IDs whose connection state
+	// is down, indexed once per projection so every row can answer "is my
+	// source unreachable?" from the same capture the manifest serves.
+	offlineSources map[string]bool
 }
 
 type navigationPinSection struct {
@@ -150,7 +155,7 @@ func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuil
 	if err != nil {
 		return navigationProjection{}, err
 	}
-	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation)}
+	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation), offlineSources: offlineSourceIDs(cloned.Sources)}
 	p.live = p.inputs.Tree.Live
 	p.needsYou = p.inputs.Tree.NeedsYou
 	p.pinCandidates, err = navigationPinCandidatesContext(ctx, p.inputs.Tree)
@@ -236,20 +241,13 @@ func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs)
 	if out.ProjectFavorite, err = cloneBool(in.ProjectFavorite); err != nil {
 		return navigationBuildInputs{}, err
 	}
-	out.PinSectionBySession = make(map[string]string, len(in.PinSectionBySession))
-	for key, value := range in.PinSectionBySession {
-		if err := ctx.Err(); err != nil {
-			return navigationBuildInputs{}, err
-		}
-		out.PinSectionBySession[key] = value
-	}
 	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
-	out.PinAssignments = make(map[string]hubcore.SessionPin, len(in.PinAssignments))
-	for id, assignment := range in.PinAssignments {
+	out.PinAssignments = make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(in.PinAssignments))
+	for key, assignment := range in.PinAssignments {
 		if err := ctx.Err(); err != nil {
 			return navigationBuildInputs{}, err
 		}
-		out.PinAssignments[id] = assignment
+		out.PinAssignments[key] = assignment
 	}
 	out.Tree, err = in.Tree.SnapshotContext(ctx)
 	if err != nil {
@@ -266,9 +264,8 @@ func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
 	out.Renameable = cloneNavigationBoolMap(in.Renameable)
 	out.SessionFavorite = cloneNavigationBoolMap(in.SessionFavorite)
 	out.ProjectFavorite = cloneNavigationBoolMap(in.ProjectFavorite)
-	out.PinSectionBySession = cloneNavigationStringMap(in.PinSectionBySession)
 	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
-	out.PinAssignments = make(map[string]hubcore.SessionPin, len(in.PinAssignments))
+	out.PinAssignments = make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(in.PinAssignments))
 	maps.Copy(out.PinAssignments, in.PinAssignments)
 	return out
 }
@@ -279,22 +276,7 @@ func cloneNavigationLiveEntries(in []hubcore.LiveEntry) []hubcore.LiveEntry {
 	}
 	out := make([]hubcore.LiveEntry, len(in))
 	for i, entry := range in {
-		out[i] = entry
-		out[i].ActiveFlags = append([]string(nil), entry.ActiveFlags...)
-		out[i].RunningSubagentIDs = append([]string(nil), entry.RunningSubagentIDs...)
-		out[i].RunningJobs = appwire.CloneEvenerJobs(entry.RunningJobs)
-		out[i].CompletedJobs = appwire.CloneEvenerJobs(entry.CompletedJobs)
-		out[i].Watches = appwire.CloneEvenerWatches(entry.Watches)
-		if entry.ChildWatches != nil {
-			out[i].ChildWatches = make(map[string][]appwire.EvenerWatchInfo, len(entry.ChildWatches))
-			for childID, watches := range entry.ChildWatches {
-				out[i].ChildWatches[childID] = appwire.CloneEvenerWatches(watches)
-			}
-		}
-		if entry.RunningSubagentStates != nil {
-			out[i].RunningSubagentStates = make(map[string]string, len(entry.RunningSubagentStates))
-			maps.Copy(out[i].RunningSubagentStates, entry.RunningSubagentStates)
-		}
+		out[i] = hubcore.CloneLiveEntry(entry)
 	}
 	return out
 }
@@ -304,12 +286,6 @@ func cloneNavigationBoolMap(in map[string]bool) map[string]bool {
 		return nil
 	}
 	out := make(map[string]bool, len(in))
-	maps.Copy(out, in)
-	return out
-}
-
-func cloneNavigationStringMap(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in))
 	maps.Copy(out, in)
 	return out
 }
@@ -1030,13 +1006,11 @@ func (p navigationProjection) PinCatalogPage(offset uint32, limit int) hubapi.Na
 	start, end := navigationRange(len(p.pinSections), offset, limit)
 	rows := make(hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor], 0, end-start)
 	for _, section := range p.pinSections[start:end] {
-		candidate := hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: truncateNavigationRunes(section.name, maxNavigationLabelRunes), Count: section.memberCount}
-		response := hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: append(append(hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor](nil), rows...), candidate), Remaining: len(p.pinSections) - start - len(rows) - 1}
-		if !navigationJSONFits(response, maxNavigationCatalogBytes) {
-			break
-		}
-		rows = append(rows, candidate)
+		rows = append(rows, hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: truncateNavigationRunes(section.name, maxNavigationLabelRunes), Count: section.memberCount})
 	}
+	rows = rows[:navigationCatalogRowsThatFit(rows, func(kept int) any {
+		return hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor]{}, Remaining: len(p.pinSections) - start - kept}
+	})]
 	return hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: rows, Remaining: len(p.pinSections) - start - len(rows)}
 }
 
@@ -1049,15 +1023,45 @@ func (p navigationProjection) CatalogPage(kind navigationResourceKind, offset ui
 	start, end := navigationRange(len(projects), offset, limit)
 	rows := make(hubapi.NavigationArray[hubapi.NavigationProjectSummary], 0, end-start)
 	for _, project := range projects[start:end] {
-		candidate := p.projectSummary(project)
-		response := hubapi.NavigationProjectCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Projects: append(append(hubapi.NavigationArray[hubapi.NavigationProjectSummary](nil), rows...), candidate), Remaining: len(projects) - start - len(rows) - 1}
-		if !navigationJSONFits(response, maxNavigationCatalogBytes) {
-			break
-		}
-		rows = append(rows, candidate)
+		rows = append(rows, p.projectSummary(project))
 	}
+	rows = rows[:navigationCatalogRowsThatFit(rows, func(kept int) any {
+		return hubapi.NavigationProjectCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Projects: hubapi.NavigationArray[hubapi.NavigationProjectSummary]{}, Remaining: len(projects) - start - kept}
+	})]
 	remaining := len(projects) - start - len(rows)
 	return hubapi.NavigationProjectCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Projects: rows, Remaining: remaining}, nil
+}
+
+// navigationCatalogRowsThatFit returns how many leading rows a catalog page
+// keeps: the page takes rows in order until the next one would carry it past
+// maxNavigationCatalogBytes. emptyPage returns the page with no rows and the
+// remaining count for kept rows.
+//
+// A page's encoding is its empty page with the rows spliced into the empty
+// array: encoding/json encodes each slice element on its own and joins them
+// with commas, and the NavigationArray wrapper's own json.Marshal output passes
+// through the outer encode byte for byte. So a page with kept rows is exactly
+// len(empty page) + the rows' encoded lengths + kept-1 commas, and each row is
+// encoded once rather than once per page it appears in.
+func navigationCatalogRowsThatFit[T any](rows []T, emptyPage func(kept int) any) int {
+	rowBytes := 0
+	for index, row := range rows {
+		kept := index + 1
+		// A row or page that cannot be encoded fits no budget
+		// (navigationEncodedSize is math.MaxInt). Each size is checked against
+		// the room left before it is added, so rowBytes and pageBytes stay
+		// within the budget and no sum below can wrap.
+		size := navigationEncodedSize(row)
+		if size > maxNavigationCatalogBytes-rowBytes {
+			return index
+		}
+		rowBytes += size
+		pageBytes := navigationEncodedSize(emptyPage(kept))
+		if pageBytes > maxNavigationCatalogBytes || pageBytes+rowBytes+kept-1 > maxNavigationCatalogBytes {
+			return index
+		}
+	}
+	return len(rows)
 }
 
 func (p navigationProjection) Project(key string) (hubapi.NavigationProjectResource, bool) {
@@ -1094,23 +1098,25 @@ func (p navigationProjection) ProjectPage(key, tier string, offset uint32, limit
 var navigationEnvelopeMarshal = json.Marshal
 
 // The fitters marshal complete candidate envelopes. When a resource is too
-// large, they retain the largest deterministic left-to-right node prefix found
-// by binary search; that is equivalent to pruning rightmost branches first but
-// needs O(log n) full-envelope probes rather than one marshal per removed node.
+// large, they retain the largest deterministic left-to-right node prefix that
+// fits (navigationFittingBudget); that is equivalent to pruning rightmost
+// branches first but needs a few full-envelope probes rather than one marshal
+// per removed node.
 func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
-	if navigationJSONFits(*resource, maxNavigationResponseBytes) {
+	fullBytes := navigationEncodedSize(*resource)
+	if fullBytes <= maxNavigationResponseBytes {
 		return
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), func(trim navigationWatchPayloadTrim, budget int) bool {
+	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
 		rows, dropped := limitNavigationSummaries(original, budget)
 		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
 		candidate.Truncated = true
-		return navigationJSONFits(candidate, maxNavigationResponseBytes)
+		return navigationEncodedSize(candidate)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
 	trimNavigationWatchPayloads(resource.Sessions, trim)
@@ -1119,19 +1125,20 @@ func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
 }
 
 func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
-	if navigationJSONFits(*resource, maxNavigationResponseBytes) {
+	fullBytes := navigationEncodedSize(*resource)
+	if fullBytes <= maxNavigationResponseBytes {
 		return
 	}
 	original := cloneNavigationSummaries(resource.Sessions)
 	baseRemaining := resource.Remaining
-	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), func(trim navigationWatchPayloadTrim, budget int) bool {
+	trim, budget := navigationFittingChoice(navigationSummaryNodes(original), fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
 		rows, dropped := limitNavigationSummaries(original, budget)
 		trimNavigationWatchPayloads(rows, trim)
 		candidate := *resource
 		candidate.Sessions = rows
 		candidate.Remaining = baseRemaining + dropped
 		candidate.Truncated = true
-		return navigationJSONFits(candidate, maxNavigationResponseBytes)
+		return navigationEncodedSize(candidate)
 	})
 	resource.Sessions, _ = limitNavigationSummaries(original, budget)
 	trimNavigationWatchPayloads(resource.Sessions, trim)
@@ -1140,40 +1147,44 @@ func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
 }
 
 func fitNavigationProject(resource *hubapi.NavigationProjectResource) {
-	if navigationJSONFits(*resource, maxNavigationResponseBytes) {
+	fullBytes := navigationEncodedSize(*resource)
+	if fullBytes <= maxNavigationResponseBytes {
 		return
 	}
 	original := cloneNavigationProjectResource(*resource)
 	nodes := navigationSummaryNodes(original.Current.Sessions) + navigationSummaryNodes(original.Recent.Sessions) + navigationSummaryNodes(original.Archived.Sessions)
-	trim, budget := navigationFittingChoice(nodes, func(trim navigationWatchPayloadTrim, budget int) bool {
+	trim, budget := navigationFittingChoice(nodes, fullBytes, func(trim navigationWatchPayloadTrim, budget int) int {
 		candidate := limitNavigationProject(original, budget)
 		trimNavigationProjectWatchPayloads(&candidate, trim)
-		return navigationJSONFits(candidate, maxNavigationResponseBytes)
+		return navigationEncodedSize(candidate)
 	})
 	limited := limitNavigationProject(original, budget)
 	trimNavigationProjectWatchPayloads(&limited, trim)
 	*resource = limited
 }
 
-// navigationFittingChoice finds the largest session-row budget that fits. It
-// tries the full payload first, preserving the pre-existing answer and probe
-// count. Only when even one untrimmed row cannot fit does it degrade optional
-// watch payloads - delivery instants first, then whole watch rows - so a
-// session whose watches are what overflowed the response is still listed with
-// as much of its payload as fits, instead of being dropped and leaving the
-// page with no rows while data remains (which validateNavigationPageProgress
-// rejects outright). It returns the trim level and budget actually used.
-func navigationFittingChoice(nodes int, fits func(navigationWatchPayloadTrim, int) bool) (navigationWatchPayloadTrim, int) {
-	full := navigationFittingBudget(nodes, func(budget int) bool {
-		return fits(navigationWatchPayloadFull, budget)
-	})
+// navigationFittingChoice finds the largest session-row budget whose candidate
+// size fits the response; fullBytes is the untrimmed resource's size. It tries
+// the full payload first. Only when even one untrimmed row cannot fit does it
+// degrade optional watch payloads - delivery instants first, then whole watch
+// rows - so a session whose watches are what overflowed the response is still
+// listed with as much of its payload as fits, instead of being dropped and
+// leaving the page with no rows while data remains (which
+// validateNavigationPageProgress rejects outright). It returns the trim level and budget actually used.
+func navigationFittingChoice(nodes, fullBytes int, size func(navigationWatchPayloadTrim, int) int) (navigationWatchPayloadTrim, int) {
+	budgetAt := func(trim navigationWatchPayloadTrim) int {
+		// The size callback cannot fail, so neither can the search.
+		budget, _ := navigationFittingBudget(nodes, maxNavigationResponseBytes, fullBytes, func(budget int) (int, error) {
+			return size(trim, budget), nil
+		})
+		return budget
+	}
+	full := budgetAt(navigationWatchPayloadFull)
 	if full > 0 || nodes == 0 {
 		return navigationWatchPayloadFull, full
 	}
 	for _, trim := range []navigationWatchPayloadTrim{navigationWatchPayloadNoDeliveryTimes, navigationWatchPayloadNoWatches} {
-		budget := navigationFittingBudget(nodes, func(budget int) bool {
-			return fits(trim, budget)
-		})
+		budget := budgetAt(trim)
 		if budget > 0 {
 			return trim, budget
 		}
@@ -1240,17 +1251,81 @@ func trimNavigationProjectWatchPayloads(resource *hubapi.NavigationProjectResour
 	trimNavigationWatchPayloads(resource.Archived.Sessions, trim)
 }
 
-func navigationFittingBudget(nodes int, fits func(int) bool) int {
-	low, high := 0, nodes+1 // nodes is known not to fit; zero always fits.
+// navigationFittingBudget returns the largest budget in [0, nodes] whose
+// candidate size is at most maxBytes. Budget 0 is known to fit and is never
+// probed. fullBytes, the size of the whole resource, seeds the search.
+//
+// No fitter's candidate gets smaller as its budget grows. One more unit of
+// budget adds a whole row (a session summary, plus its entity record and
+// children container in the normalized snapshot, or a catalog row) or, for a
+// location's single session, changes nothing. The same step can remove only
+// one digit of a remaining count and one parent's omitted_descendants field,
+// less than any row (TestNavigationFittingRowOutweighsTheCountsItShrinks). So
+// every budget up to the answer fits and none past it does: any search that
+// finds that boundary returns exactly what a bisection from zero returns, and
+// it may start anywhere. It starts where a linear size estimate puts the boundary
+// and gallops outward to bracket it. Rows are close to uniform in size, so
+// that takes two or three probes where a bisection from scratch takes
+// log2(nodes).
+func navigationFittingBudget(nodes, maxBytes, fullBytes int, size func(budget int) (int, error)) (int, error) {
+	if nodes <= 0 {
+		return 0, nil
+	}
+	guess := nodes
+	if fullBytes > 0 {
+		guess = int(int64(nodes) * int64(maxBytes) / int64(fullBytes))
+	}
+	guess = min(max(guess, 1), nodes)
+	fits := func(budget int) (bool, error) {
+		bytes, err := size(budget)
+		return err == nil && bytes <= maxBytes, err
+	}
+	// low always fits and high never does; nodes+1 stands for past the end.
+	low, high := 0, nodes+1
+	fit, err := fits(guess)
+	if err != nil {
+		return 0, err
+	}
+	if fit {
+		low = guess
+		for step := 1; low+step < high; step *= 2 {
+			fit, err := fits(low + step)
+			if err != nil {
+				return 0, err
+			}
+			if !fit {
+				high = low + step
+				break
+			}
+			low += step
+		}
+	} else {
+		high = guess
+		for step := 1; high-step > low; step *= 2 {
+			fit, err := fits(high - step)
+			if err != nil {
+				return 0, err
+			}
+			if fit {
+				low = high - step
+				break
+			}
+			high -= step
+		}
+	}
 	for high-low > 1 {
 		middle := low + (high-low)/2
-		if fits(middle) {
+		fit, err := fits(middle)
+		if err != nil {
+			return 0, err
+		}
+		if fit {
 			low = middle
 		} else {
 			high = middle
 		}
 	}
-	return low
+	return low, nil
 }
 
 func navigationSummaryWeight(summary hubapi.NavigationSessionSummary) int {
@@ -1261,9 +1336,14 @@ func navigationSummaryWeight(summary hubapi.NavigationSessionSummary) int {
 	return weight
 }
 
-func navigationJSONFits(value any, maxBytes int) bool {
+// navigationEncodedSize is the length of value's JSON encoding. A value that
+// cannot be encoded fits no budget.
+func navigationEncodedSize(value any) int {
 	encoded, err := navigationEnvelopeMarshal(value)
-	return err == nil && len(encoded) <= maxBytes
+	if err != nil {
+		return math.MaxInt
+	}
+	return len(encoded)
 }
 
 func navigationSummaryNodes(rows []hubapi.NavigationSessionSummary) int {
@@ -1544,15 +1624,6 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 		}
 		byID[section.ID] = navigationPinSection{id: section.ID, name: section.Name, memberCount: section.MemberCount}
 	}
-	assignment := cloneNavigationStringMap(p.inputs.PinSectionBySession)
-	for sessionID, pin := range p.inputs.PinAssignments {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		if assignment[sessionID] == "" {
-			assignment[sessionID] = pin.SectionID
-		}
-	}
 	for _, node := range p.pinCandidates {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -1561,10 +1632,7 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 		if err != nil {
 			continue
 		}
-		sectionID := assignment[node.ID]
-		if sectionID == "" {
-			sectionID = assignment[ref.String()]
-		}
+		sectionID := p.pinSectionIDFor(ref)
 		section, ok := byID[sectionID]
 		if !ok || sectionID == "" {
 			continue
@@ -1654,7 +1722,7 @@ func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node
 	}
 	if _, exists := p.locations[ref.String()]; !exists {
 		summary := navigationProjector{projection: p}.projectShallow(node)
-		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionFor(node.ID, ref.String()), Session: &summary}
+		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionIDFor(ref), Session: &summary}
 	}
 	for _, child := range node.Children {
 		if err := p.indexLocationNodeContext(ctx, child, root, projectKey, tier, false); err != nil {
@@ -1742,7 +1810,7 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 	if !updated.IsZero() {
 		updatedAt = &updated
 	}
-	pinned := p.projection.pinSectionFor(node.ID, ref.String()) != ""
+	pinned := p.projection.pinSectionIDFor(ref) != ""
 	watches, omittedWatches, omittedArmedWatches := navigationWatches(node.Watches)
 	return hubapi.NavigationSessionSummary{
 		Ref:       ref.String(),
@@ -1764,7 +1832,11 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Rename:              p.projection.renameable(node.ID, ref.String()),
 		Live:                p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended",
 		AskPending:          node.AskPending,
+		ApprovalPending:     node.ApprovalPending,
+		ApprovalTool:        truncateNavigationBytes(node.ApprovalTool, maxNavigationIdentityBytes),
+		ApprovalTarget:      truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
 		Dormant:             node.Dormant,
+		Offline:             p.projection.sourceOffline(ref.HostID),
 		UpdatedAt:           updatedAt,
 		MoreSubagents:       node.MoreSubagents,
 		RunningJobs:         navigationJobs(node.RunningJobs),
@@ -1772,8 +1844,63 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Watches:             watches,
 		OmittedWatches:      omittedWatches,
 		OmittedArmedWatches: omittedArmedWatches,
+		Tasks:               navigationTaskProgress(node.Tasks),
 		Children:            hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
+}
+
+// navigationTaskProgress is the row's task line: a session's task-list progress
+// when its list has at least one task, else nil. The current task's
+// description is cut to the label bound. Progress the schema would refuse (a
+// negative count, or more tasks done and cancelled than exist) is dropped, the
+// way navigationWatches drops a watch row: one invalid summary makes the whole
+// resource, every other row included, unreadable.
+func navigationTaskProgress(tasks *appwire.TaskAggregate) *hubapi.NavigationTaskProgress {
+	if tasks == nil || tasks.Total == 0 {
+		return nil
+	}
+	progress := &hubapi.NavigationTaskProgress{Total: tasks.Total, Done: tasks.Done, Cancelled: tasks.Cancelled}
+	if current := tasks.Current; current != nil {
+		progress.CurrentID = current.ID
+		progress.Current = truncateNavigationRunes(current.Description, maxNavigationLabelRunes)
+	}
+	if !navigationTaskProgressValid(*progress) {
+		return nil
+	}
+	return progress
+}
+
+// offlineSourceIDs indexes the manifest sources whose connection state is
+// down, keyed by source ID so a row can ask "is my source unreachable?" from
+// the same enumeration the manifest serves.
+//
+// A source absent from the manifest is not offline, matching sourceOnline's
+// fail-open answer for an unregistered source.
+func offlineSourceIDs(sources []hubapi.Source) map[string]bool {
+	var offline map[string]bool
+	for _, source := range sources {
+		if source.ID == "" || source.Online {
+			continue
+		}
+		if offline == nil {
+			offline = make(map[string]bool)
+		}
+		offline[source.ID] = true
+	}
+	return offline
+}
+
+// sourceOffline reports whether the row's owning source is unreachable. It is
+// a property of the source, not the row: a quiet row is as offline as an
+// active one when its host is down.
+//
+// "Owning source" is the row's canonical source identity — the ref host that
+// HostID carries to the frontend — so the marker and the row's host label
+// always name the same source. A row whose advertised ref names a different
+// source than the one that listed it is a conflicting row (the ingestion
+// marks it incomplete); it still marks by the host it names.
+func (p navigationProjection) sourceOffline(hostID string) bool {
+	return p.offlineSources[hostID]
 }
 
 func navigationJobs(jobs []appwire.EvenerJobInfo) hubapi.NavigationArray[hubapi.NavigationJobSummary] {
@@ -1994,28 +2121,17 @@ func (p navigationProjection) renameable(id, ref string) bool {
 func (p navigationProjection) sessionFavorite(id, ref string) bool {
 	return p.inputs.SessionFavorite[id] || p.inputs.SessionFavorite[ref]
 }
-func (p navigationProjection) pinSectionFor(id, ref string) string {
-	if value := p.inputs.PinSectionBySession[id]; value != "" {
-		if p.pinSectionIDs[value] {
-			return value
-		}
+
+// pinSectionIDFor is the one pin lookup every consumer shares: the section a
+// row's own (source, session id) pair is assigned to, or "" when no durable
+// section holds it. Callers pass the row's canonical ref, which already
+// carries the source, so no lookup can fall back to a bare ID.
+func (p navigationProjection) pinSectionIDFor(ref hubapi.Ref) string {
+	assignment, ok := p.inputs.PinAssignments[hubcore.SessionPinKey(ref.HostID, ref.SessionID)]
+	if !ok || !p.pinSectionIDs[assignment.SectionID] {
+		return ""
 	}
-	if value := p.inputs.PinSectionBySession[ref]; value != "" {
-		if p.pinSectionIDs[value] {
-			return value
-		}
-	}
-	if assignment, ok := p.inputs.PinAssignments[id]; ok {
-		if p.pinSectionIDs[assignment.SectionID] {
-			return assignment.SectionID
-		}
-	}
-	if assignment, ok := p.inputs.PinAssignments[ref]; ok {
-		if p.pinSectionIDs[assignment.SectionID] {
-			return assignment.SectionID
-		}
-	}
-	return ""
+	return assignment.SectionID
 }
 
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {
@@ -2031,6 +2147,10 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 		clone.Watches[index].Cadence = append([]hubapi.NavigationWatchCadence(nil), watch.Cadence...)
 		clone.Watches[index].Events = append([]string(nil), watch.Events...)
 		clone.Watches[index].DeliveryTimes = append([]string(nil), watch.DeliveryTimes...)
+	}
+	if summary.Tasks != nil {
+		tasks := *summary.Tasks
+		clone.Tasks = &tasks
 	}
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {

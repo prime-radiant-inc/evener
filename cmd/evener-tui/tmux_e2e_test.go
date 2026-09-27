@@ -23,9 +23,9 @@ import (
 
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
-	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/internal/transcriptindex"
 )
 

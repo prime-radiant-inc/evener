@@ -12,6 +12,7 @@ import (
 // descendant with no watches is present with a non-nil empty slice, which is how
 // its row sheds a cleared watch. No IDs means no answer map at all.
 func TestLiveWatchRowsForSessionsAnswersThePageInOneWalk(t *testing.T) {
+	t.Parallel()
 	root := newDescendantWatchSession(t)
 	child := newDescendantWatchSession(t)
 	grandchild := newDescendantWatchSession(t)
@@ -64,6 +65,7 @@ func TestLiveWatchRowsForSessionsAnswersThePageInOneWalk(t *testing.T) {
 // test pins: a root-receiver watch held by the child stays on the root's row,
 // and a child's own keyless watch never leaks onto the root's.
 func TestLiveWatchesForDescendantReturnsChildsOwnWatch(t *testing.T) {
+	t.Parallel()
 	root := newDescendantWatchSession(t)
 	child := newDescendantWatchSession(t)
 	registerDescendantSession(t, root, child)
@@ -93,6 +95,7 @@ func TestLiveWatchesForDescendantReturnsChildsOwnWatch(t *testing.T) {
 // snapshots the live child set once and reuses it for both the direct-match and
 // recursion loops; this pins the recursion still finds a grandchild's watch.
 func TestLiveWatchesForDescendantFindsNestedDescendant(t *testing.T) {
+	t.Parallel()
 	root := newDescendantWatchSession(t)
 	child := newDescendantWatchSession(t)
 	grandchild := newDescendantWatchSession(t)
@@ -116,6 +119,7 @@ func TestLiveWatchesForDescendantFindsNestedDescendant(t *testing.T) {
 // manager with the root recorded as the receiver. It belongs on the root's row,
 // so the descendant accessor must not surface it on the child's row.
 func TestLiveWatchesForDescendantExcludesRootReceiverWatch(t *testing.T) {
+	t.Parallel()
 	root := newDescendantWatchSession(t)
 	child := newDescendantWatchSession(t)
 	registerDescendantSession(t, root, child)
@@ -145,6 +149,7 @@ func TestLiveWatchesForDescendantExcludesRootReceiverWatch(t *testing.T) {
 // (leave the cached projection alone); the known root with no watches yields a
 // non-nil empty answer (the root really has none now).
 func TestLiveWatchesForSessionAnswersForRootAndDescendant(t *testing.T) {
+	t.Parallel()
 	root := newDescendantWatchSession(t)
 	child := newDescendantWatchSession(t)
 	registerDescendantSession(t, root, child)
@@ -182,6 +187,7 @@ func TestLiveWatchesForSessionAnswersForRootAndDescendant(t *testing.T) {
 // path must be able to tell "the root has no watches now" from "this ID is
 // unknown", or a watch cleared since the last refresh could never leave the row.
 func TestLiveWatchesForSessionEmptyRootIsNotEmptyAnswer(t *testing.T) {
+	t.Parallel()
 	root := newDescendantWatchSession(t)
 	rows := root.LiveWatchesForSession(root.ID())
 	if rows == nil || len(rows) != 0 {
@@ -197,6 +203,7 @@ func TestLiveWatchesForSessionEmptyRootIsNotEmptyAnswer(t *testing.T) {
 // non-nil empty too, so the recursion still distinguishes "found, empty" from
 // "not found".
 func TestLiveWatchesForDescendantKnownEmptyIsNotEmptyAnswer(t *testing.T) {
+	t.Parallel()
 	root := newDescendantWatchSession(t)
 	child := newDescendantWatchSession(t)
 	grandchild := newDescendantWatchSession(t)
@@ -227,6 +234,7 @@ func TestLiveWatchesForDescendantKnownEmptyIsNotEmptyAnswer(t *testing.T) {
 // cannot be answered for", never "it has no watches now", so a caller following
 // the documented contract cannot mis-handle the empty case.
 func TestLiveWatchStatusesKnownEmptyIsNotEmptyAnswer(t *testing.T) {
+	t.Parallel()
 	root := newDescendantWatchSession(t)
 	rows := root.liveWatchStatuses()
 	if rows == nil || len(rows) != 0 {
@@ -242,6 +250,7 @@ func TestLiveWatchStatusesKnownEmptyIsNotEmptyAnswer(t *testing.T) {
 // so the rollup has to leave the bridge -- and it does, because the LIST path
 // answers the same question outside it.
 func TestDetailedStatusWatchesStayOffTheDescendantManagers(t *testing.T) {
+	t.Parallel()
 	root := newDescendantWatchSession(t)
 	child := newDescendantWatchSession(t)
 	registerDescendantSession(t, root, child)

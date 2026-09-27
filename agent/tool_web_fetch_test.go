@@ -20,6 +20,7 @@ import (
 )
 
 func TestWebFetchCacheKey(t *testing.T) {
+	t.Parallel()
 	// Same URL must produce same key.
 	k1 := webFetchCacheKey("https://example.com/docs")
 	k2 := webFetchCacheKey("https://example.com/docs")
@@ -65,6 +66,7 @@ func TestWebFetchCachePath(t *testing.T) {
 }
 
 func TestWebFetchHTMLToMarkdown(t *testing.T) {
+	t.Parallel()
 	html := `<html><body><h1>Hello</h1><p>World</p><ul><li>one</li><li>two</li></ul></body></html>`
 	md, err := htmlToMarkdown(html)
 	if err != nil {
@@ -83,6 +85,7 @@ func TestWebFetchHTMLToMarkdown(t *testing.T) {
 }
 
 func TestExtFromContentType(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		ct   string
 		want string
@@ -369,6 +372,7 @@ func TestWebFetchTool_JSONContent(t *testing.T) {
 }
 
 func TestWebFetchTool_InvalidURL(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	fa := &fakeAdapter{name: "openai"}

@@ -8,13 +8,21 @@ This slice implements the edit half of component 08 — the registry spec,
 `56989a29d7`) — against the code slice 1 merged (PR #1784, `d66d970556`), and
 records what it defers to the pipeline slice.
 
+> **Storage decision update (2026-09-26).** Registry spec §19 open question 1 is
+> decided: `hub.toml` is rewritten in place, machine-managed, with a banner
+> stating that operator comments are not preserved; the sidecar is retired, and
+> its entries migrate into `hub.toml` once (registry spec §6). The sidecar
+> wording below records what this slice shipped; the live update contract now
+> targets any live entry — every host lives in the one machine-managed file, so
+> the "edit the file" refusal is retired.
+
 ## 1. Purpose
 
 Today a host can be added, connected and removed from Settings → Hosts, but not
 changed. `HostAddParams` carries name, address and key path
 (`appwire/types.go`); `evener/host/update` does not exist; `HostRow` carries
 neither the remaining entry fields nor the versions a row needs to be edited
-from. The Add dialog offers three of the seven `HostConfig` fields.
+from. The Add dialog offers three of the eight `HostConfig` fields.
 
 An operator who mistypes an address, moves a host's `hub.toml`, changes the SSH
 user, sets an `evener_path`, or adds a root must remove and re-add the host.
@@ -26,16 +34,18 @@ identity. This slice makes editing the supported path.
 
 The registry spec defines update (§4) and the UI (§13). This slice implements:
 
-- §4 — `evener/host/update` is a mutation; the target must be a **live sidecar
-  entry**; a `hub.toml`-declared name is refused with the "edit the file"
-  explanation; a name absent from both files, or present solely as a tombstone,
+- §4 — `evener/host/update` is a mutation; the target must be a **live
+  entry** (this slice shipped sidecar-only targets; the storage decision note
+  above retired that split — every host lives in `hub.toml` and is editable); a
+  name absent from the file, or present solely as a tombstone,
   is refused as not found; every field except `name` is mutable; `name` is
   immutable — it keys source IDs, cached rows, manager state and file entries;
   **every update advances the registry generation**, and the staged update
   rebinds before it clears or re-keys name-keyed resolved state, so the retiring
   identity is fenced out first; commit first, then rebind or tear down, gate
   released last.
-- §13 — the Add/Edit dialog covers **all seven** `HostConfig` fields, none
+- §13 — the Add/Edit dialog covers **all eight** `HostConfig` fields (the
+  component-03 set, which includes `key_path`), none
   invented and none hidden, each with its validation message mapped from the
   backend's refusal; Edit does not offer `name`; the row renders the host's
   installed version beside the controller's.
@@ -53,16 +63,16 @@ deviation and what the pipeline slice inherits.
   reshaping it a second time. This revises slice 1's flat
   `{name, address, keyPath}` params, and the regenerated client and the pane's
   store follow.
-- `entry` carries the record's six mutable `HostConfig` fields under slice 1's
+- `entry` carries the record's seven mutable `HostConfig` fields under slice 1's
   wire spellings — `address` (schema `ssh`), `user`, `evenerPath` (schema
-  `evener_path`), `configPath` (schema `config_path`), `addr`, `roots` — plus
-  the one field slice 1 added that the schema does not have: `keyPath`.
-  `keyPath` is **not** a `HostConfig` field: `config.go`'s schema has no key,
-  `hostreg`'s own comment says hub.toml has no key field, and the record's
-  update entry is "the six non-name fields". Slice 1 invented the wire field
-  because the dial needs one, and this slice keeps it and round-trips it —
-  dropping it would zero a stored key path on every edit, which the
-  no-regression criterion forbids. §6 records the extension.
+  `evener_path`), `configPath` (schema `config_path`), `addr`, `roots`, and
+  `keyPath` (schema `key_path`) — every one of them a schema field now: the
+  storage decision added `key_path` to component 03's schema and to
+  `hub.toml`, so the wire field slice 1 shipped under `keyPath` is the eighth
+  `HostConfig` field, not an extension (see the storage-decision note above;
+  component 08 §6/§11). The dial needs it, this slice keeps it and round-trips
+  it — dropping it would zero a stored key path on every edit, which the
+  no-regression criterion forbids.
 - `add`'s entry also carries `name`, which is required there and absent from
   the update entry because the update's target name is the request's own
   field.
@@ -95,10 +105,11 @@ deviation and what the pipeline slice inherits.
   limit in the tree today lives in the navigation projection. The record's §4
   and §14 do assign the cap to the registry's `Add`/`Update` (over-cap failing
   `ErrTooManyHosts`), §16 requires its test, and the design document's
-  follow-up ledger carries it as its [03] item. This slice records the drop
-  instead of pretending to satisfy it, and states the consequence plainly: a
-  live set pushed past 63 sources fails navigation for the whole hub, not just
-  the extra host.
+  follow-up ledger carried it as its [03] item — now **withdrawn by decision**
+  (Jesse, 2026-09-26: design §2 "Host-count cap: withdrawn"; component 03
+  §Scope). This slice records the drop instead of pretending to satisfy it, and
+  states the consequence plainly: a live set pushed past 63 sources fails
+  navigation for the whole hub, not just the extra host.
 - Replaces the entry in place and assigns a fresh generation from the
   registry-wide counter. That generation is the identity fence: `SameRegistration`
   and the manager's channel fence read it, so a parked `Ensure` that captured the
@@ -172,16 +183,17 @@ and the compensation paths in one shape:
 
 - **Commit, under the mutation mutex.** Refuse a name with a mutation already
   in flight — the existing in-flight mark, generalised from removals to any
-  mutation on the name. Require a live sidecar entry: a `hub.toml` name gets
-  the edit-the-file refusal, a name that is gone or tombstone-only gets not
-  found. **Validate the entry here, before anything is written** — the same
+  mutation on the name. Require a live entry (after the storage decision every
+  `hub.toml` host is live-editable — see the note above); a name that is gone
+  or tombstone-only gets not found. **Validate the entry here, before anything is written** — the same
   `hostreg.ValidateEntry` call the add flow runs for exactly this reason — so a
   refusal commits nothing and an entry the registry would reject never reaches
-  the file. Then persist durable-first with one atomic sidecar write that
-  replaces the entry **in place**, through a store-level replace: the file
-  keeps the order it already had, so an edit is a minimal change to it rather
-  than a reordering nothing asked for. (The rendered list is name-sorted
-  regardless — this is about the file's own order, not the list's.) A failure whose
+  the file. Then persist durable-first with one atomic `hub.toml` write that
+  replaces the entry **in place**, through a store-level replace: the entry
+  keeps its position in the host array, so an edit reorders nothing. (The
+  rewrite is otherwise wholesale per component 08 §6 — comments, blank lines,
+  key order, and formatting do not survive it, and the file's host order is the
+  hub's, not the operator's; the rendered list is name-sorted regardless.) A failure whose
   rename already committed compensates back to the live contents exactly as add
   and remove do. Replace the store row in the same critical section, set the
   mark, release the mutex.
@@ -238,10 +250,10 @@ and the compensation paths in one shape:
     cache generation still owns its rows, and the retained list is still this
     host's. An edit that changes only the SSH address or a path must not blank
     the host's sessions in the tree.
-  On failure, roll the sidecar back to the live set — one atomic write of the
+  On failure, roll `hub.toml` back to the live set — one atomic write of the
   live set as it stands now, not a pre-commit copy: a concurrent add or removal
   that committed in this window must survive — which puts the file and the
-  in-memory sidecar store back on the same entries in the same order, clear the
+  in-memory host store back on the same entries in the same order, clear the
   mark, and return the error. A live-phase refusal happens before the swap and
   leaves the retiring identity's attach record intact. When the live set no
   longer holds the name — only a directly driven registry can drop it while the
@@ -249,7 +261,7 @@ and the compensation paths in one shape:
   un-commit is a **removal**: drop the committed store row before taking the
   snapshot, so the rollback writes the live set without the name and the file
   does not keep an edit for a name that is not live, which a later add would
-  duplicate and the next sidecar load would reject.
+  duplicate and the next `hub.toml` load would reject.
   If the live phase instead succeeded and a directly driven registry drops the
   entry before the finish-phase reread, the name is likewise removed: drop the
   committed store row and write that live snapshot, then retire the derived
@@ -275,9 +287,9 @@ and the compensation paths in one shape:
   slice 1's Key path control, on edit without the `name` input (the host's name
   is in the dialog's title, per §13), submit disabled while in flight, and each
   field's message placed inline (§5).
-- Row actions: **Edit** for sidecar, non-removed rows. `hub.toml` rows keep the
-  read-only explanation the pane's help text already gives; removed rows keep
-  their removed posture.
+- Row actions: **Edit** for every non-removed row (this slice gated it on the
+  sidecar origin; the storage decision note above retired that split). Removed
+  rows keep their removed posture.
 - **No skew marker in this slice.** §13 wants the row to show the host's
   installed build beside the controller's, and this slice cannot honestly build
   it: the row's `hubVersion` is `buildinfo.Version()` *of the controller*, by
@@ -335,7 +347,9 @@ installed, and the new identity's own row still adopts it).
 
 ## 4. Semantics, precisely
 
-- Update targets a live sidecar entry. `name` is immutable. The entry's
+- Update targets a live entry (sidecar-only when this slice shipped; the
+  storage decision made every `hub.toml` host editable — see the note above).
+  `name` is immutable. The entry's
   effective values are what the row, the source and the attach path read: there
   is no second copy to drift.
 - **The attached-edit rule.** Any edit to a host that is attached lands, drops
@@ -365,11 +379,14 @@ installed, and the new identity's own row still adopts it).
   `ErrAmbiguousSSHUser` → `user` (the field that made the destination
   ambiguous, and the message says so); `ErrEmptyRoot` → `roots`;
   `ErrInvalidName` and `ErrReservedName` → `name` (add only); `ErrHostCycle` →
-  the entry as a whole. Anything else is a form-level message.
-- Refusals commit nothing. A `hub.toml` name, an unknown or tombstone-only
-  name, a validation refusal and a failed durable write all leave the file and
-  the live set exactly as they were.
-- A failed live phase rolls the sidecar back to the live snapshot and returns
+  the entry as a whole; `ErrInvalidKeyPath` → `keyPath`. Anything else is a
+  form-level message.
+- Refusals commit nothing. A name unknown to the file or present solely as a
+  tombstone, a validation refusal and a failed durable write all leave the file
+  and the live set exactly as they were. (Every `hub.toml` host is
+  live-editable — the storage decision retired the edit-the-file refusal; see
+  the note at the top.)
+- A failed live phase rolls `hub.toml` back to the live snapshot and returns
   the error.
 
 ## 6. Deviations from the trio, and what the pipeline slice inherits
@@ -395,9 +412,10 @@ reversal.
    none, and this slice adds none; the only 64-source limit in the tree today
    is the navigation projection's. The record assigns the cap to the registry's
    `Add`/`Update` (§4, §14, with §16's test) and the design document's
-   follow-up ledger tracks it as its [03] item. This slice records the drop and
-   its consequence — a live set pushed past 63 sources fails navigation for the
-   whole hub — rather than claiming a check it does not run.
+   follow-up ledger tracked it as its [03] item, now withdrawn by decision
+   (Jesse, 2026-09-26). This slice records the drop and its consequence — a live
+   set pushed past 63 sources fails navigation for the whole hub — rather than
+   claiming a check it does not run.
 6. **The handler, catalog row and regenerated client land here.** §2's table
    places them in the pipeline PR, but slice 1 already registered
    `add`/`remove`/`list`/`status`, and a mutation whose method is not routed is
@@ -407,11 +425,12 @@ reversal.
    arrives with them.
 8. **The params adopt §11's nested `entry`** and revise slice 1's flat add
    params, so the guards can be added later without a second wire change.
-9. **`keyPath` is a slice-1 extension, not a schema field.** The record's
-   `HostConfig` has no key field and §13's dialog is its seven inputs; slice 1
-   shipped the wire field and the Key path control because the dial needs one.
-   This slice keeps both, round-trips the field, and records the extension here
-   instead of hiding a schema field or dropping the control.
+9. **`keyPath` is a schema field, from slice 1's wire onward.** Slice 1
+   shipped the wire field and the Key path control because the dial needs one;
+   the storage decision then made `key_path` the eighth `HostConfig` field
+   (component 03's schema, component 08 §6/§11). This slice keeps both and
+   round-trips the field; what it shipped as an extension is now schema, and
+   the storage-decision note above records that.
 10. **Every update tears the channel down** (§3.3). The record allows either
     rebinding live resources to the new entry or tearing them down; this slice
     always tears down, because a supervisor's capture is generation-fenced and
@@ -445,13 +464,17 @@ Every item is pinned by a test in this slice's PR.
    value, the row prefills the dialog, and the pane repaints — the row
    comparator carries the new fields, so the change is not swallowed by the
    publish guard.
-2. The sidecar is the durable record: after an edit and a sidecar reload, the
-   edited values are the effective entry, and no `hub.toml` entry was written.
+2. The durable record is the machine-managed host store: after an edit and a
+   reload through it, the edited values are the effective entry (this slice
+   shipped the sidecar as that record; the storage decision moved it into
+   `hub.toml` — see the note above).
 3. `name` cannot change: the update request carries `name` only as the target
    it addresses, the edit dialog offers no name input (it names the host in its
    title), and no mutable field can rename a host.
-4. A `hub.toml`-declared name is refused with the edit-the-file message;
-   nothing changes on disk or live.
+4. A name that is unknown or tombstone-only is refused, nothing changes on
+   disk or live (this slice also refused `hub.toml`-declared names with the
+   edit-the-file message; the storage decision retired that refusal — see the
+   note above).
 5. An unknown name is refused as not found and nothing is written. (The
    tombstone-only arm of §4's rule is not constructible yet: slice 1's removal
    deletes the entry outright and tombstones arrive with the remnant
@@ -475,8 +498,8 @@ Every item is pinned by a test in this slice's PR.
 11. Per-field validation lands on the right field, in wire spelling: a missing
     ssh destination on `address`, an empty root on `roots`, a malformed name on
     `name` (add).
-12. An invalid entry never reaches the sidecar: the refusal leaves the file
-    bytes unchanged, a reload of the sidecar is clean, and a padded input is
+12. An invalid entry never reaches the durable store: the refusal leaves the file
+    bytes unchanged, a reload through the store is clean, and a padded input is
     stored trimmed — the file and the live set cannot drift.
 13. No regression to slice 1: `list`/`status` still never dial, Connect and
     remove behave as they did, an edit round-trips a stored `keyPath` rather

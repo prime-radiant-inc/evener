@@ -71,6 +71,13 @@ export interface AttentionChanged {
   project: string;
   level: string;
   askPending?: boolean;
+  /**
+   * ApprovalPending is true while the session is blocked on a sandbox
+   * escalation a human must allow or deny (M7). It is why an
+   * escalation-promoted session's Level is needs_you; AskPending is the
+   * question's equivalent.
+   */
+  approvalPending?: boolean;
   prevLevel: string;
 }
 
@@ -2028,7 +2035,37 @@ export interface NavigationSessionSummary {
   rename?: boolean;
   live: boolean;
   ask_pending?: boolean;
+  /**
+   * ApprovalPending is true while the session is blocked on a sandbox
+   * escalation a human must allow or deny (M7). The row keeps its real State
+   * ("active": the escalation blocks mid-turn); the flag says why the session
+   * is in NeedsYou, beside AskPending for a question.
+   */
+  approval_pending?: boolean;
+  /**
+   * ApprovalTool and ApprovalTarget say what the oldest pending escalation
+   * asks for, so the row can say why it waits ("wants to write outside the
+   * workspace: ~/sites/docs"): the tool that was denied, which a client maps
+   * to a verb, and the escalation's full literal denied path. The path is
+   * shown for informed consent (appwire.SandboxEscalationRequested) and
+   * reaches human clients only, as thread/read's cards already do. Both are
+   * absent unless ApprovalPending is set; the tool is cut to the identity
+   * bound and the target to the label bound.
+   */
+  approval_tool?: string;
+  approval_target?: string;
   dormant?: boolean;
+  /**
+   * Offline marks a row folded into the merged list from a source that is
+   * currently unreachable: its last-known rows stay visible, but they are not
+   * live and cannot serve host-targeted actions until the source reattaches.
+   * It is keyed off the row's source identity (HostID), never the row's own
+   * state, and is never set for the controller's own local rows.
+   *
+   * It sits BESIDE Dormant rather than reusing it: Dormant means the session
+   * has never run, and an offline row that ran must not read as "Not started".
+   */
+  offline?: boolean;
   updated_at?: string;
   more_subagents?: number;
   omitted_descendants?: number;
@@ -2055,6 +2092,13 @@ export interface NavigationSessionSummary {
    * daemon (or a past-index entry) and therefore absent-able for consumers.
    */
   watches?: NavigationWatchSummary[];
+  /**
+   * Tasks is the task line's facts ("Task 4 of 7 · Fix the settle/drain
+   * race"). Absent for a session with no task list or an empty one, and for
+   * every session this hub has no live daemon entry for: ended sessions,
+   * in-process children, and rows from other hosts.
+   */
+  tasks?: NavigationTaskProgress;
   children: NavigationSessionSummary[];
 }
 
@@ -2062,6 +2106,19 @@ export interface NavigationSnapshot {
   metadata: unknown;
   entities: NavigationEntityRecord[];
   containers: NavigationOrderContainer[];
+}
+
+export interface NavigationTaskProgress {
+  total: number;
+  done: number;
+  cancelled?: number;
+  /**
+   * CurrentID and Current name the first task in progress: its ID in the
+   * session's task list and its description, cut to the label bound. Both
+   * are absent while no task is in progress.
+   */
+  current_id?: number;
+  current?: string;
 }
 
 export interface NavigationTier {
@@ -2463,6 +2520,19 @@ export interface SessionDeleteResponse {
   deleted: string[];
   skipped: DeletionSkip[];
   navigation: NavigationMutation;
+}
+
+export interface SessionImageParams {
+  sessionId: string;
+  sha?: string;
+  path?: string;
+}
+
+export interface SessionImageResponse {
+  mediaType: string;
+  size: number;
+  sha?: string;
+  data: string;
 }
 
 export interface SessionPinAssignParams {
@@ -3570,6 +3640,7 @@ export interface WarningParams {
   ref: string;
   message?: string;
   source?: string;
+  code?: string;
   title?: string;
   hint?: string;
   warning?: unknown;
@@ -3692,6 +3763,7 @@ export const METHOD_NAMES = [
   "evener/host/remove",
   "evener/host/update",
   "evener/host/pushCredentials",
+  "evener/session/image",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -3902,6 +3974,7 @@ export interface MethodTypes {
   "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
   "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
+  "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };
 }
 
 export interface NotificationTypes {

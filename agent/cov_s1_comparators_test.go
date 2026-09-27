@@ -21,6 +21,7 @@ func s1cov_baseKey() jobstore.WatchSendKey {
 }
 
 func TestS1Cov_watchSendKeyLess(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		mut  func(k *jobstore.WatchSendKey)
@@ -52,6 +53,7 @@ func TestS1Cov_watchSendKeyLess(t *testing.T) {
 }
 
 func TestS1Cov_watchSendStateLess(t *testing.T) {
+	t.Parallel()
 	t0 := time.Unix(1000, 0).UTC()
 	t1 := t0.Add(time.Second)
 	mk := func(created, updated time.Time, seq uint64, k jobstore.WatchSendKey) *jobstore.WatchSendState {

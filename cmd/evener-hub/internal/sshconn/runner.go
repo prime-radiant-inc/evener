@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
-	"primeradiant.com/evener/internal/orphanpipe"
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/orphanpipe"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // Runner is the process seam. Production is execRunner; tests inject a fake so

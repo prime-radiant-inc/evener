@@ -3,12 +3,16 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/fuzz/fault"
 	"primeradiant.com/evener/llm"
 )
 
@@ -20,26 +24,34 @@ type taskToolStateEntry struct {
 }
 
 type taskToolHarness struct {
-	store   *taskpkg.TaskStore
-	steers  []string
-	emitted []events.EventData
-	reg     *tool.Registry
+	store    *taskpkg.TaskStore
+	dir      string
+	steers   []string
+	steerErr error
+	emitted  []taskToolEvent
+	reg      *tool.Registry
+}
+
+type taskToolEvent struct {
+	kind events.EventKind
+	data events.EventData
 }
 
 func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarness {
 	t.Helper()
-	store := taskpkg.NewTaskStore(t.TempDir(), "task-tool")
+	dir := t.TempDir()
+	store := taskpkg.NewTaskStore(dir, "task-tool")
 	if _, err := store.Append(inputs); err != nil {
 		t.Fatalf("append tasks: %v", err)
 	}
-	h := &taskToolHarness{store: store}
+	h := &taskToolHarness{store: store, dir: dir}
 	deps := &toolDeps{
-		emit: func(_ events.EventKind, data events.EventData) {
-			h.emitted = append(h.emitted, data)
+		emit: func(kind events.EventKind, data events.EventData) {
+			h.emitted = append(h.emitted, taskToolEvent{kind: kind, data: data})
 		},
 		steer: func(text, _ string) error {
 			h.steers = append(h.steers, text)
-			return nil
+			return h.steerErr
 		},
 		resultToolName: func() string { return "communicate" },
 		taskGuard: taskGuard{
@@ -50,6 +62,31 @@ func newTaskToolHarness(t *testing.T, inputs []taskpkg.TaskInput) *taskToolHarne
 	h.reg = tool.NewRegistry()
 	registerTaskTools(h.reg, deps)
 	return h
+}
+
+func (h *taskToolHarness) reopened(t *testing.T) *taskpkg.TaskStore {
+	t.Helper()
+	reloaded := taskpkg.NewTaskStore(h.dir, "task-tool")
+	if err := reloaded.Load(); err != nil {
+		t.Fatalf("reload committed task state: %v", err)
+	}
+	return reloaded
+}
+
+func taskUpdatedEvent(t *testing.T, h *taskToolHarness) events.TaskUpdatedData {
+	t.Helper()
+	if len(h.emitted) != 1 {
+		t.Fatalf("emitted %d task events, want one final snapshot", len(h.emitted))
+	}
+	event := h.emitted[0]
+	if event.kind != events.EventTaskUpdated {
+		t.Fatalf("event kind = %q, want %q", event.kind, events.EventTaskUpdated)
+	}
+	data, ok := event.data.(events.TaskUpdatedData)
+	if !ok {
+		t.Fatalf("event data = %T, want events.TaskUpdatedData", event.data)
+	}
+	return data
 }
 
 // call executes a task_list call with the given raw arguments (nil = bare
@@ -95,6 +132,465 @@ func taskStateEntry(t *testing.T, state []taskToolStateEntry, id int) taskToolSt
 	return taskToolStateEntry{}
 }
 
+func TestTaskTool_AutoAdvanceSaveFailureReportsCommittedMutation(t *testing.T) {
+	t.Parallel()
+	base := afero.NewMemMapFs()
+	store := taskpkg.NewTaskStore("/state", "task-tool").SetFs(base)
+	if _, err := store.Append([]taskpkg.TaskInput{
+		{Description: "first", Prompt: "finish first"},
+		{Description: "second", Prompt: "start second"},
+	}); err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+
+	// One successful save consumes MkdirAll, OpenFile, Write, and Rename. Fail
+	// the next save at its MkdirAll so the explicit terminal update commits but
+	// its follow-up auto-advance cannot be persisted.
+	plan := make([]byte, 9)
+	for i := range plan {
+		plan[i] = 1
+	}
+	plan[4] = 0
+	store.SetFs(fault.FS(base, fault.FromBytes(plan)))
+
+	h := newTaskToolHarness(t, nil)
+	h.store = store
+	result := h.update(t, map[string]any{"id": 1, "status": "done"})
+	if result.Err != nil || result.IsError {
+		t.Fatalf("auto-advance save failure result = err %v, isError=%v, output=%q; want committed mutation", result.Err, result.IsError, result.Output)
+	}
+	if !strings.Contains(result.Output, fault.ErrInjected.Error()) {
+		t.Fatalf("auto-advance save failure output = %q, want injected cause", result.Output)
+	}
+	if len(h.steers) != 0 {
+		t.Fatalf("failed auto-advance steered %d times: %q", len(h.steers), h.steers)
+	}
+	event := taskUpdatedEvent(t, h)
+	if event.Total != 2 || event.Done != 1 || event.Remaining != 1 || event.Current != nil {
+		t.Fatalf("failed auto-advance event = %+v, want task 1 done and no current task", event)
+	}
+	if len(result.ToolState) == 0 {
+		t.Fatal("failed auto-advance returned no committed task state")
+	}
+	state := decodeTaskToolState(t, result)
+	if taskStateEntry(t, state, 1).Status != taskpkg.TaskDone || taskStateEntry(t, state, 2).Status != taskpkg.TaskOpen {
+		t.Fatalf("published state after failed auto-advance = %#v", state)
+	}
+	committed := store.View()
+	if committed[0].Status != taskpkg.TaskDone || committed[1].Status != taskpkg.TaskOpen {
+		t.Fatalf("in-memory state after failed auto-advance = %#v", committed)
+	}
+
+	reloaded := taskpkg.NewTaskStore("/state", "task-tool").SetFs(base)
+	if err := reloaded.Load(); err != nil {
+		t.Fatalf("reload committed terminal state: %v", err)
+	}
+	durable := reloaded.View()
+	if durable[0].Status != taskpkg.TaskDone || durable[1].Status != taskpkg.TaskOpen {
+		t.Fatalf("durable state after failed auto-advance = %#v", durable)
+	}
+	assertTasksPersisted(t, "durable state after failed auto-advance", committed, durable)
+}
+
+func TestTaskTool_SteerFailureReportsCommittedMutation(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "start me", Prompt: "begin work"}})
+	h.steerErr = errors.New("steering unavailable")
+
+	result := h.update(t, map[string]any{"id": 1, "status": "in_progress"})
+	if result.Err != nil || result.IsError {
+		t.Fatalf("steer failure result = err %v, isError=%v, output=%q; want committed mutation", result.Err, result.IsError, result.Output)
+	}
+	if !strings.Contains(result.Output, "steering unavailable") {
+		t.Fatalf("steer failure output = %q, want injected cause", result.Output)
+	}
+	if len(h.emitted) != 1 {
+		t.Fatalf("steer failure emitted %d task events, want committed snapshot", len(h.emitted))
+	}
+	event := taskUpdatedEvent(t, h)
+	if event.Total != 1 || event.Done != 0 || event.Remaining != 1 || event.Current == nil || event.Current.ID != 1 {
+		t.Fatalf("steer failure event = %+v, want final in-progress task 1", event)
+	}
+	state := decodeTaskToolState(t, result)
+	if taskStateEntry(t, state, 1).Status != taskpkg.TaskInProgress {
+		t.Fatalf("published state after steer failure = %#v", state)
+	}
+	view := h.store.View()
+	if len(view) != 1 || view[0].Status != taskpkg.TaskInProgress {
+		t.Fatalf("in-memory state after steer failure = %#v", view)
+	}
+	committed := h.store.View()
+	reloaded := h.reopened(t)
+	durable := reloaded.View()
+	if len(durable) != 1 || durable[0].Status != taskpkg.TaskInProgress {
+		t.Fatalf("durable state after steer failure = %#v", durable)
+	}
+	assertTasksPersisted(t, "durable state after steer failure", committed, durable)
+}
+
+func TestTaskTool_AutoAdvanceSteerFailureReportsCommittedMutation(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{
+		{Description: "finish me", Prompt: "finish"},
+		{Description: "advance me", Prompt: "advance"},
+	})
+	h.steerErr = errors.New("auto steering unavailable")
+
+	result := h.update(t, map[string]any{"id": 1, "status": "done"})
+	if result.Err != nil || result.IsError {
+		t.Fatalf("auto steer failure result = err %v, isError=%v, output=%q; want committed mutation", result.Err, result.IsError, result.Output)
+	}
+	if !strings.Contains(result.Output, "auto steering unavailable") {
+		t.Fatalf("auto steer failure output = %q, want injected cause", result.Output)
+	}
+	if len(h.emitted) != 1 {
+		t.Fatalf("auto steer failure emitted %d task events, want one final snapshot", len(h.emitted))
+	}
+	event := taskUpdatedEvent(t, h)
+	if event.Total != 2 || event.Done != 1 || event.Remaining != 1 || event.Current == nil || event.Current.ID != 2 {
+		t.Fatalf("auto steer failure event = %+v, want task 1 done and task 2 current", event)
+	}
+	state := decodeTaskToolState(t, result)
+	if taskStateEntry(t, state, 1).Status != taskpkg.TaskDone || taskStateEntry(t, state, 2).Status != taskpkg.TaskInProgress {
+		t.Fatalf("published state after auto steer failure = %#v", state)
+	}
+	committed := h.store.View()
+	if len(committed) != 2 || committed[0].Status != taskpkg.TaskDone || committed[1].Status != taskpkg.TaskInProgress {
+		t.Fatalf("in-memory state after auto steer failure = %#v", committed)
+	}
+	reloaded := h.reopened(t)
+	durable := reloaded.View()
+	if len(durable) != 2 || durable[0].Status != taskpkg.TaskDone || durable[1].Status != taskpkg.TaskInProgress {
+		t.Fatalf("durable state after auto steer failure = %#v", durable)
+	}
+	assertTasksPersisted(t, "durable state after auto steer failure", committed, durable)
+}
+
+func TestTaskTool_TaskCompletionSteerFailureReportsCommittedMutation(t *testing.T) {
+	t.Parallel()
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "finish me", Prompt: "finish"}})
+	h.steerErr = errors.New("completion steering unavailable")
+
+	result := h.update(t, map[string]any{"id": 1, "status": "done"})
+	if result.Err != nil || result.IsError {
+		t.Fatalf("completion steer failure result = err %v, isError=%v, output=%q; want committed mutation", result.Err, result.IsError, result.Output)
+	}
+	if !strings.Contains(result.Output, "completion steering unavailable") {
+		t.Fatalf("completion steer failure output = %q, want injected cause", result.Output)
+	}
+	if len(h.emitted) != 1 {
+		t.Fatalf("completion steer failure emitted %d task events, want one final snapshot", len(h.emitted))
+	}
+	event := taskUpdatedEvent(t, h)
+	if event.Total != 1 || event.Done != 1 || event.Remaining != 0 || event.Current != nil {
+		t.Fatalf("completion steer failure event = %+v, want final done task 1", event)
+	}
+	state := decodeTaskToolState(t, result)
+	if taskStateEntry(t, state, 1).Status != taskpkg.TaskDone {
+		t.Fatalf("published state after completion steer failure = %#v", state)
+	}
+	committed := h.store.View()
+	if len(committed) != 1 || committed[0].Status != taskpkg.TaskDone {
+		t.Fatalf("in-memory state after completion steer failure = %#v", committed)
+	}
+	reloaded := h.reopened(t)
+	durable := reloaded.View()
+	if len(durable) != 1 || durable[0].Status != taskpkg.TaskDone {
+		t.Fatalf("durable state after completion steer failure = %#v", durable)
+	}
+	assertTasksPersisted(t, "durable state after completion steer failure", committed, durable)
+}
+
+func taskStatusMap(tasks []taskpkg.Task) map[int]taskpkg.TaskStatus {
+	status := make(map[int]taskpkg.TaskStatus, len(tasks))
+	for _, task := range tasks {
+		status[task.ID] = task.Status
+	}
+	return status
+}
+
+func tasksWithUTCTimestamps(tasks []taskpkg.Task) []taskpkg.Task {
+	result := append([]taskpkg.Task(nil), tasks...)
+	for i := range result {
+		if result[i].CreatedAt != nil {
+			created := result[i].CreatedAt.UTC()
+			result[i].CreatedAt = &created
+		}
+		if result[i].UpdatedAt != nil {
+			updated := result[i].UpdatedAt.UTC()
+			result[i].UpdatedAt = &updated
+		}
+		if result[i].CompletedAt != nil {
+			completed := result[i].CompletedAt.UTC()
+			result[i].CompletedAt = &completed
+		}
+	}
+	return result
+}
+
+func assertTasksPersisted(t *testing.T, checkpoint string, committed, durable []taskpkg.Task) {
+	t.Helper()
+	if !reflect.DeepEqual(tasksWithUTCTimestamps(committed), tasksWithUTCTimestamps(durable)) {
+		t.Fatalf("%s differs from committed state = %#v, want %#v", checkpoint, durable, committed)
+	}
+}
+
+func tasksWithoutUpdatedAt(tasks []taskpkg.Task) []taskpkg.Task {
+	result := tasksWithUTCTimestamps(tasks)
+	for i := range result {
+		result[i].UpdatedAt = nil
+	}
+	return result
+}
+
+func taskUpdatedEvents(t *testing.T, h *taskToolHarness) []events.TaskUpdatedData {
+	t.Helper()
+	var result []events.TaskUpdatedData
+	for _, event := range h.emitted {
+		if event.kind != events.EventTaskUpdated {
+			continue
+		}
+		data, ok := event.data.(events.TaskUpdatedData)
+		if !ok {
+			t.Fatalf("event data = %T, want events.TaskUpdatedData", event.data)
+		}
+		result = append(result, data)
+	}
+	return result
+}
+
+func assertTaskAggregate(t *testing.T, got events.TaskUpdatedData, total, done, remaining, currentID int) {
+	t.Helper()
+	if got.Total != total || got.Done != done || got.Remaining != remaining {
+		t.Fatalf("task aggregate = %+v, want total=%d done=%d remaining=%d", got, total, done, remaining)
+	}
+	if currentID == 0 {
+		if got.Current != nil {
+			t.Fatalf("task aggregate current = %+v, want nil", got.Current)
+		}
+		return
+	}
+	if got.Current == nil || got.Current.ID != currentID {
+		t.Fatalf("task aggregate current = %+v, want task %d", got.Current, currentID)
+	}
+}
+
+func assertTaskToolMarker(t *testing.T, state []taskToolStateEntry, id int, started, settled *bool) {
+	t.Helper()
+	entry := taskStateEntry(t, state, id)
+	if started != nil && (entry.Started == nil || *entry.Started != *started) {
+		t.Fatalf("task %d started marker = %v, want %v", id, entry.Started, *started)
+	}
+	if settled != nil && (entry.Settled == nil || *entry.Settled != *settled) {
+		t.Fatalf("task %d settled marker = %v, want %v", id, entry.Settled, *settled)
+	}
+}
+
+func TestTaskTool_AutoAdvanceValidationFailurePreservesCurrentTask(t *testing.T) {
+	t.Parallel()
+	wantBlockedState := map[int]taskpkg.TaskStatus{
+		1: taskpkg.TaskDone, 2: taskpkg.TaskOpen, 3: taskpkg.TaskInProgress,
+	}
+	h := newTaskToolHarness(t, []taskpkg.TaskInput{
+		{Description: "finish", Prompt: "finish"},
+		{Description: "next", Prompt: "next"},
+		{Description: "current", Prompt: "current"},
+	})
+	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 3, Status: taskpkg.TaskInProgress}}); err != nil {
+		t.Fatalf("start current task: %v", err)
+	}
+
+	result := h.update(t, map[string]any{"id": 1, "status": "done"})
+	if result.Err != nil || result.IsError {
+		t.Fatalf("terminal update with blocked auto-advance: err=%v isError=%v", result.Err, result.IsError)
+	}
+	event := taskUpdatedEvent(t, h)
+	if event.Total != 3 || event.Done != 1 || event.Remaining != 2 || event.Current == nil || event.Current.ID != 3 {
+		t.Fatalf("blocked auto-advance event = %+v, want total=3 done=1 remaining=2 current=3", event)
+	}
+	state := decodeTaskToolState(t, result)
+	for id, want := range wantBlockedState {
+		if got := taskStateEntry(t, state, id).Status; got != want {
+			t.Fatalf("published task %d status = %q, want %q", id, got, want)
+		}
+	}
+	blockedState := h.store.View()
+	if got := taskStatusMap(blockedState); !reflect.DeepEqual(got, wantBlockedState) {
+		t.Fatalf("state after blocked auto-advance = %#v", got)
+	}
+	if len(h.steers) != 0 || len(h.emitted) != 1 {
+		t.Fatalf("blocked auto-advance effects = steers:%d events:%d", len(h.steers), len(h.emitted))
+	}
+	blockedReopened := h.reopened(t).View()
+	if got := taskStatusMap(blockedReopened); !reflect.DeepEqual(got, wantBlockedState) {
+		t.Fatalf("durable state after blocked auto-advance = %#v", got)
+	}
+	assertTasksPersisted(t, "durable blocked state", blockedState, blockedReopened)
+
+	// The first explicit recovery attempt is rejected while task 3 remains the
+	// current task; it must not create a phantom transition or publication.
+	preRejected := h.store.View()
+	rejected := h.update(t, map[string]any{"id": 2, "status": "in_progress"})
+	if !rejected.IsError || len(h.emitted) != 1 || len(h.steers) != 0 {
+		t.Fatalf("invalid recovery attempt = err:%v isError:%v events:%d steers:%d", rejected.Err, rejected.IsError, len(h.emitted), len(h.steers))
+	}
+	if got := h.store.View(); !reflect.DeepEqual(got, preRejected) {
+		t.Fatalf("in-memory state changed after rejected recovery = %#v, want %#v", got, preRejected)
+	}
+	rejectedDurable := h.reopened(t).View()
+	assertTasksPersisted(t, "durable state after rejected recovery", preRejected, rejectedDurable)
+
+	// Defer the real current task through the same tool API, then start the
+	// intended next task. This is the reachable recovery path after the
+	// post-commit auto-advance validation failure.
+	if result = h.update(t, map[string]any{"id": 3, "status": "open"}); result.Err != nil || result.IsError {
+		t.Fatalf("defer current task: err=%v isError=%v", result.Err, result.IsError)
+	}
+	if result = h.update(t, map[string]any{"id": 2, "status": "in_progress"}); result.Err != nil || result.IsError {
+		t.Fatalf("start recovered task: err=%v isError=%v", result.Err, result.IsError)
+	}
+	if len(h.steers) != 1 {
+		t.Fatalf("recovery steering count = %d, want one", len(h.steers))
+	}
+	recoveredState := h.store.View()
+	gotRecovered := h.reopened(t).View()
+	if got := taskStatusMap(gotRecovered); !reflect.DeepEqual(got, map[int]taskpkg.TaskStatus{
+		1: taskpkg.TaskDone, 2: taskpkg.TaskInProgress, 3: taskpkg.TaskOpen,
+	}) {
+		t.Fatalf("durable recovered state = %#v", got)
+	}
+	assertTasksPersisted(t, "durable recovered state", recoveredState, gotRecovered)
+}
+
+func TestTaskTool_SteerFailureReassertionPreservesCommittedState(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		inputs          []taskpkg.TaskInput
+		first           map[string]any
+		reassert        map[string]any
+		wantState       map[int]taskpkg.TaskStatus
+		wantTotal       int
+		wantDone        int
+		wantRemaining   int
+		wantCurrentID   int
+		firstStartedID  int
+		firstSettledID  int
+		secondStartedID int
+		secondSettledID int
+	}{
+		{
+			name:            "manual start",
+			inputs:          []taskpkg.TaskInput{{Description: "start", Prompt: "start"}},
+			first:           map[string]any{"id": 1, "status": "in_progress"},
+			reassert:        map[string]any{"id": 1, "status": "in_progress"},
+			wantState:       map[int]taskpkg.TaskStatus{1: taskpkg.TaskInProgress},
+			wantTotal:       1,
+			wantRemaining:   1,
+			wantCurrentID:   1,
+			firstStartedID:  1,
+			secondStartedID: 1,
+		},
+		{
+			name: "auto-advance",
+			inputs: []taskpkg.TaskInput{
+				{Description: "finish", Prompt: "finish"},
+				{Description: "advance", Prompt: "advance"},
+			},
+			first:           map[string]any{"id": 1, "status": "done"},
+			reassert:        map[string]any{"id": 2, "status": "in_progress"},
+			wantState:       map[int]taskpkg.TaskStatus{1: taskpkg.TaskDone, 2: taskpkg.TaskInProgress},
+			wantTotal:       2,
+			wantDone:        1,
+			wantRemaining:   1,
+			wantCurrentID:   2,
+			firstStartedID:  2,
+			firstSettledID:  1,
+			secondStartedID: 2,
+			secondSettledID: 1,
+		},
+		{
+			name:            "completion",
+			inputs:          []taskpkg.TaskInput{{Description: "finish", Prompt: "finish"}},
+			first:           map[string]any{"id": 1, "status": "done"},
+			reassert:        map[string]any{"id": 1, "status": "done"},
+			wantState:       map[int]taskpkg.TaskStatus{1: taskpkg.TaskDone},
+			wantTotal:       1,
+			wantDone:        1,
+			firstSettledID:  1,
+			secondSettledID: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newTaskToolHarness(t, tc.inputs)
+			h.steerErr = errors.New("steering unavailable")
+
+			first := h.update(t, tc.first)
+			if first.Err != nil || first.IsError {
+				t.Fatalf("first mutation: err=%v isError=%v", first.Err, first.IsError)
+			}
+			firstState := h.store.View()
+			if len(h.steers) != 1 {
+				t.Fatalf("first steering attempts = %d, want one", len(h.steers))
+			}
+			firstEvents := taskUpdatedEvents(t, h)
+			if len(firstEvents) != 1 {
+				t.Fatalf("first task events = %d, want one", len(firstEvents))
+			}
+			assertTaskAggregate(t, firstEvents[0], tc.wantTotal, tc.wantDone, tc.wantRemaining, tc.wantCurrentID)
+			firstToolState := decodeTaskToolState(t, first)
+			for id, want := range tc.wantState {
+				if got := taskStateEntry(t, firstToolState, id).Status; got != want {
+					t.Fatalf("first published task %d status = %q, want %q", id, got, want)
+				}
+			}
+			if tc.firstStartedID != 0 {
+				want := true
+				assertTaskToolMarker(t, firstToolState, tc.firstStartedID, &want, nil)
+			}
+			if tc.firstSettledID != 0 {
+				want := true
+				assertTaskToolMarker(t, firstToolState, tc.firstSettledID, nil, &want)
+			}
+
+			second := h.update(t, tc.reassert)
+			if second.Err != nil || second.IsError {
+				t.Fatalf("reassertion: err=%v isError=%v", second.Err, second.IsError)
+			}
+			secondState := h.store.View()
+			if !reflect.DeepEqual(tasksWithoutUpdatedAt(firstState), tasksWithoutUpdatedAt(secondState)) {
+				t.Fatalf("reassertion changed committed task state: first=%#v second=%#v", firstState, secondState)
+			}
+			if got := taskStatusMap(secondState); !reflect.DeepEqual(got, tc.wantState) {
+				t.Fatalf("reassertion statuses = %#v, want %#v", got, tc.wantState)
+			}
+			secondEvents := taskUpdatedEvents(t, h)
+			if len(h.steers) != 1 || len(secondEvents) != 2 {
+				t.Fatalf("reassertion effects = steers:%d events:%d", len(h.steers), len(secondEvents))
+			}
+			assertTaskAggregate(t, secondEvents[0], tc.wantTotal, tc.wantDone, tc.wantRemaining, tc.wantCurrentID)
+			assertTaskAggregate(t, secondEvents[1], tc.wantTotal, tc.wantDone, tc.wantRemaining, tc.wantCurrentID)
+			secondToolState := decodeTaskToolState(t, second)
+			for id, want := range tc.wantState {
+				if got := taskStateEntry(t, secondToolState, id).Status; got != want {
+					t.Fatalf("second published task %d status = %q, want %q", id, got, want)
+				}
+			}
+			if tc.secondStartedID != 0 {
+				want := false
+				assertTaskToolMarker(t, secondToolState, tc.secondStartedID, &want, nil)
+			}
+			if tc.secondSettledID != 0 {
+				want := false
+				assertTaskToolMarker(t, secondToolState, tc.secondSettledID, nil, &want)
+			}
+			reassertedDurable := h.reopened(t).View()
+			assertTasksPersisted(t, "reassertion durable state", secondState, reassertedDurable)
+		})
+	}
+}
+
 func TestTaskTool_UpdateNotesOnlyKeepsStatus(t *testing.T) {
 	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "note-me", Type: "implement", Prompt: "do it"}})
@@ -122,6 +618,7 @@ func TestTaskTool_UpdateNotesOnlyKeepsStatus(t *testing.T) {
 }
 
 func TestTaskTool_UpdateClassifiesStartsFromPreState(t *testing.T) {
+	t.Parallel()
 	t.Run("notes-only reassertion is not a start", func(t *testing.T) {
 		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "investigate", Prompt: "inspect"}})
 		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
@@ -188,6 +685,7 @@ func TestTaskTool_UpdateClassifiesStartsFromPreState(t *testing.T) {
 }
 
 func TestTaskTool_MixedAddAndNonTerminalUpdateCarriesProgress(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "existing"}})
 	result := h.call(t, map[string]any{
 		"add":    []map[string]any{{"description": "new task", "type": "implement", "prompt": "p"}},
@@ -205,6 +703,7 @@ func TestTaskTool_MixedAddAndNonTerminalUpdateCarriesProgress(t *testing.T) {
 }
 
 func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
+	t.Parallel()
 	t.Run("terminal reassertion is not a settle", func(t *testing.T) {
 		h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "wrap up", Prompt: "wrap up"}})
 		if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
@@ -322,6 +821,7 @@ func TestTaskTool_UpdateClassifiesSettlesFromPreState(t *testing.T) {
 }
 
 func TestTaskTool_UpdateReopenEmitsTaskUpdated(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "reopen", Prompt: "reopen"}})
 	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatalf("complete task: %v", err)
@@ -333,7 +833,7 @@ func TestTaskTool_UpdateReopenEmitsTaskUpdated(t *testing.T) {
 	}
 	var found []events.TaskUpdatedData
 	for _, data := range h.emitted {
-		if taskUpdate, ok := data.(events.TaskUpdatedData); ok {
+		if taskUpdate, ok := data.data.(events.TaskUpdatedData); ok {
 			found = append(found, taskUpdate)
 		}
 	}
@@ -346,6 +846,7 @@ func TestTaskTool_UpdateReopenEmitsTaskUpdated(t *testing.T) {
 }
 
 func TestTaskTool_UpdateClassifiesDuplicateIDsFromFinalBatchState(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{
 		{Description: "finish", Prompt: "finish"},
 		{Description: "continue", Prompt: "continue"},
@@ -371,6 +872,7 @@ func TestTaskTool_UpdateClassifiesDuplicateIDsFromFinalBatchState(t *testing.T) 
 }
 
 func TestTaskTool_UpdateMarkerOnlyDescribesExplicitFinalInProgress(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		status string
@@ -399,6 +901,7 @@ func TestTaskTool_UpdateMarkerOnlyDescribesExplicitFinalInProgress(t *testing.T)
 }
 
 func TestTaskTool_UpdateCompletionUsesLegacySteerFallback(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "finish", Prompt: "finish"}})
 	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start task: %v", err)
@@ -422,6 +925,7 @@ func TestTaskTool_UpdateCompletionUsesLegacySteerFallback(t *testing.T) {
 // target a PRE-EXISTING task — updates validate against the pre-add state
 // (the model cannot know IDs this call's add would assign).
 func TestTaskTool_CombinedAddUpdate(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "p0"}})
 	res := h.call(t, map[string]any{
 		"add": []any{map[string]any{
@@ -447,6 +951,7 @@ func TestTaskTool_CombinedAddUpdate(t *testing.T) {
 // IDs this call's add would assign, so updates must validate against the
 // pre-add store state, and a failed combined call must apply nothing.
 func TestTaskTool_UpdateReferencesThisCallAddsRejected(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, nil)
 	res := h.call(t, map[string]any{
 		"add": []any{map[string]any{
@@ -471,6 +976,7 @@ func TestTaskTool_UpdateReferencesThisCallAddsRejected(t *testing.T) {
 // arrays; empty ones must be no-ops. With no mutation, the response is
 // the view output (the list), same as a bare call.
 func TestTaskTool_EmptyArraysAreNoOps(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
 	res := h.call(t, map[string]any{"add": []any{}, "update": []any{}})
 	if res.IsError {
@@ -483,6 +989,7 @@ func TestTaskTool_EmptyArraysAreNoOps(t *testing.T) {
 
 // TestTaskTool_ViewIsBareCall: no arrays = view, returns the list.
 func TestTaskTool_ViewIsBareCall(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
 	res := h.call(t, map[string]any{})
 	if res.IsError {
@@ -497,6 +1004,7 @@ func TestTaskTool_ViewIsBareCall(t *testing.T) {
 // action-shaped calls fail at validation. The call below deliberately
 // sends the retired action key; do not "migrate" it.
 func TestTaskTool_OldActionShapeRejectedHelpfully(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, nil)
 	res := h.call(t, map[string]any{"action": "view"})
 	if !res.IsError {
@@ -507,6 +1015,7 @@ func TestTaskTool_OldActionShapeRejectedHelpfully(t *testing.T) {
 // TestTaskTool_NoOpUpdateEntryRejected: an update entry that changes
 // nothing is a model mistake, not a no-op.
 func TestTaskTool_NoOpUpdateEntryRejected(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
 	res := h.call(t, map[string]any{
 		"update": []any{map[string]any{"id": 1}},
@@ -524,6 +1033,7 @@ func TestTaskTool_NoOpUpdateEntryRejected(t *testing.T) {
 // same publication — "when you mark a task done, the next eligible task
 // auto-starts" applies to same-call adds too.
 func TestTaskTool_AutoAdvanceCanPickSameCallAdd(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "first", Prompt: "p1"}})
 	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start: %v", err)
@@ -546,6 +1056,7 @@ func TestTaskTool_AutoAdvanceCanPickSameCallAdd(t *testing.T) {
 
 // TestTaskTool_NotesOnlyUpdateWorks: the end-to-end bug fix from the review.
 func TestTaskTool_NotesOnlyUpdateWorks(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "d", Prompt: "p"}})
 	if err := h.store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("start: %v", err)
@@ -562,6 +1073,7 @@ func TestTaskTool_NotesOnlyUpdateWorks(t *testing.T) {
 }
 
 func TestTaskTool_RejectsUnknownNestedFieldsAtomically(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		args map[string]any
@@ -626,6 +1138,7 @@ func TestTaskTool_RejectsUnknownNestedFieldsAtomically(t *testing.T) {
 }
 
 func TestTaskStateDataCarriesDistinctOutcomes(t *testing.T) {
+	t.Parallel()
 	summary := taskpkg.Summarize([]taskpkg.Task{
 		{Status: taskpkg.TaskDone},
 		{Status: taskpkg.TaskCancelled},
@@ -642,6 +1155,7 @@ func TestTaskStateDataCarriesDistinctOutcomes(t *testing.T) {
 }
 
 func TestTaskTool_CancelledTerminalListUsesOutcomeSummary(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "stop", Prompt: "stop"}})
 	res := h.update(t, map[string]any{"id": 1, "status": "cancelled"})
 	if res.IsError {
@@ -665,6 +1179,7 @@ func TestTaskTool_CancelledTerminalListUsesOutcomeSummary(t *testing.T) {
 // know it, and allowing it invites ID-guessing (the same reason update
 // targets validate against the pre-add state).
 func TestTaskTool_UpdateDependsOnSameCallAddRejected(t *testing.T) {
+	t.Parallel()
 	h := newTaskToolHarness(t, []taskpkg.TaskInput{{Description: "existing", Prompt: "p"}})
 	res := h.call(t, map[string]any{
 		"add": []any{map[string]any{

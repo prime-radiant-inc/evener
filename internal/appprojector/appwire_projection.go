@@ -91,13 +91,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// A restored session carries its re-derived state on the event (spec
 		// §5.4's "two touchpoints"); a fresh session's State is empty and
 		// defaults to idle, same as an unrecognized value.
-		status := appwire.ThreadStatusIdle
-		switch data.State {
-		case appwire.ThreadStatusAwaiting:
-			status = appwire.ThreadStatusAwaiting
-		case appwire.ThreadStatusIdle:
-			status = appwire.ThreadStatusIdle
-		}
+		status := openThreadStatus(data.State)
 		var tasks *appwire.TaskAggregate
 		var goal *appwire.GoalState
 		if data.CurrentWork != nil {
@@ -392,13 +386,14 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		})}
 	case events.EventSessionEnd:
 		data := eventData[events.SessionEndData](event.Data)
-		state := appwire.ThreadStatusClosed
-		switch data.State {
-		case appwire.ThreadStatusIdle:
-			state = appwire.ThreadStatusIdle
-		case appwire.ThreadStatusAwaiting:
-			state = appwire.ThreadStatusAwaiting
-		case appwire.ThreadStatusClosed:
+		// Only a real close ends the thread: an end with no state, or
+		// closed, the states on which server/bridge.go's
+		// sessionEventClosesSession closes the stored status. Any other value
+		// leaves the session open for the next message and maps as a
+		// SessionStart state does (openThreadStatus): an unrecognized value
+		// reads idle.
+		state := openThreadStatus(data.State)
+		if data.State == "" || data.State == appwire.ThreadStatusClosed {
 			state = appwire.ThreadStatusClosed
 		}
 		// A session end outlives no execution: the ended one's own event may
@@ -567,6 +562,19 @@ func (p *AppEventProjector) notification(method string, params any) AppNotificat
 		}
 	}
 	return AppNotification{ThreadID: p.threadID, Method: method, Params: params}
+}
+
+// openThreadStatus normalizes a restored or resting status to one of the
+// non-closed statuses a thread can carry while it stays open for the next
+// message: idle, awaiting, systemError (a session resting on a failed turn,
+// #2514) or active. An unrecognized value reads idle, matching a fresh
+// session's default.
+func openThreadStatus(state string) string {
+	switch state {
+	case appwire.ThreadStatusIdle, appwire.ThreadStatusAwaiting, appwire.ThreadStatusSystemError, appwire.ThreadStatusActive:
+		return state
+	}
+	return appwire.ThreadStatusIdle
 }
 
 // threadStatus is a thread/status/changed carrying the running execution's

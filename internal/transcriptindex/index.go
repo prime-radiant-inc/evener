@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 
@@ -102,6 +104,69 @@ type meta struct {
 	Open       bool   `json:"open"`
 	OpenTurnID string `json:"open_turn_id"`
 	TurnSlot   uint64 `json:"turn_slot"`
+	// PendingCommunicate reports whether the builder's commCalls held any
+	// deferred communicate call at the end of the last build/extend: the
+	// transcript's tail is a communicate call with no result yet. CommCalls
+	// and LastAssistant* below are what restoreBuilder needs to reconstruct
+	// that state without a rebuild.
+	PendingCommunicate bool `json:"pending_communicate,omitempty"`
+	// CommCalls persists the builder's open communicate calls (see
+	// builder.commCalls), so an adopting handle's restoreBuilder can rebuild
+	// them instead of needing a full rebuild every time it adopts a build
+	// with a pending call — the records alone (item/turn tables) don't carry
+	// this, since a deferred communicate call projects no item of its own
+	// until it is paired or flushed.
+	CommCalls []persistedCommCall `json:"comm_calls,omitempty"`
+	// LastAssistant* persists the builder's sticky last-assistant-text state
+	// (builder.lastAssistantText/TurnID/Pos/Known), for the same reason: the
+	// healed-communicate echo check needs it, and only a full build or a
+	// text-bearing assistant entry scanned since would otherwise supply it.
+	LastAssistantText   string       `json:"last_assistant_text,omitempty"`
+	LastAssistantTurnID string       `json:"last_assistant_turn_id,omitempty"`
+	LastAssistantPos    persistedPos `json:"last_assistant_pos"`
+	LastAssistantKnown  bool         `json:"last_assistant_known,omitempty"`
+}
+
+// persistedPos is a transcript entry's position: the contributor fields
+// restoreBuilder needs from meta, minus Name (always absent for an
+// assistant entry, the only kind commState/lastAssistantPos ever hold).
+type persistedPos struct {
+	Offset  int64  `json:"offset"`
+	Ordinal uint64 `json:"ordinal"`
+	Length  uint32 `json:"length"`
+}
+
+func posOf(c contributor) persistedPos {
+	return persistedPos{Offset: c.Offset, Ordinal: c.Ordinal, Length: c.Length}
+}
+
+func (p persistedPos) contributor() contributor {
+	return contributor{Offset: p.Offset, Ordinal: p.Ordinal, Length: p.Length}
+}
+
+// validatePersistedPos bounds a persisted position against the covered
+// transcript, the same way adopt bounds meta.HeaderOffset/HeaderLength: a
+// self-consistent but fabricated meta.json must not reach reader.entry's
+// make([]byte, length) with an enormous or negative length. Length 0 is the
+// sentinel for "no position" (see pendingRegistry's add), never read, so it
+// always passes.
+func validatePersistedPos(m meta, p persistedPos) error {
+	if p.Length == 0 {
+		return nil
+	}
+	if p.Offset < 0 || int64(p.Length) > maxLineBytes || p.Offset > m.Length || int64(p.Length) > m.Length-p.Offset {
+		return fmt.Errorf("%w: persisted position outside the covered transcript", errCorrupt)
+	}
+	return nil
+}
+
+// persistedCommCall is one builder.commCalls entry (see commState), persisted
+// so restoreBuilder can reconstruct it without a rebuild.
+type persistedCommCall struct {
+	ID           string `json:"id"`
+	RawArgs      string `json:"raw_args"`
+	persistedPos        // flattened: offset, ordinal, length
+	TurnID       string `json:"turn_id"`
 }
 
 // EntryError reports the entry the index could not apply: a decode failure or
@@ -242,7 +307,7 @@ func (x *Index) refresh() error {
 		_ = x.closeBuild()
 		return err
 	}
-	if m != x.meta {
+	if !reflect.DeepEqual(m, x.meta) {
 		if err := x.adopt(m); err != nil {
 			_ = x.closeBuild()
 			return err
@@ -287,6 +352,37 @@ func (x *Index) adopt(m meta) error {
 	if m.Items > items || m.Turns > turns || m.Updates > updates {
 		return fmt.Errorf("%w: meta counts records the tables lack", errCorrupt)
 	}
+	transcriptInfo, err := x.transcript.Stat()
+	if err != nil {
+		return err
+	}
+	// Bound every persisted offset/length against the real transcript before
+	// readHeader allocates from them: a self-consistent but fabricated or
+	// stale-build meta.json (Length itself unchecked) would otherwise pass
+	// the header_offset+header_length<=Length inequality and still panic
+	// make([]byte, ...) with an enormous or negative HeaderLength.
+	if m.Length < 0 || m.Length > transcriptInfo.Size() {
+		return fmt.Errorf("%w: length exceeds the transcript", errCorrupt)
+	}
+	if m.HeaderLength < 0 || m.HeaderOffset < 0 || m.HeaderLength > maxLineBytes ||
+		m.HeaderOffset > m.Length || m.HeaderLength > m.Length-m.HeaderOffset {
+		return fmt.Errorf("%w: header_offset/header_length outside the covered transcript", errCorrupt)
+	}
+	// Bound CommCalls[].persistedPos and LastAssistantPos the same way, before
+	// restoreBuilder's reader.entry allocates from them (see writeMeta):
+	// otherwise a self-consistent but fabricated meta.json could name a
+	// multi-gigabyte length and OOM the process on read.
+	if m.PendingCommunicate != (len(m.CommCalls) > 0) {
+		return fmt.Errorf("%w: pending_communicate disagrees with comm_calls", errCorrupt)
+	}
+	for _, c := range m.CommCalls {
+		if err := validatePersistedPos(m, c.persistedPos); err != nil {
+			return err
+		}
+	}
+	if err := validatePersistedPos(m, m.LastAssistantPos); err != nil {
+		return err
+	}
 	info, err := x.strings.file.Stat()
 	if err != nil {
 		return err
@@ -327,6 +423,9 @@ func (x *Index) extend(length int64) error {
 	if x.build == "" || x.stale || !x.grownByAppends(info) {
 		return x.rebuild(length, "")
 	}
+	if err := x.repairBuilder(length); err != nil {
+		return err
+	}
 	if length <= x.meta.Length {
 		return nil
 	}
@@ -335,11 +434,6 @@ func (x *Index) extend(length int64) error {
 	for _, t := range []*table{&x.items, &x.turns, &x.updates} {
 		if err := t.truncate(t.n); err != nil {
 			return err
-		}
-	}
-	if x.builderStale {
-		if err := x.restoreBuilder(); err != nil {
-			return x.rebuild(length, "")
 		}
 	}
 	if err := x.scan(length); err != nil {
@@ -352,12 +446,44 @@ func (x *Index) extend(length int64) error {
 		}
 		return x.rebuild(length, incarnation)
 	}
+	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
+	if x.meta.PendingCommunicate && !x.builder.lastAssistantKnown {
+		// A communicate call just became pending with lastAssistantText
+		// still unknown. restoreBuilder now restores it from meta (see its
+		// doc comment), so this should not happen once any build has run;
+		// kept as a defensive fallback for an index built before that field
+		// existed (a lower formatVersion rebuilds instead, but a defense in
+		// depth costs nothing here). The echo check pendingFlush relies on
+		// would be missing the true prior text otherwise.
+		return x.rebuild(length, x.meta.Incarnation)
+	}
 	if testKillAfterRecordWrites != nil {
 		if err := testKillAfterRecordWrites(); err != nil {
 			return err
 		}
 	}
 	return x.writeMeta()
+}
+
+// repairBuilder brings x.builder up to date with the covered records when
+// another handle's extension left it stale: adopt updates the covered
+// counts/meta but never touches x.builder, so a caller that consults it
+// directly (pendingFlush's commCalls/lastAssistant* state) would otherwise
+// see the state from before that extension. restoreBuilder recovers it,
+// including a pending communicate call, from the meta fields persisted for
+// that purpose (CommCalls/LastAssistant*). A builder that is not stale is
+// left untouched, so a caller re-checking the same length repeatedly (a
+// pending communicate call outliving several reads, or another handle
+// adopting it) costs nothing once repaired: it never mints a new build, so
+// it never gives another handle something new to adopt in turn.
+func (x *Index) repairBuilder(length int64) error {
+	if !x.builderStale {
+		return nil
+	}
+	if err := x.restoreBuilder(); err != nil {
+		return x.rebuild(length, "")
+	}
+	return nil
 }
 
 // grownByAppends reports whether the transcript at path is still the file the
@@ -386,6 +512,11 @@ func (x *Index) tailSum(end int64) (string, error) {
 func (x *Index) restoreBuilder() error {
 	b := newBuilder(x)
 	b.grouper = apptranscript.TurnGrouper{Open: x.meta.Open, TurnID: x.meta.OpenTurnID}
+	for _, c := range x.meta.CommCalls {
+		b.commCalls[c.ID] = commState{rawArgs: c.RawArgs, pos: c.contributor(), turnID: c.TurnID}
+	}
+	b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown = x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown
+	b.lastAssistantPos = x.meta.LastAssistantPos.contributor()
 	if x.meta.Open {
 		b.turnSlot = x.meta.TurnSlot
 		// The open legacy group's items are the newest records: any
@@ -529,6 +660,7 @@ func (x *Index) buildNew(length int64, incarnation string) error {
 	// Only the open turn's names are kept past a build: memory stays bounded
 	// by the open turn, and errRebuild covers the rest.
 	x.builder.global = nil
+	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	if testKillAfterRecordWrites != nil {
 		if err := testKillAfterRecordWrites(); err != nil {
 			return err
@@ -714,11 +846,29 @@ func (x *Index) publishMeta() error {
 	x.meta.Items, x.meta.Turns, x.meta.Updates = x.items.n, x.turns.n, x.updates.n
 	x.meta.Open, x.meta.OpenTurnID = b.grouper.Open, b.grouper.TurnID
 	x.meta.TurnSlot = b.turnSlot
+	x.meta.CommCalls = persistCommCalls(b.commCalls)
+	x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown = b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown
+	x.meta.LastAssistantPos = posOf(b.lastAssistantPos)
 	data, err := json.Marshal(x.meta)
 	if err != nil {
 		return err
 	}
 	return writeFileAtomically(filepath.Join(x.dir, x.build, metaFile), data)
+}
+
+// persistCommCalls converts the builder's open communicate calls to their
+// persisted form (see meta.CommCalls), sorted by call id for a stable
+// meta.json across writes of the same state.
+func persistCommCalls(m map[string]commState) []persistedCommCall {
+	if len(m) == 0 {
+		return nil
+	}
+	list := make([]persistedCommCall, 0, len(m))
+	for id, state := range m {
+		list = append(list, persistedCommCall{ID: id, RawArgs: state.rawArgs, persistedPos: posOf(state.pos), TurnID: state.turnID})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+	return list
 }
 
 // writeFileAtomically replaces path by rename. There is no fsync: the index is

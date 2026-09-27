@@ -162,6 +162,7 @@ func (e *cancellationGrepEnv) Grep(ctx context.Context, _ string, _ string, _ st
 }
 
 func TestGrepFilesExecToolPassesCancellationContext(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	env := &cancellationGrepEnv{
 		started: make(chan struct{}, 1),

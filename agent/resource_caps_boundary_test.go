@@ -89,6 +89,7 @@ func (e *maskedResourceFixtureEnv) ExecCommand(context.Context, string, int, str
 }
 
 func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t *testing.T) {
+	t.Parallel()
 	env := &maskedResourceFixtureEnv{resourceFixtureEnv: newResourceFixtureEnv(t, resourceFixtureV2("100000 100000", "2147483648"))}
 	info := envInfoFromEnv(env, clock.Real())
 	if info.Resources == nil || info.Resources.CPUs != 1 || info.Resources.MemoryMB != 2048 {
@@ -119,6 +120,7 @@ func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t
 }
 
 func TestRenderedEnvironmentOmitsUnknownOrUnlimitedResources(t *testing.T) {
+	t.Parallel()
 	for name, resources := range map[string]*schema.ResourceCaps{
 		"unknown":   nil,
 		"unlimited": {},

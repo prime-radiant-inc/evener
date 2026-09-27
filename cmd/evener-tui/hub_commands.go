@@ -1234,10 +1234,10 @@ func hubNotesUnquote(arg string) (string, bool) {
 const hubNotesIdleWakeWarning = "Saving will wake the agent."
 
 // hubNotesIdleWake reports whether the /notes idle warning applies: the
-// session is live AND its wire status is idle, mirroring the web Details
-// editor's live-plus-idle predicate.
+// session is live AND resting (idle, or resting on a failed turn), mirroring
+// the web Details editor's live-plus-resting predicate.
 func hubNotesIdleWake(detail hubSessionDetail) bool {
-	return detail.Live && detail.State == appwire.ThreadStatusIdle
+	return detail.Live && appwire.IsRestingThreadStatus(detail.State)
 }
 
 // hubNotesUsage renders the /notes usage line, plus the idle-wake warning

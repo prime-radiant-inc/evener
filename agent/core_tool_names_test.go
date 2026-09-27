@@ -6,6 +6,7 @@ import (
 )
 
 func TestCoreToolNamesAreSortedNonEmptyAndKnown(t *testing.T) {
+	t.Parallel()
 	names, err := CoreToolNames()
 	if err != nil {
 		t.Fatalf("CoreToolNames: %v", err)

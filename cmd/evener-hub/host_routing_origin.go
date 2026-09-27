@@ -87,6 +87,20 @@ func guardControllerLocalHosts(ctx context.Context) error {
 	return refuseRemoteOrigin(ctx, "manage this hub's hosts")
 }
 
+// guardRemoteSpawnSource refuses a remote-originated thread/start that would
+// resolve to any source but local, with the same typed InvalidParams the other
+// origin guards return (design §2 "Topology"; component 05, §"The receiving hub
+// must reject a non-local resolution for a remote-originated thread/start").
+// A remote-originated spawn is served from this hub's local state only, so a
+// preserved harness naming one of this hub's configured hosts cannot fan the
+// spawn out to it; a local client's spawn is unaffected.
+func guardRemoteSpawnSource(ctx context.Context, sourceID string) error {
+	if sourceID == "" || sourceID == "local" {
+		return nil
+	}
+	return refuseRemoteOrigin(ctx, "route a spawn to another host source")
+}
+
 // dialRemoteHost is the single Ensure-backed dialing seam for the hub's attach
 // triggers. Every caller that may dial a remote host goes through it, so the
 // host-routing origin guard cannot be omitted by a new remote attach path

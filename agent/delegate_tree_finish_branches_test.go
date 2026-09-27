@@ -14,6 +14,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestDelegateDeliveryID(t *testing.T) {
+	t.Parallel()
 	id := delegateDeliveryID("dlg_1", 3)
 	if id != "dlg_1/delivery/3" {
 		t.Fatalf("deliveryID = %q, want 'dlg_1/delivery/3'", id)
@@ -21,6 +22,7 @@ func TestDelegateDeliveryID(t *testing.T) {
 }
 
 func TestDelegateDeliveryIDZeroGeneration(t *testing.T) {
+	t.Parallel()
 	id := delegateDeliveryID("dlg_1", 0)
 	if id != "dlg_1/delivery/0" {
 		t.Fatalf("deliveryID = %q", id)
@@ -32,6 +34,7 @@ func TestDelegateDeliveryIDZeroGeneration(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateMissingTerminalPacket(t *testing.T) {
+	t.Parallel()
 	packet := delegateMissingTerminalPacket()
 	if packet.Kind != delegatestore.PacketTerminalError {
 		t.Fatalf("kind = %v", packet.Kind)
@@ -50,6 +53,7 @@ func TestDelegateMissingTerminalPacket(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateStoppedTerminalPacket(t *testing.T) {
+	t.Parallel()
 	packet := delegateStoppedTerminalPacket()
 	if packet.Kind != delegatestore.PacketTerminalError {
 		t.Fatalf("kind = %v", packet.Kind)
@@ -68,6 +72,7 @@ func TestDelegateStoppedTerminalPacket(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateIsMissingTerminalPacketTrue(t *testing.T) {
+	t.Parallel()
 	packet := delegateMissingTerminalPacket()
 	if !delegateIsMissingTerminalPacket(packet) {
 		t.Fatalf("expected true for missing terminal packet")
@@ -75,6 +80,7 @@ func TestDelegateIsMissingTerminalPacketTrue(t *testing.T) {
 }
 
 func TestDelegateIsMissingTerminalPacketFalse(t *testing.T) {
+	t.Parallel()
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported}
 	if delegateIsMissingTerminalPacket(packet) {
 		t.Fatalf("expected false for reported packet")
@@ -82,6 +88,7 @@ func TestDelegateIsMissingTerminalPacketFalse(t *testing.T) {
 }
 
 func TestDelegateIsMissingTerminalPacketWithStructuredResult(t *testing.T) {
+	t.Parallel()
 	packet := delegateMissingTerminalPacket()
 	packet.StructuredResult = json.RawMessage(`{}`)
 	if delegateIsMissingTerminalPacket(packet) {
@@ -90,6 +97,7 @@ func TestDelegateIsMissingTerminalPacketWithStructuredResult(t *testing.T) {
 }
 
 func TestDelegateIsMissingTerminalPacketWithWarnings(t *testing.T) {
+	t.Parallel()
 	packet := delegateMissingTerminalPacket()
 	packet.Warnings = []string{"warning"}
 	if delegateIsMissingTerminalPacket(packet) {
@@ -98,6 +106,7 @@ func TestDelegateIsMissingTerminalPacketWithWarnings(t *testing.T) {
 }
 
 func TestDelegateIsMissingTerminalPacketWithMetadata(t *testing.T) {
+	t.Parallel()
 	packet := delegateMissingTerminalPacket()
 	packet.Metadata = json.RawMessage(`{}`)
 	if delegateIsMissingTerminalPacket(packet) {
@@ -110,6 +119,7 @@ func TestDelegateIsMissingTerminalPacketWithMetadata(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateTerminalErrorPacket(t *testing.T) {
+	t.Parallel()
 	packet := delegateTerminalErrorPacket("some error")
 	if packet.Kind != delegatestore.PacketTerminalError {
 		t.Fatalf("kind = %v", packet.Kind)
@@ -124,6 +134,7 @@ func TestDelegateTerminalErrorPacket(t *testing.T) {
 }
 
 func TestDelegateTerminalErrorPacketEmpty(t *testing.T) {
+	t.Parallel()
 	packet := delegateTerminalErrorPacket("")
 	var msg string
 	if err := json.Unmarshal(packet.Message, &msg); err != nil {
@@ -135,6 +146,7 @@ func TestDelegateTerminalErrorPacketEmpty(t *testing.T) {
 }
 
 func TestDelegateTerminalErrorPacketTruncation(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("x", delegateFinishReasonLimit+100)
 	packet := delegateTerminalErrorPacket(long)
 	var msg string
@@ -151,6 +163,7 @@ func TestDelegateTerminalErrorPacketTruncation(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegatePacketDispositionReported(t *testing.T) {
+	t.Parallel()
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported}
 	if d := delegatePacketDisposition(packet); d != delegatestore.DispositionReported {
 		t.Fatalf("expected reported, got %v", d)
@@ -158,6 +171,7 @@ func TestDelegatePacketDispositionReported(t *testing.T) {
 }
 
 func TestDelegatePacketDispositionTerminalError(t *testing.T) {
+	t.Parallel()
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError}
 	if d := delegatePacketDisposition(packet); d != delegatestore.DispositionTerminalError {
 		t.Fatalf("expected terminal_error, got %v", d)
@@ -169,6 +183,7 @@ func TestDelegatePacketDispositionTerminalError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegatePreparedFinishReported(t *testing.T) {
+	t.Parallel()
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketReported}
 	finish := delegatePreparedFinish(packet)
 	if finish.outcome != delegatestore.OutcomeCompleted {
@@ -180,6 +195,7 @@ func TestDelegatePreparedFinishReported(t *testing.T) {
 }
 
 func TestDelegatePreparedFinishMissingTerminal(t *testing.T) {
+	t.Parallel()
 	packet := delegateMissingTerminalPacket()
 	finish := delegatePreparedFinish(packet)
 	if finish.outcome != delegatestore.OutcomeFailed {
@@ -191,6 +207,7 @@ func TestDelegatePreparedFinishMissingTerminal(t *testing.T) {
 }
 
 func TestDelegatePreparedFinishTerminalErrorNoMetadata(t *testing.T) {
+	t.Parallel()
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError}
 	finish := delegatePreparedFinish(packet)
 	if finish.outcome != delegatestore.OutcomeFailed {
@@ -202,6 +219,7 @@ func TestDelegatePreparedFinishTerminalErrorNoMetadata(t *testing.T) {
 }
 
 func TestDelegatePreparedFinishWithMetadata(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	metadata := delegateTerminalPacketMetadata{
 		RunEndedAt: now.Format(time.RFC3339Nano),
@@ -223,6 +241,7 @@ func TestDelegatePreparedFinishWithMetadata(t *testing.T) {
 }
 
 func TestDelegatePreparedFinishCancelled(t *testing.T) {
+	t.Parallel()
 	metadata := delegateTerminalPacketMetadata{
 		Outcome: delegatestore.OutcomeCancelled,
 		Reason:  "cancelled",
@@ -239,6 +258,7 @@ func TestDelegatePreparedFinishCancelled(t *testing.T) {
 }
 
 func TestDelegatePreparedFinishCancelledWrongReason(t *testing.T) {
+	t.Parallel()
 	metadata := delegateTerminalPacketMetadata{
 		Outcome: delegatestore.OutcomeCancelled,
 		Reason:  "other_reason",
@@ -252,6 +272,7 @@ func TestDelegatePreparedFinishCancelledWrongReason(t *testing.T) {
 }
 
 func TestDelegatePreparedFinishInvalidMetadata(t *testing.T) {
+	t.Parallel()
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Metadata: json.RawMessage("invalid")}
 	finish := delegatePreparedFinish(packet)
 	if finish.outcome != delegatestore.OutcomeFailed {
@@ -267,6 +288,7 @@ func TestDelegatePreparedFinishInvalidMetadata(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCloneDelegateTerminalPacket(t *testing.T) {
+	t.Parallel()
 	original := delegatestore.TerminalPacket{
 		Kind:     delegatestore.PacketTerminalError,
 		Message:  json.RawMessage(`"original"`),
@@ -289,6 +311,7 @@ func TestCloneDelegateTerminalPacket(t *testing.T) {
 }
 
 func TestCloneDelegateTerminalPacketWithStructuredResultValid(t *testing.T) {
+	t.Parallel()
 	valid := true
 	original := delegatestore.TerminalPacket{
 		StructuredResult:      json.RawMessage(`{}`),
@@ -306,6 +329,7 @@ func TestCloneDelegateTerminalPacketWithStructuredResultValid(t *testing.T) {
 }
 
 func TestCloneDelegateTerminalPacketNilStructuredResultValid(t *testing.T) {
+	t.Parallel()
 	original := delegatestore.TerminalPacket{
 		StructuredResultValid: nil,
 	}
@@ -320,6 +344,7 @@ func TestCloneDelegateTerminalPacketNilStructuredResultValid(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateRunFinishedEvent(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 5}
 	now := time.Date(2025, 6, 15, 10, 0, 0, 0, time.UTC)
 	packet := &delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"err"`)}
@@ -357,6 +382,7 @@ func TestDelegateRunFinishedEvent(t *testing.T) {
 }
 
 func TestDelegateRunFinishedEventNilPacket(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	event := delegateRunFinishedEvent(lease, delegatestore.OutcomeCompleted, delegatestore.DispositionReported, "done", time.Now(), "del_1", nil)
 	if event.RunFinished.Packet != nil {
@@ -369,6 +395,7 @@ func TestDelegateRunFinishedEventNilPacket(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateFinishMetadataEventsNonExhausted(t *testing.T) {
+	t.Parallel()
 	events := []delegatestore.Event{
 		{Kind: delegatestore.EventDelegateRunFinished, RunFinished: &delegatestore.RunFinished{}},
 	}
@@ -379,6 +406,7 @@ func TestDelegateFinishMetadataEventsNonExhausted(t *testing.T) {
 }
 
 func TestDelegateFinishMetadataEventsExhausted(t *testing.T) {
+	t.Parallel()
 	events := []delegatestore.Event{
 		{Kind: delegatestore.EventDelegateRunFinished, RunFinished: &delegatestore.RunFinished{}},
 	}
@@ -399,6 +427,7 @@ func TestDelegateFinishMetadataEventsExhausted(t *testing.T) {
 }
 
 func TestDelegateFinishMetadataEventsExhaustedNonResumable(t *testing.T) {
+	t.Parallel()
 	events := []delegatestore.Event{
 		{Kind: delegatestore.EventDelegateRunFinished, RunFinished: &delegatestore.RunFinished{}},
 	}
@@ -414,6 +443,7 @@ func TestDelegateFinishMetadataEventsExhaustedNonResumable(t *testing.T) {
 }
 
 func TestDelegateFinishMetadataEventsExhaustedResumable(t *testing.T) {
+	t.Parallel()
 	events := []delegatestore.Event{
 		{Kind: delegatestore.EventDelegateRunFinished, RunFinished: &delegatestore.RunFinished{}},
 	}
@@ -429,6 +459,7 @@ func TestDelegateFinishMetadataEventsExhaustedResumable(t *testing.T) {
 }
 
 func TestDelegateFinishMetadataEventsNoRunFinished(t *testing.T) {
+	t.Parallel()
 	events := []delegatestore.Event{
 		{Kind: delegatestore.EventDelegateResumabilityClosed},
 	}
@@ -443,6 +474,7 @@ func TestDelegateFinishMetadataEventsNoRunFinished(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHasSettlementClaimLockedEmpty(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{settlementClaims: map[uint64]*delegateSettlementClaim{}}
 	if c.hasSettlementClaimLocked(delegateLease{delegateID: "dlg_1", generation: 1}) {
 		t.Fatalf("expected false for empty claims")
@@ -450,6 +482,7 @@ func TestHasSettlementClaimLockedEmpty(t *testing.T) {
 }
 
 func TestHasSettlementClaimLockedFound(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{
@@ -462,6 +495,7 @@ func TestHasSettlementClaimLockedFound(t *testing.T) {
 }
 
 func TestHasSettlementClaimLockedDifferentGeneration(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{
 			1: {lease: delegateLease{delegateID: "dlg_1", generation: 1}},
@@ -473,6 +507,7 @@ func TestHasSettlementClaimLockedDifferentGeneration(t *testing.T) {
 }
 
 func TestHasSettlementClaimLockedNilClaim(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{1: nil},
 	}
@@ -486,6 +521,7 @@ func TestHasSettlementClaimLockedNilClaim(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHasSteeringClaimLockedEmpty(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{steeringClaims: map[uint64]*delegateSteeringClaim{}}
 	if c.hasSteeringClaimLocked(delegateLease{delegateID: "dlg_1", generation: 1}) {
 		t.Fatalf("expected false for empty claims")
@@ -493,6 +529,7 @@ func TestHasSteeringClaimLockedEmpty(t *testing.T) {
 }
 
 func TestHasSteeringClaimLockedFound(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	c := &delegateTreeController{
 		steeringClaims: map[uint64]*delegateSteeringClaim{
@@ -505,6 +542,7 @@ func TestHasSteeringClaimLockedFound(t *testing.T) {
 }
 
 func TestHasSteeringClaimLockedNilClaim(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		steeringClaims: map[uint64]*delegateSteeringClaim{1: nil},
 	}
@@ -518,6 +556,7 @@ func TestHasSteeringClaimLockedNilClaim(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReleaseSettlementClaimLocked(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{1: {}},
 	}
@@ -528,6 +567,7 @@ func TestReleaseSettlementClaimLocked(t *testing.T) {
 }
 
 func TestReleaseSettlementClaimLockedWithStop(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{1: {}},
 		stop:             &delegateStopState{settlementClaims: map[uint64]struct{}{1: {}}},
@@ -539,6 +579,7 @@ func TestReleaseSettlementClaimLockedWithStop(t *testing.T) {
 }
 
 func TestReleaseSettlementClaimLockedNonExistent(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{},
 	}
@@ -550,6 +591,7 @@ func TestReleaseSettlementClaimLockedNonExistent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReleaseSettlementClaimsForLeaseLocked(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{

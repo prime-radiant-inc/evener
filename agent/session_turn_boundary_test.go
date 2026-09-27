@@ -76,6 +76,7 @@ func indexOf(kinds []events.EventKind, k events.EventKind) int {
 // turn opens under an id the daemon's mutation preconditions reject, and every
 // Steer, Send and Stop aimed at it fails silently (kata 7vmd).
 func TestNotificationTurnAnnouncesOneNamedBoundary(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	rec := serveAndRecord(t, s)
 	s.SteerKind("look at this", events.SteeringKindNotification)
@@ -105,6 +106,7 @@ func TestNotificationTurnAnnouncesOneNamedBoundary(t *testing.T) {
 // TestNotificationTurnAnnouncesOneNamedBoundary above, which drives the shape
 // that block skips entirely.
 func TestNotificationBoundaryPrecedesTheTurnsContent(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	rec := serveAndRecord(t, s)
 	s.SteerKind("look at this", events.SteeringKindNotification)
@@ -137,6 +139,7 @@ func TestNotificationBoundaryPrecedesTheTurnsContent(t *testing.T) {
 // record) because acceptNotificationInput drops a hand-made in-memory
 // notification as undeliverable and refuses the wake.
 func TestNotificationBoundaryPrecedesItsJobReminder(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := newTestSessionForEnvctx(t, withDir(dir))
 	rec := serveAndRecord(t, s)
@@ -172,6 +175,7 @@ func TestNotificationBoundaryPrecedesItsJobReminder(t *testing.T) {
 // set, and mintRunningTurnID refuses to name the next agent turn, so an id
 // held past its turn wedges the session for the life of the process.
 func TestNotificationTurnReleasesItsTurnID(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveAndRecord(t, s)
 	s.SteerKind("look at this", events.SteeringKindNotification)
@@ -189,6 +193,7 @@ func TestNotificationTurnReleasesItsTurnID(t *testing.T) {
 // with nothing to deliver — the commonest outcome — neither announces a turn
 // nor reserves an id for one that never runs.
 func TestRefusedNotificationWakeAnnouncesNoBoundary(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	rec := serveAndRecord(t, s)
 
@@ -215,6 +220,7 @@ func TestRefusedNotificationWakeAnnouncesNoBoundary(t *testing.T) {
 // leaks, and the projection is left holding an open active turn whose close
 // finishNotificationNoop's sessionEndEmitted then suppresses.
 func TestRefusedDurableAppendAnnouncesNoBoundary(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := newTestSessionForEnvctx(t, withDir(dir))
 	rec := serveAndRecord(t, s)
@@ -259,6 +265,7 @@ func TestRefusedDurableAppendAnnouncesNoBoundary(t *testing.T) {
 // inline once that turn ends, by which point nothing is claimed and the wake
 // names itself. Nothing is lost, and no turn ever runs unnameable.
 func TestWakeStandsDownWhileAUserTurnIsClaimed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := newTestSessionForEnvctx(t, withDir(dir))
 	rec := serveAndRecord(t, s)
@@ -314,6 +321,7 @@ func TestWakeStandsDownWhileAUserTurnIsClaimed(t *testing.T) {
 // woken for, with nothing left to raise it again until some unrelated wake
 // happens by. The decision has to come first, while nothing has been consumed.
 func TestStandDownConsumesNoWakeState(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 
@@ -357,6 +365,7 @@ func TestStandDownConsumesNoWakeState(t *testing.T) {
 // loop's SetState(sess.WireState()) then publishes that. Every other refusal
 // on this path settles through finishNotificationNoop; this one must too.
 func TestStandDownSettlesTheProcessingTransition(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 
@@ -397,6 +406,7 @@ func TestStandDownSettlesTheProcessingTransition(t *testing.T) {
 // for as long as the name stays held -- which a mutation store failing writes
 // makes forever. The guarantee is unchanged; only the timing is.
 func TestStandDownReArmsTheWake(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	clk := agenttest.NewFakeClock()
 	s.clock = clk
@@ -471,6 +481,7 @@ func TestStandDownReArmsTheWake(t *testing.T) {
 // forgetRunningTurnNoOneOwns applies at load; here it decides whether asking
 // again can ever help.
 func TestStandDownDoesNotSpinOnAStaleName(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 
@@ -514,6 +525,7 @@ func TestStandDownDoesNotSpinOnAStaleName(t *testing.T) {
 // Once the user's turn ends and gives the name back, the same wake names itself
 // and runs -- which is what the serve loop's tail gate provokes for real.
 func TestWakeResumesOnceTheUserTurnReleasesTheName(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	s := newTestSessionForEnvctx(t, withDir(dir))
 	rec := serveAndRecord(t, s)
@@ -573,6 +585,7 @@ func TestWakeResumesOnceTheUserTurnReleasesTheName(t *testing.T) {
 // reversing this deliberately — delegates would take durable names so they can
 // be stopped. When that lands, this test inverts rather than being deleted.
 func TestUnservedSessionNamesNoTurn(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t) // no drain registered
 
 	if s.servedByDaemon() {

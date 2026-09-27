@@ -1056,6 +1056,7 @@ func TestMaybeElicitNoteBeforeCompaction_NoopWhenLowPressure(t *testing.T) {
 }
 
 func TestMaybeElicitNoteBeforeCompaction_AttentionResolutionDoesNotCreateFoldableHistory(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	called := false
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
