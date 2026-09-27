@@ -104,11 +104,7 @@ function Board({
 	// Activity keeps polling while only a sheet covers the Board: the sheet
 	// is part of the screen under it.
 	const inFront = useScreenInFront(routeKey);
-	const {
-		activity: pollActivity,
-		msSinceRead: pollMsSinceRead,
-		revision: activityRevision,
-	} = useActivityPoll(client, connected, inFront);
+	const { activityOf, msSinceRead, revision: activityRevision } = useActivityPoll(client, connected, inFront);
 	const [board] = useState(createBoardController);
 	useEffect(() => () => board.dispose(), [board]);
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
@@ -151,21 +147,17 @@ function Board({
 				snapshot.needsYou.rows,
 				(row) => markers.isSeen(row),
 				(row) => {
-					const activity = pollActivity(row.ref);
-					return activity ? quietState(activity, pollMsSinceRead ?? 0)?.state === "stuck" : false;
+					const activity = activityOf(row.ref);
+					return activity ? quietState(activity, msSinceRead ?? 0)?.state === "stuck" : false;
 				},
 			),
-		// seenRevision re-runs isSeen after a mark or first run, and
-		// activityRevision re-runs isStuck after each read and the moment the
-		// connection drops or returns (useActivityPoll gates pollActivity and
-		// pollMsSinceRead on connected itself, so this needs no separate check).
-		// pollMsSinceRead itself is deliberately not a dependency: it ticks every
-		// millisecond between reads, so treating it as one would re-sort Working
-		// on every render; activityRevision already re-runs this within
-		// ACTIVITY_POLL_MS of any read landing, which is fresh enough for where
-		// a row sits in the list (the row's own why-line text stays live every
-		// render regardless, since it isn't behind this memo).
-		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision, pollActivity, activityRevision],
+		// seenRevision re-runs isSeen after a mark or first run. activityRevision
+		// re-runs isStuck after each read, and activityOf changes when the
+		// connection drops or returns. msSinceRead is left out on purpose: it
+		// changes on every render, so it would re-sort Working every time, and a
+		// row's place only needs to be as fresh as the last read (its why line
+		// reads msSinceRead live).
+		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision, activityOf, activityRevision],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -299,8 +291,8 @@ function Board({
 		now,
 		onOpen: openSession,
 		draftRefs,
-		activityOf: pollActivity,
-		msSinceRead: pollMsSinceRead,
+		activityOf,
+		msSinceRead,
 	};
 	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean) => (
 		<BoardRows items={items} variant={variant} moving={moving} context={rowContext} />
@@ -316,7 +308,7 @@ function Board({
 	// The fleet meter sums the working sessions the poll has read so far, and
 	// stays still until it has read one.
 	const workingMinutes = bands.working
-		.map((item) => pollActivity(item.row.ref)?.minutes)
+		.map((item) => activityOf(item.row.ref)?.minutes)
 		.filter((minutes): minutes is number[] => minutes !== undefined);
 	const fleetPerMinute = workingMinutes.length ? fleetMinutes(workingMinutes) : undefined;
 
@@ -525,18 +517,6 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 	}, [board, markers, snapshot, focused]);
 }
 
-/** While any of the Board's reads has failed on a ready connection (Live,
- * Needs you, the pin catalog, a category or the manifest; first read or
- * later), rebind the client after a backoff that grows with each failed
- * attempt. Nothing else would retry it while the Board stays in view: an
- * idle fleet sends no invalidations, and the controller retries failed
- * reads only when it resumes, on a focus change. The retry waits while
- * another read is still out, so a rebind never cancels a healthy read.
- * Rebinding is the reconnect path: the loaded rows stay on screen until the
- * fresh reads land, and the screen's load-more pages Live back out. A read
- * that lands, or a new connection, starts the count over; with no client
- * (disconnected or out of view) the hook holds its count and schedules
- * nothing. */
 const noSubscription = () => () => {};
 const noRevision = () => 0;
 
@@ -562,10 +542,22 @@ function useActivityPoll(client: ConversationClientLike | null, connected: boole
 		return () => poll.stop();
 	}, [poll, connected, inFront]);
 	const reading = connected ? poll : null;
-	const activity = useCallback((ref: string) => reading?.activity(ref), [reading]);
-	return { revision, activity, msSinceRead: reading?.msSinceRead() ?? null };
+	const activityOf = useCallback((ref: string) => reading?.activity(ref), [reading]);
+	return { revision, activityOf, msSinceRead: reading?.msSinceRead() ?? null };
 }
 
+/** While any of the Board's reads has failed on a ready connection (Live,
+ * Needs you, the pin catalog, a category or the manifest; first read or
+ * later), rebind the client after a backoff that grows with each failed
+ * attempt. Nothing else would retry it while the Board stays in view: an
+ * idle fleet sends no invalidations, and the controller retries failed
+ * reads only when it resumes, on a focus change. The retry waits while
+ * another read is still out, so a rebind never cancels a healthy read.
+ * Rebinding is the reconnect path: the loaded rows stay on screen until the
+ * fresh reads land, and the screen's load-more pages Live back out. A read
+ * that lands, or a new connection, starts the count over; with no client
+ * (disconnected or out of view) the hook holds its count and schedules
+ * nothing. */
 function useReadRetry(
 	board: BoardController,
 	client: ConversationClientLike | null,

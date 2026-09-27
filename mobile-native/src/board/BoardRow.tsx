@@ -21,10 +21,11 @@ export interface BoardRowProps {
 	hostLabel: (hostId: string) => string;
 	hasDraft: boolean;
 	/** S5's latest activity read for this session; absent before the Board's
-	 * poll answers for it, or on a hub that predates S5. */
+	 * poll answers for it, on a hub that predates S5, or while disconnected. */
 	activity?: SessionActivity;
-	/** How long ago that read landed, which quiet time keeps counting from. */
-	msSinceRead?: number | null;
+	/** How long ago that read landed, which quiet time keeps counting from;
+	 * null without one. */
+	msSinceRead: number | null;
 	now: number;
 	onOpen: (row: NavigationSessionSummary) => void;
 }
@@ -34,11 +35,10 @@ export interface BoardRowProps {
 export const TITLE_INSET = 16 + 28 + 10;
 
 /** What every row in one of the Board's lists shares. */
-export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "now" | "onOpen"> & {
+export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "msSinceRead" | "now" | "onOpen"> & {
 	draftRefs: ReadonlySet<string>;
 	/** Each session's latest activity read (S5), by ref. */
 	activityOf: (ref: string) => SessionActivity | undefined;
-	msSinceRead: number | null;
 };
 
 function Hairline({ inset = 0 }: { inset?: number }) {

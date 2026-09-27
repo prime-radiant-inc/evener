@@ -43,6 +43,7 @@ function mount(over: Partial<BoardRowProps> = {}): ReactTestRenderer {
 		usual: { project: "evener", host: "local" },
 		hostLabel: (hostId) => (hostId === "studio" ? "Studio Mac" : hostId),
 		hasDraft: false,
+		msSinceRead: null,
 		now: NOW,
 		onOpen: () => {},
 		...over,
