@@ -456,7 +456,7 @@ func (x *Index) restoreBuilder() error {
 	}
 	b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown = x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown
 	b.lastAssistantPos = x.meta.LastAssistantPos.contributor()
-	if x.meta.Entries > 0 {
+	if x.meta.Turns > 0 { // transcript-only entries count as entries but open no turn
 		buf, err := x.turns.read(x.meta.TurnSlot, 1)
 		if err != nil {
 			return err

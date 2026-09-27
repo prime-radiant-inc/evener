@@ -364,9 +364,8 @@ func fixtures() []fixture {
 		{name: "ordinals", header: header, lines: ordinals},
 		// Last four: each leaves a communicate call permanently unpaired, so
 		// nothing in "everything" follows them (see needsCommunicateHistory
-		// and TestAppendEntryByEntryMatchesTheReference) — a reopen after
-		// this point correctly rebuilds (meta.PendingCommunicate), but nothing
-		// downstream would spuriously trigger the same rebuild.
+		// and TestAppendEntryByEntryMatchesTheReference); a reopen after
+		// this point restores the open call from meta.CommCalls.
 		{name: "communicate rejected unpaired", header: header, lines: communicateRejectedUnpaired},
 		{name: "communicate unpaired", header: header, lines: communicateUnpaired},
 		{name: "communicate sparse part collision", header: header, lines: communicateSparsePartCollision},

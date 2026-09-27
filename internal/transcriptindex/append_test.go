@@ -98,12 +98,13 @@ func needsCommunicateHistory(turn schema.Turn) bool {
 }
 
 // communicatePendingTracker follows which communicate calls are open across
-// successive turns: meta.PendingCommunicate forces a rebuild for EVERY line
-// applied while one is still open (see its doc comment), not only the call
-// and result lines themselves — an intervening standalone turn (e.g.
-// TurnHookCompleted) between them rebuilds too. Conservative about closing
-// (any tool result named "communicate" or nameless might be one), which only
-// widens the test's rebuild exemption, never narrows real coverage.
+// successive turns, for every line applied while one is still open, not only
+// the call and result lines themselves (an intervening standalone turn such
+// as TurnHookCompleted counts too). Extend restores the open calls from
+// meta.CommCalls instead of rebuilding, so the exemption it grants is a
+// tolerance, not an expectation. Conservative about closing (any tool result
+// named "communicate" or nameless might be one), which only widens the
+// exemption, never narrows real coverage.
 type communicatePendingTracker struct {
 	open map[string]bool
 }

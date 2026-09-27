@@ -1,6 +1,10 @@
 package transcriptindex
 
-import "testing"
+import (
+	"testing"
+
+	"primeradiant.com/evener/agent/schema/schematest"
+)
 
 // TestMultiHandleCatchUpAdoptsPendingCommunicate: a handle that never itself
 // scanned the pending communicate call must still project it correctly after
@@ -82,6 +86,39 @@ func TestAlternatingHandlesDoNotRebuildOverAPendingCommunicateTail(t *testing.T)
 		assertWindow(t, "b's read", wb, want, len(want), 40)
 		if a.rebuilds != baseA || b.rebuilds != baseB {
 			t.Fatalf("round %d: alternating reads over a pending-communicate tail rebuilt: a %d->%d, b %d->%d", i, baseA, a.rebuilds, baseB, b.rebuilds)
+		}
+	}
+}
+
+// A covered prefix of transcript-only entries holds entries but no turn
+// record, so restoring the builder must not read one.
+func TestAlternatingHandlesDoNotRebuildOverATranscriptOnlyPrefix(t *testing.T) {
+	fx := fixture{header: commTestHeader(), lines: []fixtureLine{
+		entryLine(schematest.TranscriptOnlySamples()[0]),
+	}}
+	path, lines := writeHeaderOnly(t, fx)
+	dir := t.TempDir()
+	a := openIndex(t, path, dir)
+	appendBytes(t, path, joinLines(lines))
+	catchUp(t, a)
+
+	b := openIndex(t, path, dir)
+	baseA, baseB := a.rebuilds, b.rebuilds
+	want := referenceCandidates(t, path)
+
+	for i := range 3 {
+		wa, err := a.Latest(40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertWindow(t, "a's read", wa, want, len(want), 40)
+		wb, err := b.Latest(40)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertWindow(t, "b's read", wb, want, len(want), 40)
+		if a.rebuilds != baseA || b.rebuilds != baseB {
+			t.Fatalf("round %d: alternating reads over a transcript-only prefix rebuilt: a %d->%d, b %d->%d", i, baseA, a.rebuilds, baseB, b.rebuilds)
 		}
 	}
 }
