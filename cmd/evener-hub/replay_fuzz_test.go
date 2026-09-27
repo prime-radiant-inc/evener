@@ -3,14 +3,18 @@ package hub
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appprojector"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
@@ -47,24 +51,27 @@ var replayFuzzSeeds = []string{
 	// RawArguments preserves the original bytes — the live emitter now uses
 	// the original bytes too, so live and reload agree.
 	`{"kind":"entry","seq":10,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"calling it"},{"kind":"tool_call","tool_call":{"id":"c5","name":"shell","arguments":{},"raw_arguments":"{command: \"ls\"}"}}]},"timestamp":"2026-06-01T10:00:09Z"}}`,
-	// Assistant turn with a rejected communicate: Arguments is the replay-safe
-	// {} placeholder, RawArguments preserves the model's original malformed
-	// bytes. Live emits nothing (CommunicateMessageFromArguments({}) is ""),
-	// and reload now defers the raw fallback to the paired result, so the
-	// assistant turn alone renders nothing on both sides.
+	// Assistant turn with a communicate whose Arguments is the replay-safe {}
+	// placeholder and RawArguments preserves the model's original malformed
+	// bytes. In the one-entry oracle this is unpaired at transcript close, so
+	// both sides recover the repairable message. The paired multi-entry tests
+	// below disambiguate rejected from healed calls using the result.
 	`{"kind":"entry","seq":11,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c6","name":"communicate","arguments":{},"raw_arguments":"{message: \"hi\"}"}}]},"timestamp":"2026-06-01T10:00:10Z"}}`,
 	// Tool-results turn for the rejected communicate: IsError=true surfaces the
 	// raw bytes deferred from the assistant turn. Used in the multi-entry
 	// metamorphic test (not the single-entry fuzz, which processes one entry).
 	`{"kind":"entry","seq":12,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c6","name":"communicate","content":"invalid","is_error":true}}]},"timestamp":"2026-06-01T10:00:11Z"}}`,
-	// Assistant turn with a healed communicate: Arguments is {} and
-	// RawArguments preserves the malformed original, but the call was repaired
-	// and executed successfully. Live delivered the healed message; reload now
-	// renders nothing from the raw bytes (the result confirms success).
+	// Assistant turn with a healed communicate: Arguments is {} and RawArguments
+	// preserves the malformed original. The one-entry oracle treats it as
+	// unpaired at close; the paired multi-entry test confirms the successful
+	// result consumes the pending call and renders the same healed message.
 	`{"kind":"entry","seq":13,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c7","name":"communicate","arguments":{},"raw_arguments":"{message: \"hello\"}"}}]},"timestamp":"2026-06-01T10:00:12Z"}}`,
 	// Tool-results turn for the healed communicate: IsError=false, so the raw
 	// fallback does not fire — matching live, which delivered the healed message.
 	`{"kind":"entry","seq":14,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c7","name":"communicate","content":"{\"accepted\":true}","is_error":false}}]},"timestamp":"2026-06-01T10:00:13Z"}}`,
+	// Assistant turn whose communicate has no paired result at transcript close.
+	// The fixed call ID and message make this the deterministic flush-path seed.
+	`{"kind":"entry","seq":15,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"call_unpaired_oracle","name":"communicate","arguments":{"message":"unpaired at close"}}}]},"timestamp":"2026-06-01T10:00:14Z"}}`,
 	`{}`,
 	`null`,
 	`not json`,
@@ -106,8 +113,8 @@ func canonicalEntry(t *testing.T, e transcript.Entry) (transcript.Entry, []byte)
 
 // FuzzHubReplayLiveVsReload is the full live-vs-reload metamorphic: it compares
 // what the user saw LIVE (the appprojector stream) against what the hub renders
-// on RELOAD (saved bytes → decodeTranscriptTurn → ProjectTurn), for one
-// turn. The live side synthesizes the SessionEvent stream the turn would have
+// on RELOAD (saved transcript → computePastEntryTurns), for one turn. The live
+// side synthesizes the SessionEvent stream the turn would have
 // produced, feeds it through a fresh AppEventProjector, and folds the emitted
 // notifications back into final ThreadItems (the streaming projector emits
 // item/started + deltas + item/completed; reasoning completion supplies status
@@ -211,21 +218,10 @@ func checkLiveVsReloadMultiEntry(t *testing.T, assistantJSON, resultJSON []byte,
 	}
 	live := normalizeMetamorphic(foldLiveItems(notes))
 
-	// Reload side: project both turns with a shared toolNames map, the way the
-	// hub's full-transcript read threads the map across entries.
-	toolNames := apptranscript.NewToolCallRegistry()
-	aReconstructed, ok := decodeTranscriptTurn(acanonBytes)
-	if !ok {
-		t.Fatalf("hub decode rejected assistant entry: %s", acanonBytes)
-	}
-	rReconstructed, ok := decodeTranscriptTurn(rcanonBytes)
-	if !ok {
-		t.Fatalf("hub decode rejected result entry: %s", rcanonBytes)
-	}
-	reload := normalizeMetamorphic(append(
-		apptranscript.ProjectTurn("turn_1", 1, aReconstructed, toolNames, nil, apptranscript.ToolResultOutputImages),
-		apptranscript.ProjectTurn("turn_2", 2, rReconstructed, toolNames, nil, apptranscript.ToolResultOutputImages)...,
-	))
+	// Reload side: write both turns and drive the hub's full saved-transcript
+	// projection. Its shared registry consumes the paired communicate before the
+	// close-time flush, exactly as a real client reload does.
+	reload := normalizeMetamorphic(projectReloadThroughHub(t, acanon.Turn, rcanon.Turn))
 
 	if eq, a, b := jsonEqItems(t, live, reload); !eq {
 		t.Fatalf("live-vs-reload multi-entry metamorphic diverged:\n live  =%s\n reload=%s\n assistant=%s\n result=%s", a, b, acanonBytes, rcanonBytes)
@@ -237,7 +233,7 @@ func checkLiveVsReloadMultiEntry(t *testing.T, assistantJSON, resultJSON []byte,
 // have a live path).
 func mustSynthesize(t *testing.T, turn schema.Turn) []events.SessionEvent {
 	t.Helper()
-	evs, supported := synthesizeLiveEvents(turn)
+	evs, supported := synthesizeLiveEvents(turn, false)
 	if !supported {
 		t.Fatalf("synthesizeLiveEvents returned unsupported for turn kind %s", turn.Kind)
 	}
@@ -283,7 +279,7 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 	}
 	canon, canonBytes := canonicalEntry(t, e)
 
-	liveEvents, supported := synthesizeLiveEvents(canon.Turn)
+	liveEvents, supported := synthesizeLiveEvents(canon.Turn, true)
 	if !supported {
 		return // turn kind has no clean item-producing live path (see synthesizer)
 	}
@@ -296,16 +292,83 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 	}
 	live := normalizeMetamorphic(foldLiveItems(notes))
 
-	// Reload side: the hub's own path off the saved bytes.
-	reconstructed, ok := decodeTranscriptTurn(canonBytes)
-	if !ok {
-		t.Fatalf("hub decode rejected the canonical entry: %s", canonBytes)
-	}
-	reload := normalizeMetamorphic(apptranscript.ProjectTurn("turn_1", 1, reconstructed, apptranscript.NewToolCallRegistry(), nil, apptranscript.ToolResultOutputImages))
+	// Reload side: the hub's own full saved-transcript projection path. Unlike a
+	// direct ProjectTurn call, this closes the projection by flushing any
+	// communicate whose paired result never reached the transcript.
+	reload := normalizeMetamorphic(projectReloadThroughHub(t, canon.Turn))
 
 	if eq, a, b := jsonEqItems(t, live, reload); !eq {
 		t.Fatalf("live-vs-reload metamorphic diverged:\n live  =%s\n reload=%s\n entry=%s", a, b, canonBytes)
 	}
+}
+
+// projectReloadThroughHub persists turns beneath an isolated state directory
+// and drives the same full-transcript projection that serves saved hub clients.
+// The fixed identity and timestamp keep fuzz seed replay deterministic; the
+// unique t.TempDir path keeps the shared transcript cache hermetic.
+func projectReloadThroughHub(t *testing.T, turns ...schema.Turn) []appwire.ThreadItem {
+	t.Helper()
+	const sessionID = "01REPLAYORACLE"
+	const openerText = "replay oracle fixed opener"
+	stateDir := t.TempDir()
+	sessionsDir := filepath.Join(stateDir, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatalf("create replay sessions directory: %v", err)
+	}
+	w, err := transcript.NewWriter(filepath.Join(sessionsDir, sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID: sessionID,
+		CreatedAt: time.Date(2026, time.June, 1, 10, 0, 0, 0, time.UTC),
+		ProfileID: "replay-oracle",
+		Model:     "replay-oracle",
+	})
+	if err != nil {
+		t.Fatalf("create replay transcript: %v", err)
+	}
+	// A persisted assistant record is a continuation of a user-opened logical
+	// turn. Supplying that fixed opener also gives communicate-only assistant
+	// records a real turn to which the close-time flush can attach. The opener's
+	// item is removed below because the differential owns only the fuzzed turns.
+	if err := w.Append(schema.Turn{
+		Kind:      schema.TurnUserInput,
+		Message:   llm.User(openerText),
+		Timestamp: time.Date(2026, time.June, 1, 9, 59, 59, 0, time.UTC),
+	}); err != nil {
+		_ = w.Close()
+		t.Fatalf("append replay transcript opener: %v", err)
+	}
+	for _, turn := range turns {
+		if err := w.Append(turn); err != nil {
+			_ = w.Close()
+			t.Fatalf("append replay transcript turn: %v", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close replay transcript: %v", err)
+	}
+
+	projected, err := computePastEntryTurns(hubcore.WebConfig{}, hubcore.PastEntry{
+		ID:       sessionID,
+		Meta:     schema.SessionMeta{ID: sessionID, ProfileID: "replay-oracle", Model: "replay-oracle"},
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("hub full-transcript projection: %v", err)
+	}
+	var items []appwire.ThreadItem
+	removedOpener := false
+	for _, turn := range projected {
+		for _, item := range turn.Items {
+			if !removedOpener && item.Type == "userMessage" && item.Text == openerText {
+				removedOpener = true
+				continue
+			}
+			items = append(items, item)
+		}
+	}
+	if !removedOpener {
+		t.Fatal("hub full-transcript projection omitted fixed opener")
+	}
+	return items
 }
 
 // synthesizeLiveEvents builds the SessionEvent stream the live path would have
@@ -316,7 +379,7 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 // kinds with NO live event (web_search, redacted_thinking, and audio/document
 // user attachments) are intentionally not synthesized here and are dropped from
 // the reload side by normalizeMetamorphic's allow-list.
-func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
+func synthesizeLiveEvents(turn schema.Turn, transcriptCloses bool) ([]events.SessionEvent, bool) {
 	var out []events.SessionEvent
 	add := func(d events.EventData) { out = append(out, events.New(d)) }
 
@@ -366,6 +429,18 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 				// paired result turn, which carries the error/PrevalOnly status
 				// that disambiguates.
 				if p.ToolCall.Name == "communicate" {
+					if transcriptCloses {
+						repaired := argrepair.RepairJSON([]byte(p.ToolCall.SentArguments()))
+						normalized := apptranscript.NormalizeCommunicateArguments(repaired)
+						if msg := apptranscript.CommunicateMessageFromArguments(normalized); msg != "" && !apptranscript.EchoesAssistantText(turn.Message.Text(), msg) {
+							// At transcript close there is no paired result left to
+							// disambiguate. Model the preview and successful delivery the
+							// live client already saw; reload recovers the same message by
+							// flushing the unconsumed registry entry.
+							add(events.CommunicatePreviewStartData{CallID: p.ToolCall.ID})
+							add(events.CommunicateData{CallID: p.ToolCall.ID, Message: msg})
+						}
+					}
 					continue
 				}
 				// Rejected call: show raw bytes, skip intent (mirrors ProjectTurn).
@@ -530,6 +605,17 @@ func normalizeMetamorphic(items []appwire.ThreadItem) []appwire.ThreadItem {
 		it.StartedAt = nil
 		it.CompletedAt = nil
 		it.TranscriptEntryIndex = 0
+		// Full transcript reloads assign stable server paging coordinates;
+		// live stream items do not have them. They are identity, not rendered
+		// content, so normalize only these two coordinate fields.
+		it.Position = nil
+		it.TranscriptKey = ""
+		// The hub stamps its fetch route only after the reload projector has
+		// described output images. Live descriptors intentionally have no URL;
+		// both sides still compare source, name, type, size, sha, and path.
+		for i := range it.OutputImages {
+			it.OutputImages[i].URL = ""
+		}
 
 		it.Images = normalizeMetamorphicImages(it.Images)
 		out = append(out, it)
