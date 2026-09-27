@@ -183,6 +183,14 @@ const (
 	// HostPlanResult union: the plan plus token, or the no-token arm naming why
 	// nothing was minted. See HostPlanParams.
 	MethodEvenerHostPlan = "evener/host/plan"
+	// MethodEvenerHostRunning serves one hub's own running build and health to
+	// the controller probing it (deploy pipeline 08b §6 step 2, §10). It is
+	// served locally by every hub and admitted only over an attached controller
+	// session peered by the handshake; its params carry the caller's fencing
+	// epoch (required on the wire, never a default) and its response is the
+	// local build revision, the authoritative health flag, and the local process
+	// start time when known. See HostRunningParams.
+	MethodEvenerHostRunning = "evener/host/running"
 	// MethodEvenerHostPushCredentials copies the controller's local
 	// provider-instance keys to one named remote host (component 07c). The unit
 	// of the push is the local credentials-store entry; each key is sent
@@ -4497,6 +4505,38 @@ const (
 	HostPlanReasonTargetMissingPrereq = "target-missing-prereq"
 	HostPlanReasonTargetUnitFindings  = "target-unit-findings"
 )
+
+// FencingEpoch is the fencing-epoch wire shape (deploy pipeline 08b §10,
+// crash-fencing §9): the controller boot id plus the per-host monotonic op
+// sequence. `evener/host/running` requires it — absent or malformed is a typed
+// `probe-failed` refusal, never an unfenced write — and the fencing spec's
+// remote-fencing boundary carries the same pair.
+type FencingEpoch struct {
+	BootID string `json:"bootId"`
+	OpSeq  uint64 `json:"opSeq"`
+}
+
+// HostRunningParams is the evener/host/running payload (deploy pipeline 08b
+// §10): the calling worker's persisted fencing epoch, which the caller minted
+// and persisted before the probe. The field is required on the wire — the
+// generated client carries it, so no well-formed call omits it — and an epoch
+// absent or malformed is refused with typed `probe-failed` ("no epoch
+// presented"), never served as an unfenced write.
+type HostRunningParams struct {
+	FencingEpoch FencingEpoch `json:"fencingEpoch"`
+}
+
+// HostRunningResponse is evener/host/running's result (deploy pipeline 08b
+// §10): the serving hub's own build revision (from the same source as the
+// controllerBuild plan input), its authoritative health flag, and its process
+// start time — present exactly when the serving hub knows it, absent otherwise
+// per the absent-when-unknown rule. An unverifiable revision ("dev" or a dirty
+// "<sha>-dirty") never proves currency by revision equality.
+type HostRunningResponse struct {
+	BuildRevision    string `json:"buildRevision"`
+	Healthy          bool   `json:"healthy"`
+	ProcessStartTime string `json:"processStartTime,omitempty"`
+}
 
 // HostNotificationParams is the evener/host/notification payload (component
 // 07a): one host-owned config notification re-emitted to the controller's

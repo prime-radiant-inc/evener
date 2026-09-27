@@ -104,7 +104,38 @@ type Config struct {
 	// api_log explicitly (either direction) win over it. Defaults to false —
 	// API-request logging is opt-in because its records are large.
 	APILog bool `toml:"api_log"`
+	// HostProbeTimeout is the owner-adjustable deadline for one
+	// evener/host/running round trip (deploy pipeline 08b §6 step 2: the plan's
+	// probe is "deadline-bounded with an explicit owner-adjustable probe
+	// timeout"). It bounds the gate hold too: a hung remote holds no gate past
+	// the probe window. Default DefaultHostProbeTimeout (10s); a value at or
+	// below zero is floored back to the default at load, since an unset probe
+	// deadline would let a hung remote hold the plan's gate.
+	HostProbeTimeout time.Duration `toml:"host_probe_timeout"`
+	// HostMinFreeSpaceBytes is the owner-adjustable minimum free space the
+	// serving hub's running-health predicate requires on each durable state root
+	// (deploy pipeline 08b §10). Below it the hub reports healthy: false without
+	// running the state-root write probe. Default
+	// DefaultHostMinFreeSpaceBytes (512 MiB); a value at or below zero is
+	// floored back to the default at load, so a state root that is critically
+	// full is never reported healthy by an unset knob.
+	HostMinFreeSpaceBytes int64 `toml:"host_min_free_space_bytes"`
 }
+
+const (
+	// DefaultHostProbeTimeout is the default deadline for one
+	// evener/host/running round trip. Ten seconds is generous for a loopback
+	// AppWire call proxied over the SSH bridge — the probe's own work is a
+	// roster read, a free-space query, and one tiny state-root write — while
+	// keeping the plan's gate hold bounded when a remote hangs.
+	DefaultHostProbeTimeout = 10 * time.Second
+	// DefaultHostMinFreeSpaceBytes is the default minimum free space the
+	// running-health predicate requires on each durable state root. 512 MiB is
+	// roughly the headroom a hub needs to keep writing session state and its
+	// own durable stores without landing in a critically-full window, and it is
+	// far above the size of any single probe write.
+	DefaultHostMinFreeSpaceBytes int64 = 512 << 20
+)
 
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() Config {
@@ -120,6 +151,8 @@ func DefaultConfig() Config {
 		PluginAutoUpgrade:         true,
 		PluginAutoUpgradeInterval: 12 * time.Hour,
 		DaemonIdleTimeout:         time.Hour,
+		HostProbeTimeout:          DefaultHostProbeTimeout,
+		HostMinFreeSpaceBytes:     DefaultHostMinFreeSpaceBytes,
 	}
 }
 
@@ -223,6 +256,12 @@ func decodeConfig(name, data string) (Config, error) {
 	// strings report "String", an absent key reports "").
 	if metadata.Type("daemon_idle_timeout") == "Integer" {
 		return cfg, fmt.Errorf("daemon_idle_timeout must be a duration string such as \"1h\" or \"0s\" (got the integer %[1]d, which TOML decodes as %[1]d nanoseconds)", int64(cfg.DaemonIdleTimeout))
+	}
+	// The same footgun, same refusal: a bare integer is a nanosecond count, so
+	// `host_probe_timeout = 10` (plausible shorthand for ten seconds) would arm
+	// a 10ns deadline that fails every probe.
+	if metadata.Type("host_probe_timeout") == "Integer" {
+		return cfg, fmt.Errorf("host_probe_timeout must be a duration string such as \"10s\" (got the integer %[1]d, which TOML decodes as %[1]d nanoseconds)", int64(cfg.HostProbeTimeout))
 	}
 	applyConfigDefaults(&cfg)
 	if cfg.DaemonIdleTimeout < 0 {
@@ -420,6 +459,12 @@ func applyConfigDefaults(cfg *Config) {
 	}
 	if cfg.PastResultsPerPage == 0 {
 		cfg.PastResultsPerPage = 50
+	}
+	if cfg.HostProbeTimeout <= 0 {
+		cfg.HostProbeTimeout = DefaultHostProbeTimeout
+	}
+	if cfg.HostMinFreeSpaceBytes <= 0 {
+		cfg.HostMinFreeSpaceBytes = DefaultHostMinFreeSpaceBytes
 	}
 	if cfg.HubStateRoot == "" {
 		cfg.HubStateRoot = DefaultHubStateRoot()

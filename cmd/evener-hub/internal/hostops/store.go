@@ -106,6 +106,18 @@ type snapshot struct {
 	// file without it, or with it null, is a store that has minted nothing —
 	// and every write emits it as an array.
 	Tokens []Token `json:"tokens"`
+	// ProbeEpochs is the durable probe-epoch row set (deploy-pipeline §6 step 2):
+	// at most one row per host name, superseded by the host's next persist or its
+	// token mint and deleted silently at boot. Optional on read for the same
+	// reason as Tokens.
+	ProbeEpochs []ProbeEpoch `json:"probeEpochs"`
+	// ProbeEpochSeq is the durable per-host op-sequence high-water mark the probe
+	// epochs are minted from. It survives the rows' supersede and reap, so a
+	// sequence is never reused within a controller boot. Optional on read.
+	ProbeEpochSeq map[string]uint64 `json:"probeEpochSeq"`
+	// GuardEpoch is the fencing epoch the serving hub last admitted from its
+	// caller (§10). Optional on read: absent means no epoch was ever presented.
+	GuardEpoch *GuardEpoch `json:"guardEpoch"`
 	// WallClockHighWaterMark is the durable high-water wall clock (§3's rollback
 	// guard): the greatest wall-clock value any token pass has observed. It
 	// never moves backward, and the zero Time means no pass has observed a clock
@@ -532,6 +544,12 @@ type storeFile struct {
 	// Tokens is optional on read (see snapshot.Tokens): absent and null both
 	// decode to nil, which is "no token minted yet".
 	Tokens *[]tokenFile `json:"tokens"`
+	// ProbeEpochs is optional on read (see snapshot.ProbeEpochs).
+	ProbeEpochs *[]ProbeEpoch `json:"probeEpochs"`
+	// ProbeEpochSeq is optional on read (see snapshot.ProbeEpochSeq).
+	ProbeEpochSeq map[string]uint64 `json:"probeEpochSeq"`
+	// GuardEpoch is optional on read (see snapshot.GuardEpoch).
+	GuardEpoch *GuardEpoch `json:"guardEpoch"`
 	// WallClockHighWaterMark is optional on read: absent, null and the zero
 	// instant all mean no pass has observed a clock yet.
 	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
@@ -675,11 +693,22 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 		Records:                records,
 		Boundaries:             file.Boundaries,
 		Tokens:                 tokens,
+		ProbeEpochSeq:          file.ProbeEpochSeq,
+		GuardEpoch:             file.GuardEpoch,
 		// The mark is normalized like every stored timestamp: an offset form
 		// converts to UTC, and anything before the Unix epoch — including the
 		// year-one string a zero mark marshals to — reads as "no mark yet"
 		// (wallClockMark).
 		WallClockHighWaterMark: wallClockMark(file.WallClockHighWaterMark),
+	}
+	if file.ProbeEpochs != nil {
+		state.ProbeEpochs = make([]ProbeEpoch, len(*file.ProbeEpochs))
+		for i, row := range *file.ProbeEpochs {
+			// The row's creation timestamp is normalized like every other stored
+			// timestamp, so a hand-edited offset form never survives a rewrite.
+			row.CreatedAt = row.CreatedAt.UTC()
+			state.ProbeEpochs[i] = row
+		}
 	}
 	// Spec §8: "`createdAt`/`updatedAt` are stored UTC-normalized (`Z`-suffixed
 	// RFC3339; a stored offset form converts at write time)". Values this store
@@ -924,7 +953,7 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 // its keys are not this store's to judge.
 var ownedObjectKeys = map[string]map[string]struct{}{
 	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
-		"tokens", "wallClockHighWaterMark"),
+		"tokens", "probeEpochs", "probeEpochSeq", "guardEpoch", "wallClockHighWaterMark"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
 		"createdAt", "updatedAt", "hostRemoved", "sequence"),
@@ -935,6 +964,8 @@ var ownedObjectKeys = map[string]map[string]struct{}{
 		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
 		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
 		"freshnessBoundSec", "mintedAt", "expiresAt"),
+	"probeEpochs[]": keysOf("host", "bootId", "opSeq", "generation", "incarnationId", "createdAt"),
+	"guardEpoch":    keysOf("bootId", "opSeq"),
 }
 
 // keysOf builds one canonical key set.
@@ -1280,6 +1311,37 @@ func validateSnapshot(state snapshot) error {
 	if err := validateTokenRows(state.Tokens); err != nil {
 		return err
 	}
+	// Probe epochs and the guard epoch carry the same refuse-always rule: a row
+	// outside the schema a persist writes never enters the file, and the
+	// set-level rules (one probe row per host, a row's sequence at or below its
+	// host's counter) hold for hand-edited files too.
+	epochHosts := make(map[string]struct{}, len(state.ProbeEpochs))
+	for _, row := range state.ProbeEpochs {
+		if err := validateProbeEpoch(row); err != nil {
+			return err
+		}
+		if _, duplicate := epochHosts[row.Host]; duplicate {
+			return fmt.Errorf("%w: host %q carries more than one probe epoch", ErrInvalidRecord, row.Host)
+		}
+		epochHosts[row.Host] = struct{}{}
+		if seq := state.ProbeEpochSeq[row.Host]; row.OpSeq > seq {
+			return fmt.Errorf("%w: probe epoch for %q carries op sequence %d above its host's counter %d",
+				ErrInvalidRecord, row.Host, row.OpSeq, seq)
+		}
+	}
+	for host, seq := range state.ProbeEpochSeq {
+		if host == "" || !utf8.ValidString(host) {
+			return fmt.Errorf("%w: a probe-epoch sequence is keyed by an invalid host", ErrInvalidRecord)
+		}
+		if seq == 0 {
+			return fmt.Errorf("%w: host %q carries a zero probe-epoch sequence", ErrInvalidRecord, host)
+		}
+	}
+	if state.GuardEpoch != nil {
+		if err := validateGuardEpoch(*state.GuardEpoch); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1293,6 +1355,9 @@ func cloneSnapshot(state snapshot) snapshot {
 	}
 	out.Boundaries = maps.Clone(state.Boundaries)
 	out.Tokens = cloneTokens(state.Tokens)
+	out.ProbeEpochs = slices.Clone(state.ProbeEpochs)
+	out.ProbeEpochSeq = maps.Clone(state.ProbeEpochSeq)
+	out.GuardEpoch = cloneGuardEpoch(state.GuardEpoch)
 	return out
 }
 

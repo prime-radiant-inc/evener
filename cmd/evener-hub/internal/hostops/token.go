@@ -314,6 +314,12 @@ func (s *Store) mintToken(req MintRequest, quiescentSince *uint64) (Token, error
 	}
 	next.WallClockHighWaterMark = anchor
 	next.Tokens = append(dropTokenHost(next.Tokens, req.Host), row)
+	// §6 step 2: the eventual token mint supersedes the plan's probe epoch. The
+	// epoch authorized exactly one probe window; the mint's own row now carries
+	// the running state that window proved, so the epoch row is deleted in the
+	// same atomic write (the per-host op-sequence counter survives, so the next
+	// plan's epoch never reuses this one's sequence).
+	next.ProbeEpochs = dropProbeEpochHost(next.ProbeEpochs, req.Host)
 	landed, err := s.commitLocked(next)
 	if err != nil && !landed {
 		// Nothing was written: the refusal reports no token.

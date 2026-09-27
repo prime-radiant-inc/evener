@@ -84,7 +84,7 @@ func planTestProbe() hubcore.HostRuntimeProbe {
 // what a hub with no seam reports.
 type planSeams struct {
 	facts func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error)
-	probe func(ctx context.Context, host hostreg.Host, client *appwire.Client) (hubcore.HostRuntimeProbe, error)
+	probe func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error)
 	dirty func() bool
 }
 
@@ -109,7 +109,7 @@ func planTestManager(t *testing.T, configPath string, entries []hostreg.Host, se
 	}
 	probe := seams.probe
 	if probe == nil {
-		probe = func(context.Context, hostreg.Host, *appwire.Client) (hubcore.HostRuntimeProbe, error) {
+		probe = func(context.Context, hostreg.Host, *appwire.Client, appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
 			return planTestProbe(), nil
 		}
 	}
@@ -120,6 +120,9 @@ func planTestManager(t *testing.T, configPath string, entries []hostreg.Host, se
 		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) { return &appwire.Client{}, true },
 		RemoteHostPlanFacts:        facts,
 		RemoteHostPlanProbe:        probe,
+		// Every plan persists a durable probe epoch before probing, so the
+		// fixture hub needs the boot id the epoch is minted under.
+		HubBootID: "test-boot",
 	}
 	m := newHubHostManager(nil, nil, cfg, configPath, registry, nil)
 	if seams.dirty != nil {
@@ -183,9 +186,10 @@ func TestHostPlanMintsThroughTheRealServer(t *testing.T) {
 	cfg.RemoteHostPlanFacts = func(context.Context, hostreg.Host) (hubcore.HostPlanFacts, error) {
 		return facts, nil
 	}
-	cfg.RemoteHostPlanProbe = func(context.Context, hostreg.Host, *appwire.Client) (hubcore.HostRuntimeProbe, error) {
+	cfg.RemoteHostPlanProbe = func(context.Context, hostreg.Host, *appwire.Client, appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
 		return planTestProbe(), nil
 	}
+	cfg.HubBootID = "test-boot"
 	hub, web := newHubRPCTestServerWithWeb(t, cfg)
 	defer hub.Close()
 	if web.hostManage == nil {
@@ -317,7 +321,7 @@ func TestHostPlanNoTokenArms(t *testing.T) {
 		},
 		{
 			name: "a running probe that fails",
-			seams: planSeams{probe: func(context.Context, hostreg.Host, *appwire.Client) (hubcore.HostRuntimeProbe, error) {
+			seams: planSeams{probe: func(context.Context, hostreg.Host, *appwire.Client, appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
 				return hubcore.HostRuntimeProbe{}, errors.New("probe read timed out")
 			}},
 			reason:   appwire.HostPlanReasonProbeFailed,
@@ -325,7 +329,7 @@ func TestHostPlanNoTokenArms(t *testing.T) {
 		},
 		{
 			name: "a remote that predates the probe handler",
-			seams: planSeams{probe: func(context.Context, hostreg.Host, *appwire.Client) (hubcore.HostRuntimeProbe, error) {
+			seams: planSeams{probe: func(context.Context, hostreg.Host, *appwire.Client, appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
 				return hubcore.HostRuntimeProbe{}, fmt.Errorf("%w (running: method not found)", PlanHandlerAbsentError{})
 			}},
 			reason:   appwire.HostPlanReasonHandlerAbsent,
@@ -394,7 +398,7 @@ func TestHostPlanRestartFollows(t *testing.T) {
 				buildinfo.GitSHA, buildinfo.GitDirty = tc.stamp, ""
 				t.Cleanup(func() { buildinfo.GitSHA, buildinfo.GitDirty = previousSHA, previousDirty })
 			}
-			seams := planSeams{probe: func(context.Context, hostreg.Host, *appwire.Client) (hubcore.HostRuntimeProbe, error) {
+			seams := planSeams{probe: func(context.Context, hostreg.Host, *appwire.Client, appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
 				probe := planTestProbe()
 				probe.Version = tc.revision
 				probe.RunningHealthy = tc.healthy
@@ -767,5 +771,49 @@ func TestHostPlanRefusesADetachDuringThePlan(t *testing.T) {
 	}
 	if _, ok := store.OutstandingToken("m4"); ok {
 		t.Fatal("a plan whose host detached mid-flight stored a token")
+	}
+}
+
+// probeEpochStoreJSON is a store file carrying one probe-epoch row — a crash
+// between a plan's epoch persist and its mint — for the boot-reap test. It
+// repeats the row schema package hostops pins in its own tests because the boot
+// wiring is this package's; a schema change has to update both.
+func probeEpochStoreJSON() string {
+	return `{"version":1,"sequence":0,"allocatorHighWaterMark":0,"records":[],` +
+		`"boundaries":{},"tokens":[],` +
+		`"probeEpochs":[{"host":"m4","bootId":"boot-1","opSeq":3,"generation":7,` +
+		`"incarnationId":"inc-m4","createdAt":"2026-09-27T12:00:00Z"}],` +
+		`"probeEpochSeq":{"m4":3}}`
+}
+
+// TestOpenHostOpsStoreReapsProbeEpochs pins §7's boot disposition at the
+// wiring: an epoch-only row is deleted silently before the store is served,
+// and the per-host op sequence it advanced survives, so the next plan's epoch
+// never reuses the abandoned epoch's sequence.
+func TestOpenHostOpsStoreReapsProbeEpochs(t *testing.T) {
+	stateRoot := t.TempDir()
+	path := hostops.StorePath(stateRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(probeEpochStoreJSON()), 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	var logged strings.Builder
+	store := openHostOpsStore(stateRoot, &logged)
+	if store == nil {
+		t.Fatalf("openHostOpsStore returned no store: %s", logged.String())
+	}
+	if _, ok := store.ProbeEpoch("m4"); ok {
+		t.Fatal("the boot pass left a probe-epoch row behind")
+	}
+	next, err := store.PersistProbeEpoch(hostops.ProbeEpochRequest{
+		Host: "m4", BootID: "boot-2", Generation: 7, IncarnationID: "inc-m4",
+	})
+	if err != nil {
+		t.Fatalf("PersistProbeEpoch: %v", err)
+	}
+	if next.OpSeq <= 3 {
+		t.Fatalf("the next epoch's opSeq = %d, want above the reaped epoch's 3", next.OpSeq)
 	}
 }

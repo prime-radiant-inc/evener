@@ -179,7 +179,29 @@ type WebConfig struct {
 	// no-token `handler-absent` arm; any other error is `probe-failed`. Nil
 	// leaves the hub with no probe seam — the honest state until
 	// evener/host/running ships — so a plan refuses `handler-absent`.
-	RemoteHostPlanProbe func(ctx context.Context, host hostreg.Host, client *appwire.Client) (HostRuntimeProbe, error)
+	// epoch is the caller's durable probe epoch, presented on the wire (never a
+	// default, never absent).
+	RemoteHostPlanProbe func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (HostRuntimeProbe, error)
+	// HostProbeTimeout bounds one evener/host/running round trip in the plan's
+	// gated probe (deploy pipeline 08b §6 step 2: "deadline-bounded with an
+	// explicit owner-adjustable probe timeout"). Zero takes
+	// DefaultHostProbeTimeout.
+	HostProbeTimeout time.Duration
+	// HostMinFreeSpaceBytes is the owner-set minimum-free-space knob the
+	// serving hub's running-health predicate checks its durable state roots
+	// against (deploy pipeline 08b §10): below it the hub reports unhealthy
+	// without running the write probe. Zero takes DefaultHostMinFreeSpaceBytes.
+	HostMinFreeSpaceBytes int64
+	// HubBootID identifies this controller process incarnation for the durable
+	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2,
+	// crash-fencing spec §4). Empty disables probe-epoch persistence, and a plan
+	// refuses `probe-failed` rather than probing without a fencible epoch.
+	HubBootID string
+	// HubProcessStart is when this hub process started, reported as
+	// evener/host/running's processStartTime when non-zero (deploy pipeline 08b
+	// §10: "present exactly when the serving hub knows its own process start
+	// time"). The zero value leaves the field absent.
+	HubProcessStart time.Time
 
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)

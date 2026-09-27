@@ -3,6 +3,8 @@ package hub
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -51,7 +53,32 @@ var (
 	hubProcessArgs = func() []string { return os.Args }
 	hubHostname    = os.Hostname
 	hubRunMain     = runMain
+	// hubProcessStart is this hub process's own start instant, captured when
+	// the package initializes. It is what evener/host/running reports as its
+	// processStartTime (deploy pipeline 08b §10: "present exactly when the
+	// serving hub knows its own process start time"), and a restart's new
+	// instant is what makes the post-restart probe distinguish the replacement
+	// process.
+	hubProcessStart = time.Now()
+	// hubBootID identifies this controller process incarnation for the durable
+	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2;
+	// crash-fencing spec §4: "a worker's durable (controller boot id, per-host
+	// monotonic op sequence)"). It is drawn once per process, so a restart
+	// always presents a fresh boot id and never continues an old boot's
+	// sequence.
+	hubBootID = newHubBootID()
 )
+
+// newHubBootID draws this process's boot id: random hex, with a pid+nanotime
+// fallback for the (practically unreachable) entropy failure, so a boot id
+// always exists.
+func newHubBootID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("pid-%d-%d", os.Getpid(), time.Now().UnixNano())
+	}
+	return hex.EncodeToString(raw[:])
+}
 
 type hubHTTPServer interface {
 	ListenAndServe() error
@@ -521,6 +548,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// process so they die with the hub.
 	defer func() { _ = sshManager.Close() }()
 
+	// Boot-prune the state-root write probe's crash orphans: evener/host/running
+	// writes (and removes) one probe file per probe under every durable state
+	// root, so a crash between its rename and its remove leaves a prefix-named
+	// stray that only this pass removes.
+	for _, root := range runningStateRoots(hubStateRoot, stateDir) {
+		if pruned := pruneHostRunningProbeStrays(root); pruned > 0 {
+			_, _ = fmt.Fprintf(stderr, "[hub] pruned %d orphaned host-running probe file(s) under %s\n", pruned, root)
+		}
+	}
 	web := newWebServer(hubcore.WebConfig{
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
@@ -563,6 +599,14 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteHostSSHManager: sshManager,
 		RemoteHostConfigPath: opts.configPath,
 		RemoteHostOpsStore:   openHostOpsStore(hubStateRoot, stderr),
+		// This hub's own running identity and the two owner-adjustable
+		// deploy-pipeline knobs: the probe deadline the plan's gated probe
+		// uses, and the minimum free space evener/host/running's health
+		// predicate requires on each durable state root.
+		HubBootID:             hubBootID,
+		HubProcessStart:       hubProcessStart,
+		HostProbeTimeout:      cfg.HostProbeTimeout,
+		HostMinFreeSpaceBytes: cfg.HostMinFreeSpaceBytes,
 		RemoteHostClient: func(ctx context.Context, host string) (*appwire.Client, error) {
 			ch, err := sshManager.Ensure(ctx, host)
 			if err != nil {
@@ -780,6 +824,13 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // for a later pass to trust. A reap that cannot write is logged for the same
 // reason the mirror's failures are — the hub serves, and the next validate or
 // consume pass for a name reaps lazily anyway.
+//
+// The same boot pass deletes every probe-epoch row silently (§7: "an epoch-only
+// probe record ... boot deletes it silently, never transitions it to
+// interrupted, and never revives a token or a worker") and prunes the
+// state-root write probe's crash orphans: an epoch with no mint behind it is
+// inert, and a crashed probe's temp/target file is a stray nothing else will
+// remove.
 func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
 	store, err := hostops.Open(hostops.StorePath(stateRoot))
 	if err != nil {
@@ -790,6 +841,11 @@ func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its expired confirmation tokens were not reaped: %v\n", err)
 	} else if reaped > 0 {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d expired confirmation token(s)\n", reaped)
+	}
+	if reapedEpochs, err := store.ReapProbeEpochs(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its probe epochs were not reaped: %v\n", err)
+	} else if reapedEpochs > 0 {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d probe epoch(s)\n", reapedEpochs)
 	}
 	return store
 }

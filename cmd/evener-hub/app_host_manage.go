@@ -155,12 +155,33 @@ type hostManagerConfig struct {
 	// 2), given the client the handler resolved for the host's live channel. Nil
 	// refuses the no-token `handler-absent` arm — the honest state until
 	// evener/host/running ships and the gate slice wires the gated probe.
-	planProbe func(ctx context.Context, host hostreg.Host, client *appwire.Client) (hubcore.HostRuntimeProbe, error)
+	// epoch is the durable probe epoch the plan persisted first, presented on
+	// the wire (never a default, never absent).
+	planProbe func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error)
 	// planControllerDirty reports whether the running controller's build is
 	// unverifiable (built from a dirty tree), the §6 terminal `controller-dirty`
 	// arm's condition. Nil reads buildinfo, the same signal the deploy paths
 	// refuse on (sshconn's errControllerDirty).
 	planControllerDirty func() bool
+	// gate is THE per-host gate (deploy pipeline 08b §5): the one gate every
+	// holder of a host's work contends on. In production it is the sshconn
+	// Manager's own per-host lock, so `plan` try-acquires the very gate
+	// `Ensure`, the reconnect supervisor, add/update, and remove take. With no
+	// manager (tests, embedders) a standalone gate serves, so the handler still
+	// try-acquires rather than proceeding ungated.
+	gate hostops.Gate
+	// bootID identifies this controller process incarnation for the durable
+	// probe epochs `plan` persists (deploy pipeline 08b §6 step 2; crash-fencing
+	// spec §4). Empty refuses the probe: an epoch that cannot be bound to a boot
+	// is not a fencible epoch.
+	bootID string
+	// probeTimeout bounds one evener/host/running round trip in the plan's
+	// gated probe (§6 step 2's "explicit owner-adjustable probe timeout").
+	probeTimeout time.Duration
+	// running is the evener/host/running handler's config (§10): this hub's own
+	// build and process identity, the local restart-required predicate's roster,
+	// and the state roots the write probe checks.
+	running hostRunningConfig
 	// state retains per-host attach state from the manager's lifecycle
 	// events plus the last-known facts of the last attached render, so
 	// offline and in-progress rows keep the metadata the wire contract
@@ -974,6 +995,10 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		facts:            cfg.RemoteHostFacts,
 		planFacts:        cfg.RemoteHostPlanFacts,
 		planProbe:        cfg.RemoteHostPlanProbe,
+		gate:             hostGateFor(manager),
+		bootID:           strings.TrimSpace(cfg.HubBootID),
+		probeTimeout:     hostProbeTimeoutFor(cfg.HostProbeTimeout),
+		running:          newHostRunningConfig(cfg),
 		state:            newHostAttachState(),
 		mutating:         map[string]struct{}{},
 		logf:             logf,
@@ -1008,6 +1033,16 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 				return hubcore.HostPlanFacts{}, fmt.Errorf("the preflight answered for host %q, not %q", preflight.Host, host.Name)
 			}
 			return hostPlanFactsFromPreflight(host, preflight, time.Now().UTC()), nil
+		}
+	}
+	if m.cfg.planProbe == nil && manager != nil {
+		// The production gated probe (deploy pipeline 08b §6 step 2): the
+		// gate-aware primitive over sshManager.ChannelIfAttached, presenting the
+		// durable epoch the plan persisted and bounded by the owner-adjustable
+		// probe timeout. It inherits the already-held gate and never re-acquires
+		// it.
+		m.cfg.planProbe = func(ctx context.Context, host hostreg.Host, client *appwire.Client, epoch appwire.FencingEpoch) (hubcore.HostRuntimeProbe, error) {
+			return probeHostRunning(ctx, manager, host, client, epoch, m.cfg.probeTimeout)
 		}
 	}
 	// The file's records are read once, before anything else can mint: its
@@ -1324,6 +1359,10 @@ func registerHostManageHandlers(server *appserver.Server, sources *appsource.Reg
 	// mutation — it mints and persists the confirmation token — so it admits
 	// exactly like them and never through a second, weaker path.
 	m.registerOpsHandlers(server)
+	// evener/host/running is the one direction-scoped exception (app_host_running.go):
+	// every hub serves its own running state, and the handler admits only the
+	// attached controller session — never a browser-origin or forwarded request.
+	m.registerRunningHandler(server)
 	return m
 }
 

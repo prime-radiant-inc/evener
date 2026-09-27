@@ -87,6 +87,28 @@ func guardControllerLocalHosts(ctx context.Context) error {
 	return refuseRemoteOrigin(ctx, "manage this hub's hosts")
 }
 
+// guardAttachedProbeSession is the one direction-scoped exception to the
+// controller-local rule (deploy pipeline 08b §10): evener/host/running is
+// admitted only over the attached controller session, so the request must carry
+// the bridge origin the attach bridge stamps — the same cooperative marker the
+// other guards read — while a browser or local request (no origin) and any
+// other remote origin are refused. The probe is never forwarded onward to a
+// third hub; this hub's running state is not a forwarded resource.
+//
+// The refusal is typed `probe-failed` in family: the unavailable class, whose
+// message names the unauthenticated probe so the controller's plan reports it
+// as `probe-failed` rather than as a host that is down.
+func guardAttachedProbeSession(ctx context.Context) error {
+	switch origin := hostRoutingOrigin(ctx); origin {
+	case hostRoutingOriginBridge:
+		return nil
+	case "":
+		return appwire.Unavailable("evener/host/running: unauthenticated probe: this method is served only over an attached controller session, never to a browser or local request")
+	default:
+		return appwire.Unavailable(fmt.Sprintf("evener/host/running: unauthenticated probe: a request with origin %q is not the attached controller session this method serves", origin))
+	}
+}
+
 // guardRemoteSpawnSource refuses a remote-originated thread/start that would
 // resolve to any source but local, with the same typed InvalidParams the other
 // origin guards return (design §2 "Topology"; component 05, §"The receiving hub

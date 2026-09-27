@@ -93,6 +93,18 @@ const (
 	// (deploy pipeline 08b §11). It shares CodeConflict with genuine conflicts,
 	// so a client must match this discriminant and its Binding, never the code.
 	ErrorStaleEntry ErrorInfo = "stale-entry"
+	// ErrorHostBusyOperation marks a deploy-pipeline refusal because the host's
+	// per-host gate is held by a deploy/restart operation — including an
+	// Ensure-triggered deploy, which holds its own operation-store record
+	// (deploy pipeline 08b §5). The data names the controller-assigned record id
+	// the UI's open/wait-able reference resolves through; the UI shows
+	// open/wait, never a bare retry.
+	ErrorHostBusyOperation ErrorInfo = "host-busy-operation"
+	// ErrorHostBusyTransient marks the same busy class with no operation
+	// reference: `plan`'s validation-plus-mint window (and, where fencing ships,
+	// an open `orphan-unverified` fence's non-teardown refusals — crash-fencing
+	// spec §8). The UI retries with backoff and shows no open/wait affordance.
+	ErrorHostBusyTransient ErrorInfo = "host-busy-transient"
 )
 
 // StaleEntryBinding names which binding a stale-entry refusal fired on, exactly
@@ -129,6 +141,41 @@ func StaleEntry(binding StaleEntryBinding, message string) WireError {
 			ErrorData: ErrorData{EvenerErrorInfo: ErrorStaleEntry},
 			Binding:   binding,
 		},
+	}
+}
+
+// HostBusyOperationErrorData is the operation-held busy refusal's data: the
+// standard ErrorData plus the controller-assigned operation record id the
+// caller's open/wait-able reference resolves through (`operations`' detail
+// filter `id`). It is present exactly on the operation class.
+type HostBusyOperationErrorData struct {
+	ErrorData
+	OperationID string `json:"operationId"`
+}
+
+// HostBusyOperation is the refusal a deploy-pipeline path emits while a
+// deploy/restart operation holds the host's gate. operationID is the
+// controller-assigned record id; message is the hub's own prose, unchanged.
+func HostBusyOperation(operationID, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: HostBusyOperationErrorData{
+			ErrorData:   ErrorData{EvenerErrorInfo: ErrorHostBusyOperation},
+			OperationID: operationID,
+		},
+	}
+}
+
+// HostBusyTransient is the refusal a deploy-pipeline path emits while the
+// host's gate is held by a holder with no operation record — `plan`'s
+// validation-plus-mint window. It carries no operation reference, so a client
+// retries with backoff instead of offering open/wait.
+func HostBusyTransient(message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorHostBusyTransient},
 	}
 }
 

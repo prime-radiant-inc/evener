@@ -974,6 +974,11 @@ export interface FeatureSet {
   keybindingsSettings?: boolean;
 }
 
+export interface FencingEpoch {
+  bootId: string;
+  opSeq: number;
+}
+
 export interface GitHeadParams {
   cwd: string;
   /**
@@ -1171,6 +1176,16 @@ export interface HostRow {
   lastAttachError?: string;
   midAttach: boolean;
   removed: boolean;
+}
+
+export interface HostRunningParams {
+  fencingEpoch: FencingEpoch;
+}
+
+export interface HostRunningResponse {
+  buildRevision: string;
+  healthy: boolean;
+  processStartTime?: string;
 }
 
 export interface HostStatusParams {
@@ -3826,6 +3841,7 @@ export const METHOD_NAMES = [
   "evener/host/remove",
   "evener/host/update",
   "evener/host/plan",
+  "evener/host/running",
   "evener/host/pushCredentials",
   "evener/session/image",
 ] as const;
@@ -4042,6 +4058,7 @@ export interface MethodTypes {
   "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
   "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
   "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
+  "evener/host/running": { params: HostRunningParams; result: HostRunningResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
   "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };
 }
