@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -2265,5 +2266,35 @@ func TestHostManageRemoveRollbackKeepsTheLiveIdentity(t *testing.T) {
 	if len(stored) != 1 || stored[0].Generation != before.Generation ||
 		stored[0].IncarnationID != before.IncarnationID || stored[0].PresenceEpoch != before.PresenceEpoch {
 		t.Fatalf("store rows after the rollback = %+v, want the live triple %+v", stored, before)
+	}
+}
+
+// TestHostManageAddRefusalKeepsRetainedState pins roborev round 8's low
+// finding: Add reset the name's retained attach state before it stamped the
+// entry, so a stamp refusal — the generation counter at its maximum — rejected
+// the add but dropped the retained state anyway, and a refused mutation must
+// commit nothing. The sweep is now a detach, and every refusal path restores
+// it, so a refused add leaves the retained state exactly as it was.
+func TestHostManageAddRefusalKeepsRetainedState(t *testing.T) {
+	f := newUpdateFixture(t)
+	// Retained state for a name the fixture does not hold live: the facts of a
+	// row that once rendered attached.
+	f.m.cfg.state.recordKnown(appwire.HostRow{
+		Name: "fresh", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
+	}, hostFactsValidity{handshake: true}, 1)
+	// The generation counter at its maximum: the add's Stamp cannot mint an
+	// identity, so the add is refused before anything may change.
+	f.m.cfg.hosts.SeedHighWater(map[string]hostreg.HighWater{"exhausted": {Generation: math.MaxUint64}})
+	_, err := f.m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "fresh", Address: "fresh.example"},
+	})
+	if !errors.Is(err, hostreg.ErrCounterExhausted) {
+		t.Fatalf("Add at an exhausted generation counter = %v, want hostreg.ErrCounterExhausted", err)
+	}
+	// The refused add left the retained state exactly as it was.
+	row := appwire.HostRow{Name: "fresh"}
+	f.m.cfg.state.apply(&row, 1)
+	if row.ServerName != "remote-hub" || row.ServerVersion != "0.1.0" {
+		t.Fatalf("the refused add dropped the name's retained state: %+v", row)
 	}
 }

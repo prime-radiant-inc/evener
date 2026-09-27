@@ -882,6 +882,29 @@ func (s *hostAttachState) remove(name string) {
 	delete(s.records, name)
 }
 
+// detach sweeps name's record and hands it back, for a caller that must commit
+// nothing until its commit phases land: the record leaves the live map now (a
+// re-added name must not inherit it) and a refusal restores it, so a refused
+// add leaves the retained state exactly as it was.
+func (s *hostAttachState) detach(name string) *hostAttachRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.records[name]
+	delete(s.records, name)
+	return rec
+}
+
+// restore puts back the record detach handed out — or leaves the entry absent
+// when there was none.
+func (s *hostAttachState) restore(name string, rec *hostAttachRecord) {
+	if rec == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.records[name] = rec
+}
+
 // hubHostManager serves evener/host/add, evener/host/list,
 // evener/host/status, evener/host/remove, and evener/host/update: the host
 // registry surface. It owns no connections: list and status resolve through
@@ -1642,8 +1665,10 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// with the stale one. Before the insert no record
 	// for the new generation can exist — every attach path requires the live
 	// entry — so a reset placed here sweeps exactly the stale state the
-	// re-add must not inherit, and nothing else.
-	m.cfg.state.remove(entry.Name)
+	// re-add must not inherit, and nothing else. It hands the swept record
+	// back so a refusal below can put it back: a refused add commits nothing,
+	// the retained state included.
+	priorState := m.cfg.state.detach(entry.Name)
 	// Mint the identity before the durable write. Spec 08 §15 requires the write
 	// that first records the host to also record its identity — "minted fresh on
 	// every add/re-add in the same atomic hub.toml write that mints the
@@ -1653,6 +1678,7 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// which is what "monotone and never reused" means for them.
 	identity, err := m.cfg.hosts.Stamp(entry)
 	if err != nil {
+		m.cfg.state.restore(entry.Name, priorState)
 		m.cfg.mu.Unlock()
 		return appwire.HostRow{}, err
 	}
@@ -1668,6 +1694,7 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 		// pre-add contents (persistOrCompensate), so the refusal cannot stand
 		// as a pre-commit one and the next start cannot resurrect an add this
 		// call reports as failed.
+		m.cfg.state.restore(entry.Name, priorState)
 		m.cfg.mu.Unlock()
 		return appwire.HostRow{}, err
 	}
@@ -1679,6 +1706,7 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 		// an add this call reported as failed. The rollback still runs under
 		// the mutex: it is part of the commit, and a concurrent Add's own
 		// save must not interleave with restoring the file.
+		m.cfg.state.restore(entry.Name, priorState)
 		err = m.rollbackHubTOML(prev, unionHosts(prev, append([]hostreg.Host(nil), entry)), err)
 		m.cfg.mu.Unlock()
 		return appwire.HostRow{}, err
