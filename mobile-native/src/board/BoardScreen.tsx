@@ -48,8 +48,8 @@ import type { SeenMarkers } from "./boardMemory";
 import { bandHeaderText, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
-import { type HubSeenMarks, hubSeenMarks } from "./hubSeen";
-import { boardSeen, foldedSections, seenMarkers } from "./nativeBoardMemory";
+import { BoardSeen, type HubSeenMarks, hubSeenMarks } from "./hubSeen";
+import { foldedSections, seenMarkers } from "./nativeBoardMemory";
 import { PinnedSection, useCategoryFolds } from "./PinnedSections";
 import { PulseMeter } from "./PulseMeter";
 
@@ -87,7 +87,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const seenRevision = useSyncExternalStore(markers.subscribe, markers.getRevision);
 	const hubMarks = hubSeenMarks(hubId);
 	const hubSeenRevision = useSyncExternalStore(hubMarks.subscribe, hubMarks.getRevision);
-	const seen = useMemo(() => boardSeen(hubId), [hubId]);
+	const seen = useMemo(() => new BoardSeen(markers, hubMarks), [markers, hubMarks]);
 	const [now, setNow] = useState(Date.now);
 	const [draftRefs, setDraftRefs] = useState<Set<string>>(() => new Set());
 
