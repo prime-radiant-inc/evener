@@ -13,6 +13,8 @@ it.each([
 	[86_400_000, "1d"],
 	[2 * 86_400_000 + 5, "2d"],
 	[-5_000, "0s"],
+	[Number.NaN, "0s"],
+	[Number.POSITIVE_INFINITY, "0s"],
 ])("a duration of %i ms reads %s", (ms, text) => {
 	expect(compactDuration(ms)).toBe(text);
 });
