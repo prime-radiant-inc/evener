@@ -101,11 +101,16 @@ func (s *Session) announceFailClosed() {
 }
 
 // trackExecutionCancel lets failClosed interrupt the execution whose context
-// cancel is; the returned func stops tracking it.
+// cancel is; the returned func stops tracking it. The cleanup only clears
+// the pointer it stored, by compare-and-swap: two executions can overlap
+// (one finishing while a newer one starts), and an unconditional clear would
+// let the finishing one erase the newer one's cancel, leaving failClosed
+// with nothing to interrupt the run still in flight.
 func (s *Session) trackExecutionCancel(cancel context.CancelFunc) func() {
-	s.failedClosed.cancelExecution.Store(&cancel)
+	tracked := &cancel
+	s.failedClosed.cancelExecution.Store(tracked)
 	if s.failedClosedRefusal() != nil {
 		cancel() // failed closed before this execution was tracked
 	}
-	return func() { s.failedClosed.cancelExecution.Store(nil) }
+	return func() { s.failedClosed.cancelExecution.CompareAndSwap(tracked, nil) }
 }

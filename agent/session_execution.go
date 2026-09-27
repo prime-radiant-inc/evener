@@ -308,9 +308,24 @@ func (s *Session) recordNotice(notice schema.NoticeInfo) {
 // the refusal; a session with no transcript, or one nobody serves, announces
 // it as it always has.
 func (s *Session) deliverCommunicate(data events.CommunicateData) error {
+	// A session that already failed closed refuses immediately: its
+	// execution is being cancelled, but a tool call already in flight (this
+	// one) can still reach delivery before that lands, and it must not
+	// record or announce a message the session is refusing everything else
+	// for.
+	if refusal := s.failedClosedRefusal(); refusal != nil {
+		s.announceFailClosed()
+		return refusal
+	}
 	rec := s.recordTranscriptOnlyAt(schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}, transcript.PlaceSession)
-	// A closed writer is a session shutting down, not a writer failure.
-	if writer := s.attachedTranscript(); !rec.Recorded && writer != nil && !writer.Closed() {
+	if !rec.Recorded && s.servedByDaemon() {
+		// A closed writer is a session shutting down, not a writer failure:
+		// refuse so the model is not told an unrecorded message succeeded,
+		// but without the fail-closed diagnostic a genuine writer failure
+		// gets.
+		if writer := s.attachedTranscript(); writer != nil && writer.Closed() {
+			return errTranscriptClosed()
+		}
 		if refusal := s.failClosed(errors.New("a communicate message was not recorded")); refusal != nil {
 			s.announceFailClosed()
 			return refusal
