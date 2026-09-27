@@ -16,14 +16,6 @@ import { paletteFor, typeRoles } from "./design/tokens";
  * `palette.inset` (not `palette.surface`) and `accent` is `palette.accentInk`
  * (text and outlines, not a fill). `onAccent` is the text color for
  * `palette.accentFill`, not for `accent`. */
-/** The size multiplier for text that sets allowFontScaling off on iOS: the
- * Dynamic Type scale there, so size and line height grow together, and 1
- * elsewhere, where the platform scales the text itself. */
-export function useTextScale(): number {
-	const { fontScale } = useWindowDimensions();
-	return Platform.OS === "ios" ? fontScale : 1;
-}
-
 export function useColors() {
 	const palette = paletteFor(useColorScheme());
 	return {
@@ -38,6 +30,14 @@ export function useColors() {
 		onAccent: palette.onFill,
 		palette,
 	};
+}
+
+/** The size multiplier for text that sets allowFontScaling off on iOS: the
+ * Dynamic Type scale there, so size and line height grow together, and 1
+ * elsewhere, where the platform scales the text itself. */
+export function useTextScale(): number {
+	const { fontScale } = useWindowDimensions();
+	return Platform.OS === "ios" ? fontScale : 1;
 }
 
 export function Action({
@@ -147,7 +147,7 @@ export function Copy({
 	label?: string;
 	numberOfLines?: number;
 	ellipsizeMode?: TextProps["ellipsizeMode"];
-	variant?: "ui" | "yourMessage";
+	variant?: "ui" | "yourMessage" | "agentProse";
 	selectable?: boolean;
 }) {
 	const colors = useColors();
@@ -160,11 +160,11 @@ export function Copy({
 			numberOfLines={numberOfLines}
 			ellipsizeMode={ellipsizeMode}
 			style={
-				variant === "yourMessage"
+				variant !== "ui"
 					? {
-							fontFamily: typeRoles.yourMessage.fontFamily,
-							fontSize: typeRoles.yourMessage.fontSize * textScale,
-							lineHeight: typeRoles.yourMessage.lineHeight * textScale,
+							fontFamily: typeRoles[variant].fontFamily,
+							fontSize: typeRoles[variant].fontSize * textScale,
+							lineHeight: typeRoles[variant].lineHeight * textScale,
 							color: colors.palette.prose,
 						}
 					: {

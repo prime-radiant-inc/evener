@@ -1,6 +1,6 @@
 import type { ReactTestInstance } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
-import { render } from "../renderNative.testkit";
+import { render, textOf } from "../renderNative.testkit";
 import type { RunStep, TimelineRow } from "../timeline";
 import { RunRow } from "./RunRow";
 
@@ -42,10 +42,6 @@ const SUMMARY = "4 steps · read 1 file, ran go test (2 failed), searched once";
 
 function texts(root: ReactTestInstance) {
 	return root.findAll((node) => String(node.type) === "Text");
-}
-
-function textOf(node: ReactTestInstance): string {
-	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 }
 
 function header(root: ReactTestInstance) {

@@ -1,5 +1,5 @@
 import { scopedDisclosureId } from "@evener/appwire-client";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import {
 	type AccessibilityActionEvent,
 	ActionSheetIOS,
@@ -13,7 +13,6 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { copyText } from "./clipboard";
-import { typeRoles } from "./design/tokens";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
 import type { MobileTimelineItem } from "./projectedRows";
@@ -361,15 +360,20 @@ function AgentMessage({
 	quote?: (text: string) => void;
 }) {
 	const colors = useColors();
-	const scale = useTextScale();
 	const [selecting, setSelecting] = useState(false);
-	const menu: MenuItem[] = [
-		{ name: "copy", label: "Copy", run: () => void copyText(markdown) },
-		...(quote
-			? [{ name: "quote", label: "Quote in reply", run: () => quote(markdown) }]
-			: []),
-		{ name: "select", label: "Select text", run: () => setSelecting(true) },
-	];
+	// Memoized so an unchanged message hands MarkdownResponse the same props
+	// and its memo skips the render the list asks of every row on each publish.
+	const menu = useMemo<MenuItem[]>(
+		() => [
+			{ name: "copy", label: "Copy", run: () => void copyText(markdown) },
+			...(quote
+				? [{ name: "quote", label: "Quote in reply", run: () => quote(markdown) }]
+				: []),
+			{ name: "select", label: "Select text", run: () => setSelecting(true) },
+		],
+		[markdown, quote],
+	);
+	const accessibility = useMemo(() => menuAccessibility(menu), [menu]);
 	return (
 		<>
 			{/* The markdown view stays VoiceOver's element (it reads the
@@ -378,7 +382,7 @@ function AgentMessage({
 				<MarkdownResponse
 					markdown={markdown || "…"}
 					selectable={false}
-					{...menuAccessibility(menu)}
+					{...accessibility}
 				/>
 			</Pressable>
 			<Modal
@@ -399,18 +403,7 @@ function AgentMessage({
 						<Action onPress={() => setSelecting(false)}>Done</Action>
 					</View>
 					<ScrollView contentContainerStyle={{ padding: 16 }}>
-						<Text
-							selectable
-							allowFontScaling={Platform.OS !== "ios"}
-							style={{
-								fontFamily: typeRoles.agentProse.fontFamily,
-								fontSize: typeRoles.agentProse.fontSize * scale,
-								lineHeight: typeRoles.agentProse.lineHeight * scale,
-								color: colors.palette.prose,
-							}}
-						>
-							{markdown}
-						</Text>
+						<Copy variant="agentProse">{markdown}</Copy>
 					</ScrollView>
 				</SafeAreaView>
 			</Modal>

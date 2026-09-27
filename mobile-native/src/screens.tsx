@@ -1406,19 +1406,24 @@ export function ConversationScreen({
 		[presentation.items, conversation?.turns],
 	);
 	const liveRun = liveRunId(timelineRows, conversation?.activeTurnId);
-	function quote(text: string) {
-		const quoted = formatQuoteBlock(text);
-		if (quoted === "") return;
-		const merged = mergeDraftText(document.getSnapshot().record.draft, quoted);
-		document.edit(merged);
-		setComposerSelection({ start: merged.length, end: merged.length });
-		requestAnimationFrame(() => {
-			composerInput.current?.setNativeProps({
-				selection: { start: merged.length, end: merged.length },
+	// Stable across renders, so a settled agent message keeps its memoized
+	// markdown view (TimelineItem's AgentMessage) while the list re-renders.
+	const quote = useCallback(
+		(text: string) => {
+			const quoted = formatQuoteBlock(text);
+			if (quoted === "") return;
+			const merged = mergeDraftText(document.getSnapshot().record.draft, quoted);
+			document.edit(merged);
+			setComposerSelection({ start: merged.length, end: merged.length });
+			requestAnimationFrame(() => {
+				composerInput.current?.setNativeProps({
+					selection: { start: merged.length, end: merged.length },
+				});
+				composerInput.current?.focus();
 			});
-			composerInput.current?.focus();
-		});
-	}
+		},
+		[document],
+	);
 	useEffect(() => {
 		appliedReaderRestore.current = null;
 		readerRestoreAttempts.current.reset();

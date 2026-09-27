@@ -12,6 +12,7 @@ import { createElement, type ReactElement, type ReactNode } from "react";
 import {
 	act,
 	create,
+	type ReactTestInstance,
 	type ReactTestRenderer,
 	type ReactTestRendererJSON,
 } from "react-test-renderer";
@@ -237,4 +238,10 @@ export function renderedText(tree: ReactTestRenderer): string {
 	if (Array.isArray(json)) for (const node of json) visit(node);
 	else visit(json);
 	return chunks.join(" ");
+}
+
+/** The text one node reads as: its strings and its descendants', joined with
+ * nothing between them, the way nested Text elements run together on screen. */
+export function textOf(node: ReactTestInstance): string {
+	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
 }

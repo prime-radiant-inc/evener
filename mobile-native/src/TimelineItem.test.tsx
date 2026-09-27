@@ -21,7 +21,7 @@ import {
 } from "./projectedRows";
 import { TimelineItem } from "./TimelineItem";
 import { Platform } from "react-native";
-import { alertRequests, render, renderedText } from "./renderNative.testkit";
+import { alertRequests, render, renderedText, textOf } from "./renderNative.testkit";
 import type { TimelineRow } from "./timeline";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
@@ -145,10 +145,6 @@ beforeEach(() => {
 	native.announceForAccessibility.mockReset();
 	native.setStringAsync.mockClear();
 });
-
-function textOf(node: ReactTestInstance): string {
-	return node.children.map((child) => (typeof child === "string" ? child : textOf(child))).join("");
-}
 
 /** Long-presses the row's pressable and returns the menu it opened: its
  * options, and a way to pick one the way ActionSheetIOS calls back. */
@@ -354,6 +350,19 @@ describe("the agent's message", () => {
 		]);
 		accessibilityActionsOf(tree.root).run("Quote in reply");
 		expect(quote).toHaveBeenCalledWith("Done. **All** tests pass.\nNext: ship.");
+	});
+
+	// Every visible row re-renders on every publish, so a settled message must
+	// leave the markdown view's memo intact: an unchanged message renders it
+	// once, not once per streaming frame.
+	it("leaves the markdown view alone when the list re-renders an unchanged message", () => {
+		const quote = vi.fn();
+		const message = () => <TimelineItem item={reply()} hubId="hub" sessionRef="s" quote={quote} />;
+		const tree = render(message());
+		const before = tree.root.findByType("EnrichedMarkdownText" as never).props;
+		act(() => tree.update(message()));
+		const after = tree.root.findByType("EnrichedMarkdownText" as never).props;
+		expect(after).toBe(before);
 	});
 
 	it("says nothing about writing while it streams: the tray says it", () => {
