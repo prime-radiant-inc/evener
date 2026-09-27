@@ -644,7 +644,7 @@ git commit -m "feat(native): the rules native sheets follow: sizes, discarding, 
 **How a sheet route uses them** (Task 18.3's Tasks sheet is the first):
 - The route component calls `const sheet = useSheet({ dirty, discardTitle, onClosed })` and returns `<Sheet>` as its root, never wrapped in a view, because the layout needs the header and the body as the screen's two direct children (ruling 28).
 - Cancel is `onCancel={sheet.close}`, which asks first when dirty. A plain Done is `done={{ onPress: () => sheet.finish() }}`. A Send or Add does its work and then calls `sheet.finish()`, or keeps the sheet open with its error in the body.
-- A row that opens a screen calls `sheet.finish(() => { navigation.goBack(); navigation.navigate(...); })`. A sheet that returns to a session calls `sheet.finish(() => returnToSession(...))` (phase 4's Task 8), whose pop removes the sheet with the screens above the session.
+- A row that opens a screen calls `sheet.finish(() => { navigation.goBack(); navigation.navigate("Reader", params); })`, with the screen's own name and params. A sheet that returns to a session calls `sheet.finish(() => returnToSession(navigation, session))` (phase 4's Task 8), whose one pop removes the sheet with the screens above the session.
 - A sheet that needs its screen reads `useSheetHost(hosts, key, sheet)`, and renders nothing while it's undefined: `useSheetHost` finishes the sheet then.
 
 - [ ] **Step 1: Write the failing tests**
