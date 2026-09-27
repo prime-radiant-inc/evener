@@ -2417,15 +2417,7 @@ export function ConversationScreen({
 								<Pressable
 									accessibilityRole="button"
 									accessibilityLabel="Latest"
-									onPress={() => {
-										readerHeader.current = false;
-										readerAnchor.current = null;
-										readerLatest.current = true;
-										captureSuppressed.current = false;
-										(
-											timeline.current?.getScrollResponder() as ScrollView | null
-										)?.scrollToEnd({ animated: true });
-									}}
+									onPress={jumpToLive}
 									style={({ pressed }) => ({
 										minWidth: Platform.OS === "ios" ? 44 : 48,
 										minHeight: Platform.OS === "ios" ? 44 : 48,

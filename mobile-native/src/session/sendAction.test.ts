@@ -67,6 +67,7 @@ describe("what Send does (spec 8.5)", () => {
 		expect(sendAction(session("idle", { resumeRequired: true }), [], true)).toBe("none");
 		expect(sendAction(session("active", { capabilities: caps({ queue: false }) }), [], true)).toBe("none");
 		expect(sendAction(session("ended", { capabilities: caps({ send: false }) }), [], true)).toBe("none");
+		expect(sendAction(session("idle", { capabilities: caps({ send: false }) }), [], true)).toBe("none");
 	});
 });
 

@@ -29,7 +29,9 @@ export function sendAction(
 	});
 	if (availability.canQueue) return "queue";
 	const ended = ENDED.has(status);
-	if (availability.canSend || (ended && conversation.capabilities.send)) return ended ? "resume" : "send";
+	// Send offers only what the store's send() will take: it requires the
+	// hub's send capability whatever the status.
+	if (conversation.capabilities.send && (availability.canSend || ended)) return ended ? "resume" : "send";
 	return "none";
 }
 

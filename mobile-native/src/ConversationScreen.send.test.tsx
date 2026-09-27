@@ -6,7 +6,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import type { Thread } from "@evener/appwire-client";
+import type { AnyNotification, Thread } from "@evener/appwire-client";
 import { render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 
@@ -211,13 +211,18 @@ function thread(ref: string, status: "idle" | "active", question = false): Threa
 }
 
 /** The hub: it answers thread/read with `served` and acknowledges every
- * mutation, recording each request in order. It sends no status frames. */
+ * mutation, recording each request in order. It sends a frame only when a
+ * test calls notify(). */
 function hubClient(served: Thread) {
 	const requests: { method: string; params: Record<string, unknown> }[] = [];
+	const listeners = new Set<(notification: AnyNotification) => void>();
 	const client = {
 		state: "ready",
 		onStateChange: () => () => {},
-		onNotification: () => () => {},
+		onNotification: (listener: (notification: AnyNotification) => void) => {
+			listeners.add(listener);
+			return () => listeners.delete(listener);
+		},
 		request: async (method: string, params: Record<string, unknown>) => {
 			requests.push({ method, params });
 			if (method === "thread/read") return { thread: served };
@@ -242,6 +247,10 @@ function hubClient(served: Thread) {
 				.filter((request) => request.method.startsWith("turn/"))
 				.map((request) => request.method),
 		requests,
+		/** A frame the hub pushes to every live subscriber. */
+		notify(notification: AnyNotification) {
+			for (const listener of [...listeners]) listener(notification);
+		},
 	};
 }
 
@@ -361,4 +370,51 @@ it("gives Send a typed command's own label, so VoiceOver hears what it runs", as
 	await type(tree, "/steer now");
 	expect(pressable(tree, "Steer")).toBeDefined();
 	expect(hub.mutations()).toEqual([]);
+});
+
+it("does nothing when a Stop lands after the turn already ended", async () => {
+	const served = thread("ref-stale-stop", "active");
+	const { tree, hub } = await mount(served);
+	const stalePress = pressable(tree, "Stop")?.props.onPress as () => void;
+	expect(stalePress).toBeDefined();
+	act(() =>
+		hub.notify({
+			method: "thread/status/changed",
+			params: {
+				threadId: served.id,
+				ref: "ref-stale-stop",
+				status: { type: "idle" },
+			},
+		} as AnyNotification),
+	);
+	await settle();
+	// The frame reached the screen: the tray and its Stop are gone.
+	expect(pressable(tree, "Stop")).toBeUndefined();
+	const before = renderedText(tree);
+
+	act(() => stalePress());
+	await settle();
+
+	expect(hub.mutations()).toEqual([]);
+	expect(renderedText(tree)).not.toContain("Stopped");
+	// No error text of any kind: the screen reads exactly as it did.
+	expect(renderedText(tree)).toBe(before);
+});
+
+it("holds Stop while a queued message is handed to the outbox", async () => {
+	const { tree, hub } = await mount(thread("ref-stop-wait", "active"));
+	await type(tree, "later");
+	const queue = pressable(tree, "Queue message");
+	if (!queue) throw new Error("no Queue message");
+	act(() => {
+		queue.props.onPress();
+	});
+	expect(pressable(tree, "Stop")?.props.accessibilityState).toMatchObject({
+		disabled: true,
+	});
+	await settle();
+	expect(hub.mutations()).toEqual(["turn/queue"]);
+	expect(pressable(tree, "Stop")?.props.accessibilityState).toMatchObject({
+		disabled: false,
+	});
 });
