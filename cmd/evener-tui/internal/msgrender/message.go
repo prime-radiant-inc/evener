@@ -495,25 +495,41 @@ func historyToMessages(turns []schema.Turn) []transcript.ChatMessage {
 					tc := p.ToolCall
 					if tc.Name == "communicate" {
 						// Raw-arguments-aware display, mirroring the hub projection
-						// (agent/transcript_render.go writeResultToolMessage): a
-						// healed communicate (result is "ok") with malformed raw
-						// bytes is repaired to recover the message it delivered live;
-						// a rejected (result is "error") or pending (no result)
-						// communicate with malformed raw bytes renders the raw bytes
-						// the model actually sent rather than the replay-safe {}
-						// placeholder. Before this, the TUI parsed tc.Arguments (the
-						// repaired/placeholder form) and silently dropped rejected
-						// communicates whose raw bytes could not parse.
+						// (agent/transcript_render.go writeAssistantContent +
+						// writeResultToolMessage):
+						//   - A runtime failure (IsError, !PrevalOnly) executed and
+						//     returned an error; its raw bytes are not the delivered
+						//     message. Skip the render so the TUI matches the hub
+						//     (transcript_render.go:975-977).
+						//   - A healed communicate (result is "ok") with malformed raw
+						//     bytes is repaired to recover the message it delivered
+						//     live.
+						//   - A PrevalOnly-rejected or pending communicate with
+						//     malformed raw bytes (RawArguments != "") renders the raw
+						//     bytes the model actually sent. When RawArguments is
+						//     empty (valid JSON, no message key), emit nothing — the
+						//     replay-safe {} placeholder is not meaningful chat text.
+						//     This differs from the hub's writeResultToolMessage,
+						//     which emits {} as its raw fallback; the TUI suppresses
+						//     it because a communicate chat message showing literal {}
+						//     is worse than dropping it (the pre-PR behavior).
 						result, hasResult := toolResults[tc.ID]
+						// Runtime failure: skip entirely, matching the hub guard.
+						if hasResult && result.IsError && !result.PrevalOnly {
+							continue
+						}
 						healed := hasResult && !result.IsError
 						msg := extractCommunicate(tc)
 						if msg == "" && healed && tc.RawArguments != "" {
 							msg = healedCommunicateMessage(tc)
 						}
-						if msg == "" && (!healed || tc.RawArguments == "") {
-							// Rejected or pending communicate with no recoverable
-							// message: show the model's raw bytes (SentArguments),
-							// matching the hub's raw-arguments fallback. Bound the
+						if msg == "" && tc.RawArguments != "" {
+							// PrevalOnly-rejected or pending communicate with no
+							// recoverable message and malformed raw bytes: show the
+							// model's raw bytes (SentArguments), matching the hub's
+							// raw-arguments fallback. Gated on RawArguments != ""
+							// so the replay-safe {} placeholder (valid JSON, no
+							// message) is not emitted as chat text. Bound the
 							// fallback so a pathological one-line payload cannot
 							// dominate the chat view.
 							msg = oneLineTrunc(tc.SentArguments(), communicateRawFallbackMaxRunes)
@@ -611,6 +627,9 @@ func healedCommunicateMessage(tc *llm.ToolCallData) string {
 // not span the chat view) and truncates to at most limit runes, appending an
 // ellipsis when truncated. Mirrors the hub's oneLine+truncRunes bounding.
 func oneLineTrunc(s string, limit int) string {
+	// \r is stripped (not normalized to a space), matching the hub's oneLine
+	// (agent/transcript_render.go:1762-1764): ReplaceAll(\n, " ") then
+	// ReplaceAll(\r, ""). So "a\rb" -> "ab" and "a\r\nb" -> "a b".
 	s = strings.ReplaceAll(strings.ReplaceAll(s, "\n", " "), "\r", "")
 	r := []rune(s)
 	if len(r) <= limit {
@@ -627,8 +646,9 @@ func oneLineTrunc(s string, limit int) string {
 const toolCardRawFallbackMaxRunes = 120
 
 // parsesAsJSONObject reports whether s decodes as a JSON object. Returns
-// false for empty input, invalid JSON, and valid non-object JSON (arrays,
-// strings, numbers). Mirrors the hub's parseArgs returning nil on error, so
+// false for empty input, invalid JSON, null, and valid non-object JSON
+// (arrays, strings, numbers). Mirrors the hub's parseArgs returning nil on
+// error and for null (where Unmarshal succeeds with a nil map), so
 // RenderToolCall can detect the rejected-call raw-bytes shape without
 // changing toolArgsFromJSON (which the fuzz oracle requires to never return
 // nil).
@@ -637,5 +657,8 @@ func parsesAsJSONObject(s string) bool {
 		return false
 	}
 	var m map[string]any
-	return json.Unmarshal([]byte(s), &m) == nil
+	// json.Unmarshal([]byte("null"), &m) succeeds with m == nil, so a bare
+	// null is not a JSON object — require m != nil, mirroring the hub's
+	// parseArgs which returns nil for null.
+	return json.Unmarshal([]byte(s), &m) == nil && m != nil
 }

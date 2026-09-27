@@ -87,7 +87,22 @@ func TestHistoryToMessages_RejectedCommunicateShowsRawArguments(t *testing.T) {
 				{Kind: llm.ContentToolCall, ToolCall: tc},
 			},
 		}},
-		{Kind: schema.TurnToolResults, Message: llm.ToolResult("call-rej-comm", "arguments not valid JSON", true)},
+		// PrevalOnly rejection: the call was rejected before dispatch (bad
+		// args), so its raw bytes surface — matching the hub guard that skips
+		// only runtime failures (IsError && !PrevalOnly).
+		{Kind: schema.TurnToolResults, Message: llm.Message{
+			Role: llm.RoleTool,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{
+					ToolCallID: "call-rej-comm",
+					Name:       "communicate",
+					Content:    "arguments not valid JSON",
+					IsError:    true,
+					PrevalOnly: true,
+				},
+			}},
+		}},
 	}
 	msgs := historyToMessages(turns)
 
@@ -242,7 +257,20 @@ func TestHistoryToMessages_RejectedCommunicateBoundedRawFallback(t *testing.T) {
 				{Kind: llm.ContentToolCall, ToolCall: tc},
 			},
 		}},
-		{Kind: schema.TurnToolResults, Message: llm.ToolResult("call-bounded-raw-comm", "arguments not valid JSON", true)},
+		// PrevalOnly rejection so the raw fallback fires (runtime failures skip).
+		{Kind: schema.TurnToolResults, Message: llm.Message{
+			Role: llm.RoleTool,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{
+					ToolCallID: "call-bounded-raw-comm",
+					Name:       "communicate",
+					Content:    "arguments not valid JSON",
+					IsError:    true,
+					PrevalOnly: true,
+				},
+			}},
+		}},
 	}
 	msgs := historyToMessages(turns)
 
@@ -264,5 +292,131 @@ func TestHistoryToMessages_RejectedCommunicateBoundedRawFallback(t *testing.T) {
 	// + ellipsis), so the user sees the model's actual input.
 	if !strings.Contains(comm.Text, strings.Repeat("x", 280)) {
 		t.Errorf("expected the bounded raw fallback to contain a long prefix of the raw args, got:\n%s", comm.Text)
+	}
+}
+
+// TestHistoryToMessages_RuntimeFailedCommunicateRendersNothing mirrors the
+// hub pin TestRenderMarkdown_RuntimeFailedCommunicateRendersNothing: a
+// runtime failure (IsError=true, PrevalOnly=false) executed and returned an
+// error; its raw bytes are not the delivered message. The communicate must
+func TestHistoryToMessages_RuntimeFailedCommunicateRendersNothing(t *testing.T) {
+	t.Parallel()
+	const rawArgs = `{message: "oops", }` // malformed JSON
+	tc := &llm.ToolCallData{
+		ID:           "call-rt-fail-comm",
+		Name:         "communicate",
+		Arguments:    json.RawMessage(`{}`),
+		RawArguments: rawArgs,
+	}
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: tc},
+			},
+		}},
+		// Runtime failure: IsError=true, PrevalOnly=false — the tool executed
+		// and returned an error. Its raw bytes must NOT surface.
+		{Kind: schema.TurnToolResults, Message: llm.Message{
+			Role: llm.RoleTool,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{
+					ToolCallID: "call-rt-fail-comm",
+					Name:       "communicate",
+					Content:    "tool execution failed",
+					IsError:    true,
+					PrevalOnly: false,
+				},
+			}},
+		}},
+	}
+	msgs := historyToMessages(turns)
+
+	for i := range msgs {
+		if msgs[i].Kind == transcript.MsgCommunicate {
+			t.Errorf("runtime-failed communicate must render nothing, got MsgCommunicate Text %q", msgs[i].Text)
+		}
+	}
+}
+
+// TestHistoryToMessages_EmptyArgsCommunicateRendersNothing verifies that a
+// communicate with the replay-safe {} placeholder (Arguments={}, RawArguments="")
+// and no recoverable message renders NOTHING — not literal "{}" as chat text.
+// Before the raw-args migration the TUI dropped this; the migration must not
+// regress to emitting the placeholder. The hub's writeResultToolMessage emits
+// {} as its raw fallback, but the TUI suppresses it (see commit message).
+func TestHistoryToMessages_EmptyArgsCommunicateRendersNothing(t *testing.T) {
+	t.Parallel()
+	tc := &llm.ToolCallData{
+		ID:        "call-empty-comm",
+		Name:      "communicate",
+		Arguments: json.RawMessage(`{}`),
+		// RawArguments empty: valid JSON, no message key, no raw bytes.
+	}
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentToolCall, ToolCall: tc},
+			},
+		}},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResult("call-empty-comm", "ok", false)},
+	}
+	msgs := historyToMessages(turns)
+
+	for i := range msgs {
+		if msgs[i].Kind == transcript.MsgCommunicate {
+			t.Errorf("empty-args communicate must render nothing, got MsgCommunicate Text %q", msgs[i].Text)
+		}
+	}
+}
+
+// TestParsesAsJSONObject_NullAndArray verifies that null and valid non-object
+// JSON (arrays) are NOT classified as JSON objects, so the tool-card raw
+// fallback fires for them — matching the hub's parseArgs (returns nil for
+// null). A bare null decodes with a nil map, which must be treated as
+// non-object.
+func TestParsesAsJSONObject_NullAndArray(t *testing.T) {
+	t.Parallel()
+	if parsesAsJSONObject("null") {
+		t.Errorf("parsesAsJSONObject(\"null\") = true, want false (null is not an object)")
+	}
+	if parsesAsJSONObject(`["a","b"]`) {
+		t.Errorf(`parsesAsJSONObject(["a","b"]) = true, want false (array is not an object)`)
+	}
+	if parsesAsJSONObject(`{"key":"val"}`) {
+		// This is correct — a valid object IS an object. Just confirming
+		// the positive case still works after the null fix.
+	} else {
+		t.Errorf(`parsesAsJSONObject({"key":"val"}) = false, want true`)
+	}
+	if parsesAsJSONObject("") {
+		t.Errorf(`parsesAsJSONObject("") = true, want false`)
+	}
+	if parsesAsJSONObject("not json") {
+		t.Errorf(`parsesAsJSONObject("not json") = true, want false`)
+	}
+}
+
+// TestOneLineTrunc_CarriageReturnHandling verifies that \r is stripped (not
+// normalized to a space), matching the hub's oneLine
+// (agent/transcript_render.go:1762-1764): "a\rb" -> "ab", "a\r\nb" -> "a b".
+func TestOneLineTrunc_CarriageReturnHandling(t *testing.T) {
+	t.Parallel()
+	// \r alone is stripped: "a\rb" -> "ab".
+	got := oneLineTrunc("a\rb", 100)
+	if got != "ab" {
+		t.Errorf("oneLineTrunc(\"a\\rb\") = %q, want \"ab\"", got)
+	}
+	// \r\n: \n becomes space, \r is stripped: "a\r\nb" -> "a b".
+	got = oneLineTrunc("a\r\nb", 100)
+	if got != "a b" {
+		t.Errorf("oneLineTrunc(\"a\\r\\nb\") = %q, want \"a b\"", got)
+	}
+	// \n alone becomes space: "a\nb" -> "a b".
+	got = oneLineTrunc("a\nb", 100)
+	if got != "a b" {
+		t.Errorf("oneLineTrunc(\"a\\nb\") = %q, want \"a b\"", got)
 	}
 }
