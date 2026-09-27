@@ -836,6 +836,14 @@ export interface EvenerThread {
    * arrive as thread/vision-model/changed.
    */
   visionModel?: string;
+  /**
+   * LastTurnEndedAt is when the session's last turn ended, in Unix
+   * milliseconds (S4); absent before any turn has ended and from an older
+   * daemon. The hub compares it with its seen-through marker to tell a
+   * Finished session from an Idle one. Snapshot-only: no notification
+   * carries it.
+   */
+  lastTurnEndedAt?: number;
 }
 
 export interface EvenerToolInfo {
