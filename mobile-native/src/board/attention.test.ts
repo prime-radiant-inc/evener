@@ -285,7 +285,7 @@ describe("the working why line reads S5's activity (spec 7.1, 13.1)", () => {
 		const stuck = { ref: "s", minutes, runningSubagents: 0, quietForMs: STUCK_AFTER_MS };
 		expect(whyLine({ row: working, state: "working" }, stuck, 0)).toEqual({
 			text: "May be stuck · no updates for 10m",
-			tone: "attention",
+			stuck: true,
 		});
 	});
 

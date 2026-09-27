@@ -5,7 +5,7 @@ import type { ReactElement } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
-import { bandOf, type ClassifiedRow, type Hue, lastLine, stateWord, type Usual, whyLine } from "./attention";
+import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, whyLine } from "./attention";
 import { StateMark } from "./StateMark";
 
 export interface BoardRowProps {
@@ -99,9 +99,6 @@ export function FoldChevron({ folded }: { folded: boolean }): ReactElement {
 	);
 }
 
-/** The ink a why line's hue draws in. */
-const hueInk = (palette: Palette, hue?: Hue) => (hue === "danger" ? palette.dangerInk : palette.attentionInk);
-
 const UNITS: Record<string, string> = { m: "minute", h: "hour", d: "day" };
 
 /** relativeAge's "2m" as VoiceOver should say it: "2 minutes". */
@@ -161,7 +158,7 @@ export function BoardRow({
 					state={state}
 					moving={moving}
 					connected={connected}
-					stuck={why?.tone === "attention"}
+					stuck={why?.stuck}
 					perMinute={activity?.minutes}
 				/>
 			</View>
@@ -218,7 +215,7 @@ export function BoardRow({
 							marginTop: 2,
 							fontSize: 15 * scale,
 							lineHeight: 20 * scale,
-							color: why.word ? palette.inkHi : why.tone ? hueInk(palette, why.tone) : palette.inkMid,
+							color: why.word ? palette.inkHi : why.stuck ? palette.attentionInk : palette.inkMid,
 						}}
 					>
 						{why.word ? (
@@ -226,7 +223,7 @@ export function BoardRow({
 								<Text
 									style={{
 										fontWeight: "600",
-										color: hueInk(palette, why.hue),
+										color: why.hue === "danger" ? palette.dangerInk : palette.attentionInk,
 									}}
 								>
 									{why.word}

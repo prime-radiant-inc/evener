@@ -218,10 +218,10 @@ export type Hue = "danger" | "attention";
 export interface WhyLine {
 	word?: string;
 	hue?: Hue;
-	/** Colors the WHOLE text in this hue, unlike `hue`, which colors only
-	 * `word` while the rest of the line stays plain. Only "May be stuck" uses
-	 * this: there is no separate word and reason to split (spec 7.1). */
-	tone?: Hue;
+	/** The line reads "May be stuck" (spec 7.1, 13.1): the whole text draws in
+	 * the attention ink, since there is no word to color apart from the rest,
+	 * and the row's meter echoes it. */
+	stuck?: boolean;
 	text: string;
 }
 
@@ -263,7 +263,7 @@ function workingWhyLine(
 	if (activity.runningSubagents > 0) return { text: subagentsText(activity.runningSubagents) };
 	const quiet = quietState(activity, msSinceReadMs);
 	if (quiet?.state === "stuck")
-		return { text: `May be stuck · no updates for ${durationLabel(quiet.forMs)}`, tone: "attention" };
+		return { text: `May be stuck · no updates for ${durationLabel(quiet.forMs)}`, stuck: true };
 	if (quiet?.state === "quiet") return { text: `Quiet ${durationLabel(quiet.forMs)}` };
 	return { text: commandOrWorking(row) };
 }
