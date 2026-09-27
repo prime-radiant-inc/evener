@@ -136,11 +136,17 @@ func (m *hubHostManager) receiptArm(hit *hostReceiptHit, kind hostMutationKind) 
 	switch receipt.Outcome {
 	case hostReceiptOutcomeTeardownFailure:
 		row := hostReceiptRow(receipt, kind)
-		if remnant, ok := m.cfg.store.remnantByID(receipt.RemnantID); ok && remnant.open() {
-			row.OpenRemnantID = receipt.RemnantID
-			row.EscalationAgeSec = m.escalationAgeSec(remnant)
+		seam := seamForReceipt(receipt, kind)
+		if remnant, ok := m.cfg.store.remnantByID(receipt.RemnantID); ok {
+			if remnant.open() {
+				row.OpenRemnantID = receipt.RemnantID
+				row.EscalationAgeSec = m.escalationAgeSec(remnant)
+			}
+			if remnant.Seam != "" {
+				seam = remnant.Seam
+			}
 		}
-		return teardownCommittedArm(kind, receipt.Seam(), receipt.RemnantID, row)
+		return teardownCommittedArm(kind, seam, receipt.RemnantID, row)
 	case hostReceiptOutcomeCollisionDropped:
 		return m.collisionArm(receipt)
 	default:
@@ -185,17 +191,18 @@ func hostRowForReceiptRow(row HostMutationReceiptRow) appwire.HostRow {
 	}
 }
 
-// Seam is the failed rebind step a committed-with-teardown-failure receipt
-// records. It is derived rather than stored: the receipt's durable record set
-// (§6) names the outcome, the row, the pair, the remnant id, and the optional
-// attestation, and the seam is the one field the record does not carry.
-func (r HostMutationReceipt) Seam() string {
-	if r.RemnantID == "" {
-		return ""
+// seamForReceipt names the failed rebind step a replay reports. §6's receipt
+// record does not carry the seam — the durable remnant does — so the remnant is
+// the authority while it survives (the caller looks it up), and a receipt whose
+// remnant is gone derives the same name from the mutation kind the scoped key
+// pins: a removal's rebind step is "remove-host", every other mutation's is
+// "update-host". The value is never the generic placeholder a client could not
+// act on.
+func seamForReceipt(receipt HostMutationReceipt, kind hostMutationKind) string {
+	if kind == hostMutationRemove {
+		return "remove-host"
 	}
-	// The remnant record is the authority for the seam while it survives; a
-	// receipt whose remnant was cleared renders the generic rebind name.
-	return "teardown"
+	return "update-host"
 }
 
 // ---------------------------------------------------------------------------
@@ -375,11 +382,15 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	plan.Marker.Phase = hostStagedPhaseRuntimeSwapped
 	finalizeReceipt := receipt
 	finalizeReceipt.RemnantID = ""
-	if err := m.finalizeReceipt(plan, finalizeReceipt, "", nil); err != nil {
+	finalized, err := m.finalizeReceipt(plan, finalizeReceipt, "", nil)
+	if err != nil {
 		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
 	m.cfg.mu.Unlock()
+	if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
+		return m.collisionArm(finalized), nil
+	}
 	return committedArm(hostMutationAdd, m.hostRow(ctx, entry)), nil
 }
 
@@ -622,12 +633,16 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 		// because the record and its key must agree (§6).
 		remnant := newTeardownRemnant(hostRemnantKindUpdate, "update-host", before, receiptKey, m.nowTime())
 		receipt.Outcome = hostReceiptOutcomeTeardownFailure
-		if err := m.finalizeReceipt(plan, receipt, remnantID, &remnant); err != nil {
+		finalized, err := m.finalizeReceipt(plan, receipt, remnantID, &remnant)
+		if err != nil {
 			m.cfg.mu.Unlock()
 			return appwire.HostMutationResult{}, err
 		}
 		row := hostReceiptRow(receipt, hostMutationUpdate)
 		m.cfg.mu.Unlock()
+		if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
+			return m.collisionArm(finalized), nil
+		}
 		return teardownCommittedArm(hostMutationUpdate, "update-host", remnantID, row), nil
 	}
 	stored, ok := m.cfg.hosts.Get(name)
@@ -655,11 +670,15 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	// A clean finalize leaves no remnant record, so the receipt carries no
 	// remnantId (§6: the field is present exactly when a remnant exists).
 	clean.RemnantID = ""
-	if err := m.finalizeReceipt(plan, clean, "", nil); err != nil {
+	finalized, err := m.finalizeReceipt(plan, clean, "", nil)
+	if err != nil {
 		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
 	m.cfg.mu.Unlock()
+	if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
+		return m.collisionArm(finalized), nil
+	}
 	// The row's retained-state fold is fenced on the entry's generation, so the
 	// reread above is what makes the returned row the identity this call
 	// committed; it is built lock-free, like every other row (hostRow's lookups
@@ -837,8 +856,12 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 		remnant := newTeardownRemnant(hostRemnantKindRemove, "remove-host", host, receiptKey, m.nowTime())
 		receipt.Outcome = hostReceiptOutcomeTeardownFailure
 		receipt.Row = hostReceiptRowFor(host)
-		if err := m.finalizeReceipt(plan, receipt, remnantID, &remnant); err != nil {
+		finalized, err := m.finalizeReceipt(plan, receipt, remnantID, &remnant)
+		if err != nil {
 			return appwire.HostMutationResult{}, err
+		}
+		if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
+			return m.collisionArm(finalized), nil
 		}
 		row := hostReceiptRow(receipt, hostMutationRemove)
 		row.OpenRemnantID = remnantID
@@ -847,8 +870,12 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	}
 	clean := receipt
 	clean.RemnantID = ""
-	if err := m.finalizeReceipt(plan, clean, "", nil); err != nil {
+	finalized, err := m.finalizeReceipt(plan, clean, "", nil)
+	if err != nil {
 		return appwire.HostMutationResult{}, err
+	}
+	if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
+		return m.collisionArm(finalized), nil
 	}
 	m.dropHostDerivedState(host.Name)
 	return committedArm(hostMutationRemove, removedRow), nil

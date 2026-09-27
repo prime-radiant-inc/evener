@@ -290,6 +290,11 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	if records.droppedAttempts == nil {
 		records.droppedAttempts = map[string]struct{}{}
 	}
+	for key, receipt := range change.carryReceipts {
+		if _, carried := records.receipts[key]; !carried {
+			records.receipts[key] = receipt
+		}
+	}
 	if change.dropMarker != "" {
 		delete(records.stagedReceipts, change.dropMarker)
 		records.droppedStaged[change.dropMarker] = struct{}{}

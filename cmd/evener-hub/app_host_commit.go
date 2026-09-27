@@ -37,6 +37,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
@@ -273,27 +274,91 @@ func (m *hubHostManager) hubTOMLFileEntry(name string) (hostreg.Host, bool) {
 // post-rename re-read observed a foreign write, the file's bytes win, and the
 // receipt is the `collision-dropped` arm (spec §11) — never a `committed`
 // receipt for an entry the file does not carry.
-func (m *hubHostManager) finalizeReceipt(plan *hostCommitPlan, receipt HostMutationReceipt, remnantID string, remnant *HostTeardownRemnant) error {
+func (m *hubHostManager) finalizeReceipt(plan *hostCommitPlan, receipt HostMutationReceipt, remnantID string, remnant *HostTeardownRemnant) (HostMutationReceipt, error) {
 	collision, err := m.reconcileRenameCollision(plan)
 	if err != nil {
-		return err
+		return receipt, err
 	}
+	entries, known := plan.Entries, plan.Known
+	var carryReceipts map[string]HostMutationReceipt
 	if collision != nil {
+		// The file's bytes win (spec §11: "a hand edit the post-rename re-read
+		// observes is adopted (the file's bytes win, the receipt says
+		// `collision-dropped`)"). Writing plan.Entries here would put the staged
+		// set back over the winning foreign write, so the write carries the
+		// file's own set — and its records with it — and the receipt the caller
+		// returns is the dropped arm.
 		receipt = *collision
 		remnantID, remnant = "", nil
+		if adopted, ok := m.hubTOMLFileEntries(); ok {
+			entries = adopted
+		}
+		if fileCfg, ok := m.hostFileRecords(); ok {
+			carryReceipts = fileCfg.MutationReceipts
+		}
 	}
+	// The change is built from the FINAL receipt: the collision branch above may
+	// have replaced it, and the durable receipt the write carries must be the one
+	// the response renders.
 	change := hostPersistChange{
-		receipt:    &pendingHostReceipt{Key: plan.Key, Receipt: receipt},
-		dropMarker: plan.Name,
+		receipt:       &pendingHostReceipt{Key: plan.Key, Receipt: receipt},
+		dropMarker:    plan.Name,
+		carryReceipts: carryReceipts,
 	}
 	if remnant != nil {
 		change.remnant = &pendingHostRemnant{RemnantID: remnantID, Remnant: *remnant}
 	}
-	if err := m.persistHosts(plan.Entries, plan.Known, change); err != nil {
-		return err
+	if err := m.persistHosts(entries, known, change); err != nil {
+		return receipt, err
+	}
+	if collision != nil {
+		// The runtime converges to the adopted set: "the forward reconcile when
+		// the file changed across the rename (file-side adopt in a follow-up
+		// atomic write + runtime re-apply of the reconciled host set ...)".
+		// BOUNDARY (S13/S17): the re-apply reaches the registry and the store
+		// rows here; a manager-owned channel for a name the adopted set drops is
+		// the supervisor/teardown slices' to drain.
+		m.reconcileRuntimeToFileLocked(plan.Name)
 	}
 	plan.lastFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
-	return nil
+	return receipt, nil
+}
+
+// reconcileRuntimeToFileLocked re-applies the adopted file's entry for name to
+// the live registry and the store: the file's bytes won, so the live set must
+// describe them rather than the commit that lost the race. Callers hold the
+// mutation lock (the finalizing write runs under it), so it takes nothing.
+func (m *hubHostManager) reconcileRuntimeToFileLocked(name string) {
+	if strings.TrimSpace(m.cfg.configPath) == "" {
+		return
+	}
+	entry, present := m.hubTOMLFileEntry(name)
+	if !present {
+		m.cfg.store.remove(name)
+		if err := m.cfg.hosts.Remove(name); err != nil && !errors.Is(err, hostreg.ErrUnknownHost) {
+			m.logf("collision reconcile: host %q not dropped from the live set: %v", name, err)
+		}
+		m.dropHostDerivedState(name)
+		return
+	}
+	if current, ok := m.cfg.hosts.Get(name); ok && sameEffectiveHostEntry(current, entry) {
+		return
+	}
+	if err := m.cfg.hosts.Update(entry); err != nil {
+		m.logf("collision reconcile: host %q not re-applied to the live set: %v", name, err)
+		return
+	}
+	m.cfg.store.replace(entry)
+}
+
+// hubTOMLFileEntries reads the selected hub.toml and returns the live entry set
+// it carries, in file order — the set a collision write adopts.
+func (m *hubHostManager) hubTOMLFileEntries() ([]hostreg.Host, bool) {
+	cfg, ok := m.hostFileRecords()
+	if !ok {
+		return nil, false
+	}
+	return hostRegistryEntries(cfg), true
 }
 
 // reconcileRenameCollision is the post-rename re-read (spec §11: "the dropped
@@ -314,6 +379,30 @@ func (m *hubHostManager) reconcileRenameCollision(plan *hostCommitPlan) (*HostMu
 	if observed == plan.lastFingerprint {
 		return nil, nil
 	}
+	// The file moved, but a moved file is not by itself a lost race: another
+	// mutation of this hub may have committed a DIFFERENT name in the window
+	// (every write rewrites the whole document). What the dropped arm means is
+	// narrower, and it is what §11 says: "the re-read instead finds the name
+	// gone entirely" or carrying something other than the entry this commit
+	// staged — the authoritative result is the winning hub.toml live entry. So
+	// the check reads the name's own entry, not the document hash.
+	entry, present := m.hubTOMLFileEntry(plan.Name)
+	if present && sameEffectiveHostEntry(entry, plan.Entry) {
+		// The name still carries the entry this commit staged: the file moved
+		// because another mutation of this hub committed a different name in the
+		// window, which is not this commit losing a race.
+		return nil, nil
+	}
+	if plan.Kind == hostMutationRemove && !present {
+		// A removal's staged state IS the absence of the name, so an absent name
+		// is the commit's own outcome rather than a foreign deletion — and a
+		// concurrent mutation of a different name rewrote the document around
+		// it. Only a name present again (a foreign re-add) is a lost race here.
+		return nil, nil
+	}
+	// The name carries something other than the staged entry, or an add/update's
+	// staged entry is gone entirely — the hand-edit deletion, whose arm "carries
+	// no `host` and sets `removed: true`".
 	return m.collisionDroppedReceipt(plan, observed)
 }
 
@@ -331,15 +420,23 @@ func (m *hubHostManager) collisionDroppedReceipt(plan *hostCommitPlan, observed 
 	if !ok {
 		// The hand-edit deletion: the winning arm is the deletion, with the
 		// marker tombstone rows use and no tombstone minted, never a fabricated
-		// live row.
+		// live row. The record keeps the pair its scoped key pins (§6 pins the
+		// two together), so the deletion arm renders without a row and the
+		// record still validates.
 		receipt.Removed = true
 		receipt.Row = HostMutationReceiptRow{}
+		receipt.Generation = plan.Entry.Generation
+		receipt.IncarnationID = plan.Entry.IncarnationID
 		return &receipt, nil
 	}
 	receipt.Removed = false
 	receipt.Row = hostReceiptRowFor(winner)
-	receipt.Generation = winner.Generation
-	receipt.IncarnationID = winner.IncarnationID
+	// The record's pair is the one its scoped key pins (§6: the record and the
+	// key agree), so the winning row's own values stay in `row`, where a reader
+	// takes them from: a hand edit carries no persisted identity, and the pair
+	// the commit pinned is what the key and the record must keep.
+	receipt.Generation = plan.Entry.Generation
+	receipt.IncarnationID = plan.Entry.IncarnationID
 	return &receipt, nil
 }
 
@@ -372,6 +469,17 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 		// No file: nothing durable to carry a marker.
 		return nil, nil
 	}
+	// The host gate is taken BEFORE the claim. A claim's live claimant holds the
+	// gate for as long as its attempt is live, so a gate we can acquire proves
+	// any existing claim is dead and ours to adopt — and a gate we cannot
+	// acquire means someone owns the host, so the marker is theirs to finalize
+	// and this finder leaves it alone (spec §5: "A held gate means a live
+	// committer still owns the host").
+	releaseGate, gateErr := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderManager, Activity: "finalize-marker"})
+	if gateErr != nil {
+		return nil, nil
+	}
+	defer releaseGate()
 	m.cfg.mu.Lock()
 	if m.isMutating(name) {
 		// The commit that staged this marker is still in flight in this process
@@ -428,6 +536,16 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 
 	m.cfg.mu.Lock()
 	defer m.cfg.mu.Unlock()
+	// Verify the claim before finalizing: another path may have adopted the
+	// marker while this run was in flight (its token would differ), in which
+	// case this caller finalizes nothing and the adopter's write stands.
+	current, ok := m.cfg.store.stagedSnapshot()[name]
+	if !ok {
+		return nil, nil
+	}
+	if current.FinalizingToken != marker.FinalizingToken {
+		return nil, nil
+	}
 	receipt := marker.Provisional
 	receipt.RemnantID = remnantID
 	receipt.BootRecovered = bootRecovered

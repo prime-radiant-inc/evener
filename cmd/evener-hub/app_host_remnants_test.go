@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -605,5 +606,162 @@ started_at = "2026-09-27T12:00:00Z"
 				t.Fatalf("LoadConfig error = %q, want it to mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestHostMutationCollisionDroppedAdoptsTheHandEdit pins spec 08 §11's dropped
+// arm end to end: a hand edit that lands while a mutation is between its commit
+// and its finalizing write wins ("a hand edit the post-rename re-read observes
+// is adopted (the file's bytes win, the receipt says `collision-dropped`)"), the
+// response carries the staged entry that was dropped plus the winning
+// fingerprint, and a replay returns the same arm from the receipt.
+func TestHostMutationCollisionDroppedAdoptsTheHandEdit(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	// Park the edit after its commit, before its finalizing write.
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	m.testOnlyParkPostCommit = func(name string) {
+		if name != "side" {
+			return
+		}
+		once.Do(func() { close(parked) })
+		<-release
+	}
+	req := updateRequest(t, m, "side", appwire.HostEntry{Address: "staged.example"})
+	type outcome struct {
+		result appwire.HostMutationResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := m.UpdateResult(context.Background(), req)
+		done <- outcome{result: result, err: err}
+	}()
+	select {
+	case <-parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the edit never reached its post-commit window")
+	}
+	// The hand edit: the operator rewrites the entry the commit staged.
+	handEdited := []byte("[[hosts]]\nname = \"side\"\nssh = \"hand.example\"\n")
+	if err := os.WriteFile(configPath, handEdited, 0o600); err != nil {
+		t.Fatalf("hand-edit hub.toml: %v", err)
+	}
+	wantFingerprint := hubTOMLFingerprint(handEdited)
+	close(release)
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("Update = %v, want the collision-dropped arm", result.err)
+	}
+	arm := result.result.HostMutationCollisionDropped
+	if arm == nil {
+		t.Fatalf("Update = %+v, want the collision-dropped arm", result.result)
+	}
+	if arm.WinningFingerprint != wantFingerprint {
+		t.Fatalf("winningFingerprint = %q, want the hand edit's %q", arm.WinningFingerprint, wantFingerprint)
+	}
+	if arm.DroppedEntry.Name != "side" || arm.DroppedEntry.Address != "staged.example" {
+		t.Fatalf("droppedEntry = %+v, want the staged entry the reconcile dropped", arm.DroppedEntry)
+	}
+	if arm.Removed || arm.Host == nil || arm.Host.Address != "hand.example" {
+		t.Fatalf("arm = %+v, want the winning live row for the hand edit", arm)
+	}
+	// The file keeps the hand edit — the adopted bytes, never the staged entry.
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
+	}
+	if len(cfg.Hosts) != 1 || cfg.Hosts[0].SSH != "hand.example" {
+		t.Fatalf("hub.toml = %+v, want the hand edit to survive the finalizing write", cfg.Hosts)
+	}
+	// The runtime followed the file: the live row is the hand edit.
+	live, ok := m.cfg.hosts.Get("side")
+	if !ok || live.SSH != "hand.example" {
+		t.Fatalf("live entry = %+v (ok=%v), want the adopted hand edit", live, ok)
+	}
+	// The receipt says collision-dropped, and a replay returns the same arm.
+	var receipt HostMutationReceipt
+	found := false
+	for _, candidate := range cfg.MutationReceipts {
+		if candidate.Outcome == hostReceiptOutcomeCollisionDropped {
+			receipt, found = candidate, true
+		}
+	}
+	if !found {
+		t.Fatalf("stored receipts = %+v, want a collision-dropped record", cfg.MutationReceipts)
+	}
+	if receipt.WinningFingerprint != wantFingerprint || receipt.DroppedEntry == nil {
+		t.Fatalf("stored receipt = %+v, want the collision-dropped fields", receipt)
+	}
+	replay, err := m.UpdateResult(context.Background(), req)
+	if err != nil {
+		t.Fatalf("replay = %v", err)
+	}
+	if replay.HostMutationCollisionDropped == nil || replay.WinningFingerprint != wantFingerprint {
+		t.Fatalf("replay = %+v, want the recorded dropped arm", replay)
+	}
+}
+
+// TestHostMutationCollisionDroppedHandEditDeletion pins the arm's other half:
+// "when the re-read instead finds the name gone entirely (a hand-edit deletion)
+// the arm carries no `host` and sets `removed: true` — the winning arm is the
+// deletion, with the marker tombstone rows use and no tombstone minted". It is
+// an EDIT whose staged entry the hand edit deleted: the staged state of an edit
+// is the name's presence, so its absence is unambiguously a foreign deletion.
+func TestHostMutationCollisionDroppedHandEditDeletion(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	m.testOnlyParkPostCommit = func(name string) {
+		if name != "side" {
+			return
+		}
+		once.Do(func() { close(parked) })
+		<-release
+	}
+	req := updateRequest(t, m, "side", appwire.HostEntry{Address: "staged.example"})
+	done := make(chan appwire.HostMutationResult, 1)
+	go func() {
+		result, _ := m.UpdateResult(context.Background(), req)
+		done <- result
+	}()
+	select {
+	case <-parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the edit never reached its post-commit window")
+	}
+	// The hand edit deletes the name (and carries nothing else, so no tombstone
+	// is minted by the hub).
+	deleted := []byte("addr = \"127.0.0.1:9180\"\n")
+	if err := os.WriteFile(configPath, deleted, 0o600); err != nil {
+		t.Fatalf("hand-edit hub.toml: %v", err)
+	}
+	wantFingerprint := hubTOMLFingerprint(deleted)
+	close(release)
+	result := <-done
+	arm := result.HostMutationCollisionDropped
+	if arm == nil {
+		t.Fatalf("Update = %+v, want the collision-dropped arm", result)
+	}
+	if !arm.Removed || arm.Host != nil {
+		t.Fatalf("arm = %+v, want removed=true with no host", arm)
+	}
+	if arm.WinningFingerprint != wantFingerprint || arm.DroppedEntry.Name != "side" {
+		t.Fatalf("arm = %+v, want the deletion's fingerprint and the staged entry", arm)
+	}
+	if _, ok := m.cfg.hosts.Get("side"); ok {
+		t.Fatal("the deleted name is still live")
 	}
 }

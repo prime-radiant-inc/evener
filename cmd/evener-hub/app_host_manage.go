@@ -297,6 +297,11 @@ type hostPersistChange struct {
 	resolved      *pendingHostRemnant
 	attempt       *pendingHostAttempt
 	fencedAttempt *pendingHostAttempt
+	// carryReceipts are receipts this write carries beyond the store's own set
+	// and its own commit's: the collision write adopts the file's bytes when a
+	// foreign edit won the race, and must adopt that file's records with it
+	// rather than drop them as an owned name's superseded history.
+	carryReceipts map[string]HostMutationReceipt
 	// dropMarker names a host whose staged-receipt marker this write removes:
 	// the post-commit write that replaces the marker with the finalized receipt
 	// is a write that carries no marker for its host, and the derivation must

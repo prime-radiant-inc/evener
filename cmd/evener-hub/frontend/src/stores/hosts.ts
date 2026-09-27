@@ -1,4 +1,4 @@
-import type { AppwireClientLike, HostEntry, HostMutationResult, HostRow, RemovedRow } from "@evener/appwire-client";
+import type { AppwireClientLike, HostEntry, HostRow, MethodTypes, RemovedRow } from "@evener/appwire-client";
 import { errorText, WireError } from "@evener/appwire-client";
 import { create, useStore } from "zustand";
 import { connectedClientPort, connectionStore } from "./connection";
@@ -183,6 +183,16 @@ async function pairForMutation(name: string): Promise<HostMutationPair> {
   return reread;
 }
 
+/**
+ * The mutation-result union the registry's add/update/remove methods return
+ * (registry spec 08 §11). The generated client types each method's result as the
+ * union of its arm interfaces but publishes no alias for it, so the store names
+ * the union off the catalog every arm registration rides: the three methods
+ * share one registration, and naming the first of them keeps the alias in step
+ * with the generated schema instead of restating the arm list by hand.
+ */
+type HostMutationResult = MethodTypes["evener/host/add"]["result"];
+
 /** committedMutationRow narrows the mutation-result union to the row a
  * successful mutation committed. The union's other arms are NOT success and
  * must never read as one (registry spec 08 §11): a
@@ -194,34 +204,38 @@ async function pairForMutation(name: string): Promise<HostMutationPair> {
  * what happened, so the caller's failure path runs instead of its success path.
  * The retry/recover affordances themselves are slice 16's. */
 function committedMutationRow(result: HostMutationResult, method: string): HostRow {
-  switch (result.outcome) {
-    case "committed":
-      return result.host as HostRow;
-    case "committed-with-teardown-failure":
-      throw new Error(
-        `${method}: the mutation committed but its ${result.seam} teardown failed; the entry is committed and its repair handle is remnantId ${result.remnantId}`,
-      );
-    case "collision-dropped":
-      throw new Error(
-        `${method}: a concurrent hub.toml edit won the race, so nothing the caller asked for landed; re-read the host list`,
-      );
-    case "ambiguous":
-      throw new Error(
-        `${method}: the row already exists and this keyless retry cannot tell whether it committed it; re-read the host list`,
-      );
-    default:
-      throw new Error(`${method}: the response carries no arm this client knows`);
+  // The generated interfaces carry `outcome: string` rather than a literal
+  // union, so the arms are narrowed by the fields only one of them declares —
+  // the same discriminator the union's registration pins, read structurally.
+  if ("observedRow" in result) {
+    throw new Error(
+      `${method}: the row already exists and this keyless retry cannot tell whether it committed it; re-read the host list`,
+    );
   }
+  if ("droppedEntry" in result) {
+    throw new Error(
+      `${method}: a concurrent hub.toml edit won the race, so nothing the caller asked for landed; re-read the host list`,
+    );
+  }
+  if ("seam" in result) {
+    throw new Error(
+      `${method}: the mutation committed but its ${result.seam} teardown failed; the entry is committed and its repair handle is remnantId ${result.remnantId}`,
+    );
+  }
+  if (!("host" in result)) {
+    throw new Error(`${method}: the response carries no arm this client knows`);
+  }
+  return result.host as HostRow;
 }
 
 /** committedRemovedRow is committedMutationRow for `remove`, whose committed arm
  * carries the dedicated removed-row shape. */
 function committedRemovedRow(result: HostMutationResult, method: string): RemovedRow {
-  if (result.outcome === "committed") {
-    return result.host as RemovedRow;
-  }
   committedMutationRow(result, method);
-  throw new Error(`${method}: unreachable`);
+  if (!("host" in result)) {
+    throw new Error("evener/host/remove: the response carries no committed row");
+  }
+  return result.host as RemovedRow;
 }
 
 /** guardedMutation sends a guarded update/remove and implements the UI retry
