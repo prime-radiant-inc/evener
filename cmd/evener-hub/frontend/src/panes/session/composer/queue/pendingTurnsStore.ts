@@ -8,7 +8,6 @@ import {
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
   recoveryEntries,
-  replaceTargetRecords,
   wireMutationCommitFeed,
 } from "@evener/appwire-client/state/mutation";
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
@@ -88,12 +87,7 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // apply() re-decides the accepted targets right here, not at refresh()'s
   // resolution: a live commit's advance() for one of them can land in
   // between, and it must still out-rank this snapshot for that target.
-  const targets = accepted.apply();
-  pendingTurnsStore.setState((state) => ({
-    outbox: replaceTargetRecords(state.outbox, targets, snapshot.outbox),
-    optimistic: replaceTargetRecords(state.optimistic, targets, snapshot.optimistic),
-    recovery: replaceTargetRecords(state.recovery, targets, snapshot.recovery),
-  }));
+  pendingTurnsStore.projectSnapshot(accepted.apply(), snapshot);
   return true;
 }
 

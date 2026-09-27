@@ -2378,13 +2378,12 @@ test("a canceled own send no longer routes the next message to queue", async () 
   });
   await user.type(textarea(), "second");
   await user.click(submitButton());
-  await waitFor(async () => {
-    const records = await storage.listOutbox("ref_a");
-    const second = records.find(
-      (record) => (record.payload.input as { text?: string }[] | undefined)?.[0]?.text === "second",
-    );
-    expect(second?.method).toBe("turn/start");
-  });
+  // The route shows in what was sent: once the daemon's receipt reflects the
+  // send, the dispatcher settles its record out of the outbox.
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/start").map((call) => call.params)).toEqual([
+    expect.objectContaining({ input: [{ type: "text", text: "second" }] }),
+  ]);
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
 });
 

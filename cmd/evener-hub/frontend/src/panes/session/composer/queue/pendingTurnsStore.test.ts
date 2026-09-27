@@ -21,6 +21,7 @@ import {
   submitWithPendingTracking,
   updateRecoveryPendingTurn,
   useAwaitingFirstFrameSend,
+  useBlockedMutationEntries,
   usePendingTurnEntries,
   useRecoveryEntries,
 } from "./pendingTurnsStore";
@@ -661,6 +662,82 @@ test("recovery action wrappers refresh the durable projection", async () => {
   ]);
   expect(await storage.getRecovery(records[1]!.clientMutationId)).toBeUndefined();
   expect(await storage.getRecovery(records[2]!.clientMutationId)).toBeUndefined();
+});
+
+// A send the daemon rejected, as the durable recovery row a composer offers.
+async function enqueueRejectedSend(storage: MutationOutboxIndexedDB, text: string) {
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    composerText: text,
+  });
+  await storage.transferToRecovery(record.clientMutationId, "rejected");
+  return record;
+}
+
+// While its client is ready, the outbox rescans the shared storage every two
+// seconds for writes no announcement brought to this tab, and every scan
+// refreshes the projection. These two tests fake that interval, and nothing
+// else, so each runs one scan when it chooses.
+test("the outbox's interval scan re-renders nothing when the durable records have not changed", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const rejected = await enqueueRejectedSend(storage, "keep this draft");
+    await connect();
+    let renders = 0;
+    const rows = renderHook(() => {
+      renders += 1;
+      return { recovery: useRecoveryEntries("ref_a"), blocked: useBlockedMutationEntries("ref_a") };
+    });
+    await flushPendingTurnsProjectionForTests();
+    expect(rows.result.current.recovery).toEqual([
+      expect.objectContaining({ clientMutationId: rejected.clientMutationId }),
+    ]);
+    const rendersBeforeScan = renders;
+    const recoveryReads = vi.spyOn(storage, "listRecovery");
+
+    vi.advanceTimersByTime(2_000);
+    await flushPendingTurnsProjectionForTests();
+
+    expect(recoveryReads).toHaveBeenCalled();
+    expect(renders).toBe(rendersBeforeScan);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("the outbox's interval scan publishes a recovery edit another tab made", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const rejected = await enqueueRejectedSend(storage, "first draft");
+    await connect();
+    const recovery = renderHook(() => useRecoveryEntries("ref_a"));
+    await flushPendingTurnsProjectionForTests();
+    expect(recovery.result.current).toEqual([expect.objectContaining({ composerText: "first draft" })]);
+
+    // Another tab edits the row: the write lands in the shared storage, and
+    // nothing announces it to this one.
+    await storage.updateRecoveryInput(
+      rejected.clientMutationId,
+      [{ type: "text", text: "second draft" }],
+      undefined,
+      "second draft",
+    );
+    vi.advanceTimersByTime(2_000);
+    await flushPendingTurnsProjectionForTests();
+
+    expect(recovery.result.current).toEqual([expect.objectContaining({ composerText: "second draft" })]);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("a recovery resend publishes its handoff without waiting for recovery projection reads", async () => {
