@@ -22,8 +22,10 @@ func TestCountProse(t *testing.T) {
 		{"arrow in code", "Run `a -> b` now.", proseCounts{Words: 2}},
 		{"shouting", "NEVER push. Never mind NASA.", proseCounts{Words: 5, Shouting: 1}},
 		{"identifiers",
-			"Fixed #123 in Task 4 and F2 at 3f9a2c1 via job_034OOL8H87Mq in session 034OOL8H87MqrpJOhRqsGI.",
+			"Fixed #123 in Task 4 and F2 at 3f9a2c1 via job_034OOL8H87MqrpJOhRqsGI_a1B2c3D4e5F6 in session 034OOL8H87MqrpJOhRqsGI.",
 			proseCounts{Words: 14, OpaqueIDs: 6}},
+		{"delegate id", "Delegate dlg_02wMz5Txv2enqVTitaig6F reported back.", proseCounts{Words: 4, OpaqueIDs: 1}},
+		{"tool names", "Check job_status, then job_send_message and dlg_status.", proseCounts{Words: 6}},
 		{"not identifiers", "The decade deadbeef release 1.2.3 cost 1234567 dollars.", proseCounts{Words: 10}},
 		{"fenced code", "Done.\n```\nx -> y — #12\n```", proseCounts{Words: 1}},
 	} {

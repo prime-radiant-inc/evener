@@ -47,10 +47,10 @@ var (
 	arrowRe     = regexp.MustCompile(`→|⇒|->|=>`)
 	shoutingRe  = regexp.MustCompile(`\b(?:NEVER|ALWAYS|MUST|CRITICAL|IMPORTANT|NOT|ONLY)\b`)
 	opaqueIDRes = []*regexp.Regexp{
-		regexp.MustCompile(`#\d+\b`),                                     // issue and pull request numbers
-		regexp.MustCompile(`\b(?:Task|Step|Phase|Item|Finding)\s+\d+\b`), // numbered work items
-		regexp.MustCompile(`\b[A-Z]{1,2}\d{1,3}\b`),                      // short codes such as T3 or D23
-		regexp.MustCompile(`\b(?:job|dlg|watch)_[A-Za-z0-9_]{6,}\b`),     // evener job, delegate, and watch ids
+		regexp.MustCompile(`#\d+\b`),                                                                    // issue and pull request numbers
+		regexp.MustCompile(`\b(?:Task|Step|Phase|Item|Finding)\s+\d+\b`),                                // numbered work items
+		regexp.MustCompile(`\b[A-Z]{1,2}\d{1,3}\b`),                                                     // short codes such as T3 or D23
+		regexp.MustCompile(`\b(?:job_[0-9A-Za-z]{22}_[0-9A-Za-z]{12}|(?:dlg|watch)_[0-9A-Za-z]{22})\b`), // evener job, delegate, and watch ids
 	}
 	hexRe    = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
 	base62Re = regexp.MustCompile(`\b[0-9A-Za-z]{22}\b`)
