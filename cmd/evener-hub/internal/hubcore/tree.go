@@ -869,6 +869,18 @@ func liveWorkspaceIdentity(entry LiveEntry) (string, appwire.Ref, bool) {
 	return currentID, ref, true
 }
 
+// LiveRowRef is the ref a live root's Live row carries (liveRefMap in
+// buildTreeAtWithProjects): the workspace ref its daemon advertises when that
+// ref is valid for the daemon's own source, else the session's local ref. A
+// client joining per-session data to Board rows by ref, as it does with
+// evener/activity/read, needs this exact spelling.
+func LiveRowRef(entry LiveEntry) string {
+	if _, ref, ok := liveWorkspaceIdentity(entry); ok {
+		return ref.String()
+	}
+	return hubapi.LocalRef(entry.SessionID).String()
+}
+
 // supersededSessionIDs identifies persisted instance IDs that a live daemon
 // has replaced under a stable workspace ref. Keeping those stale metadata rows
 // in the navigation tree would render the same logical session twice.
