@@ -372,8 +372,9 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 
 /** While a Live read has failed on a ready connection, first page or later,
  * rebind the client after a backoff that grows with each failed attempt.
- * Nothing else would retry it: an idle fleet sends no invalidations, and
- * resuming re-reads only stale pages. Rebinding is the reconnect path: the
+ * Nothing else would retry it while the Board stays in view: an idle fleet
+ * sends no invalidations, and the controller retries failed reads only when
+ * it resumes, on a focus change. Rebinding is the reconnect path: the
  * loaded rows stay on screen until the fresh reads land, and the screen's
  * load-more pages Live back out. A read that lands, or a new connection,
  * starts the count over; with no client (disconnected or out of view) the

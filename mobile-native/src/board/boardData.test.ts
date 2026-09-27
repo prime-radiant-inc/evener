@@ -285,6 +285,10 @@ it("reads a Needs you page that failed again when the Board resumes", async () =
 	retry.resolve(response(retry.params, { sessions: sessions("ask-", 30, 50), remaining: 0 }));
 	await tick();
 	expect(board.getSnapshot().needsYou.rows).toHaveLength(80);
+	// The retried page is live again: the hub's next change is read.
+	invalidate(hub, 1, [{ kind: "section", section: "needs_you", revision: 2 }]);
+	await tick();
+	expect(requestsFor(hub, "needs_you")).toHaveLength(4);
 });
 
 it("reads Needs you until the hub has no more rows, past 200", async () => {

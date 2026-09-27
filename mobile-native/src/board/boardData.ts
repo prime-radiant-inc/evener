@@ -408,14 +408,18 @@ export function createBoardController(): BoardController {
 			if (!readers) return;
 			// Resuming retries every read that failed, since a failed read
 			// doesn't retry itself: a first read the pause dropped (or that
-			// failed) starts over, a later page that failed is read again, and
-			// a loaded page catches up on the re-reads it owes.
+			// failed) starts over, a loaded page catches up on the re-reads it
+			// owes, and a later page that failed is read again. A loaded page
+			// resumes first either way: more() doesn't lift the pause, and a
+			// page left paused would hold every later re-read.
 			for (const page of pages(readers)) {
 				const state = page.getSnapshot();
-				if (!state.loaded && !state.loading) void page.refresh();
-				else if (state.error && !state.stale && !state.loading && state.remaining > 0)
-					void page.more();
-				else page.resume();
+				if (!state.loaded && !state.loading) {
+					void page.refresh();
+					continue;
+				}
+				page.resume();
+				if (state.error && !state.stale && !state.loading && state.remaining > 0) void page.more();
 			}
 			readers.manifest.resume();
 			fillNeedsYou();
