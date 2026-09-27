@@ -399,19 +399,10 @@ func TestCovBuildDashboardRows(t *testing.T) {
 // coordinator's own idle state — only a top-level session's own state can
 // turn the row red. The subagent's failure still shows on its own row.
 func TestBuildDashboardRows_SubagentAttentionCappedAtActive(t *testing.T) {
-	threads := []appwire.Thread{
-		{
-			ID: "01COORD", SessionID: "01COORD", CWD: "/repo/evener", Source: "local",
-			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Evener: appwire.EvenerThread{Ref: "local:01COORD"},
-		},
-		{
-			ID: "01SUB", SessionID: "01SUB", CWD: "/repo/evener", Source: "local",
-			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError},
-			Evener: appwire.EvenerThread{Ref: "local:01SUB", Kind: "subagent", ParentRef: "local:01COORD"},
-		},
-	}
-	rows := buildDashboardRows(hubTreeFromThreads(threads))
+	rows := buildDashboardRows(hubTreeFromThreads([]appwire.Thread{
+		coordinatorThread("01COORD", appwire.ThreadStatusIdle),
+		subagentThread("01SUB", "01COORD", appwire.ThreadStatusSystemError),
+	}))
 	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "idle" {
 		t.Errorf("project row state = %q, want idle (the errored subagent must not turn the row red)", got)
 	}
@@ -421,19 +412,10 @@ func TestBuildDashboardRows_SubagentAttentionCappedAtActive(t *testing.T) {
 // above: a subagent that is genuinely working (not merely resting in an
 // attention state) does keep the project's row active.
 func TestBuildDashboardRows_ActiveSubagentKeepsProjectRowActive(t *testing.T) {
-	threads := []appwire.Thread{
-		{
-			ID: "01COORD2", SessionID: "01COORD2", CWD: "/repo/evener", Source: "local",
-			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Evener: appwire.EvenerThread{Ref: "local:01COORD2"},
-		},
-		{
-			ID: "01SUB2", SessionID: "01SUB2", CWD: "/repo/evener", Source: "local",
-			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
-			Evener: appwire.EvenerThread{Ref: "local:01SUB2", Kind: "subagent", ParentRef: "local:01COORD2"},
-		},
-	}
-	rows := buildDashboardRows(hubTreeFromThreads(threads))
+	rows := buildDashboardRows(hubTreeFromThreads([]appwire.Thread{
+		coordinatorThread("01COORD2", appwire.ThreadStatusIdle),
+		subagentThread("01SUB2", "01COORD2", appwire.ThreadStatusActive),
+	}))
 	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "active" {
 		t.Errorf("project row state = %q, want active (the subagent is genuinely working)", got)
 	}
@@ -443,14 +425,9 @@ func TestBuildDashboardRows_ActiveSubagentKeepsProjectRowActive(t *testing.T) {
 // top-level session's own state can turn a project row red — a coordinator
 // that is itself errored must still do so.
 func TestBuildDashboardRows_CoordinatorErrorStillRedProjectRow(t *testing.T) {
-	threads := []appwire.Thread{
-		{
-			ID: "01FAILEDCOORD", SessionID: "01FAILEDCOORD", CWD: "/repo/evener", Source: "local",
-			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError},
-			Evener: appwire.EvenerThread{Ref: "local:01FAILEDCOORD"},
-		},
-	}
-	rows := buildDashboardRows(hubTreeFromThreads(threads))
+	rows := buildDashboardRows(hubTreeFromThreads([]appwire.Thread{
+		coordinatorThread("01FAILEDCOORD", appwire.ThreadStatusSystemError),
+	}))
 	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "errored" {
 		t.Errorf("project row state = %q, want errored (the coordinator itself failed)", got)
 	}
@@ -465,19 +442,10 @@ func TestBuildDashboardRows_CoordinatorErrorStillRedProjectRow(t *testing.T) {
 // before its coordinator would seed the rollup with its own uncapped
 // attention state.
 func TestBuildDashboardRows_SubagentSeenBeforeCoordinatorStaysCapped(t *testing.T) {
-	threads := []appwire.Thread{
-		{
-			ID: "01SUB3", SessionID: "01SUB3", CWD: "/repo/evener", Source: "local",
-			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError},
-			Evener: appwire.EvenerThread{Ref: "local:01SUB3", Kind: "subagent", ParentRef: "local:01COORD3"},
-		},
-		{
-			ID: "01COORD3", SessionID: "01COORD3", CWD: "/repo/evener", Source: "local",
-			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-			Evener: appwire.EvenerThread{Ref: "local:01COORD3"},
-		},
-	}
-	rows := buildDashboardRows(hubTreeFromThreads(threads))
+	rows := buildDashboardRows(hubTreeFromThreads([]appwire.Thread{
+		subagentThread("01SUB3", "01COORD3", appwire.ThreadStatusSystemError),
+		coordinatorThread("01COORD3", appwire.ThreadStatusIdle),
+	}))
 	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "idle" {
 		t.Errorf("project row state = %q, want idle (the subagent arrived first on the wire but must still not seed an attention rollup)", got)
 	}
@@ -494,6 +462,24 @@ func dashboardProjectRowState(t *testing.T, rows []hubRow, title string) string 
 	}
 	t.Fatalf("no project row titled %q in %#v", title, rows)
 	return ""
+}
+
+// coordinatorThread is a top-level local session in the /repo/evener project.
+func coordinatorThread(id, status string) appwire.Thread {
+	return appwire.Thread{
+		ID: id, SessionID: id, CWD: "/repo/evener", Source: "local",
+		Status: appwire.ThreadStatus{Type: status},
+		Evener: appwire.EvenerThread{Ref: "local:" + id},
+	}
+}
+
+// subagentThread is a delegate of the local session parentID, in the same
+// /repo/evener project.
+func subagentThread(id, parentID, status string) appwire.Thread {
+	thread := coordinatorThread(id, status)
+	thread.Evener.Kind = "subagent"
+	thread.Evener.ParentRef = "local:" + parentID
+	return thread
 }
 
 // TestCovBuildProjectRows exercises project row building.
