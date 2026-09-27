@@ -1000,7 +1000,22 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
   // (§2.3, search.js:994-1013).
   return (
     <>
-      <StatusDot state={cadenceStateFor(item.result.state)} />
+      {/* SearchResult lives in package appwire (camelCase askPending /
+          approvalPending), unlike NavigationSessionSummary's snake_case, so
+          the fields are renamed here rather than spread. A result carries no
+          `kind`: search never surfaces a subagent as its own hit, so
+          "session" is always the right value for displayState's
+          subagent-only collapse rule to skip. */}
+      <StatusDot
+        state={cadenceStateFor(
+          displayState({
+            kind: "session",
+            state: item.result.state,
+            ask_pending: item.result.askPending,
+            approval_pending: item.result.approvalPending,
+          }),
+        )}
+      />
       <span className={CLASS.title}>
         <Highlighted parts={highlightParts(item.result.title, query)} />
       </span>

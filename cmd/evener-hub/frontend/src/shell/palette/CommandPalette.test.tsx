@@ -634,6 +634,35 @@ describe("remote search results", () => {
     expect(within(live as HTMLElement).getByText("frobnitz").tagName).toBe("MARK");
   });
 
+  // An approval blocks its turn mid-tool, so the result's wire state stays
+  // "active": the dot must read approval_pending, not the state alone, the
+  // same rule #2560 gave the rail's needs-you dot (#2567).
+  test("a live search result waiting on an approval shows a needs-you dot, not a working one", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    scriptSearch({
+      live: [
+        {
+          id: "local:a",
+          ref: "local:local:a",
+          title: "frobnitz worker",
+          project: "proj",
+          state: "active",
+          age: "now",
+          approvalPending: true,
+        },
+      ],
+      past: [],
+    });
+
+    render(<CommandPalette />);
+    act(() => openPalette());
+    await user.type(screen.getByRole("combobox"), "frobnitz");
+
+    await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
+    const live = screen.getAllByRole("option").find((o) => o.textContent?.includes("frobnitz worker"));
+    expect(within(live as HTMLElement).getByRole("img", { name: "Needs you" })).toBeTruthy();
+  });
+
   // Typed against the real SearchResult, not Record<string, unknown>: `ref` is
   // required now (see search.ts), and a fixture omitting it would be describing
   // a response the hub cannot produce.
