@@ -47,7 +47,6 @@ vi.mock("@react-navigation/native-stack", () => ({
 	createNativeStackNavigator: () => ({ Navigator: "Navigator", Screen: "Screen", Group: "Group" }),
 }));
 vi.mock("expo-status-bar", () => ({ StatusBar: "StatusBar" }));
-vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("expo-clipboard", () => ({
 	setStringAsync: vi.fn(async () => {}),
 	getStringAsync: vi.fn(async () => ""),
