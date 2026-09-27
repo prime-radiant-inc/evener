@@ -149,6 +149,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// Searching from the moment the field takes focus until Cancel.
 	const [searching, setSearching] = useState(false);
 	const [scope, setScope] = useState<SearchScope>("all");
+	const searchFieldHeight = searchFieldHeightAt(useTextScale());
+	const { height: windowHeight } = useWindowDimensions();
 	const recent = recentSearches(hubId);
 	const [recentList, setRecentList] = useState(() => recent.list());
 	const typeSearch = (text: string) => {
@@ -159,6 +161,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		typeSearch("");
 		setSearching(false);
 		searchInput.current?.blur?.();
+		// Tuck the field back out of view, where the Board keeps it.
+		scroller.current?.scrollTo?.({ y: searchFieldHeight, animated: true });
 	};
 	// The field sits above the Board, scrolled out of view, so Search brings
 	// it down (spec 7.4). A test renderer's host views have no instances.
@@ -167,7 +171,6 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		searchInput.current?.focus?.();
 	}, []);
 	useHeader(navigation, hubId, hubName, connected, revealSearch);
-	const searchFieldHeight = searchFieldHeightAt(useTextScale());
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
@@ -327,7 +330,10 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 				contentOffset={{ x: 0, y: searchFieldHeight }}
 				keyboardShouldPersistTaps="handled"
 				keyboardDismissMode="on-drag"
-				contentContainerStyle={{ paddingBottom: 24 }}
+				// iOS keeps that offset only while the content is taller than the
+				// viewport, so even a short Board (skeleton, empty, a few rows)
+				// is tall enough to keep the field hidden.
+				contentContainerStyle={{ paddingBottom: 24, minHeight: windowHeight + searchFieldHeight }}
 				onScroll={onScroll}
 				onLayout={(event) => {
 					viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };

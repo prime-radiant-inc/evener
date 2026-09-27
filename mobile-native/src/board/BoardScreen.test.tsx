@@ -577,6 +577,10 @@ it("puts the search field first in the Board's scroller, which starts scrolled j
 	const height = first.props.style.height;
 	expect(height).toBeGreaterThan(0);
 	expect(scroller.props.contentOffset).toEqual({ x: 0, y: height });
+	// iOS keeps that offset only while the content is taller than the
+	// viewport, so even a short Board is tall enough to hide the field (the
+	// window here is 844pt).
+	expect(scroller.props.contentContainerStyle.minHeight).toBeGreaterThanOrEqual(844 + height);
 	expect(searchField(tree).input().props).toMatchObject({ placeholder: "Search sessions", autoCapitalize: "none" });
 	// Cancel shows only while searching.
 	expect(hasCancel(tree)).toBe(false);
@@ -599,6 +603,14 @@ it("scrolls to the top and focuses the field when you tap Search", async () => {
 	act(() => search.onPress());
 	expect(scrollTo).toHaveBeenLastCalledWith({ y: 0, animated: true });
 	expect(focus).toHaveBeenCalledTimes(1);
+	// Cancelling tucks the field back out of view.
+	searchField(tree).focus();
+	const cancel = tree.root.find(
+		(node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel === "Cancel search",
+	);
+	act(() => cancel.props.onPress());
+	const height = tree.root.find((node) => node.props.testID === "search-field").props.style.height;
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: height, animated: true });
 	// Off iOS the header draws its own Search button.
 	const fallback = render(headerOptions(nav).headerRight());
 	act(() => fallback.root.findByType("Pressable" as never).props.onPress());
