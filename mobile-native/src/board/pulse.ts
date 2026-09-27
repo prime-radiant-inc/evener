@@ -16,29 +16,29 @@ export interface PulseBar {
 	opacity: number;
 }
 
-export function pulseBars(perMinute: readonly number[] = WORKING_WITHOUT_ACTIVITY): PulseBar[] {
+/** A session's per-minute counts as the meter's PULSE_BARS minutes: the
+ * newest minute last, a short history padded with zeros on the left, and
+ * only the newest PULSE_BARS minutes of a longer one. */
+function meterMinutes(perMinute: readonly number[]): number[] {
 	const recent = perMinute.slice(-PULSE_BARS);
-	const minutes = [...Array<number>(PULSE_BARS - recent.length).fill(0), ...recent];
-	return minutes.map((events, index) => ({
+	return [...Array<number>(PULSE_BARS - recent.length).fill(0), ...recent];
+}
+
+export function pulseBars(perMinute: readonly number[] = WORKING_WITHOUT_ACTIVITY): PulseBar[] {
+	return meterMinutes(perMinute).map((events, index) => ({
 		height: events <= 0 ? 0 : Math.min(1, Math.log2(1 + events) / Math.log2(1 + PULSE_FULL_SCALE)),
 		opacity: 0.35 + (0.65 * index) / (PULSE_BARS - 1),
 	}));
 }
 
 /** The fleet meter's bars (spec 7.1's "▂▅▇ 9 working"): every working
- * session's per-minute counts, summed bar by bar. Each session's own history
- * aligns the same way pulseBars aligns a single one - the newest minute
- * last, a short history padded with zeros on the left, only the newest
- * PULSE_BARS minutes of a longer one - so the fleet meter and a row's own
- * meter agree on what "this minute" means before pulseBars scales the sum
- * for drawing. */
+ * session's per-minute counts, summed bar by bar over the same minutes a
+ * row's own meter draws, so the two agree on what "this minute" means. */
 export function fleetMinutes(perSessionMinutes: readonly (readonly number[])[]): number[] {
 	const totals = new Array<number>(PULSE_BARS).fill(0);
 	for (const minutes of perSessionMinutes) {
-		const recent = minutes.slice(-PULSE_BARS);
-		const offset = PULSE_BARS - recent.length;
-		recent.forEach((events, index) => {
-			totals[offset + index] += events;
+		meterMinutes(minutes).forEach((events, index) => {
+			totals[index] += events;
 		});
 	}
 	return totals;
