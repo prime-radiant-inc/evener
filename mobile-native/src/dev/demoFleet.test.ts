@@ -230,6 +230,15 @@ describe("demo fleet catalogs and projects", () => {
 		expect(projects.find((project) => project.key === "home")).toMatchObject({ session_count: 0 });
 	});
 
+	it("names every host a project's sessions sit on, and none for a project on this hub alone", () => {
+		const catalog = read(fleet, params({ resource: "catalog", catalog: "projects", limit: 100 }));
+		const projects = catalog.projects as { key: string; sources?: string[] }[];
+		expect(projects.find((project) => project.key === "evener")?.sources).toEqual(["local", "paradise-park"]);
+		const deslop = projects.find((project) => project.key === "deslop");
+		expect(deslop).toBeDefined();
+		expect(deslop).not.toHaveProperty("sources");
+	});
+
 	it("puts the 271-session archived total on evener's archived_projects row", () => {
 		const catalog = read(fleet, params({ resource: "catalog", catalog: "archived_projects", limit: 100 }));
 		expect(catalog.projects).toEqual([expect.objectContaining({ key: "evener", session_count: 271 })]);

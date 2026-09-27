@@ -523,10 +523,20 @@ function projectSessionsRaw(projectKey: string): RawSession[] {
 	return SESSIONS.filter((raw) => underProjects(raw) && (raw.project ?? "evener") === projectKey);
 }
 
+// The hosts that own a project's sessions, in the hub's own shape
+// (NavigationProjectSummary.sources): "local" for this hub's sessions and a
+// host's name for its own, omitted when this hub owns every one.
+function projectSources(projectKey: string): string[] | undefined {
+	const owners = new Set(SESSIONS.filter((raw) => (raw.project ?? "evener") === projectKey).map((raw) => hostId(raw.host)));
+	if ([...owners].every((owner) => owner === "local")) return undefined;
+	return ["local", "paradise-park"].filter((owner) => owners.has(owner));
+}
+
 function projectSummary(key: string, sessionCount: number): NavigationProjectSummary {
 	const meta = PROJECT_META.find((project) => project.key === key);
 	if (!meta) throw new Error(`Unknown demonstration project: ${key}`);
-	return { key, name: key, working_dir: meta.workingDir, session_count: sessionCount };
+	const sources = projectSources(key);
+	return { key, name: key, working_dir: meta.workingDir, session_count: sessionCount, ...(sources ? { sources } : {}) };
 }
 
 export interface DemoFleetOptions {

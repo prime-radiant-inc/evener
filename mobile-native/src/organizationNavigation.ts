@@ -121,3 +121,16 @@ export async function readOrganizationNavigation(
 			matches && (operation.kind === "favorite" || checkpoint.receipt !== null),
 	};
 }
+
+// A project row this hub owns alone is the only one the source-less archive and
+// favorite requests the phone sends can address: a project decision keys on (source, project
+// ID), and an unqualified request is this hub's own decision, so a project whose
+// rows also live on a host (or only on a host) would keep that host's old
+// decision, which is exactly the merged-project gap. The web rail fans one
+// request per owning source out and keeps a durable recovery record for it; this
+// client has neither, so it withdraws the actions instead of half-applying them.
+// The wire spells this hub's own source "local" and omits the field entirely for
+// a controller-only project, which is what the summary reports here.
+export function controllerOwnedProject(sources?: readonly string[]): boolean {
+	return (sources ?? []).every((source) => source === "local");
+}

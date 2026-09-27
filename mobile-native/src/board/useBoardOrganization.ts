@@ -28,6 +28,9 @@ export interface BoardOrganization {
 	state: ReturnType<NavigationActions["getSnapshot"]> | null;
 	/** The journal can take a change now. */
 	ready: boolean;
+	/** Whether this binding still holds: the same connection, ready, with the
+	 * Board focused. A sheet or alert answered later checks again with it. */
+	isCurrent(): boolean;
 }
 
 export function useBoardOrganization(hubId: string): BoardOrganization {
@@ -92,5 +95,6 @@ export function useBoardOrganization(hubId: string): BoardOrganization {
 		actions: ready ? actions : null,
 		state: actionState,
 		ready: ready && organizationFree(actionState),
+		isCurrent,
 	};
 }

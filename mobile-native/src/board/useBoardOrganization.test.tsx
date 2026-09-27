@@ -96,3 +96,23 @@ it("keeps organization closed while a change it can't check here is unresolved",
 	expect(server.reads).toEqual([]);
 	hook.unmount();
 });
+
+it("stops counting a binding as current once the Board is covered or the connection drops", async () => {
+	const server = organizationHub();
+	harness.connection = { client: server.client, activeProfile: hub, state: "ready" };
+	const hook = renderHook(() => useBoardOrganization("hub-1"));
+	await act(async () => {});
+	const first = hook.result.current.isCurrent;
+	expect(first()).toBe(true);
+	harness.focused = false;
+	hook.rerender();
+	expect(first()).toBe(false);
+	expect(hook.result.current.isCurrent()).toBe(false);
+	harness.focused = true;
+	hook.rerender();
+	expect(hook.result.current.isCurrent()).toBe(true);
+	harness.connection = { client: server.client, activeProfile: hub, state: "reconnecting" };
+	hook.rerender();
+	expect(hook.result.current.isCurrent()).toBe(false);
+	hook.unmount();
+});
