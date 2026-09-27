@@ -1,7 +1,11 @@
-import { humanizeState, type NavigationSessionSummary } from "@evener/appwire-client";
+import {
+	humanizeState,
+	type NavigationPinSectionDescriptor,
+	type NavigationSessionSummary,
+} from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { type SFSymbol, SymbolView } from "expo-symbols";
+import { SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
 	ActionSheetIOS,
@@ -27,20 +31,26 @@ import { drafts } from "../nativeDrafts";
 import { RosterSearch } from "../rosterSearch";
 import type { Routes } from "../screens";
 import { Action, Copy, styles, useColors, useTextScale } from "../ui";
+import { usePinNavigation } from "../usePinNavigation";
 import {
+	approvalRefs,
 	type Band,
+	boardState,
 	type ClassifiedRow,
 	type LiveSummary,
 	liveBands,
 	liveSummary,
+	plural,
+	sectionLabel,
 	summaryText,
 	usualPlace,
 } from "./attention";
 import type { SeenMarkers } from "./boardMemory";
-import { BoardRow, TITLE_INSET } from "./BoardRow";
+import { BoardRows, type RowContext } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { foldedSections, seenMarkers } from "./nativeBoardMemory";
+import { PinnedSection, useCategoryFolds } from "./PinnedSections";
 import { PulseMeter } from "./PulseMeter";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
@@ -55,10 +65,6 @@ const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 	finished: "FINISHED",
 	working: "WORKING",
 };
-
-const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
-/** A section's VoiceOver label, shared by its chip and its row. */
-const sectionLabel = (name: string, count: number, noun: string) => `${name}, ${plural(count, noun)}`;
 
 /** Home (spec 7.1): every live session ordered by who needs you, then the
  * user's pinned categories, projects and archive. */
@@ -123,6 +129,14 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		return (hostId: string) => labels.get(hostId) ?? hostId;
 	}, [sources]);
 
+	const approvals = useMemo(() => approvalRefs(snapshot.needsYou.rows), [snapshot.needsYou.rows]);
+	const classify = (row: NavigationSessionSummary): ClassifiedRow => ({
+		row,
+		state: boardState(row, approvals.has(row.ref), markers.isSeen(row)),
+	});
+	const folds = useCategoryFolds(hubId);
+	const categoryMenu = useCategoryMenu(hubId, () => board.getSnapshot().pins.rows);
+
 	const [idleFolded, setIdleFolded] = useState(() => foldedSections(hubId).isFolded("idle", true));
 	const foldIdle = (folded: boolean) => {
 		foldedSections(hubId).setFolded("idle", folded);
@@ -178,7 +192,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	const manifest = snapshot.manifest;
 	const liveTotal = bands.needsYou.length + bands.finished.length + bands.working.length + bands.idle.length;
-	// Every category keeps its row; only the chips hide empty ones.
+	// Every category keeps its section; only the chips hide empty ones.
 	const pins = snapshot.pins.rows;
 	const projects = manifest?.catalogs.projects.count ?? 0;
 	const archived = manifest?.catalogs.archived_projects.count ?? 0;
@@ -200,7 +214,11 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			count: pin.count,
 			pinned: true,
 			label: sectionLabel(pin.name, pin.count, "session"),
-			onPress: () => scrollTo(`pin:${pin.id}`),
+			// A chip that landed on a folded header would show nothing.
+			onPress: () => {
+				folds.setFolded(pin.id, false);
+				scrollTo(`pin:${pin.id}`);
+			},
 		});
 	if (projects > 0)
 		chips.push({
@@ -219,23 +237,10 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			onPress: () => scrollTo("archived"),
 		});
 
-	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean) =>
-		items.map((item, index) => (
-			<View key={item.row.ref}>
-				{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
-				<BoardRow
-					item={item}
-					variant={variant}
-					moving={moving}
-					connected={connected}
-					usual={usual}
-					hostLabel={hostLabel}
-					hasDraft={draftRefs.has(item.row.ref)}
-					now={now}
-					onOpen={openSession}
-				/>
-			</View>
-		));
+	const rowContext: RowContext = { connected, usual, hostLabel, now, onOpen: openSession, draftRefs };
+	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean) => (
+		<BoardRows items={items} variant={variant} moving={moving} context={rowContext} />
+	);
 	const band = (key: Exclude<Band, "idle">, moving: boolean) =>
 		bands[key].length ? (
 			<View key={key} onLayout={measure(key)}>
@@ -300,16 +305,18 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 							{live}
 						</View>
 						{pins.map((pin) => (
-							<View key={pin.id} onLayout={measure(`pin:${pin.id}`)}>
-								<SectionRow
-									glyph="pin.fill"
-									text={`${pin.name} · ${pin.count}`}
-									label={sectionLabel(pin.name, pin.count, "session")}
-									onPress={() =>
-										navigation.navigate("PinnedSection", { hubId, sectionId: pin.id, title: pin.name })
-									}
-								/>
-							</View>
+							<PinnedSection
+								key={pin.id}
+								section={pin}
+								page={snapshot.pinSections[pin.id]}
+								classify={classify}
+								context={rowContext}
+								folded={folds.isFolded(pin.id)}
+								onToggle={() => folds.setFolded(pin.id, !folds.isFolded(pin.id))}
+								onMenu={categoryMenu.menuFor(pin)}
+								changing={categoryMenu.changing(pin.id)}
+								onLayout={measure(`pin:${pin.id}`)}
+							/>
 						))}
 						{projects > 0 ? (
 							<View onLayout={measure("projects")}>
@@ -335,6 +342,82 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			<BoardToolbar state={state} fatal={fatal} newSessionDisabled={!connected} onNewSession={newSession} />
 		</View>
 	);
+}
+
+/** Rename and Delete for the pinned categories (spec 7.1), through one
+ * organization journal for the whole Board. ⋯ shows only while a change can
+ * go out: connected, the journal confirmed against the hub, and no change
+ * pending or unresolved. The journal's own error text is never shown; a
+ * change on its way dims its category. */
+function useCategoryMenu(hubId: string, catalog: () => readonly NavigationPinSectionDescriptor[]) {
+	const pin = usePinNavigation(hubId);
+	const free = (action: { pending: boolean; uncertain: boolean; storageUnavailable: boolean } | null) =>
+		!!action && !action.pending && !action.uncertain && !action.storageUnavailable;
+	const canChange = pin.ready && pin.confirmed && !!pin.actions && free(pin.action);
+	// Checked again at every press: the connection or the journal may have
+	// moved while the sheet or an alert was up.
+	const canChangeNow = () => pin.isCurrent() && !!pin.actions && free(pin.actions.getSnapshot());
+	const listed = (sectionId: string) => catalog().some((section) => section.id === sectionId);
+	const rename = (section: NavigationPinSectionDescriptor) =>
+		Alert.prompt(
+			"Rename category",
+			undefined,
+			[
+				{ text: "Cancel", style: "cancel" },
+				{
+					text: "Rename",
+					onPress: (value?: string) => {
+						const name = (value ?? "").trim();
+						if (!name || name === section.name) return;
+						if (Array.from(name).length > 80) {
+							Alert.alert("Category names can be up to 80 characters.");
+							return;
+						}
+						if (!canChangeNow() || !listed(section.id)) return;
+						void pin.actions?.renamePinSection({ sectionId: section.id, name });
+					},
+				},
+			],
+			"plain-text",
+			section.name,
+		);
+	const remove = (section: NavigationPinSectionDescriptor) =>
+		Alert.alert(`Delete “${section.name}”?`, "Its sessions stay; they're only unpinned.", [
+			{ text: "Cancel", style: "cancel" },
+			{
+				text: "Delete",
+				style: "destructive",
+				onPress: () => {
+					if (!canChangeNow() || !listed(section.id)) return;
+					void pin.actions?.deletePinSection({ sectionId: section.id });
+				},
+			},
+		]);
+	const open = (section: NavigationPinSectionDescriptor) => {
+		if (!canChangeNow()) return;
+		if (Platform.OS === "ios") {
+			ActionSheetIOS.showActionSheetWithOptions(
+				{ title: section.name, options: ["Rename", "Delete", "Cancel"], destructiveButtonIndex: 1, cancelButtonIndex: 2 },
+				(index) => {
+					if (index === 0) rename(section);
+					else if (index === 1) remove(section);
+				},
+			);
+			return;
+		}
+		// Alert.prompt is iOS-only, so Rename stays off other platforms.
+		Alert.alert(section.name, undefined, [
+			{ text: "Delete", style: "destructive", onPress: () => remove(section) },
+			{ text: "Cancel", style: "cancel" },
+		]);
+	};
+	const operation = pin.action?.pending ? pin.action.recovery?.operation : undefined;
+	return {
+		menuFor: (section: NavigationPinSectionDescriptor) => (canChange ? () => open(section) : null),
+		changing: (sectionId: string) =>
+			(operation?.kind === "renamePinSection" || operation?.kind === "deletePinSection") &&
+			operation.params.sectionId === sectionId,
+	};
 }
 
 /** The drafts saved on this device for a hub's sessions, or none when the
@@ -509,11 +592,6 @@ function HubButton({
 			<SymbolView name="chevron.down" size={13 * scale} tintColor={palette.inkHi} />
 		</Pressable>
 	);
-}
-
-function Hairline({ inset = 0 }: { inset?: number }) {
-	const { palette } = useColors();
-	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
 }
 
 interface ChipProps {
@@ -732,9 +810,9 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 	);
 }
 
-/** A section after Live that opens its own screen until PR 3 brings it
- * inline. */
-function SectionRow({ glyph, text, label, onPress }: { glyph?: SFSymbol; text: string; label: string; onPress: () => void }) {
+/** Projects or Archived, after the pinned categories: a row that opens its
+ * own screen until PR 3b brings it inline. */
+function SectionRow({ text, label, onPress }: { text: string; label: string; onPress: () => void }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
@@ -753,7 +831,6 @@ function SectionRow({ glyph, text, label, onPress }: { glyph?: SFSymbol; text: s
 				backgroundColor: pressed ? palette.pressed : palette.page,
 			})}
 		>
-			{glyph ? <SymbolView name={glyph} size={13 * scale} tintColor={palette.inkLow} /> : null}
 			<Text allowFontScaling={Platform.OS !== "ios"} style={{ flex: 1, fontSize: 17 * scale, color: palette.inkHi }}>
 				{text}
 			</Text>

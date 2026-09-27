@@ -176,6 +176,10 @@ export function liveSummary(bands: LiveBands): LiveSummary | null {
 	return Object.values(counts).filter((count) => count > 0).length >= 2 ? counts : null;
 }
 
+export const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+/** A section's VoiceOver label, shared by its chip and its header. */
+export const sectionLabel = (name: string, count: number, noun: string) => `${name}, ${plural(count, noun)}`;
+
 export function summaryText(band: Band, count: number): string {
 	if (band === "needsYou") return `${count} ${count === 1 ? "needs you" : "need you"}`;
 	return `${count} ${band}`;

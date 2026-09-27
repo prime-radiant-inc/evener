@@ -22,13 +22,16 @@ export interface BoardSnapshot {
 	live: Page<NavigationSessionSummary>;
 	needsYou: Page<NavigationSessionSummary>;
 	pins: Page<NavigationPinSectionDescriptor>;
+	/** Each category's sessions, keyed by section id in the catalog's order:
+	 * one entry for every category the catalog shown lists. */
+	pinSections: Record<string, Page<NavigationSessionSummary>>;
 	/** True from the first time Live loaded for this hub, and never false again. */
 	loaded: boolean;
 	/** True while the rows shown were read over an earlier connection and the
 	 * current one hasn't replaced them yet. */
 	retained: boolean;
-	/** True while any of the Board's reads (Live, Needs you, the pin catalog
-	 * or the manifest) is out. */
+	/** True while any of the Board's reads (Live, Needs you, the pin catalog,
+	 * a category or the manifest) is out. */
 	reading: boolean;
 	error: string | null;
 }
@@ -190,11 +193,19 @@ class ManifestReader {
 	}
 }
 
+/** One category's sessions, and what stops following them. */
+interface CategoryReader {
+	pages: NavigationPages<NavigationSessionSummary>;
+	stop: Array<() => void>;
+}
 interface Readers {
 	live: NavigationPages<NavigationSessionSummary>;
 	needsYou: NavigationPages<NavigationSessionSummary>;
 	pins: NavigationPages<NavigationPinSectionDescriptor>;
 	manifest: ManifestReader;
+	/** One reader per category the catalog shown lists, keyed by id. */
+	categories: Map<string, CategoryReader>;
+	client: ConversationClientLike;
 	stop: Array<() => void>;
 }
 /** What the Board showed when its last connection went away, per reader,
@@ -203,12 +214,14 @@ interface Retained {
 	live: Page<NavigationSessionSummary> | null;
 	needsYou: Page<NavigationSessionSummary> | null;
 	pins: Page<NavigationPinSectionDescriptor> | null;
+	categories: Record<string, Page<NavigationSessionSummary>>;
 	manifest: NavigationManifest | null;
 }
 const nothingRetained: Retained = {
 	live: null,
 	needsYou: null,
 	pins: null,
+	categories: {},
 	manifest: null,
 };
 const emptyPage = {
@@ -222,6 +235,8 @@ const emptyPage = {
 };
 const sessionKey = (row: NavigationSessionSummary) => row.ref;
 const pinSectionKey = (row: NavigationPinSectionDescriptor) => row.id;
+const categoryPagesOf = (bound: Readers) =>
+	[...bound.categories.values()].map((category) => category.pages);
 
 /** A page worth keeping across a reconnect: one that loaded. Its read died
  * with the connection, so it no longer says it is loading. */
@@ -250,32 +265,50 @@ export function createBoardController(): BoardController {
 	let paused = false;
 	let disposed = false;
 
-	const build = (): BoardSnapshot => ({
-		manifest: readers?.manifest.state.loaded
-			? readers.manifest.state.manifest
-			: retained.manifest,
-		live: shown(readers?.live, retained.live),
-		needsYou: shown(readers?.needsYou, retained.needsYou),
-		pins: shown(readers?.pins, retained.pins),
-		loaded,
-		retained:
-			retained.live !== null ||
-			retained.needsYou !== null ||
-			retained.pins !== null ||
-			retained.manifest !== null,
-		reading: readers
-			? readers.live.getSnapshot().loading ||
-				readers.needsYou.getSnapshot().loading ||
-				readers.pins.getSnapshot().loading ||
-				readers.manifest.state.loading
-			: false,
-		error: readers
-			? (readers.live.getSnapshot().error ??
-				readers.needsYou.getSnapshot().error ??
-				readers.pins.getSnapshot().error ??
-				readers.manifest.state.error)
-			: null,
-	});
+	const build = (): BoardSnapshot => {
+		const pins = shown(readers?.pins, retained.pins);
+		const categoryPages = readers ? categoryPagesOf(readers) : [];
+		return {
+			manifest: readers?.manifest.state.loaded
+				? readers.manifest.state.manifest
+				: retained.manifest,
+			live: shown(readers?.live, retained.live),
+			needsYou: shown(readers?.needsYou, retained.needsYou),
+			pins,
+			pinSections: Object.fromEntries(
+				pins.rows.map((row) => [
+					row.id,
+					shown(
+						readers?.categories.get(row.id)?.pages,
+						retained.categories[row.id] ?? null,
+					),
+				]),
+			),
+			loaded,
+			retained:
+				retained.live !== null ||
+				retained.needsYou !== null ||
+				retained.pins !== null ||
+				Object.keys(retained.categories).length > 0 ||
+				retained.manifest !== null,
+			reading: readers
+				? readers.live.getSnapshot().loading ||
+					readers.needsYou.getSnapshot().loading ||
+					readers.pins.getSnapshot().loading ||
+					categoryPages.some((page) => page.getSnapshot().loading) ||
+					readers.manifest.state.loading
+				: false,
+			error: readers
+				? (readers.live.getSnapshot().error ??
+					readers.needsYou.getSnapshot().error ??
+					readers.pins.getSnapshot().error ??
+					categoryPages
+						.map((page) => page.getSnapshot().error)
+						.find((error) => error !== null) ??
+					readers.manifest.state.error)
+				: null,
+		};
+	};
 	let snapshot = build();
 	// A reader republishes on cancel() with nothing changed, and every fresh
 	// reader starts with its own empty rows, so pages compare by content.
@@ -285,11 +318,23 @@ export function createBoardController(): BoardController {
 				? a.rows === b.rows || (!a.rows.length && !b.rows.length)
 				: a[field] === b[field],
 		);
+	const sameCategories = (
+		a: BoardSnapshot["pinSections"],
+		b: BoardSnapshot["pinSections"],
+	) => {
+		const ids = Object.keys(a);
+		return (
+			ids.length === Object.keys(b).length &&
+			ids.every((id, index) => Object.keys(b)[index] === id && samePage(a[id], b[id]))
+		);
+	};
 	const unchanged = (next: BoardSnapshot) =>
 		(Object.keys(next) as Array<keyof BoardSnapshot>).every((field) =>
 			field === "live" || field === "needsYou" || field === "pins"
 				? samePage(next[field], snapshot[field])
-				: next[field] === snapshot[field],
+				: field === "pinSections"
+					? sameCategories(next.pinSections, snapshot.pinSections)
+					: next[field] === snapshot[field],
 		);
 
 	const publish = () => {
@@ -306,6 +351,7 @@ export function createBoardController(): BoardController {
 				retained = { ...retained, pins: null };
 			if (readers.manifest.state.loaded)
 				retained = { ...retained, manifest: null };
+			followCatalog(readers);
 		}
 		const next = build();
 		if (unchanged(next)) return;
@@ -313,9 +359,9 @@ export function createBoardController(): BoardController {
 		for (const listener of listeners) listener();
 	};
 
-	/** Needs you and the pin catalog must be complete (every session that
-	 * needs you, and every category's row), so keep paging each until the
-	 * hub has no more rows. */
+	/** Needs you, the pin catalog and each category must be complete (every
+	 * session that needs you, every category's row, and every session a
+	 * category counts), so keep paging each until the hub has no more rows. */
 	const fill = <T,>(page: NavigationPages<T>) => {
 		if (paused) return;
 		const state = page.getSnapshot();
@@ -329,7 +375,64 @@ export function createBoardController(): BoardController {
 			void page.more();
 	};
 
-	const pages = (bound: Readers) => [bound.live, bound.needsYou, bound.pins];
+	/** Every paged reader: Live, Needs you, the pin catalog and the
+	 * categories. */
+	const pages = (bound: Readers) => [
+		bound.live,
+		bound.needsYou,
+		bound.pins,
+		...categoryPagesOf(bound),
+	];
+
+	/** Keep one reader per category the catalog shown lists (the fresh
+	 * catalog once it loaded, the retained one until then), and forget the
+	 * retained rows of a category that has left it or whose fresh read has
+	 * landed. A category is read whatever its fold, and to completion, since
+	 * its header shows the hub's full count. */
+	const followCatalog = (bound: Readers) => {
+		const listed = new Set(
+			shown(bound.pins, retained.pins).rows.map((row) => row.id),
+		);
+		for (const [id, category] of bound.categories) {
+			if (listed.has(id)) continue;
+			bound.categories.delete(id);
+			for (const stop of category.stop) stop();
+			category.pages.cancel();
+		}
+		// Every new reader is registered before any of them reads: a read's
+		// loading publish comes back through here.
+		const added: Array<NavigationPages<NavigationSessionSummary>> = [];
+		for (const id of listed) {
+			if (bound.categories.has(id)) continue;
+			const pages = new NavigationPages<NavigationSessionSummary>(
+				bound.client,
+				{ resource: "pin_section", sectionId: id },
+				"sessions",
+				sessionKey,
+				PAGE_LIMIT,
+			);
+			bound.categories.set(id, {
+				pages,
+				stop: [
+					pages.subscribe(() => {
+						publish();
+						fill(pages);
+					}),
+					pages.watch(),
+				],
+			});
+			added.push(pages);
+		}
+		for (const pages of added)
+			if (paused) pages.cancel();
+			else void pages.refresh();
+		const kept = Object.entries(retained.categories).filter(
+			([id]) =>
+				listed.has(id) && !bound.categories.get(id)?.pages.getSnapshot().loaded,
+		);
+		if (kept.length !== Object.keys(retained.categories).length)
+			retained = { ...retained, categories: Object.fromEntries(kept) };
+	};
 
 	const connect = (client: ConversationClientLike): Readers => {
 		const section = (name: "live" | "needs_you") =>
@@ -351,6 +454,8 @@ export function createBoardController(): BoardController {
 				PIN_CATALOG_LIMIT,
 			),
 			manifest: new ManifestReader(client, publish),
+			categories: new Map(),
+			client,
 			stop: [],
 		};
 		bound.stop.push(
@@ -381,6 +486,8 @@ export function createBoardController(): BoardController {
 		const bound = readers;
 		readers = null;
 		for (const stop of bound.stop) stop();
+		for (const category of bound.categories.values())
+			for (const stop of category.stop) stop();
 		for (const page of pages(bound)) page.cancel();
 		bound.manifest.dispose();
 	};
@@ -398,6 +505,12 @@ export function createBoardController(): BoardController {
 					live: keep(snapshot.live),
 					needsYou: keep(snapshot.needsYou),
 					pins: keep(snapshot.pins),
+					categories: Object.fromEntries(
+						Object.entries(snapshot.pinSections).flatMap(([id, page]) => {
+							const kept = keep(page);
+							return kept ? [[id, kept]] : [];
+						}),
+					),
 					manifest: snapshot.manifest,
 				};
 			disconnect();
@@ -437,6 +550,7 @@ export function createBoardController(): BoardController {
 			readers.manifest.resume();
 			fill(readers.needsYou);
 			fill(readers.pins);
+			for (const page of categoryPagesOf(readers)) fill(page);
 		},
 		dispose() {
 			if (disposed) return;

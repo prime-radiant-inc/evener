@@ -27,6 +27,47 @@ export interface BoardRowProps {
  * the 10pt gap. */
 export const TITLE_INSET = 16 + 28 + 10;
 
+/** What every row in one of the Board's lists shares. */
+export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "now" | "onOpen"> & {
+	draftRefs: ReadonlySet<string>;
+};
+
+function Hairline({ inset = 0 }: { inset?: number }) {
+	const { palette } = useColors();
+	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
+}
+
+/** A list of Board rows, separated by hairlines inset to the title. */
+export function BoardRows({
+	items,
+	variant,
+	moving,
+	context,
+}: {
+	items: readonly ClassifiedRow[];
+	variant: BoardRowProps["variant"];
+	moving: boolean;
+	context: RowContext;
+}): ReactElement {
+	const { draftRefs, ...shared } = context;
+	return (
+		<>
+			{items.map((item, index) => (
+				<View key={item.row.ref}>
+					{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
+					<BoardRow
+						item={item}
+						variant={variant}
+						moving={moving}
+						hasDraft={draftRefs.has(item.row.ref)}
+						{...shared}
+					/>
+				</View>
+			))}
+		</>
+	);
+}
+
 const UNITS: Record<string, string> = { m: "minute", h: "hour", d: "day" };
 
 /** relativeAge's "2m" as VoiceOver should say it: "2 minutes". */
