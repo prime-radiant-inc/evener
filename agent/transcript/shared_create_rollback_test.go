@@ -2,8 +2,10 @@ package transcript
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/spf13/afero"
@@ -98,9 +100,9 @@ var errInjectedSync = errors.New("injected fsync failure")
 func (syncFailsFile) Sync() error { return errInjectedSync }
 
 // One writer's durable append fails and rolls back while another writer is
-// open on the file: the rolled-back record is gone, its sequence number is
-// taken by the next append from either writer, and both writers keep
-// appending at the file's end.
+// open on the file: the rolled-back record is gone, its sequence number stays
+// spent (a reader in another process may have seen the line), and both
+// writers keep appending at the file's end.
 func TestRollbackThenAnotherWriterAppendsKeepsOneSequence(t *testing.T) {
 	path := newSharedFileTranscript(t)
 	failing := openSharedFileWriter(t, path)
@@ -126,7 +128,13 @@ func TestRollbackThenAnotherWriterAppendsKeepsOneSequence(t *testing.T) {
 	if err := failing.Append(steeringTurn("failing after")); err != nil {
 		t.Fatalf("failing Append after rollback: %v", err)
 	}
-	requireOneSequenceInFileOrder(t, path, []string{"before resume", "failing before", "other before", "other after", "failing after"})
+	var got []string
+	for _, entry := range readSharedFileEntries(t, path) {
+		got = append(got, fmt.Sprintf("%d:%s", entry.Seq, entry.Turn.Message.Text()))
+	}
+	if want := []string{"0:before resume", "1:failing before", "2:other before", "4:other after", "5:failing after"}; !slices.Equal(got, want) {
+		t.Fatalf("entries = %v, want %v", got, want)
+	}
 }
 
 // afterOpenFs is the real filesystem with a callback after each OpenFile: for
@@ -210,5 +218,13 @@ func TestPartialLineFromOneWriterPoisonsEveryWriterOnTheFile(t *testing.T) {
 	if err := broken.Append(steeringTurn("never")); !errors.Is(err, ErrWriterPoisoned) {
 		t.Fatalf("the writer that left the broken bytes = %v, want it to stay poisoned", err)
 	}
-	requireOneSequenceInFileOrder(t, path, []string{"before resume", "after resume"})
+	// The partial append consumed seq 1 though it recorded nothing, so the
+	// record after the resume takes seq 2 and the next entry ordinal.
+	var got []string
+	for _, entry := range readSharedFileEntries(t, path) {
+		got = append(got, fmt.Sprintf("%d:%s", entry.Seq, entry.Turn.Message.Text()))
+	}
+	if want := []string{"0:before resume", "2:after resume"}; !slices.Equal(got, want) {
+		t.Fatalf("entries = %v, want %v", got, want)
+	}
 }

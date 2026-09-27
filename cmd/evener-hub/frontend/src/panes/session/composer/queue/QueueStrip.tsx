@@ -15,12 +15,7 @@ import { copyToClipboard } from "../../../../shell/palette/commands";
 import { controlsFor, pressLocalRecoveryFenced, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
-import {
-  readMutationPersistence,
-  retryBlockedBySnapshot,
-  threadsStore,
-  useThreadsStore,
-} from "../../../../stores/threads";
+import { retryBlockedBySnapshot, threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, IconButton, type IconButtonProps, Tooltip, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import {
@@ -419,14 +414,12 @@ export function QueueStrip({
     const reportFailure = (cause: string) =>
       setRetryErrors((errors) => new Map(errors).set(record.clientMutationId, `Retry failed: ${cause}`));
     try {
-      if (!(await retryBlockedPendingTurn(record.clientMutationId, sessionRef))) {
-        // The projection is already refreshed at this point:
-        // retryBlockedPendingTurn is mutateThenRefresh, which awaits its refresh
-        // before resolving, so this decides on the state that refresh observed
-        // (issue #1722 - a second refresh here read the same durable rows and
-        // fed nothing).
-        const { outbox } = await readMutationPersistence(sessionRef);
-        const current = outbox.find((entry) => entry.clientMutationId === record.clientMutationId);
+      const outcome = await retryBlockedPendingTurn(record.clientMutationId, sessionRef);
+      if (!outcome.released) {
+        // retryBlockedPendingTurn read the record after its own refresh, so
+        // this decides on the state that refresh observed (issue #1722 - a
+        // second refresh here read the same durable rows and fed nothing).
+        const { current } = outcome;
         if (current?.state === "blockedUnknown")
           reportFailure("Delivery still cannot be checked. The original message is kept; you can send a new message.");
         else if (current?.state === "canceled")

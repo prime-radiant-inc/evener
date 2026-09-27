@@ -9,15 +9,15 @@
 # bundler` — an error about platforms, not about the install that is missing.
 # This refuses before Metro runs, naming the directory and the command to run.
 #
-# A symlinked node_modules is an agent worktree's shared install. Its mtime says
-# nothing about this worktree (a fresh worktree's lockfile is always newer than
-# the shared install it points at), so a symlink is settled on its shared
-# lockfile's CONTENT, and that comparison runs before any freshness test. After
-# the content matches, the shared install is held to the same freshness rule as
-# a real one — the link target against the shared lockfile — so a shared tree
-# never reinstalled after its lockfile changed is refused too. The symlink
-# branch never suggests npm ci through the link: that would delete the shared
-# install for every worktree using it.
+# A symlinked node_modules is an agent worktree's shared install — and it is
+# not a usable one here, however well its content matches: the bundler
+# resolves no module through the link. Metro 0.84 has no symlink-following
+# resolution, and the controlled case is the same tree bundled green as a real
+# directory failing at one module behind a symlink ("expo could not be found
+# within the project"), so a symlink is refused outright and the message names
+# the fix: remove the link and give this worktree its own real install. The
+# refusal never suggests npm ci through the link: that would delete the
+# shared install for every worktree using it.
 #
 # Existence and freshness are not health. An empty or half-installed tree, or a
 # symlink whose target directory is gone, passes both and still makes Metro fail
@@ -58,8 +58,8 @@ if [ ! -f package-lock.json ]; then
 	exit 1
 fi
 
-# Canonicalize a symlinked shared install once, so the content compare, the
-# freshness test, and every message name one absolute path. A relative link
+# Canonicalize a symlinked shared install once, so the refusal names one
+# absolute path. A relative link
 # target is resolved against $native — the directory the symlink lives in — and
 # the shared directory is settled on an absolute, ".."-free path when it still
 # exists (logical pwd, so a platform whose /tmp is a symlink does not rewrite
@@ -81,21 +81,16 @@ if [ -L node_modules ]; then
 fi
 
 if [ -n "$link_shared" ]; then
-	if ! cmp -s "$link_shared/package-lock.json" package-lock.json; then
-		echo "ERROR: $native/node_modules is a symlink to $link_target," >&2
-		echo "  and $link_shared/package-lock.json does not match this worktree's." >&2
-		echo "  Install an up-to-date tree in $link_shared, or replace this worktree's" >&2
-		echo "  symlink with its own real node_modules — never npm ci through the" >&2
-		echo "  symlink, which would delete the shared install every worktree uses." >&2
-		exit 1
-	fi
-	if [ ! "$link_target" -nt "$link_shared/package-lock.json" ]; then
-		echo "ERROR: $native/node_modules is a symlink to $link_target," >&2
-		echo "  and that shared install is older than $link_shared/package-lock.json." >&2
-		echo "  Refresh the shared install in $link_shared — never npm ci through the" >&2
-		echo "  symlink, which would delete it for every worktree using it." >&2
-		exit 1
-	fi
+	echo "ERROR: $native/node_modules is a symlink to $link_target." >&2
+	echo "  The bundle targets cannot run against it: the bundler resolves no" >&2
+	echo "  module through a symlinked install, however well its content matches" >&2
+	echo "  this worktree's lockfile — Metro fails with \"could not be found within" >&2
+	echo "  the project\" on a tree that bundles green as a real directory." >&2
+	echo "  Give this worktree its own real install; never npm ci through the symlink," >&2
+	echo "  which would delete the shared install every worktree uses. Remove the" >&2
+	echo "  link, then:" >&2
+	echo "    rm $native/node_modules && cd $native && npm ci" >&2
+	exit 1
 elif [ -e node_modules ]; then
 	if [ ! node_modules -nt package-lock.json ]; then
 		echo "ERROR: $native/node_modules is older than package-lock.json." >&2
@@ -116,13 +111,7 @@ fi
 if [ ! -f node_modules/.bin/expo ] || [ ! -x node_modules/.bin/expo ]; then
 	echo "ERROR: $native/node_modules is unhealthy: node_modules/.bin/expo is not" >&2
 	echo "  a regular executable file (an empty or half-installed tree)." >&2
-	if [ -n "$link_shared" ]; then
-		echo "  Install an up-to-date tree in $link_shared, or replace this worktree's" >&2
-		echo "  symlink with its own real node_modules — never npm ci through the" >&2
-		echo "  symlink." >&2
-	else
-		echo "  Reinstall mobile-native's dependencies:" >&2
-		echo "    cd $native && npm ci" >&2
-	fi
+	echo "  Reinstall mobile-native's dependencies:" >&2
+	echo "    cd $native && npm ci" >&2
 	exit 1
 fi

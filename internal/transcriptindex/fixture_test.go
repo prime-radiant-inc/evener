@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/schema/schematest"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
@@ -246,6 +247,28 @@ func fixtures() []fixture {
 		entryLine(assistant(callRaw("k9", "communicate", `{message: "then this one hangs"}`))),
 	}
 
+	// communicateSparsePartCollision: a single assistant entry issues a
+	// deferred communicate call (rendered as no item — see ProjectTurn,
+	// "Defer ALL communicate messages") ahead of an ordinary tool call, which
+	// renders one item at its own part index, 1 (part 0, the communicate
+	// call, is hidden). FlushUnpairedCommunicates used to position the
+	// flushed item by a dense count of the turn's own items (1 here), which
+	// collides with the read_file item's own {Entry, Part: 1} position
+	// (roborev finding on PR #2303, round 4).
+	communicateSparsePartCollision := []fixtureLine{
+		entryLine(assistant(callRaw("k10", "communicate", `{message: "collides"}`), call("k11", "read_file", `{"path":"x"}`))),
+	}
+
+	// communicatePreludeOnlyUnpaired: a prelude (system prompt) but no
+	// item-producing entry at all before ending on a deferred communicate
+	// call. pendingFlush's "x.items.n == 0" guard assumed commCalls could
+	// not be non-empty in that case; it can, and the whole-file projection
+	// still flushes into the prelude turn (roborev finding on PR #2303,
+	// round 4).
+	communicatePreludeOnlyUnpaired := []fixtureLine{
+		entryLine(assistant(callRaw("k12", "communicate", `{message: "prelude only"}`))),
+	}
+
 	orphans := []fixtureLine{
 		entryLine(user("orphans")),
 		entryLine(assistant(call("o1", "read_file", `{}`), call("o2", "grep", `{}`))),
@@ -336,18 +359,36 @@ func fixtures() []fixture {
 		{name: "steering", header: header, lines: steerings},
 		{name: "failures", header: header, lines: failures},
 		{name: "standalone kinds", header: header, lines: standalones},
+		{name: "transcript only", header: header, lines: interleaveTranscriptOnly(append(append([]fixtureLine(nil), basic...), communicate...))},
+		// Last: its final entry sits in the validated tail of "everything".
 		{name: "ordinals", header: header, lines: ordinals},
-		// Last two: each leaves a communicate call permanently unpaired, so
+		// Last four: each leaves a communicate call permanently unpaired, so
 		// nothing in "everything" follows them (see needsCommunicateHistory
-		// and TestAppendEntryByEntryMatchesTheReference) — a reopen after
-		// this point correctly rebuilds (meta.PendingCommunicate), but nothing
-		// downstream would spuriously trigger the same rebuild.
+		// and TestAppendEntryByEntryMatchesTheReference); a reopen after
+		// this point restores the open call from meta.CommCalls.
 		{name: "communicate rejected unpaired", header: header, lines: communicateRejectedUnpaired},
 		{name: "communicate unpaired", header: header, lines: communicateUnpaired},
+		{name: "communicate sparse part collision", header: header, lines: communicateSparsePartCollision},
+		{name: "communicate prelude only unpaired", header: prelude, lines: communicatePreludeOnlyUnpaired},
 	}
 	var everything []fixtureLine
 	for _, set := range sets {
 		everything = append(everything, set.lines...)
 	}
 	return append(sets, fixture{name: "everything", header: prelude, lines: everything})
+}
+
+// interleaveTranscriptOnly puts a transcript-only entry before, between and
+// after lines, the way a phase 2 writer records them among the entries today's
+// projection reads.
+func interleaveTranscriptOnly(lines []fixtureLine) []fixtureLine {
+	turns := make([]schema.Turn, len(lines))
+	for i, line := range lines {
+		turns[i] = line.turn
+	}
+	out := make([]fixtureLine, 0, 2*len(lines)+1)
+	for _, turn := range schematest.InterleaveTranscriptOnly(turns) {
+		out = append(out, entryLine(turn))
+	}
+	return out
 }

@@ -49,10 +49,12 @@ type commState struct {
 // call's deferred state legitimately crosses logical-turn/group boundaries
 // (e.g. a standalone HOOK_COMPLETED closing the assistant's group before its
 // result arrives) — matching the full read's single registry, threaded for
-// the whole scan. Only the position each is at, not the projected item
-// content, gets persisted (as an itemRecord's Context): the reader replays
+// the whole scan. An item's own Context (see itemRecord) persists only the
+// position each is at, not the projected item content: the reader replays
 // the referenced raw entries to reconstruct the values, so build time only
 // needs enough to decide the affected items' structure (existence/parts).
+// meta.CommCalls/LastAssistant* separately persist this whole struct's
+// values, for restoreBuilder to reconstruct it without a rebuild.
 type builder struct {
 	x        *Index
 	grouper  apptranscript.TurnGrouper
@@ -66,11 +68,24 @@ type builder struct {
 	lastAssistantText   string
 	lastAssistantTurnID string
 	lastAssistantPos    contributor
-	lastAssistantKnown  bool // true once the sticky value above is authoritative
+	// lastAssistantKnown is true once the sticky value above is
+	// authoritative: always, for a full build (correct from its first
+	// entry — "no text yet" is the ground truth, not an unknown), and for
+	// restoreBuilder once it has restored meta.LastAssistantKnown (see its
+	// doc comment). A communicate call becoming pending while this is still
+	// false means the echo check's prior text is unrecoverable without a
+	// rebuild (see extend); kept as a defensive fallback now that
+	// restoreBuilder ordinarily restores it.
+	lastAssistantKnown bool
 }
 
 // apply indexes the entry at ordinal, whose line is length bytes at offset.
 func (b *builder) apply(ordinal uint64, offset int64, length uint32, entry *schema.Turn) error {
+	if entry.Kind.TranscriptOnly() {
+		// Today's projection passes over it: the entry takes its ordinal and
+		// nothing else.
+		return nil
+	}
 	entryIndex := int(ordinal) + 1
 	version := ordinal + 1
 	turnID, newTurn := b.grouper.Place(entry, entryIndex)

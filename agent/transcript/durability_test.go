@@ -53,7 +53,10 @@ func TestAppendBatchWritesEveryTurnAtContiguousSeqs(t *testing.T) {
 }
 
 // A batch whose write fails and rolls back cleanly is all-or-nothing: nothing
-// is in the file and no seq is spent, so a retry lands the whole batch at seq 0.
+// is in the file and no entry ordinal is spent. Its sequence numbers ARE
+// spent: a reader in another process may have seen the lines before the
+// rollback took them out, so no later record may reuse them. A retry lands
+// the whole batch at the next ordinals and fresh sequence numbers.
 // Batch ops after the header (indices 0-3): Seek 4, Write 5 (faulted).
 func TestAppendBatchRollsBackWholeBatchOnWriteFailure(t *testing.T) {
 	base := afero.NewMemMapFs()
@@ -75,12 +78,15 @@ func TestAppendBatchRollsBackWholeBatchOnWriteFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry after rollback: %v", err)
 	}
-	if firstSeq != 0 {
-		t.Fatalf("retry firstSeq = %d, want 0: the failed batch spent no seq", firstSeq)
+	if firstSeq != 2 {
+		t.Fatalf("retry firstSeq = %d, want 2: the rolled-back batch consumed seq 0 and 1", firstSeq)
 	}
 	entries := faultTestEntries(t, base)
-	if len(entries) != 2 || entries[0].Seq != 0 || entries[1].Seq != 1 {
-		t.Fatalf("entries after the retry = %+v, want two at seq 0 and 1", entries)
+	if len(entries) != 2 || entries[0].Seq != 2 || entries[1].Seq != 3 {
+		t.Fatalf("entries after the retry = %+v, want two at seq 2 and 3", entries)
+	}
+	if next, err := w.Record(schema.NewTurn(schema.TurnUserInput, llm.User("charlie")), RecordOptions{Door: DoorDurable}); err != nil || next.Ordinal != 2 || next.Seq != 4 {
+		t.Fatalf("next record = %+v, %v; want ordinal 2 (the rolled-back batch took none)", next, err)
 	}
 }
 
@@ -280,12 +286,12 @@ func TestAppendBatchFailClosedDistinguishesClosedFromRecorded(t *testing.T) {
 	turn := schema.NewTurn(schema.TurnUserInput, llm.User("after close"))
 
 	// Ordinary door (failClosed=false): a closed writer is a silent nil no-op.
-	if _, retained, err := w.appendBatch([]schema.Turn{turn}, true, true, false); err != nil || retained != nil {
+	if _, retained, err := w.appendBatch([]schema.Turn{turn}, PlaceVerbatim, DoorDurable); err != nil || retained != nil {
 		t.Fatalf("ordinary appendBatch on a closed writer = (retained %v, err %v), want the silent nil no-op", retained, err)
 	}
 	// Synced owner (failClosed=true): a closed writer fails closed, so
 	// AppendSynced never reads a dropped write as durable.
-	if _, retained, err := w.appendBatch([]schema.Turn{turn}, true, false, true); !errors.Is(err, ErrWriterClosed) || retained != nil {
+	if _, retained, err := w.appendBatch([]schema.Turn{turn}, PlaceVerbatim, DoorSynced); !errors.Is(err, ErrWriterClosed) || retained != nil {
 		t.Fatalf("synced appendBatch on a closed writer = (retained %v, err %v), want ErrWriterClosed", retained, err)
 	}
 }

@@ -100,6 +100,13 @@ func TestSessionTokenBudgetOutputReductionEmitsOneWarning(t *testing.T) {
 	if warnings[0].Title == "Evener error" || strings.Contains(strings.ToLower(warnings[0].Hint), "session log") {
 		t.Fatalf("output-reduction warning classified as an error: title=%q hint=%q", warnings[0].Title, warnings[0].Hint)
 	}
+	// The quiet-notice contract: this warning is informational budget
+	// arithmetic, and clients demote and verbosity-gate it by its stable code,
+	// never by matching its prose (the projector hides a coded warning below
+	// high verbosity; the Web UI renders it as a quiet one-liner there).
+	if warnings[0].Code != events.WarningCodeContextBudget {
+		t.Fatalf("output-reduction warning code = %q, want %q", warnings[0].Code, events.WarningCodeContextBudget)
+	}
 }
 
 func TestSessionContinuationOutputReductionsEmitOneFinalWarning(t *testing.T) {

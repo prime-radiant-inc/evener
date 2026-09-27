@@ -30,6 +30,8 @@ func domainCases() []domainCase {
 		{"agent call", "ag_", MustNewAgentCallID, ValidateAgentCallID},
 		{"API attempt", "att_", MustNewAPIAttemptID, ValidateAPIAttemptID},
 		{"synthetic call", "call_", MustNewSyntheticCallID, ValidateSyntheticCallID},
+		{"turn", "t_", MustNewTurnID, ValidateTurnID},
+		{"round", "r_", MustNewRoundID, ValidateRoundID},
 	}
 }
 

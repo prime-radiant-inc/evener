@@ -3556,6 +3556,7 @@ export interface WarningParams {
   ref: string;
   message?: string;
   source?: string;
+  code?: string;
   title?: string;
   hint?: string;
   warning?: unknown;

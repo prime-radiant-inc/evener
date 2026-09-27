@@ -98,12 +98,13 @@ func needsCommunicateHistory(turn schema.Turn) bool {
 }
 
 // communicatePendingTracker follows which communicate calls are open across
-// successive turns: meta.PendingCommunicate forces a rebuild for EVERY line
-// applied while one is still open (see its doc comment), not only the call
-// and result lines themselves — an intervening standalone turn (e.g.
-// TurnHookCompleted) between them rebuilds too. Conservative about closing
-// (any tool result named "communicate" or nameless might be one), which only
-// widens the test's rebuild exemption, never narrows real coverage.
+// successive turns, for every line applied while one is still open, not only
+// the call and result lines themselves (an intervening standalone turn such
+// as TurnHookCompleted counts too). Extend restores the open calls from
+// meta.CommCalls instead of rebuilding, so the exemption it grants is a
+// tolerance, not an expectation. Conservative about closing (any tool result
+// named "communicate" or nameless might be one), which only widens the
+// exemption, never narrows real coverage.
 type communicatePendingTracker struct {
 	open map[string]bool
 }
@@ -447,6 +448,20 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 			rewriteMetaField(t, dir, "length", `1099511627776`)
 			rewriteMetaField(t, dir, "header_length", `1099511627776`)
 			rewriteMetaField(t, dir, "header_offset", `0`)
+		}},
+		{"fabricated comm-call position", func(t *testing.T, dir string) {
+			// A pending communicate call's persisted position must be bounded
+			// the same way HeaderLength is: unvalidated, this would drive a
+			// multi-gigabyte allocation in reader.entry (roborev finding on
+			// PR #2545).
+			rewriteMetaField(t, dir, "comm_calls", `[{"id":"x","raw_args":"{}","offset":0,"ordinal":0,"length":4294967295,"turn_id":"t"}]`)
+		}},
+		{"pending communicate without its calls", func(t *testing.T, dir string) {
+			rewriteMetaField(t, dir, "pending_communicate", `true`)
+			rewriteMetaField(t, dir, "comm_calls", `[]`)
+		}},
+		{"fabricated last-assistant position", func(t *testing.T, dir string) {
+			rewriteMetaField(t, dir, "last_assistant_pos", `{"offset":0,"ordinal":0,"length":4294967295}`)
 		}},
 	}
 	for _, tc := range cases {
