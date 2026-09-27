@@ -837,7 +837,10 @@ faked clock when they find a `jest` global, and `userEvent.setup({
 advanceTimers: vi.advanceTimersByTime })`, so typing delays advance it too.
 Fake only the timer functions (`toFake: ["setTimeout", "clearTimeout",
 "setInterval", "clearInterval"]`); src/panes/spawn/Spawn.test.tsx is the
-worked example.
+worked example. To read a Tooltip from a test that otherwise runs on real
+timers, use `hoverForTooltip` (src/widgets/tooltip/tooltipTestUtils.ts): it
+crosses the show delay on a fake clock scoped to the hover, so it needs none
+of that wiring, and it must be called on real timers.
 
 `await user.click(...)` returns once the event is dispatched, not once the
 handler's async work finishes. An effect that sits behind an `await`, such as
