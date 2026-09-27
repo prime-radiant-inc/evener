@@ -12,8 +12,8 @@ package server
 // live session, at every notification egress. This test drives a real
 // agent.Session through a real ask_user round, bridged into a real *Server
 // the way cmd/evener/serve.go wires it (ConsumeEventsLossless -> BridgeEvent,
-// a ThreadEnvelopeSource whose AskPending() reads the session directly), and
-// reads back the actual recorded notification to prove the stamp lands.
+// a ThreadEnvelopeSource whose PendingQuestion() reads the session directly),
+// and reads back the actual recorded notification to prove the stamp lands.
 import (
 	"context"
 	"encoding/json"
@@ -91,16 +91,16 @@ func (a *oneShotAskUserAdapter) Stream(context.Context, llm.Request) (llm.Stream
 }
 
 // sessionAskPendingEnvelopeSource is stubThreadEnvelopeSource with exactly one
-// facet backed by a real session: AskPending. Every other facet stays at its
-// stub zero value, so nothing else in the recorded frame can be mistaken for
-// live session state this test did not set up.
+// facet backed by a real session: PendingQuestion. Every other facet stays at
+// its stub zero value, so nothing else in the recorded frame can be mistaken
+// for live session state this test did not set up.
 type sessionAskPendingEnvelopeSource struct {
 	stubThreadEnvelopeSource
 	sess *agent.Session
 }
 
-func (s *sessionAskPendingEnvelopeSource) AskPending() bool {
-	return s.sess.HasPendingAsk()
+func (s *sessionAskPendingEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+	return s.sess.PendingQuestion()
 }
 
 func TestAskUserLiveStatusFrameCarriesAskPending(t *testing.T) {

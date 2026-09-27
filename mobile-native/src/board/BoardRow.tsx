@@ -3,6 +3,7 @@ import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import type { ReactElement } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
+import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
 import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, whyLine } from "./attention";
 import { StateMark } from "./StateMark";
@@ -26,6 +27,68 @@ export interface BoardRowProps {
 /** Where a row's title starts: its 16pt padding, the 28pt mark column and
  * the 10pt gap. */
 export const TITLE_INSET = 16 + 28 + 10;
+
+/** What every row in one of the Board's lists shares. */
+export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "now" | "onOpen"> & {
+	draftRefs: ReadonlySet<string>;
+};
+
+function Hairline({ inset = 0 }: { inset?: number }) {
+	const { palette } = useColors();
+	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
+}
+
+/** A list of Board rows, separated by hairlines inset to the title. */
+export function BoardRows({
+	items,
+	variant,
+	moving,
+	context,
+}: {
+	items: readonly ClassifiedRow[];
+	variant: BoardRowProps["variant"];
+	moving: boolean;
+	context: RowContext;
+}): ReactElement {
+	const { draftRefs, ...shared } = context;
+	return (
+		<>
+			{items.map((item, index) => (
+				<View key={item.row.ref}>
+					{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
+					<BoardRow
+						item={item}
+						variant={variant}
+						moving={moving}
+						hasDraft={draftRefs.has(item.row.ref)}
+						{...shared}
+					/>
+				</View>
+			))}
+		</>
+	);
+}
+
+/** The type of the Board's section headers (spec 7.1): 13pt semibold,
+ * inkMid, 0.4 letter-spacing. */
+export const bandHeaderText = (palette: Palette, scale: number) => ({
+	fontSize: 13 * scale,
+	fontWeight: "600" as const,
+	letterSpacing: 0.4,
+	color: palette.inkMid,
+});
+
+/** A fold's chevron at a header's trailing edge: right while folded, turned
+ * down while open. */
+export function FoldChevron({ folded }: { folded: boolean }): ReactElement {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ transform: [{ rotate: folded ? "0deg" : "90deg" }] }}>
+			<SymbolView name="chevron.right" size={13 * scale} tintColor={palette.inkLow} />
+		</View>
+	);
+}
 
 const UNITS: Record<string, string> = { m: "minute", h: "hour", d: "day" };
 
@@ -156,8 +219,9 @@ export function BoardRow({
 				) : null}
 				{last ? (
 					<View style={{ marginTop: 4, flexDirection: "row", alignItems: "center", columnGap: 6, overflow: "hidden" }}>
-						{last.project ? <Place glyph="folder" text={last.project} scale={scale} /> : null}
-						{last.host ? <Place glyph="server.rack" text={last.host} scale={scale} /> : null}
+						{last.task ? <Fact glyph="checklist" text={last.task} scale={scale} shrink /> : null}
+						{last.project ? <Fact glyph="folder" text={last.project} scale={scale} /> : null}
+						{last.host ? <Fact glyph="server.rack" text={last.host} scale={scale} /> : null}
 					</View>
 				) : null}
 			</View>
@@ -165,17 +229,31 @@ export function BoardRow({
 	);
 }
 
-/** A glyph and a name on the last line, which never wraps. */
-function Place({ glyph, text, scale }: { glyph: "folder" | "server.rack"; text: string; scale: number }) {
+/** A glyph and a fact on the last line, which never wraps. A `shrink` fact
+ * gives up width when the line runs out of room, tail-truncating its text;
+ * the others keep theirs. Only the task line shrinks: its title comes after
+ * the "Task 4 of 7 · " prefix, so the title truncates first (spec 7.2). */
+function Fact({
+	glyph,
+	text,
+	scale,
+	shrink = false,
+}: {
+	glyph: "checklist" | "folder" | "server.rack";
+	text: string;
+	scale: number;
+	shrink?: boolean;
+}) {
 	const { palette } = useColors();
+	const flexShrink = shrink ? 1 : 0;
 	return (
-		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink: 1 }}>
+		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink }}>
 			<SymbolView name={glyph} size={13 * scale} tintColor={palette.inkLow} />
 			<Text
 				allowFontScaling={Platform.OS !== "ios"}
 				numberOfLines={1}
 				ellipsizeMode="tail"
-				style={{ flexShrink: 1, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+				style={{ flexShrink, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 			>
 				{text}
 			</Text>

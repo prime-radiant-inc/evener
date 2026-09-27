@@ -319,74 +319,70 @@ func TestHostReceiptPrunedMarkerBound(t *testing.T) {
 // tombstoned name's remove-retry backstop marker is never dropped by the
 // count/TTL bound while the tombstone lives; once the tombstone is purged the
 // bound applies again.
+//
+// It drives the derivation directly with controlled pruned_at instants: the
+// end-to-end churn variant is wall-clock dependent (marker timestamps have
+// second granularity, so the count bound's newest-first order can flip across
+// a second boundary) and pinned nothing more than this does.
 func TestHostReceiptTombstonedNameBackstopExemption(t *testing.T) {
 	f := newUpdateFixture(t)
-	f.m.cfg.policy.supersededMaxCount = 1
-	// The marker bound is deliberately wide while the remove key is churned into
-	// a marker: WHETHER that marker exists follows from the remove receipt being
-	// compacted away, and the bound is what may evict it afterwards. Asserting
-	// both at the tight bound made the precondition depend on which write's
-	// compaction dropped the receipt — a timing artifact of the commit's write
-	// sequence, not a rule the spec pins — so the wide bound pins the marker's
-	// creation and the tight bound below pins the tombstoned-name exemption,
-	// which is where §6 actually puts it.
-	f.m.cfg.policy.prunedMaxCount = 8
-	// Churn one remove key into a marker, then a newer update key into a
-	// newer marker, so the count bound would drop the older remove marker.
-	removeKey := newTestMutationID()
-	params := removeRequest(t, f.m, "side")
-	params.MutationID = removeKey
-	if _, err := f.m.Remove(context.Background(), params); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "fresh.example"}}); err != nil {
-		t.Fatalf("re-add: %v", err)
-	}
-	keys := churnUpdates(t, f.m, "side", 5)
-	_ = keys
-	_, markers := receiptScopesFor(t, f.m, "side")
-	hasRemoveMarker := false
-	for key := range markers {
-		scope, _ := parseHostReceiptScopedKey(key)
-		if scope.MutationID == removeKey {
-			hasRemoveMarker = true
-		}
-	}
-	if !hasRemoveMarker {
-		t.Fatalf("the remove-key marker was never created: %v", markers)
-	}
-	// Now tombstone the name again and tighten the marker bound to the owner's
-	// one: the remove marker is the backstop and must survive compaction past
-	// the count bound, while every other marker of the name is fair game.
 	f.m.cfg.policy.prunedMaxCount = 1
-	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
-		t.Fatalf("second Remove: %v", err)
+	base := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	removeMarkerKey := hostReceiptScopedKey(hostReceiptScope{
+		MutationID: "m-remove", Name: "side", Kind: hostMutationRemove, Generation: 1, IncarnationID: "inc-1",
+	})
+	updateMarkerKey := hostReceiptScopedKey(hostReceiptScope{
+		MutationID: "m-update", Name: "side", Kind: hostMutationUpdate, Generation: 2, IncarnationID: "inc-2",
+	})
+	tombstone := HostTombstone{
+		Name: "side",
+		Entry: HostConfig{
+			Name: "side", SSH: "side.example",
+		},
+		Origin:        hostOriginHubTOML,
+		Generation:    1,
+		IncarnationID: "inc-1",
+		PresenceEpoch: 2,
+		RemovedAt:     base.Format(time.RFC3339),
 	}
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later", Address: "later.example"}}); err != nil {
-		t.Fatalf("Add(later): %v", err)
+	// The remove marker is the OLDER one: without the exemption the count bound
+	// (1) would keep only the newer update marker.
+	// Pin the derivation's clock just past the removal instant: the tombstone
+	// and both markers are fresh, so neither the retention prune nor the
+	// marker TTL fires and the only rule under test is the backstop exemption.
+	f.m.cfg.now = func() time.Time { return base.Add(time.Minute) }
+	f.m.cfg.store.setRecordMaps(
+		map[string]HostTombstone{"side": tombstone},
+		map[string]PrunedReceiptMarker{
+			removeMarkerKey: {PrunedAt: base.Add(-2 * time.Hour).Format(time.RFC3339)},
+			updateMarkerKey: {PrunedAt: base.Format(time.RFC3339)},
+		},
+	)
+	records, err := f.m.deriveHostTOMLRecords(nil, nil, hostPersistChange{})
+	if err != nil {
+		t.Fatalf("derive with the tombstone: %v", err)
 	}
-	_, markers = receiptScopesFor(t, f.m, "side")
-	hasRemoveMarker = false
-	for key := range markers {
-		scope, _ := parseHostReceiptScopedKey(key)
-		if scope.MutationID == removeKey {
-			hasRemoveMarker = true
-		}
+	if _, ok := records.prunedReceipts[removeMarkerKey]; !ok {
+		t.Fatalf("the tombstoned name's backstop marker was compacted away: %v", records.prunedReceipts)
 	}
-	if !hasRemoveMarker {
-		t.Fatalf("the tombstoned name's backstop marker was compacted away: %v", markers)
+	if _, ok := records.prunedReceipts[updateMarkerKey]; !ok {
+		t.Fatalf("the newer marker did not survive its own bound: %v", records.prunedReceipts)
 	}
-	// A re-add purges the tombstone and ends the exemption: the next write's
-	// compaction may drop it under the count bound.
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "final.example"}}); err != nil {
-		t.Fatalf("final re-add: %v", err)
+	// Purge the tombstone: the exemption ends and the bound drops the oldest
+	// non-backstop marker.
+	f.m.cfg.store.setRecordMaps(nil, map[string]PrunedReceiptMarker{
+		removeMarkerKey: {PrunedAt: base.Add(-2 * time.Hour).Format(time.RFC3339)},
+		updateMarkerKey: {PrunedAt: base.Format(time.RFC3339)},
+	})
+	records, err = f.m.deriveHostTOMLRecords(nil, nil, hostPersistChange{})
+	if err != nil {
+		t.Fatalf("derive without the tombstone: %v", err)
 	}
-	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later2", Address: "later2.example"}}); err != nil {
-		t.Fatalf("Add(later2): %v", err)
+	if _, ok := records.prunedReceipts[removeMarkerKey]; ok {
+		t.Fatalf("the backstop marker outlived its tombstone: %v", records.prunedReceipts)
 	}
-	_, markers = receiptScopesFor(t, f.m, "side")
-	if len(markers) > 1 {
-		t.Fatalf("markers after the purge = %d, want the post-purge bound 1", len(markers))
+	if _, ok := records.prunedReceipts[updateMarkerKey]; !ok {
+		t.Fatalf("the newer marker did not survive the post-purge bound: %v", records.prunedReceipts)
 	}
 }
 

@@ -2319,8 +2319,8 @@ func (l liveThreadEnvelopeSource) FailedToolCalls() (int, bool) {
 	return l.session().FailedToolCallsSnapshot()
 }
 
-func (l liveThreadEnvelopeSource) AskPending() bool {
-	return l.session().HasPendingAsk()
+func (l liveThreadEnvelopeSource) PendingQuestion() *appwire.PendingQuestion {
+	return l.session().PendingQuestion()
 }
 
 func (l liveThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {

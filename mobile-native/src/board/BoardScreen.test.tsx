@@ -6,6 +6,7 @@ import type {
 	AnyNotification,
 	ConnectionState,
 	NavigationInvalidationTarget,
+	NavigationProjectSummary,
 	NavigationReadParams,
 	NavigationSessionSummary,
 } from "@evener/appwire-client";
@@ -26,13 +27,20 @@ const harness = vi.hoisted(() => ({
 	focused: true,
 	focusListeners: new Set<(focused: boolean) => void>(),
 	actionSheet: vi.fn(),
+	prompt: vi.fn(),
 }));
 
-vi.mock("react-native", async () => ({
-	...(await import("../renderNative.testkit")).nativeModuleMock(),
-	ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
-	Keyboard: { dismiss: () => {} },
-}));
+vi.mock("react-native", async () => {
+	const native = (await import("../renderNative.testkit")).nativeModuleMock();
+	return {
+		...native,
+		Alert: { ...native.Alert, prompt: (...args: unknown[]) => harness.prompt(...args) },
+		ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
+		Keyboard: { dismiss: () => {} },
+	};
+});
+// The organization journal names each change it records.
+vi.mock("expo-crypto", () => ({ randomUUID: () => `change-${Math.random()}` }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-safe-area-context", () => ({
 	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
@@ -134,10 +142,20 @@ interface Fleet {
 	live: NavigationSessionSummary[][];
 	needsYou: NavigationSessionSummary[];
 	pins: Array<{ id: string; name: string; count: number }>;
+	/** Each category's sessions, by id. */
+	pinned: Record<string, NavigationSessionSummary[]>;
 	manifest: ReturnType<typeof manifest>;
 	/** Sessions only search finds: the Board doesn't list them. */
 	searchOnly?: NavigationSessionSummary[];
+	/** Each project catalog's projects; a catalog left out is empty. */
+	catalogs?: Partial<Record<ProjectCatalogName, NavigationProjectSummary[]>>;
+	/** Each project tier's sessions, keyed `${projectKey}:${tier}`, paged by the read's limit. */
+	projectPages?: Record<string, NavigationSessionSummary[]>;
 }
+type ProjectCatalogName = "projects" | "archived_projects" | "test_runs";
+const keptNote = session("local:kept", { title: "Kept note", live: false, updated_at: minutesAgo(600) });
+const oldPlan = session("local:plan", { title: "Old plan", live: false, updated_at: minutesAgo(900) });
+const releaseNotes = session("local:notes", { title: "Release notes", live: false, updated_at: minutesAgo(1200) });
 const fleet: Fleet = {
 	// The ask is in the hub's needs_you section only: bands union it.
 	live: [[failing, working, finished, idleOne, idleTwo]],
@@ -146,6 +164,7 @@ const fleet: Fleet = {
 		{ id: "pins-1", name: "Mine", count: 3 },
 		{ id: "pins-2", name: "Empty", count: 0 },
 	],
+	pinned: { "pins-1": [keptNote, oldPlan, releaseNotes], "pins-2": [] },
 	manifest: manifest({
 		sources: [{ id: "local", label: "Laptop", kind: "local", online: true }],
 		sections: { live: { count: 5 }, needs_you: { count: 2 }, pin_sections: { count: 2 } },
@@ -154,19 +173,40 @@ const fleet: Fleet = {
 };
 
 /** A hub that answers navigation reads by params; `hold` keeps a read
- * unanswered until the test releases it, and `fail` rejects it. */
+ * unanswered until the test releases it, and `fail` rejects it. It accepts
+ * every category rename and delete and every project favorite and archive
+ * (`mutations` records them, and a favorite shows in the catalog after),
+ * unless `refuse` says to reject one, and `holdChanges` keeps them
+ * unanswered until `release`. */
 function hub(
 	shape: Fleet,
 	hold: (params: NavigationReadParams) => boolean = () => false,
 	fail: (params: NavigationReadParams) => boolean = () => false,
+	{ holdChanges = false, refuse = false } = {},
 ) {
 	const requests: NavigationReadParams[] = [];
+	const mutations: Array<{ method: string; params: unknown }> = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
 	const held: Array<() => void> = [];
 	const answer = (params: NavigationReadParams) => {
 		const offset = params.offset ?? 0;
 		if (params.resource === "manifest") return shape.manifest;
 		if (params.resource === "pin_catalog") return { pin_sections: shape.pins, remaining: 0 };
+		if (params.resource === "pin_section") {
+			const rows = shape.pinned[params.sectionId ?? ""];
+			if (!rows) throw new Error(`no category ${params.sectionId}`);
+			return { sessions: rows, remaining: 0 };
+		}
+		if (params.resource === "catalog") {
+			const projects = shape.catalogs?.[params.catalog as ProjectCatalogName] ?? [];
+			const page = projects.slice(offset, offset + (params.limit ?? 50));
+			return { projects: page, remaining: projects.length - offset - page.length };
+		}
+		if (params.resource === "project_page") {
+			const rows = shape.projectPages?.[`${params.projectKey}:${params.tier}`] ?? [];
+			const page = rows.slice(offset, offset + (params.limit ?? 50));
+			return { sessions: page, remaining: rows.length - offset - page.length };
+		}
 		if (params.section === "needs_you") return { sessions: shape.needsYou, remaining: 0 };
 		// Live pages are consecutive: each page's offset is the rows before it.
 		let before = 0;
@@ -182,6 +222,34 @@ function hub(
 	const client: ConversationClientLike = {
 		request: (method, params) =>
 			new Promise((resolve, reject) => {
+				if (
+					method === "evener/pin-section/rename" ||
+					method === "evener/pin-section/delete" ||
+					method === "evener/favorite/set" ||
+					method === "evener/archive/set"
+				) {
+					mutations.push({ method, params });
+					const respond = () => {
+						if (refuse) {
+							reject(new Error("request timed out"));
+							return;
+						}
+						if (method === "evener/archive/set") {
+							const change = params as { id: string; archived: boolean };
+							for (const catalog of Object.values(shape.catalogs ?? {}))
+								for (const project of catalog ?? []) if (project.key === change.id) project.is_archived = change.archived;
+						}
+						if (method === "evener/favorite/set") {
+							const change = params as { id: string; favorited: boolean };
+							for (const catalog of Object.values(shape.catalogs ?? {}))
+								for (const project of catalog ?? []) if (project.key === change.id) project.favorite = change.favorited;
+						}
+						resolve({ ok: true, navigation: { generation_id: "generation-test", targets: [] } } as never);
+					};
+					if (holdChanges) held.push(respond);
+					else respond();
+					return;
+				}
 				if (method === "thread/list") {
 					// Search answers with every session the hub has, as wire threads.
 					const sessions = [...shape.live.flat(), ...shape.needsYou, ...(shape.searchOnly ?? [])].filter(
@@ -226,6 +294,7 @@ function hub(
 	return {
 		client,
 		requests,
+		mutations,
 		invalidate: (sequence: number, targets: NavigationInvalidationTarget[]) => {
 			for (const listener of listeners)
 				listener({
@@ -271,7 +340,10 @@ function rerender(tree: ReactTestRenderer, nav: Navigation) {
 
 /** Every string a Text renders on its own. */
 function texts(tree: ReactTestRenderer): string[] {
-	return tree.root
+	return textsIn(tree.root);
+}
+function textsIn(root: ReactTestInstance): string[] {
+	return root
 		.findAll((node) => node.type === ("Text" as never))
 		.flatMap((node) => [node.props.children].flat().filter((child): child is string => typeof child === "string"));
 }
@@ -340,22 +412,256 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 	act(() => tree.unmount());
 });
 
-it("shows chips for the sections that have sessions, a row for every pinned category, and opens today's screens", async () => {
+const EMPTY_CATEGORY = "Touch and hold a session and choose Pin to category.";
+const pinHeaders = (tree: ReactTestRenderer) =>
+	tree.root.findAll((node) => node.props.testID === "pin-header").map((node) => node.props.accessibilityLabel);
+const menuLabels = (tree: ReactTestRenderer) =>
+	tree.root
+		.findAll(
+			(node) =>
+				node.type === ("Pressable" as never) &&
+				typeof node.props.accessibilityLabel === "string" &&
+				node.props.accessibilityLabel.endsWith(", category menu"),
+		)
+		.map((node) => node.props.accessibilityLabel);
+const pinSection = (tree: ReactTestRenderer, name: string) =>
+	tree.root.find(
+		(node) =>
+			node.props.testID === "pin-section" &&
+			node.findAll((child) => child.props.testID === "pin-header" && child.props.accessibilityLabel.startsWith(`${name}, `))
+				.length > 0,
+	);
+const opacity = (tree: ReactTestRenderer, name: string) => pinSection(tree, name).props.style.opacity;
+/** Opens a category's menu and chooses Delete; returns the confirmation. */
+function confirmDelete(tree: ReactTestRenderer, name: string) {
+	pressLabel(tree, `${name}, category menu`);
+	act(() => harness.actionSheet.mock.calls.at(-1)?.[1](1));
+	return alertRequests.at(-1);
+}
+
+it("shows chips for the sections that have sessions, and each pinned category inline with its sessions", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
-	connect(id, hub(fleet).client, "ready");
+	connect(id, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
 	expect(chipLabels(tree)).toEqual(["Live, 5 sessions, 2 need you", "Mine, 3 sessions", "Projects, 4 projects"]);
 	expect(texts(tree)).not.toContain("Archived · 0");
+	// Every category is a section in the hub's order, an empty one included
+	// (spec 7.1: a category is a place, and an empty one says how to pin to it).
+	expect(pinHeaders(tree)).toEqual(["Mine, 3 sessions", "Empty, 0 sessions"]);
+	for (const title of ["Kept note", "Old plan", "Release notes"]) expect(hasRow(tree, title)).toBe(true);
+	expect(textsIn(pinSection(tree, "Empty"))).toContain(EMPTY_CATEGORY);
+	expect(textsIn(pinSection(tree, "Mine"))).not.toContain(EMPTY_CATEGORY);
+	// The link rows to the category screens are gone.
+	expect(texts(tree)).not.toContain("Mine · 3");
+	act(() => rowTitled(tree, "Old plan").props.onPress());
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:plan", title: "Old plan" });
+	expect(seenMarkers(id).isSeen(oldPlan)).toBe(true);
+	// The header folds its category.
 	pressLabel(tree, "Mine, 3 sessions");
-	expect(nav.navigate).toHaveBeenLastCalledWith("PinnedSection", { hubId: id, sectionId: "pins-1", title: "Mine" });
-	// An empty category has no chip, but it keeps its row (spec 7.1: a
-	// category is a place, and an empty one says how to pin to it).
-	pressLabel(tree, "Empty, 0 sessions");
-	expect(nav.navigate).toHaveBeenLastCalledWith("PinnedSection", { hubId: id, sectionId: "pins-2", title: "Empty" });
-	pressLabel(tree, "Projects, 4 projects");
-	expect(nav.navigate).toHaveBeenLastCalledWith("Projects", { hubId: id, archived: false });
+	expect(hasRow(tree, "Kept note")).toBe(false);
+	expect(nav.navigate.mock.calls.map(([route]) => route)).not.toContain("PinnedSection");
+	// The Projects chip scrolls to the section on the Board; nothing opens another screen.
+	const projectsChip = tree.root.find(
+		(node) => node.props.testID === "chip" && node.props.accessibilityLabel === "Projects, 4 projects",
+	);
+	act(() => projectsChip.props.onPress());
+	expect(nav.navigate.mock.calls.map(([route]) => route)).not.toContain("Projects");
+	act(() => tree.unmount());
+});
+
+it("keeps a live pinned session in Live as well as in its category", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, pinned: { ...fleet.pinned, "pins-1": [working, keptNote, oldPlan] } }).client, "ready");
+	const tree = await mount(navigation());
+	const copies = tree.root.findAll(isRowTitled("Build docs"));
+	expect(copies).toHaveLength(2);
+	expect(bandHeaders(tree)).toContain("WORKING · 1");
+	act(() => tree.unmount());
+});
+
+it("unfolds a folded category when its chip is tapped", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	pressLabel(tree, "Mine, 3 sessions");
+	expect(hasRow(tree, "Kept note")).toBe(false);
+	const chip = tree.root.find(
+		(node) => node.props.testID === "chip" && node.props.accessibilityLabel === "Mine, 3 sessions",
+	);
+	act(() => chip.props.onPress());
+	expect(hasRow(tree, "Kept note")).toBe(true);
+	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "null")).toMatchObject({ "pin:pins-1": false });
+	act(() => tree.unmount());
+});
+
+it("renames a category from its menu, sending the trimmed name", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
+	const rename = (value: string) => {
+		pressLabel(tree, "Mine, category menu");
+		const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
+		expect(sheet).toEqual({
+			title: "Mine",
+			options: ["Rename", "Delete", "Cancel"],
+			destructiveButtonIndex: 1,
+			cancelButtonIndex: 2,
+		});
+		act(() => choose(0));
+		const [title, message, buttons, type, current] = harness.prompt.mock.calls.at(-1) ?? [];
+		expect([title, message, type, current]).toEqual(["Rename category", undefined, "plain-text", "Mine"]);
+		expect(buttons.map((button: { text: string; style?: string }) => [button.text, button.style])).toEqual([
+			["Cancel", "cancel"],
+			["Rename", undefined],
+		]);
+		act(() => buttons[1].onPress(value));
+	};
+	// A blank or unchanged name sends nothing, and neither does a long one.
+	rename("   ");
+	rename(" Mine ");
+	const alerts = alertRequests.length;
+	rename("x".repeat(81));
+	expect(alertRequests.slice(alerts).map((request) => request.title)).toEqual([
+		"Category names can be up to 80 characters.",
+	]);
+	expect(fake.mutations).toEqual([]);
+	rename("  Shipped  ");
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/pin-section/rename", params: { sectionId: "pins-1", name: "Shipped" } },
+	]);
+	act(() => tree.unmount());
+});
+
+it("deletes a category after the spec's confirmation", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const confirm = confirmDelete(tree, "Mine");
+	expect(confirm?.title).toBe("Delete “Mine”?");
+	expect(confirm?.message).toBe("Its sessions stay; they're only unpinned.");
+	expect(confirm?.buttons?.map((button) => [button.text, button.style])).toEqual([
+		["Cancel", "cancel"],
+		["Delete", "destructive"],
+	]);
+	expect(fake.mutations).toEqual([]);
+	act(() => confirm?.buttons?.[1].onPress?.());
+	await settle();
+	expect(fake.mutations).toEqual([{ method: "evener/pin-section/delete", params: { sectionId: "pins-1" } }]);
+	act(() => tree.unmount());
+});
+
+it("sends no delete for a category that left the catalog while its confirmation was up", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape = { ...fleet, pins: [...fleet.pins] };
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const confirm = confirmDelete(tree, "Mine");
+	shape.pins = [fleet.pins[1]];
+	// This fake hub answers every read at revision 1, so the change names none.
+	act(() => fake.invalidate(1, [{ kind: "pin_catalog" }]));
+	await settle();
+	expect(pinHeaders(tree)).toEqual(["Empty, 0 sessions"]);
+	act(() => confirm?.buttons?.[1].onPress?.());
+	await settle();
+	expect(fake.mutations).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("offers only Delete off iOS, where there is no text prompt", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	Platform.OS = "android";
+	try {
+		pressLabel(tree, "Mine, category menu");
+		const menu = alertRequests.at(-1);
+		expect(menu?.title).toBe("Mine");
+		expect(menu?.buttons?.map((button) => [button.text, button.style])).toEqual([
+			["Delete", "destructive"],
+			["Cancel", "cancel"],
+		]);
+		act(() => menu?.buttons?.[0].onPress?.());
+		expect(alertRequests.at(-1)?.title).toBe("Delete “Mine”?");
+	} finally {
+		Platform.OS = "ios";
+	}
+	act(() => tree.unmount());
+});
+
+it("hides ⋯ while disconnected, and a confirmation answered after the drop sends nothing", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const confirm = confirmDelete(tree, "Mine");
+	connect(id, null, "reconnecting");
+	rerender(tree, nav);
+	expect(menuLabels(tree)).toEqual([]);
+	// The categories stay on screen with their rows.
+	expect(pinHeaders(tree)).toEqual(["Mine, 3 sessions", "Empty, 0 sessions"]);
+	expect(hasRow(tree, "Kept note")).toBe(true);
+	act(() => confirm?.buttons?.[1].onPress?.());
+	await settle();
+	expect(fake.mutations).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("dims a category while its change is on its way, and hides every ⋯ until it lands", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet, undefined, undefined, { holdChanges: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(opacity(tree, "Mine")).toBe(1);
+	const mine = confirmDelete(tree, "Mine");
+	const empty = confirmDelete(tree, "Empty");
+	act(() => mine?.buttons?.[1].onPress?.());
+	await settle();
+	// The second confirmation was up before the first change went out;
+	// pressed while that change is pending, it sends nothing.
+	act(() => empty?.buttons?.[1].onPress?.());
+	await settle();
+	expect(fake.mutations).toEqual([{ method: "evener/pin-section/delete", params: { sectionId: "pins-1" } }]);
+	expect(opacity(tree, "Mine")).toBe(0.5);
+	expect(opacity(tree, "Empty")).toBe(1);
+	expect(menuLabels(tree)).toEqual([]);
+	fake.release();
+	await settle();
+	expect(opacity(tree, "Mine")).toBe(1);
+	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
+	act(() => tree.unmount());
+});
+
+it("never shows the journal's error, and hides ⋯ while a change can't be confirmed", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet, undefined, undefined, { refuse: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const confirm = confirmDelete(tree, "Mine");
+	act(() => confirm?.buttons?.[1].onPress?.());
+	await settle();
+	expect(fake.mutations).toHaveLength(1);
+	expect(menuLabels(tree)).toEqual([]);
+	expect(renderedText(tree)).not.toMatch(/Refresh|trying again|Could not confirm/);
+	expect(opacity(tree, "Mine")).toBe(1);
 	act(() => tree.unmount());
 });
 
@@ -497,11 +803,16 @@ it("reads nothing while connecting, and reads the Board once the connection is r
 	connect(id, fake.client, "ready");
 	rerender(tree, nav);
 	await settle();
+	// The Board's reads, its categories', and the Projects section's catalog.
+	// An empty organization journal needs no read before ⋯ shows.
 	expect(fake.requests.map((read) => read.section ?? read.resource).sort()).toEqual([
+		"catalog",
 		"live",
 		"manifest",
 		"needs_you",
 		"pin_catalog",
+		"pin_section",
+		"pin_section",
 	]);
 	expect(bandHeaders(tree)).toEqual(["NEEDS YOU · 2", "FINISHED · 1", "WORKING · 1", "Idle · 2"]);
 	act(() => tree.unmount());
@@ -1041,5 +1352,559 @@ it("reads nothing while blurred, and on refocus catches up and re-reads drafts",
 	await settle();
 	expect(manifestReads()).toBe(2);
 	expect(draftTags(rowTitled(tree, "Build docs"))).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+// Projects, Test runs and Archived (spec 7.1).
+const laptopSource = { id: "local", label: "Laptop", kind: "local", online: true };
+const parkSource = { id: "paradise-park", label: "paradise-park", kind: "appwire", online: false };
+const catalogCounts = (projects: number, archived: number, testRuns: number) => ({
+	projects: { count: projects },
+	archived_projects: { count: archived },
+	test_runs: { count: testRuns },
+});
+const fleetSections = { live: { count: 5 }, needs_you: { count: 2 }, pin_sections: { count: 2 } };
+const twoHosts = (counts = catalogCounts(1, 0, 0)) =>
+	manifest({ sources: [laptopSource, parkSource], sections: fleetSections, catalogs: counts });
+const evenerProject = (over: Partial<NavigationProjectSummary> = {}): NavigationProjectSummary => ({
+	key: "evener",
+	name: "evener",
+	working_dir: "/home/jesse/git/evener",
+	session_count: 2,
+	...over,
+});
+const localWork = session("local:lw", { title: "Local work", live: false, updated_at: minutesAgo(30) });
+const parkWork = session("paradise-park:pw", {
+	title: "Park work",
+	host_id: "paradise-park",
+	live: false,
+	updated_at: minutesAgo(40),
+});
+/** The Projects, Test runs and Archived headers, in screen order. */
+const sectionHeaders = (tree: ReactTestRenderer) =>
+	tree.root.findAll((node) => node.props.testID === "project-section-header").map(joinedText);
+const organizeControls = (tree: ReactTestRenderer) =>
+	tree.root.findAll(
+		(node) =>
+			node.type === ("Pressable" as never) &&
+			typeof node.props.accessibilityLabel === "string" &&
+			node.props.accessibilityLabel.startsWith("Organize by: "),
+	);
+const projectSection = (tree: ReactTestRenderer, section: string) =>
+	tree.root.find((node) => node.type === ("View" as never) && node.props.testID === `project-section:${section}`);
+/** The project row with this accessibility label, its first copy when hosts come first. */
+const projectRows = (tree: ReactTestRenderer, label: string) =>
+	tree.root.findAll(
+		(node) =>
+			node.type === ("Pressable" as never) &&
+			node.props.testID === "project-row" &&
+			node.props.accessibilityLabel === label,
+	);
+const catalogReads = (fake: ReturnType<typeof hub>) =>
+	fake.requests.filter((read) => read.resource === "catalog").map((read) => read.catalog);
+const pageReads = (fake: ReturnType<typeof hub>) =>
+	fake.requests.filter((read) => read.resource === "project_page").map((read) => `${read.tier}@${read.offset ?? 0}`);
+const rowOpacity = (node: ReactTestInstance) =>
+	(typeof node.props.style === "function" ? node.props.style({ pressed: false }) : node.props.style).opacity ?? 1;
+
+it("offers Organize by only once the hub names a second host, and saves the choice", async () => {
+	const single = hubId();
+	adoptedAnHourAgo(single);
+	connect(single, hub({ ...fleet, catalogs: { projects: [evenerProject()] } }).client, "ready");
+	const alone = await mount(navigation());
+	expect(sectionHeaders(alone)).toEqual(["PROJECTS"]);
+	expect(organizeControls(alone)).toEqual([]);
+	act(() => alone.unmount());
+
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, manifest: twoHosts(), catalogs: { projects: [evenerProject()] } }).client, "ready");
+	const tree = await mount(navigation());
+	expect(sectionHeaders(tree)).toEqual(["PROJECTS"]);
+	const [control] = organizeControls(tree);
+	expect(control.props.accessibilityLabel).toBe("Organize by: Project, then host");
+	expect(control.props.accessibilityHint).toBe("Changes to Host, then project");
+	expect(textsIn(control)).toEqual(["Project, then host"]);
+	expect(control.findAll((node) => node.type === ("SymbolView" as never)).map((node) => node.props.name)).toEqual([
+		"arrow.left.arrow.right",
+	]);
+	act(() => control.props.onPress());
+	expect(sectionHeaders(tree)).toEqual(["HOSTS"]);
+	expect(harness.kv.get(`evener.native.board-organize.${id}`)).toBe(JSON.stringify("host-project"));
+	const [flipped] = organizeControls(tree);
+	expect(flipped.props.accessibilityLabel).toBe("Organize by: Host, then project");
+	expect(flipped.props.accessibilityHint).toBe("Changes to Project, then host");
+	act(() => tree.unmount());
+});
+
+it("organized by host, shows each session of a shared project once, under its own host", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	harness.kv.set(`evener.native.board-organize.${id}`, JSON.stringify("host-project"));
+	const shared = evenerProject({ sources: ["local", "paradise-park"], default_expanded: true });
+	connect(
+		id,
+		hub({
+			...fleet,
+			manifest: twoHosts(),
+			catalogs: { projects: [shared] },
+			projectPages: { "evener:current": [localWork, parkWork] },
+		}).client,
+		"ready",
+	);
+	const tree = await mount(navigation());
+	expect(tree.root.findAll(isRowTitled("Local work"))).toHaveLength(1);
+	expect(tree.root.findAll(isRowTitled("Park work"))).toHaveLength(1);
+	// Laptop counts its sessions in Live and Needs you, once each; the offline host says so.
+	expect(textsIn(projectSection(tree, "projects"))).toEqual([
+		"HOSTS",
+		"Host, then project",
+		"Laptop",
+		"6 live",
+		"evener",
+		"Today",
+		"Local work",
+		"30m",
+		"paradise-park",
+		"Offline",
+		"evener",
+		"Today",
+		"Park work",
+		"40m",
+	]);
+	act(() => tree.unmount());
+});
+
+it("reads an unfolded project's pages once, reads nothing to fold it, and remembers the fold", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({
+		...fleet,
+		catalogs: { projects: [evenerProject()] },
+		projectPages: { "evener:current": [localWork] },
+	});
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(pageReads(fake)).toEqual([]);
+	expect(projectRows(tree, "evener")[0].props.accessibilityState).toEqual({ expanded: false });
+	pressLabel(tree, "evener");
+	await settle();
+	expect(pageReads(fake).sort()).toEqual(["archived@0", "current@0", "recent@0"]);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	pressLabel(tree, "evener");
+	await settle();
+	expect(hasRow(tree, "Local work")).toBe(false);
+	pressLabel(tree, "evener");
+	await settle();
+	expect(pageReads(fake)).toHaveLength(3);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	act(() => tree.unmount());
+	expect(JSON.parse(harness.kv.get(`evener.native.board-sections.${id}`) ?? "null")).toMatchObject({
+		"project:evener": false,
+	});
+	const again = await mount(nav);
+	expect(projectRows(again, "evener")[0].props.accessibilityState).toEqual({ expanded: true });
+	expect(hasRow(again, "Local work")).toBe(true);
+	act(() => again.unmount());
+});
+
+it("starts Test runs and Archived folded, reading neither catalog until it is unfolded", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({
+		...fleet,
+		manifest: manifest({ sources: [laptopSource], sections: fleetSections, catalogs: catalogCounts(1, 271, 3) }),
+		catalogs: {
+			projects: [evenerProject()],
+			test_runs: [{ key: "hub-test-env", name: "hub-test-env", session_count: 3 }],
+			archived_projects: [evenerProject({ key: "old-site", name: "old-site", is_archived: true })],
+		},
+	});
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(sectionHeaders(tree)).toEqual(["PROJECTS", "Test runs · 3", "ARCHIVED · 271"]);
+	expect(catalogReads(fake)).toEqual(["projects"]);
+	expect(projectRows(tree, "hub-test-env")).toHaveLength(0);
+	pressLabel(tree, "Test runs, 3 projects");
+	await settle();
+	expect(catalogReads(fake)).toEqual(["projects", "test_runs"]);
+	expect(projectRows(tree, "hub-test-env")).toHaveLength(1);
+	pressLabel(tree, "Archived, 271 projects");
+	await settle();
+	expect(catalogReads(fake)).toEqual(["projects", "test_runs", "archived_projects"]);
+	expect(projectRows(tree, "old-site")).toHaveLength(1);
+	// Folded again and reopened, a section reads nothing more.
+	pressLabel(tree, "Test runs, 3 projects");
+	pressLabel(tree, "Test runs, 3 projects");
+	await settle();
+	expect(catalogReads(fake)).toEqual(["projects", "test_runs", "archived_projects"]);
+	act(() => tree.unmount());
+});
+
+it("shows no section while the manifest counts none, reading no catalog", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, manifest: manifest({ sources: [laptopSource], catalogs: catalogCounts(0, 0, 0) }) });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(catalogReads(fake)).toEqual([]);
+	expect(sectionHeaders(tree)).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("shows no PROJECTS header before the manifest lands, and hides it once its catalog loads empty", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let holding = true;
+	const fake = hub(fleet, (read) => holding && (read.resource === "manifest" || read.section === "live"));
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(skeletonRows(tree)).toHaveLength(3);
+	expect(sectionHeaders(tree)).toEqual([]);
+	expect(catalogReads(fake)).toEqual([]);
+	holding = false;
+	fake.release();
+	await settle();
+	// The manifest counts 4 projects, but the catalog comes back empty.
+	expect(catalogReads(fake)).toEqual(["projects"]);
+	expect(sectionHeaders(tree)).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("keeps every project row on screen from a dropped client until the new client's reads land", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape = {
+		...fleet,
+		catalogs: { projects: [evenerProject({ default_expanded: true })] },
+		projectPages: { "evener:current": [localWork] },
+	};
+	connect(id, hub(shape).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	connect(id, null, "reconnecting");
+	rerender(tree, nav);
+	await settle();
+	expect(projectRows(tree, "evener")).toHaveLength(1);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	let holding = true;
+	const next = hub(shape, () => holding);
+	connect(id, next.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(catalogReads(next)).toEqual(["projects"]);
+	expect(projectRows(tree, "evener")).toHaveLength(1);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	holding = false;
+	next.release();
+	await settle();
+	expect(pageReads(next).sort()).toEqual(["archived@0", "current@0", "recent@0"]);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("pins a project to the top from its long-press menu, dimming it until the hub confirms", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, { holdChanges: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const [row] = projectRows(tree, "evener");
+	expect(rowOpacity(row)).toBe(1);
+	act(() => row.props.onLongPress());
+	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
+	expect(sheet).toEqual({ title: "evener", options: ["Pin to top", "Archive project", "Cancel"], cancelButtonIndex: 2 });
+	act(() => choose(0));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{ method: "evener/favorite/set", params: { kind: "project", id: "evener", favorited: true } },
+	]);
+	// While the change is out, the project dims and every organization action hides.
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
+	expect(menuLabels(tree)).toEqual([]);
+	fake.release();
+	await settle();
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
+	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
+	expect(fake.mutations).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("offers no menu for a project another host shares", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(
+		id,
+		hub({
+			...fleet,
+			manifest: twoHosts(),
+			catalogs: { projects: [evenerProject({ sources: ["local", "paradise-park"] })] },
+		}).client,
+		"ready",
+	);
+	const tree = await mount(navigation());
+	const [row] = projectRows(tree, "evener");
+	expect(row.props.onLongPress).toBeUndefined();
+	act(() => tree.unmount());
+});
+
+const recentRows = Array.from({ length: 32 }, (_, index) =>
+	session(`local:r${index}`, { title: `Recent ${index}`, live: false, updated_at: minutesAgo(2000 + index) }),
+);
+const longProject = {
+	...fleet,
+	catalogs: { projects: [evenerProject({ default_expanded: true })] },
+	projectPages: { "evener:recent": recentRows },
+};
+
+it("reads a tier's next page when its more row is pressed", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(longProject);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(texts(tree)).toContain("12 more");
+	pressLabel(tree, "12 more");
+	await settle();
+	expect(pageReads(fake)).toContain("recent@20");
+	expect(hasRow(tree, "Recent 31")).toBe(true);
+	expect(texts(tree)).not.toContain("12 more");
+	act(() => tree.unmount());
+});
+
+it("reads a tier's next page once its more row is at least half on screen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(longProject);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const scroller = tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
+	const more = tree.root.find((node) => node.props.testID === "project-more");
+	act(() => {
+		scroller.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
+		projectSection(tree, "projects").props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 1400 } } });
+		// 600 + 1000 is well past the 700pt viewport.
+		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 1000, width: 390, height: 44 } } });
+	});
+	await settle();
+	expect(pageReads(fake)).not.toContain("recent@20");
+	// Scrolled so only a quarter of the row shows: still nothing.
+	act(() =>
+		scroller.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 1611 - 700 }, layoutMeasurement: { width: 390, height: 700 } } }),
+	);
+	await settle();
+	expect(pageReads(fake)).not.toContain("recent@20");
+	// Half of it on screen.
+	act(() =>
+		scroller.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 1622 - 700 }, layoutMeasurement: { width: 390, height: 700 } } }),
+	);
+	await settle();
+	expect(pageReads(fake).filter((read) => read === "recent@20")).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("replaces the links to other screens with the sections themselves", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(
+		id,
+		hub({
+			...fleet,
+			manifest: manifest({ sources: [laptopSource], sections: fleetSections, catalogs: catalogCounts(1, 2, 0) }),
+			catalogs: { projects: [evenerProject()] },
+		}).client,
+		"ready",
+	);
+	const tree = await mount(navigation());
+	for (const gone of ["Projects ›", "Archived ›", "Projects · 1", "Archived · 2", "Reconnect", "Refresh"])
+		expect(texts(tree)).not.toContain(gone);
+	expect(sectionHeaders(tree)).toEqual(["PROJECTS", "ARCHIVED · 2"]);
+	act(() => tree.unmount());
+});
+
+const COULDNT_LOAD = "Couldn't load these sessions.";
+
+it("reads a project's failed tier again on its own: when the Board comes back into view, and when the project unfolds", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let recentFails = true;
+	const fake = hub(
+		{
+			...fleet,
+			catalogs: { projects: [evenerProject({ default_expanded: true })] },
+			projectPages: { "evener:current": [localWork] },
+		},
+		undefined,
+		(read) => recentFails && read.resource === "project_page" && read.tier === "recent",
+	);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const recentReads = () => pageReads(fake).filter((read) => read === "recent@0").length;
+	expect(texts(tree)).toContain(COULDNT_LOAD);
+	expect(recentReads()).toBe(1);
+	// Staying in view, nothing reads it again on a timer.
+	await advance(60_000);
+	expect(recentReads()).toBe(1);
+	setFocused(false);
+	await settle();
+	setFocused(true);
+	await settle();
+	expect(recentReads()).toBe(2);
+	expect(texts(tree)).toContain(COULDNT_LOAD);
+	recentFails = false;
+	pressLabel(tree, "evener");
+	await settle();
+	pressLabel(tree, "evener");
+	await settle();
+	expect(recentReads()).toBe(3);
+	expect(texts(tree)).not.toContain(COULDNT_LOAD);
+	expect(hasRow(tree, "Local work")).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("reads a failed catalog again when the Board comes back into view", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let catalogFails = true;
+	const fake = hub(
+		{ ...fleet, catalogs: { projects: [evenerProject()] } },
+		undefined,
+		(read) => catalogFails && read.resource === "catalog",
+	);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(catalogReads(fake)).toEqual(["projects"]);
+	expect(sectionHeaders(tree)).toEqual(["PROJECTS"]);
+	expect(projectRows(tree, "evener")).toHaveLength(0);
+	catalogFails = false;
+	setFocused(false);
+	await settle();
+	setFocused(true);
+	await settle();
+	expect(catalogReads(fake)).toEqual(["projects", "projects"]);
+	expect(projectRows(tree, "evener")).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("offers the project menu as an alert off iOS, archiving the project", async () => {
+	const { Platform } = (await import("react-native")) as unknown as { Platform: { OS: string } };
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, { holdChanges: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	Platform.OS = "android";
+	try {
+		act(() => projectRows(tree, "evener")[0].props.onLongPress());
+		const menu = alertRequests.at(-1);
+		expect(menu?.title).toBe("evener");
+		expect(menu?.buttons?.map((button) => [button.text, button.style])).toEqual([
+			["Pin to top", undefined],
+			["Archive project", undefined],
+			["Cancel", "cancel"],
+		]);
+		act(() => menu?.buttons?.[1].onPress?.());
+		await settle();
+	} finally {
+		Platform.OS = "ios";
+	}
+	expect(fake.mutations).toEqual([
+		{
+			method: "evener/archive/set",
+			params: { kind: "project", id: "evener", workingDir: "/home/jesse/git/evener", archived: true },
+		},
+	]);
+	act(() => tree.unmount());
+});
+
+const manyProjects = Array.from({ length: 70 }, (_, index) =>
+	evenerProject({ key: `project-${index}`, name: `project-${index}`, working_dir: `/home/jesse/git/project-${index}` }),
+);
+const manyProjectsFleet = {
+	...fleet,
+	manifest: manifest({ sources: [laptopSource], sections: fleetSections, catalogs: catalogCounts(70, 0, 0) }),
+	catalogs: { projects: manyProjects },
+};
+const projectCatalogPages = (fake: ReturnType<typeof hub>) =>
+	fake.requests.filter((read) => read.resource === "catalog").map((read) => read.offset ?? 0);
+
+it("reads the catalog's next page when its more projects row is pressed", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(manyProjectsFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(projectRows(tree, "project-49")).toHaveLength(1);
+	expect(projectRows(tree, "project-50")).toHaveLength(0);
+	pressLabel(tree, "20 more projects");
+	await settle();
+	expect(projectCatalogPages(fake)).toEqual([0, 50]);
+	expect(projectRows(tree, "project-69")).toHaveLength(1);
+	expect(texts(tree)).not.toContain("20 more projects");
+	act(() => tree.unmount());
+});
+
+it("reads the catalog's next page once its more projects row is at least half on screen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(manyProjectsFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const scroller = tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
+	const more = tree.root.find((node) => node.props.testID === "project-more-projects");
+	act(() => {
+		scroller.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
+		projectSection(tree, "projects").props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 2500 } } });
+		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 2400, width: 390, height: 44 } } });
+	});
+	await settle();
+	expect(projectCatalogPages(fake)).toEqual([0]);
+	// The row's top half is on screen.
+	act(() =>
+		scroller.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 3022 - 700 }, layoutMeasurement: { width: 390, height: 700 } } }),
+	);
+	await settle();
+	expect(projectCatalogPages(fake)).toEqual([0, 50]);
+	expect(projectRows(tree, "project-69")).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("archives a project from its long-press menu, dimming it until the hub confirms", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, catalogs: { projects: [evenerProject()] } }, undefined, undefined, { holdChanges: true });
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	act(() => projectRows(tree, "evener")[0].props.onLongPress());
+	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
+	expect(sheet.options).toEqual(["Pin to top", "Archive project", "Cancel"]);
+	act(() => choose(1));
+	await settle();
+	expect(fake.mutations).toEqual([
+		{
+			method: "evener/archive/set",
+			params: { kind: "project", id: "evener", workingDir: "/home/jesse/git/evener", archived: true },
+		},
+	]);
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(0.5);
+	expect(menuLabels(tree)).toEqual([]);
+	fake.release();
+	await settle();
+	expect(rowOpacity(projectRows(tree, "evener")[0])).toBe(1);
+	expect(menuLabels(tree)).toEqual(["Mine, category menu", "Empty, category menu"]);
+	expect(fake.mutations).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+it("drops the Projects chip once the projects catalog loads empty, as the section goes", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	// The manifest counts 4 projects, but the catalog comes back empty.
+	connect(id, hub(fleet).client, "ready");
+	const tree = await mount(navigation());
+	expect(sectionHeaders(tree)).toEqual([]);
+	expect(chipLabels(tree)).toEqual(["Live, 5 sessions, 2 need you", "Mine, 3 sessions"]);
 	act(() => tree.unmount());
 });

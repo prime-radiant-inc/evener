@@ -819,6 +819,14 @@ export interface EvenerThread {
    */
   askPending?: boolean;
   /**
+   * PendingQuestion is the first question of the session's pending ask and
+   * how many the ask holds (S1b). The daemon reads both from one sample of
+   * the pending set, so it is present exactly when AskPending is true; it is
+   * absent from an older daemon. Snapshot-only: thread/status/changed
+   * carries AskPending, and nothing carries the question's text.
+   */
+  pendingQuestion?: PendingQuestion;
+  /**
    * PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
    * cards for any sandbox-exemption escalations currently blocked on this session,
    * so a client entering / reconnecting to / not-having-seen-live this session
@@ -860,6 +868,14 @@ export interface EvenerThread {
    * carries it.
    */
   lastTurnEndedAt?: number;
+  /**
+   * LastMessage is the opening of the session's last agent message (S1d):
+   * one line of at most MaxMessageExcerptRunes, the agent's own words only,
+   * never its reasoning or a tool's output. Absent until the session has
+   * written a message, and from an older daemon. Snapshot-only: no
+   * notification carries it.
+   */
+  lastMessage?: string;
   /**
    * Subagents tallies a live root session's whole delegate tree (S3), read
    * from the root's delegate controller when the row is listed. It rides
@@ -2402,8 +2418,8 @@ export interface NavigationSessionSummary {
   /**
    * Tasks is the task line's facts ("Task 4 of 7 · Fix the settle/drain
    * race"). Absent for a session with no task list or an empty one, and for
-   * every session this hub has no live daemon entry for: ended sessions,
-   * in-process children, and rows from other hosts.
+   * every session with no live daemon entry: ended sessions and in-process
+   * children. A live session on another host carries its host's (S13b).
    */
   tasks?: NavigationTaskProgress;
   children: NavigationSessionSummary[];
@@ -2543,6 +2559,12 @@ export interface PendingMutation {
   turnId?: string;
   queueEntryIds?: string[];
   projectionState: string;
+}
+
+export interface PendingQuestion {
+  question: string;
+  options?: string[];
+  count: number;
 }
 
 export interface PinSection {

@@ -247,6 +247,12 @@ type SessionMeta struct {
 	// a rename or a mid-turn meta write. Zero until a turn has ended, and on
 	// metas written before the field existed.
 	LastTurnEndedAt time.Time `json:"last_turn_ended_at,omitzero"`
+	// LastMessage is the opening of the session's last agent message (S1d):
+	// one line cut to the wire's bound, recorded whenever the session writes
+	// an agent message and persisted with the next meta save, so an ended
+	// session's row and a restarted daemon still have it. Empty until the
+	// session has written one, and on metas written before the field existed.
+	LastMessage string `json:"last_message,omitempty"`
 	// JobTreeRootSessionID identifies the root session whose shared job/activity
 	// lifecycle revision this session participates in. For standalone/root
 	// sessions it is the session's own ID; descendants persist the inherited root
