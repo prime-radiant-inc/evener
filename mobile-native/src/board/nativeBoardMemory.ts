@@ -1,5 +1,6 @@
 import { Storage } from "expo-sqlite/kv-store";
 import { FoldedSections, forgetBoard, SeenMarkers } from "./boardMemory";
+import { BoardSeen, forgetHubSeenMarks, hubSeenMarks } from "./hubSeen";
 
 // One instance per hub, so every screen reading the Board's memory sees the
 // same in-memory state and the same subscribers.
@@ -15,6 +16,12 @@ export function seenMarkers(hubId: string): SeenMarkers {
 	return markers;
 }
 
+/** The Board's seen state for a hub: the hub's marker where rows carry it,
+ * the device's markers elsewhere (S4). */
+export function boardSeen(hubId: string): BoardSeen {
+	return new BoardSeen(seenMarkers(hubId), hubSeenMarks(hubId));
+}
+
 export function foldedSections(hubId: string): FoldedSections {
 	let sections = folded.get(hubId);
 	if (!sections) {
@@ -27,5 +34,6 @@ export function foldedSections(hubId: string): FoldedSections {
 export function forgetBoardForHub(hubId: string): void {
 	seen.delete(hubId);
 	folded.delete(hubId);
+	forgetHubSeenMarks(hubId);
 	forgetBoard(Storage, hubId);
 }
