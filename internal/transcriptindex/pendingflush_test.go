@@ -64,13 +64,14 @@ func call1(id string) schema.Turn {
 }
 
 // TestReopenThenTextlessCommunicateRecoversEarlierAssistantText: restoreBuilder
-// (run on a reopen) cannot recover lastAssistantText any more than it can
-// commCalls — both are builder state a targeted restore does not attempt to
-// reconstruct (see restoreBuilder). A communicate call that becomes pending
-// right after a reopen, from an assistant entry with no text of its own,
-// must still see the true earlier assistant text the whole-file projection
-// carries, so the echo check suppresses a message that duplicates it
-// (roborev finding on PR #2303, round 4, trigger (b)).
+// (run on a reopen) restores lastAssistantText from meta.LastAssistant* (see
+// restoreBuilder), the same fields it restores commCalls from. A communicate
+// call that becomes pending right after a reopen, from an assistant entry
+// with no text of its own, must still see the true earlier assistant text the
+// whole-file projection carries, so the echo check suppresses a message that
+// duplicates it (roborev finding on PR #2303, round 4, trigger (b)) — this
+// test asserts that restored state produces the same echo suppression as the
+// whole-file projection.
 func TestReopenThenTextlessCommunicateRecoversEarlierAssistantText(t *testing.T) {
 	fx := fixture{header: commTestHeader(), lines: []fixtureLine{
 		entryLine(user("start")),

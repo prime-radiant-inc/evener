@@ -116,6 +116,22 @@ func (p persistedPos) contributor() contributor {
 	return contributor{Offset: p.Offset, Ordinal: p.Ordinal, Length: p.Length}
 }
 
+// validatePersistedPos bounds a persisted position against the covered
+// transcript, the same way adopt bounds meta.HeaderOffset/HeaderLength: a
+// self-consistent but fabricated meta.json must not reach reader.entry's
+// make([]byte, length) with an enormous or negative length. Length 0 is the
+// sentinel for "no position" (see pendingRegistry's add), never read, so it
+// always passes.
+func validatePersistedPos(m meta, p persistedPos) error {
+	if p.Length == 0 {
+		return nil
+	}
+	if p.Offset < 0 || int64(p.Length) > maxLineBytes || p.Offset > m.Length || int64(p.Length) > m.Length-p.Offset {
+		return fmt.Errorf("%w: persisted position outside the covered transcript", errCorrupt)
+	}
+	return nil
+}
+
 // persistedCommCall is one builder.commCalls entry (see commState), persisted
 // so restoreBuilder can reconstruct it without a rebuild.
 type persistedCommCall struct {
@@ -296,6 +312,18 @@ func (x *Index) adopt(m meta) error {
 	if m.HeaderLength < 0 || m.HeaderOffset < 0 || m.HeaderLength > maxLineBytes ||
 		m.HeaderOffset > m.Length || m.HeaderLength > m.Length-m.HeaderOffset {
 		return fmt.Errorf("%w: header_offset/header_length outside the covered transcript", errCorrupt)
+	}
+	// Bound CommCalls[].persistedPos and LastAssistantPos the same way, before
+	// restoreBuilder's reader.entry allocates from them (see writeMeta):
+	// otherwise a self-consistent but fabricated meta.json could name a
+	// multi-gigabyte Length and OOM the process on read.
+	for _, c := range m.CommCalls {
+		if err := validatePersistedPos(m, c.persistedPos); err != nil {
+			return err
+		}
+	}
+	if err := validatePersistedPos(m, m.LastAssistantPos); err != nil {
+		return err
 	}
 	info, err := x.strings.file.Stat()
 	if err != nil {

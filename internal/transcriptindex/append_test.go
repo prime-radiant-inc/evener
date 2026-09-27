@@ -448,6 +448,16 @@ func TestCorruptSidecarRebuilds(t *testing.T) {
 			rewriteMetaField(t, dir, "header_length", `1099511627776`)
 			rewriteMetaField(t, dir, "header_offset", `0`)
 		}},
+		{"fabricated comm-call position", func(t *testing.T, dir string) {
+			// A pending communicate call's persisted position must be bounded
+			// the same way HeaderLength is: unvalidated, this would drive a
+			// multi-gigabyte allocation in reader.entry (roborev finding on
+			// PR #2545).
+			rewriteMetaField(t, dir, "comm_calls", `[{"id":"x","raw_args":"{}","offset":0,"ordinal":0,"length":4294967295,"turn_id":"t"}]`)
+		}},
+		{"fabricated last-assistant position", func(t *testing.T, dir string) {
+			rewriteMetaField(t, dir, "last_assistant_pos", `{"offset":0,"ordinal":0,"length":4294967295}`)
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
