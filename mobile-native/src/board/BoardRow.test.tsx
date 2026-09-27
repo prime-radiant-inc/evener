@@ -198,6 +198,52 @@ describe("a Board row (spec 7.2)", () => {
 		expect(symbols(pinned)).toContain("circle.fill");
 	});
 
+	it("draws a working row's meter from its activity read, and flat without one", () => {
+		const minutes = [0, 0, 1, 4, 9, 2, 5];
+		const read = mount({
+			item: item("working", { state: "active" }),
+			moving: true,
+			activity: { ref: "local:fix", minutes, runningSubagents: 0 },
+		});
+		expect(read.root.findByType(PulseMeter).props.perMinute).toEqual(minutes);
+		const unread = mount({ item: item("working", { state: "active" }), moving: true });
+		expect(unread.root.findByType(PulseMeter).props.perMinute).toBeUndefined();
+	});
+
+	it("says what a working row's activity read says in place of the children guess", () => {
+		const busy = item("working", {
+			state: "active",
+			children: [row({ ref: "local:child", state: "active" })],
+			more_subagents: 4,
+		});
+		const guessed = mount({ item: busy });
+		expect(textWith(guessed, "Waiting on 1 subagent (+4 more)")).toHaveLength(1);
+		const read = mount({ item: busy, activity: { ref: "local:fix", minutes: [1], runningSubagents: 3 } });
+		expect(textWith(read, "Waiting on 3 subagents")).toHaveLength(1);
+		expect(textWith(read, "Waiting on 1 subagent (+4 more)")).toEqual([]);
+	});
+
+	it("counts a working row's quiet time from its read, plus the time since that read landed", () => {
+		const tree = mount({
+			item: item("working", { state: "active" }),
+			activity: { ref: "local:fix", minutes: [0], runningSubagents: 0, quietForMs: 3 * 60_000 },
+			msSinceRead: 60_000,
+		});
+		const quiet = textWith(tree, "Quiet 4m")[0];
+		expect(styleOf(quiet)).toMatchObject({ color: palette.inkMid });
+	});
+
+	it("colors the whole May be stuck line in the attention ink", () => {
+		const tree = mount({
+			item: item("working", { state: "active" }),
+			activity: { ref: "local:fix", minutes: [0], runningSubagents: 0, quietForMs: 12 * 60_000 },
+			msSinceRead: 0,
+		});
+		const stuck = textWith(tree, "May be stuck · no updates for 12m")[0];
+		expect(styleOf(stuck)).toMatchObject({ fontSize: 15, color: palette.attentionInk });
+		expect(pressable(tree).props.accessibilityLabel).toContain("May be stuck · no updates for 12m");
+	});
+
 	it("grays the meter while disconnected", () => {
 		const tree = mount({ item: item("working", { state: "active" }), moving: true, connected: false });
 		expect(tree.root.findByType(PulseMeter).props.tone).toBe("gray");

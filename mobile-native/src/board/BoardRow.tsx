@@ -1,11 +1,11 @@
-import type { NavigationSessionSummary } from "@evener/appwire-client";
+import type { NavigationSessionSummary, SessionActivity } from "@evener/appwire-client";
 import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import type { ReactElement } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
-import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, whyLine } from "./attention";
+import { bandOf, type ClassifiedRow, type Hue, lastLine, stateWord, type Usual, whyLine } from "./attention";
 import { StateMark } from "./StateMark";
 
 export interface BoardRowProps {
@@ -20,6 +20,11 @@ export interface BoardRowProps {
 	usual: Usual;
 	hostLabel: (hostId: string) => string;
 	hasDraft: boolean;
+	/** S5's latest activity read for this session; absent before the Board's
+	 * poll answers for it, or on a hub that predates S5. */
+	activity?: SessionActivity;
+	/** How long ago that read landed, which quiet time keeps counting from. */
+	msSinceRead?: number | null;
 	now: number;
 	onOpen: (row: NavigationSessionSummary) => void;
 }
@@ -90,6 +95,9 @@ export function FoldChevron({ folded }: { folded: boolean }): ReactElement {
 	);
 }
 
+/** The ink a why line's hue draws in. */
+const hueInk = (palette: Palette, hue?: Hue) => (hue === "danger" ? palette.dangerInk : palette.attentionInk);
+
 const UNITS: Record<string, string> = { m: "minute", h: "hour", d: "day" };
 
 /** relativeAge's "2m" as VoiceOver should say it: "2 minutes". */
@@ -110,6 +118,8 @@ export function BoardRow({
 	usual,
 	hostLabel,
 	hasDraft,
+	activity,
+	msSinceRead,
 	now,
 	onOpen,
 }: BoardRowProps): ReactElement {
@@ -118,7 +128,7 @@ export function BoardRow({
 	const { row, state } = item;
 	const signal = variant === "signal";
 	const needsYou = signal && bandOf(state) === "needsYou";
-	const why = signal ? whyLine(item) : null;
+	const why = signal ? whyLine(item, activity, msSinceRead ?? 0) : null;
 	const last = signal ? lastLine(row, usual, hostLabel) : null;
 	const age = relativeAge(row.updated_at, now);
 	const word = stateWord(state);
@@ -143,7 +153,7 @@ export function BoardRow({
 			})}
 		>
 			<View style={{ height: lineOne, justifyContent: "center" }}>
-				<StateMark state={state} moving={moving} connected={connected} />
+				<StateMark state={state} moving={moving} connected={connected} perMinute={activity?.minutes} />
 			</View>
 			<View style={{ flex: 1, minWidth: 0 }}>
 				<View style={{ flexDirection: "row", alignItems: "flex-start", columnGap: 8 }}>
@@ -198,7 +208,7 @@ export function BoardRow({
 							marginTop: 2,
 							fontSize: 15 * scale,
 							lineHeight: 20 * scale,
-							color: why.word ? palette.inkHi : palette.inkMid,
+							color: why.word ? palette.inkHi : why.tone ? hueInk(palette, why.tone) : palette.inkMid,
 						}}
 					>
 						{why.word ? (
@@ -206,7 +216,7 @@ export function BoardRow({
 								<Text
 									style={{
 										fontWeight: "600",
-										color: why.hue === "danger" ? palette.dangerInk : palette.attentionInk,
+										color: hueInk(palette, why.hue),
 									}}
 								>
 									{why.word}

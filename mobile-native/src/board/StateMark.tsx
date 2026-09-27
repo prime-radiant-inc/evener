@@ -30,10 +30,14 @@ export function StateMark({
 	state,
 	moving = false,
 	connected = true,
+	perMinute,
 }: {
 	state: BoardState;
 	moving?: boolean;
 	connected?: boolean;
+	/** The meter's per-minute counts (S5's activity read); absent, the meter
+	 * shows its still fallback. */
+	perMinute?: readonly number[];
 }) {
 	const { palette } = useColors();
 	const mark = markFor(state, moving);
@@ -44,7 +48,7 @@ export function StateMark({
 			accessibilityLabel={mark ? stateWord(state) : undefined}
 		>
 			{mark === "meter" ? (
-				<PulseMeter tone={connected ? "alive" : "gray"} />
+				<PulseMeter tone={connected ? "alive" : "gray"} perMinute={perMinute} />
 			) : mark ? (
 				<SymbolView name={mark.name} tintColor={palette[mark.tint]} size={mark.size} />
 			) : null}
