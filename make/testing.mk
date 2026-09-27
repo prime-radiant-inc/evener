@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-native test-native-bundle native-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-native test-native-bundle native-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline test-hub-mcp test-hub-mcp-e2e
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so

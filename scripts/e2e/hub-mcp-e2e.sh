@@ -40,6 +40,7 @@ set -euo pipefail
 
 SCRIPT_NAME="hub-mcp-e2e"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/e2e-lib.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/scratch-lib.sh"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 keep=0
@@ -67,7 +68,13 @@ if [ -n "$stop_dir" ]; then
 		"$stop_dir/fakellm.pid" "$stop_dir/hub.pid"
 fi
 
-e2e_make_run_dir "evener-e2e-hub-mcp" ".$SCRIPT_NAME"
+# scratch_dir mints the run directory the way the repo's audit requires: a
+# recursive delete may never take a variable a caller can clobber, so the
+# teardown reclaims it with the no-argument scratch_rm instead of rm -rf.
+# The marker file matches what e2e_make_run_dir stamped, so --stop and the
+# reaper keep validating the same run directory.
+scratch_dir run "evener-e2e-hub-mcp"
+touch "$run/.$SCRIPT_NAME"
 e2e_setup_reaper "$run" "$SCRIPT_NAME" "$repo_root"
 
 cd "$repo_root"
@@ -191,5 +198,5 @@ echo "==> tearing down" >&2
 e2e_stop_owned_pid "$(cat "$run/hub.pid")" hub "$(basename "$run")"
 e2e_stop_owned_pid "$(cat "$run/fakellm.pid")" fakellm "$(basename "$run")"
 e2e_disarm_reaper
-rm -rf "$run"
+scratch_rm
 echo "HUB MCP E2E PASSED" >&2
