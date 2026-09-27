@@ -285,4 +285,93 @@ func TestRawArgs_Stream_FallbackOnNull(t *testing.T) {
 	}
 }
 
-// Ensure imports are used.
+func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	body := []byte(`{"id":"resp_1","status":"completed","model":"gpt-5.5","output":[` +
+		`{"id":"fc_1","type":"function_call","call_id":"call_1","name":"first","arguments":` + string(jsonStringToken(first)) + `},` +
+		`{"id":"fc_2","type":"function_call","call_id":"call_2","name":"second","arguments":` + string(jsonStringToken(second)) + `}` +
+		`]}`)
+
+	got := decodeRawArgsCompleteMany(t, body)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second)})
+}
+
+func TestRawArgs_Stream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	firstToken := string(jsonStringToken(first))
+	secondToken := string(jsonStringToken(second))
+	sseBody := "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n" +
+		"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"first\"}}\n\n" +
+		"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":" + firstToken + "}\n\n" +
+		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"first\",\"arguments\":" + firstToken + "}}\n\n" +
+		"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_2\",\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"second\"}}\n\n" +
+		"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_2\",\"delta\":" + secondToken + "}\n\n" +
+		"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"fc_2\",\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"second\",\"arguments\":" + secondToken + "}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"model\":\"gpt-5.5\",\"output\":[{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"first\",\"arguments\":" + firstToken + "},{\"id\":\"fc_2\",\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"second\",\"arguments\":" + secondToken + "}],\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n\n"
+
+	got := decodeRawArgsStreamMany(t, sseBody)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second)})
+}
+
+func decodeRawArgsCompleteMany(t *testing.T, body []byte) [][]byte {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	res := resolved(nil)
+	res.Transport = registry.Transport{Auth: registry.AuthBearer, BaseURL: srv.URL + "/v1", Endpoint: "/responses", StreamEndpoint: "/responses", ModelsEndpoint: "/models", CountTokensEndpoint: "/responses/input_tokens"}
+	res.Credential = registry.Credential{Value: "k-1", Source: "api_key"}
+	resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	return responseToolCallArguments(resp)
+}
+
+func decodeRawArgsStreamMany(t *testing.T, sseBody string) [][]byte {
+	t.Helper()
+	srv, _ := server(t, http.StatusOK, sseBody)
+	res := liveRes(srv, nil)
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(userReq("hi"), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final *llm.Response
+	for ev := range s.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventFinish {
+			final = ev.Response
+		}
+	}
+	if final == nil {
+		t.Fatal("stream ended without a finish event")
+	}
+	return responseToolCallArguments(*final)
+}
+
+func responseToolCallArguments(resp llm.Response) [][]byte {
+	calls := resp.ToolCalls()
+	args := make([][]byte, len(calls))
+	for i := range calls {
+		args[i] = calls[i].Arguments
+	}
+	return args
+}
+
+func assertRawArgsByIndex(t *testing.T, got, want [][]byte) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d tool calls, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("tool call %d Arguments = %q (% x), want %q (% x)", i, got[i], got[i], want[i], want[i])
+		}
+	}
+}
