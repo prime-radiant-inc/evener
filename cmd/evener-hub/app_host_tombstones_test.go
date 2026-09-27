@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -921,5 +922,41 @@ ssh = "gone.example"
 	added, _ := boot.cfg.hosts.Get("gone")
 	if added.Generation <= 5 {
 		t.Fatalf("re-add minted generation %d at or below the retained mark 5", added.Generation)
+	}
+}
+
+// TestHostTombstoneEntryNameMustMatchKey pins roborev's Low finding on the S11
+// review: the tombstone's nested effective-entry name is part of the record
+// shape this build writes (it always equals the key), so a record whose
+// `entry.name` disagrees — empty or another name — is refused loudly at load
+// instead of round-tripping verbatim as a shape the hub can never produce
+// (spec §6: "a reserved value whose shape this build cannot decode is refused
+// loudly before any rewrite").
+func TestHostTombstoneEntryNameMustMatchKey(t *testing.T) {
+	for _, entryName := range []string{"", "other"} {
+		dir := t.TempDir()
+		configPath := filepath.Join(dir, "hub.toml")
+		raw := hostTOMLBanner + `[generations."gone"]
+generation = 3
+incarnation_id = "00000000-0000-4000-8000-000000000001"
+presence_epoch = 4
+
+[tombstones."gone"]
+name = "gone"
+removed_at = "2026-09-20T00:00:00Z"
+origin = "hub.toml"
+generation = 3
+incarnation_id = "00000000-0000-4000-8000-000000000001"
+presence_epoch = 4
+rows_truncated = false
+` + "\n[tombstones.\"gone\".entry]\nname = " + strconv.Quote(entryName) + "\nssh = \"gone.example\"\n"
+		if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+			t.Fatalf("write hub.toml: %v", err)
+		}
+		if _, err := LoadConfig(configPath); err == nil {
+			t.Fatalf("a tombstone whose entry.name is %q loaded, want the loud refusal", entryName)
+		} else if !strings.Contains(err.Error(), "entry names") {
+			t.Fatalf("refusal = %v, want it to name the disagreeing entry name", err)
+		}
 	}
 }
