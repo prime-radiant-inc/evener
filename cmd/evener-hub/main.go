@@ -774,11 +774,22 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 // and the custody-first quarantine a corrupt store file earns belongs to the
 // crash-fencing slice. Until then this is the interim posture: the hub serves,
 // and host mutations commit without mirroring.
+//
+// The opened store also runs §3's boot reap: expired confirmation tokens are
+// dropped at startup, so a restart never leaves an unexpired-looking row behind
+// for a later pass to trust. A reap that cannot write is logged for the same
+// reason the mirror's failures are — the hub serves, and the next validate or
+// consume pass for a name reaps lazily anyway.
 func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
 	store, err := hostops.Open(hostops.StorePath(stateRoot))
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store not opened, host boundary records will not be mirrored: %v\n", err)
 		return nil
+	}
+	if reaped, err := store.ReapExpiredTokens(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its expired confirmation tokens were not reaped: %v\n", err)
+	} else if reaped > 0 {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d expired confirmation token(s)\n", reaped)
 	}
 	return store
 }

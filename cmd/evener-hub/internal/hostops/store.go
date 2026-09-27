@@ -100,6 +100,17 @@ type snapshot struct {
 	// that has mirrored no boundary yet, not a schema-invalid file. Every write
 	// emits it as an object.
 	Boundaries map[string]Boundary `json:"boundaries"`
+	// Tokens is the outstanding confirmation-token row set (deploy-pipeline §3):
+	// at most one row per host name, because minting supersedes. Like Boundaries
+	// it is optional on read — the key arrived after the store shipped, so a
+	// file without it, or with it null, is a store that has minted nothing —
+	// and every write emits it as an array.
+	Tokens []Token `json:"tokens"`
+	// WallClockHighWaterMark is the durable high-water wall clock (§3's rollback
+	// guard): the greatest wall-clock value any token pass has observed. It
+	// never moves backward, and the zero Time means no pass has observed a clock
+	// yet. It is optional on read for the same reason as Tokens.
+	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
 }
 
 // storeCell is the lock-and-state cell one store file's handlers share.
@@ -136,6 +147,12 @@ type Store struct {
 	fs     afero.Fs
 	faults storeFaults
 	cell   *storeCell
+	// clock is the token paths' clock seam (token.go): nil reads the real
+	// clock. It is per handle, like faults, so a test can drive token expiry,
+	// the wall-clock high-water mark and the rollback guard deterministically.
+	// The record paths keep reading nowUTC directly: their timestamps are
+	// display-only and never decide a race.
+	clock func() time.Time
 }
 
 // StorePath is the operation store's file under stateRoot, beside the hub's
@@ -512,6 +529,12 @@ type storeFile struct {
 	// Boundaries is optional on read (see snapshot.Boundaries): absent and null
 	// both decode to nil, which is "no boundary mirrored yet".
 	Boundaries map[string]Boundary `json:"boundaries"`
+	// Tokens is optional on read (see snapshot.Tokens): absent and null both
+	// decode to nil, which is "no token minted yet".
+	Tokens *[]tokenFile `json:"tokens"`
+	// WallClockHighWaterMark is optional on read: absent, null and the zero
+	// instant all mean no pass has observed a clock yet.
+	WallClockHighWaterMark time.Time `json:"wallClockHighWaterMark"`
 }
 
 // recordFile is the decode shape of one record. It carries the same fields as
@@ -634,12 +657,29 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 		}
 		records[i] = mapped
 	}
+	var tokens []Token
+	if file.Tokens != nil {
+		tokens = make([]Token, len(*file.Tokens))
+		for i, row := range *file.Tokens {
+			mapped, err := row.token()
+			if err != nil {
+				return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
+			}
+			tokens[i] = mapped
+		}
+	}
 	state := snapshot{
 		Version:                *file.Version,
 		Sequence:               *file.Sequence,
 		AllocatorHighWaterMark: *file.AllocatorHighWaterMark,
 		Records:                records,
 		Boundaries:             file.Boundaries,
+		Tokens:                 tokens,
+		// The mark is normalized like every stored timestamp: an offset form
+		// converts to UTC, and anything before the Unix epoch — including the
+		// year-one string a zero mark marshals to — reads as "no mark yet"
+		// (wallClockMark).
+		WallClockHighWaterMark: wallClockMark(file.WallClockHighWaterMark),
 	}
 	// Spec §8: "`createdAt`/`updatedAt` are stored UTC-normalized (`Z`-suffixed
 	// RFC3339; a stored offset form converts at write time)". Values this store
@@ -675,6 +715,11 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 		// the key is always present in a file this store wrote, so absent/null
 		// stays what it is — the pre-boundary file shape.
 		state.Boundaries = map[string]Boundary{}
+	}
+	if state.Tokens == nil {
+		// Same rule for the token rows: a store that has minted nothing writes an
+		// empty array, never null.
+		state.Tokens = []Token{}
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -878,13 +923,18 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 // opaque — a raw field's interior, whose schema the crash-fencing spec owns — so
 // its keys are not this store's to judge.
 var ownedObjectKeys = map[string]map[string]struct{}{
-	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries"),
+	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries",
+		"tokens", "wallClockHighWaterMark"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
 		"createdAt", "updatedAt", "hostRemoved", "sequence"),
 	"records[].result":     keysOf("ok", "message"),
 	"records[].progress[]": keysOf("ts", "message"),
 	"boundaries[]":         keysOf("generation", "incarnationId", "presenceEpoch"),
+	"tokens[]": keysOf("host", "value", "generation", "incarnationId", "entryHash",
+		"hubTomlFingerprint", "factsRevision", "factsCapturedAt", "targetPath",
+		"controllerRevision", "runningVersion", "runningHealthy", "processStartTime",
+		"freshnessBoundSec", "mintedAt", "expiresAt"),
 }
 
 // keysOf builds one canonical key set.
@@ -1221,6 +1271,15 @@ func validateSnapshot(state snapshot) error {
 			return err
 		}
 	}
+	// Token rows carry the same refuse-always rule: a row outside the schema a
+	// mint writes is never served, and the set-level rules (one row per host
+	// name, one row per value) hold for hand-edited files too. Where a row's
+	// capture timestamps sit relative to the durable mark is deliberately not a
+	// load rule: §3 makes that the read path's arm, which reads such a row
+	// expired instead of corrupt.
+	if err := validateTokenRows(state.Tokens); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1233,6 +1292,7 @@ func cloneSnapshot(state snapshot) snapshot {
 		out.Records[i] = cloneRecord(record)
 	}
 	out.Boundaries = maps.Clone(state.Boundaries)
+	out.Tokens = cloneTokens(state.Tokens)
 	return out
 }
 
@@ -1261,3 +1321,14 @@ func parseAllocatorID(id string) (uint64, error) {
 
 // nowUTC is the one clock the store reads: display-only timestamps.
 func nowUTC() time.Time { return time.Now().UTC() }
+
+// now is the clock the token paths read: the handle's own seam when a test set
+// one, the real clock otherwise. Token deadlines, facts ages and the wall-clock
+// high-water mark all read here, so one handle's passes cannot disagree about
+// what time it is.
+func (s *Store) now() time.Time {
+	if s.clock != nil {
+		return s.clock().UTC()
+	}
+	return nowUTC()
+}

@@ -176,6 +176,13 @@ const (
 	// entry's advancement of the registry generation retires the host's
 	// channel. Every live host is editable here. See HostUpdateParams.
 	MethodEvenerHostUpdate = "evener/host/update"
+	// MethodEvenerHostPlan plans one deploy against a named host and mints the
+	// single-use confirmation token evener/host/deploy consumes (deploy pipeline
+	// 08b §10). It is a mutation — it persists the token — so it admits like the
+	// settings mutations and refuses a remote origin. Its result is the
+	// HostPlanResult union: the plan plus token, or the no-token arm naming why
+	// nothing was minted. See HostPlanParams.
+	MethodEvenerHostPlan = "evener/host/plan"
 	// MethodEvenerHostPushCredentials copies the controller's local
 	// provider-instance keys to one named remote host (component 07c). The unit
 	// of the push is the local credentials-store entry; each key is sent
@@ -4350,6 +4357,146 @@ type HostRemoveParams struct {
 type HostRemoveResponse struct {
 	Host HostRow `json:"host"`
 }
+
+// HostPlanParams is the evener/host/plan payload (deploy pipeline 08b §10): the
+// component-03 source ID of the host to plan against. plan is a mutation — it
+// mints the token deploy consumes — so it admits like the settings mutations
+// and refuses a remote origin. Unknown names are InvalidParams.
+type HostPlanParams struct {
+	Name string `json:"name"`
+}
+
+// HostPlan is what the human confirms before a deploy (deploy pipeline 08b
+// §10): the host, the registry generation the plan was built from, the resolved
+// deploy target, the controller's own revision, whether a restart follows the
+// push, the digest and capture time of the refreshed preflight facts, the
+// host's own hub.toml entry fingerprint, and the probed running state.
+// Timestamps are RFC3339; `factsAgeSec` is how old the facts were when the plan
+// was built, in whole seconds. `runningProcessStartTime` is absent — never null
+// — when the probe carried none.
+type HostPlan struct {
+	Host                    string `json:"host"`
+	Generation              uint64 `json:"generation"`
+	TargetPath              string `json:"targetPath"`
+	ControllerRevision      string `json:"controllerRevision"`
+	RestartFollows          bool   `json:"restartFollows"`
+	FactsRevision           string `json:"factsRevision"`
+	HubTOMLFingerprint      string `json:"hubTomlFingerprint"`
+	FactsCapturedAt         string `json:"factsCapturedAt"`
+	FactsAgeSec             int64  `json:"factsAgeSec"`
+	RunningVersion          string `json:"runningVersion"`
+	RunningHealthy          bool   `json:"runningHealthy"`
+	RunningProcessStartTime string `json:"runningProcessStartTime,omitempty"`
+}
+
+// HostPlanStaleFacts is the no-token arm's explanation (deploy pipeline 08b
+// §10): the human-readable message, whether the host was attached when the plan
+// refused, and the machine-readable reason a client branches on.
+type HostPlanStaleFacts struct {
+	Message  string `json:"message"`
+	Attached bool   `json:"attached"`
+	Reason   string `json:"reason"`
+}
+
+// HostPlanPlanned is evener/host/plan's planned arm (deploy pipeline 08b §10):
+// the plan the human confirms plus the single-use token deploy consumes.
+type HostPlanPlanned struct {
+	Outcome string   `json:"outcome"`
+	Plan    HostPlan `json:"plan"`
+	Token   string   `json:"token"`
+}
+
+// HostPlanNoToken is evener/host/plan's no-token arm (deploy pipeline 08b §10):
+// nothing was minted. `terminal` is true exactly on the arms a retry cannot
+// clear on its own (controller-dirty, target-unwritable, target-missing-prereq,
+// target-unit-findings) and false on the retryable ones (unattached,
+// refresh-failed, probe-failed, handler-absent, remnant-open). `remnantId` is
+// present — never null — exactly on the remnant-open arm.
+type HostPlanNoToken struct {
+	Outcome    string             `json:"outcome"`
+	StaleFacts HostPlanStaleFacts `json:"staleFacts"`
+	Terminal   bool               `json:"terminal"`
+	RemnantID  string             `json:"remnantId,omitempty"`
+}
+
+// HostPlanResult is evener/host/plan's result union (deploy pipeline 08b §10):
+// exactly one arm is set. The embedded pointers make the union marshal as the
+// arm it carries — so `plan` and `token` are absent, never null, on the
+// no-token arm — while the catalog still carries one named Go struct per arm
+// (Methods' ResultArms).
+type HostPlanResult struct {
+	*HostPlanPlanned
+	*HostPlanNoToken
+}
+
+// MarshalJSON renders the one arm the union carries. The explicit marshaller is
+// what makes the wire honest: both arms carry an `outcome` field, and
+// encoding/json drops a field two same-depth embedded structs both declare — so
+// without this the discriminator would silently vanish from the bytes a client
+// branches on. Exactly one arm must be set; nothing is a programming error no
+// response may hide.
+func (u HostPlanResult) MarshalJSON() ([]byte, error) {
+	switch {
+	case u.HostPlanPlanned != nil && u.HostPlanNoToken != nil:
+		return nil, errors.New("appwire: evener/host/plan result carries both arms")
+	case u.HostPlanPlanned != nil:
+		return json.Marshal(u.HostPlanPlanned)
+	case u.HostPlanNoToken != nil:
+		return json.Marshal(u.HostPlanNoToken)
+	}
+	return nil, errors.New("appwire: evener/host/plan result carries no arm")
+}
+
+// UnmarshalJSON reads the arm the discriminator names, and refuses anything
+// else: a result whose `outcome` is neither value is not a plan this protocol
+// defines, so a client fails loudly instead of reading a zero-valued arm.
+func (u *HostPlanResult) UnmarshalJSON(raw []byte) error {
+	var probe struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return err
+	}
+	switch probe.Outcome {
+	case HostPlanOutcomePlanned:
+		arm := HostPlanPlanned{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostPlanPlanned, u.HostPlanNoToken = &arm, nil
+	case HostPlanOutcomeNoToken:
+		arm := HostPlanNoToken{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostPlanNoToken, u.HostPlanPlanned = &arm, nil
+	default:
+		return fmt.Errorf("appwire: evener/host/plan result carries outcome %q, want %q or %q",
+			probe.Outcome, HostPlanOutcomePlanned, HostPlanOutcomeNoToken)
+	}
+	return nil
+}
+
+// The two outcome values evener/host/plan's arms carry (deploy pipeline 08b
+// §10).
+const (
+	HostPlanOutcomePlanned = "planned"
+	HostPlanOutcomeNoToken = "no-token"
+)
+
+// The no-token reasons evener/host/plan's no-token arm carries (deploy pipeline
+// 08b §10), exactly as the spec spells them.
+const (
+	HostPlanReasonUnattached          = "unattached"
+	HostPlanReasonRefreshFailed       = "refresh-failed"
+	HostPlanReasonProbeFailed         = "probe-failed"
+	HostPlanReasonHandlerAbsent       = "handler-absent"
+	HostPlanReasonRemnantOpen         = "remnant-open"
+	HostPlanReasonControllerDirty     = "controller-dirty"
+	HostPlanReasonTargetUnwritable    = "target-unwritable"
+	HostPlanReasonTargetMissingPrereq = "target-missing-prereq"
+	HostPlanReasonTargetUnitFindings  = "target-unit-findings"
+)
 
 // HostNotificationParams is the evener/host/notification payload (component
 // 07a): one host-owned config notification re-emitted to the controller's

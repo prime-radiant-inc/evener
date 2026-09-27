@@ -6,12 +6,17 @@
 // (§7).
 //
 // What this package deliberately does not own, because the spec hands each to a
-// later slice: confirmation tokens (§3), dedup and the create-from-consume
-// write (§6), the per-host gate (§5), operations pagination (§8), retention and
-// compaction (§4), cross-file commit intents (§9), and the custody-first
-// quarantine of a corrupt store file (§4, crash-fencing spec). Its record
-// schema, states, one atomic write discipline, one store mutex, and load are
-// the substrate those paths stand on.
+// later slice: dedup and the create-from-consume write (§6), the per-host gate
+// (§5), operations pagination (§8), retention and compaction (§4), cross-file
+// commit intents (§9), and the custody-first quarantine of a corrupt store file
+// (§4, crash-fencing spec). Its record schema, states, one atomic write
+// discipline, one store mutex, and load are the substrate those paths stand on.
+//
+// The confirmation token's durable half (§3) lives in token.go: the row schema,
+// the mint write's supersede rule, the validate/consume pass, the lazy and boot
+// reaps, live-remove revocation, and the wall-clock rollback guard. What deploy
+// does with a consumed token — dedup, the probe epoch, the operation record —
+// belongs to the slices that own those paths.
 //
 // The per-host boundary record — the registry's current
 // {generation, incarnationId, presenceEpoch} triple per host name (§7), written

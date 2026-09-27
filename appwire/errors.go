@@ -85,7 +85,52 @@ const (
 	// client has no binding for it and still surfaces the removal as a failed
 	// mutation.
 	ErrorMarketplaceRemoveApplied ErrorInfo = "marketplaceRemoveApplied"
+	// ErrorStaleEntry marks a deploy-pipeline refusal whose subject drifted out
+	// from under the request: the resolved host entry, the resolved deploy
+	// target, the registry's (generation, incarnation id) pair, the host's own
+	// hub.toml entry fingerprint, the re-probed running revision or health, the
+	// token-bound facts age, or a concurrent terminal operation on the host
+	// (deploy pipeline 08b §11). It shares CodeConflict with genuine conflicts,
+	// so a client must match this discriminant and its Binding, never the code.
+	ErrorStaleEntry ErrorInfo = "stale-entry"
 )
+
+// StaleEntryBinding names which binding a stale-entry refusal fired on, exactly
+// as deploy pipeline 08b §11 spells each value.
+type StaleEntryBinding string
+
+const (
+	StaleEntryBindingEntry                StaleEntryBinding = "entry"
+	StaleEntryBindingTarget               StaleEntryBinding = "target"
+	StaleEntryBindingGeneration           StaleEntryBinding = "generation"
+	StaleEntryBindingHubTOMLFingerprint   StaleEntryBinding = "hub.toml-fingerprint"
+	StaleEntryBindingRunningVersion       StaleEntryBinding = "running-version"
+	StaleEntryBindingRunningHealth        StaleEntryBinding = "running-health"
+	StaleEntryBindingFactsAge             StaleEntryBinding = "facts-age"
+	StaleEntryBindingConcurrentTerminalOp StaleEntryBinding = "concurrent-terminal-op"
+	StaleEntryBindingPrunedGeneration     StaleEntryBinding = "pruned-generation"
+)
+
+// StaleEntryErrorData is a stale-entry refusal's data: the standard ErrorData
+// plus the binding that drifted, so a client re-plans or re-lists on the value
+// it reads instead of parsing prose.
+type StaleEntryErrorData struct {
+	ErrorData
+	Binding StaleEntryBinding `json:"binding"`
+}
+
+// StaleEntry is the refusal a deploy-pipeline path emits when a binding drifted.
+// binding is the half that moved; message is the hub's own prose, unchanged.
+func StaleEntry(binding StaleEntryBinding, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: StaleEntryErrorData{
+			ErrorData: ErrorData{EvenerErrorInfo: ErrorStaleEntry},
+			Binding:   binding,
+		},
+	}
+}
 
 type MutationOutcome string
 

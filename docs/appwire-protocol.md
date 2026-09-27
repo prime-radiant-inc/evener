@@ -201,6 +201,7 @@ no router (reserved).
 | `evener/host/status` | hub | `HostStatusParams` | `HostStatusResponse` | Returns one host's list row for a single named host; never dials. |
 | `evener/host/remove` | hub | `HostRemoveParams` | `HostRemoveResponse` | Deregisters one live host entry, stopping its supervisor and dropping its channel; every live host is removable here. |
 | `evener/host/update` | hub | `HostUpdateParams` | `HostUpdateResponse` | Edits one live host entry in place (every field but the name; the name is the target) and retires the host's channel with the identity it replaced; the edit is written into the machine-managed hub.toml. |
+| `evener/host/plan` | hub | `HostPlanParams` | `HostPlanPlanned \| HostPlanNoToken` | Plans one deploy against a named host and mints the single-use confirmation token evener/host/deploy consumes: refreshes the host's preflight facts without a gate, probes its running state, and answers with either the plan plus token (HostPlanPlanned) or the no-token arm (HostPlanNoToken) naming why nothing was minted and whether the refusal is terminal. |
 | `evener/host/pushCredentials` | hub | `HostPushCredentialsParams` | `HostPushCredentialsResponse` | Copies the controller's local provider-instance keys to one named remote host (component 07c): each local store key is joined to the host's own instance by name (the lookup folds case), and the HOST's own spelling of the matched entry is what travels as Provider to evener/auth/status and evener/auth/apiKey/conditionalSet, the host classifies and writes its own store, and each entry reports added/updated/skipped/failed. |
 | `evener/session/image` | hub | `SessionImageParams` | `SessionImageResponse` | Fetches one image out of the recipient hub's own local session state for the controller's host-qualified image routes (component 05): SHA addresses a replayed transcript image and Path a session-relative file inside the session's working directory; the sha branch enforces the 8 MiB bound while scanning, and the media type is re-derived from the bytes. Never an HTTP route. |
 
@@ -873,6 +874,59 @@ _(no fields)_
 | `host` | `string` |  |  |
 | `method` | `string` |  |  |
 | `params` | `jsontext.Value` | yes |  |
+
+
+### `HostPlan`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+| `generation` | `uint64` |  |  |
+| `targetPath` | `string` |  |  |
+| `controllerRevision` | `string` |  |  |
+| `restartFollows` | `bool` |  |  |
+| `factsRevision` | `string` |  |  |
+| `hubTomlFingerprint` | `string` |  |  |
+| `factsCapturedAt` | `string` |  |  |
+| `factsAgeSec` | `int64` |  |  |
+| `runningVersion` | `string` |  |  |
+| `runningHealthy` | `bool` |  |  |
+| `runningProcessStartTime` | `string` | yes |  |
+
+
+### `HostPlanNoToken`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `staleFacts` | `appwire.HostPlanStaleFacts` |  |  |
+| `terminal` | `bool` |  |  |
+| `remnantId` | `string` | yes |  |
+
+
+### `HostPlanParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+
+
+### `HostPlanPlanned`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `outcome` | `string` |  |  |
+| `plan` | `appwire.HostPlan` |  |  |
+| `token` | `string` |  |  |
+
+
+### `HostPlanStaleFacts`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `message` | `string` |  |  |
+| `attached` | `bool` |  |  |
+| `reason` | `string` |  |  |
 
 
 ### `HostPushCredentialsParams`

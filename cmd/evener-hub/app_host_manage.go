@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/appwire"
@@ -144,6 +145,22 @@ type hostManagerConfig struct {
 	// facts returns the preflight facts for the connection behind client.
 	// Nil leaves rows without preflight facts.
 	facts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
+	// planFacts refreshes one host's preflight facts for evener/host/plan
+	// (deploy pipeline 08b §6 step 1). It is the ungated refresh a plan is built
+	// from: the handler calls it on the attached channel and refuses the
+	// no-token `refresh-failed` arm on any error. Nil (tests, embedders, and a
+	// hub with no live channel) refuses `refresh-failed`.
+	planFacts func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error)
+	// planProbe probes one host's running state for evener/host/plan (§6 step
+	// 2), given the client the handler resolved for the host's live channel. Nil
+	// refuses the no-token `handler-absent` arm — the honest state until
+	// evener/host/running ships and the gate slice wires the gated probe.
+	planProbe func(ctx context.Context, host hostreg.Host, client *appwire.Client) (hubcore.HostRuntimeProbe, error)
+	// planControllerDirty reports whether the running controller's build is
+	// unverifiable (built from a dirty tree), the §6 terminal `controller-dirty`
+	// arm's condition. Nil reads buildinfo, the same signal the deploy paths
+	// refuse on (sshconn's errControllerDirty).
+	planControllerDirty func() bool
 	// state retains per-host attach state from the manager's lifecycle
 	// events plus the last-known facts of the last attached render, so
 	// offline and in-progress rows keep the metadata the wire contract
@@ -955,10 +972,44 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		clientIfAttached: cfg.RemoteHostClientIfAttached,
 		handshake:        cfg.RemoteHostHandshake,
 		facts:            cfg.RemoteHostFacts,
+		planFacts:        cfg.RemoteHostPlanFacts,
+		planProbe:        cfg.RemoteHostPlanProbe,
 		state:            newHostAttachState(),
 		mutating:         map[string]struct{}{},
 		logf:             logf,
 	}}
+	if m.cfg.planFacts == nil && manager != nil {
+		// The production refresh seam (deploy pipeline 08b §6 step 1): the
+		// ungated one-shot SSH preflight the manager runs against the host, read
+		// now and stamped with the instant the read returned. Reading the live
+		// channel's captured snapshot instead would let a token's freshness term
+		// measure from the wrong instant — the snapshot was taken whenever the
+		// channel attached, which can be arbitrarily long before the plan.
+		//
+		// It is deliberately an SSH execution rather than a read of the attached
+		// channel's snapshot: §6 step 1 defines the refresh that way ("the refresh
+		// is an SSH command execution, not [the probe]"), precisely so a plan's
+		// facts are read now instead of inherited from whenever the channel
+		// attached. The identity pairing the two round-trips could otherwise
+		// blur — one connection's facts against another registration's probe — is
+		// pinned twice: this seam refuses a preflight that answers for a different
+		// host name, and the plan's fence re-checks that the entry both legs were
+		// resolved from is still the registry's registration before it mints, so
+		// an entry that moved mid-plan refuses rather than pairing two
+		// registrations. A refresh that fails (an unreachable host, a dropped
+		// channel's transport) is the no-token `refresh-failed` arm, never a mint
+		// from facts nothing read.
+		m.cfg.planFacts = func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
+			preflight, err := manager.Preflight(ctx, host)
+			if err != nil {
+				return hubcore.HostPlanFacts{}, err
+			}
+			if preflight.Host != host.Name {
+				return hubcore.HostPlanFacts{}, fmt.Errorf("the preflight answered for host %q, not %q", preflight.Host, host.Name)
+			}
+			return hostPlanFactsFromPreflight(host, preflight, time.Now().UTC()), nil
+		}
+	}
 	// The file's records are read once, before anything else can mint: its
 	// retained marks seed the counters, so a host folded in below mints above
 	// every mark the file carries, and any live host the file carries no
@@ -1268,6 +1319,11 @@ func registerHostManageHandlers(server *appserver.Server, sources *appsource.Reg
 		}
 		return resp, err
 	}))
+	// evener/host/plan rides the same manager and the same registration-time
+	// origin guard the settings mutations do (app_host_ops.go): plan is a
+	// mutation — it mints and persists the confirmation token — so it admits
+	// exactly like them and never through a second, weaker path.
+	m.registerOpsHandlers(server)
 	return m
 }
 
@@ -2087,9 +2143,29 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	// re-persist an entry this removal already committed — the next start
 	// would resurrect the host this call is removing.
 	m.cfg.store.remove(host.Name)
+	// The removal also drops the host's outstanding confirmation tokens (§3:
+	// "live `remove` revokes every outstanding token row for the name"). The
+	// pendingStoreSync revocation *intent* is §9's; this is the durable effect
+	// it must carry, applied in its own atomic store write after the hub.toml
+	// commit — which cannot be unwound — so a failure is logged rather than
+	// returned. The rows that would survive it are inert: every deploy compares
+	// the token's bound (generation, incarnation id) with the registry's current
+	// pair, and this removal retires both halves, while a re-add mints a fresh
+	// pair that no older token can name.
+	// A teardown that later fails un-commits the removal above but not this
+	// revocation: the name stays live with no outstanding token, so the next
+	// deploy re-plans — the fail-closed direction, and the one that never leaves
+	// a live host a token that outlived its plan.
 	// The mark fences the name for the window the mutex is about to release.
 	m.markMutating(host.Name)
 	m.cfg.mu.Unlock()
+	// The revocation itself runs after the mutation mutex is released: it is a
+	// whole-file store write, and the store's own mutex (innermost, per spec §4's
+	// lock order) already serializes it against every other store write, so
+	// holding the manager's mutex across that file I/O would stall every
+	// concurrent add/list/status on one host's removal for no ordering gain. The
+	// mark set just above still fences the name for this window.
+	m.revokeHostTokens(host.Name)
 
 	// Teardown, mutex-free: with a manager wired, RemoveHost drops the
 	// registry entry, stops the supervisor, and clears the channel under the
