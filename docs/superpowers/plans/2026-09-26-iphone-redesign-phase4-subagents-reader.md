@@ -2603,7 +2603,7 @@ export function returnToSession(
    Once the hub takes a message for it (its run ended; a send resumes it), the composer takes its place back. While it works, the tray shows its line as on any session, with no Stop: a running subagent's read has no `interrupt` capability.
 3. **The row.** `flattenSubagents(snapshot.tree)` matched by `row.ref === params.ref`, from `useSubagentTree(hubId, coordinator.ref, coordinator.threadId)`. The Subagents list under this screen shares the same tree, so the row is there at once. With no row (the tree no longer lists it), the bar shows only "Open coordinator".
 4. **Liveness (ruling 9).** The Session follows this subagent's thread through its own binding. On focus, `tree.reload()`. While focused, a `thread/status/changed` or `turn/completed` for this subagent's ref calls `tree.reload()`, so a stop shows up here.
-5. **Nested subagents.** A `SubagentRow` opens `"Subagent"` for its subagent: under this session as the coordinator on a coordinator's own screen, and under the same coordinator on a subagent's screen.
+5. **Nested subagents.** A `SubagentRow` opens `"Subagent"` for its subagent: under this session as the coordinator on a coordinator's own screen, and under the same coordinator on a subagent's screen. On a subagent's screen, the Subagents chip and the ⋯ menu's Subagents (Task 6's entry points) open the coordinator's Subagents list, with `subagentOf`'s `{ ref, threadId, title }`: that list already shows every depth (spec 9), and the coordinator's tree is the one this screen follows.
 6. **Messages** read as on any session (ruling 24): no "From the coordinator" caption, and the Session's long-press menus as they are.
 7. **Documents.** A document chip (Task 18) opens the Reader on this subagent's own ref, which is also where its review goes (ruling 16).
 8. **Relaunch (ruling 21).** `locationForRoute` maps `"Subagent"` to `{ hubId, conversation: { ref: coordinator.ref, title: coordinator.title } }`.
@@ -2662,6 +2662,7 @@ it("goes back to the session when it's under this screen, and opens it otherwise
     - a running subagent whose read carries no capabilities (the hub's read-only alias): no field labelled "Message"; the bar shows "Ask coordinator to stop it" and "Open coordinator", and "Stop requested" with "Open coordinator" once a request is pending; the tray has no "Stop";
     - a done subagent whose read carries a past session's capabilities (`send` and `queue`): the field labelled "Message" shows, no bar shows, and typing "Try the other lock order" and pressing "Send" sends `turn/start` with the subagent's ref and that text;
     - "Open coordinator" pops back to the coordinator;
+    - the Subagents chip on a subagent's screen navigates to `"Subagents"` with the coordinator's `{ hubId, ref, threadId, title }`;
     - a `thread/status/changed` for this subagent's ref sends another `evener/jobs/list`;
     - no rendered text is "Retry", "Refresh", "Reconnect", "From the coordinator" or "Talk to it through its coordinator".
   - `ConversationScreen.send.test.tsx`: pressing a subagent row opens `"Subagent"` with that subagent and this session as its coordinator.
