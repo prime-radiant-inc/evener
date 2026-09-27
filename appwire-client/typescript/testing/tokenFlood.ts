@@ -307,7 +307,19 @@ export function hydrateFloodModel(ref: string): ThreadModel {
     source: "evener",
     evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
   };
-  const resp: ThreadReadResponse = { thread };
+  // Matches the flood notifications' own bootGeneration/epoch/incarnation
+  // (buildFloodStream, hydrateStreamingAgentMessage below): a hydrate with no
+  // snapshot at all takes hydrateThread's legacy (unversioned) branch, whose
+  // EMPTY_HISTORY bootGeneration ("") never equals a live frame's "1" -
+  // classifySignal reads that mismatch as a boot-generation replace and
+  // invalidates the thread on the very first frame, discarding every
+  // notification that follows instead of folding it.
+  const resp: ThreadReadResponse = {
+    thread,
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc_flood", length: 0 },
+  };
   return hydrateThread(resp, ref, 1000);
 }
 
