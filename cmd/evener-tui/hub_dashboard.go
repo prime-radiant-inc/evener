@@ -219,8 +219,8 @@ func dashboardRowLess(a, b hubRow) bool {
 	if ar != br {
 		return ar > br
 	}
-	// The dashboard's rows come from thread/list, whose hub rows carry the ask
-	// but no pending escalations, so a row here never knows of an approval.
+	// The dashboard shows no approvals: it reads the ask from its thread/list
+	// rows but not their pending escalations, so it ranks no approval either.
 	aBand, bBand := hubapi.NeedsYouBand(stateLabel(a.state), a.askPending, false), hubapi.NeedsYouBand(stateLabel(b.state), b.askPending, false)
 	if aBand != bBand {
 		return aBand > bBand
