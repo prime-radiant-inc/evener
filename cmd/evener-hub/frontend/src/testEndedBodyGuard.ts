@@ -43,11 +43,11 @@ export function runAsTheCurrentTest(runTest: () => Promise<void>, signal: AbortS
 // never disabled writes a property onto each promise its worker creates from
 // then on. vmThreads evaluates this module afresh for every test file, so each
 // file turns its own storage off once its tests are done; otherwise a worker
-// carries one live storage per file it has run. Before Node 24, turning it off
-// also takes the marker from a body still running then, so a wait it begins or
-// an event it fires after that is not stopped (a wait already under way still
-// is). By then no test in its file is left for it to act on, and the next file
-// runs in a VM context of its own.
+// carries one live storage per file it has run. On those versions, turning it
+// off also takes the marker from a body still running then, so a wait it
+// begins or an event it fires after that is not stopped (a wait already under
+// way still is). By then no test in its file is left for it to act on, and the
+// next file runs in a VM context of its own.
 export function stopMarkingTests(): void {
   currentTest.disable();
 }
