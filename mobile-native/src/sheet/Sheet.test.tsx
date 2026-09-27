@@ -61,6 +61,27 @@ describe("closing a sheet (spec 6)", () => {
 		expect(alertRequests).toEqual([]);
 	});
 
+	it("resets finishing once it leaves, so a second finish is judged on its own", () => {
+		const sheet = renderHook(() => useSheet({ dirty: true }));
+		sheet.result.current.finish();
+		act(() => guard.onPrevent?.({ data: { action: swipeDown } }));
+		expect(alertRequests).toEqual([]);
+
+		// A stale `finishing` flag would still read true here, bypassing the
+		// prompt for a swipe that never called finish(). It must not: the flag
+		// is a one-shot bypass for the finish that set it, not a standing
+		// license to skip every later dismissal on the same mounted sheet.
+		act(() => guard.onPrevent?.({ data: { action: swipeDown } }));
+		expect(alertRequests).toHaveLength(1);
+
+		// A genuine second finish still bypasses the prompt, on its own merits.
+		navigation.dispatch.mockClear();
+		sheet.result.current.finish();
+		act(() => guard.onPrevent?.({ data: { action: swipeDown } }));
+		expect(navigation.dispatch).toHaveBeenCalledWith(swipeDown);
+		expect(alertRequests).toHaveLength(1);
+	});
+
 	it("lets `then` remove the sheet when it leads somewhere else", () => {
 		const sheet = renderHook(() => useSheet({ dirty: true }));
 		const then = vi.fn();
