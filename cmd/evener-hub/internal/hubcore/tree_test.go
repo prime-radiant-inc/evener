@@ -593,6 +593,37 @@ func fuzzScenarioBuildTree_AttentionSortsLive(t *testing.T) {
 	}
 }
 
+// fuzzScenarioLiveTier_ApprovalRanksWithAwaiting: the Live tier sorts by
+// attention, and an approval waits on a person the way a question does while
+// its session keeps reporting "active" (the escalation blocks mid-turn), so
+// it sorts with the awaiting rows, ahead of the working ones. A failure still
+// ranks first, pending approval or not, and every row keeps its real state.
+func fuzzScenarioLiveTier_ApprovalRanksWithAwaiting(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01WORKING", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		{ID: "01APPROVAL", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		{ID: "01AWAIT", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+		{ID: "01ERR", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01WORKING", Status: appwire.ThreadStatusActive},
+		{PID: 2, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{PID: 3, SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting},
+		{PID: 4, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError, PendingEscalation: true},
+	}
+	tree := buildTree(metas, live)
+	got := make([]string, 0, len(tree.Live))
+	for _, node := range tree.Live {
+		got = append(got, node.ID+"="+node.State)
+	}
+	// Inside the awaiting rank the newer row leads, the tier's usual order.
+	want := []string{"01ERR=errored", "01APPROVAL=active", "01AWAIT=awaiting", "01WORKING=active"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("Live = %v, want %v", got, want)
+	}
+}
+
 func fuzzScenarioBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T) {
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
@@ -1128,6 +1159,34 @@ func fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {
 	// RollupAttn; pinning both legs of the switch case.
 	if proj.RollupAttn != 2 {
 		t.Errorf("RollupAttn = %d, want 2 (awaiting + warning)", proj.RollupAttn)
+	}
+}
+
+// fuzzScenarioBuildTree_RollupCountsAnApprovalAsAttention: a session blocked
+// on an approval keeps reporting "active", yet its task needs a person, so
+// the project header counts it in RollupAttn (not RollupLive) and its dot
+// goes to the needs-you "awaiting". A failed task keeps "errored" whether or
+// not an approval is also pending.
+func fuzzScenarioBuildTree_RollupCountsAnApprovalAsAttention(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01WORK", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01APPROVAL", UpdatedAt: now.Add(-time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01BROKEN", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/broken"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01WORK", Status: appwire.ThreadStatusActive},
+		{PID: 2, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{PID: 3, SessionID: "01BROKEN", Status: appwire.ThreadStatusSystemError, PendingEscalation: true},
+	}
+	tree := buildTree(metas, live)
+	evener := projectByName(t, tree, "evener")
+	if evener.RollupState != "awaiting" || evener.RollupLive != 1 || evener.RollupAttn != 1 {
+		t.Errorf("evener rollup = %q live=%d attn=%d, want \"awaiting\" live=1 attn=1", evener.RollupState, evener.RollupLive, evener.RollupAttn)
+	}
+	broken := projectByName(t, tree, "broken")
+	if broken.RollupState != "errored" || broken.RollupAttn != 1 {
+		t.Errorf("broken rollup = %q attn=%d, want \"errored\" attn=1", broken.RollupState, broken.RollupAttn)
 	}
 }
 
@@ -2363,6 +2422,38 @@ func fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T)
 		if got[i] != want[i] {
 			t.Fatalf("band order = %v, want %v", got, want)
 		}
+	}
+}
+
+// fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand pins the spec's one
+// ordering (principle 1, section 7.1): failed first, then the sessions blocked
+// on a person's answer, questions and approvals together and oldest waiting
+// first, then your-move. The approval's session keeps reporting "active" (the
+// escalation blocks mid-turn), so only its ApprovalPending can place it.
+func fuzzScenarioNeedsYou_ApprovalSharesTheQuestionBand(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01OLD_YOURMOVE", UpdatedAt: now.Add(-4 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ASK", UpdatedAt: now.Add(-1 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01APPROVAL", UpdatedAt: now.Add(-2 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ERR", UpdatedAt: now.Add(-3 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01OLD_YOURMOVE", Status: appwire.ThreadStatusAwaiting},
+		{PID: 2, SessionID: "01ASK", Status: appwire.ThreadStatusAwaiting, PendingAsk: true},
+		{PID: 3, SessionID: "01APPROVAL", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{PID: 4, SessionID: "01ERR", Status: appwire.ThreadStatusSystemError},
+	}
+	tree := buildTree(metas, live)
+	got := make([]string, 0, len(tree.NeedsYou))
+	for _, node := range tree.NeedsYou {
+		got = append(got, node.ID)
+	}
+	// The approval waits longer than the question, so it leads their shared
+	// band; in the lowest band it would trail even the older your-move row.
+	want := []string{"01ERR", "01APPROVAL", "01ASK", "01OLD_YOURMOVE"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("band order = %v, want %v", got, want)
 	}
 }
 

@@ -83,6 +83,7 @@ function onNavigationAttention(): void {
       title: changed.title,
       level,
       askPending: changed.askPending === true,
+      approvalPending: changed.approvalPending === true,
     });
   }
   if (prevNavigationAttention === null) {
