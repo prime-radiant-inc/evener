@@ -2,7 +2,7 @@
 // helpers both the agent and the doctor consume, so the two components no
 // longer re-implement ref formatting and bucket enumeration independently.
 //
-// SessionRefDialect is the single owner of the selector grammar the transcript
+// The dialect is the single owner of the selector grammar the transcript
 // read tools and the doctor accept. The dialect has three spellings, all
 // carrying a bare session id as their final token:
 //
@@ -37,12 +37,12 @@ package bucketref
 
 // LocalScheme is the "local:" prefix naming the current / override / scratch
 // bucket in a session ref. A "local:<sid>" ref parses identically to a bare
-// <sid> (both resolve to projectID="" and the same sid); see SessionRefDialect.
+// <sid> (both resolve to projectID="" and the same sid); see above.
 const LocalScheme = "local:"
 
 // ProjScheme is the "proj:" prefix naming a sibling project bucket in a session
 // ref. A "proj:<project-id>:<sid>" ref cuts at the LAST colon: session ids
 // never contain a colon (pinned by TestSessionIDGrammarCarriesNoColon), so the
 // final colon is always the sid boundary and a project id may itself contain
-// colons; see SessionRefDialect.
+// colons; see above.
 const ProjScheme = "proj:"

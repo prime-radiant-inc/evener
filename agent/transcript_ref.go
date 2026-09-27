@@ -8,7 +8,7 @@ import (
 )
 
 // encodeRef builds an opaque transcript ref using the shared session-ref
-// dialect (see agent/internal/bucketref.SessionRefDialect). An empty projectID
+// dialect (see agent/internal/bucketref). An empty projectID
 // means the current bucket (local:<id>); otherwise proj:<projectID>:<id>.
 func encodeRef(projectID, sessionID string) string {
 	if projectID == "" {
@@ -18,7 +18,7 @@ func encodeRef(projectID, sessionID string) string {
 }
 
 // decodeRef parses a ref into (projectID, sessionID) using the shared
-// session-ref dialect (see agent/internal/bucketref.SessionRefDialect). It is
+// session-ref dialect (see agent/internal/bucketref). It is
 // the deliberately stricter, model-facing subset: validIDToken rejects
 // colons/dots/spaces on top of the separators, so a ref the model emits for a
 // non-canonical bucket name is rejected at the agent read boundary rather than

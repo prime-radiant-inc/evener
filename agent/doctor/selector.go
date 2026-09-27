@@ -16,7 +16,7 @@ type selector struct {
 }
 
 // parseSelector parses a session selector in the shared session-ref dialect
-// (see agent/internal/bucketref.SessionRefDialect), which read_transcript
+// (see agent/internal/bucketref), which read_transcript
 // accepts: local:<sid>, proj:<project-id>:<sid>, or a bare <sid>. The empty
 // selector and "current" are rejected: a standalone forensic tool has no
 // current session, so the caller must name one. The sid is a strict

@@ -95,12 +95,13 @@ func EnumerateBuckets(projects string, opts ...func(*Options)) ([]Bucket, error)
 			continue // symlinked bucket dir → skip under RefuseSymlinks
 		}
 		if !info.IsDir() {
-			// Under FollowSymlinks a symlink-to-a-dir reports IsDir true
-			// (Lstat on the symlink returns the symlink's mode, but the
-			// doctor's isDir uses os.Stat which follows; match that by
-			// re-checking with Stat when following). Under RefuseSymlinks a
-			// symlink was already skipped above, so a non-dir here is a plain
-			// file and is skipped.
+			// Lstat reports IsDir() == false for a symlink-to-a-dir: Lstat
+			// returns the symlink's own mode, not the target's. The os.Stat
+			// re-check below is therefore required and load-bearing — it
+			// follows the symlink and admits a symlinked bucket dir under
+			// FollowSymlinks, mirroring the doctor's historical os.Stat-based
+			// isDir. Under RefuseSymlinks a symlink was already skipped above,
+			// so a non-dir here is a plain file and is skipped.
 			if o.symlinkPolicy == FollowSymlinks && info.Mode()&os.ModeSymlink != 0 {
 				if s, e := os.Stat(m); e == nil && s.IsDir() {
 					buckets = append(buckets, Bucket{Dir: m, ProjectID: filepath.Base(m)})
