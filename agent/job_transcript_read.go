@@ -34,8 +34,8 @@ var lstatJobOutputFile = os.Lstat
 
 func jobOutputOpenRoot(path string) string {
 	for candidate := filepath.Dir(filepath.Clean(path)); ; candidate = filepath.Dir(candidate) {
-		if stateHome := stateHomeFor(candidate); stateHome != "" {
-			return filepath.Join(stateHome, "evener")
+		if stateHomeFor(candidate) != "" {
+			return candidate
 		}
 		parent := filepath.Dir(candidate)
 		if parent == candidate {
@@ -328,8 +328,8 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	}
 	// Downstream output reads narrow the leaf window with their own
 	// Lstat→anchored descriptor walk→SameFile check, then pass that descriptor
-	// to jobstore. The descriptor walk pins each component beneath
-	// stateHome/evener, so an intermediate directory replaced by a symlink after
+	// to jobstore. The descriptor walk pins each component beneath the located
+	// project bucket, so an intermediate directory replaced by a symlink after
 	// this locator's pre-walk is refused at open time. The frozen path-only read
 	// seams cannot carry outInfo to that wrapper, so a regular-to-regular leaf
 	// replacement, or a fully consistent directory-tree rename, after this

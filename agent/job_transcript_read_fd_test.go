@@ -288,6 +288,15 @@ func TestOpenJobOutputFileOpensLegacyNamedBucket(t *testing.T) {
 	}
 }
 
+func TestJobOutputOpenRootUsesLegacyNamedBucket(t *testing.T) {
+	stateHome := t.TempDir()
+	bucket := filepath.Join(stateHome, "evener", "projects", "legacy:bucket")
+	path := filepath.Join(bucket, "sessions", "owner", "jobs", "output.log")
+	if got := jobOutputOpenRoot(path); got != bucket {
+		t.Fatalf("jobOutputOpenRoot() = %q, want bucket %q", got, bucket)
+	}
+}
+
 func TestOpenJobOutputFileRefusesRegularReplacementDuringOpen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "output.log")
 	if err := os.WriteFile(path, []byte("original\n"), 0o600); err != nil {
