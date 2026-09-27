@@ -42,14 +42,14 @@ func probeHostRunning(ctx context.Context, manager *sshconn.Manager, host hostre
 	timeout = hostProbeTimeoutFor(timeout)
 	channel, ok := manager.ChannelIfAttached(host.Name)
 	if !ok {
-		return hubcore.HostRuntimeProbe{}, fmt.Errorf("host %q has no live channel; connect it and plan again", host.Name)
+		return hubcore.HostRuntimeProbe{}, fmt.Errorf("%w: host %q has no live channel; connect it and plan again", errHostDetached, host.Name)
 	}
 	if client == nil || channel.Client() != client {
 		// A reconnect can replace the channel between the plan's resolution and
 		// this probe; the held gate cannot stop the supervisor's own reconnect
 		// from swapping a dropped channel. The probe refuses rather than
 		// pairing the resolved generation with a replacement's answer.
-		return hubcore.HostRuntimeProbe{}, fmt.Errorf("host %q's attached channel changed generation while the plan held its gate; plan again", host.Name)
+		return hubcore.HostRuntimeProbe{}, fmt.Errorf("%w: host %q's attached channel changed generation under the held gate; plan again", errHostDetached, host.Name)
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -63,7 +63,8 @@ func probeHostRunning(ctx context.Context, manager *sshconn.Manager, host hostre
 		// failures: a canceled caller must not be told the remote timed out.
 		switch {
 		case errors.Is(probeCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil:
-			return hubcore.HostRuntimeProbe{}, fmt.Errorf("probing host %q's running state timed out after %s: %w", host.Name, timeout, err)
+			return hubcore.HostRuntimeProbe{}, fmt.Errorf("%w: probing host %q's running state timed out after %s: %w",
+				errProbeTimedOut, host.Name, timeout, err)
 		case ctx.Err() != nil:
 			return hubcore.HostRuntimeProbe{}, fmt.Errorf("probing host %q's running state was canceled: %w", host.Name, err)
 		default:

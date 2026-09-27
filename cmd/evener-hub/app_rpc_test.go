@@ -12781,6 +12781,10 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		// persists the confirmation token — controller-local like the rest of
 		// the host surface, so a peer hub cannot plan against this hub's hosts.
 		appwire.MethodEvenerHostPlan,
+		// The deploy pipeline's operation starts (08b §6): controller-local
+		// mutations, refused to a remote origin exactly like plan.
+		appwire.MethodEvenerHostDeploy,
+		appwire.MethodEvenerHostRestart,
 		// The deploy pipeline's running probe (08b §10): served by every hub, and
 		// the one host method that admits the attached controller session
 		// instead of refusing it — a browser-origin or forwarded request is

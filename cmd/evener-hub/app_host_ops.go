@@ -325,7 +325,7 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 
 	// §6 step 2: the durable probe epoch first. Nothing is probed — and no
 	// remote write half can run — until the epoch is recoverable in the store.
-	epoch, err := m.persistPlanProbeEpoch(entry)
+	epoch, err := m.persistProbeEpoch(entry)
 	switch {
 	case err != nil && !hostops.RenameLanded(err):
 		// Nothing was written: no epoch, no probe, nothing launched.
@@ -362,7 +362,7 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	// §6 step 2: a probe epoch never outlives its plan call — an arm that did
 	// not mint deletes it. (A mint whose rename landed with a directory-sync
 	// failure is still the planned arm and already superseded it.)
-	m.dropPlanProbeEpoch(name, epoch)
+	m.dropProbeEpoch(name, epoch)
 	return result, err
 }
 
@@ -435,13 +435,14 @@ func hostBusyWireError(err error) error {
 	return appwire.HostBusyTransient(busy.Error())
 }
 
-// persistPlanProbeEpoch writes the plan's durable probe epoch (§6 step 2): its
-// own atomic store write, bound to the entry's current (generation, incarnation
-// id) pair, with the store assigning the per-host op sequence. A hub with no
-// operation store or no boot id cannot persist one, so it refuses — the honest
-// answer, because a probe without a durable epoch is exactly the unfenced write
-// the spec forbids.
-func (m *hubHostManager) persistPlanProbeEpoch(entry hostreg.Host) (hostops.ProbeEpoch, error) {
+// persistProbeEpoch writes one durable probe epoch for entry (§6): its own
+// atomic store write, bound to the entry's current (generation, incarnation id)
+// pair, with the store assigning the per-host op sequence. Plan, deploy and
+// restart all persist through here, so no probe path can present an epoch the
+// store never held. A hub with no operation store or no boot id cannot persist
+// one, so it refuses — the honest answer, because a probe without a durable
+// epoch is exactly the unfenced write the spec forbids.
+func (m *hubHostManager) persistProbeEpoch(entry hostreg.Host) (hostops.ProbeEpoch, error) {
 	if m.cfg.ops == nil {
 		return hostops.ProbeEpoch{}, errors.New("the host operation store is not configured")
 	}
@@ -456,17 +457,17 @@ func (m *hubHostManager) persistPlanProbeEpoch(entry hostreg.Host) (hostops.Prob
 	})
 }
 
-// dropPlanProbeEpoch deletes the plan's epoch on a failure path. The match is
-// exact, so a stale drop can never remove a row another call persisted, and a
-// drop after the mint superseded the row is a no-op. A drop that cannot write
-// is logged, not returned: the row left behind is inert and the next boot's
-// reap deletes it.
-func (m *hubHostManager) dropPlanProbeEpoch(name string, epoch hostops.ProbeEpoch) {
-	if m.cfg.ops == nil {
+// dropProbeEpoch deletes one probe epoch on a refusal path. The match is exact,
+// so a stale drop can never remove a row another call persisted, and a drop
+// after the mint (or the consume) superseded the row is a no-op. A drop that
+// cannot write is logged, not returned: the row left behind is inert and the
+// next boot's reap deletes it.
+func (m *hubHostManager) dropProbeEpoch(name string, epoch hostops.ProbeEpoch) {
+	if m.cfg.ops == nil || epoch.BootID == "" {
 		return
 	}
 	if err := m.cfg.ops.DropProbeEpoch(name, epoch.BootID, epoch.OpSeq); err != nil {
-		m.logf("host %q: the probe epoch %s/%d could not be dropped after a refused plan: %v",
+		m.logf("host %q: the probe epoch %s/%d could not be dropped after a refused operation: %v",
 			name, epoch.BootID, epoch.OpSeq, err)
 	}
 }
@@ -644,6 +645,12 @@ func (m *hubHostManager) controllerDirty() bool {
 // request, and the handler itself holds nothing.
 func (m *hubHostManager) registerOpsHandlers(server *appserver.Server) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostPlan, hostManageHandler(m.Plan))
+	// deploy and restart are mutations of the same surface and the same
+	// admission: the edge's auth admits the connection, the registration-time
+	// origin guard refuses a remote-originated request, and each handler runs
+	// its own fixed processing order (app_host_deploy.go).
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostDeploy, hostManageHandler(m.Deploy))
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostRestart, hostManageHandler(m.Restart))
 }
 
 // revokeHostTokens drops name's outstanding confirmation tokens (§3's live

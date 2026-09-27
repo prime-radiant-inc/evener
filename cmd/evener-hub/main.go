@@ -654,6 +654,13 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if web.hostManage != nil {
 		hostManageEvents = web.hostManage.observeEvent
 	}
+	// The deploy pipeline's operation workers run under the controller's
+	// lifetime, never an RPC's. On the way out they are cancelled and their
+	// records settle to `interrupted` (naming the shutdown) with their hosts'
+	// gates released, before the SSH manager below tears the channels down.
+	if web.hostManage != nil {
+		defer func() { web.hostManage.ShutdownHostOperations(operationsShutdownTimeout) }()
+	}
 	// Drain the AppWire RPC server on every exit path, tracing or not: the
 	// remote-admin fan-out is bound to appserver.Server.Lifetime(), and
 	// Shutdown is what cancels it, so a hub that only stopped its HTTP server
@@ -846,6 +853,14 @@ func openHostOpsStore(stateRoot string, stderr io.Writer) *hostops.Store {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its probe epochs were not reaped: %v\n", err)
 	} else if reapedEpochs > 0 {
 		_, _ = fmt.Fprintf(stderr, "[hub] host operation store reaped %d probe epoch(s)\n", reapedEpochs)
+	}
+	// §7's interrupted transition, before the store serves any request: a
+	// record a crash left pending/running is a terminal unknown outcome. A
+	// retry with the same operation ID gets the interrupted record back.
+	if interrupted, err := store.RecoverInterrupted(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store opened, but its in-flight operations were not moved to interrupted: %v\n", err)
+	} else if interrupted > 0 {
+		_, _ = fmt.Fprintf(stderr, "[hub] host operation store moved %d in-flight operation(s) to interrupted\n", interrupted)
 	}
 	return store
 }

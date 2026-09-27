@@ -105,6 +105,44 @@ const (
 	// an open `orphan-unverified` fence's non-teardown refusals — crash-fencing
 	// spec §8). The UI retries with backoff and shows no open/wait affordance.
 	ErrorHostBusyTransient ErrorInfo = "host-busy-transient"
+	// ErrorTokenMissing marks a deploy presenting a token the store holds no
+	// row for: nothing was minted, or the row is gone (consumed, superseded,
+	// revoked, or reaped). A consumed token presented again reads as this — a
+	// consumed row is deleted, and gone rows never validate (deploy pipeline
+	// 08b §§3, 6 step 4, 11).
+	ErrorTokenMissing ErrorInfo = "token-missing"
+	// ErrorTokenMismatched marks a presented value that is not a confirmation
+	// token of this store at all: outside the wire's token shape, or a live
+	// token bound to another host (deploy pipeline 08b §11).
+	ErrorTokenMismatched ErrorInfo = "token-mismatched"
+	// ErrorTokenSuperseded marks a value that was a token for the host but is
+	// no longer the host's current one: a later mint replaced the nonce, and
+	// the supersede-on-mint write deleted the row (deploy pipeline 08b §§3,
+	// 11). Shares CodeConflict with the other token refusals.
+	ErrorTokenSuperseded ErrorInfo = "token-superseded"
+	// ErrorTokenExpired marks a token whose deadline the store has observed
+	// passing, or a corrupt row whose own capture timestamp postdates the
+	// durable wall-clock mark (deploy pipeline 08b §§3, 6 step 4, 11).
+	ErrorTokenExpired ErrorInfo = "token-expired"
+	// ErrorConflictingOperationID marks a client operation ID already used up
+	// by a current-generation record of a different host or kind, or by a
+	// current-generation `host-removed` record (deploy pipeline 08b §§4, 11).
+	ErrorConflictingOperationID ErrorInfo = "conflicting-operation-id"
+	// ErrorHostDetached marks a deploy refused because the host's channel is
+	// gone — at the gated probe, or at a revalidation under the same gate.
+	// Token unconsumed, no record; the client Connects and re-plans (deploy
+	// pipeline 08b §§6, 11). Unavailable class.
+	ErrorHostDetached ErrorInfo = "host-detached"
+	// ErrorProbeFailed marks a deploy step-(3) running re-probe whose read
+	// failed, timed out, or was unauthenticated. Token unconsumed, no record
+	// (deploy pipeline 08b §§6 step 3, 11). Unavailable class. Distinct from
+	// plan's `probe-failed` no-token reason, which is never an envelope.
+	ErrorProbeFailed ErrorInfo = "probe-failed"
+	// ErrorRemnantOpen marks a deploy/restart/Ensure refusal because an open
+	// teardown remnant fences the name (deploy pipeline 08b §6 step 2, §11;
+	// remnant semantics are the registry spec's §6). Conflict class, with the
+	// blocking remnant's id in the data.
+	ErrorRemnantOpen ErrorInfo = "remnant-open"
 )
 
 // StaleEntryBinding names which binding a stale-entry refusal fired on, exactly
@@ -176,6 +214,102 @@ func HostBusyTransient(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorHostBusyTransient},
+	}
+}
+
+// tokenRefusal renders one of the four token refusals §11 pins in the conflict
+// class. They carry no data beyond the discriminator: the client branches on
+// the info value, and the hub's prose names what it saw.
+func tokenRefusal(info ErrorInfo, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: info},
+	}
+}
+
+// TokenMissing is §11's `token-missing` refusal: no row for the host, or the
+// row is gone.
+func TokenMissing(message string) WireError { return tokenRefusal(ErrorTokenMissing, message) }
+
+// TokenMismatched is §11's `token-mismatched` refusal.
+func TokenMismatched(message string) WireError { return tokenRefusal(ErrorTokenMismatched, message) }
+
+// TokenSuperseded is §11's `token-superseded` refusal.
+func TokenSuperseded(message string) WireError { return tokenRefusal(ErrorTokenSuperseded, message) }
+
+// TokenExpired is §11's `token-expired` refusal.
+func TokenExpired(message string) WireError { return tokenRefusal(ErrorTokenExpired, message) }
+
+// ConflictingOperationID is §11's `conflicting-operation-id` refusal: the
+// client operation ID is already used up by a current-generation record of a
+// different host or kind, or by a current-generation host-removed record.
+func ConflictingOperationID(message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorConflictingOperationID},
+	}
+}
+
+// HostDetached is §11's `host-detached` refusal: the host's channel is gone.
+// Token unconsumed, no record; the client Connects and re-plans.
+func HostDetached(message string) WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorHostDetached},
+	}
+}
+
+// The three probe-failure values §11's `probe-failed` data names.
+const (
+	ProbeFailureReadFailed      = "read-failed"
+	ProbeFailureTimedOut        = "timed-out"
+	ProbeFailureUnauthenticated = "unauthenticated"
+)
+
+// ProbeFailedErrorData is §11's `probe-failed` data: the host probed plus
+// which of the three failures it was.
+type ProbeFailedErrorData struct {
+	ErrorData
+	Host    string `json:"host"`
+	Failure string `json:"failure"`
+}
+
+// ProbeFailed is §11's `probe-failed` refusal (unavailable class): the deploy
+// step-(3) running re-probe read failed, timed out, or was unauthenticated.
+// Token unconsumed, no record.
+func ProbeFailed(host, failure, message string) WireError {
+	return WireError{
+		Code:    CodeUnavailable,
+		Message: message,
+		Data: ProbeFailedErrorData{
+			ErrorData: ErrorData{EvenerErrorInfo: ErrorProbeFailed},
+			Host:      host,
+			Failure:   failure,
+		},
+	}
+}
+
+// RemnantOpenErrorData is §11's `remnant-open` data: the id of the open
+// teardown remnant blocking the name.
+type RemnantOpenErrorData struct {
+	ErrorData
+	RemnantID string `json:"remnantId"`
+}
+
+// RemnantOpen is §11's `remnant-open` refusal (conflict class): an open
+// teardown remnant fences the name, past the dedup check and before any probe
+// or acquisition.
+func RemnantOpen(remnantID, message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: RemnantOpenErrorData{
+			ErrorData: ErrorData{EvenerErrorInfo: ErrorRemnantOpen},
+			RemnantID: remnantID,
+		},
 	}
 }
 

@@ -73,6 +73,11 @@ const (
 	// 3's re-plan refusal, which compares the age against the token-bound bound
 	// and never against a re-read owner knob.
 	StaleBindingFactsAge StaleBinding = "facts-age"
+	// StaleBindingPrunedGeneration is the operation-store dedup path's stale
+	// refusal: the request's intended (generation, incarnation id) pair is older
+	// than the registry's current pair and matches no retained record (§4, §11's
+	// `pruned-generation` value).
+	StaleBindingPrunedGeneration StaleBinding = "pruned-generation"
 )
 
 // StaleEntryError reports a token whose binding no longer matches the values a
@@ -399,16 +404,7 @@ func (s *Store) tokenPass(host, value string, consume bool) (Token, error) {
 		// Consume is delete in the same write that carries the reap and the mark.
 		next.Tokens = dropTokenValue(next.Tokens, value)
 	}
-	reaped := false
-	kept := make([]Token, 0, len(next.Tokens))
-	for _, row := range next.Tokens {
-		if row.Host == host && row.expired(effectiveNow, mark) {
-			reaped = true
-			continue
-		}
-		kept = append(kept, row)
-	}
-	next.Tokens = kept
+	reaped := reapHostTokensLocked(&next, host, effectiveNow, mark)
 
 	// §6 step 2 calls ValidateToken a fail-fast readability check, and §1 defines
 	// the mark as "the greatest wall-clock value observed by any token mint or
@@ -444,6 +440,26 @@ func (s *Store) tokenPass(host, value string, consume bool) (Token, error) {
 		}
 	}
 	return matched, passErr
+}
+
+// reapHostTokensLocked drops host's rows whose deadline the effective now has
+// passed — §3's lazy reap, shared by every validate/consume pass so one pass's
+// reap rule can never drift from another's. It reports whether it dropped a row,
+// which is what makes a pass that reaps nothing a read rather than a write.
+func reapHostTokensLocked(next *snapshot, host string, effectiveNow, mark time.Time) bool {
+	kept := make([]Token, 0, len(next.Tokens))
+	reaped := false
+	for _, row := range next.Tokens {
+		if row.Host == host && row.expired(effectiveNow, mark) {
+			reaped = true
+			continue
+		}
+		kept = append(kept, row)
+	}
+	if reaped {
+		next.Tokens = kept
+	}
+	return reaped
 }
 
 // classifyToken is the discriminator set of §6 step 4 applied to the store's

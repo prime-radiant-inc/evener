@@ -100,7 +100,20 @@ type Gate interface {
 	// release func that must be called exactly once; on a held gate it returns
 	// *BusyError naming the current holder. Nothing waits.
 	TryAcquire(host string, holder Holder) (release func(), err error)
+	// HoldAs replaces the holder published for host's currently-held gate. The
+	// deploy/restart paths acquire their host's gate before their operation
+	// record exists — the probe window has no record yet — and call HoldAs once
+	// the atomic consume-and-create write names the record, so a contender's
+	// busy refusal upgrades from the recordless transient form to the operation
+	// class naming the record id. A gate that is free (no hold) has no holder to
+	// update: ErrGateNotHeld.
+	HoldAs(host string, holder Holder) error
 }
+
+// ErrGateNotHeld reports a promotion attempt against a gate nobody holds: there
+// is no hold to update, so the caller's own hold must have ended (or never
+// started).
+var ErrGateNotHeld = errors.New("hostops: the per-host gate is not held")
 
 // ProcessGate is the standalone in-process Gate: one mutex per host name,
 // reference-counted so a name with no holder or waiter does not leak an entry,
@@ -115,11 +128,13 @@ type ProcessGate struct {
 // gateHost is one host's gate cell: the gate mutex itself, the live-user
 // reference count that keeps the cell alive while anyone holds or acquires it,
 // and the current holder. refs is guarded by the owning ProcessGate's mu; mu is
-// the gate, and holder is published atomically so the contended read never
-// needs the map lock.
+// the gate, holder is published atomically so the contended read never needs
+// the map lock, and held reports whether the gate is currently held — the flag
+// HoldAs checks without disturbing the holder a contender may be about to read.
 type gateHost struct {
 	mu     sync.Mutex
 	refs   int
+	held   atomic.Bool
 	holder atomic.Pointer[Holder]
 }
 
@@ -158,6 +173,7 @@ func (g *ProcessGate) TryAcquire(host string, holder Holder) (func(), error) {
 		g.dropRef(name, entry)
 		return nil, Busy(name, held)
 	}
+	entry.held.Store(true)
 	// The holder is published as the acquisition's very next step: a contender
 	// that fails TryLock in the instant before the store reads the zero Holder
 	// and gets the safe generic transient form, never a wrong operation id.
@@ -169,6 +185,7 @@ func (g *ProcessGate) TryAcquire(host string, holder Holder) (func(), error) {
 	return func() {
 		once.Do(func() {
 			entry.holder.Store(nil)
+			entry.held.Store(false)
 			entry.mu.Unlock()
 			g.dropRef(name, entry)
 		})
@@ -186,4 +203,33 @@ func (g *ProcessGate) dropRef(name string, entry *gateHost) {
 	if entry.refs == 0 {
 		delete(g.hosts, name)
 	}
+}
+
+// HoldAs implements Gate: it publishes holder for name's currently-held gate.
+// The entry lookup takes a live-user reference for the duration, so a released
+// gate cannot drop the cell under the promotion; the held flag is tested before
+// the holder is published, so a promotion can never name an operation for a
+// gate nobody holds. A gate that is free — or a name with no gate at all —
+// refuses with ErrGateNotHeld.
+func (g *ProcessGate) HoldAs(host string, holder Holder) error {
+	name := strings.TrimSpace(host)
+	if name == "" {
+		return errors.New("hostops: a gate promotion needs a host name")
+	}
+	g.mu.Lock()
+	entry := g.hosts[name]
+	if entry == nil {
+		g.mu.Unlock()
+		return fmt.Errorf("%w: host %q", ErrGateNotHeld, name)
+	}
+	entry.refs++
+	g.mu.Unlock()
+
+	if !entry.held.Load() {
+		g.dropRef(name, entry)
+		return fmt.Errorf("%w: host %q", ErrGateNotHeld, name)
+	}
+	entry.holder.Store(&holder)
+	g.dropRef(name, entry)
+	return nil
 }
