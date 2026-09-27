@@ -46,9 +46,19 @@ async function call(name, args) {
 }
 
 function cursorOf(text) {
-  const match = text.match(/activity_cursor: (\d+)/);
+  // The cursor is "<epoch>:<seq>": the epoch names the server process (a
+  // restart mints a new one), the seq its position in that process's stream.
+  // since takes the whole string back verbatim; only seq comparisons need it
+  // split, so a numeric parse here would silently read the epoch's digits.
+  const match = text.match(/activity_cursor: ([0-9a-f]+:\d+)/);
   assert.ok(match, `expected an activity_cursor in:\n${text}`);
-  return Number(match[1]);
+  return match[1];
+}
+
+function cursorParts(cursor) {
+  const match = /^([0-9a-f]+):(\d+)$/.exec(cursor);
+  assert.ok(match, `expected an "<epoch>:<seq>" activity_cursor, got "${cursor}"`);
+  return { epoch: match[1], seq: Number(match[2]) };
 }
 
 // waitFor repeatedly waits for activity until the accumulated events match,
@@ -78,8 +88,15 @@ async function waitFor(pattern, { refs, groups, since, timeoutSeconds = 30, budg
 const overview = await call("hub_overview", {});
 assert.match(overview, /hub: evener-hub .+ \(source local\) at .* — connected/);
 assert.match(overview, /daemons:/);
-assert.equal(cursorOf(overview), 0);
+const { epoch, seq } = cursorParts(cursorOf(overview));
+assert.equal(seq, 0, "the stream position starts at 0 before any event");
+// The catalog read is part of orienting: list_models renders exactly the
+// model strings start_session accepts, so the fake provider the workers
+// will run must appear there.
+const models = await call("list_models", {});
+assert.match(models, /- fake\/fake-test-model\b/);
 console.log("ok hub_overview");
+console.log("ok list_models renders the model start_session accepts");
 
 // 2. Delegate: start a worker on the fake provider. Three held rounds then
 // the turn ends, so there is a real turn to watch, steer inside, and read.
@@ -98,7 +115,9 @@ console.log(`ok start_session → ${worker}`);
 const startWatch = await waitFor("\\[turns\\].*: turn started", { refs: [worker] });
 assert.match(startWatch.text, /\[turns\] .*: turn started/);
 const cursor = startWatch.cursor;
-assert.ok(cursor > 0, "the activity cursor advanced past 0");
+const watched = cursorParts(cursor);
+assert.ok(watched.seq > 0, "the activity cursor advanced past 0");
+assert.equal(watched.epoch, epoch, "one server process serves this workflow, so one epoch");
 console.log("ok wait_for_activity saw the turn start");
 
 // 4. Steer mid-turn: the worker is inside its held rounds, so auto mode must
@@ -150,6 +169,19 @@ assert.match(fleet, /notes-worker/);
 assert.match(fleet, /audit-worker/);
 console.log("ok list_sessions shows the fleet");
 
+// 9b. Rename the second worker: the echo must carry old -> new, and the
+// fleet must show the new label — a rename nothing reports is a rename
+// that did not happen.
+const renameOut = await call("rename_session", { ref: refTwo, name: "audit-worker-retitled" });
+assert.match(renameOut, new RegExp(`renamed ${refTwo}: "audit-worker" -> "audit-worker-retitled"`));
+const fleetRenamed = await call("list_sessions", {});
+assert.match(fleetRenamed, /audit-worker-retitled/);
+console.log("ok rename_session retitled the second worker");
+
+// resume_session is deliberately not exercised: reaching it for real needs
+// the hub's recovery path to halt a live session, which nothing in this
+// fakellm harness can trigger without faking the very state under test.
+
 // 10. Search finds the worker by its prompt.
 const search = await call("search_sessions", { query: "parser mention" });
 assert.match(search, new RegExp(worker));
@@ -168,16 +200,27 @@ for (const ref of [worker, refTwo]) {
 }
 
 // 13. Honest quiet: a dormant session (no prompt, so nothing ever runs)
-// produces no events after its spawn settles, so a wait scoped to it and
+// produces no WORK after its spawn settles, so a wait scoped to it and
 // the current cursor must report that honestly rather than hanging or
-// inventing activity. Stopping the workers above would make waits on THEM
-// see their own closing events, which is exactly the noise this check must
-// not depend on.
+// inventing activity. The wait filters to the turns group on purpose:
+// the hub's attention watcher emits idle→idle bookkeeping for a fresh
+// session at a timing of its own, and since the attention-fix those
+// events genuinely match a wait on the session — the quiet under test is
+// "no work happened", not "the hub stayed silent about everything".
+// Stopping the workers above would make waits on THEM see their own
+// closing events, which is exactly the noise this check must not
+// depend on.
 const dormantStart = await call("start_session", { cwd: workspace, model: "fake/fake-test-model" });
+assert.match(dormantStart, /\(dormant: no prompt, so nothing runs until you send_message\)/);
 const dormant = dormantStart.match(/started (local:[A-Za-z0-9_-]+)/)[1];
 const quietCursor = cursorOf(dormantStart);
-const quiet = await call("wait_for_activity", { refs: [dormant], since: quietCursor, timeout_seconds: 2 });
-assert.match(quiet, /no matching activity/);
+const quiet = await call("wait_for_activity", {
+  refs: [dormant],
+  since: quietCursor,
+  events: ["turns"],
+  timeout_seconds: 2,
+});
+assert.match(quiet, /no matching activity on the 1 named session in the last 2s — nothing is wrong/);
 console.log("ok wait_for_activity reports honest quiet");
 const dormantStop = await call("stop_session", { ref: dormant });
 assert.match(dormantStop, /stopped/);
@@ -212,6 +255,11 @@ console.log("ok the scripted PM finished its MCP-driven turn");
 // on its behalf, and their results.
 const pmTranscript = await call("read_transcript", { ref: pmRef, turns: 3, detail: "full" });
 assert.match(pmTranscript, /tool: hub__hub_overview/);
+// The overview call must have SUCCEEDED for the PM, and the transcript is
+// where that shows: its live "connected" line is the unambiguous marker of
+// the tool's actual output — the tool name alone cannot tell an error
+// result from a working one.
+assert.match(pmTranscript, /hub: evener-hub .+ \(source local\) at .* — connected/);
 assert.match(pmTranscript, /tool: hub__start_session/);
 // The rendered result of the PM's start call must be the success text that
 // names the worker's ref — an error result would prove the wiring but not
@@ -232,6 +280,43 @@ if (/mcp servers/.test(pmDetail)) {
   assert.match(pmDetail, /hub=connected/);
   console.log("ok the PM session reports the hub MCP connected");
 }
+
+// ---- Config-gate smokes: the same server binary, stricter configs ----
+//
+// The read-only and project-scope gates are configuration promises, so the
+// proof is more server instances against the same live hub: tools/list must
+// drop the mutating tools under EVENER_HUB_MCP_READONLY=1, and a scope that
+// contains no session must refuse to read one.
+
+const readOnly = await McpClient.spawn(["node", entry], {
+  env: { ...process.env, EVENER_HUB_RPC_URL: rpc, EVENER_HUB_TOKEN: token, EVENER_HUB_MCP_READONLY: "1" },
+});
+const readOnlyNames = (await readOnly.listTools()).map((tool) => tool.name);
+assert.ok(readOnlyNames.includes("list_models"), "the read-only registry must include list_models");
+assert.ok(!readOnlyNames.includes("start_session"), "the read-only registry must not include start_session");
+await readOnly.close();
+console.log("ok the read-only instance registers only the read tools");
+
+// Every session this harness starts lives in the workspace, so a scope one
+// level below it genuinely contains none: the live PM's ref is out of scope
+// (a stopped session could fail at thread/read before the gate, so the
+// refusal must be proven on a session that is certainly readable).
+const scoped = await McpClient.spawn(["node", entry], {
+  env: {
+    ...process.env,
+    EVENER_HUB_RPC_URL: rpc,
+    EVENER_HUB_TOKEN: token,
+    EVENER_HUB_MCP_PROJECT: `${workspace}/no-sessions-here`,
+  },
+});
+const refusal = await scoped.callTool("get_session", { ref: pmRef });
+assert.ok(refusal.isError, "get_session must refuse a ref outside the configured project scope");
+assert.match(
+  refusal.text,
+  /is outside the project scope this server is limited to \(.*no-sessions-here, from EVENER_HUB_MCP_PROJECT\)/,
+);
+await scoped.close();
+console.log("ok the scoped instance refuses an out-of-scope ref");
 
 await client.close();
 console.log("PM WORKFLOW PASSED");

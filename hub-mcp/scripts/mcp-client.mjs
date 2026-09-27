@@ -42,7 +42,7 @@ export class McpClient {
       const failTimer = setTimeout(() => reject(new Error("server produced no output in 10s")), 10_000);
       client
         .request("initialize", {
-          protocolVersion: "2025-06-18",
+          protocolVersion: "2025-11-25",
           capabilities: {},
           clientInfo: { name: "hub-mcp-e2e", version: "0.0.0" },
         })
