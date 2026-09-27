@@ -221,9 +221,13 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
 // timer it fires: a 21s advance would take about 750 real turns (the storage
 // steps of ten discovery scans and a scroll-reconcile frame loop), enough for a
 // starved host to push the test past its timeout. With only these faked, the
-// same advance fires about seventeen timers. The discovery scans the faked
+// same advance fires about seventeen timers. setTimeout stays real as well:
+// the storage's 10s transaction deadlines and the projection flush's 4s stall
+// tripwire run on it, and a long fake advance would fire them while
+// fake-indexeddb's work still runs in real time. The discovery scans the faked
 // interval still starts run on real IndexedDB, so a test settles them with the
-// projection flush after it advances.
+// projection flush after it advances, before the file's afterEach resets the
+// pending-turns store they publish into.
 const FAKE_CLOCK_ONLY: Parameters<typeof vi.useFakeTimers>[0] = { toFake: ["setInterval", "clearInterval", "Date"] };
 
 // jsdom performs no real layout (every element's offsetHeight is 0, no
@@ -1339,6 +1343,9 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   });
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
 
+  // A live frame lands after the `now` the pane last rendered. Moving the clock
+  // one millisecond stamps this one that way; it fires no timer.
+  vi.advanceTimersByTime(1);
   act(() => {
     fake.emitNotification({
       method: "thread/status/changed",
@@ -1347,6 +1354,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   });
   // The ring itself (store-level) grows immediately - no timer involved.
   expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(1);
+  expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
 
   // The pane's own `now` prop only advances on its 3s tick (Cadence itself
   // is pure/prop-driven - see widgets/cadence's own doc comment); advance
