@@ -209,6 +209,19 @@ test("the empty-query view lists needs-you sessions (title + 'needs you' hint) w
   expect(screen.getByRole("option", { name: /Session B/i })).toBeTruthy();
 });
 
+// An approval blocks its turn mid-tool, so the row's wire state stays
+// "active": the dot must read approval_pending, not the state alone.
+test("a needs-you row waiting on an approval shows a needs-you dot, not a working one", () => {
+  setNeedsYouRows(
+    needsYouRows().map((row) => (row.ref === "local:ny1" ? { ...row, state: "active", approval_pending: true } : row)),
+  );
+  render(<CommandPalette />);
+  act(() => openPalette());
+
+  const option = screen.getByRole("option", { name: /Session A/i });
+  expect(within(option).getByRole("img", { name: "Needs you" })).toBeTruthy();
+});
+
 test("Enter on a needs-you row opens that session and closes the palette", async () => {
   const user = userEvent.setup();
   setNeedsYouRows(needsYouRows());

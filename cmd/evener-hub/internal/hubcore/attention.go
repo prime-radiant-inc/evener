@@ -3,6 +3,7 @@ package hubcore
 import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/hubapi"
 )
 
 // attentionLevel maps a normalized UI state to an attention level.
@@ -24,16 +25,13 @@ func attentionLevel(normalized string) string {
 // it blocks mid-turn so the daemon status is still "active" (level
 // "working"). A pending escalation promotes any non-error level to
 // needs_you — additive to any other reason, and it never downgrades an
-// "error" level. DeriveAttention's summary below and BuildTree's needs-you
-// tier (tree.go) both call this single function for their inclusion
-// decision, so a live session can never light one without the other — see
-// AttentionSummary's doc.
+// "error" level. hubapi.AttentionState states that rule once, for this and
+// for the tree's Live order and project rollups. DeriveAttention's summary
+// below and BuildTree's needs-you tier (tree.go) both call this single
+// function for their inclusion decision, so a live session can never light
+// one without the other; see AttentionSummary's doc.
 func promotedAttentionLevel(normalized string, pendingEscalation bool) string {
-	level := attentionLevel(normalized)
-	if pendingEscalation && level != "error" {
-		level = "needs_you"
-	}
-	return level
+	return attentionLevel(hubapi.AttentionState(normalized, pendingEscalation))
 }
 
 // tierEligible reports whether a session belongs to the tier-eligible
