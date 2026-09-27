@@ -97,8 +97,9 @@ renders, a staged-but-unpersisted change) is never an intent.
   the finalized receipt (§5).
 - Finalizing claim (`finalizingMutation`): the same entry under a
   server-generated opaque attempt token while a foreign path finalizes it (§5).
-- Reconcile marker: the (re-read whole-document content hash, `reconcile_applied`
-  flag) pair the post-rename reconcile stages in the same write as its
+- Reconcile marker: the (re-read whole-document content hash — computed with the
+  marker's own `[reconcile]` key excluded — and the `reconcile_applied` flag)
+  pair the post-rename reconcile stages in the same write as its
   cleanup (§6); the staged entry a reconcile drops lives on the
   `collision-dropped` receipt's `droppedEntry`, never in the marker.
 - Pruned marker (`prunedReceipts`): the scoped key plus `{prunedAt}` a
@@ -776,10 +777,18 @@ migration refuses it rather than translating it or silently stripping it: a
 sidecar carrying any key beyond the shipped shape fails validation with the
 unrecognized keys named, both files stay byte-identical, and mutations stay
 refused until the operator archives or repairs the file — the explicit
-recovery path. Migration is therefore lossless for every sidecar that shipped:
-the merge drops at most a colliding duplicate *host entry* (the file's wins),
-and because the merged rewrite is a read-modify-write, every machine-managed
-record `hub.toml` already holds survives it unchanged. A sidecar that fails to parse or validate is not
+recovery path. Migration is therefore lossless for every sidecar that shipped,
+with one documented incompatible case: the shipped validation checked
+`key_path`'s shape only, so a stored relative or `~`-prefixed value meets this
+series' absolute-path rule at migration time and the sidecar is refused like any
+invalid one (both files untouched, mutations refused, the error naming the host
+and field). The operator's repair is explicit and targeted: edit the sidecar's
+`key_path` to an absolute path (or clear it) and reboot; a stored relative value
+is never reinterpreted against the hub's launch directory, which would bake an
+unstable base into durable state. Otherwise the merge drops at most a colliding
+duplicate *host entry* (the file's wins), and because the merged rewrite is a
+read-modify-write, every machine-managed record `hub.toml` already holds
+survives it unchanged. A sidecar that fails to parse or validate is not
 migrated at all: boot logs the refusal loudly and leaves both files untouched
 (the posture the shipped store already takes for an unreadable sidecar). The file's stored host fields are the component-03 set, which includes `key_path` (the
 SSH identity file the shipped Add/Edit dialog collects and `sshconn` dials
@@ -936,7 +945,10 @@ runtime-apply error between the follow-up adopt and the rebuild leaves the
 marker open, a lost-response retry re-runs the pending runtime-apply under the
 same marker before finalizing the `collision-dropped` receipt, and boot
 completes an open marker the same way it completes the adopt (reconcile marker
-with a matching fingerprint finishes the rebuild, never the hard error); other
+with a matching fingerprint finishes the rebuild, never the hard error; the
+marker's fingerprint is the whole-document content hash computed with the
+marker's own `[reconcile]` key excluded, so neither the marker write nor a
+`reconcile_applied` flip can change the value the marker must match); other
 changes are picked up by the fingerprint-bound
 invalidation at the next mutation or token validation. When the post-rename
 reconcile finds the file no longer carries the just-committed staged change,
@@ -1197,14 +1209,17 @@ phase (deploy-pipeline spec §5) with the lock released across the teardowns and
 persist the committed receipt plus real remnant (verifying the claim's attempt
 token still owns the marker); (4) if the swap itself fails, compensate fully
 before responding: restore the prior `hub.toml` bytes from the stash (atomic
-rename) only while the file still holds the staged bytes — the restore compares
-the current whole-document content hash against the staged write's first, so a
-hand edit that landed after the staged write makes the restore skip itself: the
+rename) only while the file still holds the bytes the mutation last wrote it —
+the compensation keeps the whole-document content hash of every write the
+mutation itself makes (the step-(2) staged write, then the step-(3) `swapStarted`
+flip) and compares the current file against the latest of those hashes, so the
+mutation's own marker writes never read as external edits, and only a document
+carrying something the mutation did not write makes the restore skip itself: the
 mutation adopts the re-read file and reconciles the runtime to the reconciled
 set instead, reporting the swap failure with the typed `concurrent-edit`
-discriminator naming both hashes, and the edit is never erased — while in the
-restore case the runtime reverts to the previous set; then report exactly
-which step failed. Compensation runs in persisted phases, tracked in the
+discriminator naming the expected and observed hashes, and the edit is never
+erased — while in the restore case the runtime reverts to the previous set;
+then report exactly which step failed. Compensation runs in persisted phases, tracked in the
 store-side compensation record (deploy-pipeline spec §9 pins the phase field)
 — which the `hub.toml` restore cannot touch — never on `hub.toml`
 staged-receipt marker: the committer persists that record with the stash
@@ -2179,7 +2194,12 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   ignored as stale and never re-merged, an identical duplicate collision drops
   with nothing lost, and a differing one refuses loudly), the boot-time hard-error duplicate,
   swap-failure compensation (prior `hub.toml` bytes restored, runtime reverted,
-  retry re-applies cleanly), and the corrupt/schema-invalid `hub.toml` boot hard
+  retry re-applies cleanly), the hand-edit-deletion adoption test (the
+  post-rename re-read finds the name gone: the response carries `removed: true`
+  with no `host`, the receipt carries `removed` + `droppedEntry` + the winning
+  fingerprint, and a replay returns the deletion), the component-03 `key_path`
+  validation case (an absolute path accepted; relative and `~`-prefixed refused
+  with `hostreg.ErrInvalidKeyPath`), and the corrupt/schema-invalid `hub.toml` boot hard
   error, the host-admin controller live-set tests (forwarded requests reach
   newly added hosts; removed hosts' fan-outs stop), update-rebind tests (a
   running supervisor's next reconnect uses the updated entry; the rebind
@@ -2259,14 +2279,15 @@ Registry tests (all bullets in this section ship with the registry PR, except th
   `Ensure`-triggered work/`plan`/attach on the name — refused with
   `remnant-open` until the retry completes; the persisted receipt carries
   exactly `{outcome, row, generation, incarnationId, committedAt,
-  droppedEntry?, winningFingerprint?, remnantId?, remnantResolvedAt?,
+  droppedEntry?, winningFingerprint?, removed?, remnantId?, remnantResolvedAt?,
   recoveryAttestation?, bootRecovered?}` (`incarnationId` the pinned incarnation — the commit-point
   test pins the full five-part scoped key, so a crash-torn boot collision
   looks the receipt up under the right incarnation (strict monotonicity per
   §1 means no live path produces a shared generation); `remnantId` while the
   remnant is open, `remnantResolvedAt` after resolution, `recoveryAttestation`
   exactly on `teardown-recover`-resolved receipts, `bootRecovered`
-  exactly on boot-recovered receipts) and the cleared marker is the typed
+  exactly on boot-recovered receipts, and `removed` exactly on a
+  `collision-dropped` receipt whose winning arm is the hand-edit deletion) and the cleared marker is the typed
   resolved-remnant record (`remnantId` → replay payload) in `teardownRemnants`;
   a post-`remove` retry returns the tombstone
   removed-row shape, a post-add/update retry the live row; the retry validates

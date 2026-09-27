@@ -504,6 +504,9 @@ Unit tests, all without a hub or network:
   is safe for concurrent `Get`/`All`.
 - **No host-count boundary test** (recorded decision, §Scope): the 64-source cap
   is not implemented, so a 63/64-entry count test has nothing to assert.
+- `key_path` validation: an absolute `key_path` loads; a relative or
+  `~`-prefixed value is refused with `hostreg.ErrInvalidKeyPath`; an
+  empty-after-trim value is absent.
 - A ref-grammar parity test: for a corpus of names, assert
   `hostreg` accepts exactly the names `appwire.ParseRef(name+":x")` accepts,
   minus the `.`, `..`, and `local` cases we deliberately exclude. This pins
@@ -542,6 +545,10 @@ Unit tests, all without a hub or network:
 9. **Withdrawn** (recorded decision, §Scope): no `ErrTooManyHosts`, at config
    load or on a programmatic add; an over-limit `[[hosts]]` list loads and is
    the operator's configuration.
+10. `key_path` is absolute-or-absent: an absolute path round-trips through load
+    and rewrite; a relative or `~`-prefixed value fails validation with
+    `hostreg.ErrInvalidKeyPath` naming the host and field; the sentinel maps to
+    the `keyPath` control in the host dialog (host-edit-slice §5).
 
 ## PR size estimate (LOC)
 
