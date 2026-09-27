@@ -428,39 +428,30 @@ func removeRootOnlySubagentTools(items []string) []string {
 	return removeStrings(items, rootOnlySubagentTools())
 }
 
+// intrinsicSubagentTools ride along on every typed role's tools: allow-list.
+// None is a capability a role opts into, so no role's list may take one away
+// (the untyped surface keeps them all on the deny-list path):
+//   - task_list is the child's own work list;
+//   - compact_context is context hygiene, not a capability, so a child that
+//     cannot compact can only wait for the automatic compaction unsteered;
+//   - use_skill is the skill-activation capability, without which a brief that
+//     directs a delegate to run a skill cannot be followed literally;
+//   - job_status, job_stop, and job_watch supervise the session's OWN jobs.
+//     Each authorizes its target itself — a watch's `parent` source needs
+//     delegate(watch_parent=true), and a concrete job id must be owned by the
+//     reading or stopping session (see rootOnlyJobControlTools) — so a leaf
+//     gains no reach over its parent's jobs. Without them a long foreground
+//     command promoted to a background job is unawaitable, and the one-shot
+//     drain kills it after its two escalation turns (#2645).
+var intrinsicSubagentTools = []string{"task_list", "compact_context", "use_skill", "job_status", "job_stop", "job_watch"}
+
 func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools bool, allowed []string, denied []string) {
 	switch {
 	case agent != nil && agent.AllTools:
 		return true, nil, nil
 	case agent != nil && len(agent.Tools) > 0:
 		allowed = append([]string(nil), agent.Tools...)
-		allowed = appendUniqueStrings(allowed, "task_list")
-		// compact_context is context hygiene, not a capability an agent type
-		// opts into: a child that cannot compact can only wait for the
-		// automatic compaction to run unsteered. The untyped surface already
-		// keeps it (deny-list path), so listing tools: must not take it away.
-		allowed = appendUniqueStrings(allowed, "compact_context")
-		// use_skill is the skill-activation capability, not an agent-type
-		// opt-in: a brief that directs a delegate to run a skill
-		// (`use_skill("...")`) cannot be followed literally without it, and the
-		// only substitute is the untracked read_file fallback. The untyped
-		// surface already keeps it (deny-list path), so a typed role's tools:
-		// list must not silently take it away.
-		allowed = appendUniqueStrings(allowed, "use_skill")
-		// The job-supervision tools are intrinsic too: job_watch, job_status,
-		// and job_stop all act on a session's OWN jobs, not a delegate's. Any
-		// session that can run jobs can watch, inspect, and stop them at any
-		// depth, so none is a capability a role opts into and a tools: list
-		// must not take them away. Every source authorizes itself — a watch's
-		// `parent` requires delegate(watch_parent=true), and a concrete job id
-		// must be owned by the reading or stopping session — so a leaf gains no
-		// reach over its parent's jobs. Without job_watch a long foreground
-		// command promoted to a background job is unawaitable, without job_stop
-		// the one-shot drain's stop remedy is uncallable, and the drain kills
-		// the job after its two escalation turns (#2645).
-		allowed = appendUniqueStrings(allowed, "job_status")
-		allowed = appendUniqueStrings(allowed, "job_stop")
-		allowed = appendUniqueStrings(allowed, "job_watch")
+		allowed = appendUniqueStrings(allowed, intrinsicSubagentTools...)
 		// Delegation tools in a typed role's list are allowance-gated: a role
 		// granted delegation keeps delegate; a leaf loses it on every spawn
 		// path, exactly as the untyped surface does.
@@ -1053,16 +1044,9 @@ func (s *Session) prepareSubagentRunFromSelection(
 		subCfg.spawn.toolNameCeiling = append([]string(nil), allowedTools...)
 	} else {
 		// The policy follows the CHILD's granted allowance, not this session's:
-		// a leaf spawned by a coordinator must not inherit the coordinator's
-		// job-supervision tools.
+		// a leaf loses the delegation tools it cannot use, while the intrinsic
+		// job tools stay — they act on the leaf's own jobs, not the parent's.
 		allTools, allowedTools, deniedTools = baseSubagentToolPolicy(agent, childCanDelegate)
-		if subCfg.spawn.parentWatchGranted && !allTools {
-			if len(allowedTools) > 0 {
-				allowedTools = appendUniqueStrings(allowedTools, "job_watch")
-			} else {
-				deniedTools = removeStrings(deniedTools, []string{"job_watch"})
-			}
-		}
 	}
 	if frozen == nil && len(canonicalGrantTools) > 0 {
 		currentTools := s.reg.RegisteredNames()
