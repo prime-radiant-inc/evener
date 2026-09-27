@@ -9,7 +9,6 @@ import {
 	Pressable,
 	ScrollView,
 	Text,
-	useWindowDimensions,
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -29,7 +28,7 @@ import {
 	type TimelineRow,
 } from "./timeline";
 import type { ActivityPresentation } from "./transcriptPresentation";
-import { Action, Copy, styles, useColors } from "./ui";
+import { Action, Copy, styles, useColors, useTextScale } from "./ui";
 
 export function TimelineItem({
 	item,
@@ -260,7 +259,7 @@ interface MenuItem {
 	run: () => void;
 }
 
-function showMenu(items: readonly MenuItem[]) {
+function showMenu(items: readonly MenuItem[], preview: string) {
 	if (Platform.OS === "ios") {
 		ActionSheetIOS.showActionSheetWithOptions(
 			{
@@ -271,10 +270,19 @@ function showMenu(items: readonly MenuItem[]) {
 		);
 		return;
 	}
-	Alert.alert("Message", undefined, [
-		...items.map((item) => ({ text: item.label, onPress: item.run })),
-		{ text: "Cancel", style: "cancel" as const },
-	]);
+	// Android's alert holds at most three buttons, so it dismisses by a tap
+	// outside rather than spending one on Cancel.
+	Alert.alert(
+		"Message",
+		preview,
+		items.map((item) => ({ text: item.label, onPress: item.run })),
+		{ cancelable: true },
+	);
+}
+
+/** A message's first 120 characters on one line, for the Android menu. */
+function menuPreview(text: string): string {
+	return text.replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
 function menuAccessibility(items: readonly MenuItem[]) {
@@ -283,11 +291,6 @@ function menuAccessibility(items: readonly MenuItem[]) {
 		onAccessibilityAction: (event: AccessibilityActionEvent) =>
 			items.find((item) => item.name === event.nativeEvent.actionName)?.run(),
 	};
-}
-
-function useTextScale() {
-	const { fontScale } = useWindowDimensions();
-	return Platform.OS === "ios" ? fontScale : 1;
 }
 
 function YourMessage({
@@ -323,7 +326,7 @@ function YourMessage({
 			<Pressable
 				accessibilityLabel={`You: ${item.text}`}
 				{...menuAccessibility(menu)}
-				onLongPress={() => showMenu(menu)}
+				onLongPress={() => showMenu(menu, menuPreview(item.text))}
 				style={{
 					alignSelf: "flex-end",
 					maxWidth: "85%",
@@ -371,7 +374,7 @@ function AgentMessage({
 		<>
 			{/* The markdown view stays VoiceOver's element (it reads the
 			formatting and its links); the pressable only adds touch and hold. */}
-			<Pressable accessible={false} onLongPress={() => showMenu(menu)}>
+			<Pressable accessible={false} onLongPress={() => showMenu(menu, menuPreview(markdown))}>
 				<MarkdownResponse
 					markdown={markdown || "…"}
 					selectable={false}

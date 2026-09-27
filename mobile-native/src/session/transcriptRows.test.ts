@@ -140,8 +140,8 @@ describe("time markers", () => {
 		expect(timeMarkerText(Date.UTC(2026, 8, 12, 9, 3), now, "UTC")).toBe("Sep 12, 9:03 AM");
 	});
 
-	// Fix round 1, finding 1: "Yesterday" has to be the zone's previous
-	// calendar date, not "24 hours ago"; those disagree across a DST change.
+	// "Yesterday" has to be the zone's previous calendar date, not "24 hours
+	// ago"; those disagree across a DST change.
 	it("counts calendar days, so Yesterday survives a DST change", () => {
 		// America/New_York's 2026 DST began 2026-03-08 at 2 AM local, so that
 		// day has only 23 wall-clock hours: subtracting a flat 24h from "now"

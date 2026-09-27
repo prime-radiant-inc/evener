@@ -20,7 +20,8 @@ import {
 	type MobileTimelineItem,
 } from "./projectedRows";
 import { TimelineItem } from "./TimelineItem";
-import { render, renderedText } from "./renderNative.testkit";
+import { Platform } from "react-native";
+import { alertRequests, render, renderedText } from "./renderNative.testkit";
 import type { TimelineRow } from "./timeline";
 
 const mode = vi.hoisted(() => ({ scheme: "light" as "light" | "dark" }));
@@ -208,7 +209,7 @@ describe("your message", () => {
 		expect(renderedText(plain)).not.toContain("Steered in mid-turn");
 	});
 
-	it("no longer carries the three-dot actions button", () => {
+	it("carries no actions button beside the bubble", () => {
 		const tree = render(<TimelineItem item={user()} hubId="hub" sessionRef="s" fork={() => {}} />);
 		expect(tree.root.findAll((node) => /^Message actions/.test(node.props.accessibilityLabel ?? ""))).toEqual([]);
 	});
@@ -264,6 +265,24 @@ describe("your message", () => {
 	it("leaves Quote out where nothing can take the quote", () => {
 		const tree = render(<TimelineItem item={user()} hubId="hub" sessionRef="s" />);
 		expect(longPress(tree.root).options).toEqual(["Copy", "Cancel"]);
+	});
+
+	it("fits every item in Android's three-button alert, cancelled by a tap outside", () => {
+		const os = Platform.OS;
+		(Platform as { OS: string }).OS = "android";
+		try {
+			const tree = render(
+				<TimelineItem item={user({ text: "Ship   it\nnow" })} hubId="hub" sessionRef="s" fork={() => {}} quote={() => {}} />,
+			);
+			const [target] = tree.root.findAll((node) => typeof node.props.onLongPress === "function");
+			act(() => target.props.onLongPress());
+			const request = alertRequests.at(-1);
+			expect(request?.message).toBe("Ship it now");
+			expect(request?.buttons?.map((button) => button.text)).toEqual(["Copy", "Fork from here", "Quote"]);
+			expect(request?.options).toEqual({ cancelable: true });
+		} finally {
+			(Platform as { OS: string }).OS = os;
+		}
 	});
 
 	it("gives VoiceOver the menu's items as actions", () => {

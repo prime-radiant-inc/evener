@@ -113,6 +113,7 @@ export interface AlertRequest {
 	title: string;
 	message?: string;
 	buttons?: { text?: string; style?: string; onPress?: () => void }[];
+	options?: { cancelable?: boolean };
 }
 
 /** Every Alert.alert call the mounted tree made, oldest first. A test that
@@ -124,8 +125,9 @@ function recordAlert(
 	title: string,
 	message?: string,
 	buttons?: AlertRequest["buttons"],
+	options?: AlertRequest["options"],
 ): void {
-	alertRequests.push({ title, message, buttons });
+	alertRequests.push({ title, message, buttons, options });
 }
 
 /** The client a test hands the credential store: every request method it is

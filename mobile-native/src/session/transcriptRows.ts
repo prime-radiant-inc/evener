@@ -124,9 +124,9 @@ function dayKey(at: number, timeZone?: string): string {
 // parts and turns them into a UTC-midnight instant (Date.UTC), so two of
 // these subtract to a whole number of calendar days regardless of a DST
 // change between them. Subtracting the instants' raw milliseconds and
-// re-formatting the result can land a wall-clock hour off instead (fix
-// round 1, finding 1: "yesterday" read as a weekday the day after a
-// spring-forward).
+// re-formatting the result can land a wall-clock hour off instead, so the
+// day after a spring-forward would read as a weekday rather than
+// "Yesterday".
 function dayNumber(at: number, timeZone: string | undefined): number {
 	const parts = formattersFor(timeZone).dayKey.formatToParts(at);
 	const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((candidate) => candidate.type === type)?.value);

@@ -2,7 +2,7 @@
 // glue (jsdom's own selection APIs are too thin to drive honestly - see that
 // file's header comment) so message-content containment and floating-bar
 // clamping are each testable directly. Quote formatting (formatQuoteBlock)
-// moved into @evener/appwire-client so the phone's Quote action shares it.
+// lives in @evener/appwire-client, shared with the phone's Quote action.
 
 /**
  * Walks from `node` up toward (but never including) `container`, returning

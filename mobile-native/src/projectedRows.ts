@@ -460,7 +460,7 @@ function activityDescription(it: ItemModel): string | undefined {
 // The item's started/completed timestamps as epoch milliseconds. The
 // canonical duration behavior (D24-3's deferred delta): absent (both, not
 // just one) when either timestamp is missing or fails to parse, instead of
-// producing NaN — so durationMs, startedAtMs and endedAtMs never disagree
+// producing NaN, so durationMs, startedAtMs and endedAtMs never disagree
 // about whether this item's timing is known.
 function parsedItemTimes(it: ItemModel): { start?: number; end?: number } {
 	if (it.startedAt === undefined || it.completedAt === undefined) return {};
@@ -881,6 +881,14 @@ function rowsForProjectedTurn(
 	return entries;
 }
 
+// An attachments row's fields, before it takes its place in the timeline.
+type AttachmentsRowFields = {
+	id: string;
+	items: AttachmentRef[];
+	sourceTranscriptKey?: string;
+	turnId?: string;
+};
+
 // The attachments row that follows the row which produced it. It points back at
 // its source by transcript key, so a page or a reread that reissues the source
 // under a new wire id does not orphan its images. An activity's images name the
@@ -892,7 +900,7 @@ function attachmentsRow(
 	source: MobileTimelineItem,
 	attachments: AttachmentRef[],
 	fallbackToId = false,
-): { id: string; items: AttachmentRef[]; sourceTranscriptKey?: string; turnId?: string } {
+): AttachmentsRowFields {
 	const key = source.transcriptKey ?? (fallbackToId ? source.id : undefined);
 	return {
 		id: `${source.id}:attachments`,
@@ -929,12 +937,7 @@ export function projectTimeline(
 	// rebuild the timeline in original order.
 	const items: MobileTimelineItem[] = [];
 	let activityRun: PreActivity[] = [];
-	let activityAttachments: Array<{
-		id: string;
-		items: AttachmentRef[];
-		sourceTranscriptKey?: string;
-		turnId?: string;
-	}> = [];
+	let activityAttachments: AttachmentsRowFields[] = [];
 
 	const flushActivityRun = () => {
 		if (activityRun.length === 0) return;

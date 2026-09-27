@@ -5,10 +5,10 @@
 import { parseArgs, str } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { Fragment } from "react";
-import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { typeRoles } from "../design/tokens";
 import type { RunStep, TimelineRow } from "../timeline";
-import { useColors } from "../ui";
+import { useColors, useTextScale } from "../ui";
 import { runHeadText, runPartFailedText, runSummary, runSummaryText } from "./transcriptRows";
 
 type Run = Extract<TimelineRow, { kind: "run" }>;
@@ -18,11 +18,6 @@ type Run = Extract<TimelineRow, { kind: "run" }>;
 function stepTarget(step: RunStep): string | undefined {
 	const args = parseArgs(step.detail.arguments);
 	return step.label === "shell" ? str(args, "command") : (str(args, "file_path") ?? str(args, "path"));
-}
-
-function useTextScale() {
-	const { fontScale } = useWindowDimensions();
-	return Platform.OS === "ios" ? fontScale : 1;
 }
 
 function StepLine({ step, onStep }: { step: RunStep; onStep: (step: RunStep) => void }) {
@@ -38,6 +33,8 @@ function StepLine({ step, onStep }: { step: RunStep; onStep: (step: RunStep) => 
 			style={{ flexDirection: "row", alignItems: "flex-start", gap: 8, paddingVertical: 4 }}
 		>
 			<View style={{ paddingTop: 2 * scale }}>
+				{/* Two marks are enough: sessionRows leaves every running step to the
+				tray, so a run holds only completed and failed steps. */}
 				<SymbolView
 					name={failed ? "xmark.octagon.fill" : "checkmark.circle.fill"}
 					tintColor={failed ? palette.dangerInk : palette.inkLow}

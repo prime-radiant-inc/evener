@@ -669,8 +669,7 @@ describe("where a session opens (spec 7.3, ruling 31)", () => {
 	it("opens at the start of a reply that finished since you last reached the end", () => {
 		expect(openingTarget(anchor({ turnsSeen: "turn_1" }), rows, turnIds, false)).toEqual({ kind: "row", index: 4 });
 	});
-	// Fix round 1, finding 2 (no code change; pinning intended behavior): the
-	// "unread result" (spec 7.3) starts with the agent's first row, runs
+	// The "unread result" (spec 7.3) starts with the agent's first row, runs
 	// included, so a newer turn whose agent side opens with a run opens there,
 	// not at the assistant reply that follows it.
 	it("opens at a run when a newer turn's agent side starts with one", () => {

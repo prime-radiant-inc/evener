@@ -16,6 +16,14 @@ import { paletteFor, typeRoles } from "./design/tokens";
  * `palette.inset` (not `palette.surface`) and `accent` is `palette.accentInk`
  * (text and outlines, not a fill). `onAccent` is the text color for
  * `palette.accentFill`, not for `accent`. */
+/** The size multiplier for text that sets allowFontScaling off on iOS: the
+ * Dynamic Type scale there, so size and line height grow together, and 1
+ * elsewhere, where the platform scales the text itself. */
+export function useTextScale(): number {
+	const { fontScale } = useWindowDimensions();
+	return Platform.OS === "ios" ? fontScale : 1;
+}
+
 export function useColors() {
 	const palette = paletteFor(useColorScheme());
 	return {
@@ -48,8 +56,7 @@ export function Action({
 	tone?: "accent" | "quiet" | "primary";
 }) {
 	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
+	const textScale = useTextScale();
 	return (
 		<Pressable
 			accessibilityRole="button"
@@ -101,8 +108,7 @@ export function Choice({
 	onPress(): void;
 }) {
 	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
+	const textScale = useTextScale();
 	return (
 		<Pressable
 			accessibilityRole="radio"
@@ -145,8 +151,7 @@ export function Copy({
 	selectable?: boolean;
 }) {
 	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
+	const textScale = useTextScale();
 	return (
 		<Text
 			selectable={selectable}
@@ -176,8 +181,7 @@ export function Copy({
 
 export function ErrorMessage({ message }: { message: string | null }) {
 	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
+	const textScale = useTextScale();
 	return message ? (
 		<Text
 			accessibilityRole="alert"
@@ -194,8 +198,7 @@ export function ErrorMessage({ message }: { message: string | null }) {
  * failure. */
 export function WarningMessage({ message }: { message: string | null }) {
 	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	const textScale = Platform.OS === "ios" ? fontScale : 1;
+	const textScale = useTextScale();
 	return message ? (
 		<Text
 			accessibilityRole="alert"

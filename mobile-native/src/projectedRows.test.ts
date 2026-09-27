@@ -581,7 +581,7 @@ describe("projectedRow — critical entries", () => {
 	});
 });
 
-describe("projectedRow — turn id, origin, and step timing", () => {
+describe("projectedRow: turn id, origin, and step timing", () => {
 	it("carries the item's turn id onto a user message row", () => {
 		const row = projectedRow(itemEntry(item({ type: "userMessage", text: "hi", turnId: "turn_2" }), true));
 		expect(row).toMatchObject({ kind: "user", turnId: "turn_2" });
@@ -1292,6 +1292,8 @@ describe("the timeline projection delegates to the shared projector", () => {
 				expect(c1.detail.arguments).toBeUndefined();
 				expect(c1.detail.output).toBeUndefined();
 				expect(c1.detail.durationMs).toBeUndefined();
+				expect(c1.detail.startedAtMs).toBeUndefined();
+				expect(c1.detail.endedAtMs).toBeUndefined();
 				expect(c1.detail.callId).toBeUndefined();
 			} else {
 				expect(c1.summaryOnly).toBeUndefined();
