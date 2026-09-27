@@ -54,7 +54,7 @@ function stubMatchMedia(matches: boolean) {
 }
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return { origin: "sidecar", attached: true, midAttach: false, removed: false, ...overrides };
+  return { origin: "hub.toml", attached: true, midAttach: false, removed: false, ...overrides };
 }
 
 // A connected hub whose host registry lists beta and whose beta partition

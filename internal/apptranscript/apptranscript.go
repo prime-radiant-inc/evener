@@ -927,6 +927,9 @@ func ImagesFromContent(parts []llm.ContentPart, imageProjector ImageProjector) [
 type ItemTurnProjection struct {
 	Turns     []appwire.Turn
 	NextEntry uint64
+	// Entries is the number of entry lines projected over, transcript-only
+	// ones included: the highest entry index the transcript holds.
+	Entries int
 }
 
 // ItemTurnProjectionFromFile projects a transcript and returns both its
@@ -961,6 +964,7 @@ func itemTurnProjectionFromFileContext(ctx context.Context, path string, maxLine
 	if ctx.Err() != nil {
 		return ItemTurnProjection{}, ctx.Err()
 	}
+	projection.Entries = entryIndex
 	return projection, err
 }
 
@@ -986,7 +990,9 @@ func ItemTurnProjectionFromEntries(header transcript.Header, entries []transcrip
 	for i := range entries {
 		appendProjectedEntry(&acc, project, entries[i].Turn, i+1)
 	}
-	return groupedAppTurnProjection(&acc, header)
+	projection, err := groupedAppTurnProjection(&acc, header)
+	projection.Entries = len(entries)
+	return projection, err
 }
 
 // ItemTurnsFromEntries is the compatible turn-only form of
