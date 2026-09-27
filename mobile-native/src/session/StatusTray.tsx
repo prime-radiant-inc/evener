@@ -33,9 +33,10 @@ export function StatusTray({
 	const { fontScale } = useWindowDimensions();
 	const scale = Platform.OS === "ios" ? fontScale : 1;
 	if (!line) return null;
-	// Stop is shown whenever the turn can be stopped, but only pressable while
-	// the durable submitter has a client to carry it.
-	const stopDisabled = !connected || stopping;
+	// A control appears only when it can act (spec principle 2): offline the
+	// durable submitter has no client to carry a Stop, so Stop hides. It is
+	// only disabled for the moment a Stop or another change is in flight.
+	const showStop = canStop && connected;
 	return (
 		<View style={{ flexDirection: "row", alignItems: "center", minHeight: 36, paddingLeft: 16, paddingRight: 4 }}>
 			<Pressable
@@ -64,10 +65,10 @@ export function StatusTray({
 					{line.text}
 				</Text>
 			</Pressable>
-			{canStop ? (
+			{showStop ? (
 				<SymbolButton
 					label="Stop"
-					disabled={stopDisabled}
+					disabled={stopping}
 					onPress={onStop}
 					// A 44pt target that overhangs the 36pt row.
 					style={{ marginVertical: -4 }}

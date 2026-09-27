@@ -71,10 +71,10 @@ describe("StatusTray", () => {
 		expect(props.onJumpToLive).not.toHaveBeenCalled();
 	});
 
-	it("disables Stop while disconnected", () => {
+	it("hides Stop while disconnected, since it can't act offline", () => {
 		const { tree } = tray({ connected: false });
-		expect(pressable(tree, "Stop")?.props.disabled).toBe(true);
-		expect(pressable(tree, "Stop")?.props.accessibilityState).toMatchObject({ disabled: true });
+		expect(pressable(tree, "Stop")).toBeUndefined();
+		expect(renderedText(tree)).toContain("Running go test ./agent/... · 42s");
 	});
 
 	it("disables Stop while a Stop is in flight", () => {
