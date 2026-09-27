@@ -7,7 +7,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Response {
+func fromAnthropicResponse(raw map[string]any, requestedModel string, body []byte) llm.Response {
 	r := llm.Response{
 		Provider: "anthropic",
 		Model:    requestedModel,
@@ -22,7 +22,7 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 
 	msg := llm.Message{Role: llm.RoleAssistant}
 	if content, ok := raw["content"].([]any); ok {
-		for _, itAny := range content {
+		for contentIdx, itAny := range content {
 			it, ok := itAny.(map[string]any)
 			if !ok {
 				continue
@@ -38,6 +38,16 @@ func fromAnthropicResponse(raw map[string]any, requestedModel string) llm.Respon
 				name, _ := it["name"].(string)
 				argsAny := it["input"]
 				argsRaw, _ := json.Marshal(argsAny)
+				// When the raw body is available, capture the input object
+				// as json.RawMessage — for objects, the RawMessage token IS
+				// the content (byte-identical, preserves key-order/spacing/
+				// invalid-UTF-8). Degrade, never drop: fall back to the
+				// existing re-marshal path on failure.
+				if len(body) > 0 {
+					if rawInput, ok := captureAnthropicInputRaw(body, contentIdx); ok && rawInput != nil {
+						argsRaw = rawInput
+					}
+				}
 				msg.Content = append(msg.Content, llm.ContentPart{
 					Kind: llm.ContentToolCall,
 					ToolCall: &llm.ToolCallData{
@@ -245,4 +255,30 @@ func parseUsage(u map[string]any) llm.Usage {
 // of maintaining its own narrower hierarchy that can drift out of sync.
 func clampEffort(requested string, supportedLevels []string) string {
 	return llm.ClampReasoningEffort(requested, supportedLevels)
+}
+
+// captureAnthropicInputRaw decodes the response body with a focused struct
+// that captures the tool_use content block's input as json.RawMessage — for
+// objects, the RawMessage token IS the content (byte-identical, preserves
+// key-order/spacing/invalid-UTF-8). contentIdx is the index of the content
+// block within the content array. Returns (nil, false) if the focused decode
+// fails — the caller falls back to the existing re-marshal path.
+func captureAnthropicInputRaw(body []byte, contentIdx int) (json.RawMessage, bool) {
+	type contentItemRaw struct {
+		Type  string          `json:"type"`
+		Input json.RawMessage `json:"input,omitempty"`
+	}
+	var focused struct {
+		Content []contentItemRaw `json:"content"`
+	}
+	if err := json.Unmarshal(body, &focused); err != nil {
+		return nil, false
+	}
+	if contentIdx < 0 || contentIdx >= len(focused.Content) {
+		return nil, false
+	}
+	if focused.Content[contentIdx].Type != "tool_use" {
+		return nil, false
+	}
+	return focused.Content[contentIdx].Input, true
 }

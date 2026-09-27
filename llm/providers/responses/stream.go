@@ -18,7 +18,7 @@ import (
 type responsesToolState struct {
 	id, itemID, name string
 	started          bool
-	args             strings.Builder
+	args             bytes.Buffer
 }
 
 // responsesOutputAccumulator tracks response.output_item.added/done and
@@ -439,6 +439,24 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 					return nil
 				}
+				// Capture the delta fragment as raw bytes from ev.Data to
+				// preserve bytes that json.Unmarshal into string would coerce
+				// to U+FFFD. The accumulator already wrote the string-form
+				// delta; overwrite the tail with the raw bytes when capture
+				// succeeds.
+				// Degrade, never drop: fall back to the string-form delta.
+				if rawDelta, ok2 := captureResponsesDeltaRaw(ev.Data); ok2 && rawDelta != nil {
+					if content, cerr := protocolhttp.RawStringContent(rawDelta); cerr == nil && len(content) > 0 {
+						// Rewind the string delta the accumulator wrote and
+						// replace it with the raw bytes.
+						cur := st.args.String()
+						if strings.HasSuffix(cur, delta) {
+							st.args.Truncate(len(cur) - len(delta))
+						}
+						st.args.Write(content)
+						delta = string(content)
+					}
+				}
 				if !st.started {
 					st.started = true
 					tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
@@ -483,7 +501,12 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				if rawResp == nil {
 					rawResp = payload
 				}
-				built := fromResponses(rawResp, req.Model)
+				// Extract the raw response object bytes from ev.Data for
+				// byte-faithful argument capture (the lossy map has already
+				// coerced invalid UTF-8). When the response is nested under
+				// "response", extract that sub-object's raw bytes.
+				respBody := extractResponseObjectRaw(ev.Data)
+				built := fromResponses(rawResp, req.Model, respBody)
 				settleResponsesTerminalOutput(&built, rawResp, acc.Output())
 				built.Provider = res.Instance
 				p.stampResponseIDHash(sctx, &built)
@@ -522,4 +545,37 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 		},
 	}
 	runner.Run(sctx)
+}
+
+// captureResponsesDeltaRaw decodes an SSE event's raw data with a focused
+// struct that captures the "delta" field as json.RawMessage (the string
+// token) rather than string, preserving bytes that json.Unmarshal into
+// string would coerce. Returns (nil, false) if the focused decode fails.
+func captureResponsesDeltaRaw(eventData []byte) (json.RawMessage, bool) {
+	var focused struct {
+		Delta json.RawMessage `json:"delta"`
+	}
+	if err := json.Unmarshal(eventData, &focused); err != nil {
+		return nil, false
+	}
+	return focused.Delta, true
+}
+
+// extractResponseObjectRaw extracts the raw bytes of the "response" object
+// from a response.completed SSE event. When the payload nests the response
+// under "response", that sub-object's raw JSON is returned; when the
+// payload IS the response, the full event data is returned. Returns nil
+// when extraction fails — the caller falls back to the lossy map path.
+func extractResponseObjectRaw(eventData []byte) []byte {
+	var focused struct {
+		Response json.RawMessage `json:"response"`
+	}
+	if err := json.Unmarshal(eventData, &focused); err != nil {
+		return nil
+	}
+	if len(focused.Response) > 0 {
+		return focused.Response
+	}
+	// No "response" field — the payload itself is the response object.
+	return eventData
 }

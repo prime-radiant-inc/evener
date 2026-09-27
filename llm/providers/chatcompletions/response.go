@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/openaichat"
+	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 )
 
 type chatCompletionResponse struct {
@@ -132,6 +133,29 @@ type chatFunctionCall struct {
 	Arguments string `json:"arguments"`
 }
 
+// chatFunctionCallRaw is the focused decode target for byte-faithful
+// argument capture: Arguments is captured as a json.RawMessage (the string
+// token) rather than a string, so rawStringContent can unescape it
+// preserving bytes that encoding/json would coerce to U+FFFD.
+type chatFunctionCallRaw struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+type chatToolCallRaw struct {
+	ID       string              `json:"id"`
+	Type     string              `json:"type"`
+	Function chatFunctionCallRaw `json:"function"`
+}
+type chatMessageRaw struct {
+	ToolCalls []chatToolCallRaw `json:"tool_calls,omitempty"`
+}
+type chatChoiceRaw struct {
+	Message chatMessageRaw `json:"message"`
+}
+type chatCompletionResponseRaw struct {
+	Choices []chatChoiceRaw `json:"choices"`
+}
+
 type chatCompletionChunk struct {
 	ID      string                  `json:"id"`
 	Model   string                  `json:"model"`
@@ -234,7 +258,14 @@ func extractReasoning(msg chatMessage) (text, field string) {
 // response into an llm.Response. finishMap applies the row's
 // Caps.FinishReasonMap before normalization; the caller (Complete) stamps
 // Response.Provider from res.Instance after this returns.
-func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string) (llm.Response, error) {
+//
+// body is the raw response body bytes; when non-nil, a focused decode
+// captures tool-call arguments as json.RawMessage so rawStringContent can
+// unescape them preserving bytes (invalid UTF-8, non-canonical JSON) that
+// the map[string]any decode coerces. When nil, the existing string-form
+// path is used (args come from the lossy map, already U+FFFD-coerced for
+// invalid UTF-8).
+func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string, body []byte) (llm.Response, error) {
 	b, err := json.Marshal(raw)
 	if err != nil {
 		return llm.Response{}, err
@@ -262,8 +293,23 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string)
 	if choice.Message.Content != "" {
 		parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: choice.Message.Content})
 	}
-	for _, tc := range choice.Message.ToolCalls {
+	for tcIdx, tc := range choice.Message.ToolCalls {
 		args := rescueClaudeXMLArgs(tc.Function.Arguments)
+		// When the raw body is available, try a focused RawMessage decode
+		// to capture byte-faithful arguments. Degrade, never drop: if the
+		// focused decode fails for this call, fall back to the existing
+		// string-form args (already coerced by the map decode).
+		if len(body) > 0 {
+			if rawArgs, ok := captureChatArgsRaw(body, len(parts), tcIdx); ok && rawArgs != nil {
+				// rawArgs is the RawMessage string token; unescape it to
+				// get byte-faithful content. rescueClaudeXMLArgs still
+				// applies on the unescaped content (it returns it
+				// unchanged when no XML is present, preserving raw bytes).
+				if content, cerr := protocolhttp.RawStringContent(rawArgs); cerr == nil {
+					args = rescueClaudeXMLArgs(string(content))
+				}
+			}
+		}
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolCall,
 			ToolCall: &llm.ToolCallData{
@@ -327,4 +373,30 @@ func estimateThinkingFromBuf(chars int) int {
 	}
 	est := max(chars/4, 1)
 	return est
+}
+
+// captureChatArgsRaw decodes the response body with a focused struct that
+// captures tool-call arguments as json.RawMessage (the string token) rather
+// than string, preserving bytes that the lossy map[string]any decode coerces.
+// toolCallIdx is the index of the tool call within choices[0].message.tool_calls.
+// Returns (nil, false) if the focused decode fails — the caller falls back
+// to the existing string-form args (degrade, never drop).
+//
+// partsBefore is the number of content parts already built before the tool
+// calls — not used for chatcompletions (tool calls are always at the end of
+// the message), but accepted for signature parity with other families.
+func captureChatArgsRaw(body []byte, partsBefore, toolCallIdx int) (json.RawMessage, bool) {
+	_ = partsBefore
+	var focused chatCompletionResponseRaw
+	if err := json.Unmarshal(body, &focused); err != nil {
+		return nil, false
+	}
+	if len(focused.Choices) == 0 {
+		return nil, false
+	}
+	choice := focused.Choices[0]
+	if toolCallIdx < 0 || toolCallIdx >= len(choice.Message.ToolCalls) {
+		return nil, false
+	}
+	return choice.Message.ToolCalls[toolCallIdx].Function.Arguments, true
 }

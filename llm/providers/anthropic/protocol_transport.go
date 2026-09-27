@@ -45,8 +45,8 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 		return llm.Response{}, err
 	}
 	call := p.completionCall("messages.create", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
-	return protocolhttp.Complete(ctx, call, func(raw map[string]any) (llm.Response, error) {
-		return fromAnthropicResponse(raw, req.Model), nil
+	return protocolhttp.Complete(ctx, call, func(r *protocolhttp.Result) (llm.Response, error) {
+		return fromAnthropicResponse(r.Raw, req.Model, r.Body), nil
 	})
 }
 

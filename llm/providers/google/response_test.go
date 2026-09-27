@@ -37,7 +37,7 @@ func TestGeminiSyntheticToolCallIDUsesIdentifierDomain(t *testing.T) {
 				"functionCall": map[string]any{"name": "lookup", "args": map[string]any{"q": "x"}},
 			}}},
 		}},
-	}, "test")
+	}, "test", nil)
 	calls := r.ToolCalls()
 	if len(calls) != 1 {
 		t.Fatalf("tool calls = %d, want 1", len(calls))
