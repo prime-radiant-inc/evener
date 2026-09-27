@@ -40,7 +40,7 @@ func ExtractRecordedResponse(body []byte, requestedModel string) (llm.Response, 
 		if _, hasChoices := raw["choices"]; hasChoices {
 			return llm.Response{}, errors.New("responses: recorded body is a Chat Completions shape, not Responses API -- use chatcompletions.ExtractRecordedResponse")
 		}
-		return fromResponses(raw, requestedModel), nil
+		return fromResponses(raw, requestedModel, trimmed), nil
 	}
 	if isChatCompletionsSSE(trimmed) {
 		return llm.Response{}, errors.New("responses: recorded body is a Chat Completions SSE stream, not Responses API -- use chatcompletions.ExtractRecordedResponse")
@@ -126,7 +126,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 		return llm.Response{}, errors.New("responses: recorded responses SSE body has no response.completed event")
 	}
 
-	r := fromResponses(terminal, requestedModel)
+	r := fromResponses(terminal, requestedModel, nil)
 	settleResponsesTerminalOutput(&r, terminal, acc.Output())
 	return r, nil
 }
