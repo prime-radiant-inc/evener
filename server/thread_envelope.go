@@ -88,17 +88,20 @@ type threadEnvelope struct {
 	// VisionModel is the session's vision side-channel setting ("", "off", or
 	// a model ref), sampled under its own facet beside reasoning's trio.
 	VisionModel string
-	// Name, Preview and LastTurnEndedAt are the facetMeta fields appThread reads
-	// out of schema.SessionMeta. Storing them rather than the whole struct is
-	// deliberate: SessionMeta has roughly a dozen other fields (turn counts,
-	// pinned notes, worktree paths) that change constantly and silently, and
-	// storing them would create a dozen values this envelope claims to keep
-	// current and does not. LastTurnEndedAt (Unix ms, 0 before any turn has
-	// ended) is current by construction: only a turn ending moves it, and
-	// TURN_ENDED re-samples every facet, facetMeta included.
+	// Name, Preview, LastTurnEndedAt and LastMessage are the facetMeta fields
+	// appThread reads out of schema.SessionMeta. Storing them rather than the
+	// whole struct is deliberate: SessionMeta has roughly a dozen other fields
+	// (turn counts, pinned notes, worktree paths) that change constantly and
+	// silently, and storing them would create a dozen values this envelope
+	// claims to keep current and does not. LastTurnEndedAt (Unix ms, 0 before
+	// any turn has ended) is current by construction: only a turn ending moves
+	// it, and TURN_ENDED re-samples every facet, facetMeta included.
+	// LastMessage can move mid-turn and lag until the turn ends, which is when
+	// a row shows it (S1d): a Finished row is a session whose turn ended.
 	Name            string
 	Preview         string
 	LastTurnEndedAt int64
+	LastMessage     string
 }
 
 // ThreadEnvelopeSource supplies the live session values the thread envelope
@@ -403,6 +406,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 			if !meta.LastTurnEndedAt.IsZero() {
 				next.LastTurnEndedAt = meta.LastTurnEndedAt.UnixMilli()
 			}
+			next.LastMessage = meta.LastMessage
 		}
 		if facets&facetGoal != 0 {
 			if meta.Goal != nil {
@@ -527,5 +531,6 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notes
 		e.Name = next.Name
 		e.Preview = next.Preview
 		e.LastTurnEndedAt = next.LastTurnEndedAt
+		e.LastMessage = next.LastMessage
 	}
 }
