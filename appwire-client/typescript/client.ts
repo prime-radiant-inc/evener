@@ -699,7 +699,10 @@ export class AppwireClient {
 
   private armHeartbeat(): void {
     this.disarmHeartbeat();
-    this.heartbeatTimer = setTimeout(() => this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer = setTimeout(() => {
+      this.heartbeatTimer = null;
+      this.sendHeartbeat();
+    }, HEARTBEAT_INTERVAL_MS);
   }
 
   private disarmHeartbeat(): void {
@@ -729,7 +732,6 @@ export class AppwireClient {
   // handler's latency, and a silent drop is already caught within
   // HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS of the last frame received.
   private sendHeartbeat(): void {
-    this.heartbeatTimer = null;
     if (this.connectionState !== "ready") return;
     const socket = this.socket;
     if (!socket) return;
