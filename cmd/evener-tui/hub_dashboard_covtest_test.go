@@ -393,6 +393,95 @@ func TestCovBuildDashboardRows(t *testing.T) {
 	}
 }
 
+// TestBuildDashboardRows_SubagentAttentionCappedAtActive: issue #2558,
+// mirroring the hub's #2557 fix. A subagent thread resting in an attention
+// state (errored, here) must not raise its project's dashboard row past the
+// coordinator's own idle state — only a top-level session's own state can
+// turn the row red. The subagent's failure still shows on its own row.
+func TestBuildDashboardRows_SubagentAttentionCappedAtActive(t *testing.T) {
+	rows := buildDashboardRows(hubTreeFromThreads([]appwire.Thread{
+		coordinatorThread("01COORD", appwire.ThreadStatusIdle),
+		subagentThread("01SUB", "01COORD", appwire.ThreadStatusSystemError),
+	}))
+	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "idle" {
+		t.Errorf("project row state = %q, want idle (the errored subagent must not turn the row red)", got)
+	}
+}
+
+// TestBuildDashboardRows_ActiveSubagentKeepsProjectRowActive complements the
+// above: a subagent that is genuinely working (not merely resting in an
+// attention state) does keep the project's row active.
+func TestBuildDashboardRows_ActiveSubagentKeepsProjectRowActive(t *testing.T) {
+	rows := buildDashboardRows(hubTreeFromThreads([]appwire.Thread{
+		coordinatorThread("01COORD2", appwire.ThreadStatusIdle),
+		subagentThread("01SUB2", "01COORD2", appwire.ThreadStatusActive),
+	}))
+	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "active" {
+		t.Errorf("project row state = %q, want active (the subagent is genuinely working)", got)
+	}
+}
+
+// TestBuildDashboardRows_CoordinatorErrorStillRedProjectRow: only a
+// top-level session's own state can turn a project row red — a coordinator
+// that is itself errored must still do so.
+func TestBuildDashboardRows_CoordinatorErrorStillRedProjectRow(t *testing.T) {
+	rows := buildDashboardRows(hubTreeFromThreads([]appwire.Thread{
+		coordinatorThread("01FAILEDCOORD", appwire.ThreadStatusSystemError),
+	}))
+	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "errored" {
+		t.Errorf("project row state = %q, want errored (the coordinator itself failed)", got)
+	}
+}
+
+// TestBuildDashboardRows_SubagentSeenBeforeCoordinatorStaysCapped guards the
+// root cause behind the bug above: hubTreeFromThreads seeds a new project's
+// hubTreeProject.RollupState from whichever thread it encounters first for
+// that project, which can be the subagent rather than its coordinator
+// depending on wire order. The cap must hold there too, not only in
+// buildDashboardRows's fold, or a subagent thread that happens to arrive
+// before its coordinator would seed the rollup with its own uncapped
+// attention state.
+func TestBuildDashboardRows_SubagentSeenBeforeCoordinatorStaysCapped(t *testing.T) {
+	rows := buildDashboardRows(hubTreeFromThreads([]appwire.Thread{
+		subagentThread("01SUB3", "01COORD3", appwire.ThreadStatusSystemError),
+		coordinatorThread("01COORD3", appwire.ThreadStatusIdle),
+	}))
+	if got := stateLabel(dashboardProjectRowState(t, rows, "evener")); got != "idle" {
+		t.Errorf("project row state = %q, want idle (the subagent arrived first on the wire but must still not seed an attention rollup)", got)
+	}
+}
+
+// dashboardProjectRowState returns the state of the hubRowProject row whose
+// title matches, failing the test if no such row exists.
+func dashboardProjectRowState(t *testing.T, rows []hubRow, title string) string {
+	t.Helper()
+	for _, row := range rows {
+		if row.kind == hubRowProject && row.title == title {
+			return row.state
+		}
+	}
+	t.Fatalf("no project row titled %q in %#v", title, rows)
+	return ""
+}
+
+// coordinatorThread is a top-level local session in the /repo/evener project.
+func coordinatorThread(id, status string) appwire.Thread {
+	return appwire.Thread{
+		ID: id, SessionID: id, CWD: "/repo/evener", Source: "local",
+		Status: appwire.ThreadStatus{Type: status},
+		Evener: appwire.EvenerThread{Ref: "local:" + id},
+	}
+}
+
+// subagentThread is a delegate of the local session parentID, in the same
+// /repo/evener project.
+func subagentThread(id, parentID, status string) appwire.Thread {
+	thread := coordinatorThread(id, status)
+	thread.Evener.Kind = "subagent"
+	thread.Evener.ParentRef = "local:" + parentID
+	return thread
+}
+
 // TestCovBuildProjectRows exercises project row building.
 func TestCovBuildProjectRows(t *testing.T) {
 	// With live and recent sessions.
@@ -719,6 +808,45 @@ func TestCovProjectSummary(t *testing.T) {
 	}
 	if !contains(got, "1 live") {
 		t.Fatalf("got %q, want '1 live'", got)
+	}
+}
+
+// TestProjectSummary_SubagentAttentionCappedAtActive: issue #2558.
+// projectSummary renders the text shown right next to a project's dashboard
+// dot (hub_dashboard_view.go:264), computed by its own walk over the
+// group's session rows — separate from buildDashboardRows's rollup fold.
+// That walk needs the same subagent cap: an errored subagent row must not
+// surface as "Error" text next to an otherwise-idle coordinator's dot, or
+// the row would show a correct (idle) dot beside contradictory text.
+func TestProjectSummary_SubagentAttentionCappedAtActive(t *testing.T) {
+	project := hubRow{kind: hubRowProject, project: "Proj1", groupKey: "g1", state: "idle", liveCount: 2}
+	rows := []hubRow{
+		project,
+		{kind: hubRowSession, groupKey: "g1", state: "idle", live: true},
+		{kind: hubRowSession, groupKey: "g1", state: "errored", live: true, isSubagent: true},
+	}
+	got := projectSummary(project, rows)
+	if contains(got, "Error") {
+		t.Fatalf("got %q, want no Error (the errored subagent row must not surface in the project summary)", got)
+	}
+	if !contains(got, "Idle") {
+		t.Fatalf("got %q, want Idle (the coordinator's own state)", got)
+	}
+}
+
+// TestProjectSummary_ActiveSubagentSurfacesAsWorking complements the above:
+// a subagent that is genuinely active does still surface as "Working" in
+// the summary, same as buildDashboardRows's rollup allows it to.
+func TestProjectSummary_ActiveSubagentSurfacesAsWorking(t *testing.T) {
+	project := hubRow{kind: hubRowProject, project: "Proj1", groupKey: "g1", state: "idle", liveCount: 2}
+	rows := []hubRow{
+		project,
+		{kind: hubRowSession, groupKey: "g1", state: "idle", live: true},
+		{kind: hubRowSession, groupKey: "g1", state: "active", live: true, isSubagent: true},
+	}
+	got := projectSummary(project, rows)
+	if !contains(got, "Working") {
+		t.Fatalf("got %q, want Working (the subagent is genuinely active)", got)
 	}
 }
 

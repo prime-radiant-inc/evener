@@ -51,6 +51,34 @@ func TestDelegateRuntimeReclaim_ClaimsOnlyQuiescentTerminalSubtrees(t *testing.T
 	}
 }
 
+// TestDelegateRuntimeReclaim_SubtreeWithANeverRunMemberIsRefused pins the
+// other half of claimableRuntimeSubtreeLocked's terminal check. A member that
+// was created but has never run sits in PhaseIdle, so the phase clause alone
+// would accept it; only the "no outcome yet" half of the check refuses it,
+// and that refusal must still bail the whole subtree, the same as a running
+// child does above.
+func TestDelegateRuntimeReclaim_SubtreeWithANeverRunMemberIsRefused(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 8, 4)
+	c.maxRetainedTerminal = 2
+	eligible := seedDelegateReclaimRuntime(t, c, "dlg_eligible", "", time.Unix(10, 0).UTC(), false, false)
+	blocked := seedDelegateReclaimRuntime(t, c, "dlg_blocked", "", time.Unix(5, 0).UTC(), false, false)
+	seedDelegateControllerIdle(t, c, "dlg_never_run", "dlg_blocked")
+
+	claim, err := c.ClaimRuntimeReclamation(1)
+	if err != nil {
+		t.Fatalf("ClaimRuntimeReclamation: %v", err)
+	}
+	if claim == nil || !reflect.DeepEqual(reclamationDelegateIDs(claim), []string{"dlg_eligible"}) {
+		t.Fatalf("claimed runtimes = %#v, want only quiescent dlg_eligible", claim)
+	}
+	if got := claim.entries[0].runtime; got != eligible {
+		t.Fatalf("claimed runtime = %p, want exact eligible runtime %p", got, eligible)
+	}
+	if got := c.live["dlg_blocked"].runtime; got != blocked {
+		t.Fatalf("blocked subtree runtime changed during claim: got %p want %p", got, blocked)
+	}
+}
+
 func TestDelegateRuntimeReclaim_ClosesPostorderAfterUnlock(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 8, 4)
 	c.maxRetainedTerminal = 2

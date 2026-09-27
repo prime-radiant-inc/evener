@@ -109,6 +109,7 @@ Decisions this plan makes where the spec is silent or its data doesn't exist yet
 | 5: notices and search | 14-15 | Opus (medium) | when PR 2 lands | A |
 | 4: row actions, select mode, list stability | 11-13 | Opus (medium) | when PRs 3 and 5 land | B |
 
+- Parts 2 and 3 split PRs 3 and 4 further, and their tables are the current ones: part 2 keeps PR 3 as Task 9 and PR 4 as Task 11, and part 3 lands Task 10 as PRs 3a and 3b and Tasks 12-13 as PRs 4a to 4c (see "PRs 3 to 5" below).
 - The server lane (phase 7) runs beside these as the third lane.
 - Every PR lands under the roadmap's rules: CI green, RoboRev with nothing Medium or higher, /simplify, admin squash merge, Lows in a fast-follow, and decompose after five rounds.
 - The phase's last PR carries Release-simulator screenshots of Appendix A frames 1-7 against the demo fleet (Task 17).
@@ -882,10 +883,10 @@ git commit -m "feat(native): the Board's attention model on the navigation fallb
 - Test: `mobile-native/src/board/boardMemory.test.ts`
 
 **Interfaces:**
+- Consumes: `SyncStringStorage` (`src/syncStringStorage.ts`), the kv-store's three sync methods, which #2536 made the app's one storage type in place of this task's first `SyncStringStorage`.
 - Produces:
-  - `interface BoardStorage { getItemSync(key: string): string | null; setItemSync(key: string, value: string): void; removeItemSync(key: string): void }`
   - `class SeenMarkers`:
-    - constructor `(storage: BoardStorage, hubId: string)`
+    - constructor `(storage: SyncStringStorage, hubId: string)`
     - `isSeen(row: { ref: string; updated_at?: string }): boolean`
     - `adoptEpoch(rows: readonly { updated_at?: string }[]): void`
     - `markSeen(row: { ref: string; updated_at?: string }): void`
@@ -893,10 +894,10 @@ git commit -m "feat(native): the Board's attention model on the navigation fallb
     - `subscribe(listener: () => void): () => void`
     - `getRevision(): number`
   - `class FoldedSections`:
-    - constructor `(storage: BoardStorage, hubId: string)`
+    - constructor `(storage: SyncStringStorage, hubId: string)`
     - `isFolded(section: string, byDefault: boolean): boolean`
     - `setFolded(section: string, folded: boolean): void`
-  - `forgetBoard(storage: BoardStorage, hubId: string): void`
+  - `forgetBoard(storage: SyncStringStorage, hubId: string): void`
   - From `nativeBoardMemory.ts`: `seenMarkers(hubId: string): SeenMarkers`, `foldedSections(hubId: string): FoldedSections` and `forgetBoardForHub(hubId: string): void`. These are per-hub singletons over `expo-sqlite/kv-store`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -904,9 +905,10 @@ git commit -m "feat(native): the Board's attention model on the navigation fallb
 ```ts
 // mobile-native/src/board/boardMemory.test.ts
 import { describe, expect, it } from "vitest";
-import { type BoardStorage, FoldedSections, forgetBoard, SeenMarkers } from "./boardMemory";
+import type { SyncStringStorage } from "../syncStringStorage";
+import { FoldedSections, forgetBoard, SeenMarkers } from "./boardMemory";
 
-function memoryStorage(values = new Map<string, string>()): BoardStorage & { values: Map<string, string> } {
+function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
 		values,
 		getItemSync: (key) => values.get(key) ?? null,
@@ -982,7 +984,7 @@ describe("seen markers", () => {
 	});
 
 	it("keeps working in memory when storage throws", () => {
-		const broken: BoardStorage = {
+		const broken: SyncStringStorage = {
 			getItemSync: () => {
 				throw new Error("disk");
 			},
@@ -1061,12 +1063,7 @@ Expected: FAIL: `Cannot find module './boardMemory'`.
 // What this device remembers about one hub's Board: which sessions you have
 // seen and which sections you folded. Kept in expo-sqlite's kv-store under
 // per-hub keys that ConnectionProvider.removeHub clears.
-
-export interface BoardStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
-}
+import type { SyncStringStorage } from "../syncStringStorage";
 
 const seenKey = (hubId: string) => `evener.native.seen.${hubId}`;
 const foldedKey = (hubId: string) => `evener.native.board-sections.${hubId}`;
@@ -1075,7 +1072,7 @@ const SEEN_LIMIT = 500;
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-function readJson(storage: BoardStorage, key: string): unknown {
+function readJson(storage: SyncStringStorage, key: string): unknown {
 	try {
 		const raw = storage.getItemSync(key);
 		return raw ? JSON.parse(raw) : null;
@@ -1083,7 +1080,7 @@ function readJson(storage: BoardStorage, key: string): unknown {
 		return null;
 	}
 }
-function writeJson(storage: BoardStorage, key: string, value: unknown): void {
+function writeJson(storage: SyncStringStorage, key: string, value: unknown): void {
 	try {
 		storage.setItemSync(key, JSON.stringify(value));
 	} catch {
@@ -1132,7 +1129,7 @@ export class SeenMarkers {
 	private listeners = new Set<() => void>();
 
 	constructor(
-		private readonly storage: BoardStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
 		this.state = parseSeen(readJson(storage, seenKey(hubId)));
@@ -1205,7 +1202,7 @@ export class FoldedSections {
 	private folded: Record<string, boolean> = {};
 
 	constructor(
-		private readonly storage: BoardStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
 		const value = readJson(storage, foldedKey(hubId));
@@ -1224,7 +1221,7 @@ export class FoldedSections {
 	}
 }
 
-export function forgetBoard(storage: BoardStorage, hubId: string): void {
+export function forgetBoard(storage: SyncStringStorage, hubId: string): void {
 	for (const key of [seenKey(hubId), foldedKey(hubId)])
 		try {
 			storage.removeItemSync(key);
@@ -1571,7 +1568,7 @@ Open PR 1: "feat(native): the Board's attention model, memory and marks (phase 2
 
 ## PR 2: the Board, Live first
 
-PR 2 makes the Board home. Pinned categories, Projects and Archived appear as section rows that open today's screens until PR 3 brings them inline, and search keeps today's `thread/list` search until PR 5. Nothing the old home reached becomes unreachable.
+PR 2 makes the Board home. Pinned categories, Projects and Archived appear as section rows that open today's screens until they come inline: pinned categories with part 2's PR 3 (Task 9), and Projects, Test runs and Archived with part 3's PR 3b (Task 10.6). Search keeps today's `thread/list` search until part 2's PR 5. Nothing the old home reached becomes unreachable.
 
 ### Task 5: The Board's data
 
@@ -1774,7 +1771,7 @@ export function BoardRow(props: BoardRowProps): ReactElement;
    - "NEEDS YOU · n", "FINISHED · n" and "WORKING · n" (headers 13pt semibold uppercase, `inkMid`, 0.4 letter-spacing), with signal rows.
    - Then "Idle · n ›", folded by default. Its fold state lives in `foldedSections(hubId)` under the key `"idle"`. It holds quiet rows.
    - Empty bands are omitted.
-5. **Section rows** after Live, each opening today's screen until PR 3:
+5. **Section rows** after Live, each opening today's screen until its section comes inline (pinned categories with part 2's PR 3; Projects and Archived with part 3's PR 3b):
    - one "📌 name · count ›" row per pinned category (`navigation.navigate("PinnedSection", { hubId, sectionId, title })`);
    - "Projects · n ›" (`Projects` route with `archived: false`);
    - "Archived · n ›" (`Projects` route with `archived: true`).
@@ -1829,9 +1826,11 @@ export function BoardRow(props: BoardRowProps): ReactElement;
 
 ---
 
-## PRs 3, 5 and 4 (Tasks 9-15)
+## PRs 3 to 5 (Tasks 9-15)
 
-Pinned categories, projects and hosts, test runs and archived (PR 3), notices and search (PR 5), and row actions, select mode and list stability (PR 4) are planned in part 2, `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-board-part2.md`, which lands in its own PR once PR 2 is under way.
+Two more parts plan these:
+- Part 2, `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-board-part2.md`: pinned categories (PR 3, Task 9), notices and search (PR 5, Tasks 14-15), and the gesture and animation foundations (PR 4, Task 11).
+- Part 3, `docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-board-part3.md`: projects and hosts, test runs and archived (PRs 3a and 3b, Task 10), swipes and the long-press menu (PRs 4a and 4b, Task 12), and select mode with a list that holds still (PR 4c, Task 13).
 
 ## PR B: the demo fleet
 

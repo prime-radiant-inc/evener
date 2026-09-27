@@ -50,6 +50,21 @@ func (m hubModel) projectKeyForSession() (string, bool) {
 	return "", false
 }
 
+// rollupContribution is the state a session contributes to its project's
+// rollup: its own state, or, for a subagent at any depth, its state while it
+// is active and "" (the lowest rank) otherwise. A subagent's attention
+// states show on its own row but never raise its project's (the hub's
+// #2557 rule) — seeding a rollup with this value keeps that true when a
+// subagent is the first thread seen on the wire, and folding a project's
+// summary text (projectSummary) through it keeps that text from
+// contradicting the rollup dot it sits beside.
+func rollupContribution(state string, isSubagent bool) string {
+	if isSubagent && stateLabel(state) != "active" {
+		return ""
+	}
+	return state
+}
+
 func buildDashboardRows(tree hubTreeResponse) []hubRow {
 	type dashboardGroup struct {
 		key        string
@@ -116,6 +131,7 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			projectKey:  projectKey,
 			groupKey:    groupKey,
 			state:       n.State,
+			isSubagent:  n.IsSubagent,
 			askPending:  n.AskPending,
 			live:        n.Live,
 			model:       n.Model,
@@ -124,10 +140,11 @@ func buildDashboardRows(tree hubTreeResponse) []hubRow {
 			createdAt:   n.CreatedAt,
 			updatedAt:   n.UpdatedAt,
 		}
-		group := ensureGroup(groupKey, projectKey, project, n.State)
+		contribution := rollupContribution(n.State, n.IsSubagent)
+		group := ensureGroup(groupKey, projectKey, project, contribution)
 		group.sessions = append(group.sessions, row)
-		if attentionRankLabel(n.State) > attentionRankLabel(group.state) {
-			group.state = stateLabel(n.State)
+		if attentionRankLabel(contribution) > attentionRankLabel(group.state) {
+			group.state = stateLabel(contribution)
 		}
 		if recency := rowRecency(row); recency > group.updatedAt {
 			group.updatedAt = recency

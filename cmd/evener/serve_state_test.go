@@ -775,6 +775,10 @@ type clearIdentityServer struct {
 	// through. Capturing it lets this test observe WHICH session the daemon
 	// resolves after thread/clear, which is what the meta callback used to prove.
 	envelopeSource server.ThreadEnvelopeSource
+	// subagentTally and subagentTallyInstalls record the tally seam serve
+	// installs for each session it bridges.
+	subagentTally         func() (appwire.SubagentTally, bool)
+	subagentTallyInstalls int
 }
 
 func (s *clearIdentityServer) ReplaceAppIdentity(prepared server.PreparedAppIdentity, activate func()) {
@@ -807,6 +811,12 @@ func (s *clearIdentityServer) SetShutdownFunc(fn func()) {
 func (s *clearIdentityServer) SetThreadEnvelopeSource(src server.ThreadEnvelopeSource) {
 	s.envelopeSource = src
 	s.Server.SetThreadEnvelopeSource(src)
+}
+
+func (s *clearIdentityServer) SetSubagentTallyFunc(fn func() (appwire.SubagentTally, bool)) {
+	s.subagentTally = fn
+	s.subagentTallyInstalls++
+	s.Server.SetSubagentTallyFunc(fn)
 }
 
 // newClearServeDeps builds a real serve run whose LLM boundary is scripted and

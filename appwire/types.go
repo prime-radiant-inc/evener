@@ -858,6 +858,11 @@ type EvenerThread struct {
 	// Finished session from an Idle one. Snapshot-only: no notification
 	// carries it.
 	LastTurnEndedAt int64 `json:"lastTurnEndedAt,omitempty"`
+	// Subagents tallies a live root session's whole delegate tree (S3), read
+	// from the root's delegate controller when the row is listed. It rides
+	// thread/list root rows only, when the tree has at least one subagent, and
+	// never a thread/read snapshot: no notification announces its changes.
+	Subagents *SubagentTally `json:"subagents,omitempty"`
 }
 
 // ThreadActivity is one pulse meter sample. Minutes holds seven one-minute
@@ -870,6 +875,17 @@ type EvenerThread struct {
 type ThreadActivity struct {
 	Minutes        []int `json:"minutes"`
 	LastActivityAt int64 `json:"lastActivityAt"`
+}
+
+// SubagentTally counts a live root session's subagents, at every depth, by how
+// each one's latest run stands (spec 9, S3). Running: no run has ended yet, or
+// a run is open again after the last one ended. Failed: the latest run ended
+// failed or exhausted. Done: it ended any other way (completed, cancelled or
+// stopped), including a subagent idle between runs.
+type SubagentTally struct {
+	Running int `json:"running"`
+	Failed  int `json:"failed"`
+	Done    int `json:"done"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the

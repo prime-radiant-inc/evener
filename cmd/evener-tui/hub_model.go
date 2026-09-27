@@ -49,6 +49,7 @@ type hubRow struct {
 	projectKey  string // server-supplied canonical project ID; empty is non-actionable
 	groupKey    string // presentation-only grouping key; never sent to the server
 	state       string
+	isSubagent  bool // a delegate thread at any depth; caps its rollupContribution (#2558)
 	askPending  bool
 	live        bool
 	model       string
