@@ -7,7 +7,7 @@
 // These cases evaluate the REAL expression string in jsdom, so the
 // not-ready (null) / ready (rows) contract is pinned without a browser.
 
-import { beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import { Driver } from "./run.mjs";
 
@@ -76,6 +76,15 @@ describe("selectAll holds the whole-text selection", () => {
     return { driver, ranges };
   }
 
+  // Each re-selection is announced on stderr, the log a failing skillguard run
+  // leaves behind; the tests that re-select assert those lines.
+  const reselecting = (attempt) =>
+    `skillguard: ref_a: a render reset the selection after selectAll; re-selecting (attempt ${attempt}/4)`;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   test("returns after one selection when the editor holds it", async () => {
     const { driver: d, ranges } = scriptedDriver([editState(0, 0), editState(0, 37)]);
     await d.selectAll("ref_a");
@@ -83,6 +92,7 @@ describe("selectAll holds the whole-text selection", () => {
   });
 
   test("re-applies the selection a render reset, then returns", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const { driver: d, ranges } = scriptedDriver([
       editState(0, 0),
       editState(37, 37),
@@ -94,6 +104,7 @@ describe("selectAll holds the whole-text selection", () => {
       [0, 37],
       [0, 37],
     ]);
+    expect(consoleError.mock.calls).toEqual([[reselecting(1)]]);
   });
 
   test("re-applies when the draft grew after the selection was placed", async () => {
@@ -101,6 +112,7 @@ describe("selectAll holds the whole-text selection", () => {
     // longer one and mapped the selection to the old prefix. Comparing against
     // the length read before the range (11) would read that as a whole-text
     // hold and strand the tail, so the settled text is the yardstick.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const { driver: d, ranges } = scriptedDriver([
       editState(0, 0, "SHORT_DRAFT"),
       editState(0, 11),
@@ -112,11 +124,13 @@ describe("selectAll holds the whole-text selection", () => {
       [0, 11],
       [0, 37],
     ]);
+    expect(consoleError.mock.calls).toEqual([[reselecting(1)]]);
   });
 
   test("reports an editor that will not hold the selection", async () => {
     // Every settle reports the reset caret, so no attempt ever holds: the guard
     // must fail, not type into the collapsed caret.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const { driver: d, ranges } = scriptedDriver([
       editState(0, 0),
       editState(37, 37),
@@ -129,5 +143,7 @@ describe("selectAll holds the whole-text selection", () => {
     ]);
     await expect(d.selectAll("ref_a")).rejects.toThrow(/would not hold the whole-text selection/);
     expect(ranges.length).toBe(4);
+    // The fourth, last attempt fails the guard instead of announcing a retry.
+    expect(consoleError.mock.calls).toEqual([[reselecting(1)], [reselecting(2)], [reselecting(3)]]);
   });
 });

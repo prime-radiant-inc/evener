@@ -13,9 +13,9 @@ import {
 	parseDraftBytes,
 	readDraftOutcome,
 	readDraftOutcomeWithValue,
-	type RawStringStorage,
 	rawStringDraftBackend,
 } from "./nativePreferenceDrafts";
+import type { SyncStringStorage } from "./syncStringStorage";
 
 // The keybindings store's discardClassified and its settle paths (a save,
 // a discard or a rebase adopting a checkpoint replaced under them) branch on
@@ -32,7 +32,7 @@ const checkpoint = { id: "draft-1", baseRevision: 3, rules: [], writeUncertain: 
 // same function production calls over it, not a parallel reimplementation.
 function rawBytesBackend() {
 	const raw = new Map<string, string>();
-	const storage: RawStringStorage = {
+	const storage: SyncStringStorage = {
 		getItemSync: (key) => raw.get(key) ?? null,
 		setItemSync: (key, value) => raw.set(key, value),
 		removeItemSync: (key) => raw.delete(key),

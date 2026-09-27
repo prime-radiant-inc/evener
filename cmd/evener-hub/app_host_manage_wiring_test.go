@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -21,7 +21,7 @@ import (
 // hostManageWiringConfig builds the production remote-host wiring shape the
 // real server construction path consumes: the shared live registry, the SSH
 // manager over it, the Ensure-backed dial seam, the attached-only lookups, and
-// the selected hub.toml path whose sidecar persists UI-added hosts — the same
+// the selected hub.toml path the host surface rewrites in place — the same
 // values runMain threads through WebConfig. The runner refuses every dial, so
 // no test here reaches a real ssh; nothing in add/list/status/remove/update
 // dials at all.
@@ -56,9 +56,9 @@ func hostManageWiringConfig(t *testing.T, configPath string, entries []hostreg.H
 // is wired, not a placeholder: it drives the real server construction path
 // (newHubRPCTestServerWithWeb -> NewWebServer over a WebConfig threaded the way
 // runMain threads it) and asserts over a real /rpc dispatch that a configured
-// [[hosts]] host is listed by evener/host/list with its hub.toml origin, is
-// refused by evener/host/add (hub.toml is authoritative for its own names),
-// and is not removable — with its live source intact afterwards.
+// host is listed by evener/host/list with the one origin, is refused by
+// evener/host/add as a duplicate, and — because hub.toml is the machine-managed
+// store the hub writes — is removable like any other live host.
 func TestHostManageConfiguredHostThroughRealServer(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
@@ -98,38 +98,50 @@ func TestHostManageConfiguredHostThroughRealServer(t *testing.T) {
 	addErr := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "m4", Address: "other.example"}}, nil)
 	assertWireCode(t, addErr, appwire.CodeInvalidParams)
 
-	// evener/host/remove of the configured name is refused the same way.
-	removeErr := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "m4"}, nil)
-	assertWireCode(t, removeErr, appwire.CodeInvalidParams)
-
-	// The refused calls changed nothing: the host is still listed with its
-	// origin, still registered in the shared registry the SSH manager dials
-	// through, and still has its live source.
+	// The refused add changed nothing and rewrote nothing: hub.toml still
+	// holds its original bytes.
 	var relist appwire.HostListResponse
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostList, appwire.EmptyParams{}, &relist); err != nil {
 		t.Fatalf("second evener/host/list: %v", err)
 	}
 	if len(relist.Hosts) != 1 || relist.Hosts[0].Name != "m4" || relist.Hosts[0].Origin != hostOriginHubTOML {
-		t.Fatalf("list after refused calls = %+v, want m4 unchanged", relist.Hosts)
+		t.Fatalf("list after the refused add = %+v, want m4 unchanged", relist.Hosts)
 	}
 	if _, ok := reg.Get("m4"); !ok {
 		t.Fatal("the shared registry lost the configured host")
 	}
-	if _, ok := web.sources.Source("m4"); !ok {
-		t.Fatal("the refused remove dropped the hub.toml host's live source")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read hub.toml: %v", err)
 	}
-	// And the sidecar was never written: the refused add committed nothing.
-	if _, err := os.Stat(filepath.Join(dir, hostSidecarFileName)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("sidecar exists after a refused add: %v", err)
+	if len(raw) != 0 {
+		t.Fatalf("hub.toml rewritten by a refused add: %q", raw)
+	}
+
+	// The configured host is removable through the real server — the machine-
+	// managed file is the hub's store, so no class of live host is protected —
+	// and its registry entry and live source go with it.
+	var removed appwire.HostRemoveResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostRemove, appwire.HostRemoveParams{Name: "m4"}, &removed); err != nil {
+		t.Fatalf("evener/host/remove(configured host): %v", err)
+	}
+	if !removed.Host.Removed {
+		t.Fatalf("remove row = %+v, want removed", removed.Host)
+	}
+	if _, ok := reg.Get("m4"); ok {
+		t.Fatal("the shared registry still holds the removed host")
+	}
+	if _, ok := web.sources.Source("m4"); ok {
+		t.Fatal("the removal left the host's live source behind")
 	}
 }
 
 // TestHostManageUIAddedHostThroughRealServer pins the runtime half of the
 // wiring over the same real construction path: a host added through /rpc is
-// persisted in the sidecar beside the selected hub.toml, is attachable
-// immediately (an attach reaches the SSH manager's dial rather than an
-// unknown-host refusal — no restart), and removes cleanly — registry entry,
-// source, row, and sidecar entry all go.
+// persisted into the selected hub.toml, is attachable immediately (an attach
+// reaches the SSH manager's dial rather than an unknown-host refusal — no
+// restart), and removes cleanly — registry entry, source, row, and file entry
+// all go.
 func TestHostManageUIAddedHostThroughRealServer(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
@@ -147,25 +159,25 @@ func TestHostManageUIAddedHostThroughRealServer(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
-	// Add through the real server: the row renders sidecar + offline.
+	// Add through the real server: the row renders the one origin + offline.
 	var added appwire.HostRow
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example", KeyPath: "/keys/ws"}}, &added); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
-	if added.Name != "web-side" || added.Origin != hostOriginSidecar || added.Attached {
-		t.Fatalf("add row = %+v, want web-side/sidecar/offline", added)
+	if added.Name != "web-side" || added.Origin != hostOriginHubTOML || added.Attached {
+		t.Fatalf("add row = %+v, want web-side/hub.toml/offline", added)
 	}
-	// The sidecar persisted beside the selected hub.toml with the key path.
-	data, err := os.ReadFile(filepath.Join(dir, hostSidecarFileName))
+	// hub.toml was rewritten in place with the added entry and its key path.
+	data, err := os.ReadFile(configPath)
 	if err != nil {
-		t.Fatalf("sidecar not written: %v", err)
+		t.Fatalf("hub.toml not written: %v", err)
 	}
-	var file hostSidecarFile
-	if err := json.Unmarshal(data, &file); err != nil {
-		t.Fatalf("sidecar unparsable: %v", err)
+	var probe configProbe
+	if _, err := toml.Decode(string(data), &probe); err != nil {
+		t.Fatalf("hub.toml unparsable: %v", err)
 	}
-	if len(file.Hosts) != 1 || file.Hosts[0].Name != "web-side" || file.Hosts[0].KeyPath != "/keys/ws" {
-		t.Fatalf("sidecar = %s, want the added entry with its key", data)
+	if len(probe.Hosts) != 2 || probe.Hosts[1].Name != "web-side" || probe.Hosts[1].KeyPath != "/keys/ws" {
+		t.Fatalf("hub.toml = %s, want the configured host plus the added entry with its key", data)
 	}
 
 	// Attach without a restart: the request reaches the SSH manager's dial
@@ -202,17 +214,17 @@ func TestHostManageUIAddedHostThroughRealServer(t *testing.T) {
 	if len(after.Hosts) != 1 || after.Hosts[0].Name != "m4" {
 		t.Fatalf("list after remove = %+v, want only the hub.toml host", after.Hosts)
 	}
-	// The sidecar no longer carries the entry: a restart will not resurrect it.
-	data, err = os.ReadFile(filepath.Join(dir, hostSidecarFileName))
+	// hub.toml no longer carries the entry: a restart will not resurrect it.
+	data, err = os.ReadFile(configPath)
 	if err != nil {
-		t.Fatalf("read sidecar after remove: %v", err)
+		t.Fatalf("read hub.toml after remove: %v", err)
 	}
-	var fileAfter hostSidecarFile
-	if err := json.Unmarshal(data, &fileAfter); err != nil {
-		t.Fatalf("sidecar unparsable after remove: %v", err)
+	var afterProbe configProbe
+	if _, err := toml.Decode(string(data), &afterProbe); err != nil {
+		t.Fatalf("hub.toml unparsable after remove: %v", err)
 	}
-	if len(fileAfter.Hosts) != 0 {
-		t.Fatalf("sidecar after remove = %s, want empty", data)
+	if len(afterProbe.Hosts) != 1 || afterProbe.Hosts[0].Name != "m4" {
+		t.Fatalf("hub.toml after remove = %s, want only m4", data)
 	}
 }
 
@@ -258,8 +270,8 @@ func TestHostManageNilRegistryAddAttachThroughRealServer(t *testing.T) {
 	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Entry: appwire.HostEntry{Name: "web-side", Address: "ws.example"}}, &added); err != nil {
 		t.Fatalf("evener/host/add: %v", err)
 	}
-	if added.Origin != hostOriginSidecar {
-		t.Fatalf("add row = %+v, want a sidecar row", added)
+	if added.Origin != hostOriginHubTOML {
+		t.Fatalf("add row = %+v, want a hub.toml row", added)
 	}
 	// Add → attach through the real server: the attach validates against the
 	// same fallback registry the add committed to, so the request reaches the
@@ -402,7 +414,8 @@ func TestHostManageRuntimeHostClassifiedRemoteThroughRealServer(t *testing.T) {
 // finding: when a caller threads RemoteHostSSHManager but leaves
 // RemoteHostRegistry nil (a supported embedder shape), the constructor's
 // fallback used to be a fresh registry built from RemoteHosts while Add and
-// Remove mutated the manager's own registry — so boot sidecar entries landed
+// Remove mutated the manager's own registry — so entries the boot migration
+// folds in landed
 // where the manager never dialed (Ensure -> ErrHostNotFound) and a runtime Add
 // inserted where host/list and host/attach never read. The fallback is the
 // manager's registry now: one instance behind every surface.
@@ -412,10 +425,11 @@ func TestHostManageManagerWithoutRegistrySharesTheManagers(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
 		t.Fatalf("write hub.toml: %v", err)
 	}
-	// A sidecar from a previous run: its entry loads at construction and must
+	// A legacy sidecar from a previous run: the boot migration folds its entry
+	// into hub.toml and the live set at construction, and it must
 	// land in the registry the manager dials through, or Ensure would refuse
 	// it as unknown after a restart.
-	if err := os.WriteFile(filepath.Join(dir, hostSidecarFileName), []byte(`{"hosts":[{"name":"boot-side","ssh":"bs.example"}]}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, legacyHostSidecarFileName), []byte(`{"hosts":[{"name":"boot-side","ssh":"bs.example"}]}`), 0o600); err != nil {
 		t.Fatalf("write sidecar: %v", err)
 	}
 	// The manager over its own registry, exactly the way runMain builds it —
@@ -455,11 +469,11 @@ func TestHostManageManagerWithoutRegistrySharesTheManagers(t *testing.T) {
 	if web.cfg.RemoteHostRegistry != manager.Registry() {
 		t.Fatal("the fallback registry is not the SSH manager's: host surfaces would split between two registries")
 	}
-	// The boot sidecar entry landed where the manager dials: Ensure resolves
+	// The migrated boot entry landed where the manager dials: Ensure resolves
 	// hosts from its own registry, so an entry only in the fallback would be
 	// refused as unknown after a restart.
 	if _, ok := manager.Registry().Get("boot-side"); !ok {
-		t.Fatal("the boot sidecar entry is missing from the SSH manager's registry")
+		t.Fatal("the migrated boot entry is missing from the SSH manager's registry")
 	}
 
 	// A runtime Add goes through the manager's AddHost; host/list must show it.

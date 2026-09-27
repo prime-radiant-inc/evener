@@ -169,6 +169,8 @@ const SESSION_KEYS = valueRecordKeys(
     "rename",
     "ask_pending",
     "approval_pending",
+    "approval_tool",
+    "approval_target",
     "dormant",
     "offline",
     "updated_at",
@@ -309,6 +311,8 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.rename, bool) &&
     optional(value.ask_pending, bool) &&
     optional(value.approval_pending, bool) &&
+    optional(value.approval_tool, (item) => identity(item)) &&
+    optional(value.approval_target, (item) => boundedString(item, 512)) &&
     optional(value.dormant, bool) &&
     optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&

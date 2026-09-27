@@ -116,6 +116,34 @@ test("codec refuses a non-boolean approval flag on a session row", () => {
   expectContentFreeRejection(key, snapshot);
 });
 
+// approval_tool is an identity (at most 1024 UTF-8 bytes) and approval_target a
+// label (at most 512 characters), as the hub bounds them. A value at a bound is
+// kept; past one, or of the wrong type, it is a schema error that names none of
+// the row's content.
+test("codec keeps an approval's tool and target within their bounds and refuses them past", () => {
+  const withApproval = (detail: Record<string, unknown>) => {
+    const snapshot = liveSnapshot();
+    const first = snapshot.entities[0];
+    if (!first) throw new Error("missing entity");
+    first.value = { ...(first.value as object), state: "active", approval_pending: true, ...detail };
+    return snapshot;
+  };
+  const tool = "t".repeat(1024);
+  const target = "😀".repeat(512);
+  const rows = materializeSnapshot(
+    key,
+    decodedSnapshot(key, withApproval({ approval_tool: tool, approval_target: target })),
+  ).sessions as Array<Record<string, unknown>>;
+  expect(rows[0]?.approval_tool).toBe(tool);
+  expect(rows[0]?.approval_target).toBe(target);
+
+  expectContentFreeRejection(key, withApproval({ approval_tool: `${"t".repeat(1007)}private-body-value` }));
+  expectContentFreeRejection(key, withApproval({ approval_tool: "" }));
+  expectContentFreeRejection(key, withApproval({ approval_tool: 7 }));
+  expectContentFreeRejection(key, withApproval({ approval_target: `${"t".repeat(495)}private-body-value` }));
+  expectContentFreeRejection(key, withApproval({ approval_target: ["private-body-value"] }));
+});
+
 test("codec accepts stateless records and rejects obsolete entity and container revisions", () => {
   const stateless = structuredClone(liveSnapshot()) as unknown as {
     entities: Array<Record<string, unknown>>;

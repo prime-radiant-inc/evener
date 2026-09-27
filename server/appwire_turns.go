@@ -56,18 +56,14 @@ type appTurnProjection struct {
 
 func appTurnProjectionFromTranscriptFile(path string) (appTurnProjection, error) {
 	reg := apptranscript.NewToolCallRegistry()
-	entries := 0
 	projection, err := apptranscript.ItemTurnProjectionFromFile(path, appTranscriptMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		if entryIndex > entries {
-			entries = entryIndex
-		}
 		// Positioning is apptranscript's now: TurnsFromFile groups entries
 		// into logical turns and assigns each item its Position/TranscriptKey
 		// there. Re-positioning here would clobber the grouped ordinals.
 		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 	})
 	apptranscript.FlushUnpairedCommunicates(&projection.Turns, reg)
-	return appTurnProjection{turns: projection.Turns, persistedEntries: entries, nextEntry: projection.NextEntry}, err
+	return appTurnProjection{turns: projection.Turns, persistedEntries: projection.Entries, nextEntry: projection.NextEntry}, err
 }
 
 // appTurnsFromEntries projects already-decoded transcript entries into
@@ -86,15 +82,11 @@ func appTurnsFromEntries(header transcript.Header, entries []transcript.Entry) (
 
 func appTurnProjectionFromEntries(header transcript.Header, entries []transcript.Entry) (appTurnProjection, error) {
 	reg := apptranscript.NewToolCallRegistry()
-	highest := 0
 	projection, err := apptranscript.ItemTurnProjectionFromEntries(header, entries, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		if entryIndex > highest {
-			highest = entryIndex
-		}
 		return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
 	})
 	apptranscript.FlushUnpairedCommunicates(&projection.Turns, reg)
-	return appTurnProjection{turns: projection.Turns, persistedEntries: highest, nextEntry: projection.NextEntry}, err
+	return appTurnProjection{turns: projection.Turns, persistedEntries: projection.Entries, nextEntry: projection.NextEntry}, err
 }
 
 func positionAppItems(items []appwire.ThreadItem, turnID string, entry uint64) []appwire.ThreadItem {

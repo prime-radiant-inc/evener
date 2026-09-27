@@ -2,19 +2,14 @@
 // seen and which sections you folded. Kept in expo-sqlite's kv-store under
 // per-hub keys that ConnectionProvider.removeHub clears.
 import { isPlainObject } from "@evener/appwire-client";
+import type { SyncStringStorage } from "../syncStringStorage";
 import { hubTime } from "./attention";
-
-export interface BoardStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
-}
 
 const seenKey = (hubId: string) => `evener.native.seen.${hubId}`;
 const foldedKey = (hubId: string) => `evener.native.board-sections.${hubId}`;
 const MARK_LIMIT = 500;
 
-function readJson(storage: BoardStorage, key: string): unknown {
+function readJson(storage: SyncStringStorage, key: string): unknown {
 	try {
 		const raw = storage.getItemSync(key);
 		return raw ? JSON.parse(raw) : null;
@@ -22,7 +17,7 @@ function readJson(storage: BoardStorage, key: string): unknown {
 		return null;
 	}
 }
-function writeJson(storage: BoardStorage, key: string, value: unknown): void {
+function writeJson(storage: SyncStringStorage, key: string, value: unknown): void {
 	try {
 		storage.setItemSync(key, JSON.stringify(value));
 	} catch {
@@ -77,7 +72,7 @@ export class SeenMarkers {
 	private listeners = new Set<() => void>();
 
 	constructor(
-		private readonly storage: BoardStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
 		this.state = parseSeen(readJson(storage, seenKey(hubId)));
@@ -156,7 +151,7 @@ export class FoldedSections {
 	private folded: Record<string, boolean> = {};
 
 	constructor(
-		private readonly storage: BoardStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
 		const value = readJson(storage, foldedKey(hubId));
@@ -175,7 +170,7 @@ export class FoldedSections {
 	}
 }
 
-export function forgetBoard(storage: BoardStorage, hubId: string): void {
+export function forgetBoard(storage: SyncStringStorage, hubId: string): void {
 	let failed = false;
 	for (const key of [seenKey(hubId), foldedKey(hubId)])
 		try {

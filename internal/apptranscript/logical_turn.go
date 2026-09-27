@@ -60,24 +60,6 @@ func groupOpenAfter(kind schema.TurnKind) bool {
 	return opensLogicalTurn(kind, false) || continuesLogicalTurn(kind)
 }
 
-// recordStartsGroup reports whether a record of this kind starts a new
-// logical group given the kind of the record immediately before it ("" when
-// there is none). Openers always start a group; continuations join the open
-// group (start one only when the previous record closed it); standalone kinds
-// always start — and close — their own group.
-func recordStartsGroup(kind, prevKind schema.TurnKind, goalContinuation bool, owningTurnID, openTurnID string) bool {
-	if opensLogicalTurn(kind, goalContinuation) {
-		return true
-	}
-	if kind == schema.TurnSteering && owningTurnID != "" {
-		return !groupOpenAfter(prevKind) || owningTurnID != openTurnID
-	}
-	if continuesLogicalTurn(kind) {
-		return !groupOpenAfter(prevKind)
-	}
-	return true
-}
-
 // groupedTurn is one logical turn: the group's first entry's identity plus
 // every projected item of the group, in arrival order, before call-id merge.
 type groupedTurn struct {
@@ -98,34 +80,51 @@ type groupedTurn struct {
 // mirrors this state machine over persisted records
 // (TurnKind/GroupItems/GroupCalls) so both paths agree by construction.
 type logicalTurnAccumulator struct {
-	turns []groupedTurn
-	open  bool
+	turns   []groupedTurn
+	grouper TurnGrouper
+}
+
+// TurnGrouper applies the logical-turn grouping rule to entries in file order.
+// Its zero value is the state before the first entry. Open and TurnID are the
+// whole state, so a caller that persists them can resume grouping later.
+type TurnGrouper struct {
+	// Open reports whether continuations join the latest group.
+	Open bool
+	// TurnID is the latest group's turn id.
+	TurnID string
+}
+
+// Place reports the turn the entry belongs to and whether it starts a new
+// logical turn. entryIndex is the entry's 1-based index (its ordinal + 1).
+func (g *TurnGrouper) Place(entry *schema.Turn, entryIndex int) (turnID string, newTurn bool) {
+	kind, owner := entry.Kind, entry.OwningTurnID
+	switch {
+	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
+		g.TurnID, g.Open = persistedTurnID(*entry, entryIndex), true
+		return g.TurnID, true
+	case kind == schema.TurnSteering && owner != "":
+		if g.Open && g.TurnID == owner {
+			return g.TurnID, false
+		}
+		g.TurnID, g.Open = owner, true
+		return g.TurnID, true
+	case continuesLogicalTurn(kind) && g.Open:
+		return g.TurnID, false
+	default:
+		// Standalone kind, or a continuation with no open group: its own
+		// group. A standalone closes it; a stray continuation stays open for
+		// later continuations.
+		g.TurnID, g.Open = persistedTurnID(*entry, entryIndex), continuesLogicalTurn(kind)
+		return g.TurnID, true
+	}
 }
 
 // appendEntry buffers one scanned entry with its projected items (which may
 // be empty: the entry still carries failure/usage/timestamp stamps into its
 // group).
 func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, items []appwire.ThreadItem) {
-	kind := entry.Kind
-	owner := entry.OwningTurnID
-	switch {
-	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
-		a.turns = append(a.turns, groupedTurn{turnID: persistedTurnID(entry, entryIndex)})
-		a.open = true
-	case kind == schema.TurnSteering && owner != "":
-		if a.open && len(a.turns) > 0 && a.turns[len(a.turns)-1].turnID == owner {
-			break
-		}
-		a.turns = append(a.turns, groupedTurn{turnID: owner})
-		a.open = true
-	case continuesLogicalTurn(kind) && a.open && len(a.turns) > 0:
-		// Join the open group.
-	default:
-		// Standalone kind, or a continuation with no open group: its own
-		// group. A standalone closes it; a stray continuation stays open for
-		// later continuations.
-		a.turns = append(a.turns, groupedTurn{turnID: persistedTurnID(entry, entryIndex)})
-		a.open = continuesLogicalTurn(kind)
+	if turnID, newTurn := a.grouper.Place(&entry, entryIndex); newTurn {
+		a.turns = append(a.turns, groupedTurn{turnID: turnID})
 	}
 	last := &a.turns[len(a.turns)-1]
 	last.entries = append(last.entries, entry)
@@ -142,39 +141,18 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 // in the same logical turn, so the healed-communicate echo check scopes
 // correctly on the full read (where per-entry IDs differ within a group).
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
-	turnID := persistedTurnID(turn, entryIndex)
-	// Derive the projection turn id from the SAME grouping decision
-	// appendEntry (below) makes, so an entry is projected under the id of
-	// the logical group it is finally buffered into — not the per-entry
-	// persistedTurnID and not (for a steering opener) the previously open
-	// group's id. appendEntry owns the grouping semantics; this switch must
-	// stay in lockstep with it. The cases mirror appendEntry's switch in
-	// order:
-	//
-	//   - An opener (USER_INPUT, or goal-continuation STEERING) uses its own
-	//     persistedTurnID, which appendEntry assigns as the new group's id.
-	//   - An owner-bearing STEERING projects under its OwningTurnID whether
-	//     it joins the open group (appendEntry case 2's guard requires the
-	//     open id to equal owner, so the open group's id IS owner) or opens
-	//     a new one (appendEntry assigns owner as the new group's id). This
-	//     also matches the bounded read, which unconditionally resolves an
-	//     owner-bearing steering's record id to owner (turn_index.go).
-	//   - A continuation joining an open group projects under the group's
-	//     turn id (the opener's), the load-bearing propagation for the
-	//     echo-suppression parity (PR #2322). KEEP this branch for genuine
-	//     joins; it is correct.
-	//   - A standalone, or a continuation with no open group, uses its own
-	//     persistedTurnID, the id appendEntry assigns the group it starts.
-	switch {
-	case opensLogicalTurn(turn.Kind, turn.GoalContinuation != nil):
-		// opener: own persistedTurnID (turnID already holds it)
-	case turn.Kind == schema.TurnSteering && turn.OwningTurnID != "":
-		turnID = turn.OwningTurnID
-	case continuesLogicalTurn(turn.Kind) && acc.open && len(acc.turns) > 0:
-		turnID = acc.turns[len(acc.turns)-1].turnID
-	default:
-		// standalone or stray continuation: own persistedTurnID (turnID already holds it)
+	if turn.Kind.TranscriptOnly() {
+		// Written for the history projection phase 3 introduces. Today's
+		// projection passes over it: it joins no group, closes none, and
+		// projects nothing, though its line still takes an entry index.
+		return
 	}
+	// Project under the id of the group appendEntry will buffer the entry
+	// into: the same grouping decision, made on a copy so appendEntry still
+	// places the entry itself. A steering opener takes its own group's id,
+	// not the previously open group's (#2432).
+	probe := acc.grouper
+	turnID, _ := probe.Place(&turn, entryIndex)
 	var items []appwire.ThreadItem
 	if project != nil {
 		items = project(turn, turnID, entryIndex)
@@ -222,17 +200,17 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			return ItemTurnProjection{}, err
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-		stampGroupedTurnFromEntries(&turn, group.entries)
+		StampGroupedTurn(&turn, group.entries)
 		turns = append(turns, turn)
 	}
 	return ItemTurnProjection{Turns: turns, NextEntry: entryOrdinal}, nil
 }
 
-// stampGroupedTurnFromEntries applies a group's terminal stamps: failure
+// StampGroupedTurn applies a group's terminal stamps: failure
 // status from any TURN_FAILURE entry in the group, the earliest timestamp as
 // the turn's start, and usage summed across the group's entries (the live
 // projector accumulates a turn's usage the same way).
-func stampGroupedTurnFromEntries(turn *appwire.Turn, entries []schema.Turn) {
+func StampGroupedTurn(turn *appwire.Turn, entries []schema.Turn) {
 	var startedAt *int64
 	var usage llm.Usage
 	interrupted := false
@@ -256,6 +234,12 @@ func stampGroupedTurnFromEntries(turn *appwire.Turn, entries []schema.Turn) {
 	}
 }
 
+// MergesByCallID reports whether a logical turn folds item with its later
+// items of the same call: every commandExecution item that carries a call id.
+func MergesByCallID(item appwire.ThreadItem) bool {
+	return item.Type == "commandExecution" && item.CallID != ""
+}
+
 // mergeGroupedItems folds a group's items into one item per call id: a later
 // commandExecution item whose CallID was already introduced merges into the
 // earlier one (the file counterpart of the live snapshot's call/result
@@ -265,9 +249,9 @@ func mergeGroupedItems(items []appwire.ThreadItem) []appwire.ThreadItem {
 	merged := make([]appwire.ThreadItem, 0, len(items))
 	callIndex := map[string]int{}
 	for _, item := range items {
-		if item.Type == "commandExecution" && item.CallID != "" {
+		if MergesByCallID(item) {
 			if at, ok := callIndex[item.CallID]; ok {
-				merged[at] = mergeAppThreadItems(merged[at], item)
+				merged[at] = MergeThreadItems(merged[at], item)
 				continue
 			}
 			callIndex[item.CallID] = len(merged)
@@ -283,7 +267,7 @@ func mergeGroupedItems(items []appwire.ThreadItem) []appwire.ThreadItem {
 // calls is mutated to include the introduced ids.
 func mergedContribution(items []appwire.ThreadItem, calls map[string]bool) (count int, introduced []string) {
 	for _, item := range items {
-		if item.Type == "commandExecution" && item.CallID != "" {
+		if MergesByCallID(item) {
 			if calls[item.CallID] {
 				continue
 			}
@@ -295,11 +279,11 @@ func mergedContribution(items []appwire.ThreadItem, calls map[string]bool) (coun
 	return count, introduced
 }
 
-// mergeAppThreadItems merges a later projected item into an earlier one of
+// MergeThreadItems merges a later projected item into an earlier one of
 // the same call: absent fields fall back to the earlier item's values. This
 // mirrors server mergeAppThreadItem's field precedence; apptranscript cannot
 // import server, so the merge is local.
-func mergeAppThreadItems(existing, incoming appwire.ThreadItem) appwire.ThreadItem {
+func MergeThreadItems(existing, incoming appwire.ThreadItem) appwire.ThreadItem {
 	if incoming.Type == "" {
 		incoming.Type = existing.Type
 	}
