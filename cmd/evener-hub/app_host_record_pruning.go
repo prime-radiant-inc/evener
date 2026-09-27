@@ -234,6 +234,15 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 	}
 
 	live := hostNameSet(entries)
+	// protectedKey is the receipt this very write is finalizing: no purge or
+	// compaction rule may drop it, or the write's own commit would be durable
+	// in the store and absent from the file (and a lost-response replay after
+	// a restart would refuse stale-entry instead of returning the recorded
+	// outcome).
+	protectedKey := ""
+	if change.receipt != nil {
+		protectedKey = change.receipt.Key
+	}
 
 	// Re-add purge: the write carries the name live, so the tombstone is
 	// consumed by the live entry (§6: "a tombstone whose name matches a live
@@ -247,7 +256,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		delete(records.tombstones, name)
 		records.droppedTombstones[name] = struct{}{}
 		delete(records.highWater, name)
-		m.purgeNameReceipts(records, name, purgeRetainNewestRemove, now)
+		m.purgeNameReceipts(records, name, purgeRetainNewestRemove, protectedKey, now)
 	}
 
 	// Expiry prune: past the retention period the tombstone is dropped in this
@@ -272,7 +281,7 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		}
 		delete(records.tombstones, name)
 		records.droppedTombstones[name] = struct{}{}
-		m.purgeNameReceipts(records, name, purgeDropAll, now)
+		m.purgeNameReceipts(records, name, purgeDropAll, protectedKey, now)
 	}
 
 	// Receipt compaction for every name the write's receipt set carries — the
@@ -291,10 +300,6 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 		if scope, ok := parseHostReceiptScopedKey(key); ok {
 			owned[scope.Name] = struct{}{}
 		}
-	}
-	protectedKey := ""
-	if change.receipt != nil {
-		protectedKey = change.receipt.Key
 	}
 	for name := range owned {
 		if _, tombstoned := records.tombstones[name]; tombstoned {
@@ -317,7 +322,23 @@ func (m *hubHostManager) deriveHostTOMLRecords(entries, known []hostreg.Host, ch
 // advancedPresenceEpoch returns name's next presence epoch as of this write:
 // strictly above every value the name's records currently carry — the
 // tombstone's own epoch, its high-water entry, and the registry's counter —
-// so the prune's advance is monotone across restarts and re-adds.
+// and raises the registry's counter to that value before returning, so the
+// persisted advance and the live counter cannot disagree.
+//
+// The raise is what keeps a re-add's mint strictly above the retained mark in
+// the SAME process: NextPresenceEpoch is a pure read, so without it the file
+// would carry an epoch one above a counter that stayed put, and the next mint
+// would land exactly ON the persisted mark — while a restart (whose seed
+// raises the counter) would mint one above it, making the durable identity
+// outcome restart-dependent (spec §1: "Re-add mints strictly above every
+// retained high-water mark for the name").
+//
+// It runs under the mutation lock like the rest of the derivation. A write
+// that then fails leaves the counter raised without the file advancing: that
+// is benign and deliberate — the counter is monotonic and never reused, the
+// raise is idempotent, and the next boot's seed re-raises it from the file —
+// while lowering it to match a failed write is the direction that could let a
+// later re-add reuse a value the name already carried.
 func (m *hubHostManager) advancedPresenceEpoch(name string, records hostTOMLRecords, tombstoneEpoch uint64) (uint64, error) {
 	highest := tombstoneEpoch
 	if mark, ok := records.highWater[name]; ok && mark.PresenceEpoch > highest {
@@ -330,7 +351,14 @@ func (m *hubHostManager) advancedPresenceEpoch(name string, records hostTOMLReco
 			return 0, fmt.Errorf("prune tombstone %q: %w", name, err)
 		}
 	}
-	return highest + 1, nil
+	advanced := highest + 1
+	if m.cfg.hosts != nil {
+		// Generation 0 is inert: SeedHighWater raises the name's counter (and
+		// would carry a live entry, which a tombstone prune never has) without
+		// registering a generation.
+		m.cfg.hosts.SeedHighWater(map[string]hostreg.HighWater{name: {PresenceEpoch: advanced}})
+	}
+	return advanced, nil
 }
 
 // purgeMode selects how much of a purged name's receipt history is retained.
@@ -353,7 +381,7 @@ const (
 // every dropped non-audit receipt persists a pruned marker keyed by its full
 // scope, so a same-key replay refuses as `stale-entry` (pruned-generation)
 // instead of fresh-applying. prunedAt is the purge instant.
-func (m *hubHostManager) purgeNameReceipts(records hostTOMLRecords, name string, mode purgeMode, now time.Time) {
+func (m *hubHostManager) purgeNameReceipts(records hostTOMLRecords, name string, mode purgeMode, protectedKey string, now time.Time) {
 	byKey := make(map[string]hostReceiptScope)
 	for key := range records.receipts {
 		scope, ok := parseHostReceiptScopedKey(key)
@@ -415,6 +443,12 @@ func (m *hubHostManager) purgeNameReceipts(records hostTOMLRecords, name string,
 	}
 	for key := range byKey {
 		if _, keep := retained[key]; keep {
+			continue
+		}
+		if key == protectedKey {
+			// The receipt this write is finalizing: never dropped, never
+			// marked — the committed mutation must leave its receipt behind
+			// (spec §5: the commit and its receipt are one atomic write).
 			continue
 		}
 		receipt := records.receipts[key]
@@ -616,8 +650,12 @@ func (m *hubHostManager) compactPrunedMarkers(records hostTOMLRecords, now time.
 func (m *hubHostManager) enforceTombstoneCaps(records hostTOMLRecords, change hostPersistChange, now time.Time) error {
 	policy := m.cfg.policy
 	incoming := ""
+	protectedKey := ""
 	if change.tombstone != nil {
 		incoming = change.tombstone.Tombstone.Name
+	}
+	if change.receipt != nil {
+		protectedKey = change.receipt.Key
 	}
 	fits := func() bool {
 		return len(records.tombstones) <= policy.tombstoneMaxCount &&
@@ -650,7 +688,7 @@ func (m *hubHostManager) enforceTombstoneCaps(records hostTOMLRecords, change ho
 		}
 		delete(records.tombstones, candidate.name)
 		records.droppedTombstones[candidate.name] = struct{}{}
-		m.purgeNameReceipts(records, candidate.name, purgeDropAll, now)
+		m.purgeNameReceipts(records, candidate.name, purgeDropAll, protectedKey, now)
 	}
 	if fits() {
 		return nil

@@ -509,3 +509,115 @@ func TestHostReceiptEvictionMarkersBounded(t *testing.T) {
 		t.Fatal("the eviction persisted no markers at all; the test no longer exercises the purge")
 	}
 }
+
+// TestHostReceiptKeyedReAddNotPurgedByItsOwnWrite pins the review finding: a
+// keyed re-add over a tombstone stages its own receipt into the very write
+// whose re-add purge drops the name's superseded receipts. The staged receipt
+// must be protected — otherwise the file loses it (and gains a false pruned
+// marker) while the store keeps it, and a lost-response replay after a restart
+// refuses `stale-entry` instead of returning the recorded committed row.
+func TestHostReceiptKeyedReAddNotPurgedByItsOwnWrite(t *testing.T) {
+	f := newUpdateFixture(t)
+	removeKey := newTestMutationID()
+	removeParams := removeRequest(t, f.m, "side")
+	removeParams.MutationID = removeKey
+	if _, err := f.m.Remove(context.Background(), removeParams); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	addKey := newTestMutationID()
+	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{
+		Entry:      appwire.HostEntry{Name: "side", Address: "fresh.example"},
+		MutationID: addKey,
+	}); err != nil {
+		t.Fatalf("keyed re-add: %v", err)
+	}
+	// The durable file carries the re-add's receipt and no marker for its key.
+	cfg, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	for key := range cfg.PrunedReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == addKey {
+			t.Fatalf("the re-add's own write persisted a pruned marker for its receipt: %q", key)
+		}
+	}
+	found := false
+	for key, receipt := range cfg.MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == addKey {
+			found = true
+			_ = receipt
+		}
+	}
+	if !found {
+		t.Fatal("hub.toml lost the keyed re-add's just-committed receipt")
+	}
+	// A restart then a lost-response replay returns the recorded committed row.
+	boot := bootHostManager(t, f.configPath)
+	resp, err := boot.Add(context.Background(), appwire.HostAddParams{
+		Entry:      appwire.HostEntry{Name: "side", Address: "fresh.example"},
+		MutationID: addKey,
+	})
+	if err != nil {
+		t.Fatalf("replay after restart: %v", err)
+	}
+	if resp.Name != "side" || resp.Removed || resp.Address != "fresh.example" {
+		t.Fatalf("replay row = %+v, want the recorded committed row", resp)
+	}
+}
+
+// TestHostTombstonePruneRaisesPresenceCounter pins the review finding: the
+// expiry prune persists an ADVANCED presence epoch in the name's high-water
+// entry, so the registry's counter must be raised to that value in the same
+// step — otherwise a same-process re-add mints a value equal to the retained
+// mark (the restart path seeds the counter and mints strictly above), and the
+// durable identity outcome depends on whether the process restarted.
+func TestHostTombstonePruneRaisesPresenceCounter(t *testing.T) {
+	f := newUpdateFixture(t)
+	removedAt := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	f.m.cfg.now = func() time.Time { return removedAt }
+	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	f.m.cfg.now = func() time.Time { return removedAt.Add(DefaultHostTombstoneRetention + time.Hour) }
+	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later", Address: "later.example"}}); err != nil {
+		t.Fatalf("Add(later): %v", err)
+	}
+	cfg, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	mark, ok := cfg.Generations["side"]
+	if !ok {
+		t.Fatal("the prune did not persist the name's high-water entry")
+	}
+	// Same-process re-add: strictly above the retained mark.
+	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "side2.example"}}); err != nil {
+		t.Fatalf("re-add: %v", err)
+	}
+	sameProcess, _ := f.m.cfg.hosts.Get("side")
+	if sameProcess.PresenceEpoch <= mark.PresenceEpoch {
+		t.Fatalf("same-process re-add presence epoch = %d, want strictly above the pruned mark %d", sameProcess.PresenceEpoch, mark.PresenceEpoch)
+	}
+	// A restart's re-add produces the same strict ordering.
+	f.m.cfg.now = func() time.Time { return removedAt.Add(2 * DefaultHostTombstoneRetention) }
+	if _, err := f.m.Remove(context.Background(), removeRequestFor("side", sameProcess.Generation, sameProcess.IncarnationID)); err != nil {
+		t.Fatalf("second Remove: %v", err)
+	}
+	boot := bootHostManager(t, f.configPath)
+	cfg, err = LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	mark, ok = cfg.Generations["side"]
+	if !ok {
+		t.Fatal("the second removal lost the high-water entry")
+	}
+	boot.cfg.now = func() time.Time { return removedAt.Add(3 * DefaultHostTombstoneRetention) }
+	if _, err := boot.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "side3.example"}}); err != nil {
+		t.Fatalf("re-add after restart: %v", err)
+	}
+	restarted, _ := boot.cfg.hosts.Get("side")
+	if restarted.PresenceEpoch <= mark.PresenceEpoch {
+		t.Fatalf("restart re-add presence epoch = %d, want strictly above the mark %d", restarted.PresenceEpoch, mark.PresenceEpoch)
+	}
+}
