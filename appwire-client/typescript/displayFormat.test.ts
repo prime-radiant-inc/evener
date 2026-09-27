@@ -65,6 +65,15 @@ test("formatDurationMs: 10000ms and above renders whole seconds, no decimal", ()
   expect(formatDurationMs(65432)).toBe("65s");
 });
 
+test("formatDurationMs: non-finite input renders no duration, so a caller can treat it as absent", () => {
+  // turnMeta.ts's parts.duration is present only when the turn carries real
+  // data (TurnSeparator.tsx renders it behind `parts.duration &&`), so an
+  // empty string - never "NaNs" or "Infinitys" - is what makes a caller's
+  // truthiness check omit it like any other missing duration.
+  expect(formatDurationMs(NaN)).toBe("");
+  expect(formatDurationMs(Infinity)).toBe("");
+});
+
 // --- firstLine --------------------------------------------------------------
 // A general-purpose "first non-blank line, clipped" helper: used for the
 // think-block settled preview and the system-notice group's "first event"

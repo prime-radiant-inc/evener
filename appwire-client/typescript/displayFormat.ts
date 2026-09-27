@@ -8,7 +8,12 @@ export function formatTokenCount(n: number): string {
 }
 
 // Floors at 1ms, then uses decimal or whole seconds as durations grow.
+// Non-finite input (NaN, +/-Infinity) renders "": unlike formatTokenCount,
+// which clamps a bad count to a real rendered "0", a duration has no such
+// honest zero, so callers (turnMeta.ts's `parts.duration`) treat an empty
+// string as no duration to show, never "NaNs" or "Infinitys".
 export function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms)) return "";
   const rounded = Math.max(1, Math.round(ms));
   if (rounded < 1000) return `${rounded}ms`;
   if (rounded < 10000) return `${(rounded / 1000).toFixed(1).replace(/\.0$/, "")}s`;
