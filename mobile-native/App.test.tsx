@@ -9,84 +9,33 @@ import { expect, it, vi } from "vitest";
 import App from "./App";
 import { render } from "./src/renderNative.testkit";
 
-vi.mock("react-native", async () => ({
-	...(await import("./src/renderNative.testkit")).nativeModuleMock(),
-	AccessibilityInfo: { announceForAccessibility: vi.fn() },
-	ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
-	AppState: {
-		currentState: "active",
-		addEventListener: () => ({ remove: () => {} }),
-	},
-	Image: "Image",
-	Keyboard: { dismiss: vi.fn() },
-	Linking: { openURL: vi.fn() },
-	RefreshControl: "RefreshControl",
-	StatusBar: "StatusBar",
-}));
+vi.mock("react-native", async () => (await import("./src/renderNative.testkit")).nativeModuleMock());
 vi.mock("react-native-gesture-handler", () => ({
 	GestureHandlerRootView: "GestureHandlerRootView",
 }));
 vi.mock("react-native-safe-area-context", () => ({
-	SafeAreaView: "SafeAreaView",
 	SafeAreaProvider: (props: { children?: ReactNode }) => props.children ?? null,
-	useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
-vi.mock("react-native-enriched-markdown", () => ({
-	EnrichedMarkdownText: "EnrichedMarkdownText",
-}));
-vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 64 }));
-vi.mock("@react-navigation/native", () => ({
-	DarkTheme: {},
-	DefaultTheme: {},
-	NavigationContainer: "NavigationContainer",
-	useFocusEffect: () => {},
-	useIsFocused: () => true,
-	useNavigationState: () => undefined,
-}));
-vi.mock("@react-navigation/native-stack", () => ({
-	createNativeStackNavigator: () => ({ Navigator: "Navigator", Screen: "Screen", Group: "Group" }),
-}));
-vi.mock("expo-status-bar", () => ({ StatusBar: "StatusBar" }));
-vi.mock("expo-clipboard", () => ({
-	setStringAsync: vi.fn(async () => {}),
-	getStringAsync: vi.fn(async () => ""),
-}));
-vi.mock("expo-crypto", () => ({
-	randomUUID: () => "app-root-uuid",
-	getRandomValues: (array: Uint8Array) => array,
-}));
-vi.mock("expo-sqlite", () => ({ openDatabaseSync: vi.fn() }));
-vi.mock("expo-sqlite/kv-store", () => {
-	const Storage = { getItemSync: () => null, setItemSync: () => {}, removeItemSync: () => {} };
-	// nativeLocation.ts takes the default export; the rest name Storage.
-	return { default: Storage, Storage };
-});
-vi.mock("expo-file-system", () => ({
-	File: class File {
-		constructor(public uri: string) {}
-	},
-}));
-vi.mock("expo-image-manipulator", () => ({
-	ImageManipulator: { manipulate: vi.fn() },
-	SaveFormat: { JPEG: "jpeg", PNG: "png" },
-}));
-vi.mock("expo-image-picker", () => ({
-	launchImageLibraryAsync: vi.fn(async () => ({ canceled: true, assets: [] })),
-	UIImagePickerPreferredAssetRepresentationMode: { Current: "current" },
-}));
-vi.mock("expo-secure-store", () => ({
-	getItemAsync: vi.fn(async () => null),
-	setItemAsync: vi.fn(async () => {}),
-	deleteItemAsync: vi.fn(async () => {}),
-}));
+// The other native edges App's imports reach. Only the loading view renders,
+// so each factory returns just what its importers read as they load, and
+// vitest throws if anything reads another export.
+vi.mock("react-native-enriched-markdown", () => ({}));
+vi.mock("@react-navigation/elements", () => ({}));
+vi.mock("@react-navigation/native", () => ({}));
+vi.mock("@react-navigation/native-stack", () => ({ createNativeStackNavigator: () => ({}) }));
+vi.mock("expo-status-bar", () => ({}));
+vi.mock("expo-clipboard", () => ({}));
+vi.mock("expo-crypto", () => ({ randomUUID: () => "app-root-uuid" }));
+vi.mock("expo-sqlite", () => ({}));
+// nativeLocation.ts takes the default export; the rest name Storage.
+vi.mock("expo-sqlite/kv-store", () => ({ default: {}, Storage: {} }));
+vi.mock("expo-file-system", () => ({}));
+vi.mock("expo-image-manipulator", () => ({}));
+vi.mock("expo-image-picker", () => ({}));
+vi.mock("expo-secure-store", () => ({}));
 vi.mock("./src/ConnectionProvider", () => ({
 	ConnectionProvider: (props: { children?: ReactNode }) => props.children ?? null,
-	useConnection: () => ({
-		loading: true,
-		initialLocation: null,
-		activeProfile: null,
-		restorationError: null,
-	}),
+	useConnection: () => ({ loading: true }),
 }));
 vi.mock("./src/NativePreferencesProvider", () => ({
 	NativePreferencesProvider: (props: { children?: ReactNode }) => props.children ?? null,
