@@ -1,7 +1,9 @@
 # Project-layer MCP trust gate — design
 
 Date: 2026-09-27
-Status: design only; nothing implemented. Jesse picked "trust record + prompt"
+Status: design only; nothing implemented. All six open questions were
+resolved by Jesse on 2026-09-27 — the "Resolved questions" section records
+each answer, folded into the sections it decides. Jesse picked "trust record + prompt"
 for gating project-layer MCP servers (`.evener/mcp.json`) and asked whether the
 right shape is "TOFU or maybe just manual selection at session start, like we
 currently do with plugins?" This document answers that from the code: what the
@@ -214,8 +216,9 @@ Rules:
   session's model ever writes the record.
 - Writes are atomic and append hashes, never overwrite the set — the launch
   trust semantics (cmd/evener-hub/app_launch.go:221-237).
-- `decision: "rejected"` mirrors `ComputeTrustState`'s rule that a recorded
-  rejected hash stays blocked (cmd/evener-hub/internal/launchconfig/trust.go:82-87).
+- v1 records only `decision: "trusted"`; the launch-trust `rejected` state is
+  out of v1 (no verb can set it — resolved question 4), so a rejected hash is
+  simply one never approved: it skips with its warning at every encounter.
 
 Rejected locations: the repo itself (model-writable — the record would guard
 itself with an attacker-editable file); hub state `projects/<id>/meta.toml`
@@ -310,9 +313,11 @@ new session, resume, subagent, delegate alike:
   hash. v1 applies trust at the *next* session start; hot-connecting a
   just-trusted server into the running session is deliberately out (the
   session's MCP set is fixed at init, agent/session_init.go:2564-2577).
-  A launcher-side pre-start preview (new-session form shows "this repo
-  declares N untrusted MCP servers") mirrors the plugin picker and can
-  follow; it is UI, not the gate.
+  The launcher pre-start preview is in v1 scope (resolved question 2): the
+  web and TUI new-session forms show "this repo declares N untrusted MCP
+  servers" before start, mirroring the plugin picker. Hub-started and other
+  headless launches have no form to preview on; they see the post-start
+  warning path above, identical to every other session (resolved question 6).
 - **Non-interactive / headless session** (daemon-spawned, `--non-interactive`,
   delegates): same rule — skip, never connect — with a warning that names
   exactly which servers were skipped and how to trust them, e.g.:
@@ -347,16 +352,17 @@ Install consent covers the bytes installed, not bytes shipped afterward.
 Tradeoff stated plainly: upgrades that change MCP entries will prompt once
 per change. That is the honest cost of "the operator approved these bytes";
 auto-carrying trust across content changes would recreate the hole the gate
-exists to close (open question Q3 for whether auto-upgrade should surface
-this more loudly at upgrade time).
+exists to close. Upgrades stay silent about it (resolved question 3): the
+next session's warning is the only notice, and nothing new appears in
+upgrade output.
 
 ### D7. Mechanics (function-level sketch; no code)
 
 - **mcpconfig — new trust.go**: load/save the record (atomic write,
   schema-versioned, mirroring internal/plugins/registry.go:40-73); canonical
-  per-entry hash; a `ComputeTrustState`-equivalent with launch trust's exact
-  state table (cmd/evener-hub/internal/launchconfig/trust.go:62-90), so
-  `rejected` stays blocked.
+  per-entry hash; a `ComputeTrustState`-equivalent over launch trust's state
+  table (cmd/evener-hub/internal/launchconfig/trust.go:62-90) minus the
+  `rejected` state, which v1 does not record.
 - **mcpconfig — `Discover` Layer 2** (agent/mcpconfig/config.go:342-359):
   after `LoadFileUntrusted` parses, evaluate each entry against the record;
   keep trusted entries, drop the rest, and return per-server skip records
@@ -364,6 +370,10 @@ this more loudly at upgrade time).
   `warnings`. The return shape grows a structured field (or a sibling
   `DiscoverGated`); global/CLI-file/inline layers (:329-340, :361-377) are
   untouched.
+- **mcpconfig — origin-gated `--mcp-config` loads** (resolved question 5): a
+  config file reached via a trusted launch.toml's `mcp_configs` that lives
+  inside a repo workspace is evaluated against the same record before its
+  entries load; operator-authored files outside workspaces stay ungated.
 - **agent — `initMCP`** (agent/session_init.go:2541): convert the gate's
   skip records into `WarningData` (Source `"mcp"`, title distinguishing
   untrusted/changed, message naming the server, file, and trust command) —
@@ -374,7 +384,9 @@ this more loudly at upgrade time).
   name, like today's plugin MCP warnings (:2038-2042).
 - **Operator surfaces**: `evener mcp` verb group — `list` (show each
   project-layer and plugin entry, its state and hash) and `trust`
-  (approve by path and optional server name, hash-CAS'd); hub RPC
+  (approve by path and optional server name, hash-CAS'd; by default it
+  trusts every current entry at once — resolved question 1 — with `--server`
+  narrowing to one); hub RPC
   `evener/mcp/trust` mirroring `evener/launch/trustRepo`
   (appwire/types.go:108, params shape :3659-3662); TUI row in the session
   view mirroring the launch repo tab affordance
@@ -417,8 +429,8 @@ Unit (mcpconfig):
 - Record round-trip: save/load, schema-version enforcement, atomic write,
   hash-set dedupe, append-only merge across two approvals.
 - `ComputeTrustState` mirror, table-driven: absent / first-contact /
-  trusted / changed / rejected-stays-blocked, matching
-  cmd/evener-hub/internal/launchconfig/trust.go:62-90 semantics.
+  trusted / changed, matching cmd/evener-hub/internal/launchconfig/trust.go:62-90
+  semantics minus the rejected state v1 does not record.
 - Canonical entry hash: stable across whitespace and key reorder; unstable
   across any semantic change to command, args, env, url, headers, type.
 - Loader gating: trusted entry loads; untrusted entry skipped and named;
@@ -426,6 +438,9 @@ Unit (mcpconfig):
   same file loads exactly the trusted one; parse failure still
   skip-with-warning (today's behavior, agent/mcpconfig/config.go:351-354);
   global/CLI-file/inline layers unaffected by any record state.
+- Origin gate: the same entry content reached via a launch.toml
+  `mcp_configs` file that lives inside a repo workspace skips untrusted;
+  the same content at an operator path outside workspaces loads ungated.
 
 Integration (agent, real-subprocess harness as in
 agent/cov_intg_mcp_test.go):
@@ -450,9 +465,13 @@ wiring still connects.
 
 ## Non-goals
 
-- No change to trusted layers: the global `~/.config/evener/mcp.json`,
-  `--mcp-config` files, and `--mcp` inline specs (agent/mcpconfig/config.go:329-340,
-  :361-377) stay operator-authored and ungated.
+- No change to trusted layers except origin: the global
+  `~/.config/evener/mcp.json`, `--mcp-config` files, and `--mcp` inline specs
+  (agent/mcpconfig/config.go:329-340, :361-377) stay operator-authored and
+  ungated — except a `--mcp-config` file that lives inside a repo workspace
+  and is reached via a trusted launch.toml's `mcp_configs`, which the gate
+  covers (resolved question 5): the operator approved the pointer, not the
+  pointed-at bytes.
 - No change to `DiscoverTrusted` or sandbox-root derivation
   (agent/mcpconfig/config.go:382-397).
 - No new `$(command)` permissions; untrusted layers keep refusing them
@@ -476,33 +495,36 @@ wiring still connects.
   confined but MCP servers still get network (agent/internal/mcp/manager.go:314-319)
   and the credential env floor (:302-307). Sandboxed sessions cannot write
   the record (their filesystem roots exclude the config dir).
-- Adjacent hole, out of scope here, recorded so it is not lost: a *trusted*
+- Adjacent hole, now in scope (resolved question 5): a *trusted*
   `.evener/launch.toml` can point `mcp_configs` at a repo file
   (cmd/evener-hub/internal/launchconfig/resolver.go:231), and that file then
   loads through the trusted `--mcp-config` path with full `$(command)`
   expansion (agent/mcpconfig/config.go:361-368) — the launch trust gates the
-  layer's bytes, not the referenced file's. Same class of bug, needs its own
-  small decision (Q5).
+  layer's bytes, not the referenced file's. Resolved: those loads are gated
+  by file origin, so a trusted launch.toml can no longer carry ungated repo
+  bytes through the mcp_configs path.
 
-## Open questions for Jesse
+## Resolved questions (2026-09-27)
 
-1. **Trust scope per approval.** One keypress trusts every entry in the
-   current file (hash-CAS'd per entry), or the operator names entries
-   (`--server`) every time? The design above defaults to all-current-entries
-   with per-entry hashes recorded; the stricter default is one prompt per
-   entry.
-2. **Launcher pre-start preview.** Should the new-session forms (web/TUI)
-   surface untrusted project-layer servers before start, plugin-picker
-   style, or is warning + post-hoc trust command enough for v1?
-3. **Auto-upgrade loudness.** When a marketplace upgrade changes a plugin's
-   MCP entries, trust lapses silently until the next session warns. Should
-   the upgrade output name the re-prompt up front?
-4. **Rejected entries.** Should the CLI expose an explicit `evener mcp
-   reject` (a "never prompt again for this hash" decision, mirroring launch
-   trust's `rejected` state), or is ignore-in-record enough?
-5. **Repo-referenced mcp_configs via trusted launch.toml** (Security notes):
-   gate those loads by file origin too, or leave as trusted-layer behavior?
-6. **Warning vs error in interactive sessions.** v1 warns and continues
-   without the servers. Should an interactive session ever *refuse to start*
-   when project-layer servers are untrusted (it cannot today for any MCP
-   condition; failures are non-fatal by design, agent/session_init.go:2561-2563)?
+Jesse answered all six on 2026-09-27; each answer is folded into the section
+it decides, noted below.
+
+1. **Trust scope per approval: all current entries at once.** One act trusts
+   every entry in the current file, per-entry hashes recorded; `--server`
+   narrows to one when wanted. (D2, D7.)
+2. **Launcher pre-start preview: in v1.** The web and TUI new-session forms
+   surface untrusted project-layer servers before start, plugin-picker style;
+   headless launches rely on the post-start warning path. (D5.)
+3. **Auto-upgrade loudness: stay silent.** Upgrade output does not mention the
+   re-prompt; the next session's warning is the only notice. (D6.)
+4. **Rejected entries: no verb in v1.** No `evener mcp reject`; the rejected
+   state drops out of v1 entirely — a rejected hash is simply never approved,
+   and skips with its warning at every encounter. (D2, D7, test plan.)
+5. **Repo-referenced mcp_configs via trusted launch.toml: gate by file
+   origin.** Files inside a repo workspace reached via a trusted
+   launch.toml's `mcp_configs` load through the same trust record;
+   operator-authored files outside workspaces stay ungated. (D7, Non-goals,
+   Security notes, test plan.)
+6. **Warning vs error in interactive sessions: warn and continue.** v1 never
+   refuses to start; untrusted servers skip with warnings, identical to the
+   headless path. (D5.)
