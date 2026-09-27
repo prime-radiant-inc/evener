@@ -1302,6 +1302,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     failedToolCalls: thread.evener.failedToolCalls,
     workMillis: thread.evener.workMillis ?? 0,
     activeTurnStartedAt: epochMsToISO(thread.evener.activeTurnStartedAt),
+    lastTurnEndedAt: epochMsToISO(thread.evener.lastTurnEndedAt),
     reasoningEffortLevels: thread.evener.reasoningEffortLevels ?? [],
     supportsReasoning: thread.evener.supportsReasoning ?? false,
     cwd: thread.cwd,

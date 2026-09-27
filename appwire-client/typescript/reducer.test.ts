@@ -480,6 +480,20 @@ test("a zero or negative activeTurnStartedAt hydrates as absent, never an epoch 
   expect(negative.activeTurnStartedAt).toBeUndefined();
 });
 
+test("lastTurnEndedAt hydrates as an ISO string, and absent or zero hydrates as absent", () => {
+  const ended = testHydrate({
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, lastTurnEndedAt: 1_790_000_000_123 },
+  });
+  expect(ended.lastTurnEndedAt).toBe("2026-09-21T14:13:20.123Z");
+  expect(Date.parse(ended.lastTurnEndedAt ?? "")).toBe(1_790_000_000_123);
+  const absent = testHydrate({ evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 } } });
+  expect(absent.lastTurnEndedAt).toBeUndefined();
+  const zero = testHydrate({
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, lastTurnEndedAt: 0 },
+  });
+  expect(zero.lastTurnEndedAt).toBeUndefined();
+});
+
 test("stable delegate diagnostics preserve lossless fields and omit call-scoped wait reasons", () => {
   const thread = testThread();
   (thread.evener as unknown as Record<string, unknown>).diagnostics = {
