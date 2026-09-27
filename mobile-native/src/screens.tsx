@@ -8,6 +8,7 @@ import {
 	type RefObject,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -978,6 +979,21 @@ export function ConversationScreen({
 	const headerHiding = useHeaderHiding();
 	// The header block floats over the list; the list reserves its height.
 	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
+	const listOffset = useRef(0);
+	const reservedHeaderHeight = useRef(0);
+	// When the block grows or shrinks (the connection bar comes or goes), the
+	// list's top padding moves by the same amount; scrolling the list by it
+	// too keeps every row where it was on screen. At the top the list stays
+	// at the top, and the rows make room for the block.
+	useLayoutEffect(() => {
+		const change = sessionHeaderHeight - reservedHeaderHeight.current;
+		reservedHeaderHeight.current = sessionHeaderHeight;
+		if (change === 0 || listOffset.current <= 0) return;
+		timeline.current?.scrollToOffset({
+			offset: Math.max(0, listOffset.current + change),
+			animated: false,
+		});
+	}, [sessionHeaderHeight]);
 	function openChip(kind: ChipKind) {
 		switch (kind) {
 			case "subagents":
@@ -1969,7 +1985,11 @@ export function ConversationScreen({
 							}}
 							scrollEventThrottle={100}
 							onScroll={(event) => {
-								headerHiding.onScroll(event.nativeEvent.contentOffset.y);
+								listOffset.current = event.nativeEvent.contentOffset.y;
+								headerHiding.onScroll(
+									listOffset.current,
+									readerDragging.current || readerMomentum.current,
+								);
 								if (!focused || captureSuppressed.current) {
 									return;
 								}

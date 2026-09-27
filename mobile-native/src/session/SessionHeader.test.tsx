@@ -3,7 +3,7 @@ import { act, type ReactTestInstance, type ReactTestRenderer } from "react-test-
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { paletteFor } from "../design/tokens";
 import { render, renderedText, renderHook } from "../renderNative.testkit";
-import { nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
+import { type HeaderHiding, nextHeaderHiding, SessionHeader, useHeaderHiding } from "./SessionHeader";
 import type { ChipKind, ContextChip } from "./sessionState";
 
 vi.mock("react-native", async () => ({
@@ -213,31 +213,48 @@ describe("hiding on scroll (spec 8.1)", () => {
 		expect(translateY(chipsRow(tree))).toBe(-48);
 	});
 
-	it("hides after more than 8pt down, and shows on any upward scroll or at the top", () => {
-		const cases: Array<{ name: string; from: number[]; y: number; hidden: boolean }> = [
-			{ name: "8pt down stays", from: [0], y: 8, hidden: false },
-			{ name: "9pt down hides", from: [0], y: 9, hidden: true },
-			{ name: "a step under 8pt after a turn stays", from: [0, 50, 45], y: 49, hidden: false },
-			{ name: "small steps add up", from: [0, 50, 45, 49], y: 54, hidden: true },
-			{ name: "any upward scroll shows", from: [0, 200], y: 199, hidden: false },
-			{ name: "down again after an upward scroll counts from the turn", from: [0, 200, 150], y: 158, hidden: false },
-			{ name: "and hides past 8pt from the turn", from: [0, 200, 150], y: 159, hidden: true },
-			{ name: "the top shows", from: [0, 200], y: 0, hidden: false },
-			{ name: "the bounce above the top shows", from: [0, 200], y: -30, hidden: false },
+	/** A scroll offset from the person's drag (a number) or from the app
+	 * moving the list itself (reading-position restore, scroll to latest). */
+	type Step = number | { programmatic: number };
+	const programmatic = (y: number): Step => ({ programmatic: y });
+	const apply = (state: HeaderHiding, step: Step) =>
+		typeof step === "number"
+			? nextHeaderHiding(state, step, true)
+			: nextHeaderHiding(state, step.programmatic, false);
+
+	it("hides after more than 8pt dragged down, and shows on any upward scroll or at the top", () => {
+		const cases: Array<{ name: string; from: Step[]; to: Step; hidden: boolean }> = [
+			{ name: "8pt down stays", from: [0], to: 8, hidden: false },
+			{ name: "9pt down hides", from: [0], to: 9, hidden: true },
+			{ name: "a step under 8pt after a turn stays", from: [0, 50, 45], to: 49, hidden: false },
+			{ name: "small steps add up", from: [0, 50, 45, 49], to: 54, hidden: true },
+			{ name: "any upward scroll shows", from: [0, 200], to: 199, hidden: false },
+			{ name: "down again after an upward scroll counts from the turn", from: [0, 200, 150], to: 158, hidden: false },
+			{ name: "and hides past 8pt from the turn", from: [0, 200, 150], to: 159, hidden: true },
+			{ name: "the top shows", from: [0, 200], to: 0, hidden: false },
+			{ name: "the bounce above the top shows", from: [0, 200], to: -30, hidden: false },
+			{ name: "a programmatic jump down leaves the chips shown", from: [], to: programmatic(5000), hidden: false },
+			{ name: "a programmatic jump leaves hidden chips hidden", from: [0, 200], to: programmatic(5000), hidden: true },
+			{ name: "a drag after a programmatic jump counts from where it landed", from: [programmatic(5000)], to: 5008, hidden: false },
+			{ name: "and hides past 8pt from there", from: [programmatic(5000)], to: 5009, hidden: true },
+			{ name: "a programmatic move up leaves hidden chips hidden", from: [0, 200], to: programmatic(100), hidden: true },
+			{ name: "a programmatic move to the top shows", from: [0, 200], to: programmatic(0), hidden: false },
 		];
-		for (const { name, from, y, hidden } of cases) {
-			let state = { hidden: false, lastY: 0, turnY: 0 };
-			for (const step of from) state = nextHeaderHiding(state, step);
-			expect(nextHeaderHiding(state, y).hidden, name).toBe(hidden);
+		for (const { name, from, to, hidden } of cases) {
+			let state: HeaderHiding = { hidden: false, lastY: 0, turnY: 0 };
+			for (const step of from) state = apply(state, step);
+			expect(apply(state, to).hidden, name).toBe(hidden);
 		}
 	});
 
 	it("useHeaderHiding follows the list's scroll offsets", () => {
 		const hook = renderHook(() => useHeaderHiding());
 		expect(hook.result.current.hidden).toBe(false);
-		act(() => hook.result.current.onScroll(40));
+		act(() => hook.result.current.onScroll(40, false));
+		expect(hook.result.current.hidden).toBe(false);
+		act(() => hook.result.current.onScroll(50, true));
 		expect(hook.result.current.hidden).toBe(true);
-		act(() => hook.result.current.onScroll(30));
+		act(() => hook.result.current.onScroll(30, true));
 		expect(hook.result.current.hidden).toBe(false);
 	});
 });

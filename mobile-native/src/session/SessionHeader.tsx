@@ -204,20 +204,25 @@ export interface HeaderHiding {
 	turnY: number;
 }
 
-/** The chips hide once the list scrolls down more than 8pt from where it last
- * turned, and come back on any upward scroll or at the top. */
-export function nextHeaderHiding(state: HeaderHiding, y: number): HeaderHiding {
-	if (y <= 0 || y < state.lastY) return { hidden: false, lastY: y, turnY: y };
+/** The chips hide once the person drags the list down more than 8pt from
+ * where it last turned, and come back on any upward scroll or at the top.
+ * `dragging` is false when the app moved the list itself (a reading-position
+ * restore, following the latest message): that never hides the chips, and
+ * the next drag counts from where the list landed. */
+export function nextHeaderHiding(state: HeaderHiding, y: number, dragging: boolean): HeaderHiding {
+	if (y <= 0) return { hidden: false, lastY: y, turnY: y };
+	if (!dragging) return { hidden: state.hidden, lastY: y, turnY: y };
+	if (y < state.lastY) return { hidden: false, lastY: y, turnY: y };
 	return { hidden: state.hidden || y - state.turnY > HIDE_AFTER_PT, lastY: y, turnY: state.turnY };
 }
 
 /** Whether the header's chips are hidden, fed the list's scroll offsets from
- * its own onScroll. */
-export function useHeaderHiding(): { hidden: boolean; onScroll: (y: number) => void } {
+ * its own onScroll, with whether a drag (or its momentum) moved it. */
+export function useHeaderHiding(): { hidden: boolean; onScroll: (y: number, dragging: boolean) => void } {
 	const tracker = useRef<HeaderHiding>({ hidden: false, lastY: 0, turnY: 0 });
 	const [hidden, setHidden] = useState(false);
-	const onScroll = useCallback((y: number) => {
-		tracker.current = nextHeaderHiding(tracker.current, y);
+	const onScroll = useCallback((y: number, dragging: boolean) => {
+		tracker.current = nextHeaderHiding(tracker.current, y, dragging);
 		setHidden(tracker.current.hidden);
 	}, []);
 	return { hidden, onScroll };

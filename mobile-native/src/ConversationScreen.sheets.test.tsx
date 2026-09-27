@@ -40,13 +40,27 @@ const stack = vi.hoisted(() => ({
 	state: { index: 0, routes: [] as { key: string; name: string }[] },
 }));
 
+// Every scrollToOffset the screen asks of its list, oldest first.
+const listScrolls = vi.hoisted(() => [] as { offset: number; animated?: boolean }[]);
+
 // One sqlite double per database name, keyed the way the singletons open them.
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
 
 vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
+	const { useImperativeHandle } = await import("react");
 	return {
 		...mock,
+		// The list with the handle the screen scrolls through: scrollToOffset
+		// calls are recorded, and the rest do nothing.
+		FlatList: (props: Parameters<typeof mock.FlatList>[0] & { ref?: unknown }) => {
+			useImperativeHandle(props.ref as never, () => ({
+				scrollToOffset: (options: { offset: number; animated?: boolean }) => listScrolls.push(options),
+				scrollToIndex: () => {},
+				getScrollResponder: () => ({ scrollToEnd: () => {} }),
+			}));
+			return mock.FlatList(props);
+		},
 		ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 		AppState: {
 			currentState: "active",
@@ -238,20 +252,27 @@ async function flush() {
 	});
 }
 
-function mount(read: Thread = thread, answers: Answers = {}) {
+const screen = () => (
+	<ConversationScreen
+		route={route}
+		navigation={navigation as unknown as ConversationScreenProps["navigation"]}
+	/>
+);
+
+function mount(
+	read: Thread = thread,
+	answers: Answers = {},
+	connection: Record<string, unknown> = {},
+) {
 	const { client, requests } = sessionClient(read, answers);
 	harness.connection = {
 		...screenConnection(client, "ready"),
 		error: null,
 		disconnect: () => {},
+		...connection,
 	};
-	const tree = render(
-		<ConversationScreen
-			route={route}
-			navigation={navigation as unknown as ConversationScreenProps["navigation"]}
-		/>,
-	);
-	return { tree, requests };
+	const tree = render(screen());
+	return { tree, requests, client };
 }
 
 function subscribedReads(requests: { method: string; params: unknown }[]) {
@@ -271,6 +292,7 @@ beforeEach(() => {
 	navigation.goBack.mockClear();
 	navigation.setOptions.mockClear();
 	alertRequests.length = 0;
+	listScrolls.length = 0;
 });
 
 /** The header options the screen set last. */
@@ -543,33 +565,35 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	tree.unmount();
 });
 
-it("floats the context chips over the list, opens each one's sheet, and hides them on a downward scroll", async () => {
-	const busy = {
-		...thread,
-		evener: {
-			...thread.evener,
-			queue: { revision: 1, depth: 2 },
-			goal: { objective: "Ship it", status: "blocked", iterations: 2 },
-			diagnostics: {
-				delegates: [
-					{
-						delegateId: "d1",
-						ownerSessionId: "root",
-						rootSessionId: "root",
-						childSessionId: "c1",
-						transcriptRef: "local:c1",
-						type: "subagent",
-						lifecycle: "running",
-						phase: "running",
-						status: "running",
-						resumable: false,
-						needsAttention: false,
-						projectionRevision: 1,
-					},
-				],
-			},
+/** A session with a subagent, tasks, a blocked goal and two queued
+ * messages: every context chip. */
+const busy = {
+	...thread,
+	evener: {
+		...thread.evener,
+		queue: { revision: 1, depth: 2 },
+		goal: { objective: "Ship it", status: "blocked", iterations: 2 },
+		diagnostics: {
+			delegates: [
+				{
+					delegateId: "d1",
+					ownerSessionId: "root",
+					rootSessionId: "root",
+					childSessionId: "c1",
+					transcriptRef: "local:c1",
+					type: "subagent",
+					lifecycle: "running",
+					phase: "running",
+					status: "running",
+					resumable: false,
+					needsAttention: false,
+					projectionRevision: 1,
+				},
+			],
 		},
-	} as unknown as Thread;
+	},
+} as unknown as Thread;
+it("floats the context chips over the list, opens each one's sheet, and hides them on a downward scroll", async () => {
 	const { tree } = mount(busy);
 	await flush();
 
@@ -612,11 +636,139 @@ it("floats the context chips over the list, opens each one's sheet, and hides th
 
 	const scroll = (y: number) =>
 		act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y } } }));
+	act(() => list().props.onScrollBeginDrag());
 	scroll(40);
 	expect(block().props.hidden).toBe(true);
 	scroll(30);
 	expect(block().props.hidden).toBe(false);
 	// Hiding never moves the list.
 	expect(list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
+	tree.unmount();
+});
+
+/** The screen's header block, its list, and scrolling it. */
+function sessionList(tree: ReturnType<typeof render>) {
+	const block = () => tree.root.findByType(SessionHeader);
+	const list = () => tree.root.findByType(FlatList);
+	return {
+		block,
+		list,
+		/** The block's wrapper reporting a new height, as layout would. */
+		measure: (height: number) =>
+			act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height } } })),
+		scroll: (y: number) => act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y } } })),
+		drag: (y: number) => {
+			act(() => list().props.onScrollBeginDrag());
+			act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y } } }));
+			act(() => list().props.onScrollEndDrag());
+		},
+	};
+}
+
+it("hides the chips only for the person's own drag, never for the app moving the list", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+
+	// A reading-position restore or following the latest message moves the
+	// list with no drag: the chips stay.
+	session.scroll(4000);
+	expect(session.block().props.hidden).toBe(false);
+
+	// The person's drag, counted from where the list landed.
+	session.drag(4020);
+	expect(session.block().props.hidden).toBe(true);
+
+	// A coast after the drag counts as the person's too.
+	act(() => session.list().props.onMomentumScrollBegin());
+	session.scroll(4010);
+	act(() => session.list().props.onMomentumScrollEnd());
+	expect(session.block().props.hidden).toBe(false);
+	tree.unmount();
+});
+
+it("keeps the transcript in place when the connection bar comes and goes", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	session.measure(48);
+	session.drag(500);
+	expect(listScrolls).toEqual([]);
+
+	// The bar adds 24pt above the chips: the padding grows and the list
+	// scrolls by the same amount, so every row stays where it was on screen.
+	session.measure(72);
+	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 88 });
+	expect(listScrolls).toEqual([{ offset: 524, animated: false }]);
+	session.scroll(524);
+
+	session.measure(48);
+	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
+	expect(listScrolls.at(-1)).toEqual({ offset: 500, animated: false });
+	tree.unmount();
+});
+
+it("stays at the top when the header changes there", async () => {
+	const { tree } = mount(busy);
+	await flush();
+	const session = sessionList(tree);
+	session.measure(48);
+	session.measure(72);
+	expect(session.list().props.contentContainerStyle).toMatchObject({ paddingTop: 88 });
+	expect(listScrolls).toEqual([]);
+	tree.unmount();
+});
+
+const OLD_PROTOCOL_ERROR = "This app and hub need compatible versions. Update them together, then reconnect.";
+const OLD_TRANSPORT_ERROR = "Could not connect. Check the hub address, token, and network, then retry.";
+
+it("says Update needed, with the spec's hint, when no retry can fix the connection", async () => {
+	const { tree } = mount(busy, {}, { state: "closed", fatal: true, error: OLD_PROTOCOL_ERROR });
+	await flush();
+
+	expect(sessionList(tree).block().props.status).toBe("Update needed");
+	const bar = tree.root.find(
+		(node) => node.type === ("Text" as never) && node.props.children === "Update needed",
+	);
+	expect(bar.props.accessibilityHint).toBe(
+		"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.",
+	);
+	expect(renderedText(tree)).not.toContain(OLD_PROTOCOL_ERROR);
+	tree.unmount();
+});
+
+it("says Reconnecting… and then how old the session is while the hub is out of reach", async () => {
+	const { tree, client } = mount(busy);
+	await flush();
+	vi.useFakeTimers();
+	try {
+		harness.connection = {
+			...harness.connection,
+			state: "reconnecting",
+			error: OLD_TRANSPORT_ERROR,
+		};
+		act(() => tree.update(screen()));
+		const status = () => sessionList(tree).block().props.status;
+		const advance = (ms: number) =>
+			act(() => {
+				vi.advanceTimersByTime(ms);
+			});
+		expect(status()).toBeNull();
+		advance(2000);
+		expect(status()).toBe("Reconnecting…");
+		advance(28_000);
+		expect(status()).toBe("Offline · updated 1m ago");
+		advance(180_000);
+		expect(status()).toBe("Offline · updated 3m ago");
+		expect(renderedText(tree)).not.toContain(OLD_TRANSPORT_ERROR);
+		expect(renderedText(tree)).toContain("Offline · updated 3m ago");
+
+		// Back in reach, the bar goes without a word.
+		harness.connection = { ...screenConnection(client, "ready"), error: null, disconnect: () => {} };
+		act(() => tree.update(screen()));
+		expect(status()).toBeNull();
+	} finally {
+		vi.useRealTimers();
+	}
 	tree.unmount();
 });
