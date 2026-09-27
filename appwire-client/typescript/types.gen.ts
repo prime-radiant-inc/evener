@@ -836,6 +836,14 @@ export interface EvenerThread {
    * arrive as thread/vision-model/changed.
    */
   visionModel?: string;
+  /**
+   * Activity is the pulse meter of a live root session's whole tree (spec
+   * 16.4, S5): the root and every in-process descendant. It rides thread/list
+   * rows only, never a thread/read snapshot, because nothing announces its
+   * changes to a subscriber; the hub serves it through evener/activity/read,
+   * never navigation. Absent on descendant rows and from an older daemon.
+   */
+  activity?: ThreadActivity;
 }
 
 export interface EvenerToolInfo {
@@ -2776,6 +2784,11 @@ export interface Thread {
   name?: string;
   turns?: Turn[];
   evener: EvenerThread;
+}
+
+export interface ThreadActivity {
+  minutes: number[];
+  lastActivityAt: number;
 }
 
 export interface ThreadCapabilities {
