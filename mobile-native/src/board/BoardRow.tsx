@@ -241,8 +241,9 @@ export function BoardRow({
 				) : null}
 				{last ? (
 					<View style={{ marginTop: 4, flexDirection: "row", alignItems: "center", columnGap: 6, overflow: "hidden" }}>
-						{last.project ? <Place glyph="folder" text={last.project} scale={scale} /> : null}
-						{last.host ? <Place glyph="server.rack" text={last.host} scale={scale} /> : null}
+						{last.task ? <Fact glyph="checklist" text={last.task} scale={scale} shrink /> : null}
+						{last.project ? <Fact glyph="folder" text={last.project} scale={scale} /> : null}
+						{last.host ? <Fact glyph="server.rack" text={last.host} scale={scale} /> : null}
 					</View>
 				) : null}
 			</View>
@@ -250,17 +251,31 @@ export function BoardRow({
 	);
 }
 
-/** A glyph and a name on the last line, which never wraps. */
-function Place({ glyph, text, scale }: { glyph: "folder" | "server.rack"; text: string; scale: number }) {
+/** A glyph and a fact on the last line, which never wraps. A `shrink` fact
+ * gives up width when the line runs out of room, tail-truncating its text;
+ * the others keep theirs. Only the task line shrinks: its title comes after
+ * the "Task 4 of 7 · " prefix, so the title truncates first (spec 7.2). */
+function Fact({
+	glyph,
+	text,
+	scale,
+	shrink = false,
+}: {
+	glyph: "checklist" | "folder" | "server.rack";
+	text: string;
+	scale: number;
+	shrink?: boolean;
+}) {
 	const { palette } = useColors();
+	const flexShrink = shrink ? 1 : 0;
 	return (
-		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink: 1 }}>
+		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink }}>
 			<SymbolView name={glyph} size={13 * scale} tintColor={palette.inkLow} />
 			<Text
 				allowFontScaling={Platform.OS !== "ios"}
 				numberOfLines={1}
 				ellipsizeMode="tail"
-				style={{ flexShrink: 1, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+				style={{ flexShrink, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 			>
 				{text}
 			</Text>

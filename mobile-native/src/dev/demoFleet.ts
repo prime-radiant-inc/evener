@@ -411,12 +411,12 @@ function hostId(host: ProtoHost | undefined): string {
 }
 
 // The prototype's states on the wire. An approval stays "active" (the phone
-// infers approval from the row's presence in needs_you), and "yourmove" is a
-// turn that ended without asking.
-const WIRE_STATE: Record<ProtoState, { state: string; askPending?: true }> = {
+// infers approval from the row's presence in needs_you, plus approvalPending
+// saying why), and "yourmove" is a turn that ended without asking.
+const WIRE_STATE: Record<ProtoState, { state: string; askPending?: true; approvalPending?: true }> = {
 	failed: { state: "errored" },
 	question: { state: "awaiting", askPending: true },
-	approval: { state: "active" },
+	approval: { state: "active", approvalPending: true },
 	restart: { state: "restartRequired" },
 	yourmove: { state: "awaiting" },
 	working: { state: "active" },
@@ -490,7 +490,7 @@ function runningJobs(raw: RawSession): NavigationJobSummary[] | undefined {
 function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): NavigationSessionSummary {
 	const owner = hostId(raw.host);
 	const project = raw.project ?? "evener";
-	const { state, askPending } = WIRE_STATE[raw.state];
+	const { state, askPending, approvalPending } = WIRE_STATE[raw.state];
 	const live = raw.state !== "shutdown";
 	const offline = owner === "paradise-park" && offlineHost;
 	const { capped, omitted } = capChildren(rawChildren(raw));
@@ -505,6 +505,7 @@ function toRow(raw: RawSession, startupMs: number, offlineHost: boolean): Naviga
 		kind: "session",
 		live,
 		...(askPending ? { ask_pending: true as const } : {}),
+		...(approvalPending ? { approval_pending: true as const } : {}),
 		...(offline ? { offline: true as const } : {}),
 		updated_at: new Date(startupMs - raw.ago * 1000).toISOString(),
 		...(omitted > 0 ? { omitted_descendants: omitted } : {}),
@@ -733,7 +734,18 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		const toHit = (raw: RawSession) => {
 			const row = rowOf(raw);
 			const age = relativeAge(row.updated_at, now);
-			return { id: row.session_id, title: row.title, project: row.project, state: row.state, age, ref: row.ref };
+			return {
+				id: row.session_id,
+				title: row.title,
+				project: row.project,
+				state: row.state,
+				age,
+				ref: row.ref,
+				// The same flags a navigation row carries (#2583): a past (ended)
+				// row never has either set, so this needs no shutdown special case.
+				...(row.ask_pending ? { askPending: true as const } : {}),
+				...(row.approval_pending ? { approvalPending: true as const } : {}),
+			};
 		};
 		return {
 			live: matches.filter((raw) => raw.state !== "shutdown").map(toHit),
