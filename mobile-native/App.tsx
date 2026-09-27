@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { ActivityIndicator, useColorScheme, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { BoardScreen } from "./src/board/BoardScreen";
 import { ConnectionProvider, useConnection } from "./src/ConnectionProvider";
 import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
@@ -37,7 +38,6 @@ import {
 	ConversationScreen,
 	HubsScreen,
 	type Routes,
-	SessionsScreen,
 } from "./src/screens";
 import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
 import { TasksSheet } from "./src/TasksSheet";
@@ -117,7 +117,7 @@ function Navigation() {
 						component={HubsScreen}
 						options={{ title: "Evener · Hubs" }}
 					/>
-					<Stack.Screen name="Sessions" component={SessionsScreen} />
+					<Stack.Screen name="Sessions" component={BoardScreen} />
 					<Stack.Screen
 						name="SessionDeletion"
 						component={SessionDeletionScreen}

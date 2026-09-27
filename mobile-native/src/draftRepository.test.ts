@@ -682,3 +682,25 @@ test("active question survives reopen and stays within its destination and pendi
 		repository.readQuestionPosition(destination, ["first:0", "second:0"]),
 	).toBe("first:0");
 });
+
+test("refsWithDrafts names the sessions with typed, unconfirmed or image-only drafts, for that hub only", () => {
+	const at = (sessionRef: string, hubId = "hub-a") => ({ hubId, sessionRef });
+	const image = { id: "image-a", marker: 1, mediaType: "image/png" };
+	repository.write(at("typed"), { draft: "half a thought", unconfirmed: null });
+	repository.write(at("unconfirmed"), { draft: "", unconfirmed: "sent, not confirmed" });
+	repository.write(
+		at("images-only"),
+		{ draft: "", unconfirmed: null, images: [image] },
+		[{ ...image, data: "AQID" }],
+	);
+	repository.write(at("cleared"), { draft: "gone soon", unconfirmed: null });
+	repository.write(at("cleared"), { draft: "", unconfirmed: null });
+	repository.write(at("elsewhere", "hub-b"), { draft: "other hub", unconfirmed: null });
+	expect([...repository.refsWithDrafts("hub-a")].sort()).toEqual([
+		"images-only",
+		"typed",
+		"unconfirmed",
+	]);
+	expect([...repository.refsWithDrafts("hub-b")]).toEqual(["elsewhere"]);
+	expect(repository.refsWithDrafts("hub-c").size).toBe(0);
+});

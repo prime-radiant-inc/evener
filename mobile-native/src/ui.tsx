@@ -32,6 +32,14 @@ export function useColors() {
 	};
 }
 
+/** The size multiplier for text that sets allowFontScaling off on iOS: the
+ * Dynamic Type scale there, so size and line height grow together, and 1
+ * elsewhere, where the platform scales the text itself. */
+export function useTextScale(): number {
+	const { fontScale } = useWindowDimensions();
+	return Platform.OS === "ios" ? fontScale : 1;
+}
+
 export function Action({
 	children,
 	onPress,
