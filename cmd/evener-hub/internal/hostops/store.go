@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -84,12 +85,21 @@ func RenameLanded(err error) bool {
 // and every live record. Retention and compaction (§4) are a later slice, so
 // nothing here yet removes a record or bounds the set. Every field is required
 // in the file: the kernel of the store is that a file missing one is
-// schema-invalid, never silently an empty store.
+// schema-invalid, never silently an empty store. Boundaries is the one
+// exception — it arrived after the store shipped, so a file without it (or with
+// it null) is a store that has mirrored no boundary yet; see its own comment.
 type snapshot struct {
 	Version                uint64   `json:"version"`
 	Sequence               uint64   `json:"sequence"`
 	AllocatorHighWaterMark uint64   `json:"allocatorHighWaterMark"`
 	Records                []Record `json:"records"`
+	// Boundaries is the per-host boundary record the registry mirrors (spec 08
+	// §7): the {generation, incarnationId, presenceEpoch} triple per host name.
+	// Unlike every other field it is optional on read: this key arrived after
+	// the store shipped, so a file without it — or with it null — is a store
+	// that has mirrored no boundary yet, not a schema-invalid file. Every write
+	// emits it as an object.
+	Boundaries map[string]Boundary `json:"boundaries"`
 }
 
 // storeCell is the lock-and-state cell one store file's handlers share.
@@ -499,6 +509,9 @@ type storeFile struct {
 	Sequence               *uint64       `json:"sequence"`
 	AllocatorHighWaterMark *uint64       `json:"allocatorHighWaterMark"`
 	Records                *[]recordFile `json:"records"`
+	// Boundaries is optional on read (see snapshot.Boundaries): absent and null
+	// both decode to nil, which is "no boundary mirrored yet".
+	Boundaries map[string]Boundary `json:"boundaries"`
 }
 
 // recordFile is the decode shape of one record. It carries the same fields as
@@ -626,6 +639,7 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 		Sequence:               *file.Sequence,
 		AllocatorHighWaterMark: *file.AllocatorHighWaterMark,
 		Records:                records,
+		Boundaries:             file.Boundaries,
 	}
 	// Spec §8: "`createdAt`/`updatedAt` are stored UTC-normalized (`Z`-suffixed
 	// RFC3339; a stored offset form converts at write time)". Values this store
@@ -655,6 +669,12 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renamed bool, err error) {
 	if err := validateSnapshot(state); err != nil {
 		return false, err
+	}
+	if state.Boundaries == nil {
+		// A store that has mirrored nothing writes an empty object, never null:
+		// the key is always present in a file this store wrote, so absent/null
+		// stays what it is — the pre-boundary file shape.
+		state.Boundaries = map[string]Boundary{}
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
@@ -858,12 +878,13 @@ func preservedMode(fs afero.Fs, path string) (os.FileMode, bool) {
 // opaque — a raw field's interior, whose schema the crash-fencing spec owns — so
 // its keys are not this store's to judge.
 var ownedObjectKeys = map[string]map[string]struct{}{
-	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records"),
+	"": keysOf("version", "sequence", "allocatorHighWaterMark", "records", "boundaries"),
 	"records[]": keysOf("id", "clientOperationId", "host", "kind", "state", "generation",
 		"incarnationId", "fencingEpoch", "orphanBoundary", "progress", "result",
 		"createdAt", "updatedAt", "hostRemoved", "sequence"),
 	"records[].result":     keysOf("ok", "message"),
 	"records[].progress[]": keysOf("ts", "message"),
+	"boundaries[]":         keysOf("generation", "incarnationId", "presenceEpoch"),
 }
 
 // keysOf builds one canonical key set.
@@ -1049,7 +1070,7 @@ func validateKeys(raw []byte, owned map[string]map[string]struct{}) error {
 				parent.expectKey = true
 				continue
 			}
-			if canonical, isOwned := owned[parent.path]; isOwned {
+			if canonical, isOwned := ownedKeysFor(owned, parent.path); isOwned {
 				if _, ok := canonical[value]; !ok {
 					return fmt.Errorf("object %s carries the key %q, which is not one this store writes",
 						pathLabel(parent.path), value)
@@ -1069,6 +1090,21 @@ func validateKeys(raw []byte, owned map[string]map[string]struct{}) error {
 			}
 		}
 	}
+}
+
+// ownedKeysFor resolves an object path to the canonical key set this store
+// decodes it with. A map's per-key object carries the key in its path —
+// "boundaries.<name>" — so the one map-valued record this store owns is matched
+// by its "boundaries[]" template; every other keyed object (the hand-written
+// file shapes a test or an operator might produce) is opaque to this rule.
+func ownedKeysFor(owned map[string]map[string]struct{}, path string) (map[string]struct{}, bool) {
+	if canonical, ok := owned[path]; ok {
+		return canonical, true
+	}
+	if key, ok := strings.CutPrefix(path, "boundaries."); ok && key != "" {
+		return owned["boundaries[]"], true
+	}
+	return nil, false
 }
 
 // joinKeyPath extends a parent object's path with the key naming a nested value.
@@ -1176,6 +1212,15 @@ func validateSnapshot(state snapshot) error {
 				ErrInvalidRecord, record.ID, state.AllocatorHighWaterMark)
 		}
 	}
+	// Boundary records are validated like every other value this store persists:
+	// no triple outside the writers' schema enters the file, so the boot that
+	// reconciles against these values (a later slice) never has to guess what a
+	// malformed one meant.
+	for name, boundary := range state.Boundaries {
+		if err := validateBoundary(name, boundary); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1187,6 +1232,7 @@ func cloneSnapshot(state snapshot) snapshot {
 	for i, record := range state.Records {
 		out.Records[i] = cloneRecord(record)
 	}
+	out.Boundaries = maps.Clone(state.Boundaries)
 	return out
 }
 

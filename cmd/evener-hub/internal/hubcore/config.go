@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
@@ -117,6 +118,12 @@ type WebConfig struct {
 	// registry spec 08 §6 — so UI-added and UI-edited hosts live in it; empty
 	// disables host persistence (the surface stays memory-only).
 	RemoteHostConfigPath string
+	// RemoteHostOpsStore is the operation store the host-management surface
+	// mirrors each hub.toml commit's per-host boundary record into (registry
+	// spec 08 §7). nil (tests, embedders) disables mirroring; the mirror is a
+	// copy of hub.toml's machine records, never their authority, so a hub
+	// without it still commits and loads hosts.
+	RemoteHostOpsStore *hostops.Store
 	// RemoteHostClient returns an attached, initialized AppWire client for a
 	// remote host, attaching over SSH on first use (component 04). nil
 	// disables remote hosts (tests).

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/fsdurability"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
@@ -82,6 +84,12 @@ type hostManagerConfig struct {
 	// rewrites in place. Empty (tests, embedders without a file) disables
 	// persistence: the store stays memory-only and every method still works.
 	configPath string
+	// ops is the operation store the per-host boundary records are mirrored
+	// into (registry spec 08 §7): the triple each hub.toml write commits is
+	// mirrored behind it, in one atomic store write. Nil (tests, embedders,
+	// and a hub whose operation store failed to open) disables mirroring; the
+	// mirror is a copy of hub.toml's records, never their authority.
+	ops *hostops.Store
 	// sources is the component-05 registry; a remote host's source is where
 	// attachment state (Online) and the per-host client live.
 	sources *appsource.Registry
@@ -170,6 +178,15 @@ type hostManagerConfig struct {
 type hostStore struct {
 	mu      sync.Mutex
 	entries []hostreg.Host
+	// highWater is the per-name generation high-water record the file carries
+	// for names with no live entry: a removal records the removed incarnation's
+	// (generation, incarnation id, presence epoch) triple with the epoch the
+	// removal advanced to, and it stays until the name's history is pruned
+	// (retention belongs to a later slice). A live name's record is always
+	// derived from its entry, so an entry here for a live name is inert. The
+	// boot load seeds it from the file, so a removal that lands before the next
+	// start keeps its high-water record.
+	highWater map[string]HostGeneration
 	// loadErr records why the durable host set cannot be treated as fully
 	// loaded: a legacy sidecar failed to parse or validate, or its one-time
 	// migration failed. While it is set the in-memory snapshot is known
@@ -186,6 +203,42 @@ func (s *hostStore) set(entries []hostreg.Host) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries = entries
+}
+
+// setHighWater records name's generation high-water triple, replacing any
+// earlier value. Callers hold hostManagerConfig.mu.
+func (s *hostStore) setHighWater(name string, mark HostGeneration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.highWater == nil {
+		s.highWater = map[string]HostGeneration{}
+	}
+	s.highWater[name] = mark
+}
+
+// clearHighWater drops name's high-water record: a removal that never
+// committed must not leave one behind. Callers hold hostManagerConfig.mu.
+func (s *hostStore) clearHighWater(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.highWater, name)
+}
+
+// setHighWaterMap installs the file's high-water records at boot; the
+// constructor calls it once with the records the file carried. The caller
+// transfers ownership.
+func (s *hostStore) setHighWaterMap(marks map[string]HostGeneration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.highWater = marks
+}
+
+// highWaterSnapshot returns copies of the retained high-water records, keyed by
+// name. Callers hold hostManagerConfig.mu.
+func (s *hostStore) highWaterSnapshot() map[string]HostGeneration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.highWater)
 }
 
 // poison records err as the reason the durable host set is not fully loaded.
@@ -337,7 +390,7 @@ func parseLegacyHostSidecar(data []byte) ([]hostreg.Host, error) {
 // path (no config file) skips the write; the in-memory store stays
 // authoritative for the process lifetime.
 func writeHubTOMLHosts(path string, entries []hostreg.Host) error {
-	return writeHubTOMLHostsKnown(path, entries, nil, false)
+	return writeHubTOMLHostsKnown(path, entries, nil, nil, false)
 }
 
 // writeHubTOMLHostsMarked is writeHubTOMLHosts plus the migration's marker:
@@ -345,7 +398,7 @@ func writeHubTOMLHosts(path string, entries []hostreg.Host) error {
 // legacySidecarMigratedKey, so the rewritten file itself says the retired
 // sidecar has been folded in.
 func writeHubTOMLHostsMarked(path string, entries []hostreg.Host, migrated bool) error {
-	return writeHubTOMLHostsKnown(path, entries, nil, migrated)
+	return writeHubTOMLHostsKnown(path, entries, nil, nil, migrated)
 }
 
 // writeHubTOMLHostsKnown is the one writer. known is the set the rewrite is
@@ -356,7 +409,13 @@ func writeHubTOMLHostsMarked(path string, entries []hostreg.Host, migrated bool)
 // write), which the exact-write entry points below use; a store snapshot is
 // never nil, even when the store is empty — an empty snapshot must still
 // preserve hand-added file entries, and nil would silently drop them.
-func writeHubTOMLHostsKnown(path string, entries, known []hostreg.Host, migrated bool) error {
+//
+// highWater carries the retained per-name generation high-water records for
+// names this write does not carry a live entry for (a removal's record); nil
+// means the write carries none, and every other record the file holds for a
+// name the write does not own is preserved verbatim, exactly as the entries
+// are.
+func writeHubTOMLHostsKnown(path string, entries, known []hostreg.Host, highWater map[string]HostGeneration, migrated bool) error {
 	if strings.TrimSpace(path) == "" {
 		return nil
 	}
@@ -364,9 +423,23 @@ func writeHubTOMLHostsKnown(path string, entries, known []hostreg.Host, migrated
 	if err != nil {
 		return err
 	}
-	extra, err := fileOnlyHostEntries(path, raw, known, entries)
-	if err != nil {
-		return err
+	// One decode of the file's current bytes serves both preservation rules —
+	// the hand-added entries the write carries through and the records it
+	// carries through with them — and a write that preserves neither (the exact
+	// writes, both sentinels nil) skips it: the round-trip check below still
+	// holds the bytes it writes to the loader's rules. A nil known is the
+	// exact-write sentinel (no snapshot: preserve nothing); an empty known is a
+	// real empty snapshot, and preservation still applies.
+	var fileCfg Config
+	if known != nil || highWater != nil {
+		fileCfg, err = decodeHubTOMLForRewrite(path, raw)
+		if err != nil {
+			return err
+		}
+	}
+	var extra []HostConfig
+	if known != nil {
+		extra = fileOnlyHostEntries(fileCfg, known, entries)
 	}
 	tables := append(hubTOMLHostTables(entries), extra...)
 	if len(tables) == 0 {
@@ -377,6 +450,17 @@ func writeHubTOMLHostsKnown(path string, entries, known []hostreg.Host, migrated
 		delete(doc, "hosts")
 	} else {
 		doc["hosts"] = tables
+	}
+	records, generations := hubTOMLRecordTables(fileCfg, entries, known, highWater)
+	if len(records) == 0 {
+		delete(doc, "host_records")
+	} else {
+		doc["host_records"] = records
+	}
+	if len(generations) == 0 {
+		delete(doc, "generations")
+	} else {
+		doc["generations"] = generations
 	}
 	if migrated {
 		doc[legacySidecarMigratedKey] = true
@@ -460,45 +544,6 @@ func readHubTOMLDocument(path string) (map[string]any, []byte, error) {
 		doc = map[string]any{}
 	}
 	return doc, data, nil
-}
-
-// fileOnlyHostEntries returns the host entries raw holds that known does not
-// name, in file order. known is the store's pre-mutation snapshot, which is
-// what distinguishes a host the operator hand-added to hub.toml while the hub
-// was running (absent from known, preserved) from a host this very mutation is
-// removing (present in known, not preserved). A nil known is the exact-write
-// sentinel (no snapshot: preserve nothing); an empty known is a real empty
-// snapshot, and preservation still applies. A hand-added entry is not live yet
-// — the running hub serves its boot set until the spec's read-path
-// adopt/reconcile lands — but it survives the rewrite and is adopted by the
-// next boot, which is strictly better than deletion and the direction the
-// spec's adopt-on-reconcile work takes. raw that does not decode
-// through the loader refuses the write: the hub never rewrites a host set it
-// cannot read.
-func fileOnlyHostEntries(path string, raw []byte, known, entries []hostreg.Host) ([]HostConfig, error) {
-	if len(raw) == 0 || known == nil {
-		return nil, nil
-	}
-	cfg, err := decodeConfig(path, string(raw))
-	if err != nil {
-		return nil, fmt.Errorf("hub.toml rewrite refused: %w", err)
-	}
-	// A name the write itself carries is never an extra: appending it would
-	// write the same name twice and the round-trip would refuse the file.
-	carried := make(map[string]struct{}, len(known)+len(entries))
-	for _, e := range known {
-		carried[e.Name] = struct{}{}
-	}
-	for _, e := range entries {
-		carried[e.Name] = struct{}{}
-	}
-	var extra []HostConfig
-	for _, h := range cfg.Hosts {
-		if _, ok := carried[h.Name]; !ok {
-			extra = append(extra, h)
-		}
-	}
-	return extra, nil
 }
 
 // hubTOMLHostTables renders entries as the file's [[hosts]] tables, in the very
@@ -878,6 +923,7 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		hosts:            hosts,
 		store:            &hostStore{},
 		configPath:       strings.TrimSpace(configPath),
+		ops:              cfg.RemoteHostOpsStore,
 		sources:          sources,
 		remoteCache:      cfg.RemoteThreadCache,
 		manager:          manager,
@@ -891,14 +937,97 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		logf:             logf,
 	}}
 	m.cfg.store.set(hosts.All())
-	if err := m.migrateLegacyHostSidecar(); err != nil {
+	// The file's records are read once, before anything else can mint: its
+	// retained marks seed the counters, so a host folded in below mints above
+	// every mark the file carries, and any live host the file carries no
+	// identity for gets its pair recorded in the same boot.
+	fileRecords, hasFile := m.hostFileRecords()
+	if hasFile {
+		m.seedHighWater(fileRecords)
+	}
+	migrated, err := m.migrateLegacyHostSidecar()
+	if err != nil {
 		// Loud, not fatal: the hub.toml hosts still serve. The store stays
 		// poisoned so no later rewrite can land before the sidecar's entries
 		// are folded in.
 		m.logf("legacy host sidecar %s not migrated: %v", legacySidecarPathFor(m.cfg.configPath), err)
 		m.cfg.store.poison(err)
 	}
+	if !migrated {
+		// The migration's own write records every live host's identity, so only
+		// a boot without that write can need the initial records.
+		m.materializeHostRecords(fileRecords, hasFile)
+	}
 	return m
+}
+
+// seedHighWater seeds the store's retained high-water records plus the
+// registry's counters from the file's [generations] tables: a name with no live
+// entry keeps the triple the removal recorded, so a later rewrite carries it
+// through instead of dropping the advance, and a re-add of it mints above the
+// marks it left (spec 08 §1) — its generation above the file's and its presence
+// epoch above the removal's advance, never back at 1.
+func (m *hubHostManager) seedHighWater(cfg Config) {
+	m.cfg.store.setHighWaterMap(cfg.Generations)
+	marks := make(map[string]hostreg.HighWater, len(cfg.Generations))
+	for name, mark := range cfg.Generations {
+		marks[name] = hostreg.HighWater{Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch}
+	}
+	m.cfg.hosts.SeedHighWater(marks)
+}
+
+// materializeHostRecords performs spec 08 §15's boot mint: a hub.toml host the
+// file carries no identity record for gets its initial (generation, incarnation
+// id, presence epoch) triple recorded, "in that same atomic hub.toml write".
+// The registry minted the pair at load (hostreg.New); this write is what makes
+// it durable, so the pair survives the next reload unchanged instead of being
+// minted again. A file that already records every live host is left
+// byte-identical — no boot rewrites it.
+//
+// The achievement is not a re-registration: the write only fills records the
+// file did not carry, it mints no generation above any mark, and the name stays
+// live throughout — nothing a re-add does (a generation strictly above the
+// retained high-water mark, the purge of the removed name's history) happens
+// here. A write that cannot land is logged and retried by the next boot (or by
+// the next mutation, which records the same in-memory pair); the hub still
+// serves, because the pair is already the registry's current identity.
+func (m *hubHostManager) materializeHostRecords(cfg Config, hasFile bool) {
+	if !hasFile || m.cfg.store.poisoned() != nil {
+		return
+	}
+	entries := m.cfg.store.snapshot()
+	for _, entry := range entries {
+		record := cfg.HostRecords[entry.Name]
+		if !record.complete() {
+			if err := m.persistHosts(entries, entries); err != nil {
+				m.logf("host records for %s not recorded yet: %v", m.cfg.configPath, err)
+			}
+			return
+		}
+	}
+}
+
+// hostFileRecords loads the machine records the selected hub.toml carries.
+// ok is false when there is no document to read — the file is missing or empty,
+// so the boot carries no records and nothing is materialized from it — and when
+// the file cannot be read or decoded, which the boot load reports; these helpers
+// leave the file alone rather than acting on a half-read one. It deliberately
+// does not go through LoadConfig: that loader folds a missing file into
+// DefaultConfig, which cannot express "no document", and the empty/missing case
+// is exactly the one where a boot must not write.
+func (m *hubHostManager) hostFileRecords() (Config, bool) {
+	if strings.TrimSpace(m.cfg.configPath) == "" {
+		return Config{}, false
+	}
+	raw, err := configReadFile(m.cfg.configPath)
+	if err != nil || len(raw) == 0 {
+		return Config{}, false
+	}
+	cfg, err := decodeConfig(m.cfg.configPath, string(raw))
+	if err != nil {
+		return Config{}, false
+	}
+	return cfg, true
 }
 
 // migrateLegacyHostSidecar folds a retired hub.hosts.json into hub.toml exactly
@@ -928,19 +1057,19 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 // point re-runs the whole migration on the next boot and converges, because
 // already-merged names collide with the live set and are skipped, and the
 // set-aside rename either already happened or is retried.
-func (m *hubHostManager) migrateLegacyHostSidecar() error {
+func (m *hubHostManager) migrateLegacyHostSidecar() (wrote bool, err error) {
 	path := legacySidecarPathFor(m.cfg.configPath)
 	if path == "" {
-		return nil
+		return wrote, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// No sidecar: hub.toml is not rewritten at boot, so a hub that
 			// never added a host keeps its file byte-identical.
-			return nil
+			return wrote, nil
 		}
-		return fmt.Errorf("read legacy host sidecar: %w", err)
+		return wrote, fmt.Errorf("read legacy host sidecar: %w", err)
 	}
 	// A sidecar that reappears after a recorded migration is stale — the
 	// marker and every mutation since are in the same file, so a survivor of
@@ -957,11 +1086,11 @@ func (m *hubHostManager) migrateLegacyHostSidecar() error {
 			}
 		}
 		m.logf("stale legacy host sidecar %s ignored: %s already records the migration", path, m.cfg.configPath)
-		return nil
+		return wrote, nil
 	}
 	entries, err := parseLegacyHostSidecar(data)
 	if err != nil {
-		return err
+		return wrote, err
 	}
 	// The store's set as the running hub held it: the rewrite's "known" set,
 	// so only genuine hand-added file entries are carried through.
@@ -982,10 +1111,10 @@ func (m *hubHostManager) migrateLegacyHostSidecar() error {
 		// the trimmed one.
 		e = hostreg.Normalize(e)
 		if err := validateHostEntry(e); err != nil {
-			return fmt.Errorf("legacy host sidecar entry %q: %w", e.Name, err)
+			return wrote, fmt.Errorf("legacy host sidecar entry %q: %w", e.Name, err)
 		}
 		if _, dup := seen[e.Name]; dup {
-			return fmt.Errorf("legacy host sidecar entry %q: the sidecar names it twice", e.Name)
+			return wrote, fmt.Errorf("legacy host sidecar entry %q: the sidecar names it twice", e.Name)
 		}
 		seen[e.Name] = struct{}{}
 		if live, ok := m.cfg.hosts.Get(e.Name); ok {
@@ -995,7 +1124,7 @@ func (m *hubHostManager) migrateLegacyHostSidecar() error {
 			// sidecar's settings (a key path, say) would make the "lossless"
 			// migration a lie.
 			if !live.Equal(e) {
-				return fmt.Errorf("legacy host sidecar entry %q differs from the %s entry of the same name; resolve the duplicate first", e.Name, m.cfg.configPath)
+				return wrote, fmt.Errorf("legacy host sidecar entry %q differs from the %s entry of the same name; resolve the duplicate first", e.Name, m.cfg.configPath)
 			}
 			continue
 		}
@@ -1005,20 +1134,28 @@ func (m *hubHostManager) migrateLegacyHostSidecar() error {
 	// Add stays a checked call rather than a silent trust.
 	for _, e := range toAdd {
 		if err := m.cfg.hosts.Add(e); err != nil {
-			return fmt.Errorf("legacy host sidecar entry %q: %w", e.Name, err)
+			return wrote, fmt.Errorf("legacy host sidecar entry %q: %w", e.Name, err)
 		}
-		m.cfg.store.add(e)
+		// The store row is the entry the registry stored, not the local one: the
+		// registry minted the migration's added hosts an identity, and the write
+		// below records it.
+		stored, ok := m.cfg.hosts.Get(e.Name)
+		if !ok {
+			return wrote, fmt.Errorf("legacy host sidecar entry %q: the registry did not store it", e.Name)
+		}
+		m.cfg.store.add(stored)
 		m.registerSource(e)
 	}
 	if err := m.persistHostsMarked(m.cfg.store.snapshot(), pre, true); err != nil {
-		return err
+		return false, err
 	}
+	wrote = true
 	aside := path + legacyHostSidecarAsideSuffix
 	if _, err := os.Stat(aside); err == nil {
-		return fmt.Errorf("cannot set legacy host sidecar %s aside: %s already exists", path, aside)
+		return wrote, fmt.Errorf("cannot set legacy host sidecar %s aside: %s already exists", path, aside)
 	}
 	if err := os.Rename(path, aside); err != nil {
-		return fmt.Errorf("set legacy host sidecar aside: %w", err)
+		return wrote, fmt.Errorf("set legacy host sidecar aside: %w", err)
 	}
 	// The rename is only durable once the directory entry carrying it is
 	// synced: without this, a power loss could bring the retired sidecar back
@@ -1026,9 +1163,9 @@ func (m *hubHostManager) migrateLegacyHostSidecar() error {
 	// sync seam keeps its usual tolerance for filesystems that cannot sync a
 	// directory at all.
 	if err := hubTOMLSyncDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("set legacy host sidecar aside: %w", err)
+		return wrote, fmt.Errorf("set legacy host sidecar aside: %w", err)
 	}
-	return nil
+	return wrote, nil
 }
 
 // logf emits through the hub logging path when one is wired (tests may pass
@@ -1503,6 +1640,19 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	// entry — so a reset placed here sweeps exactly the stale state the
 	// re-add must not inherit, and nothing else.
 	m.cfg.state.remove(entry.Name)
+	// Mint the identity before the durable write. Spec 08 §15 requires the write
+	// that first records the host to also record its identity — "minted fresh on
+	// every add/re-add in the same atomic hub.toml write that mints the
+	// generation" — so the entry carries the stamped triple into the write, and
+	// the live insert below applies that same identity instead of minting a
+	// second one. Stamping advances the counters: a refused add leaves a gap,
+	// which is what "monotone and never reused" means for them.
+	identity, err := m.cfg.hosts.Stamp(entry)
+	if err != nil {
+		m.cfg.mu.Unlock()
+		return appwire.HostRow{}, err
+	}
+	entry = stampedEntry(entry, identity)
 	// Durable commit first: hub.toml is the record of truth for every host,
 	// so the entry is exposed only after the write landed. The
 	// pre-save snapshot is the rollback copy: should the live insert below
@@ -1653,7 +1803,54 @@ func (m *hubHostManager) persistHostsMarked(entries, known []hostreg.Host, migra
 	if err := m.cfg.store.poisoned(); err != nil {
 		return fmt.Errorf("hub.toml %s not rewritten: %w (fix the legacy host sidecar or remove its unloaded entries first)", m.cfg.configPath, err)
 	}
-	return writeHubTOMLHostsKnown(m.cfg.configPath, entries, known, migrated)
+	highWater := m.cfg.store.highWaterSnapshot()
+	if err := writeHubTOMLHostsKnown(m.cfg.configPath, entries, known, highWater, migrated); err != nil {
+		return err
+	}
+	// The mirror rides behind the hub.toml commit: hub.toml is the authority
+	// and the two files cannot be one write, so the mirror is written last and
+	// a failure here leaves it behind the file rather than unwinding the
+	// commit. See mirrorBoundaries.
+	m.mirrorBoundaries(entries, highWater)
+	return nil
+}
+
+// mirrorBoundaries records the triples the hub.toml write just committed in the
+// operation store's per-host boundary records (registry spec 08 §7: "one record
+// per host name — {generation, incarnationId, presenceEpoch} — written in the
+// same atomic store writes that mirror the generation"). Every live entry's
+// triple and every retained high-water record for a name with no live entry is
+// carried, names whose entry holds no complete identity (a direct writer
+// fixture) are skipped, and the whole set lands in one atomic store write.
+//
+// A mirror failure is logged, not returned: the hub.toml commit already landed
+// and cannot be unwound, and the state it leaves — the file ahead of the
+// mirror — is exactly what the deploy-pipeline spec §4 boot pass pushes
+// forward. That pass, and the cursor validation that reads the mirror, belong
+// to later slices; until they land the mirror trails the file and nothing
+// reads it.
+func (m *hubHostManager) mirrorBoundaries(entries []hostreg.Host, highWater map[string]HostGeneration) {
+	if m.cfg.ops == nil || strings.TrimSpace(m.cfg.configPath) == "" {
+		return
+	}
+	// The mirrored triples are the same derivation the file's records come from
+	// (hostFileRecordSet), so the mirror and the file cannot be projected by two
+	// rules that drift apart.
+	_, generations := hostFileRecordSet(entries, highWater)
+	boundaries := make(map[string]hostops.Boundary, len(generations))
+	for name, mark := range generations {
+		boundaries[name] = hostops.Boundary{
+			Generation:    mark.Generation,
+			IncarnationID: mark.IncarnationID,
+			PresenceEpoch: mark.PresenceEpoch,
+		}
+	}
+	if len(boundaries) == 0 {
+		return
+	}
+	if err := m.cfg.ops.MirrorBoundaries(boundaries); err != nil {
+		m.logf("host boundary records not mirrored: %v", err)
+	}
 }
 
 // rollbackHubTOML re-persists previous after a post-write live mutation failed,
@@ -1803,7 +2000,25 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 	// holds the host, so it is compensated back to the live contents before
 	// the refusal is returned — the store row is still in place (it drops
 	// only after a successful save), so the snapshot still carries the entry.
+	//
+	// The removal also advances the name's presence epoch in that same write
+	// (spec 08 §1: "advanced on every add, remove, re-add, and expiry purge"),
+	// recorded as the name's high-water triple: the removed incarnation's
+	// generation and id with the epoch the removal moved to, so a later re-add
+	// mints above it and a paginated reader can still validate the removed
+	// boundary. NextPresenceEpoch is the one place that arithmetic lives: the
+	// registry's own Remove applies the same rule when the live entry drops in
+	// the teardown below.
+	advanced := m.cfg.hosts.NextPresenceEpoch(host.Name)
+	m.cfg.store.setHighWater(host.Name, HostGeneration{
+		Generation:    host.Generation,
+		IncarnationID: host.IncarnationID,
+		PresenceEpoch: advanced,
+	})
 	if err := m.persistOrCompensate(m.cfg.store.without(host.Name), m.cfg.store.snapshot()); err != nil {
+		// The removal committed nothing, so the name keeps its live record and
+		// the high-water entry this attempt staged goes with it.
+		m.cfg.store.clearHighWater(host.Name)
 		m.cfg.mu.Unlock()
 		return appwire.HostRemoveResponse{}, err
 	}
@@ -1843,6 +2058,10 @@ func (m *hubHostManager) Remove(ctx context.Context, params appwire.HostRemovePa
 		// live snapshot, not a pre-remove copy: concurrent Adds and Removes
 		// may have committed in the window, and their entries must survive.
 		m.cfg.store.add(host)
+		// The staged high-water entry goes with the removal it belonged to: the
+		// name is live again, and a mark left behind would claim an advance
+		// that never committed.
+		m.cfg.store.clearHighWater(host.Name)
 		err := m.rollbackHubTOML(m.cfg.store.snapshot(), m.cfg.store.snapshot(), teardownErr)
 		m.cfg.mu.Unlock()
 		return appwire.HostRemoveResponse{}, err
@@ -1947,6 +2166,16 @@ func (m *hubHostManager) Update(ctx context.Context, params appwire.HostUpdatePa
 		m.cfg.mu.Unlock()
 		return appwire.HostUpdateResponse{}, hostValidationRefusal(name, err)
 	}
+	// Mint the identity the swap will carry before the write, exactly as Add
+	// does and for the same reason (spec 08 §15): the generation this edit
+	// advances to must be recorded by the write that records the edit, and the
+	// swap below applies the stamped generation instead of minting a second one.
+	identity, err := m.cfg.hosts.Stamp(entry)
+	if err != nil {
+		m.cfg.mu.Unlock()
+		return appwire.HostUpdateResponse{}, err
+	}
+	entry = stampedEntry(entry, identity)
 	// Persist first: the durable store holds the edited entry before any live
 	// state changes, so a save failure leaves the host fully intact and the
 	// caller can retry. A failure the rename already committed leaves the file
