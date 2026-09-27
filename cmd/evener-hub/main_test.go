@@ -172,6 +172,25 @@ func TestRunMainCreatesAppWireTraceAndWarnsAboutRawPayloads(t *testing.T) {
 	}
 }
 
+// The startup banners (listening address, auth URL, auth token path) must
+// reach the stderr runMain was given, not the process's real stderr: a
+// caller that redirects diagnostics (this test, or a future embedder) would
+// otherwise never see them.
+func TestRunMainPrintsStartupBannersToTheGivenStderr(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	output := stderr.String()
+	for _, want := range []string{"listening on", "auth URL", "auth token also at"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("stderr missing %q banner:\n%s", want, output)
+		}
+	}
+}
+
 func TestRunMainAppWireTraceCapturesRPCConnection(t *testing.T) {
 	root, cfg, deps := newTraceMainTestDeps(t)
 	ctx := t.Context()

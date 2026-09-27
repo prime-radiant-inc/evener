@@ -80,29 +80,6 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 		},
 	}
 
-	// The startup log line this test asserts on is written straight to
-	// os.Stderr (not the io.Writer runMain takes), so capture the real fd.
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	origStderr := os.Stderr
-	os.Stderr = w
-	defer r.Close()
-	logOut := make(chan string, 1)
-	go func() {
-		buf := make([]byte, 0, 4096)
-		tmp := make([]byte, 4096)
-		for {
-			n, readErr := r.Read(tmp)
-			buf = append(buf, tmp[:n]...)
-			if readErr != nil {
-				break
-			}
-		}
-		logOut <- string(buf)
-	}()
-
 	var stderr bytes.Buffer
 	done := make(chan error, 1)
 	go func() { done <- runMain(nil, &stderr, deps) }()
@@ -116,16 +93,13 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 		t.Fatal("deps.serve saw a nil hubHTTPServer")
 	}
 
-	// The startup log line (including "listening on") is written before
-	// deps.serve is called, so it's already in the pipe by now.
-	os.Stderr = origStderr
-	_ = w.Close()
-	var captured string
-	select {
-	case captured = <-logOut:
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out reading captured stderr")
-	}
+	// The startup log line (including "listening on") is written to stderr
+	// before deps.serve is called, so it's already there once served fires -
+	// the same happens-before edge gotSrv above relies on. Snapshot it now,
+	// before the dial loop below gives background goroutines time to run and
+	// write more: stderr is a plain bytes.Buffer, not safe to read while
+	// runMain's goroutine might still be writing to it.
+	captured := stderr.String()
 
 	// The log line must carry a real, non-zero port - not the literal ":0"
 	// the caller asked for.
