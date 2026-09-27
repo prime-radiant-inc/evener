@@ -90,6 +90,10 @@ type LiveEntry struct {
 	// this entry, which the row's task line shows. nil means the daemon cannot
 	// read its task state; a present zero is an authoritative empty list.
 	Tasks *appwire.TaskAggregate
+	// Subagents is the root's whole-tree subagent tally from its probe (S3). It
+	// renders on the row's last line and Subagents chip, so rosterFingerprint
+	// hashes it; the counts move only when a subagent's run starts or ends.
+	Subagents appwire.SubagentTally
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -123,6 +127,9 @@ type ProbeResult struct {
 	// Tasks mirrors LiveEntry.Tasks: the root's task-list progress from the
 	// same projection cut as Status.
 	Tasks *appwire.TaskAggregate
+	// Subagents is the listed root's whole-tree subagent tally (S3); zero from
+	// a daemon that predates it and for a tree with no subagent.
+	Subagents appwire.SubagentTally
 	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
 	// talk to (restart required). Such an answer names no session of its own,
 	// so it does not vouch for the entry's PID the way a bound answer does.
@@ -549,6 +556,10 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		// being cancelled or starting must move the fingerprint while the
 		// status holds still, or onChange never invalidates navigation.
 		writeTaskFingerprint(h, bySess[id].Tasks)
+		// A subagent failing or finishing changes the row's last line (S3).
+		tally := bySess[id].Subagents
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(strconv.Itoa(tally.Running) + "/" + strconv.Itoa(tally.Failed) + "/" + strconv.Itoa(tally.Done)))
 	}
 	return h.Sum64()
 }
@@ -1349,6 +1360,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Watches:               result.Watches,
 		ChildWatches:          result.ChildWatches,
 		Tasks:                 result.Tasks,
+		Subagents:             result.Subagents,
 	})
 }
 
