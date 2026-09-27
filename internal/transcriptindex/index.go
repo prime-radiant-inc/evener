@@ -12,6 +12,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 
@@ -23,7 +25,7 @@ import (
 const (
 	// formatVersion is the sidecar's layout. projectionID names the projection
 	// its records reproduce; either changing rebuilds every index.
-	formatVersion = 4
+	formatVersion = 5
 	projectionID  = "apptranscript-items-v1/entry-ordinal-positions-v2"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
@@ -76,14 +78,51 @@ type meta struct {
 	TurnSlot   uint64 `json:"turn_slot"`
 	// PendingCommunicate reports whether the builder's commCalls held any
 	// deferred communicate call at the end of the last build/extend: the
-	// transcript's tail is a communicate call with no result yet.
-	// restoreBuilder does not reconstruct commCalls (see builder's doc
-	// comment), so extend forces a full rebuild instead of an incremental
-	// restore when this is set, keeping pendingFlush's read of
-	// builder.commCalls accurate across a reopen — matching the errRebuild
-	// policy used elsewhere for state an incremental extend cannot
-	// reconstruct.
+	// transcript's tail is a communicate call with no result yet. CommCalls
+	// and LastAssistant* below are what restoreBuilder needs to reconstruct
+	// that state without a rebuild.
 	PendingCommunicate bool `json:"pending_communicate,omitempty"`
+	// CommCalls persists the builder's open communicate calls (see
+	// builder.commCalls), so an adopting handle's restoreBuilder can rebuild
+	// them instead of needing a full rebuild every time it adopts a build
+	// with a pending call — the records alone (item/turn tables) don't carry
+	// this, since a deferred communicate call projects no item of its own
+	// until it is paired or flushed.
+	CommCalls []persistedCommCall `json:"comm_calls,omitempty"`
+	// LastAssistant* persists the builder's sticky last-assistant-text state
+	// (builder.lastAssistantText/TurnID/Pos/Known), for the same reason: the
+	// healed-communicate echo check needs it, and only a full build or a
+	// text-bearing assistant entry scanned since would otherwise supply it.
+	LastAssistantText   string       `json:"last_assistant_text,omitempty"`
+	LastAssistantTurnID string       `json:"last_assistant_turn_id,omitempty"`
+	LastAssistantPos    persistedPos `json:"last_assistant_pos"`
+	LastAssistantKnown  bool         `json:"last_assistant_known,omitempty"`
+}
+
+// persistedPos is a transcript entry's position: the contributor fields
+// restoreBuilder needs from meta, minus Name (always absent for an
+// assistant entry, the only kind commState/lastAssistantPos ever hold).
+type persistedPos struct {
+	Offset  int64  `json:"offset"`
+	Ordinal uint64 `json:"ordinal"`
+	Length  uint32 `json:"length"`
+}
+
+func posOf(c contributor) persistedPos {
+	return persistedPos{Offset: c.Offset, Ordinal: c.Ordinal, Length: c.Length}
+}
+
+func (p persistedPos) contributor() contributor {
+	return contributor{Offset: p.Offset, Ordinal: p.Ordinal, Length: p.Length}
+}
+
+// persistedCommCall is one builder.commCalls entry (see commState), persisted
+// so restoreBuilder can reconstruct it without a rebuild.
+type persistedCommCall struct {
+	ID           string `json:"id"`
+	RawArgs      string `json:"raw_args"`
+	persistedPos        // flattened: offset, ordinal, length
+	TurnID       string `json:"turn_id"`
 }
 
 // Index is an open transcript index. It is safe for concurrent use, and other
@@ -200,7 +239,7 @@ func (x *Index) refresh() error {
 		_ = x.closeBuild()
 		return err
 	}
-	if m != x.meta {
+	if !reflect.DeepEqual(m, x.meta) {
 		if err := x.adopt(m); err != nil {
 			_ = x.closeBuild()
 			return err
@@ -324,11 +363,12 @@ func (x *Index) extend(length int64) error {
 	x.meta.PendingCommunicate = len(x.builder.commCalls) > 0
 	if x.meta.PendingCommunicate && !x.builder.lastAssistantKnown {
 		// A communicate call just became pending with lastAssistantText
-		// still unknown: only restoreBuilder ever leaves it unknown (a full
-		// build starts authoritative — see the builder's doc comment), and
-		// restoreBuilder cannot recover it any more than it can commCalls.
-		// The echo check pendingFlush relies on would be missing the true
-		// prior text. Only a full rebuild recovers it.
+		// still unknown. restoreBuilder now restores it from meta (see its
+		// doc comment), so this should not happen once any build has run;
+		// kept as a defensive fallback for an index built before that field
+		// existed (a lower formatVersion rebuilds instead, but a defense in
+		// depth costs nothing here). The echo check pendingFlush relies on
+		// would be missing the true prior text otherwise.
 		return x.rebuild(length, x.meta.Incarnation)
 	}
 	return x.writeMeta()
@@ -338,18 +378,16 @@ func (x *Index) extend(length int64) error {
 // another handle's extension left it stale: adopt updates the covered
 // counts/meta but never touches x.builder, so a caller that consults it
 // directly (pendingFlush's commCalls/lastAssistant* state) would otherwise
-// see the state from before that extension. restoreBuilder alone suffices
-// unless a communicate call is pending at the covered tail: it cannot
-// recover commCalls (see restoreBuilder), so that case gets a full rebuild
-// instead, exactly once per staleness. A builder that is not stale is left
-// untouched, so a caller re-checking the same length repeatedly (a pending
-// communicate call outliving several reads) costs nothing once repaired.
+// see the state from before that extension. restoreBuilder recovers it,
+// including a pending communicate call, from the meta fields persisted for
+// that purpose (CommCalls/LastAssistant*). A builder that is not stale is
+// left untouched, so a caller re-checking the same length repeatedly (a
+// pending communicate call outliving several reads, or another handle
+// adopting it) costs nothing once repaired: it never mints a new build, so
+// it never gives another handle something new to adopt in turn.
 func (x *Index) repairBuilder(length int64) error {
 	if !x.builderStale {
 		return nil
-	}
-	if x.meta.PendingCommunicate {
-		return x.rebuild(length, x.meta.Incarnation)
 	}
 	if err := x.restoreBuilder(); err != nil {
 		return x.rebuild(length, "")
@@ -378,9 +416,18 @@ func (x *Index) tailSum(end int64) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// restoreBuilder recovers the open turn's state from meta and records.
+// restoreBuilder recovers the open turn's state from meta and records,
+// including the deferred-communicate state (commCalls and the sticky
+// lastAssistant* fields) meta.CommCalls/LastAssistant* persist for exactly
+// this: item/turn records alone don't carry it, since a deferred communicate
+// call projects no item of its own until it is paired or flushed.
 func (x *Index) restoreBuilder() error {
 	b := builder{x: x, grouper: apptranscript.TurnGrouper{Open: x.meta.Open, TurnID: x.meta.OpenTurnID}, calls: map[string]uint64{}, names: map[string]toolName{}, commCalls: map[string]commState{}}
+	for _, c := range x.meta.CommCalls {
+		b.commCalls[c.ID] = commState{rawArgs: c.RawArgs, pos: c.contributor(), turnID: c.TurnID}
+	}
+	b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown = x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown
+	b.lastAssistantPos = x.meta.LastAssistantPos.contributor()
 	if x.meta.Entries > 0 {
 		buf, err := x.turns.read(x.meta.TurnSlot, 1)
 		if err != nil {
@@ -556,11 +603,29 @@ func (x *Index) writeMeta() error {
 	x.meta.Items, x.meta.Turns, x.meta.Updates = x.items.n, x.turns.n, x.updates.n
 	x.meta.Open, x.meta.OpenTurnID = b.grouper.Open, b.grouper.TurnID
 	x.meta.TurnSlot = b.turnSlot
+	x.meta.CommCalls = persistCommCalls(b.commCalls)
+	x.meta.LastAssistantText, x.meta.LastAssistantTurnID, x.meta.LastAssistantKnown = b.lastAssistantText, b.lastAssistantTurnID, b.lastAssistantKnown
+	x.meta.LastAssistantPos = posOf(b.lastAssistantPos)
 	data, err := json.Marshal(x.meta)
 	if err != nil {
 		return err
 	}
 	return writeFileAtomically(filepath.Join(x.dir, x.build, metaFile), data)
+}
+
+// persistCommCalls converts the builder's open communicate calls to their
+// persisted form (see meta.CommCalls), sorted by call id for a stable
+// meta.json across writes of the same state.
+func persistCommCalls(m map[string]commState) []persistedCommCall {
+	if len(m) == 0 {
+		return nil
+	}
+	list := make([]persistedCommCall, 0, len(m))
+	for id, state := range m {
+		list = append(list, persistedCommCall{ID: id, RawArgs: state.rawArgs, persistedPos: posOf(state.pos), TurnID: state.turnID})
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].ID < list[j].ID })
+	return list
 }
 
 // writeFileAtomically replaces path by rename. There is no fsync: the index is
