@@ -8,7 +8,9 @@ import (
 	"os"
 )
 
-var errNonTraversableRoot = errors.New("root is a symlink or not a directory; refusing to follow it")
+// ErrNonTraversableRoot classifies refusal of a protected root boundary that
+// is a symlink or is not a directory.
+var ErrNonTraversableRoot = errors.New("root is a symlink or not a directory; refusing to follow it")
 
 // OpenRegularBeneathRoot is the portable fallback: this platform has no
 // openat or O_NOFOLLOW, so the descriptor-relative walk is not possible.
@@ -16,6 +18,8 @@ var errNonTraversableRoot = errors.New("root is a symlink or not a directory; re
 // variant), and the descriptor is fstat'd regular before the caller reads a
 // byte. Intermediate-component symlink protection relies on the pre-walk
 // (symlinkErrorDeep) which is the best available guarantee on this platform.
+// Production callers use OpenRegularBeneathRootNoFollow; direct tests retain
+// this API to pin its followable-root semantics.
 func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -42,7 +46,7 @@ func OpenRegularBeneathRootNoFollow(path, root string) (*os.File, error) {
 		return nil, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return nil, &os.PathError{Op: "open root without symlinks", Path: root, Err: errNonTraversableRoot}
+		return nil, &os.PathError{Op: "open root without symlinks", Path: root, Err: ErrNonTraversableRoot}
 	}
 	return OpenRegularBeneathRoot(path, root)
 }

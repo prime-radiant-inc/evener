@@ -12,11 +12,15 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var errNonTraversableRoot = errors.New("root is a symlink or not a directory; refusing to follow it")
+// ErrNonTraversableRoot classifies refusal of a protected root boundary that
+// is a symlink or is not a directory. For a no-follow walk this includes root
+// itself and its first walked directory component.
+var ErrNonTraversableRoot = errors.New("root is a symlink or not a directory; refusing to follow it")
 
 // OpenRegularBeneathRoot opens a regular file at path, walking every component
 // below root through openat with O_NOFOLLOW. The root itself remains followable
-// for callers whose supported state paths may end in a symlink.
+// for compatibility. Production callers use OpenRegularBeneathRootNoFollow;
+// direct tests retain this API to pin its followable-root semantics.
 //
 // The walk starts by opening root as a directory descriptor, then opens each
 // component of filepath.Rel(root, path) one at a time beneath the previous
@@ -72,7 +76,7 @@ func openRegularBeneathRoot(path, root string, noFollowRoot bool) (*os.File, err
 		// symlink depending on kernel check order. Classify both without a
 		// second, race-prone Lstat; the failed open already refused traversal.
 		if noFollowRoot && (errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR)) {
-			return nil, &os.PathError{Op: "open root without symlinks", Path: root, Err: errNonTraversableRoot}
+			return nil, &os.PathError{Op: "open root without symlinks", Path: root, Err: ErrNonTraversableRoot}
 		}
 		return nil, &os.PathError{Op: "open", Path: root, Err: err}
 	}
@@ -102,6 +106,13 @@ func openRegularBeneathRoot(path, root string, noFollowRoot bool) (*os.File, err
 		closeCur()
 		if err != nil {
 			if errors.Is(err, unix.ELOOP) {
+				if noFollowRoot && i == 0 {
+					return nil, &os.PathError{
+						Op:   "open root component without symlinks",
+						Path: filepath.Join(root, comps[i]),
+						Err:  ErrNonTraversableRoot,
+					}
+				}
 				return nil, fmt.Errorf("open %q: component %q is a symlink, refusing to follow it", path, comps[i])
 			}
 			return nil, &os.PathError{Op: "openat", Path: filepath.Join(root, filepath.Join(comps[:i+1]...)), Err: err}
@@ -114,6 +125,13 @@ func openRegularBeneathRoot(path, root string, noFollowRoot bool) (*os.File, err
 		}
 		if st.Mode&unix.S_IFMT != unix.S_IFDIR {
 			_ = unix.Close(next)
+			if noFollowRoot && i == 0 {
+				return nil, &os.PathError{
+					Op:   "open root component without symlinks",
+					Path: filepath.Join(root, comps[i]),
+					Err:  ErrNonTraversableRoot,
+				}
+			}
 			return nil, fmt.Errorf("open %q: component %q is not a directory", path, comps[i])
 		}
 		cur = next

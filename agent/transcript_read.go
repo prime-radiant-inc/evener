@@ -16,16 +16,13 @@ import (
 const transcriptJSONLMaxLineBytes = 128 << 20
 
 var openTranscriptFile = func(path, root string) (io.ReadCloser, error) {
-	// When root is provided, OpenRegularBeneathRoot walks every intermediate
-	// component relative to root via openat(O_NOFOLLOW), refusing symlinks at
-	// any level — not just the leaf. This closes the intermediate-component
-	// TOCTOU window that OpenRegularNoFollow alone leaves open: symlinkErrorDeep
-	// pre-checks each component with Lstat, but a directory swapped for a
-	// symlink between the pre-walk and the open is refused (ELOOP from openat)
-	// rather than followed. When root is empty (test-only path), the open
-	// falls back to OpenRegularNoFollow, which protects only the leaf.
+	// Non-empty roots are policy-validated bucket/state directories. Refuse a
+	// post-validation root symlink swap, then walk every component beneath the
+	// root via openat(O_NOFOLLOW). A symlinked ancestor above the root remains
+	// supported because O_NOFOLLOW applies only to the root's final component.
+	// When root is empty (test-only path), protect only the leaf.
 	if root != "" {
-		return execenv.OpenRegularBeneathRoot(path, root)
+		return execenv.OpenRegularBeneathRootNoFollow(path, root)
 	}
 	return execenv.OpenRegularNoFollow(path)
 }

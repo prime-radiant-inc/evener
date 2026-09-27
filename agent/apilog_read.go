@@ -32,11 +32,11 @@ const (
 )
 
 var openAPILogFile = func(path, root string) (io.ReadCloser, error) {
-	// When root is provided, OpenRegularBeneathRoot walks every intermediate
-	// component via openat(O_NOFOLLOW), closing the intermediate-component
-	// TOCTOU window. See openTranscriptFile for the full rationale.
+	// Non-empty roots are policy-validated bucket/state directories. Refuse a
+	// post-validation root symlink swap and walk below it without following
+	// symlinks. See openTranscriptFile for the full rationale.
 	if root != "" {
-		return execenv.OpenRegularBeneathRoot(path, root)
+		return execenv.OpenRegularBeneathRootNoFollow(path, root)
 	}
 	return execenv.OpenRegularNoFollow(path)
 }

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/identifier"
 )
@@ -190,8 +192,8 @@ func TestLocalJobRetainedReadsRefusePostLocateBucketSymlinkSwap(t *testing.T) {
 				if strings.Contains(string(content), "ATTACKER") {
 					t.Fatalf("read attacker content: %q (error %v)", content, err)
 				}
-				if !strings.Contains(err.Error(), "output_unavailable") {
-					t.Fatalf("error = %v, want output_unavailable refusal", err)
+				if !errors.Is(err, execenv.ErrNonTraversableRoot) {
+					t.Fatalf("error = %v, want root-refusal class", err)
 				}
 				return
 			}
@@ -204,8 +206,66 @@ func TestLocalJobRetainedReadsRefusePostLocateBucketSymlinkSwap(t *testing.T) {
 			if strings.Contains(string(content), "ATTACKER") {
 				t.Fatalf("read attacker content: %q (error %v)", content, err)
 			}
-			if !strings.Contains(err.Error(), "output_unavailable") {
-				t.Fatalf("error = %v, want output_unavailable refusal", err)
+			if !errors.Is(err, execenv.ErrNonTraversableRoot) {
+				t.Fatalf("error = %v, want root-refusal class", err)
+			}
+		})
+	}
+}
+
+func TestLocalJobRetainedReadsRefusePostLocateProjectsSymlinkSwap(t *testing.T) {
+	for _, reader := range []string{"metadata", "window"} {
+		t.Run(reader, func(t *testing.T) {
+			bucket := localJobProjectBucket(t, t.TempDir(), localJobCurrentProject)
+			owner := identifier.MustNewSessionID()
+			jobID := identifier.MustNewJobID(owner)
+			seedLocalJob(t, bucket, owner, jobID, "/dev/null", "ORIGINAL\n", true)
+
+			target, err := locateLocalJobRetainedTarget(bucket, jobID)
+			if err != nil {
+				t.Fatalf("locate retained target: %v", err)
+			}
+			projects := filepath.Dir(bucket)
+			attackerProjects := filepath.Join(t.TempDir(), "attacker-projects")
+			attackerOutput := filepath.Join(attackerProjects, filepath.Base(bucket), "sessions", owner, "jobs", jobID+".log")
+			if err := os.MkdirAll(filepath.Dir(attackerOutput), 0o700); err != nil {
+				t.Fatalf("create attacker output dir: %v", err)
+			}
+			writeAttackerOutputFixture(t, attackerOutput, "ATTACKER\n")
+
+			if err := os.Rename(projects, projects+".honest"); err != nil {
+				t.Fatalf("move honest projects dir: %v", err)
+			}
+			if err := os.Symlink(attackerProjects, projects); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			var content []byte
+			if reader == "metadata" {
+				got, err := readLocalJobRetainedMetadata(target)
+				content = got.Content
+				if err == nil {
+					t.Fatalf("post-locate projects symlink swap was read: %q", content)
+				}
+				if strings.Contains(string(content), "ATTACKER") {
+					t.Fatalf("read attacker content: %q (error %v)", content, err)
+				}
+				if !errors.Is(err, execenv.ErrNonTraversableRoot) {
+					t.Fatalf("error = %v, want root-refusal class", err)
+				}
+				return
+			}
+
+			got, err := (localJobSearchSource{target: target}).ReadWindow(0, 1024)
+			content = got.Content
+			if err == nil {
+				t.Fatalf("post-locate projects symlink swap was read: %q", content)
+			}
+			if strings.Contains(string(content), "ATTACKER") {
+				t.Fatalf("read attacker content: %q (error %v)", content, err)
+			}
+			if !errors.Is(err, execenv.ErrNonTraversableRoot) {
+				t.Fatalf("error = %v, want root-refusal class", err)
 			}
 		})
 	}
@@ -349,8 +409,9 @@ func TestJobOutputOpenRootUsesLegacyNamedBucket(t *testing.T) {
 	stateHome := t.TempDir()
 	bucket := filepath.Join(stateHome, "evener", "projects", "legacy:bucket")
 	path := filepath.Join(bucket, "sessions", "owner", "jobs", "output.log")
-	if got := jobOutputOpenRoot(path); got != bucket {
-		t.Fatalf("jobOutputOpenRoot() = %q, want bucket %q", got, bucket)
+	projects := filepath.Dir(bucket)
+	if got := jobOutputOpenRoot(path); got != projects {
+		t.Fatalf("jobOutputOpenRoot() = %q, want projects dir %q", got, projects)
 	}
 }
 

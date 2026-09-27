@@ -35,7 +35,7 @@ var lstatJobOutputFile = os.Lstat
 func jobOutputOpenRoot(path string) string {
 	for candidate := filepath.Dir(filepath.Clean(path)); ; candidate = filepath.Dir(candidate) {
 		if stateHomeFor(candidate) != "" {
-			return candidate
+			return filepath.Dir(candidate)
 		}
 		parent := filepath.Dir(candidate)
 		if parent == candidate {
@@ -328,14 +328,16 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	}
 	// Downstream output reads narrow the leaf window with their own
 	// Lstat→anchored descriptor walk→SameFile check, then pass that descriptor
-	// to jobstore. The descriptor walk opens the located project bucket itself
-	// with no-follow and pins every component beneath it, so a bucket-root or
-	// intermediate-directory symlink replacement after this locator's pre-walk
-	// is refused at open time. The frozen path-only read
-	// seams cannot carry outInfo to that wrapper, so a regular-to-regular leaf
+	// to jobstore. The descriptor walk opens projects/ itself with no-follow;
+	// the bucket is its first no-follow walked component, and every component
+	// below the bucket is descriptor-pinned. A projects/, bucket, or below-root
+	// symlink replacement after this locator's pre-walk is therefore refused at
+	// open time. Swaps in ancestors above projects/ (evener/ or stateHome) remain
+	// accepted, matching the #2594-r3 boundary. The frozen path-only read seams
+	// also cannot carry outInfo to the wrapper, so a regular-to-regular leaf
 	// replacement, or a fully consistent directory-tree rename, after this
 	// locator Lstat but before the wrapper Lstat is accepted as the wrapper's
-	// baseline. That residual is explicit and accepted because changing those
+	// baseline. Those residuals are explicit and accepted because changing the
 	// seam signatures would break the fixed injection boundary; replacements
 	// during the wrapper's own Lstat/open interval are refused.
 	return localJobRetainedTarget{
@@ -370,6 +372,10 @@ func localJobRetainedUnreadableError(jobID string) error {
 	return fmt.Errorf("output_unavailable: job %q retained output could not be read", jobID)
 }
 
+func localJobRetainedRootRefusedError(jobID string, err error) error {
+	return fmt.Errorf("output_unavailable: job %q retained output root was refused: %w", jobID, err)
+}
+
 func localJobRetainedChangedError(jobID string) error {
 	return fmt.Errorf("output_changed_during_read: job %q", jobID)
 }
@@ -389,6 +395,8 @@ func localJobRetainedReadError(target localJobRetainedTarget, offset int64, snap
 		)
 	case errors.Is(err, jobstore.ErrOutputChangedDuringRead):
 		return localJobRetainedChangedError(target.JobID)
+	case errors.Is(err, execenv.ErrNonTraversableRoot):
+		return localJobRetainedRootRefusedError(target.JobID, err)
 	case errors.Is(err, os.ErrNotExist):
 		return localJobRetainedMissingError(target.JobID)
 	default:
@@ -400,6 +408,9 @@ func readLocalJobRetainedMetadata(target localJobRetainedTarget) (jobstore.Outpu
 	snapshot, err := readLocalJobOutputSnapshot(target.OutputPath, 0, true)
 	if errors.Is(err, jobstore.ErrOutputChangedDuringRead) {
 		return jobstore.OutputSnapshot{}, localJobRetainedChangedError(target.JobID)
+	}
+	if errors.Is(err, execenv.ErrNonTraversableRoot) {
+		return jobstore.OutputSnapshot{}, localJobRetainedRootRefusedError(target.JobID, err)
 	}
 	if errors.Is(err, os.ErrNotExist) {
 		return jobstore.OutputSnapshot{}, localJobRetainedMissingError(target.JobID)
