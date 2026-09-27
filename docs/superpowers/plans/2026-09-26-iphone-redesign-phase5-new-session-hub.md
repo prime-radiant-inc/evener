@@ -116,7 +116,7 @@ The roadmap starts this phase once phase 4's PRs are on main. Phases 2 to 4 are 
 | The notices' actions (`src/board/notices.ts`, `src/board/Notices.tsx`) | phase 2, Task 14 | Tasks 11, 13 and 15 | Skip that task's rewire step and say so in the PR. |
 | `expo-symbols` | phase 2, Task 4 | every screen | Stop: phase 2 must land first. |
 | `DETAIL_LEVELS` in `src/session/detailLevels.ts`: spec 8.2's table as `{ level, label, description }[]` | phase 3, Task 12 | Task 7 | Create that module with spec 8.2's table in that shape, and use it there. |
-| The model list (recent first, then grouped by provider) | phase 3, Task 21's model sheet (`src/session/ModelSheet.tsx`, spec 8.5) | Task 21 | Build the list in `src/newSession/ModelList.tsx` (Task 21). |
+| The model list (recent first, then grouped by provider) | phase 3, Task 21: the list `src/ModelPicker.tsx` renders, which its `ModelSheet` route shows (spec 8.5). Reuse the list, never the route, which reads a session's host (ruling 27) | Task 21 | Build the list in `src/newSession/ModelList.tsx` (Task 21). |
 | `expo-web-browser` (SFSafariViewController) | phase 3, Notes & links (spec 8.8) | Task 14 | `npx expo install expo-web-browser`, then regenerate the pod lock. |
 | The session's ⋯ menu | phase 3 (spec 8.7) | Task 25 | Add the item where the session screen builds its menu today. |
 
@@ -127,7 +127,7 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
 1. **The sheets are modal with a nested stack.**
    - `presentation: "modal"` is the native-stack presentation documented to host a nested stack (`@react-navigation/native-stack`'s types: "this also allows for a nested stack to be rendered inside the screen"). `formSheet`'s detents make no such promise.
    - Pickers and detail pages push inside the sheet with a Back to the form, as iOS's own forms do (Calendar's New Event). A sheet over a sheet over the Board would stack three layers.
-   - The spec's medium detent stays with the session's own pickers (phase 3).
+   - The spec's medium detent stays with the session's own pickers (phase 3's ruling 37, on phase 2's native sheets; ruling 27).
 2. **A host's reads go to that host.**
    - `model/list`, `evener/projects/recent`, `evener/paths/complete`, `evener/path/validate`, `evener/dirs/create`, `evener/git/head`, `evener/plugin/preview` and `evener/launch/resolve` take no host. Each answers for the machine that receives it.
    - For another host, the phone wraps them in `evener/host/request { host, method, params }`. The hub forwards exactly these methods (`remoteHostAdminMethods`, `cmd/evener-hub/app_host_admin.go`; the spawn form's subset is `cmd/evener-hub/host_request_methods.txt`).
@@ -215,6 +215,12 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
     - S18: starting a session in a new worktree branch, for spec 11's Branch (ruling 15).
 
     This PR adds both to spec 18's table and to the roadmap's phase 7 row. This phase ships on their fallbacks: no model toggle in Display, and a Branch row that only shows the current branch. The phone switches when each lands, as the roadmap's phase 7 does for every item.
+27. **Native sheets, and the sheets this phase keeps as they are.** Jesse approved native sheets that open pickers at half height ("Build the redesign's sheets as native navigation sheets, so pickers open at half height?" "yes"). Phase 2's PR 6 builds them as native-stack formSheet routes (its ruling 28), and phases 3 and 4 build their detented sheets on them. This phase's sheets keep the shapes rulings 1 and 9 give them, because a formSheet doesn't fit them:
+    - Hub and New session stay `presentation: "modal"` routes, each holding its own nested stack (ruling 1). The pickers and detail pages inside push within the sheet, so they need no detents of their own.
+    - A provider's and a plugin's detail sheets, and sign-in, stay RN `Modal` page sheets over their lists (ruling 9), because their mutation gates, fences and sign-in flows live with the list.
+    - Presenting a formSheet route dismisses any other presented view controller (phase 2's ruling 28), so nothing inside Hub or New session opens one. "New session like this" (Task 25) opens New session from the session's ⋯ menu, a native menu, not from a sheet.
+    - A relaunch skips only formSheet routes (`routeToSave`, phase 2's Task 18.1), so with Hub or New session open it reopens the Board under it, as it does today.
+    - Phase 3's model sheet is a session sheet that reads its session's host. New session's model picker (Task 21) reuses its list, never the route.
 
 ## Questions for Jesse
 
@@ -4985,7 +4991,7 @@ export function modelFacts(model: ModelDescriptor): string {
      - An accent row, "Use this folder", calls `setCwd(dir, true)` and pops to the form. It is hidden while `dir` is `""`, because the phone doesn't know which folder home resolves to.
      - A row, "New folder", asks `Alert.prompt("New folder", \`In ${dir || "your home folder"}\`, …)`, then calls `createDirectory(source, childrenPrefix(dir) + name)` and moves into the folder it made. The hub's refusal shows as a danger footer.
   4. **The model picker (`Model`, title "Model"):**
-     - If phase 3 built a model list for the composer's model sheet, reuse it with no effort control. Otherwise build `ModelList`:
+     - If phase 3 built a model list for the composer's model sheet, reuse that list (not the `ModelSheet` route, which reads a session's host; ruling 27) with no effort control. Otherwise build `ModelList`:
        - a search field;
        - a first row, "Hub default", checked when no model is chosen;
        - "RECENT" with up to five `recentModels`;
