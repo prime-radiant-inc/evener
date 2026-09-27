@@ -58,4 +58,14 @@ describe("sameJsonValue", () => {
     expect(sameJsonValue(left, right)).toBe(false);
     expect(sameJsonValue(right, left)).toBe(false);
   });
+
+  // A Date or a Blob keeps its content out of its own keys, so comparing keys
+  // would find any two of them equal.
+  test("an object other than an array or a plain object is the same value only as itself", () => {
+    const date = new Date(0);
+    expect(sameJsonValue(date, date)).toBe(true);
+    expect(sameJsonValue(new Date(0), new Date(1))).toBe(false);
+    expect(sameJsonValue(new Blob(["a"]), new Blob(["b"]))).toBe(false);
+    expect(sameJsonValue({ at: new Date(0) }, { at: new Date(1) })).toBe(false);
+  });
 });

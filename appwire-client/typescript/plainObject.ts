@@ -16,21 +16,25 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
 // Structural equality for JSON-shaped values: scalars, arrays and plain
 // objects, compared by content. Every read of stored or fetched data hands back
 // new objects even when nothing changed, so content is what tells a real change
-// from a fresh copy. Objects compare by their own enumerable keys, so this
-// answers for JSON data only: a Blob or a Date has no such keys and would
-// compare equal to any other.
+// from a fresh copy. Any other object (a Date, a Blob, a Map) keeps its content
+// out of its own keys, so it is the same value only as itself.
 export function sameJsonValue(left: unknown, right: unknown): boolean {
   if (Object.is(left, right)) return true;
   if (Array.isArray(left) || Array.isArray(right)) {
     if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
     return left.every((item, index) => sameJsonValue(item, right[index]));
   }
-  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false;
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const keys = Object.keys(leftRecord);
+  if (!isJsonObject(left) || !isJsonObject(right)) return false;
+  const keys = Object.keys(left);
   return (
-    keys.length === Object.keys(rightRecord).length &&
-    keys.every((key) => Object.hasOwn(rightRecord, key) && sameJsonValue(leftRecord[key], rightRecord[key]))
+    keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.hasOwn(right, key) && sameJsonValue(left[key], right[key]))
   );
+}
+
+// A plain object from any realm. isPlainObject's prototype check would reject
+// one whose Object.prototype is another realm's, which is what a record read
+// back from the tests' fake-indexeddb carries, so this reads the object's tag.
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Object.prototype.toString.call(value) === "[object Object]";
 }
