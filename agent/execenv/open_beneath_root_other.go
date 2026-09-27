@@ -3,9 +3,12 @@
 package execenv
 
 import (
+	"errors"
 	"fmt"
 	"os"
 )
+
+var errNonTraversableRoot = errors.New("root is a symlink or not a directory; refusing to follow it")
 
 // OpenRegularBeneathRoot is the portable fallback: this platform has no
 // openat or O_NOFOLLOW, so the descriptor-relative walk is not possible.
@@ -28,4 +31,18 @@ func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
 		return nil, fmt.Errorf("open %q: not a regular file", path)
 	}
 	return file, nil
+}
+
+// OpenRegularBeneathRootNoFollow is the best available portable fallback for
+// refusing a symlinked root. Platforms in this file have no O_NOFOLLOW, so the
+// root Lstat and path open cannot be made atomic.
+func OpenRegularBeneathRootNoFollow(path, root string) (*os.File, error) {
+	info, err := os.Lstat(root)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil, &os.PathError{Op: "open root without symlinks", Path: root, Err: errNonTraversableRoot}
+	}
+	return OpenRegularBeneathRoot(path, root)
 }

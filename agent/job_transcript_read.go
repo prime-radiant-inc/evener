@@ -54,7 +54,7 @@ var openJobOutputFile = func(path string) (*os.File, error) {
 	}
 	var f *os.File
 	if root := jobOutputOpenRoot(path); root != "" {
-		f, err = execenv.OpenRegularBeneathRoot(path, root)
+		f, err = execenv.OpenRegularBeneathRootNoFollow(path, root)
 	} else {
 		f, err = execenv.OpenRegularNoFollow(path)
 	}
@@ -328,9 +328,10 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	}
 	// Downstream output reads narrow the leaf window with their own
 	// Lstat→anchored descriptor walk→SameFile check, then pass that descriptor
-	// to jobstore. The descriptor walk pins each component beneath the located
-	// project bucket, so an intermediate directory replaced by a symlink after
-	// this locator's pre-walk is refused at open time. The frozen path-only read
+	// to jobstore. The descriptor walk opens the located project bucket itself
+	// with no-follow and pins every component beneath it, so a bucket-root or
+	// intermediate-directory symlink replacement after this locator's pre-walk
+	// is refused at open time. The frozen path-only read
 	// seams cannot carry outInfo to that wrapper, so a regular-to-regular leaf
 	// replacement, or a fully consistent directory-tree rename, after this
 	// locator Lstat but before the wrapper Lstat is accepted as the wrapper's

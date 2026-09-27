@@ -154,6 +154,63 @@ func TestLocalJobRetainedReadsRefusePostLocateIntermediateSymlinkSwap(t *testing
 	}
 }
 
+func TestLocalJobRetainedReadsRefusePostLocateBucketSymlinkSwap(t *testing.T) {
+	for _, reader := range []string{"metadata", "window"} {
+		t.Run(reader, func(t *testing.T) {
+			bucket := localJobProjectBucket(t, t.TempDir(), localJobCurrentProject)
+			owner := identifier.MustNewSessionID()
+			jobID := identifier.MustNewJobID(owner)
+			seedLocalJob(t, bucket, owner, jobID, "/dev/null", "ORIGINAL\n", true)
+
+			target, err := locateLocalJobRetainedTarget(bucket, jobID)
+			if err != nil {
+				t.Fatalf("locate retained target: %v", err)
+			}
+			attackerBucket := filepath.Join(t.TempDir(), "attacker-bucket")
+			attackerOutput := filepath.Join(attackerBucket, "sessions", owner, "jobs", jobID+".log")
+			if err := os.MkdirAll(filepath.Dir(attackerOutput), 0o700); err != nil {
+				t.Fatalf("create attacker output dir: %v", err)
+			}
+			writeAttackerOutputFixture(t, attackerOutput, "ATTACKER\n")
+
+			if err := os.Rename(bucket, bucket+".honest"); err != nil {
+				t.Fatalf("move honest bucket: %v", err)
+			}
+			if err := os.Symlink(attackerBucket, bucket); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			var content []byte
+			if reader == "metadata" {
+				got, err := readLocalJobRetainedMetadata(target)
+				content = got.Content
+				if err == nil {
+					t.Fatalf("post-locate bucket symlink swap was read: %q", content)
+				}
+				if strings.Contains(string(content), "ATTACKER") {
+					t.Fatalf("read attacker content: %q (error %v)", content, err)
+				}
+				if !strings.Contains(err.Error(), "output_unavailable") {
+					t.Fatalf("error = %v, want output_unavailable refusal", err)
+				}
+				return
+			}
+
+			got, err := (localJobSearchSource{target: target}).ReadWindow(0, 1024)
+			content = got.Content
+			if err == nil {
+				t.Fatalf("post-locate bucket symlink swap was read: %q", content)
+			}
+			if strings.Contains(string(content), "ATTACKER") {
+				t.Fatalf("read attacker content: %q (error %v)", content, err)
+			}
+			if !strings.Contains(err.Error(), "output_unavailable") {
+				t.Fatalf("error = %v, want output_unavailable refusal", err)
+			}
+		})
+	}
+}
+
 func writeAttackerOutputFixture(t *testing.T, path, content string) {
 	t.Helper()
 	output, err := jobstore.OpenOutputNoSync(path, 1024)

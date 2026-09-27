@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,42 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+func TestOpenRegularBeneathRoot_RootSymlinkPolicy(t *testing.T) {
+	t.Parallel()
+	realRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(realRoot, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realRoot, "sessions", "output.log"), []byte("payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	linkRoot := filepath.Join(t.TempDir(), "root")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(linkRoot, "sessions", "output.log")
+
+	t.Run("legacy root follows", func(t *testing.T) {
+		f, err := OpenRegularBeneathRoot(path, linkRoot)
+		if err != nil {
+			t.Fatalf("OpenRegularBeneathRoot: %v", err)
+		}
+		_ = f.Close()
+	})
+
+	t.Run("no-follow root refuses", func(t *testing.T) {
+		f, err := OpenRegularBeneathRootNoFollow(path, linkRoot)
+		if f != nil {
+			_ = f.Close()
+			t.Fatal("OpenRegularBeneathRootNoFollow followed a symlinked root")
+		}
+		var pathErr *os.PathError
+		if !errors.As(err, &pathErr) || pathErr.Path != linkRoot || !strings.Contains(err.Error(), "symlink") {
+			t.Fatalf("error = %v, want typed symlink refusal naming root %q", err, linkRoot)
+		}
+	})
+}
 
 // TestOpenRegularBeneathRoot_RefusesSymlinkedIntermediateDir (FU3 round 13, M2)
 // asserts OpenRegularBeneathRoot refuses a symlink at an intermediate directory

@@ -12,13 +12,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// OpenRegularBeneathRoot opens a regular file at path, walking every
-// intermediate component relative to root through openat with O_NOFOLLOW so
-// no symlink is ever traversed — not just at the leaf (OpenRegularNoFollow)
-// but at every parent directory too. This closes the intermediate-component
-// TOCTOU window: symlinkErrorDeep Lstats each component before the open,
-// but a directory swapped for a symlink between the pre-walk and the open is
-// refused (ELOOP from openat) rather than followed.
+var errNonTraversableRoot = errors.New("root is a symlink or not a directory; refusing to follow it")
+
+// OpenRegularBeneathRoot opens a regular file at path, walking every component
+// below root through openat with O_NOFOLLOW. The root itself remains followable
+// for callers whose supported state paths may end in a symlink.
 //
 // The walk starts by opening root as a directory descriptor, then opens each
 // component of filepath.Rel(root, path) one at a time beneath the previous
@@ -33,6 +31,17 @@ import (
 // path must be beneath root (filepath.Rel returns a non-".." relative path);
 // callers that pass a path outside root get an error from the escape guard.
 func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
+	return openRegularBeneathRoot(path, root, false)
+}
+
+// OpenRegularBeneathRootNoFollow is OpenRegularBeneathRoot with the additional
+// requirement that root itself is not a symlink. It is for callers that have
+// validated root as a real directory and must refuse a later root replacement.
+func OpenRegularBeneathRootNoFollow(path, root string) (*os.File, error) {
+	return openRegularBeneathRoot(path, root, true)
+}
+
+func openRegularBeneathRoot(path, root string, noFollowRoot bool) (*os.File, error) {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
 		return nil, fmt.Errorf("open %q beneath %q: %w", path, root, err)
@@ -51,9 +60,20 @@ func OpenRegularBeneathRoot(path, root string) (*os.File, error) {
 		return nil, fmt.Errorf("open %q: empty relative path", path)
 	}
 
-	// Open root as a directory descriptor.
-	rootFd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	// Open root as a directory descriptor. O_NOFOLLOW protects roots that the
+	// caller has already validated as real directories from a later symlink swap.
+	rootFlags := unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC
+	if noFollowRoot {
+		rootFlags |= unix.O_NOFOLLOW
+	}
+	rootFd, err := unix.Open(root, rootFlags, 0)
 	if err != nil {
+		// O_NOFOLLOW|O_DIRECTORY may report either ELOOP or ENOTDIR for a
+		// symlink depending on kernel check order. Classify both without a
+		// second, race-prone Lstat; the failed open already refused traversal.
+		if noFollowRoot && (errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR)) {
+			return nil, &os.PathError{Op: "open root without symlinks", Path: root, Err: errNonTraversableRoot}
+		}
 		return nil, &os.PathError{Op: "open", Path: root, Err: err}
 	}
 
