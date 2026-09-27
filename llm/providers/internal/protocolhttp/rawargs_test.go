@@ -89,21 +89,10 @@ func TestRawStringContent_InvalidUTF8Preserved(t *testing.T) {
 			want:  []byte("abc\xffdef"),
 		},
 		{
-			name:  "invalid utf8 with escaped quote",
-			token: []byte("\"" + `\xff` + "\"" + "\xff" + "\""), // not valid; let me fix
-			// Actually this is tricky to construct. Let me use a simpler case.
+			name:  "raw 0xc3 0xa9 valid utf8 pair passes through",
+			token: []byte("\"\xc3\xa9\""), // é in UTF-8
+			want:  []byte("\xc3\xa9"),
 		},
-	}
-
-	// Fix the last case — remove the broken one and add a clean one.
-	cases[4] = struct {
-		name  string
-		token []byte
-		want  []byte
-	}{
-		name:  "raw 0xc3 0xa9 valid utf8 pair passes through",
-		token: []byte("\"\xc3\xa9\""), // é in UTF-8
-		want:  []byte("\xc3\xa9"),
 	}
 
 	for _, tc := range cases {

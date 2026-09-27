@@ -6,11 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -288,5 +286,3 @@ func TestRawArgs_Stream_FallbackOnNull(t *testing.T) {
 }
 
 // Ensure imports are used.
-var _ = strings.Builder{}
-var _ = protocolhttp.Result{}

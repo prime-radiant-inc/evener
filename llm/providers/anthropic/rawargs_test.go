@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
-	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 )
 
 // rawInputJSON builds an Anthropic Messages response body whose tool_use
@@ -223,4 +222,3 @@ func TestRawArgs_Stream_FallbackOnEmpty(t *testing.T) {
 }
 
 // Ensure imports are used.
-var _ = protocolhttp.Result{}
