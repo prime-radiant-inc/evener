@@ -133,6 +133,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			CapabilitiesKnown:  item.CapabilitiesKnown,
 			Subagents:          item.Subagents,
 			LastTurnEndedAt:    hubcore.UnixMilliseconds(item.LastTurnEndedAt),
+			Tasks:              item.Tasks,
 		}
 		entries = append(entries, entry)
 		// In-process descendants are addressed as their own AppWire
@@ -165,6 +166,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			// The root's tally counts the root's tree, not the child's.
 			child.Subagents = appwire.SubagentTally{}
 			child.LastTurnEndedAt = 0 // the root's turn is not the child's
+			child.Tasks = nil         // nor is the root's task list
 			child.ReadOnlyAlias = true
 			entries = append(entries, child)
 		}

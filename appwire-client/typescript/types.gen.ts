@@ -2287,8 +2287,8 @@ export interface NavigationSessionSummary {
   /**
    * Tasks is the task line's facts ("Task 4 of 7 · Fix the settle/drain
    * race"). Absent for a session with no task list or an empty one, and for
-   * every session this hub has no live daemon entry for: ended sessions,
-   * in-process children, and rows from other hosts.
+   * every session with no live daemon entry: ended sessions and in-process
+   * children. A live session on another host carries its host's (S13b).
    */
   tasks?: NavigationTaskProgress;
   children: NavigationSessionSummary[];
