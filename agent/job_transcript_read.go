@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/identifier"
 )
@@ -29,9 +30,38 @@ var openLocalJobProjectDirectory = func(path string) (localJobProjectDirectory, 
 	return os.Open(path)
 }
 
-var readLocalJobOutputSnapshot = jobstore.ReadOutputSnapshot
+var openJobOutputFile = func(path, root string) (io.ReadCloser, error) {
+	if root != "" {
+		return execenv.OpenRegularBeneathRoot(path, root)
+	}
+	return execenv.OpenRegularNoFollow(path)
+}
 
-var readLocalJobOutputWindowSnapshot = jobstore.ReadOutputWindowSnapshot
+var readLocalJobOutputSnapshot = func(path string, maxBytes int, fromHead bool) (jobstore.OutputSnapshot, error) {
+	opened, err := openJobOutputFile(path, "")
+	if err != nil {
+		return jobstore.OutputSnapshot{}, err
+	}
+	defer func() { _ = opened.Close() }()
+	f, ok := opened.(*os.File)
+	if !ok {
+		return jobstore.OutputSnapshot{}, fmt.Errorf("open job output %q: opener returned %T, want *os.File", path, opened)
+	}
+	return jobstore.ReadOutputSnapshotFromFile(path, f, maxBytes, fromHead)
+}
+
+var readLocalJobOutputWindowSnapshot = func(path string, offset int64, maxBytes int) (jobstore.OutputWindowSnapshot, error) {
+	opened, err := openJobOutputFile(path, "")
+	if err != nil {
+		return jobstore.OutputWindowSnapshot{}, err
+	}
+	defer func() { _ = opened.Close() }()
+	f, ok := opened.(*os.File)
+	if !ok {
+		return jobstore.OutputWindowSnapshot{}, fmt.Errorf("open job output %q: opener returned %T, want *os.File", path, opened)
+	}
+	return jobstore.ReadOutputWindowSnapshotFromFile(path, f, offset, maxBytes)
+}
 
 func locateLocalJob(currentStateDir, jobID string) (localJobLocation, error) {
 	ownerSessionID, err := identifier.JobOwnerSessionID(jobID)
@@ -254,17 +284,14 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 	if !outInfo.Mode().IsRegular() {
 		return localJobRetainedTarget{}, fmt.Errorf("read local job %q: output is not a regular file", jobID)
 	}
-	// jobstore.ReadOutputSnapshot / ReadOutputWindowSnapshot open the output
-	// file by path internally (afero.NewOsFs), so there is a residual TOCTOU
-	// window between the Lstat above and the internal open: a symlink or
-	// non-regular entry swapped in between would be followed. Changing
-	// jobstore's API to accept an fd is disproportionate — it touches the
-	// internal package and every caller, the same reasoning the round-10
-	// journal hybrid declined (lines 174-183 above). The window is narrow:
-	// symlinkErrorDeep pre-checks every component, the Lstat rejects
-	// non-regular entries, and the output path is a per-job file under
-	// sessions/<id>/jobs/, not a shared directory. The residual risk is an
-	// in-window swap from regular to non-regular, not a missing check.
+	// Downstream output reads open the leaf once with OpenRegularNoFollow and
+	// pass that descriptor to jobstore. O_NOFOLLOW refuses an in-window leaf
+	// symlink, the descriptor's regular-file check refuses a FIFO or directory,
+	// and the descriptor pins the inode for every stat and content read. This
+	// closes the documented leaf-swap window. As with round 13's rootless
+	// transcript fallback, an intermediate directory can still be swapped after
+	// symlinkErrorDeep's pre-walk and before the open; that residual is accepted
+	// here and remains mitigated by the pre-walk of every component.
 	return localJobRetainedTarget{
 		JobID:      jobID,
 		Record:     location.Record,
@@ -360,7 +387,7 @@ func readLocalJobSnapshot(currentStateDir, jobID string, readBytes int) (localJo
 	if err != nil {
 		return localJobSnapshot{}, err
 	}
-	snapshot, err := jobstore.ReadOutputSnapshot(target.OutputPath, readBytes, false)
+	snapshot, err := readLocalJobOutputSnapshot(target.OutputPath, readBytes, false)
 	if errors.Is(err, jobstore.ErrOutputChangedDuringRead) {
 		return localJobSnapshot{}, localJobRetainedChangedError(jobID)
 	}
