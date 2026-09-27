@@ -57,3 +57,18 @@ export function reactActScopeOpen(
   }
   return internals.actQueue !== null;
 }
+
+// The guard's ports on React's own act() and on the timers and clock as they
+// are when this is called, so call it before any test can fake them.
+export function reactActScopeGuardPorts(
+  internals: { actQueue: unknown },
+  act: (callback: () => void) => unknown,
+  reportError: (error: unknown) => void,
+): ActScopeGuardPorts {
+  const realSetTimeout = globalThis.setTimeout;
+  return {
+    actScopeOpen: () => reactActScopeOpen(internals, act, reportError),
+    nextTurn: () => new Promise<void>((resolve) => realSetTimeout(resolve, 0)),
+    now: performance.now.bind(performance),
+  };
+}

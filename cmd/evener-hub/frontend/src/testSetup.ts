@@ -1,7 +1,7 @@
 import { cleanup } from "@testing-library/react";
 import * as React from "react";
 import { afterAll, afterEach, beforeAll } from "vitest";
-import { reactActScopeOpen, waitOutLeakedActScope } from "./testActScopeGuard";
+import { reactActScopeGuardPorts, waitOutLeakedActScope } from "./testActScopeGuard";
 import { guardConsoleOutput } from "./testConsoleGuard";
 
 // Every test file must get its own VM context: stores, pane registrations and
@@ -102,13 +102,7 @@ if (!("actQueue" in reactInternals)) {
   throw new Error("React no longer exposes actQueue; update or remove the act-scope guard in testSetup.ts.");
 }
 const actInternals = reactInternals as { actQueue: unknown };
-const realSetTimeout = globalThis.setTimeout;
-const realNow = performance.now.bind(performance);
-const actScopeGuard = {
-  actScopeOpen: () => reactActScopeOpen(actInternals, React.act, (error) => actScopeFailures.push(error)),
-  nextTurn: () => new Promise<void>((resolve) => realSetTimeout(resolve, 0)),
-  now: realNow,
-};
+const actScopeGuard = reactActScopeGuardPorts(actInternals, React.act, (error) => actScopeFailures.push(error));
 let stuckActScopeReported = false;
 afterEach(async () => {
   if (stuckActScopeReported && actScopeGuard.actScopeOpen()) return;

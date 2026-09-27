@@ -2,7 +2,7 @@ import * as React from "react";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, test } from "vitest";
-import { reactActScopeOpen, waitOutLeakedActScope } from "./testActScopeGuard";
+import { reactActScopeGuardPorts, reactActScopeOpen, waitOutLeakedActScope } from "./testActScopeGuard";
 
 const reactInternals = (
   React as unknown as { __CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE: { actQueue: unknown } }
@@ -13,11 +13,7 @@ function rethrow(error: unknown): never {
 }
 
 function realPorts() {
-  return {
-    actScopeOpen: () => reactActScopeOpen(reactInternals, act, rethrow),
-    nextTurn: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
-    now: () => performance.now(),
-  };
+  return reactActScopeGuardPorts(reactInternals, act, rethrow);
 }
 
 test("a test that left no act scope open passes at once", async () => {
