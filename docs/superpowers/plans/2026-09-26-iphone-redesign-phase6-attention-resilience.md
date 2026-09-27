@@ -173,6 +173,13 @@ describe("the connection clock (spec 14)", () => {
 		expect(clock.observe(hub(false, true), at(3600))).toEqual({ downSince: at(3600), lastLiveAt: at(5) });
 	});
 
+	it("dates the data from leaving the front, even if the connection closes later", () => {
+		const clock = new ConnectionClock();
+		clock.observe(hub(true), at(0));
+		expect(clock.observe(hub(true, false), at(5))).toEqual({ downSince: null, lastLiveAt: at(5) });
+		expect(clock.observe(hub(false, true), at(3600))).toEqual({ downSince: at(3600), lastLiveAt: at(5) });
+	});
+
 	it("starts over for a different hub", () => {
 		const clock = new ConnectionClock();
 		clock.observe(hub(true), at(0));
@@ -313,8 +320,9 @@ export interface ConnectionTimes {
 	/** When this stretch in front without a live connection began; null while
 	 * live or in the background. */
 	downSince: number | null;
-	/** When this hub's connection last stopped being live; null until it has
-	 * been live and dropped since the app launched or the hub was chosen. */
+	/** When this hub's connection last stopped being live in front (it
+	 * dropped, or the app left the front); null until that has happened since
+	 * the app launched or the hub was chosen. */
 	lastLiveAt: number | null;
 }
 
@@ -327,8 +335,12 @@ export class ConnectionClock {
 		this.last = next;
 		const sameHub = last !== null && last.hubId === next.hubId;
 		let { downSince, lastLiveAt } = this.times;
+		// The data stops being live when the connection drops or the app
+		// leaves the front, whichever the provider reports first: it closes
+		// the connection in the background.
+		const wasLive = sameHub && last.live && last.foreground;
 		if (!sameHub) lastLiveAt = null;
-		else if (last.live && !next.live) lastLiveAt = now;
+		else if (wasLive && !(next.live && next.foreground)) lastLiveAt = now;
 		if (next.live || !next.foreground) downSince = null;
 		else if (!sameHub || !last.foreground || downSince === null) downSince = now;
 		this.times = { downSince, lastLiveAt };
@@ -551,6 +563,11 @@ it("reads the text a person sees, and nothing else", () => {
 	expect(asks("e.ts", `// Reconnect later\nconst e = reconcileAfterReconnect(refresh);`)).toEqual([]);
 	expect(asks("f.ts", `import { refresh } from "./refresh";\nconsole.warn("refresh failed");`)).toEqual([]);
 	expect(asks("g.ts", `console.warn(format("refresh failed: %s", error));`)).toEqual([]);
+	expect(asks("h.ts", `export const MESSAGE = "Refresh to try again.";\nexport function hint() { return "Reconnect first"; }`)).toEqual([
+		"Refresh to try again.",
+		"Reconnect first",
+	]);
+	expect(asks("i.ts", `export { refresh } from "./refresh";`)).toEqual([]);
 });
 
 it("no text a person can read asks them to reconnect or refresh", () => {
@@ -1065,7 +1082,8 @@ it("sends to start or resume, and falls back to the thread id for a session with
 `ConversationScreen.offline.test.tsx` mounts the real screen on the harness of phase 3's `ConversationScreen.send.test.tsx`, with the real durable runtime over `openSqliteSyncDouble()` (mock `expo-sqlite`'s `openDatabaseSync` to return that port). It covers:
 - the session loads connected; the connection drops (the mocked connection reports `"reconnecting"`); typing "sent on the train" and pressing Send ("Send when you're back online") leaves the composer empty, stores one `turn/queue` record for `nativeMutationTargetKey("hub-1", ref)`, and shows a ghost reading "Will send when you're back online";
 - the connection returns (`"ready"`, the same client): the client receives that `turn/queue` exactly once, and the ghost goes when the read reflects it;
-- a screen that never read its session keeps Send disabled while offline, and the typed draft stays.
+- a screen that never read its session keeps Send disabled while offline, and the typed draft stays;
+- with a question pending and the connection down, the dock's Send reads "Send answer when you're back online", pressing it stores one record carrying the composed answer and marks the question's batch sent, and back online the client receives it exactly once.
 
 - [ ] **Step 2: Run them and watch them fail**
 
