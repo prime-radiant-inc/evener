@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -339,38 +340,13 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
 
-	c := llm.NewClient()
-	comm := communicateCall("c1", "done")
+	sess := newSession(t, withAdapter(&fakeAdapter{name: "anthropic"}), withProfile(newAnthropicProfile("claude-test")), withDir(root))
 
-	var capturedSystem string
-	f := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				// Capture the system prompt from the first message.
-				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
-					capturedSystem = req.Messages[0].Text()
-				}
-				return toolCallResponse(comm)
-			},
-		},
-	}
-	c.Register(f)
-
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi", nil)
-	sess.Close()
-
-	if !strings.Contains(capturedSystem, "<skill-catalog>") {
-		t.Error("system prompt missing <skills> section")
-	}
-	if !strings.Contains(capturedSystem, "greet: Greeting skill") {
-		t.Error("system prompt missing greet skill entry")
+	data := sess.buildPromptData(sess.currentEnv())
+	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool {
+		return s.CatalogNameOrName() == "greet" && s.Description == "Greeting skill"
+	}) {
+		t.Fatalf("prompt skills = %+v, want greet with its description", data.Skills)
 	}
 }
 
@@ -380,43 +356,17 @@ func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
 
-	c := llm.NewClient()
-	comm := communicateCall("c1", "done")
+	sess := newSession(t, withDir(root))
 
-	var capturedSystem string
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
-					capturedSystem = req.Messages[0].Text()
-				}
-				return toolCallResponse(comm)
-			},
-		},
+	data := sess.buildPromptData(sess.currentEnv())
+	if !data.HasUseSkill {
+		t.Fatal("HasUseSkill = false, want true on the openai surface")
 	}
-	c.Register(f)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi", nil)
-	sess.Close()
-
-	if !strings.Contains(capturedSystem, "<skill-catalog>") {
-		t.Error("OpenAI system prompt should contain <skills> section")
-	}
-	if !strings.Contains(capturedSystem, "Load a skill by calling use_skill with its name") {
-		t.Error("OpenAI system prompt should instruct model to use use_skill for skills")
-	}
-	if !strings.Contains(capturedSystem, "greet: Greeting skill") {
-		t.Error("OpenAI system prompt missing greet skill entry")
-	}
-	if !strings.Contains(capturedSystem, "[") || !strings.Contains(capturedSystem, filepath.Join("skills", "greet")) {
-		t.Error("OpenAI system prompt should list the skill directory for use_skill profiles")
+	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool {
+		return s.CatalogNameOrName() == "greet" && s.Description == "Greeting skill" &&
+			strings.HasSuffix(s.Dir, filepath.Join("skills", "greet"))
+	}) {
+		t.Fatalf("prompt skills = %+v, want greet with its description and skill directory", data.Skills)
 	}
 }
 
@@ -434,37 +384,25 @@ func TestOpenAI_PluginSkillCatalogUsesNamespacedName(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	c := llm.NewClient()
-	comm := communicateCall("c1", "done")
+	sess := newSession(t, withDir(root), withConfig(SessionConfig{
+		PluginDirs:    []string{pluginDir},
+		AgentsDocPath: filepath.Join(t.TempDir(), "no-personal-AGENTS.md"),
+	}))
 
-	var capturedSystem string
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
-					capturedSystem = req.Messages[0].Text()
-				}
-				return toolCallResponse(comm)
-			},
-		},
+	data := sess.buildPromptData(sess.currentEnv())
+	if !slices.ContainsFunc(data.Skills, func(s skillEntry) bool { return s.CatalogNameOrName() == "skill-plugin:my-skill" }) {
+		t.Fatalf("prompt skills = %+v, want the namespaced skill-plugin:my-skill", data.Skills)
 	}
-	c.Register(f)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{PluginDirs: []string{pluginDir}})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
+	if slices.ContainsFunc(data.Skills, func(s skillEntry) bool { return s.CatalogNameOrName() == "my-skill" }) {
+		t.Fatalf("prompt skills = %+v, advertised the bare plugin skill name", data.Skills)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
-	defer cancel()
-	_, _ = sess.ProcessInput(ctx, "hi", nil)
-	sess.Close()
-
-	if !strings.Contains(capturedSystem, "- skill-plugin:my-skill: Plugin skill [") {
-		t.Fatalf("system prompt missing namespaced plugin skill entry:\n%s", capturedSystem)
+	// The catalog must render the namespaced name: it is the key use_skill loads.
+	prompt, warning := sess.renderSystemPrompt(sess.currentEnv())
+	if warning != "" {
+		t.Fatalf("renderSystemPrompt warning: %s", warning)
 	}
-	if strings.Contains(capturedSystem, "- my-skill: Plugin skill [") {
-		t.Fatalf("system prompt advertised bare plugin skill name:\n%s", capturedSystem)
+	if !strings.Contains(prompt, "skill-plugin:my-skill") {
+		t.Fatal("rendered prompt lacks the namespaced catalog name skill-plugin:my-skill")
 	}
 }
 
