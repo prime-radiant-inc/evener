@@ -1072,6 +1072,18 @@ export interface HostCredentialPushResult {
   reason?: string;
 }
 
+export interface HostDeployParams {
+  name: string;
+  token: string;
+  operationId: string;
+}
+
+export interface HostDeployResponse {
+  id: string;
+  clientOperationId: string;
+  state: string;
+}
+
 export interface HostEntry {
   name?: string;
   address: string;
@@ -1155,6 +1167,19 @@ export interface HostRequestParams {
   host: string;
   method: string;
   params?: unknown;
+}
+
+export interface HostRestartParams {
+  name: string;
+  operationId: string;
+  generation: number;
+  incarnationId: string;
+}
+
+export interface HostRestartResponse {
+  id: string;
+  clientOperationId: string;
+  state: string;
 }
 
 export interface HostRow {
@@ -3841,6 +3866,8 @@ export const METHOD_NAMES = [
   "evener/host/remove",
   "evener/host/update",
   "evener/host/plan",
+  "evener/host/deploy",
+  "evener/host/restart",
   "evener/host/running",
   "evener/host/pushCredentials",
   "evener/session/image",
@@ -4058,6 +4085,8 @@ export interface MethodTypes {
   "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
   "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
   "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
+  "evener/host/deploy": { params: HostDeployParams; result: HostDeployResponse };
+  "evener/host/restart": { params: HostRestartParams; result: HostRestartResponse };
   "evener/host/running": { params: HostRunningParams; result: HostRunningResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
   "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };

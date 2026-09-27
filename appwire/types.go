@@ -183,6 +183,19 @@ const (
 	// HostPlanResult union: the plan plus token, or the no-token arm naming why
 	// nothing was minted. See HostPlanParams.
 	MethodEvenerHostPlan = "evener/host/plan"
+	// MethodEvenerHostDeploy consumes a plan's confirmation token and starts
+	// the deploy operation it names (deploy pipeline 08b §6, §10): dedup-first
+	// on the client operation ID, the confirmed token's single use, and a
+	// durable operation record whose worker runs outside the RPC. It is a
+	// mutation and admits like the settings mutations; it refuses a remote
+	// origin. See HostDeployParams.
+	MethodEvenerHostDeploy = "evener/host/deploy"
+	// MethodEvenerHostRestart starts a restart operation for one named host
+	// (deploy pipeline 08b §6, §10): no token — restart has no install step —
+	// but the same durable record, dedup and gate model as deploy, with the
+	// request naming the intended (generation, incarnation id) pair. See
+	// HostRestartParams.
+	MethodEvenerHostRestart = "evener/host/restart"
 	// MethodEvenerHostRunning serves one hub's own running build and health to
 	// the controller probing it (deploy pipeline 08b §6 step 2, §10). It is
 	// served locally by every hub and admitted only over an attached controller
@@ -4514,6 +4527,97 @@ const (
 type FencingEpoch struct {
 	BootID string `json:"bootId"`
 	OpSeq  uint64 `json:"opSeq"`
+}
+
+// HostDeployParams is the evener/host/deploy payload (deploy pipeline 08b
+// §10): the host name, the single-use confirmation token the plan minted, and
+// the client's own operation ID — opaque, non-empty, at most 128 bytes, no
+// required structure — that makes the call idempotent.
+type HostDeployParams struct {
+	Name        string `json:"name"`
+	Token       string `json:"token"`
+	OperationID string `json:"operationId"`
+}
+
+// HostDeployResponse is evener/host/deploy's result (deploy pipeline 08b
+// §10): the controller-assigned record id, the caller's operation ID echoed
+// back, and the record's state — `pending` on the fresh create that consumed
+// the token, the existing record's actual state on a dedup hit.
+type HostDeployResponse struct {
+	ID                string         `json:"id"`
+	ClientOperationID string         `json:"clientOperationId"`
+	State             OperationState `json:"state"`
+}
+
+// HostRestartParams is the evener/host/restart payload (deploy pipeline 08b
+// §10): the host name, the client operation ID, and the intended
+// (generation, incarnation id) pair. A lost-response retry repeats the old
+// pair and replays the retained record; a reuse of the same operation ID for a
+// new incarnation names the new pair and opens fresh; a pair older than the
+// registry's current one refuses `stale-entry` (§4).
+type HostRestartParams struct {
+	Name          string `json:"name"`
+	OperationID   string `json:"operationId"`
+	Generation    uint64 `json:"generation"`
+	IncarnationID string `json:"incarnationId"`
+}
+
+// HostRestartResponse is evener/host/restart's result (deploy pipeline 08b
+// §10): the fresh create reports `pending`, a dedup hit the existing record's
+// state.
+type HostRestartResponse struct {
+	ID                string         `json:"id"`
+	ClientOperationID string         `json:"clientOperationId"`
+	State             OperationState `json:"state"`
+}
+
+// OperationState is one durable operation record's lifecycle state (deploy
+// pipeline 08b §4, §10). The set is closed; the wire carries the exact string.
+type OperationState string
+
+const (
+	OperationStatePending          OperationState = "pending"
+	OperationStateRunning          OperationState = "running"
+	OperationStateComplete         OperationState = "complete"
+	OperationStateFailed           OperationState = "failed"
+	OperationStateInterrupted      OperationState = "interrupted"
+	OperationStateOrphanUnverified OperationState = "orphan-unverified"
+)
+
+// OperationProgressEntry is one timestamped progress line on an operation
+// record (deploy pipeline 08b §10): RFC3339 UTC plus the line's message,
+// bounded per record.
+type OperationProgressEntry struct {
+	TS      string `json:"ts"`
+	Message string `json:"message"`
+}
+
+// OperationResult is a record's terminal result (deploy pipeline 08b §10).
+type OperationResult struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+// OperationRecord is the controller-side durable record of one deploy/restart
+// (deploy pipeline 08b §4, §10). `incarnationId` is the pinned incarnation the
+// record ran against; `result` is present exactly on terminal records;
+// `hostRemoved` marks a record whose pinned incarnation a removal tombstoned.
+// The fencing-epoch and orphan-boundary details a later slice's wire carries
+// (the crash-fencing spec's shapes) stay off this shape until that slice
+// registers its filters.
+type OperationRecord struct {
+	ID                string                   `json:"id"`
+	ClientOperationID string                   `json:"clientOperationId"`
+	Host              string                   `json:"host"`
+	Generation        uint64                   `json:"generation"`
+	IncarnationID     string                   `json:"incarnationId"`
+	Kind              string                   `json:"kind"`
+	State             OperationState           `json:"state"`
+	Progress          []OperationProgressEntry `json:"progress,omitempty"`
+	Result            *OperationResult         `json:"result,omitempty"`
+	CreatedAt         string                   `json:"createdAt"`
+	UpdatedAt         string                   `json:"updatedAt"`
+	HostRemoved       bool                     `json:"hostRemoved"`
 }
 
 // HostRunningParams is the evener/host/running payload (deploy pipeline 08b
