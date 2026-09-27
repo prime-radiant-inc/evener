@@ -88,6 +88,7 @@ vi.mock("react-native-safe-area-context", () => ({
 // The enriched-markdown native component cannot load outside a device; as a
 // host string its children render as passed, which is all the screen's
 // timeline items need from it under this harness.
+vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 vi.mock("react-native-enriched-markdown", () => ({
 	EnrichedMarkdownText: "EnrichedMarkdownText",
 }));

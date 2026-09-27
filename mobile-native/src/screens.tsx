@@ -58,6 +58,7 @@ import {
 	composerCommand,
 	composerCommandAvailable,
 	isLocalComposerCommand,
+	startAside,
 	submitComposerCommand,
 } from "./composerCommand";
 import { canComposeFor, conversationControls } from "./conversationControls";
@@ -116,9 +117,19 @@ import {
 import { type SessionDestination, SessionMenu } from "./SessionMenu";
 import { SessionSheet } from "./SessionSheet";
 import { SessionControls } from "./sessionControls";
+import {
+	configForLevel,
+	currentLevel,
+	levelToast,
+} from "./session/detailLevels";
+import { detailLevels } from "./session/nativeDetailLevels";
+import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
+import { sessionStateLine } from "./session/sessionState";
+import { SessionTitle } from "./session/SessionTitle";
 import { localSessionId } from "./sessionDeletionResult";
 import { leaveScreen, screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
 import { TimelineItem } from "./TimelineItem";
+import { Toast, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
@@ -470,6 +481,7 @@ export function ConversationScreen({
 	const { fontScale, height: windowHeight } = useWindowDimensions();
 	const [viewportHeight, setViewportHeight] = useState(windowHeight);
 	const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
+	const toast = useToast();
 	const headerHeight = useHeaderHeight();
 	// The durable-mutation wiring: the store admits every mutation through a
 	// lazily-acquired process runtime (a screen that never sends never opens the
@@ -493,8 +505,17 @@ export function ConversationScreen({
 	// so the ref (not the render value) is what it closes over — the store is
 	// not recreated per config change.
 	const preferences = useNativePreferences();
-	const displayConfig =
+	const hubDisplayConfig =
 		preferences.hubId === route.params.hubId ? preferences.config : null;
+	// The detail level chosen for this session on this device replaces the
+	// hub config's content (spec 8.7); nothing chosen leaves the hub's.
+	const levels = detailLevels(route.params.hubId);
+	useSyncExternalStore(levels.subscribe, levels.getRevision);
+	const chosenLevel = levels.get(route.params.ref);
+	const displayConfig = useMemo(
+		() => configForLevel(chosenLevel, hubDisplayConfig),
+		[chosenLevel, hubDisplayConfig],
+	);
 	const displayConfigRef = useRef<TranscriptDisplayConfigV1 | null>(displayConfig);
 	displayConfigRef.current = displayConfig;
 	const resolveDisplayConfig = useCallback(
@@ -779,67 +800,63 @@ export function ConversationScreen({
 			preview,
 		});
 	}
-	const controls = useMemo(
-		() =>
-			service && connected && focused
-				? new SessionControls(
-						service,
-						async () => {
-							if (store.getState().status === "open")
-								await store.getState().rehydrate(service, activitySink);
-							else
-								await store
-									.getState()
-									.resumeProjected(service, activitySink, route.params.ref);
-							const current = store.getState();
-							if (current.status !== "open" || current.error)
-								throw new Error("Session refresh failed");
-						},
-						() => {
-							store.getState().close();
-							service.close();
-							setSessionOpen(false);
-							if (screenInFront(navigation, route.key))
-								leaveScreen(navigation, route.key);
-						},
-						(scope) => {
-							const current = store.getState();
-							if (
-								currentDestination.current.store !== store ||
-								currentDestination.current.client !== client ||
-								!connectionReady.current ||
-								!screenInFront(navigation, route.key)
-							)
-								return false;
-							if (scope === "destination")
-								return current.ref === route.params.ref;
-							return (
-								current.status === "open" &&
-								current.conversationGeneration === bindingGeneration &&
-								current.conversation?.instanceId === bindingInstance
-							);
-						},
-						() => store.getState().conversation,
-						() =>
-							!commandBusy.current &&
-							!document.getSnapshot().submitting &&
-							store.getState().pendingMutation?.status !== "pending",
-					)
-				: null,
-		[
+	const controls = useMemo(() => {
+		if (!service || !connected || !focused) return null;
+		const refreshSession = async () => {
+			if (store.getState().status === "open")
+				await store.getState().rehydrate(service, activitySink);
+			else
+				await store
+					.getState()
+					.resumeProjected(service, activitySink, route.params.ref);
+			const current = store.getState();
+			if (current.status !== "open" || current.error)
+				throw new Error("Session refresh failed");
+		};
+		return new SessionControls(
 			service,
-			store,
-			client,
-			route.params.ref,
-			activitySink,
-			navigation,
-			connected,
-			focused,
-			bindingGeneration,
-			bindingInstance,
-			document,
-		],
-	);
+			refreshSession,
+			// A shut-down session stays open on its history (ruling 19); a
+			// failed read surfaces through the store's own error.
+			() => {
+				void refreshSession().catch(() => undefined);
+			},
+			(scope) => {
+				const current = store.getState();
+				if (
+					currentDestination.current.store !== store ||
+					currentDestination.current.client !== client ||
+					!connectionReady.current ||
+					!screenInFront(navigation, route.key)
+				)
+					return false;
+				if (scope === "destination")
+					return current.ref === route.params.ref;
+				return (
+					current.status === "open" &&
+					current.conversationGeneration === bindingGeneration &&
+					current.conversation?.instanceId === bindingInstance
+				);
+			},
+			() => store.getState().conversation,
+			() =>
+				!commandBusy.current &&
+				!document.getSnapshot().submitting &&
+				store.getState().pendingMutation?.status !== "pending",
+		);
+	}, [
+		service,
+		store,
+		client,
+		route.params.ref,
+		activitySink,
+		navigation,
+		connected,
+		focused,
+		bindingGeneration,
+		bindingInstance,
+		document,
+	]);
 	useEffect(() => () => controls?.dispose(), [controls]);
 	const approvalControls = useMemo(
 		() =>
@@ -936,52 +953,145 @@ export function ConversationScreen({
 			route.params.title,
 		],
 	);
+	// The title's state line reads live ages ("Working · 38m", "Finished ·
+	// 1h ago"): re-render twice a minute while the session is in front.
+	const [, setClock] = useState(0);
+	useEffect(() => {
+		if (!focused) return;
+		const clock = setInterval(() => setClock((tick) => tick + 1), 30_000);
+		return () => clearInterval(clock);
+	}, [focused]);
+	const headerConversation = snapshot.conversation;
+	const stateLine = headerConversation
+		? sessionStateLine(headerConversation, Date.now())
+		: null;
+	const headerTitleText = headerConversation?.name || route.params.title;
+	const menuLevel = currentLevel(chosenLevel, hubDisplayConfig);
+	const hasSubagents =
+		connected && (headerConversation?.delegates?.length ?? 0) > 0;
+	const canAside =
+		connected &&
+		service !== null &&
+		!!headerConversation?.capabilities.forkFromTurn;
+	const canShutDown =
+		controls !== null &&
+		!!headerConversation?.capabilities.shutdown &&
+		headerConversation.status.type !== "notLoaded";
+	function openAside(ref: string, title: string) {
+		Keyboard.dismiss();
+		navigation.push("Conversation", {
+			hubId: route.params.hubId,
+			ref,
+			title,
+		});
+	}
+	function archive(archived: boolean) {
+		if (!client) return Promise.reject(new Error("Not connected"));
+		return client.request("evener/archive/set", {
+			kind: "session",
+			id: route.params.ref,
+			archived,
+		});
+	}
+	function chooseSessionAction(action: SessionMenuAction) {
+		switch (action.kind) {
+			case "level":
+				levels.set(route.params.ref, action.level);
+				toast.show({ text: levelToast(action.level) });
+				return;
+			case "subagents":
+				openSessionDestination("activity");
+				return;
+			case "tasks":
+				openSessionDestination("tasks");
+				return;
+			case "info":
+				openSessionDestination("session");
+				return;
+			case "pin":
+				openSessionDestination("pin");
+				return;
+			case "delete":
+				openSessionDestination("delete");
+				return;
+			case "aside":
+				if (!service) return;
+				startAside(service).then(
+					(aside) => {
+						if (screenInFront(navigation, route.key))
+							openAside(aside.ref, aside.title);
+					},
+					() => toast.show({ text: "Couldn't start an aside." }),
+				);
+				return;
+			case "archive":
+				archive(true).then(
+					() =>
+						toast.show({
+							text: "Session archived",
+							action: {
+								label: "Undo",
+								run: () => void archive(false).catch(() => undefined),
+							},
+						}),
+					() => toast.show({ text: "Couldn't archive this session." }),
+				);
+				return;
+			case "shutDown": {
+				const stopping = controls;
+				if (!stopping) return;
+				Alert.alert(
+					"Shut down this session?",
+					"It stops now and keeps its history. Sending a message resumes it.",
+					[
+						{ text: "Cancel", style: "cancel" },
+						{
+							text: "Shut down",
+							style: "destructive",
+							onPress: () => {
+								void stopping.shutdown().then((stopped) => {
+									if (stopped) toast.show({ text: "Session shut down" });
+								});
+							},
+						},
+					],
+				);
+				return;
+			}
+		}
+	}
+	// The header items outlive this render; they reach the latest choices
+	// through the ref, so the header is not reset on every render.
+	const chooseSessionActionRef = useRef(chooseSessionAction);
+	chooseSessionActionRef.current = chooseSessionAction;
 	useEffect(() => {
 		navigation.setOptions({
-			unstable_headerRightItems: () => [
-				{
-					type: "menu",
-					label: "Session actions",
-					accessibilityLabel: "Session actions",
-					icon: { type: "sfSymbol", name: "ellipsis" },
-					disabled: !hasConversation,
-					menu: {
-						items: [
-							...(deletionAvailable
-								? [
-										{
-											type: "action" as const,
-											label: "Delete saved session",
-											onPress: () => openSessionDestination("delete"),
-										},
-									]
-								: []),
-							{
-								type: "action",
-								label: "Session details",
-								onPress: () => openSessionDestination("session"),
-							},
-							{
-								type: "action",
-								label: "Pin to section",
-								onPress: () => openSessionDestination("pin"),
-							},
-							{
-								type: "action",
-								label: "Tasks",
-								disabled: !connected,
-								onPress: () => openSessionDestination("tasks"),
-							},
-							{
-								type: "action",
-								label: "Activity",
-								disabled: !connected,
-								onPress: () => openSessionDestination("activity"),
-							},
-						],
-					},
-				},
-			],
+			// iPhone only: the pressable title with the session's state (spec
+			// 8.1). Android keeps the plain title.
+			headerTitle:
+				Platform.OS === "ios" && stateLine
+					? () => (
+							<SessionTitle
+								title={headerTitleText}
+								line={stateLine}
+								onPress={() => openSessionDestination("session")}
+							/>
+						)
+					: undefined,
+			// iOS draws these as a native menu and ignores headerRight; Android
+			// ignores them and keeps headerRight's SessionMenu.
+			unstable_headerRightItems: () =>
+				hasConversation
+					? sessionMenu({
+							current: menuLevel,
+							hasSubagents,
+							connected,
+							canAside,
+							canShutDown,
+							deletable: deletionAvailable,
+							choose: (action) => chooseSessionActionRef.current(action),
+						})
+					: [],
 			headerRight: () => (
 				<Pressable
 					accessibilityRole="button"
@@ -1016,6 +1126,13 @@ export function ConversationScreen({
 		connected,
 		openSessionDestination,
 		colors.text,
+		headerTitleText,
+		stateLine?.state,
+		stateLine?.text,
+		menuLevel,
+		hasSubagents,
+		canAside,
+		canShutDown,
 	]);
 	const currentName = snapshot.conversation?.name;
 	useEffect(() => {
@@ -1288,14 +1405,7 @@ export function ConversationScreen({
 									replacement,
 								);
 						},
-						openAside: (ref, title) => {
-							Keyboard.dismiss();
-							navigation.push("Conversation", {
-								hubId: route.params.hubId,
-								ref,
-								title,
-							});
-						},
+						openAside,
 						local: async (id) => {
 							if (!currentBinding())
 								throw new CommandArgumentError(
@@ -2023,6 +2133,12 @@ export function ConversationScreen({
 								</Pressable>
 							</View>
 						) : null}
+						<View
+							pointerEvents="box-none"
+							style={{ position: "absolute", left: 0, right: 0, bottom: 10 }}
+						>
+							<Toast toast={toast.toast} dismiss={toast.dismiss} />
+						</View>
 					</View>
 					<View
 						style={[
