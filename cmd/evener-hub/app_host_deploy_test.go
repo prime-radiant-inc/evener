@@ -1031,3 +1031,99 @@ func TestHostDeploySkipsTheRestartWhenTheHostIsCurrent(t *testing.T) {
 		t.Fatalf("restart calls = %d, want 0 for a host already on the controller's revision", got)
 	}
 }
+
+// editingGate wraps the test hub's gate and runs edit at one hook — the
+// acquisition or the promotion — so a test can land a hub.toml edit exactly in
+// the window a check must catch.
+type editingGate struct {
+	inner hostops.Gate
+	onTry func()
+	onAs  func()
+}
+
+func (g *editingGate) TryAcquire(host string, holder hostops.Holder) (func(), error) {
+	if g.onTry != nil {
+		g.onTry()
+	}
+	return g.inner.TryAcquire(host, holder)
+}
+
+func (g *editingGate) HoldAs(host string, holder hostops.Holder) error {
+	if g.onAs != nil {
+		g.onAs()
+	}
+	return g.inner.HoldAs(host, holder)
+}
+
+// TestHostRestartRefusesFingerprintDriftUnderTheGate pins §6's restart arm of
+// the post-acquisition re-read: an edit landing between restart's resolution
+// and its gate is a typed stale-entry refusal with no record.
+func TestHostRestartRefusesFingerprintDriftUnderTheGate(t *testing.T) {
+	entry := deployTestHost()
+	configPath := deployTestConfigPath(t, entry)
+	m, store, registry := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{})
+	live, ok := registry.Get(entry.Name)
+	if !ok {
+		t.Fatal("the registry carries no entry")
+	}
+	edited := live
+	edited.SSH = "m4-elsewhere.example"
+	m.cfg.gate = &editingGate{
+		inner: m.cfg.gate,
+		onTry: func() {
+			if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{edited})), 0o600); err != nil {
+				t.Errorf("rewrite hub.toml: %v", err)
+			}
+		},
+	}
+	_, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: live.Generation, IncarnationID: live.IncarnationID,
+	})
+	info, data, _ := deployWireInfo(t, err)
+	var binding string
+	_ = json.Unmarshal(data["binding"], &binding)
+	if info != appwire.ErrorStaleEntry || binding != "hub.toml-fingerprint" {
+		t.Fatalf("under-gate drift refusal = (%q, %q), want (stale-entry, hub.toml-fingerprint)", info, binding)
+	}
+	if got := len(store.Records()); got != 0 {
+		t.Fatalf("the drift refusal created records: %d", got)
+	}
+}
+
+// TestHostRestartRefusesFingerprintDriftBeforeTheRestart pins §6's final
+// restart check: an edit landing after the handler's checks but before the
+// worker's pre-restart re-read aborts with no restart and a recorded
+// stale-entry failure.
+func TestHostRestartRefusesFingerprintDriftBeforeTheRestart(t *testing.T) {
+	entry := deployTestHost()
+	configPath := deployTestConfigPath(t, entry)
+	counters := &deployCounters{}
+	m, store, registry := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{counters: counters})
+	live, ok := registry.Get(entry.Name)
+	if !ok {
+		t.Fatal("the registry carries no entry")
+	}
+	edited := live
+	edited.SSH = "m4-elsewhere.example"
+	m.cfg.gate = &editingGate{
+		inner: m.cfg.gate,
+		onAs: func() {
+			if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{edited})), 0o600); err != nil {
+				t.Errorf("rewrite hub.toml: %v", err)
+			}
+		},
+	}
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: live.Generation, IncarnationID: live.IncarnationID,
+	})
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateFailed)
+	if record.Result == nil || !strings.Contains(record.Result.Message, "stale-entry (hub.toml-fingerprint)") {
+		t.Fatalf("failure = %+v, want the stale-entry fingerprint note", record.Result)
+	}
+	if got := counters.restarts.Load(); got != 0 {
+		t.Fatalf("restart calls = %d, want 0: the drift must abort before the irreversible step", got)
+	}
+}
