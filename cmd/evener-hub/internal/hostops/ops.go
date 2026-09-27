@@ -274,6 +274,25 @@ type OperationCreateRequest struct {
 	// SequenceBefore is the state-transition sequence position the caller read
 	// before its gated probe; a terminal transition above it refuses the write.
 	SequenceBefore uint64
+	// Dedup, when set, is the same-key/conflict lookup re-run inside the
+	// write's own locked read (§4: "any dedup lookup that leads to a write —
+	// holds one store-wide mutex across the read and the atomic write"). The
+	// handler's pre-gate lookup is dedup-first; this one closes the window
+	// between that lookup and the write, so two concurrent calls with one
+	// client operation ID can never append two records.
+	Dedup *OperationDedupQuery
+}
+
+// OperationCreateOutcome is what a consume-and-create (or tokenless create)
+// write produced: the record, the consumed token (deploy only), and whether the
+// write replayed an existing record instead of creating one.
+type OperationCreateOutcome struct {
+	Record Record
+	Token  Token
+	// Replayed reports that the in-write dedup check found an existing record:
+	// nothing was created, the token was not consumed, and the record is the
+	// one the caller must answer with.
+	Replayed bool
 }
 
 // ConsumeTokenAndCreateOperation is §6 step 4: one atomic store write that
@@ -297,19 +316,22 @@ type OperationCreateRequest struct {
 // operation's life. A RenameLanded failure still returns both — the write
 // landed, so the caller must reconcile with what it returns rather than retry
 // as though nothing was written.
-func (s *Store) ConsumeTokenAndCreateOperation(req OperationCreateRequest) (Record, Token, error) {
+func (s *Store) ConsumeTokenAndCreateOperation(req OperationCreateRequest) (OperationCreateOutcome, error) {
 	if s == nil {
-		return Record{}, Token{}, errors.New("hostops: store is not configured")
+		return OperationCreateOutcome{}, errors.New("hostops: store is not configured")
 	}
 	if req.Kind != KindDeploy {
-		return Record{}, Token{}, fmt.Errorf("%w: a consume-and-create write is a deploy path", ErrInvalidRecord)
+		return OperationCreateOutcome{}, fmt.Errorf("%w: a consume-and-create write is a deploy path", ErrInvalidRecord)
 	}
 	if err := validateOperationCreateRequest(req); err != nil {
-		return Record{}, Token{}, err
+		return OperationCreateOutcome{}, err
 	}
 	s.cell.mu.Lock()
 	defer s.cell.mu.Unlock()
 
+	if outcome, replayed, err := replayDedupLocked(&s.cell.state, req.Dedup); err != nil || replayed {
+		return outcome, err
+	}
 	next := cloneSnapshot(s.cell.state)
 	now := s.now()
 	mark := wallClockMark(next.WallClockHighWaterMark)
@@ -319,14 +341,14 @@ func (s *Store) ConsumeTokenAndCreateOperation(req OperationCreateRequest) (Reco
 	if passErr != nil {
 		// Nothing is written: the refusal reports the token it classified, with
 		// the row — if the pass would have reaped one — untouched.
-		return Record{}, Token{}, passErr
+		return OperationCreateOutcome{}, passErr
 	}
 	if recordID, concurrent := terminalOperationSinceLocked(&next, req.Host, req.SequenceBefore); concurrent {
-		return Record{}, Token{}, &ConcurrentTerminalOpError{ID: recordID}
+		return OperationCreateOutcome{}, &ConcurrentTerminalOpError{ID: recordID}
 	}
 	epoch, err := promoteProbeEpochLocked(&next, req)
 	if err != nil {
-		return Record{}, Token{}, err
+		return OperationCreateOutcome{}, err
 	}
 
 	// Consume is delete in the same write that carries the reap, the mark and
@@ -342,17 +364,17 @@ func (s *Store) ConsumeTokenAndCreateOperation(req OperationCreateRequest) (Reco
 
 	record, err := appendPendingRecordLocked(&next, req, epoch)
 	if err != nil {
-		return Record{}, Token{}, err
+		return OperationCreateOutcome{}, err
 	}
 	landed, err := s.commitLocked(next)
 	if err != nil && !landed {
 		// Nothing was written: the refusal reports no record and leaves the
 		// token, the epoch and the file exactly as they were.
-		return Record{}, Token{}, err
+		return OperationCreateOutcome{}, err
 	}
 	// See Create: a landed rename is this operation's durable record even when
 	// the directory sync behind it failed.
-	return cloneRecord(record), cloneToken(token), err
+	return OperationCreateOutcome{Record: cloneRecord(record), Token: cloneToken(token)}, err
 }
 
 // CreateOperation is the tokenless paths' atomic record creation (§6): a
@@ -368,25 +390,28 @@ func (s *Store) ConsumeTokenAndCreateOperation(req OperationCreateRequest) (Reco
 // The host's persisted probe-epoch row, when one exists (an abandoned plan's),
 // is superseded in the same write: the record's own epoch is the host's current
 // one from here on.
-func (s *Store) CreateOperation(req OperationCreateRequest) (Record, Token, error) {
+func (s *Store) CreateOperation(req OperationCreateRequest) (OperationCreateOutcome, error) {
 	if s == nil {
-		return Record{}, Token{}, errors.New("hostops: store is not configured")
+		return OperationCreateOutcome{}, errors.New("hostops: store is not configured")
 	}
 	if req.Kind != KindRestart && req.Kind != KindDeploy {
-		return Record{}, Token{}, fmt.Errorf("%w: an atomic record creation without a token records a restart or an Ensure-triggered deploy", ErrInvalidRecord)
+		return OperationCreateOutcome{}, fmt.Errorf("%w: an atomic record creation without a token records a restart or an Ensure-triggered deploy", ErrInvalidRecord)
 	}
 	if err := validateOperationCreateRequest(req); err != nil {
-		return Record{}, Token{}, err
+		return OperationCreateOutcome{}, err
 	}
 	if strings.TrimSpace(req.BootID) == "" {
-		return Record{}, Token{}, fmt.Errorf("%w: a restart operation needs the controller boot id for its fencing epoch", ErrInvalidProbeEpoch)
+		return OperationCreateOutcome{}, fmt.Errorf("%w: a tokenless operation needs the controller boot id for its fencing epoch", ErrInvalidProbeEpoch)
 	}
 	s.cell.mu.Lock()
 	defer s.cell.mu.Unlock()
 
+	if outcome, replayed, err := replayDedupLocked(&s.cell.state, req.Dedup); err != nil || replayed {
+		return outcome, err
+	}
 	next := cloneSnapshot(s.cell.state)
 	if recordID, concurrent := terminalOperationSinceLocked(&next, req.Host, req.SequenceBefore); concurrent {
-		return Record{}, Token{}, &ConcurrentTerminalOpError{ID: recordID}
+		return OperationCreateOutcome{}, &ConcurrentTerminalOpError{ID: recordID}
 	}
 	if next.ProbeEpochSeq == nil {
 		next.ProbeEpochSeq = map[string]uint64{}
@@ -397,13 +422,32 @@ func (s *Store) CreateOperation(req OperationCreateRequest) (Record, Token, erro
 
 	record, err := appendPendingRecordLocked(&next, req, fencingEpochJSON(req.BootID, seq))
 	if err != nil {
-		return Record{}, Token{}, err
+		return OperationCreateOutcome{}, err
 	}
 	landed, err := s.commitLocked(next)
 	if err != nil && !landed {
-		return Record{}, Token{}, err
+		return OperationCreateOutcome{}, err
 	}
-	return cloneRecord(record), Token{}, err
+	return OperationCreateOutcome{Record: cloneRecord(record)}, err
+}
+
+// replayDedupLocked runs the caller's in-write dedup check against the state
+// the write is built from. The caller holds the store mutex, so the lookup and
+// the write it guards see one record set: a hit returns the existing record
+// with replayed true and the write must not proceed (§4's "any dedup lookup
+// that leads to a write" holds one mutex across both).
+func replayDedupLocked(state *snapshot, query *OperationDedupQuery) (OperationCreateOutcome, bool, error) {
+	if query == nil {
+		return OperationCreateOutcome{}, false, nil
+	}
+	record, hit, err := lookupOperationLocked(state, *query)
+	switch {
+	case err != nil:
+		return OperationCreateOutcome{}, false, err
+	case hit:
+		return OperationCreateOutcome{Record: record, Replayed: true}, true, nil
+	}
+	return OperationCreateOutcome{}, false, nil
 }
 
 // promoteProbeEpochLocked promotes the host's persisted probe-epoch row into

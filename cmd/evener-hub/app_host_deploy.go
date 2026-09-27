@@ -342,42 +342,61 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	// promotes the probe epoch; for a restart it creates the record with its
 	// freshly minted epoch. Either way the record exists before the RPC
 	// answers, and the worker that follows owns the gate release.
-	var created hostops.Record
-	// consumed is the token row the atomic write consumed: its bindings (the
-	// target, the entry fingerprint, the controller revision, the running state)
-	// are the worker's references for the operation's whole life, so the worker
-	// must carry them from this write rather than re-reading a row the write
-	// just deleted.
-	var consumed hostops.Token
+	// The in-write dedup query closes the window between the pre-gate lookup
+	// above and this write: a concurrent call with the same client operation ID
+	// that won the gate first is answered with its record instead of a second
+	// one (§4 holds one store mutex across the lookup that leads to a write).
+	var outcome hostops.OperationCreateOutcome
 	switch req.kind {
 	case hostops.KindDeploy:
-		created, consumed, err = ops.ConsumeTokenAndCreateOperation(hostops.OperationCreateRequest{
+		outcome, err = ops.ConsumeTokenAndCreateOperation(hostops.OperationCreateRequest{
 			ClientOperationID: req.clientOperationID,
 			Host:              entry.Name,
 			Kind:              hostops.KindDeploy,
 			Pair:              pair,
 			TokenValue:        req.tokenValue,
 			SequenceBefore:    sequenceBefore,
+			Dedup:             &query,
 		})
 	case hostops.KindRestart:
-		created, _, err = ops.CreateOperation(hostops.OperationCreateRequest{
+		outcome, err = ops.CreateOperation(hostops.OperationCreateRequest{
 			ClientOperationID: req.clientOperationID,
 			Host:              entry.Name,
 			Kind:              hostops.KindRestart,
 			Pair:              pair,
 			BootID:            m.cfg.bootID,
 			SequenceBefore:    sequenceBefore,
+			Dedup:             &query,
 		})
 	}
 	if err != nil && !hostops.RenameLanded(err) {
+		if req.kind == hostops.KindDeploy {
+			m.dropProbeEpoch(entry.Name, epoch)
+		}
 		return hostops.Record{}, operationRefusal(entry.Name, err)
 	}
 	if err != nil {
 		// The rename landed, so the record is durable (see hostops.RenameLanded):
 		// the operation proceeds and the sync trouble is logged.
 		m.logf("host %q: operation %s's directory sync failed after its rename landed; the record is durable: %v",
-			entry.Name, created.ID, err)
+			entry.Name, outcome.Record.ID, err)
 	}
+	if outcome.Replayed {
+		// A concurrent call with this operation ID created the record while this
+		// one waited for the gate: answer with that record, launch no worker,
+		// and leave the token (deploy) and any persisted probe epoch alone.
+		if req.kind == hostops.KindDeploy {
+			m.dropProbeEpoch(entry.Name, epoch)
+		}
+		return outcome.Record, nil
+	}
+	// outcome.Token is the token row the atomic write consumed: its bindings
+	// (the target, the entry fingerprint, the controller revision, the running
+	// state) are the worker's references for the operation's whole life, so the
+	// worker must carry them from this write rather than re-reading a row the
+	// write just deleted.
+	created := outcome.Record
+	consumed := outcome.Token
 
 	// Promotion (item §5's holder publication): the record exists, so a
 	// contender's busy refusal upgrades from the recordless transient form to
@@ -732,6 +751,10 @@ func (m *hubHostManager) runOperationWorker(ctx context.Context, work opWork) {
 			m.failOperation(ctx, id, err)
 			return
 		}
+		if m.cfg.deployHost == nil {
+			m.failOperation(ctx, id, errors.New("this hub has no deploy step wired, so the operation cannot run"))
+			return
+		}
 		facts, ok := m.attachedFactsFor(work.entry.Name)
 		if !ok {
 			m.failOperation(ctx, id, hostDetachedRefusal(work.entry.Name))
@@ -847,6 +870,9 @@ func (m *hubHostManager) probeBeforeRestart(ctx context.Context, work opWork) (h
 // runRestartStep runs the 04b restart path and records the progress line both
 // the standalone and planned-restart callers share.
 func (m *hubHostManager) runRestartStep(ctx context.Context, id string, entry hostreg.Host, facts sshconn.Preflight) error {
+	if m.cfg.restartHost == nil {
+		return errors.New("this hub has no restart step wired, so the operation cannot run")
+	}
 	m.recordProgress(id, "restarting the host")
 	if err := m.cfg.restartHost(ctx, entry, facts); err != nil {
 		return err
@@ -1087,16 +1113,21 @@ func (m *hubHostManager) EnsureDeploy(host hostreg.Host) (func(error), error) {
 	if err != nil {
 		return nil, err
 	}
-	record, _, err := ops.CreateOperation(hostops.OperationCreateRequest{
+	outcome, err := ops.CreateOperation(hostops.OperationCreateRequest{
 		ClientOperationID: clientOperationID,
 		Host:              host.Name,
 		Kind:              hostops.KindDeploy,
 		Pair:              hostops.OperationPair{Generation: host.Generation, IncarnationID: host.IncarnationID},
 		BootID:            m.cfg.bootID,
+		// The caller holds the host's gate, so this read is the pre-operation
+		// position: an operation that finished before the Ensure attempt started
+		// must not refuse the attempt (only one that lands while it runs).
+		SequenceBefore: ops.Sequence(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("persisting the Ensure-triggered deploy's operation record failed, so nothing was launched: %w", err)
 	}
+	record := outcome.Record
 	if err := m.cfg.gate.HoldAs(host.Name, hostops.Holder{Kind: hostops.HolderOperation, OperationID: record.ID}); err != nil {
 		m.logf("host %q: the Ensure-triggered operation %s could not publish itself as the gate holder: %v",
 			host.Name, record.ID, err)

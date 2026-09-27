@@ -1136,3 +1136,127 @@ func TestHostRestartRefusesFingerprintDriftBeforeTheRestart(t *testing.T) {
 		t.Fatalf("restart calls = %d, want 0: the drift must abort before the irreversible step", got)
 	}
 }
+
+// TestEnsureTriggeredDeployRunsAfterATerminalRecord pins the High review
+// finding: the Ensure path's create reads its pre-operation sequence under the
+// held gate, so an operation that finished before the attempt (or a boot
+// interrupted transition) never refuses every later Ensure-triggered deploy.
+func TestEnsureTriggeredDeployRunsAfterATerminalRecord(t *testing.T) {
+	entry := deployTestHost()
+	configPath := deployTestConfigPath(t, entry)
+	m, store, registry := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{})
+	live, ok := registry.Get(entry.Name)
+	if !ok {
+		t.Fatal("the registry carries no entry")
+	}
+	// One terminal operation on the host, and a boot-pass interrupted record:
+	// both advance the store's sequence past zero.
+	done := createPairRecordForTest(t, store, live, hostops.KindDeploy, "op-old")
+	if done.Sequence == 0 {
+		t.Fatal("the fixture did not stamp a sequence")
+	}
+	if moved, err := store.InterruptInFlight(hostops.InterruptedNote); err != nil || moved != 0 {
+		t.Fatalf("InterruptInFlight = (%d, %v), want (0, nil)", moved, err)
+	}
+
+	release, err := m.cfg.gate.TryAcquire(entry.Name, hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"})
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	finish, err := m.EnsureDeploy(live)
+	if err != nil {
+		t.Fatalf("EnsureDeploy after a terminal record: %v", err)
+	}
+	finish(nil)
+	release()
+	records := store.Records()
+	if len(records) != 2 {
+		t.Fatalf("records = %d, want the old one plus a fresh Ensure record", len(records))
+	}
+	fresh, ok := store.Record(records[1].ID)
+	if !ok || fresh.State != hostops.StateComplete || fresh.ClientOperationID == done.ClientOperationID {
+		t.Fatalf("fresh Ensure record = %+v, want a new complete record", fresh)
+	}
+}
+
+// createPairRecordForTest persists and completes one record for the live entry.
+func createPairRecordForTest(t *testing.T, store *hostops.Store, entry hostreg.Host, kind hostops.Kind, clientID string) hostops.Record {
+	t.Helper()
+	record, err := store.Create(hostops.NewRecord{
+		ClientOperationID: clientID, Host: entry.Name, Kind: kind,
+		Generation: entry.Generation, IncarnationID: entry.IncarnationID,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	done, err := store.Transition(record.ID, hostops.StateComplete, func(r *hostops.Record) {
+		r.Result = &hostops.Result{OK: true, Message: "done"}
+	})
+	if err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	return done
+}
+
+// TestHostRestartInWriteDedupClosesTheRace pins the Medium review finding: a
+// concurrent call with the same operation ID that creates its record while this
+// one waits for the gate is replayed by the write's own locked dedup check, so
+// one operation ID never yields two records (and two restarts).
+func TestHostRestartInWriteDedupClosesTheRace(t *testing.T) {
+	entry := deployTestHost()
+	configPath := deployTestConfigPath(t, entry)
+	counters := &deployCounters{}
+	m, store, registry := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{counters: counters})
+	live, ok := registry.Get(entry.Name)
+	if !ok {
+		t.Fatal("the registry carries no entry")
+	}
+	var racer hostops.Record
+	// The pre-gate lookup has already missed when the gate acquisition runs
+	// this hook: it is exactly the window between lookup and write.
+	m.cfg.gate = &editingGate{
+		inner: m.cfg.gate,
+		onTry: func() {
+			racer = createPairRecordForTest(t, store, live, hostops.KindRestart, "op-1")
+		},
+	}
+	response, err := m.Restart(context.Background(), appwire.HostRestartParams{
+		Name: entry.Name, OperationID: "op-1", Generation: live.Generation, IncarnationID: live.IncarnationID,
+	})
+	if err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if racer.ID == "" {
+		t.Fatal("the fixture never created the racing record")
+	}
+	if response.ID != racer.ID {
+		t.Fatalf("response id = %s, want the racing record %s", response.ID, racer.ID)
+	}
+	if got := len(store.Records()); got != 1 {
+		t.Fatalf("records = %d, want one: the same operation ID must not create a second record", got)
+	}
+	if got := counters.restarts.Load(); got != 0 {
+		t.Fatalf("restart calls = %d, want 0: a replayed dedup hit launches no worker", got)
+	}
+}
+
+// TestHostOperationWorkerFailsWithoutASeam pins the Low review finding: a hub
+// with no deploy step wired records a failure instead of panicking the worker
+// goroutine.
+func TestHostOperationWorkerFailsWithoutASeam(t *testing.T) {
+	entry := deployTestHost()
+	configPath := deployTestConfigPath(t, entry)
+	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{probe: deployProbeScript(t)})
+	m.cfg.deployHost = nil
+	token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
+	response, err := m.Deploy(context.Background(), appwire.HostDeployParams{
+		Name: entry.Name, Token: token.Value, OperationID: "op-1",
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateFailed)
+	if record.Result == nil || !strings.Contains(record.Result.Message, "no deploy step wired") {
+		t.Fatalf("failure = %+v, want the missing-seam refusal", record.Result)
+	}
+}

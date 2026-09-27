@@ -225,7 +225,7 @@ func TestConsumeTokenAndCreatePromotesTheEpochInOneWrite(t *testing.T) {
 		t.Fatalf("PersistProbeEpoch: %v", err)
 	}
 
-	record, _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
+	outcome, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
 		ClientOperationID: "op-1",
 		Host:              "h1",
 		Kind:              KindDeploy,
@@ -236,6 +236,7 @@ func TestConsumeTokenAndCreatePromotesTheEpochInOneWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ConsumeTokenAndCreateOperation: %v", err)
 	}
+	record := outcome.Record
 	if record.State != StatePending || record.Kind != KindDeploy {
 		t.Fatalf("record = %+v, want a pending deploy", record)
 	}
@@ -273,7 +274,7 @@ func TestConsumeTokenAndCreateRefusesExpiredTokenWithoutConsuming(t *testing.T) 
 	}
 	clock.advance(DefaultTokenTTL)
 
-	_, _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
+	_, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
 		ClientOperationID: "op-1",
 		Host:              "h1",
 		Kind:              KindDeploy,
@@ -302,7 +303,7 @@ func TestConsumeTokenAndCreateRefusesSupersededToken(t *testing.T) {
 		t.Fatalf("PersistProbeEpoch: %v", err)
 	}
 
-	_, _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
+	_, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
 		ClientOperationID: "op-1",
 		Host:              "h1",
 		Kind:              KindDeploy,
@@ -331,7 +332,7 @@ func TestConsumeTokenAndCreateRefusesAMismatchedToken(t *testing.T) {
 		t.Fatalf("PersistProbeEpoch: %v", err)
 	}
 
-	_, _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
+	_, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
 		ClientOperationID: "op-1",
 		Host:              "h1",
 		Kind:              KindDeploy,
@@ -360,7 +361,7 @@ func TestConsumeTokenAndCreateRefusesAConcurrentTerminalOp(t *testing.T) {
 	sequenceBefore := store.Sequence()
 	other := createPairRecord(t, store, "h1", KindRestart, "op-other", 7, "inc-h1")
 
-	_, _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
+	_, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
 		ClientOperationID: "op-1",
 		Host:              "h1",
 		Kind:              KindDeploy,
@@ -399,7 +400,7 @@ func TestConsumeAndCreateCrashWindowLeavesNoConsumedToken(t *testing.T) {
 
 	// The crash window: the write fails before its rename lands.
 	store.faults.beforeRename = func() error { return errors.New("injected crash before the rename") }
-	_, _, err := store.ConsumeTokenAndCreateOperation(request)
+	_, err := store.ConsumeTokenAndCreateOperation(request)
 	if err == nil || RenameLanded(err) {
 		t.Fatalf("pre-rename failure = %v, want a plain refusal", err)
 	}
@@ -423,10 +424,11 @@ func TestConsumeAndCreateCrashWindowLeavesNoConsumedToken(t *testing.T) {
 		return syncErr
 	}
 	syncErr = errors.New("injected directory-sync failure")
-	record, _, err := store.ConsumeTokenAndCreateOperation(request)
+	outcome, err := store.ConsumeTokenAndCreateOperation(request)
 	if !RenameLanded(err) {
 		t.Fatalf("post-rename failure = %v, want RenameLanded", err)
 	}
+	record := outcome.Record
 	if record.ID == "" || record.State != StatePending {
 		t.Fatalf("landed record = %+v, want a pending record", record)
 	}
@@ -452,7 +454,7 @@ func TestCreateOperationMintsItsFencingEpoch(t *testing.T) {
 		t.Fatalf("PersistProbeEpoch: %v", err)
 	}
 
-	record, _, err := store.CreateOperation(OperationCreateRequest{
+	outcome, err := store.CreateOperation(OperationCreateRequest{
 		ClientOperationID: "op-1",
 		Host:              "h1",
 		Kind:              KindRestart,
@@ -462,6 +464,7 @@ func TestCreateOperationMintsItsFencingEpoch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateOperation: %v", err)
 	}
+	record := outcome.Record
 	if record.State != StatePending || record.Kind != KindRestart {
 		t.Fatalf("record = %+v, want a pending restart", record)
 	}
@@ -601,7 +604,7 @@ func TestAppendProgressIsBounded(t *testing.T) {
 func TestConsumeAndCreateRefusesAnUnpromotableEpoch(t *testing.T) {
 	store, _, clock := openClockStore(t)
 	token := mustMint(t, store, mintDefaults("h1", clock.now()))
-	_, _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
+	_, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
 		ClientOperationID: "op-1",
 		Host:              "h1",
 		Kind:              KindDeploy,
@@ -629,7 +632,7 @@ func TestConsumeAndCreateRefusesAPairMismatchedEpoch(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PersistProbeEpoch: %v", err)
 	}
-	_, _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
+	_, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
 		ClientOperationID: "op-1",
 		Host:              "h1",
 		Kind:              KindDeploy,
@@ -652,7 +655,7 @@ func TestConsumedTokenReplayedWithANewOperationIDReadsTokenMissing(t *testing.T)
 	}); err != nil {
 		t.Fatalf("PersistProbeEpoch: %v", err)
 	}
-	if _, _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
+	if _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
 		ClientOperationID: "op-1",
 		Host:              "h1",
 		Kind:              KindDeploy,
@@ -666,7 +669,7 @@ func TestConsumedTokenReplayedWithANewOperationIDReadsTokenMissing(t *testing.T)
 	}); err != nil {
 		t.Fatalf("PersistProbeEpoch: %v", err)
 	}
-	_, _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
+	_, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
 		ClientOperationID: "op-2",
 		Host:              "h1",
 		Kind:              KindDeploy,
@@ -691,7 +694,7 @@ func TestConsumeAndCreateKeepsTheStoreMode(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("PersistProbeEpoch: %v", err)
 	}
-	if _, _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
+	if _, err := store.ConsumeTokenAndCreateOperation(OperationCreateRequest{
 		ClientOperationID: "op-1",
 		Host:              "h1",
 		Kind:              KindDeploy,
