@@ -63,9 +63,10 @@ export function buildComposerInput(
 
 // Text going back into a draft: after exactly one blank line (the draft's
 // own trailing whitespace dropped), or in place of a blank draft. "prefix"
-// puts it in front with no separator, for the web's quote insert. Shared so
-// the web and the phone put a queued message back into the composer the same
-// way (spec 8.5: "after a blank line ... as the web does").
+// puts it in front with no separator, for the web palette's slash-command
+// insert: a command parses only at the start of the draft. Shared so the web
+// and the phone put a queued message back into the composer the same way
+// (spec 8.5: "after a blank line ... as the web does").
 export function mergeDraftText(existing: string, addition: string, placement: "append" | "prefix" = "append"): string {
   if (placement === "prefix") return `${addition}${existing}`;
   return existing.trim() === "" ? addition : `${existing.replace(/\s+$/, "")}\n\n${addition}`;
