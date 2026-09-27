@@ -2000,8 +2000,12 @@ func startParkedRemoval(t *testing.T, name string) *parkedRemoval {
 		if host != name {
 			return
 		}
-		parkOnce.Do(func() { close(entered) })
+		// The flag is published BEFORE the channel close the test waits on: the
+		// close is the happens-before edge, so a reader that has received from
+		// `entered` must observe `parked` as true. Publishing it after the close
+		// let a loaded runner read a stale false and fail the window assertion.
 		pr.parked.Store(true)
+		parkOnce.Do(func() { close(entered) })
 		<-releaseCh
 		pr.returned.Store(true)
 	}
