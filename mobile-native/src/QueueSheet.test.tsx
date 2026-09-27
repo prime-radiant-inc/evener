@@ -1,7 +1,7 @@
 // Calm copy (spec principle 2): nothing here asks the person to reconnect or
-// refresh, since the app does both on its own. These pin the factual copy
-// QueueSheet shows in place of the old directive tails, so a regression back
-// to "Reconnect..." is caught the way #2628 caught NATIVE_MUTATION_HOST_UNAVAILABLE's.
+// refresh, since the app does both on its own. These pin QueueSheet's exact
+// copy so a regression back to a reconnect/refresh directive is caught, the
+// way #2628 pinned NATIVE_MUTATION_HOST_UNAVAILABLE's.
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import type { MobileConversation } from "./projectedRows";
@@ -66,7 +66,7 @@ it("says the queue can't change while disconnected, and never asks to reconnect"
       close={() => {}}
     />,
   );
-  expect(renderedText(tree)).toContain("Disconnected");
+  expect(renderedText(tree)).toContain("Disconnected. This queue can't change right now.");
   expect(renderedText(tree).toLowerCase()).not.toContain("reconnect");
 });
 
