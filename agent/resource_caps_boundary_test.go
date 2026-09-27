@@ -17,8 +17,9 @@ type renderedResourceCaps struct {
 	MemoryMB int64   `json:"memory_mb"`
 }
 
-// promptResourceCaps decodes the resource caps the environment block renders,
-// from the typed prompt input; ok is false when the session renders none.
+// promptResourceCaps decodes the resource caps the session hands the
+// environment template, from the typed prompt input; ok is false when it
+// hands none.
 func promptResourceCaps(t *testing.T, s *Session) (renderedResourceCaps, bool) {
 	t.Helper()
 	data := s.buildPromptData(s.env)
@@ -64,17 +65,22 @@ func TestRenderedEnvironmentUsesTrustedStructuredResourcesWhenModelShellMasked(t
 			},
 		},
 	}))
-	_, warning := sess.renderSystemPrompt(sess.env)
+	prompt, warning := sess.renderSystemPrompt(sess.env)
 	if warning != "" {
 		t.Fatalf("render system prompt: %s", warning)
 	}
 	caps, ok := promptResourceCaps(t, sess)
 	if !ok {
-		t.Fatal("rendered environment omitted finite resource payload")
+		t.Fatal("prompt data carries no finite resource payload")
 	}
 	if caps.CPUs != info.Resources.CPUs || caps.MemoryMB != info.Resources.MemoryMB {
-		t.Fatalf("rendered resource payload = %+v, want cpus=%v memory_mb=%d",
+		t.Fatalf("prompt resource payload = %+v, want cpus=%v memory_mb=%d",
 			caps, info.Resources.CPUs, info.Resources.MemoryMB)
+	}
+	// The payload is Go-generated JSON, so the rendered prompt must carry it
+	// verbatim, once.
+	if payload := sess.buildPromptData(sess.env).ResourceCapsJSON; strings.Count(prompt, payload) != 1 {
+		t.Fatalf("rendered prompt carries resource payload %s %d times, want once", payload, strings.Count(prompt, payload))
 	}
 }
 
@@ -100,7 +106,7 @@ func TestRenderedEnvironmentOmitsUnknownOrUnlimitedResources(t *testing.T) {
 				t.Fatalf("render system prompt: %s", warning)
 			}
 			if caps, ok := promptResourceCaps(t, sess); ok {
-				t.Fatalf("rendered environment resource payload for %s resources: %+v", name, caps)
+				t.Fatalf("prompt data carries a resource payload for %s resources: %+v", name, caps)
 			}
 		})
 	}
