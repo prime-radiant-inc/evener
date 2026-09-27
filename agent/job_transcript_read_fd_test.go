@@ -77,6 +77,7 @@ func TestLocalJobRetainedReadsRefusePostLocateLeafSwap(t *testing.T) {
 					if !strings.Contains(got.err.Error(), "output_unavailable") {
 						t.Fatalf("error = %v, want output_unavailable refusal", got.err)
 					}
+				// TRIPWIRE: secure non-blocking opens return immediately; three seconds is far above the expected time.
 				case <-time.After(3 * time.Second):
 					if replacement == "fifo" {
 						unblock, err := os.OpenFile(target.OutputPath, os.O_RDWR, 0)
@@ -131,6 +132,7 @@ func TestOpenJobOutputFileRefusesNonRegularLeaf(t *testing.T) {
 					}
 					t.Fatal("openJobOutputFile accepted a non-regular leaf")
 				}
+			// TRIPWIRE: secure non-blocking opens return immediately; three seconds is far above the expected time.
 			case <-time.After(3 * time.Second):
 				if replacement == "fifo" {
 					unblock, err := os.OpenFile(path, os.O_RDWR, 0)
