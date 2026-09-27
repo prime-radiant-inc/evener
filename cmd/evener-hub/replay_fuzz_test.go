@@ -516,6 +516,59 @@ func TestProjectReloadThroughHubDropsOnlyFixedOpener(t *testing.T) {
 	}
 }
 
+func TestProjectReloadThroughHubPreservesPagingAndImageMetadata(t *testing.T) {
+	fixture := schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+				ToolCallID:     "image-call",
+				Name:           "screenshot",
+				Content:        "captured",
+				ImageData:      []byte("hello"),
+				ImageMediaType: "image/png",
+			}},
+		}},
+		Timestamp: time.Date(2026, time.June, 1, 10, 0, 0, 0, time.UTC),
+	}
+	first := projectReloadThroughHub(t, fixture)
+	second := projectReloadThroughHub(t, fixture)
+	if len(first) == 0 || len(first) != len(second) {
+		t.Fatalf("reload projection item counts differ: first=%d second=%d", len(first), len(second))
+	}
+
+	imageCount := 0
+	for i := range first {
+		if first[i].Position == nil || second[i].Position == nil {
+			t.Fatalf("reload item %d omitted paging position: first=%+v second=%+v", i, first[i].Position, second[i].Position)
+		}
+		if *first[i].Position != *second[i].Position {
+			t.Fatalf("reload item %d paging position changed: first=%+v second=%+v", i, *first[i].Position, *second[i].Position)
+		}
+		if first[i].TranscriptKey == "" || first[i].TranscriptKey != second[i].TranscriptKey {
+			t.Fatalf("reload item %d transcript key is empty or unstable: first=%q second=%q", i, first[i].TranscriptKey, second[i].TranscriptKey)
+		}
+		if len(first[i].OutputImages) != len(second[i].OutputImages) {
+			t.Fatalf("reload item %d output image counts differ: first=%d second=%d", i, len(first[i].OutputImages), len(second[i].OutputImages))
+		}
+		for imageIndex, image := range first[i].OutputImages {
+			imageCount++
+			if image.SHA == "" {
+				t.Fatalf("reload output image omitted content sha: %+v", image)
+			}
+			wantURL := "/s/01REPLAYORACLE/images/" + image.SHA
+			if image.URL != wantURL {
+				t.Fatalf("reload output image URL = %q, want %q", image.URL, wantURL)
+			}
+			if second[i].OutputImages[imageIndex].URL != image.URL {
+				t.Fatalf("reload output image URL changed: first=%q second=%q", image.URL, second[i].OutputImages[imageIndex].URL)
+			}
+		}
+	}
+	if imageCount != 1 {
+		t.Fatalf("reload projection output image count = %d, want 1: %+v", imageCount, first)
+	}
+}
+
 // synthesizeLiveEvents builds the SessionEvent stream the live path would have
 // emitted for turn, covering the content kinds that have a faithful live event
 // representation. It returns supported=false for turn kinds whose live rendering
