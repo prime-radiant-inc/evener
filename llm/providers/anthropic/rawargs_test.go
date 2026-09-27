@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -218,6 +220,69 @@ func TestRawArgs_Stream_FallbackOnEmpty(t *testing.T) {
 	calls := final.ToolCalls()
 	if len(calls) != 1 {
 		t.Fatalf("got %d tool calls, want 1", len(calls))
+	}
+}
+
+func TestRawArgs_Stream_ToolCallEndArgumentsOwnBytes(t *testing.T) {
+	first := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x-wire\",\"content\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"write_file\",\"input\":{}}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\\\"x\\\"}\"}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+	rest := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\" \"}}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
+	releaseCh := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseCh) }) }
+	t.Cleanup(release)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(first))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-releaseCh
+		_, _ = w.Write([]byte(rest))
+	}))
+	t.Cleanup(srv.Close)
+
+	res := protoLive(srv)
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(protoReq(""), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final *llm.Response
+	mutatedEnd := false
+	for ev := range s.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventToolCallEnd && ev.ToolCall != nil {
+			if len(ev.ToolCall.Arguments) == 0 {
+				t.Fatal("ToolCallEnd arguments are empty")
+			}
+			ev.ToolCall.Arguments[0] = 'X'
+			mutatedEnd = true
+			release()
+		}
+		if ev.Type == llm.StreamEventFinish {
+			final = ev.Response
+		}
+	}
+	if !mutatedEnd {
+		t.Fatal("stream ended without ToolCallEnd")
+	}
+	if final == nil {
+		t.Fatal("stream ended without finish event")
+	}
+	calls := final.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("got %d final tool calls, want 1", len(calls))
+	}
+	want := []byte(`{"path":"x"} `)
+	if !bytes.Equal(calls[0].Arguments, want) {
+		t.Fatalf("final Arguments = %q, want %q; emitted ToolCallEnd must not alias decoder buffer", calls[0].Arguments, want)
 	}
 }
 
