@@ -331,9 +331,17 @@ func nonEvenerGoBinary(t *testing.T) string {
 
 // TestParseHubOptionsNormalizesDeployFlags pins that a whitespace-only flag is
 // no deploy path at all: it must not skip validation while still being logged and
-// wired as though a path were set. Both flags are stored as the single trimmed
-// value validation, logging, and the wiring all read.
+// wired as though a path were set. With the own-executable default in place, "no
+// path at all" means the flag behaves exactly as if it were never given, so the
+// default is adopted — the trimmed value is the one value validation, logging,
+// and the wiring all read.
 func TestParseHubOptionsNormalizesDeployFlags(t *testing.T) {
+	exe := evenerArtifact(t)
+	stubHubExecutable(t, exe, nil)
+	want, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatalf("canonicalize the artifact: %v", err)
+	}
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -346,8 +354,8 @@ func TestParseHubOptionsNormalizesDeployFlags(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseHubOptions(%v): %v", tc.args, err)
 			}
-			if opts.deployBinary != "" || opts.buildSource != "" {
-				t.Fatalf("whitespace-only flag stored as deployBinary=%q buildSource=%q, want both empty", opts.deployBinary, opts.buildSource)
+			if opts.deployBinary != want || opts.buildSource != "" || !opts.deployDefault {
+				t.Fatalf("a whitespace-only %s left deployBinary=%q buildSource=%q deployDefault=%v, want the unset-flag default %q", tc.name, opts.deployBinary, opts.buildSource, opts.deployDefault, want)
 			}
 		})
 	}
@@ -430,9 +438,12 @@ func TestDeployWiringUsesBuildSourceWhenNoBinary(t *testing.T) {
 	}
 }
 
-// TestDeployWiringWithNeitherSetsHelpOnly pins the no-deploy-path case: no
-// build seam is installed (behavior is today's), but the refusal still carries
-// the hub's help text naming both flags.
+// TestDeployWiringWithNeitherSetsHelpOnly pins the raw no-fields case: a
+// hubOptions with neither flag set carries no build seam and still the help text
+// naming the remedy. Production never leaves a parsed hubOptions in this shape —
+// validateDeployFlags resolves the own-executable default there — so this pins
+// the unwired state's wiring itself, which is what a non-evener executable (and
+// an -no-deploy hub) reaches.
 func TestDeployWiringWithNeitherSetsHelpOnly(t *testing.T) {
 	dw := hubOptions{}.deployWiring()
 	if dw.buildBinary != nil || dw.buildSource != "" {
@@ -520,6 +531,15 @@ func TestRunMainLogsTheDeployPathItWasGiven(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonicalize the built artifact: %v", err)
 	}
+	// The no-flag and whitespace-only cases below pin the unwired default: this
+	// test binary is not an evener build, so the own-executable default is
+	// skipped and there is no deploy leg to log. Stub the seam explicitly so that
+	// property is the test's own rather than an accident of the binary running it.
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	stubHubExecutable(t, testBinary, nil)
 	// The checkout only has to pass verifyBuildSource here. This test binary
 	// carries no build stamp, so the revision check is skipped; pinning GitSHA to
 	// "" keeps that true if the package is ever built with ldflags.

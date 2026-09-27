@@ -219,3 +219,44 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 		t.Fatalf("a disabled deploy reached the host: %v", runs)
 	}
 }
+
+// TestDirtyControllerArtifactMismatchRefusesUnstamped pins the guard that must
+// survive the dirty relaxation: a declared binary artifact is deployable from a
+// dirty controller because it IS the controller's build — and when the artifact
+// on the host turns out to be a different build after all (the bytes were not
+// this controller's), the post-deploy identity read still refuses terminally
+// (errDeployUnstamped) instead of attaching the host to that build.
+func TestDirtyControllerArtifactMismatchRefusesUnstamped(t *testing.T) {
+	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
+	fr := deployRunner(t,
+		func(call int) ([]byte, error) {
+			if call == 0 {
+				// The on-disk binary before the deploy: this controller's own
+				// dirty build.
+				return []byte(`{"protocol":"evener-appwire-v5","version":"` + dirtyControllerVersion + `","launch_flags":["api-log"]}`), nil
+			}
+			// The artifact the deploy wrote: right platform, foreign identity.
+			return []byte(`{"protocol":"evener-appwire-v5","version":"othersha","launch_flags":["api-log"]}`), nil
+		},
+		func(int) ([]byte, error) {
+			return []byte(`{"version":"othersha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
+	)
+	m := newTestManager(t, testRegistry(t, host), fr, Options{
+		controllerVersionOverride: dirtyControllerVersion,
+		BinaryArtifact:            true,
+		BuildBinary:               writeStageBinary,
+		sleep:                     func(context.Context, time.Duration) error { return nil },
+	})
+
+	_, err := m.Ensure(context.Background(), "alpha")
+	if !errors.Is(err, errDeployUnstamped) {
+		t.Fatalf("Ensure err = %v, want errDeployUnstamped", err)
+	}
+	if errors.Is(err, ErrDeploy) {
+		t.Fatalf("Ensure err = %v still wraps ErrDeploy, so the supervisor would re-push the same foreign artifact forever", err)
+	}
+	if !isTerminal(err) {
+		t.Fatalf("Ensure err = %v, want a terminal refusal", err)
+	}
+}

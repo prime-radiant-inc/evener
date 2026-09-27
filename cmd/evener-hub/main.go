@@ -992,8 +992,9 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	}
 	// Validate the deploy flags where they are read: a bad path fails startup
 	// naming the flag rather than surfacing at the first attach as a deploy
-	// failure. A flag left unset needs no validation, so a local-only controller
-	// still starts.
+	// failure. A flag left unset needs no validation — and with both unset the
+	// deploy default (this hub's own executable) is adopted only if it passes the
+	// same checks, so an embedder or test binary still starts with no deploy path.
 	if err == nil {
 		err = opts.validateDeployFlags()
 	}

@@ -443,16 +443,17 @@ retrying would re-push the same file. So a mismatched artifact is refused before
 attach, and the hub never serves a host on a build it did not stamp.
 
 With no push source — `-no-deploy`, or a hub whose executable is not an evener
-build — the push path is unavailable. `-no-deploy` also disables the installer
-fallback, so that hub writes nothing to a host at all. Without `-no-deploy`, a
-release or snapshot controller still installs through `install.sh` on the host
-(the installer fallback); where that is refused — a dev or dirty controller, or
-a release build with no stamped tag — nothing is installed, so the host keeps
-its own build and attaches, and the hub logs which build it kept. The fallback
-is also refused for a snapshot controller once the mutable `snapshot` tag has
-moved past this controller's commit. For a snapshot controller the fallback
-writes the binary before its commit is proven, so prefer the push path; the push
-path is the one the refusal names.
+build — the push path is unavailable, and `-no-deploy` additionally disables the
+installer fallback, so that hub writes nothing to a host at all. A hub whose
+executable is not an evener build keeps the installer fallback: a release or
+snapshot controller installs through `install.sh` on the host. Where that
+fallback is refused — a dev or dirty controller, or a release build with no
+stamped tag — nothing is installed, so the host keeps its own build and
+attaches, and the hub logs which build it kept. The fallback is also refused for
+a snapshot controller once the mutable `snapshot` tag has moved past this
+controller's commit. For a snapshot controller the fallback writes the binary
+before its commit is proven, so prefer the push path; the push path is the one
+the refusal names.
 
 When a deploy fails, the refusal lands in that host's attach error — its row in
 Settings — naming the flag to set. A host that attached on its own build raises
