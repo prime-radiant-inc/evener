@@ -2574,7 +2574,7 @@ cp tools/prompt-eval/rubric.md $LAB/rubric.md
 go build -o $LAB/bin/evener-fluency ./tools/tool-fluency/cmd/evener-fluency
 git fetch -q origin main
 BASE=$(git rev-parse origin/main)
-git switch -q --detach $BASE && go build -o $LAB/bin/evener-baseline ./cmd/evener && git switch -q claude/prompt-rewrite-part2
+git switch -q --detach $BASE && go build -o $LAB/bin/evener-v0 ./cmd/evener && git switch -q claude/prompt-rewrite-part2
 echo "baseline commit: $BASE" >> $LAB/LAB-LOG.md
 ```
 
@@ -2582,28 +2582,26 @@ Expected: both binaries exist, and the log names the baseline commit. The tasks 
 
 - [ ] **Step 2: Get the model names**
 
-Jesse named seven models. Three are known names on lunarouter: `deepseek-4.1-flash`, `glm-5.3-vision`, and `glm-5.3-flash`, the last of which it may not serve. Evener's registry cannot list the gateway's other models. Ask Jesse for the exact lunarouter names of Opus 5.5, Opus 5, Sonnet, and the GPT model he called "gpt 6-luna"; his sessions show `gpt-5.6-luna`. Do not guess. Write the refs, one per line, to `$LAB/models.txt`, in this order, since later steps pick models by line:
-1. Opus 5.5
-2. Opus 5
-3. Sonnet
-4. the GPT model
-5. `lunarouter/deepseek-4.1-flash`
-6. `lunarouter/glm-5.3-vision`
-7. `lunarouter/glm-5.3-flash`
+Jesse named seven models, then (2026-09-27) set the Claude models and the GPT model aside for now. The runs use the three lunarouter models. Write their refs, one per line, to `$LAB/models.txt`, in this order, since later steps pick models by line:
+1. `lunarouter/deepseek-4.1-flash`
+2. `lunarouter/glm-5.3-vision`
+3. `lunarouter/glm-5.3-flash`, which the gateway may not serve
+
+If the Claude or GPT models come back, ask Jesse for their exact lunarouter names rather than guessing, and append them.
 
 - [ ] **Step 3: Smoke run**
 
 ```bash
 $LAB/bin/evener-fluency matrix \
-  --version baseline=$LAB/bin/evener-baseline \
+  --version v0=$LAB/bin/evener-v0 \
   --models "$(paste -sd, $LAB/models.txt)" \
   --probes-dir $LAB/tasks --probe prose.smoke \
-  --repetitions 1 --max-concurrent 7 \
+  --repetitions 1 --max-concurrent 3 \
   --fast-cheap-model lunarouter/deepseek-4.1-flash \
   --out $LAB/smoke
 ```
 
-Expected: one `prose.smoke rep=1 status=passed` line per model. For a model that fails, read its `stderr.ndjson` under `$LAB/smoke`. If the gateway does not know the name, ask Jesse. If `glm-5.3-flash` is not served, drop it and log that; the plan runs with six models. For any other failure, use superpowers:systematic-debugging before going on.
+Expected: one `prose.smoke rep=1 status=passed` line per model. For a model that fails, read its `stderr.ndjson` under `$LAB/smoke`. If the gateway does not know the name, ask Jesse. If `glm-5.3-flash` is not served, drop it from `models.txt` and log that; the plan runs with two models. For any other failure, use superpowers:systematic-debugging before going on.
 
 ### Task 9: The baseline
 
@@ -2611,7 +2609,7 @@ Expected: one `prose.smoke rep=1 status=passed` line per model. For a model that
 
 ```bash
 $LAB/bin/evener-fluency matrix \
-  --version baseline=$LAB/bin/evener-baseline \
+  --version v0=$LAB/bin/evener-v0 \
   --models "$(paste -sd, $LAB/models.txt)" \
   --probes-dir $LAB/tasks \
   --repetitions 3 --timeout 25m --max-concurrent 4 \
@@ -2619,16 +2617,16 @@ $LAB/bin/evener-fluency matrix \
   --out $LAB/runs 2>&1 | tee $LAB/baseline-run.log
 ```
 
-Expected: 27 result lines per model (nine tasks, three runs each), and results under `$LAB/runs/baseline/`.
+Expected: 27 result lines per model (nine tasks, three runs each), and results under `$LAB/runs/v0/`.
 
 - [ ] **Step 2: Find the gateway's limit and rule out harness trouble**
 
 ```bash
-grep -l -i -E '429|rate.?limit|too many requests' $LAB/runs/baseline/*/*/rep-*/stderr.ndjson | wc -l
-grep -h '"status"' $LAB/runs/baseline/*/*/rep-*/result.json | sort | uniq -c
+grep -l -i -E '429|rate.?limit|too many requests' $LAB/runs/v0/*/*/rep-*/stderr.ndjson | wc -l
+grep -h '"status"' $LAB/runs/v0/*/*/rep-*/result.json | sort | uniq -c
 ```
 
-Expected: no rate-limit hits, and every status is `passed` or `failed`. On rate limits, rerun the failed runs at `--max-concurrent 2`. Log the concurrency that held as a line `cap: N` in `$LAB/LAB-LOG.md`. With no hits at 4, log `cap: 7` and watch the next round for rate limits. Look into every status other than passed or failed before the baseline is trusted: timeouts, infra errors, harness failures.
+Expected: no rate-limit hits, and every status is `passed` or `failed`. On rate limits, rerun each blocked task at `--max-concurrent 2`, with `--probe` naming the task, into a new `--out` such as `$LAB/retry-1`, since a run refuses a directory that holds results. Later steps pass both directories to `prose-stats` and `review-pack` under the same label; the blocked runs show in their own column and do not count against the version. Log the concurrency that held as a line `cap: N` in `$LAB/LAB-LOG.md`. With no hits at 4, log `cap: 7` and watch the next round for rate limits. Look into every status other than passed or failed before the baseline is trusted: timeouts, infra errors, harness failures.
 
 Later rounds read the cap back with:
 
@@ -2639,9 +2637,9 @@ CAP=$(grep '^cap:' $LAB/LAB-LOG.md | tail -1 | awk '{print $2}')
 - [ ] **Step 3: Count the baseline's prose**
 
 ```bash
-$LAB/bin/evener-fluency prose-stats --results baseline=$LAB/runs/baseline | tee $LAB/stats-baseline.txt
-$LAB/bin/evener-fluency prose-stats --results baseline=$LAB/runs/baseline --channel all | tee $LAB/stats-baseline-all.txt
-$LAB/bin/evener-fluency prose-stats --results baseline=$LAB/runs/baseline --json > $LAB/stats-baseline.json
+$LAB/bin/evener-fluency prose-stats --results v0=$LAB/runs/v0 | tee $LAB/stats-baseline.txt
+$LAB/bin/evener-fluency prose-stats --results v0=$LAB/runs/v0 --channel all | tee $LAB/stats-baseline-all.txt
+$LAB/bin/evener-fluency prose-stats --results v0=$LAB/runs/v0 --json > $LAB/stats-baseline.json
 ```
 
 Expected: one row per model, with `PROSE ERRORS` at 0. Copy the pass counts per task and the tic and identifier rates per model into the log, as the numbers to beat.
@@ -2780,7 +2778,7 @@ Expected: three tags and three binaries. Log the tags and their commits.
 
 ```bash
 CAP=$(grep '^cap:' $LAB/LAB-LOG.md | tail -1 | awk '{print $2}')
-FLASH=$(sed -n '5,$p' $LAB/models.txt | paste -sd, -)   # deepseek and the GLM models the smoke run kept
+FLASH=$(paste -sd, $LAB/models.txt)   # the lunarouter models the smoke run kept
 $LAB/bin/evener-fluency matrix \
   --version v1-A=$LAB/bin/evener-v1-A --version v1-B=$LAB/bin/evener-v1-B --version v1-C=$LAB/bin/evener-v1-C \
   --models $FLASH --probes-dir $LAB/tasks \
@@ -2794,7 +2792,7 @@ Expected: 27 result lines for each variant and model.
 - [ ] **Step 2: Compare with the baseline**
 
 ```bash
-$LAB/bin/evener-fluency prose-stats --results baseline=$LAB/runs/baseline --results v1-A=$LAB/runs/v1-A --results v1-B=$LAB/runs/v1-B --results v1-C=$LAB/runs/v1-C | tee $LAB/stats-round1.txt
+$LAB/bin/evener-fluency prose-stats --results v0=$LAB/runs/v0 --results v1-A=$LAB/runs/v1-A --results v1-B=$LAB/runs/v1-B --results v1-C=$LAB/runs/v1-C | tee $LAB/stats-round1.txt
 ```
 
 Read only the flash rows, since the baseline covers every model. For any task where a variant passes fewer runs than the baseline on the same model, read those transcripts. When a cut lesson caused the drop, bring the lesson back as guidance in a new commit on the lab branch. Tag it `lab/v1.1-<persona>`, rebuild, and rerun that task on the flash models. Log each case.
@@ -2808,7 +2806,7 @@ R1=$LAB/review-round1; mkdir -p $R1/unused
 ARGS=""
 for m in $(echo $FLASH | tr ',' ' '); do
   d=$(echo $m | tr '/' '-')
-  ARGS="$ARGS --results baseline=$LAB/runs/baseline/$d --results v1-A=$LAB/runs/v1-A/$d --results v1-B=$LAB/runs/v1-B/$d --results v1-C=$LAB/runs/v1-C/$d"
+  ARGS="$ARGS --results v0=$LAB/runs/v0/$d --results v1-A=$LAB/runs/v1-A/$d --results v1-B=$LAB/runs/v1-B/$d --results v1-C=$LAB/runs/v1-C/$d"
 done
 $LAB/bin/evener-fluency review-pack $ARGS --mask-root $LAB/runs --packets $R1/packets --key $LAB/review-round1-key.json --seed 11
 jq -r 'map(select(.probe != "prose.smoke")) | group_by([.label, .model, .probe]) | map(.[0].packet) | .[]' $LAB/review-round1-key.json > $R1/keep.txt
@@ -2842,22 +2840,24 @@ Rank the variants by the tic and identifier rates in the to-user channel, lowest
 
 - [ ] **Step 1: Run the finalists on every model**
 
+Task 11 already ran each v1 variant on every model in `models.txt`, and the matrix refuses cells that hold results, so this step runs only the finalists with no runs yet, such as a `lab/v1.1-` fix. If the Claude or GPT models come back, run the finalists on those models only.
+
 ```bash
 CAP=$(grep '^cap:' $LAB/LAB-LOG.md | tail -1 | awk '{print $2}')
 FINALISTS=$(grep '^finalist:' $LAB/LAB-LOG.md | awk '{print $2}')
-VERSIONS=""; RESULTS="--results baseline=$LAB/runs/baseline"
+NEW=""; RESULTS="--results v0=$LAB/runs/v0"
 for f in $FINALISTS; do
-  VERSIONS="$VERSIONS --version $f=$LAB/bin/evener-$f"
   RESULTS="$RESULTS --results $f=$LAB/runs/$f"
+  [ -d $LAB/runs/$f ] || NEW="$NEW --version $f=$LAB/bin/evener-$f"
 done
-$LAB/bin/evener-fluency matrix $VERSIONS \
+[ -z "$NEW" ] || $LAB/bin/evener-fluency matrix $NEW \
   --models "$(paste -sd, $LAB/models.txt)" --probes-dir $LAB/tasks \
   --repetitions 3 --timeout 25m --max-concurrent $CAP \
   --fast-cheap-model lunarouter/deepseek-4.1-flash \
   --out $LAB/runs 2>&1 | tee $LAB/round2-run.log
 ```
 
-Expected: 27 result lines for each finalist and model.
+Expected: 27 results for each finalist and model under `$LAB/runs`.
 
 - [ ] **Step 2: Count and compare**
 
@@ -2873,15 +2873,15 @@ Log, per model family, the change in each rate and in the passes, counting runs 
 
 - [ ] **Step 3: Blind read a stratified sample**
 
-Read one run per task and version on three models, one per model family: Opus 5.5, the GPT model, and deepseek-4.1-flash. These are lines 1, 4, and 5 of `$LAB/models.txt`.
+Read one run per task and version on two models, one per model family: deepseek-4.1-flash and glm-5.3-vision. These are lines 1 and 2 of `$LAB/models.txt`.
 
 ```bash
 R2=$LAB/review-round2; mkdir -p $R2/unused
-SAMPLE="$(sed -n 1p $LAB/models.txt) $(sed -n 4p $LAB/models.txt) $(sed -n 5p $LAB/models.txt)"
+SAMPLE="$(sed -n 1p $LAB/models.txt) $(sed -n 2p $LAB/models.txt)"
 ARGS=""
 for m in $SAMPLE; do
   d=$(echo $m | tr '/' '-')
-  ARGS="$ARGS --results baseline=$LAB/runs/baseline/$d"
+  ARGS="$ARGS --results v0=$LAB/runs/v0/$d"
   for f in $FINALISTS; do ARGS="$ARGS --results $f=$LAB/runs/$f/$d"; done
 done
 $LAB/bin/evener-fluency review-pack $ARGS --mask-root $LAB/runs --packets $R2/packets --key $LAB/review-round2-key.json --seed 12

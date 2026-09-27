@@ -24,37 +24,39 @@ Build the runner and one evener binary for each prompt version:
 
 ```bash
 go build -o /tmp/lab/evener-fluency ./tools/tool-fluency/cmd/evener-fluency
-go build -o /tmp/lab/evener-baseline ./cmd/evener
+go build -o /tmp/lab/evener-v0 ./cmd/evener
 ```
 
-Run every task on several models, three times each:
+Run every task on several models, three times each. Each prompt version gets a label with a digit in it, such as `v0` for the baseline and `v1-A` for a draft, because `review-pack` masks the label wherever it appears:
 
 ```bash
 /tmp/lab/evener-fluency matrix \
-  --version baseline=/tmp/lab/evener-baseline \
+  --version v0=/tmp/lab/evener-v0 \
   --models lunarouter/deepseek-4.1-flash,lunarouter/glm-5.3-vision \
   --probes-dir tools/prompt-eval/tasks \
   --repetitions 3 --timeout 25m --max-concurrent 4 \
   --fast-cheap-model lunarouter/deepseek-4.1-flash \
-  --out tools/prompt-eval/results/example
+  --out $PWD/tools/prompt-eval/results/example
 ```
+
+A run refuses an `--out` that already holds results, so give each run its own directory, or add new version labels to an existing one.
 
 Count the prose each version produced:
 
 ```bash
-/tmp/lab/evener-fluency prose-stats --results baseline=tools/prompt-eval/results/example/baseline
+/tmp/lab/evener-fluency prose-stats --results v0=$PWD/tools/prompt-eval/results/example/v0
 ```
 
 Make blind packets for a read against `rubric.md`. Keep the key somewhere the readers never look:
 
 ```bash
 /tmp/lab/evener-fluency review-pack \
-  --results baseline=tools/prompt-eval/results/example/baseline \
-  --mask-root tools/prompt-eval/results/example \
+  --results v0=$PWD/tools/prompt-eval/results/example/v0 \
+  --mask-root $PWD/tools/prompt-eval/results/example \
   --packets /tmp/lab/review/packets --key /tmp/lab/review-key.json
 ```
 
-Results land under `tools/prompt-eval/results/`, which git ignores.
+Results land under `tools/prompt-eval/results/`, which git ignores. Each fixture still runs as its own project: the runner turns Go workspaces off and stops git from looking above the fixture, for the task checks and for the agent's commands. Use absolute paths for `--out`, since each result records where its sessions live.
 
 ## Adding a task
 
