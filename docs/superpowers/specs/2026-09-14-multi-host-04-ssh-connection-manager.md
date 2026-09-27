@@ -253,7 +253,7 @@ the single place that turns `(dest, remote argv)` into local `ssh` argv.
 
 ```
 ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
-    -o ServerAliveCountMax=<n> -- <dest> <evener_path> hub attach --stdio \
+    -o ServerAliveCountMax=<n> [-i <key_path>] -- <dest> <evener_path> hub attach --stdio \
     [--config <config_path>] [--addr <addr>]
 ```
 
@@ -1697,14 +1697,18 @@ with the remote hub and its daemons still running.
   `launch-check` version, and that a probe that answers nothing invents no
   restart.
 - **Channel argv tests.** Assert `ssh -T -o BatchMode=yes -o ConnectTimeout=…,
-  ServerAliveInterval=…, ServerAliveCountMax=… -- <dest> <evener_path> hub attach
+  ServerAliveInterval=…, ServerAliveCountMax=… [-i <key_path>] -- <dest>
+  <evener_path> hub attach
   --stdio`; assert stderr is wired to the diagnostic sink and stdout is not
   touched outside `StreamTransport`. With a per-host `config_path`/`addr` set,
   assert `--config`/`--addr` appear in that order (each value shell-quoted) and
   that the restart/health path uses the same address. Assert `--` precedes the
   destination so a `dest` beginning with `-` is never read as an ssh option.
+  When the entry sets `key_path`, assert the `["-i", key_path]` pair appears
+  before `--`; when it does not, assert no `-i` is emitted.
   Assert **no** ssh invocation carries `StrictHostKeyChecking=no`/`accept-new`
-  or any raw `-p`/`-i`/`ProxyJump` option, and that an unknown host key is
+  or any raw `-p`/`ProxyJump` option, and no `-i` beyond the entry's own
+  permitted pair, and that an unknown host key is
   surfaced with the named operator hint (add the key out of band —
   §"Contract", "Host-key verification is the user's `known_hosts`") in the
   **retryable** `ErrSSHStart` class rather than asserted terminal: a completed

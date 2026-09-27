@@ -80,7 +80,7 @@ sixteen shared terms below are identical in all three documents.
 
 **Fencing epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) presented on every SSH command it runs.
 
-**Presence epoch.** The per-host monotonic removal/presence counter the file advances on every add, remove, re-add, and expiry purge. It persists in `hub.toml` per live entry and per tombstone; every `hub.toml` write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§7 defines the record schema; deploy-pipeline spec §4 cites it); cursor validation reads the mirrored value (§8 there).
+**Presence epoch.** The per-host monotonic removal/presence counter the file advances on every add, remove, re-add, and expiry purge. It persists in `hub.toml` per live host (the per-host machine record, `[host_records."<name>"]`, §6) and per tombstone; every `hub.toml` write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§7 defines the record schema; deploy-pipeline spec §4 cites it); cursor validation reads the mirrored value (§8 there).
 
 **Intent.** A durable record the controller writes before acting, so a crash
 leaves recovery instructions on disk. The registry intents are the
@@ -806,8 +806,11 @@ generation, and the store-mirror generation), `[tombstones."<name>"]` (the §15
 tombstone records),
 `[mutation_receipts."<scoped-key>"]` (the §5/§6 receipts, keyed by the
 five-part scoped receipt key in mutation-id / name / kind / generation /
-incarnation-id order), `[pruned_receipts."<scoped-key>"]` (the §6 pruned
-marker: `pruned_at`), `[teardown_remnants."<remnant-id>"]` (the §9 teardown
+incarnation-id order; each part is canonical percent-encoded — RFC 3986
+unreserved characters preserved, every other byte %XX — and the parts join
+with `/`, so an opaque mutation id can never introduce a delimiter, quote, or
+newline and two distinct keys can never collide), `[pruned_receipts."<scoped-key>"]` (the §6 pruned
+marker: `pruned_at`; the same encoded scoped key), `[teardown_remnants."<remnant-id>"]` (the §9 teardown
 remnants), `[pending_store_sync]` (the deploy-pipeline spec §9 cross-file
 revocation intent), and `[host_records."<name>"]` (the per-host records the
 sibling specs define there — the crash-fencing spec's bootstrap-attempt fence
@@ -822,12 +825,14 @@ record lives, not what it holds. A rewrite re-emits every reserved key the
 mutation does not own unchanged (it writes only `hosts` and the records the
 mutation itself updates in that same atomic write — the update rule above), so
 a record this build does not recognize round-trips rather than being dropped,
-and a reserved key never carries operator data. Reserved keys are machine-owned:
-a file that already holds operator data under a reserved name — a value the
-machine record does not decode as — is refused loudly before any rewrite,
-nothing overwritten or reinterpreted, and the operator resolves the collision
-by renaming their key; unknown keys outside the reserved set are preserved as
-data.
+and a reserved key never carries operator data. Reserved keys are a documented
+machine-owned namespace: the hub honors a reserved key only when the file
+carries the machine-managed banner every rewrite writes and the key's value
+matches the record shape exactly; anything else under a reserved name — a value
+the record cannot decode, or a reserved key in a file the hub has never
+rewritten — is refused loudly before any rewrite, nothing overwritten or
+reinterpreted, and the operator resolves the collision by renaming their key.
+Unknown keys outside the reserved set are preserved as data.
 
 Fingerprint semantics: the **host-set fingerprint** is a canonical hash over
 the file's validated effective host entries, the same entries the registry
@@ -1545,9 +1550,9 @@ documents and are cited, never restated):
   droppedEntry: <the staged effective config in the same lowerCamel shape as
   `HostRow`'s config fields — never a literal `HostConfig`, whose `toml`-only
   tags would generate `Name`/`SSH`/`EvenerPath`/… instead of
-  `name`/`ssh`/`evenerPath` —, winningFingerprint: string, host: HostRow}` (the
-  dropped arm always carries the authoritative `HostRow` regardless of
-  mutation kind — when the post-rename reconcile finds the file no longer carries the
+  `name`/`ssh`/`evenerPath` —, winningFingerprint: string, host?: HostRow}` (the
+  dropped arm carries the authoritative `HostRow` whenever the file still holds
+  the name — when the post-rename reconcile finds the file no longer carries the
   just-committed staged entry, the authoritative result is the winning `hub.toml` live
   entry, never a tombstone, so a remove whose name was re-added through
   `hub.toml` mid-remove returns the live row, and when the re-read instead finds

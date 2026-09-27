@@ -36,7 +36,7 @@ Every later section uses these terms with exactly these meanings.
 
 **Fencing epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) presented on every SSH command it runs.
 
-**Presence epoch.** The per-host monotonic removal/presence counter advanced in the same atomic `hub.toml` write as every add, remove, re-add, and expiry purge. It persists in `hub.toml` per live entry and per tombstone; every `hub.toml` write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (deploy-pipeline spec §4); cursor validation reads the mirrored value (§8 there).
+**Presence epoch.** The per-host monotonic removal/presence counter advanced in the same atomic `hub.toml` write as every add, remove, re-add, and expiry purge. It persists in `hub.toml` per live host (the per-host machine record, `[host_records."<name>"]`, registry spec §6) and per tombstone; every `hub.toml` write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (deploy-pipeline spec §4); cursor validation reads the mirrored value (§8 there).
 
 The fencing-specific terms below appear only in this spec.
 
