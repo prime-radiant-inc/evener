@@ -123,6 +123,32 @@ describe("the search controller", () => {
 		expect(hub.requests).toHaveLength(2);
 	});
 
+	it("drops an answer that lands after the query changed, before the new query is asked", async () => {
+		const hub = boundary();
+		const search = createSearchController();
+		search.setClient(hub.client);
+		search.setQuery("fix");
+		vi.advanceTimersByTime(250);
+		search.setQuery("fixes");
+		hub.requests[0].resolve({ live: [result("fix")], past: [] });
+		await settle();
+		expect(search.getSnapshot()).toEqual({ query: "fixes", results: null, searching: false, failed: false });
+		expect(hub.requests).toHaveLength(1);
+	});
+
+	it("stops saying a search failed once the client goes", async () => {
+		const hub = boundary();
+		const search = createSearchController();
+		search.setClient(hub.client);
+		search.setQuery("fix");
+		vi.advanceTimersByTime(250);
+		hub.requests[0].reject(new Error("request timed out"));
+		await settle();
+		expect(search.getSnapshot().failed).toBe(true);
+		search.setClient(null);
+		expect(search.getSnapshot()).toEqual({ query: "fix", results: null, searching: false, failed: false });
+	});
+
 	it("waits for a client, drops a search when the client goes, and asks again on a new one", async () => {
 		const hub = boundary();
 		const search = createSearchController();

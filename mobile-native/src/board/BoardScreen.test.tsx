@@ -689,6 +689,26 @@ it("says a failed search failed, and never asks you to retry", async () => {
 	act(() => tree.unmount());
 });
 
+it("searches nothing while connecting, and asks for the typed query once the connection is ready", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "connecting");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchField(tree);
+	bar.focus();
+	await bar.type("ship");
+	expect(fake.searches).toEqual([]);
+	expect(texts(tree)).toContain("Search works when the hub is connected.");
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(fake.searches).toEqual(["ship"]);
+	expect(resultTitles(tree)).toEqual(["Ship it"]);
+	act(() => tree.unmount());
+});
+
 it("remembers the queries you opened a result from, per hub, and clears them", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);

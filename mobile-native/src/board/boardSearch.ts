@@ -78,7 +78,9 @@ export function createSearchController(): SearchController {
 			client = next;
 			stopWaiting();
 			request++;
-			if (snapshot.searching) publish({ searching: false });
+			// A failure belonged to the old client; with none, the screen says
+			// search waits for the hub instead.
+			if (snapshot.searching || snapshot.failed) publish({ searching: false, failed: false });
 			ask();
 		},
 		setQuery(text) {
