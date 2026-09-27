@@ -7,7 +7,7 @@ import { createElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import type { AnyNotification, Thread } from "@evener/appwire-client";
-import { render, renderedText, screenConnection } from "./renderNative.testkit";
+import { pressable, render, renderedText, screenConnection } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 
 const harness = vi.hoisted(() => ({
@@ -282,12 +282,6 @@ function field(tree: ReactTestRenderer) {
 	return tree.root
 		.findAll((node) => String(node.type) === "TextInput")
 		.find((node) => node.props.accessibilityLabel === "Message");
-}
-
-function pressable(tree: ReactTestRenderer, label: string) {
-	return tree.root
-		.findAll((node) => String(node.type) === "Pressable")
-		.find((node) => node.props.accessibilityLabel === label);
 }
 
 async function type(tree: ReactTestRenderer, text: string) {

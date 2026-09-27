@@ -3,7 +3,7 @@ import { act } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PulseMeter } from "../board/PulseMeter";
 import { palettes } from "../design/tokens";
-import { render, renderHook, renderedText } from "../renderNative.testkit";
+import { pressable, render, renderHook, renderedText } from "../renderNative.testkit";
 import { LiveStatusTray, StatusTray, useFrameCounter } from "./StatusTray";
 import { FrameCounter, type TraySource } from "./trayLine";
 
@@ -26,14 +26,6 @@ function tray(overrides: Partial<Parameters<typeof StatusTray>[0]> = {}) {
 		...overrides,
 	};
 	return { props, tree: render(<StatusTray {...props} />) };
-}
-
-function pressables(tree: ReactTestRenderer): ReactTestInstance[] {
-	return tree.root.findAll((node) => String(node.type) === "Pressable");
-}
-
-function stop(tree: ReactTestRenderer): ReactTestInstance | undefined {
-	return pressables(tree).find((node) => node.props.accessibilityLabel === "Stop");
 }
 
 function lineText(tree: ReactTestRenderer): ReactTestInstance {
@@ -62,13 +54,13 @@ describe("StatusTray", () => {
 
 	it("has no Stop when the turn cannot be stopped", () => {
 		const { tree } = tray({ canStop: false });
-		expect(stop(tree)).toBeUndefined();
+		expect(pressable(tree, "Stop")).toBeUndefined();
 		expect(renderedText(tree)).not.toContain("Stop");
 	});
 
 	it("labels Stop and calls onStop when it is pressed", () => {
 		const { props, tree } = tray();
-		const button = stop(tree);
+		const button = pressable(tree, "Stop");
 		expect(button?.props.accessibilityState).toMatchObject({ disabled: false });
 		expect(button?.findByType("SymbolView" as never).props).toMatchObject({
 			name: "stop.fill",
@@ -81,19 +73,19 @@ describe("StatusTray", () => {
 
 	it("disables Stop while disconnected", () => {
 		const { tree } = tray({ connected: false });
-		expect(stop(tree)?.props.disabled).toBe(true);
-		expect(stop(tree)?.props.accessibilityState).toMatchObject({ disabled: true });
+		expect(pressable(tree, "Stop")?.props.disabled).toBe(true);
+		expect(pressable(tree, "Stop")?.props.accessibilityState).toMatchObject({ disabled: true });
 	});
 
 	it("disables Stop while a Stop is in flight", () => {
 		const { tree } = tray({ stopping: true });
-		expect(stop(tree)?.props.disabled).toBe(true);
-		expect(stop(tree)?.props.accessibilityState).toMatchObject({ disabled: true });
+		expect(pressable(tree, "Stop")?.props.disabled).toBe(true);
+		expect(pressable(tree, "Stop")?.props.accessibilityState).toMatchObject({ disabled: true });
 	});
 
 	it("jumps to the live end when the line is pressed", () => {
 		const { props, tree } = tray();
-		const row = pressables(tree).find((node) => node.props.accessibilityLabel !== "Stop");
+		const row = pressable(tree, "Running go test ./agent/... · 42s");
 		act(() => row?.props.onPress());
 		expect(props.onJumpToLive).toHaveBeenCalledTimes(1);
 		expect(props.onStop).not.toHaveBeenCalled();

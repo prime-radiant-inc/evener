@@ -4,7 +4,7 @@ import { act } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { palettes } from "../design/tokens";
 import { Platform } from "react-native";
-import { alertRequests, render, renderedText } from "../renderNative.testkit";
+import { alertRequests, pressable, render, renderedText } from "../renderNative.testkit";
 import { Composer } from "./Composer";
 
 const actionSheet = vi.hoisted(() => ({ show: vi.fn() }));
@@ -38,12 +38,6 @@ function composer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
 		...overrides,
 	};
 	return { props, tree: render(<Composer {...props} />) };
-}
-
-function pressable(tree: ReactTestRenderer, label: string): ReactTestInstance | undefined {
-	return tree.root.findAll(
-		(node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label,
-	)[0];
 }
 
 function fields(tree: ReactTestRenderer): ReactTestInstance[] {
