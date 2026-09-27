@@ -12,7 +12,7 @@ import { createMutationProjectionWorkTracker } from "@evener/appwire-client/stat
 // Tracking costs two counter updates and one `finally` reaction per storage
 // transaction. Nothing outside a test reads the count or waits on it, so
 // production behavior is unchanged apart from each storage call settling a
-// microtask or two later. The stall tripwire and the macrotask yield the
+// few microtasks later. The stall tripwire and the macrotask yield the
 // tracker settles through are the package's; this binds them to the
 // browser's own timers and a MessageChannel hop.
 const projectionWorkTracker = createMutationProjectionWorkTracker({

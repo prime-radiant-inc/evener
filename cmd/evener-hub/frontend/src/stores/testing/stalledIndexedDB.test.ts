@@ -93,11 +93,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// The storage's transactions differ by mode and store scope, and a test holds
-// exactly one of them: the first readwrite transaction over the stores it
-// names. A readonly transaction, or a write over other stores, runs to
-// completion while it is held; a later write over the same stores queues
-// behind it, and is not held itself once the first is released.
+// The storage's transactions differ by mode and store scope, and the helper
+// holds exactly one: the first readwrite transaction over exactly the stores it
+// names. A readonly transaction and a write over a wider scope are not held,
+// and neither is a later write over the same stores.
 test("holdNextWriteTransaction holds only the first readwrite transaction over exactly the named stores", async () => {
   const database = await openTwoStores();
   const held = holdNextWriteTransaction(["rows"]);
@@ -114,9 +113,11 @@ test("holdNextWriteTransaction holds only the first readwrite transaction over e
   const laterDone = completion(later);
 
   await held.reached;
-  await Promise.all([read.done, widerDone.done]);
+  expect(read.isDone()).toBe(true);
+  expect(widerDone.isDone()).toBe(true);
   expect(targetDone.isDone()).toBe(false);
 
   held.release();
-  await Promise.all([targetDone.done, laterDone.done]);
+  expect(targetDone.isDone()).toBe(true);
+  await laterDone.done;
 });

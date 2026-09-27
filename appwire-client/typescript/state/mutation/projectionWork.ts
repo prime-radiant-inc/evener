@@ -76,11 +76,10 @@ export function createMutationProjectionWorkTracker<TimerId = unknown>(
     });
   }
 
-  // Drains, hops, and drains again for as long as each hop let new work
-  // register. The tripwire bounds the whole settle, so a chain that keeps
-  // going past it fails as loudly as work that never settles (the count in
-  // its message is what was still in flight when it fired); once the settle
-  // is over, `abandoned` stops the loop.
+  // Drains, hops, and drains again for as long as a hop lets new work register
+  // or leaves work in flight. The tripwire bounds the whole settle, so a chain
+  // that keeps going past it fails as loudly as work that never settles; once
+  // the settle is over, `abandoned` stops the loop.
   async function drainedAndQuiet(current: WorkGeneration, abandoned: () => boolean): Promise<void> {
     for (;;) {
       await drained(current);
@@ -110,7 +109,7 @@ export function createMutationProjectionWorkTracker<TimerId = unknown>(
           () =>
             reject(
               new Error(
-                `projection work stalled: ${current.outstanding} operation(s) still unsettled after ${STALL_TRIPWIRE_MS}ms - release whatever storage or transport is holding this work open`,
+                `projection work stalled: ${current.outstanding} operation(s) still unsettled after ${STALL_TRIPWIRE_MS}ms (${registrations - registrationsAtStart} registered since this settle began) - release whatever storage or transport is holding this work open`,
               ),
             ),
           STALL_TRIPWIRE_MS,

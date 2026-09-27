@@ -26,8 +26,8 @@ import { settleProjectionWorkForTests } from "../../../../../stores/projectionWo
 //
 // The storage registers no RPC, so a test holding one open can still flush,
 // except where pendingTurnsStore tracks a whole operation that contains one (a
-// Retry's reconciliation read). Nor does it wait for a timer (the outbox's
-// discovery interval) or a component's own state. pendingTurnsStore's "a flush
+// Retry's reconciliation read). Nor does the flush wait for a timer (the
+// outbox's discovery interval) or a component's own state. pendingTurnsStore's "a flush
 // cannot settle while ..." tests pin the property for submits and for storage
 // writes begun anywhere, and Composer's pin it for both Stop routes.
 export async function flushPendingTurnsProjectionForTests(): Promise<void> {
