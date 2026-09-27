@@ -49,7 +49,7 @@ The server reads its environment (set these in the `.mcp.json` entry's `env`):
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `EVENER_HUB_RPC_URL` | Hub AppWire `/rpc` WebSocket URL | `ws://127.0.0.1:9180/rpc` |
-| `EVENER_HUB_TOKEN` | Hub capability token (wins over the file); empty string clears an inherited value — hub-spawned sessions carry the hub's spawner token under this name, so set it empty there | — |
+| `EVENER_HUB_MCP_TOKEN` | Hub capability token (wins over the file). Not `EVENER_HUB_TOKEN`: hub-spawned sessions inherit the hub's spawner token under that name, which /rpc refuses | — |
 | `EVENER_HUB_TOKEN_FILE` | Token file to read | `<state root>/auth-token` |
 | `EVENER_HUB_STATE_ROOT` | Hub state root (for the token-file default) | `${XDG_STATE_HOME:-$HOME/.local/state}/evener` |
 | `EVENER_HUB_MCP_READONLY` | `1` registers only the read tools — supervision without mutation | unset: all tools |

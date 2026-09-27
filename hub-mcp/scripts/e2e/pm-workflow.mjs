@@ -34,7 +34,7 @@ function required(name) {
 }
 
 const client = await McpClient.spawn(["node", entry], {
-  env: { ...process.env, EVENER_HUB_RPC_URL: rpc, EVENER_HUB_TOKEN: token },
+  env: { ...process.env, EVENER_HUB_RPC_URL: rpc, EVENER_HUB_MCP_TOKEN: token },
 });
 
 async function call(name, args) {
@@ -289,7 +289,7 @@ if (/mcp servers/.test(pmDetail)) {
 // contains no session must refuse to read one.
 
 const readOnly = await McpClient.spawn(["node", entry], {
-  env: { ...process.env, EVENER_HUB_RPC_URL: rpc, EVENER_HUB_TOKEN: token, EVENER_HUB_MCP_READONLY: "1" },
+  env: { ...process.env, EVENER_HUB_RPC_URL: rpc, EVENER_HUB_MCP_TOKEN: token, EVENER_HUB_MCP_READONLY: "1" },
 });
 const readOnlyNames = (await readOnly.listTools()).map((tool) => tool.name);
 assert.ok(readOnlyNames.includes("list_models"), "the read-only registry must include list_models");
@@ -305,7 +305,7 @@ const scoped = await McpClient.spawn(["node", entry], {
   env: {
     ...process.env,
     EVENER_HUB_RPC_URL: rpc,
-    EVENER_HUB_TOKEN: token,
+    EVENER_HUB_MCP_TOKEN: token,
     EVENER_HUB_MCP_PROJECT: `${workspace}/no-sessions-here`,
   },
 });

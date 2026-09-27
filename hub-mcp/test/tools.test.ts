@@ -262,7 +262,7 @@ test("wait_for_activity does not claim quiet over a dead hub connection", async 
 });
 
 test("wait_for_activity surfaces the hub configuration error, like every hub-touching tool", async () => {
-  const reason = "cannot read the hub token file /h/.local/state/evener/auth-token: ENOENT. Set EVENER_HUB_TOKEN";
+  const reason = "cannot read the hub token file /h/.local/state/evener/auth-token: ENOENT. Set EVENER_HUB_MCP_TOKEN";
   const port: HubPort = {
     request: () => Promise.reject(new Error(reason)),
     onNotification: () => () => {},

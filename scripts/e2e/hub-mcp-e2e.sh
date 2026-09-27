@@ -24,9 +24,10 @@
 # The mcp.json it wires in carries no token: the server's token-file default
 # reads the hub's own auth-token under the isolated HOME (the zero-config
 # path the docs recommend), so the one config a session's model can read
-# holds no secret material; its one non-URL env var empties EVENER_HUB_TOKEN,
-# because a hub-spawned daemon inherits the hub's internal spawner token
-# under that name, which this hub's /rpc does not accept. On success it tears
+# holds no secret material: the server reads its token from the hub's own
+# auth-token file, and reads EVENER_HUB_MCP_TOKEN — not EVENER_HUB_TOKEN,
+# which hub-spawned daemons inherit holding the hub's internal spawner
+# token, a bearer /rpc refuses. On success it tears
 # the whole stack down; on failure the run directory stays for diagnosis and
 # a reaper kills the processes it started.
 #
@@ -134,12 +135,13 @@ echo "==> wiring the hub MCP into the isolated home's global mcp.json" >&2
 # No token in this file, on purpose: the server's token-file default reads the
 # hub's own auth-token under this isolated HOME — the zero-config path the
 # docs recommend — and the env a daemon merges over its own carries HOME down
-# to the server process. The empty EVENER_HUB_TOKEN is part of that recipe,
-# not a token: the hub injects its internal spawner token into every spawned
-# daemon's env under that name (a bearer for the hub→daemon dials, not for
-# this hub's /rpc), and the server would prefer it over the file; emptying it
-# in the trusted layer lets the file default win. The guard below keeps the
-# one config a session's model can read free of secret material.
+# to the server process. The server reads EVENER_HUB_MCP_TOKEN, which nothing
+# in a hub-spawned session sets: the hub injects its internal spawner token
+# into every spawned daemon's env under the older EVENER_HUB_TOKEN name (a
+# bearer for the hub→daemon dials, not for this hub's /rpc), and reading
+# that name is exactly what would break the zero-config path. The guard
+# below keeps the one config a session's model can read free of secret
+# material.
 mkdir -p "$HOME/.config/evener"
 cat >"$HOME/.config/evener/mcp.json" <<EOF
 {
@@ -149,8 +151,7 @@ cat >"$HOME/.config/evener/mcp.json" <<EOF
 			"command": "node",
 			"args": ["$mcp_entry"],
 			"env": {
-				"EVENER_HUB_RPC_URL": "ws://127.0.0.1:$hub_port/rpc",
-				"EVENER_HUB_TOKEN": ""
+				"EVENER_HUB_RPC_URL": "ws://127.0.0.1:$hub_port/rpc"
 			}
 		}
 	}

@@ -28,7 +28,7 @@ args = ["/path/to/evener/checkout/hub-mcp/dist/src/index.js"]
 
 That shape carries only `name`, `command`, and `args` — no environment —
 so a server wired that way has no way to receive `EVENER_HUB_RPC_URL`,
-`EVENER_HUB_TOKEN`, or the scoping variables below, and must live on the
+`EVENER_HUB_MCP_TOKEN`, or the scoping variables below, and must live on the
 defaults (loopback hub, token file in the default state root). The
 `.mcp.json` route, which passes `env`, is the one that lets you point a
 session at a non-default hub or set `EVENER_HUB_MCP_PROJECT` /
@@ -45,7 +45,6 @@ paths via its `mcp_configs`:
       "command": "node",
       "args": ["/path/to/evener/checkout/hub-mcp/dist/src/index.js"],
       "env": {
-        "EVENER_HUB_TOKEN": "",
         "EVENER_HUB_MCP_PROJECT": "/absolute/path/to/one/project"
       }
     }
@@ -53,14 +52,12 @@ paths via its `mcp_configs`:
 }
 ```
 
-One entry in that example earns its own explanation: the empty
-`EVENER_HUB_TOKEN`. The hub passes an internal per-hub token to every
-session it spawns under that same variable name (it authenticates the
-hub's dials to the session's daemon, and the hub's own `/rpc` refuses
-it). A server wired into a hub-spawned session inherits that value and
-would prefer it over the token file. The empty string clears the
-inheritance so the token-file default wins — keep it in every wiring
-inside hub-spawned sessions; it is harmless anywhere else.
+The token variable is `EVENER_HUB_MCP_TOKEN`, deliberately not
+`EVENER_HUB_TOKEN`: the hub passes an internal per-hub token to every
+session it spawns under that older name (it authenticates the hub's dials
+to the session's daemon, and the hub's own `/rpc` refuses it), so a
+server that read it would silently break inside every hub-spawned
+session. With `EVENER_HUB_MCP_TOKEN` unset, the token-file default wins.
 
 The recommended server name is `hub`, so the session sees tools named
 `hub__list_sessions`, `hub__start_session`, `hub__send_message`,
@@ -109,7 +106,7 @@ environment, set through the `.mcp.json` entry's `env` map:
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `EVENER_HUB_RPC_URL` | Hub AppWire `/rpc` WebSocket URL | `ws://127.0.0.1:9180/rpc` |
-| `EVENER_HUB_TOKEN` | Hub capability token, verbatim; an empty string clears an inherited value (see the wiring note above) | — |
+| `EVENER_HUB_MCP_TOKEN` | Hub capability token, verbatim (wins over the file) | — |
 | `EVENER_HUB_TOKEN_FILE` | A file containing the token | `<state root>/auth-token` |
 | `EVENER_HUB_STATE_ROOT` | Hub state root for the default above | `${XDG_STATE_HOME:-$HOME/.local/state}/evener` |
 | `EVENER_HUB_MCP_READONLY` | `1` registers only the read tools — supervision without mutation | unset: all tools |
@@ -143,7 +140,7 @@ repositories you may not control:
   the repo. Scope the entry per launch or per session; do not rely on a
   perimeter.
 - **Token placement.** Prefer the token-file default over pasting a token
-  into config files. `EVENER_HUB_TOKEN` inside a mcp.json `env` map is
+  into config files. `EVENER_HUB_MCP_TOKEN` inside a mcp.json `env` map is
   session-readable: the global `~/.config/evener/mcp.json` is not masked
   from session reads, so any session with read access outside its worktree
   can read the token back out of it.

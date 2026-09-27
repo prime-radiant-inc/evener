@@ -253,12 +253,24 @@ them where they conflict. Code and documentation changed together.
   to spawned evener serve daemons") — a bearer for the hub's dials to
   the daemon that the hub's own `/rpc` refuses (server/server.go
   authorizes only the auth-token file value). A wiring inside a
-  hub-spawned session therefore sets `EVENER_HUB_TOKEN` to the empty
-  string so the token-file default wins; the operator doc and the e2e
-  harness both carry that recipe, and the gate asserts its mcp.json
-  contains no token. The product-side fix — stop overloading the name,
+  hub-spawned session therefore needed the wave-3 mitigation — setting
+  `EVENER_HUB_TOKEN` to the empty string in the wiring so the
+  token-file default won — and the gate asserted its mcp.json contains
+  no token. The product-side fix — stop overloading the name,
   or accept the spawner token on `/rpc` — is follow-up work outside
-  this server.
+  this server. Resolved 2026-09-27, on Jesse's call, by the third way:
+  this server reads `EVENER_HUB_MCP_TOKEN` and deliberately ignores
+  `EVENER_HUB_TOKEN`, so an inherited spawner token can never shadow the
+  file default. The hub-side overload of the older name remains by
+  design.
+- **Scoped tokens: declined** (2026-09-27, Jesse's call). Scoped or
+  read-only hub capability tokens were the critique's proposed deep fix
+  for the trust boundary (a project-layer-wired session holding
+  full-hub power). The hub stays bearer-only on the single-user hub;
+  the mitigations that stand are wiring discipline (per-session wiring,
+  the global-layer warning in the operator doc), the MCP-layer scoping
+  knobs (`EVENER_HUB_MCP_READONLY`, `EVENER_HUB_MCP_PROJECT`), and the
+  untrusted-content framing in the tool descriptions.
 - **The honest wait (D7).** `wait_for_activity` no longer reports a quiet
   timeout when something is wrong. Waits disclose events skipped past the
   return limit, ring-buffer eviction gaps, how many sessions are actually

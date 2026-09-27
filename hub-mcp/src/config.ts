@@ -47,7 +47,7 @@ export function stateRoot(env: Record<string, string | undefined>): string {
 }
 
 /**
- * resolveConfig picks the hub URL and token from env. EVENER_HUB_TOKEN wins;
+ * resolveConfig picks the hub URL and token from env. EVENER_HUB_MCP_TOKEN wins;
  * otherwise the token file is read (EVENER_HUB_TOKEN_FILE, defaulting to
  * <state root>/auth-token). readFile is injectable for tests; the trimming,
  * the empty-file refusal, and the actionable missing-file error all live
@@ -67,11 +67,16 @@ export function resolveConfig(
     );
   }
   const projectScope = projectScopeRaw ? path.resolve(projectScopeRaw) : undefined;
-  if (env.EVENER_HUB_TOKEN && env.EVENER_HUB_TOKEN.trim() !== "") {
+  // EVENER_HUB_MCP_TOKEN, deliberately not EVENER_HUB_TOKEN: the hub
+  // injects its internal spawner token into every session it spawns under
+  // that name (envvars/envvars.go) — a bearer for the hub's dials to the
+  // session's daemon that the hub's own /rpc refuses — so reading it would
+  // silently break every hub-spawned session's token-file default.
+  if (env.EVENER_HUB_MCP_TOKEN && env.EVENER_HUB_MCP_TOKEN.trim() !== "") {
     return {
       url,
-      token: env.EVENER_HUB_TOKEN.trim(),
-      tokenSource: "EVENER_HUB_TOKEN",
+      token: env.EVENER_HUB_MCP_TOKEN.trim(),
+      tokenSource: "EVENER_HUB_MCP_TOKEN",
       readOnly: readOnly || undefined,
       projectScope,
     };
@@ -83,12 +88,14 @@ export function resolveConfig(
   } catch (err) {
     throw new Error(
       `cannot read the hub token file ${file}: ${err instanceof Error ? err.message : String(err)}. ` +
-        `Set EVENER_HUB_TOKEN, point EVENER_HUB_TOKEN_FILE at the hub's auth-token file, or start the hub so it creates one.`,
+        `Set EVENER_HUB_MCP_TOKEN, point EVENER_HUB_TOKEN_FILE at the hub's auth-token file, or start the hub so it creates one.`,
     );
   }
   const token = raw.trim();
   if (!token) {
-    throw new Error(`the hub token file ${file} is empty; start the hub so it writes a token, or set EVENER_HUB_TOKEN`);
+    throw new Error(
+      `the hub token file ${file} is empty; start the hub so it writes a token, or set EVENER_HUB_MCP_TOKEN`,
+    );
   }
   return { url, token, tokenSource: `file ${file}`, readOnly: readOnly || undefined, projectScope };
 }

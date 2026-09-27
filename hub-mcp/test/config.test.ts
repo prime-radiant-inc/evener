@@ -10,11 +10,22 @@ test("stateRoot honors the explicit override, then XDG, then HOME", () => {
 });
 
 test("an explicit token wins over the token file", () => {
-  const config = resolveConfig({ EVENER_HUB_TOKEN: "  abc  " }, () => {
-    throw new Error("must not read a file when EVENER_HUB_TOKEN is set");
+  const config = resolveConfig({ EVENER_HUB_MCP_TOKEN: "  abc  " }, () => {
+    throw new Error("must not read a file when EVENER_HUB_MCP_TOKEN is set");
   });
   assert.equal(config.token, "abc");
-  assert.equal(config.tokenSource, "EVENER_HUB_TOKEN");
+  assert.equal(config.tokenSource, "EVENER_HUB_MCP_TOKEN");
+});
+
+test("EVENER_HUB_TOKEN is deliberately not read: the hub overloads that name", () => {
+  // The hub injects its internal spawner token into every session it spawns
+  // as EVENER_HUB_TOKEN (envvars/envvars.go) — a bearer for the hub's dials
+  // to the session's daemon that the hub's own /rpc refuses. This server
+  // reads EVENER_HUB_MCP_TOKEN instead, so an inherited spawner token can
+  // never shadow the token-file default inside a hub-spawned session.
+  const config = resolveConfig({ EVENER_HUB_TOKEN: "spawner-token", HOME: "/h" }, () => "file-token");
+  assert.equal(config.token, "file-token");
+  assert.match(config.tokenSource, /auth-token/);
 });
 
 test("the token file defaults to the state root and is trimmed", () => {
@@ -39,7 +50,7 @@ test("a missing token file is an actionable error", () => {
       resolveConfig({ HOME: "/home/jesse" }, () => {
         throw new Error("ENOENT: no such file");
       }),
-    /cannot read the hub token file .*auth-token.*Set EVENER_HUB_TOKEN/,
+    /cannot read the hub token file .*auth-token.*Set EVENER_HUB_MCP_TOKEN/,
   );
 });
 
@@ -48,35 +59,35 @@ test("an empty token file is refused, not silently accepted", () => {
 });
 
 test("the default URL is the hub's default listener, overridable", () => {
-  assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t" }).url, "ws://127.0.0.1:9180/rpc");
-  assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_RPC_URL: "ws://h:1/rpc" }).url, "ws://h:1/rpc");
+  assert.equal(resolveConfig({ EVENER_HUB_MCP_TOKEN: "t" }).url, "ws://127.0.0.1:9180/rpc");
+  assert.equal(resolveConfig({ EVENER_HUB_MCP_TOKEN: "t", EVENER_HUB_RPC_URL: "ws://h:1/rpc" }).url, "ws://h:1/rpc");
 });
 
 test("EVENER_HUB_MCP_READONLY enables read-only mode only for the literal 1", () => {
-  assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_READONLY: "1" }).readOnly, true);
+  assert.equal(resolveConfig({ EVENER_HUB_MCP_TOKEN: "t", EVENER_HUB_MCP_READONLY: "1" }).readOnly, true);
   for (const value of ["true", "yes", "0", "1 ", ""]) {
     assert.equal(
-      resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_READONLY: value }).readOnly,
+      resolveConfig({ EVENER_HUB_MCP_TOKEN: "t", EVENER_HUB_MCP_READONLY: value }).readOnly,
       undefined,
       `EVENER_HUB_MCP_READONLY=${JSON.stringify(value)} must not read as enabled`,
     );
   }
-  assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t" }).readOnly, undefined);
+  assert.equal(resolveConfig({ EVENER_HUB_MCP_TOKEN: "t" }).readOnly, undefined);
 });
 
 test("EVENER_HUB_MCP_PROJECT sets the scope and refuses non-absolute values", () => {
   assert.equal(
-    resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "/home/jesse/git/evener" }).projectScope,
+    resolveConfig({ EVENER_HUB_MCP_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "/home/jesse/git/evener" }).projectScope,
     "/home/jesse/git/evener",
   );
   assert.equal(
-    resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "/home/jesse/git/evener/" }).projectScope,
+    resolveConfig({ EVENER_HUB_MCP_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "/home/jesse/git/evener/" }).projectScope,
     "/home/jesse/git/evener",
   );
-  assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "  " }).projectScope, undefined);
-  assert.equal(resolveConfig({ EVENER_HUB_TOKEN: "t" }).projectScope, undefined);
+  assert.equal(resolveConfig({ EVENER_HUB_MCP_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "  " }).projectScope, undefined);
+  assert.equal(resolveConfig({ EVENER_HUB_MCP_TOKEN: "t" }).projectScope, undefined);
   assert.throws(
-    () => resolveConfig({ EVENER_HUB_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "git/evener" }),
+    () => resolveConfig({ EVENER_HUB_MCP_TOKEN: "t", EVENER_HUB_MCP_PROJECT: "git/evener" }),
     /EVENER_HUB_MCP_PROJECT must be an absolute path \(got "git\/evener"\)/,
   );
 });
