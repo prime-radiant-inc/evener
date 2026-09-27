@@ -464,6 +464,7 @@ it("opens a search result the way the Board opens its row, marking it seen", asy
 	// A session only in Needs you (past Live's loaded pages) is found too.
 	expect(seenMarkers(id).isSeen(asking)).toBe(false);
 	pressLabel(tree, "Open Pick a name");
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:ask", title: "Pick a name" });
 	expect(seenMarkers(id).isSeen(asking)).toBe(true);
 	// A session the Board doesn't list has no Finished state to clear.
 	pressLabel(tree, "Open Old report");
