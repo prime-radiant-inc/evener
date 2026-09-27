@@ -819,6 +819,46 @@ type EvenerThread struct {
 	// a model ref. Snapshot-only like the effort fields beside it; live updates
 	// arrive as thread/vision-model/changed.
 	VisionModel string `json:"visionModel,omitempty"`
+	// Activity is the pulse meter of a live root session's whole tree (spec
+	// 16.4, S5): the root and every in-process descendant. It rides thread/list
+	// rows only, never a thread/read snapshot, because nothing announces its
+	// changes to a subscriber; the hub serves it through evener/activity/read,
+	// never navigation. Absent on descendant rows and from an older daemon.
+	Activity *ThreadActivity `json:"activity,omitempty"`
+	// LastTurnEndedAt is when the session's last turn ended, in Unix
+	// milliseconds (S4); absent before any turn has ended and from an older
+	// daemon. The hub compares it with its seen-through marker to tell a
+	// Finished session from an Idle one. Snapshot-only: no notification
+	// carries it.
+	LastTurnEndedAt int64 `json:"lastTurnEndedAt,omitempty"`
+	// Subagents tallies a live root session's whole delegate tree (S3), read
+	// from the root's delegate controller when the row is listed. It rides
+	// thread/list root rows only, when the tree has at least one subagent, and
+	// never a thread/read snapshot: no notification announces its changes.
+	Subagents *SubagentTally `json:"subagents,omitempty"`
+}
+
+// ThreadActivity is one pulse meter sample. Minutes holds seven one-minute
+// counts, oldest first, the last ending when the row was listed; each counts
+// the transcript items that finished and the tool output events in that minute.
+// LastActivityAt is the Unix-millisecond time of the tree's newest transcript
+// motion (a turn or item starting, a message or reasoning summary streaming, an
+// item finishing, a tool writing output), or the time the daemon began serving
+// this session when nothing has moved since.
+type ThreadActivity struct {
+	Minutes        []int `json:"minutes"`
+	LastActivityAt int64 `json:"lastActivityAt"`
+}
+
+// SubagentTally counts a live root session's subagents, at every depth, by how
+// each one's latest run stands (spec 9, S3). Running: no run has ended yet, or
+// a run is open again after the last one ended. Failed: the latest run ended
+// failed or exhausted. Done: it ended any other way (completed, cancelled or
+// stopped), including a subagent idle between runs.
+type SubagentTally struct {
+	Running int `json:"running"`
+	Failed  int `json:"failed"`
+	Done    int `json:"done"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the

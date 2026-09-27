@@ -58,7 +58,7 @@ Other sources:
   - No daemon, harness, thread, source or runtime in anything on screen (principle 7).
 - **Calm** (spec principle 2):
   - A control appears only when it can act.
-  - No screen carries a Reconnect button, asks you to reconnect, or offers pull-to-refresh.
+  - No screen carries a Reconnect button, asks you to reconnect, or offers pull-to-refresh. Today's administration screens (ruling 12) keep their own controls until #2539, except that they stop asking you to reconnect (Task 27).
   - Nothing asks you to do what the app does itself.
 - **Color:** only from `useColors().palette`.
   - Amber (`attentionInk`) only where a human is needed: an offline host, "Sign-in expired", Start blocked by an offline host.
@@ -85,7 +85,7 @@ Other sources:
   - New kv-store keys:
     - `evener.native.display` (device-wide, never cleared with a hub);
     - `evener.native.recipes.${hubId}` and `evener.native.launch-history.${hubId}`, both removed by `ConnectionProvider.removeHub`.
-  - The creation draft gains one optional field, `source` (Question 4).
+  - The creation draft gains one optional field, `source` (ruling 28).
 - **Tests** meet the hub at the request boundary: a fake `request`/`onNotification` client, or `scriptedClient` from `src/renderNative.testkit.tsx`.
   - Screens render through `render` and `renderedText` from the same kit, with `react-native` mocked by `nativeModuleMock()` and `expo-symbols` by `{ SymbolView: "SymbolView" }`.
   - Never mock the module under test.
@@ -116,7 +116,7 @@ The roadmap starts this phase once phase 4's PRs are on main. Phases 2 to 4 are 
 | The notices' actions (`src/board/notices.ts`, `src/board/Notices.tsx`) | phase 2, Task 14 | Tasks 11, 13 and 15 | Skip that task's rewire step and say so in the PR. |
 | `expo-symbols` | phase 2, Task 4 | every screen | Stop: phase 2 must land first. |
 | `DETAIL_LEVELS` in `src/session/detailLevels.ts`: spec 8.2's table as `{ level, label, description }[]` | phase 3, Task 12 | Task 7 | Create that module with spec 8.2's table in that shape, and use it there. |
-| The model list (recent first, then grouped by provider) | phase 3, Task 21's model sheet (`src/session/ModelSheet.tsx`, spec 8.5) | Task 21 | Build the list in `src/newSession/ModelList.tsx` (Task 21). |
+| The model list (recent first, then grouped by provider) | phase 3, Task 21: the list `src/ModelPicker.tsx` renders, which its `ModelSheet` route shows (spec 8.5). Reuse the list, never the route, which reads a session's host (ruling 27) | Task 21 | Build the list in `src/newSession/ModelList.tsx` (Task 21). |
 | `expo-web-browser` (SFSafariViewController) | phase 3, Notes & links (spec 8.8) | Task 14 | `npx expo install expo-web-browser`, then regenerate the pod lock. |
 | The session's ⋯ menu | phase 3 (spec 8.7) | Task 25 | Add the item where the session screen builds its menu today. |
 
@@ -127,7 +127,7 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
 1. **The sheets are modal with a nested stack.**
    - `presentation: "modal"` is the native-stack presentation documented to host a nested stack (`@react-navigation/native-stack`'s types: "this also allows for a nested stack to be rendered inside the screen"). `formSheet`'s detents make no such promise.
    - Pickers and detail pages push inside the sheet with a Back to the form, as iOS's own forms do (Calendar's New Event). A sheet over a sheet over the Board would stack three layers.
-   - The spec's medium detent stays with the session's own pickers (phase 3).
+   - The spec's medium detent stays with the session's own pickers (phase 3's ruling 37, on phase 2's native sheets; ruling 27).
 2. **A host's reads go to that host.**
    - `model/list`, `evener/projects/recent`, `evener/paths/complete`, `evener/path/validate`, `evener/dirs/create`, `evener/git/head`, `evener/plugin/preview` and `evener/launch/resolve` take no host. Each answers for the machine that receives it.
    - For another host, the phone wraps them in `evener/host/request { host, method, params }`. The hub forwards exactly these methods (`remoteHostAdminMethods`, `cmd/evener-hub/app_host_admin.go`; the spawn form's subset is `cmd/evener-hub/host_request_methods.txt`).
@@ -164,13 +164,13 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
     - Hubs opens the root `Hubs`;
     - "Hub settings" opens `HubSettings` (keyboard shortcuts, launch defaults and the upgrade live there today).
 11. **In-app alerts ship with phase 6.** The Alerts page's five toggles control banners, holds and haptics that phase 6 builds, and a toggle that controls nothing breaks principle 2. The coordinator ruled this way on 2026-09-26. This PR moves the Alerts page from the roadmap's phase 5 row to phase 6's.
-12. **Desktop-only settings leave the phone** (spec 12's footer, spec 3's non-goals):
-    - keyboard shortcuts;
-    - launch defaults and project launch settings (raw launch configuration);
-    - the hub's runtime, storage, agents and MCP servers;
-    - adding, editing, removing and re-defaulting provider instances (the prototype: "Add providers from the web app.").
+12. **Today's administration screens stay reachable from the Hub** (spec 12's More). Jesse, 2026-09-26: "We *should* allow full admin on the phone, but that can be a later phase." So this phase deletes none of them:
+    - keyboard shortcuts (`KeybindingPreferences`);
+    - launch defaults and project launch settings (`LaunchSettings`);
+    - the hub's runtime, storage, agents and MCP servers (today's `HubSettings`, less its update section and its links, Task 5);
+    - adding, editing, removing and re-defaulting provider instances (Providers' MANAGE groups, Task 13).
 
-    The Hub sheet doesn't link them. Until Question 2 is answered, a temporary MORE group keeps "Keyboard shortcuts" and "Launch defaults" reachable. The last PR deletes the screens once the answer is yes.
+    The Hub's MORE group links the first three, with the rows "Keyboard shortcuts", "Launch defaults" and "Hub settings" (Task 5). Full administration in the redesign's language is a later phase (#2539). Until then these screens keep their own controls and layout, except the Reconnect copy Task 27 retires.
 13. **The harness choice goes.** The hub offers one harness, `evener` (`launchHarnessDescriptors`, `cmd/evener-hub/app_models.go`), and principle 7 keeps the word off screen. The sheet sends no `harness`. The draft keeps writing `harness: ""`, so its stored shape doesn't change.
 14. **Access and More options are launch overrides.**
     - Access writes `sandbox`: `off` is Full access, then `workspace-write`, `read-only` and `restricted`.
@@ -200,7 +200,8 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
     - A page that has never loaded says "Connecting to <hub>…" instead of today's walls.
 22. **Hub updates.**
     - The header's "up to date" or "Update available" comes from `evener/update/check`, read when the Hub sheet opens.
-    - About's "Update hub" appears only when an update is available. It confirms, then runs `evener/update/apply`, which installs and restarts the hub as the web's Updates section does. The phone reconnects on its own (`hubConnection.ts`), and the next check reads the new version (Question 3).
+    - About's "Update hub" appears only when an update is available. It confirms, then runs `evener/update/apply`, which installs and restarts the hub as the web's Updates section does. The phone reconnects on its own (`hubConnection.ts`), and the next check reads the new version.
+    - Jesse, 2026-09-26: "hub update: install and restart as the web: yes. should use a shared api." So the check and the apply run through one update client in `@evener/appwire-client`, lifted from the web's store (`cmd/evener-hub/frontend/src/stores/hubUpdate.ts`) before the phone points at it (Task 4). The phone's install-only `evener/upgrade` path goes (Task 5).
     - About doesn't repeat the hub's version (spec 12). It is a group on the Hub's home, not a page.
 23. **First run lands here.** Spec 15 isn't on any phase's row, and its parts are this phase's: the scanner, pasting a link, and the saved-hub list. The root `Hubs` route keeps its name, since restore depends on it (`restoredStack`, `src/location.ts`), and shows spec 15's screen. Entering an address and token by hand stays as a quiet third choice, "Enter the address", so a hub without a pairing page is still reachable.
 24. **"New session like this" copies what the wire has.** It copies the host (the ref's source), project (`cwd`), model (`modelProvider`) and effort (`reasoningEffort`). A session's plugins and access aren't on `Thread`, so those come from "Same as last time". Spec 8.7's menu doesn't list the item; spec 11 puts it there, so Task 25 adds it.
@@ -215,20 +216,17 @@ Decisions this plan makes where the spec is silent, or where the data it wants d
     - S18: starting a session in a new worktree branch, for spec 11's Branch (ruling 15).
 
     This PR adds both to spec 18's table and to the roadmap's phase 7 row. This phase ships on their fallbacks: no model toggle in Display, and a Branch row that only shows the current branch. The phone switches when each lands, as the roadmap's phase 7 does for every item.
+27. **Native sheets, and the sheets this phase keeps as they are.** Jesse approved native sheets that open pickers at half height ("Build the redesign's sheets as native navigation sheets, so pickers open at half height?" "yes"). Phase 2's PR 6 builds them as native-stack formSheet routes (its ruling 28), and phases 3 and 4 build their detented sheets on them. This phase's sheets keep the shapes rulings 1 and 9 give them, because a formSheet doesn't fit them:
+    - Hub and New session stay `presentation: "modal"` routes, each holding its own nested stack (ruling 1). The pickers and detail pages inside push within the sheet, so they need no detents of their own.
+    - A provider's and a plugin's detail sheets, and sign-in, stay RN `Modal` page sheets over their lists (ruling 9), because their mutation gates, fences and sign-in flows live with the list.
+    - Presenting a formSheet route dismisses any other presented view controller (phase 2's ruling 28), so nothing inside Hub or New session opens one. "New session like this" (Task 25) opens New session from the session's ⋯ menu, a native menu, not from a sheet.
+    - A relaunch skips only formSheet routes (`routeToSave`, phase 2's Task 18.1). With Hub or New session open, it reopens the Board, as it does today (`locationForRoute` gives both `{ hubId }`).
+    - Phase 3's model sheet is a session sheet that reads its session's host. New session's model picker (Task 21) reuses its list, never the route.
+28. **Drafts saved before this phase still load.** The saved creation draft's new `source` field is optional, and absent means the hub's own machine (Task 19). This is backward compatibility for stored data, which Jesse allowed on 2026-09-26: "We do not need back-compat on drafts, but we don't not need it." Without it, a draft saved before this phase would fail to load with "saved creation draft could not be loaded".
 
 ## Questions for Jesse
 
-The coordinator settled question 1 (the Alerts page moves to phase 6: ruling 11) and question 5 (S17 and S18 join the server lane: ruling 26) on 2026-09-26. The three below stay open. Each keeps its number and says what this plan builds until you answer.
-
-2. **Desktop administration leaves the phone:** delete these screens in this phase's last PR (Task 28)?
-   - the keyboard-shortcut editor;
-   - launch defaults and project launch settings;
-   - the hub's runtime, storage, agents and MCP pages;
-   - adding, editing, removing and re-defaulting provider instances.
-
-   I recommend yes: spec 12 and the prototype send them to the web, which has all of them. Until you answer, the Hub keeps "Keyboard shortcuts" and "Launch defaults" in a temporary MORE group.
-3. **Hub updates:** replace the phone's install-only upgrade with `evener/update/apply`, which installs and restarts the hub as the web does? Today the phone calls `evener/upgrade`, then shows a restart message nobody on a phone can act on. I recommend yes. This plan assumes yes: Task 4 builds the new controller, and Task 5 deletes `hubUpgrade.ts`, `hubUpgradeRepository.ts`, `hubUpgradeValidation.ts`, `nativeHubUpgrade.ts` and `HubUpgradeSection.tsx`.
-4. **Drafts saved before this phase have no host:** may the saved draft's new `source` field be optional, with absent meaning the hub's own machine, so those drafts still load? This is backward compatibility for stored data, which needs your approval. I recommend yes. The alternative is failing to load them, with the "saved creation draft could not be loaded" error. This plan assumes yes (Task 19), so PR 8 waits for your answer before it starts.
+None open. The coordinator settled question 1 (the Alerts page moves to phase 6: ruling 11) and question 5 (S17 and S18 join the server lane: ruling 26). Jesse answered the other three on 2026-09-26: today's administration screens stay reachable from the Hub, and full administration is a later phase, #2539 (question 2, ruling 12); hub updates install and restart as the web's do, through one client shared with the web (question 3, ruling 22); and drafts saved before this phase keep loading (question 4, ruling 28).
 
 ## Review Focus
 
@@ -253,9 +251,9 @@ The coordinator settled question 1 (the Alerts page moves to phase 6: ruling 11)
 | PR | Tasks | Model | Starts when | Lane |
 |---|---|---|---|---|
 | 1: the Hub sheet | 1-3 | Sonnet for 1-2, Opus (medium) for 3 | phase 4's PRs are on main | A |
-| 8: the New session's rules and reads | 16-19 | Sonnet | phase 4's PRs are on main, and Jesse has answered Question 4 | B |
+| 8: the New session's rules and reads | 16-19 | Sonnet | phase 4's PRs are on main | B |
 | 12: the demo hub serves New session and the Hub | 26 | Sonnet | phase 4's PRs are on main (it builds on #2471, already there) | C |
-| 2: About and hub updates | 4-5 | Sonnet for 4, Opus for 5 | PR 1 lands | A |
+| 2: the shared hub-update client, About and hub updates | 4-5 | Opus for 4 and 5 | PR 1 lands | A |
 | 3: Display | 6-7 | Sonnet for 6, Opus for 7 | PR 1 lands | A2 |
 | 4: Hubs, pairing and first run | 8-9 | Opus | PR 1 lands | A3 |
 | 5: Hosts | 10-11 | Sonnet for 10, Opus for 11 | PRs 1 and 2 land | A4 |
@@ -264,7 +262,7 @@ The coordinator settled question 1 (the Alerts page moves to phase 6: ruling 11)
 | 9: the New session sheet | 20-21 | Opus | PRs 1, 5 and 8 land | B |
 | 10: plugins, access, options and recipes in New session | 22-23 | Opus | PR 9 lands | B |
 | 11: recipes in the Hub, and New session like this | 24-25 | Opus | PR 10 lands | B |
-| 13: the last Reconnect, desktop-only screens, screenshots | 27-29 | Opus | every other PR lands | A |
+| 13: the last Reconnect, DESIGN.md, screenshots | 27-29 | Opus | every other PR lands | A |
 
 - After PR 1, PRs 2 to 7 can run as parallel lanes. Each touches `src/hub/HubSheet.tsx` (one route) and `src/hub/HubHome.tsx` (one row), so a rebase conflict is a line or two.
 - PR 9 needs PR 5's hosts controller for the host picker.
@@ -1361,320 +1359,116 @@ Open PR 1: "feat(native): the Hub sheet (phase 5, PR 1)". The description says t
 
 ---
 
-## PR 2: About and hub updates
+## PR 2: the shared hub-update client, About and hub updates
 
-### Task 4: The hub-update controller
+### Task 4: The hub-update client moves into the package
+
+The web checks for and applies the hub's own updates through `cmd/evener-hub/frontend/src/stores/hubUpdate.ts`. Jesse asked for one API that both clients share (ruling 22), so this task lifts that store's logic into `@evener/appwire-client` first, with the web wrapping it unchanged; Task 5 then points the phone at it.
 
 **Files:**
-- Create: `mobile-native/src/hub/hubUpdate.ts`
-- Test: `mobile-native/src/hub/hubUpdate.test.ts`
+- Create: `appwire-client/typescript/hubUpdate.ts` and `appwire-client/typescript/hubUpdate.test.ts`
+- Modify:
+  - `appwire-client/typescript/index.ts` (root exports) and the package README's module list;
+  - `cmd/evener-hub/frontend/src/stores/hubUpdate.ts`: its zustand store becomes a thin wrapper over the package's controller, with the same exports and behavior.
+- Test: `appwire-client/typescript/hubUpdate.test.ts`; the web's `src/stores/hubUpdate.test.ts` and `src/panes/settings/sections/hubUpdates.test.tsx` pass unchanged.
 
 **Interfaces:**
-- Consumes: `friendlyErrorMessage` and the `UpdateCheckResponse` and `UpdateApplyResponse` types from `@evener/appwire-client`; `ConversationClientLike` (`mobile/src/services/conversation.ts`).
-- Produces:
-  - `APPLY_TIMEOUT_MS = 360_000`;
-  - `interface HubUpdateState { check: UpdateCheckResponse | null; checking: boolean; applying: boolean; restartingInto: string | null; error: string | null }`;
-  - `interface HubUpdateController { getSnapshot(): HubUpdateState; subscribe(listener: () => void): () => void; check(): Promise<void>; apply(): Promise<void>; dispose(): void }`;
-  - `createHubUpdateController(client: Pick<ConversationClientLike, "request">): HubUpdateController`.
+- Consumes: `AppwireClientLike`, `UpdateCheckResponse`, `ConnectionClosedError`, `WireError` and `friendlyErrorMessage`, all the package's own.
+- Produces, as root exports of `@evener/appwire-client`:
+  - `type UpdateChannel = "release" | "snapshot"` and `APPLY_TIMEOUT_MS = 6 * 60_000`, moved from the web store, which re-exports both;
+  - `interface HubUpdateState { channel: UpdateChannel | null; check: UpdateCheckResponse | null; checking: boolean; checkError: string | null; applying: boolean; applyError: string | null; restarting: boolean; restartTimedOut: boolean }`, the web store's state without its methods;
+  - `interface HubUpdatePorts { client(): Pick<AppwireClientLike, "request">; awaitRestart(previousVersion: string | null): Promise<boolean> }`:
+    - `client()` returns the connected client, or throws when there is none, so a request that was never sent reports as an error (the web's `requireClient`);
+    - `awaitRestart` runs once the hub answered that it is restarting, or its answer was lost on the way, and resolves `true` once the new hub is up, or `false` when it didn't come back;
+  - `interface HubUpdateController { getState(): HubUpdateState; subscribe(listener: () => void): () => void; setChannel(channel: UpdateChannel): void; runCheck(): Promise<void>; apply(): Promise<void>; dispose(): void }`
+  - `createHubUpdateController(ports: HubUpdatePorts): HubUpdateController`
 
-- [ ] **Step 1: Write the failing tests**
+**Requirements (ruling 22):**
+1. **The web's behavior, moved.** The controller does exactly what the web store does today (`stores/hubUpdate.ts:117-215`):
+   - `setChannel` retires any check in flight and clears the result, its error, the apply error and `restartTimedOut`;
+   - `runCheck` first clears the previous result, its error and a stale `restartTimedOut`, then sends `evener/update/check` with `{ channel: channel ?? "" }`, and only the newest check writes its answer or its error (`friendlyErrorMessage`);
+   - `apply` does nothing while applying or restarting. It refuses without a check ("Check for updates first"), for a check from another channel ("That result is stale; run a fresh check first"), and when nothing is waiting ("Already up to date"), sending nothing. Otherwise it sends `evener/update/apply` with `{ channel: channel ?? "" }` and `{ timeoutMs: APPLY_TIMEOUT_MS }`;
+   - an answer of `restarting: false` is "Already up to date";
+   - a `WireError`, a `ConnectionClosedError`, or an error whose message says "cannot call" means the hub refused or never got the request, and stays an error. Any other failure means the answer was lost, and waits for the restart as a success does.
+2. **Restarting.** After the hub answered (or its answer was lost), `restarting` is true until `ports.awaitRestart(check.currentVersion)` resolves: `true` clears it, and `false` clears it and sets `restartTimedOut`.
+3. **No host globals.** The module uses no zustand, `fetch`, timers or `window`; the restart wait is a port, as every host API is in the package. `dispose()` stops notifying listeners.
+4. **The web wraps it.** `stores/hubUpdate.ts` keeps its exports (`hubUpdateStore` with `setChannel`, `runCheck` and `apply`; `useHubUpdateStore`; `resetHubUpdateStoreForTests`; `RESTART_POLL_MS` and `RESTART_TIMEOUT_MS`), re-exports `APPLY_TIMEOUT_MS` and `UpdateChannel`, mirrors the controller's state through `subscribe`, and calls the controller from its three methods. Its ports:
+   - `client` is `requireClient` (`connectedClientPort("hubUpdate")`);
+   - `awaitRestart` is today's `waitForNewHub`: it polls `/api/health` every `RESTART_POLL_MS` through the injectable `fetchImpl` until the version differs, then calls the injectable `reload` and resolves `true`, or resolves `false` after `RESTART_TIMEOUT_MS`.
 
-```ts
-// mobile-native/src/hub/hubUpdate.test.ts
-import { describe, expect, it } from "vitest";
-import { type UpdateCheckResponse, WireError } from "@evener/appwire-client";
-import { APPLY_TIMEOUT_MS, createHubUpdateController } from "./hubUpdate";
+   `resetHubUpdateStoreForTests` builds a fresh controller over the ports it injects, so the web's tests keep driving the poll with fake timers.
 
-const upToDate: UpdateCheckResponse = {
-	channel: "release",
-	buildChannel: "release",
-	currentVersion: "0.9.412",
-	currentCommit: "abc1234",
-	updateAvailable: false,
-	applicable: true,
-};
-const waiting: UpdateCheckResponse = { ...upToDate, latestTag: "v0.9.413", latestCommit: "def5678", updateAvailable: true };
+- [ ] **Step 1: Write the failing tests** in `appwire-client/typescript/hubUpdate.test.ts`, over a scripted client (each request answered by the test) and a scripted `awaitRestart`. Port the web test's fixtures (`stores/hubUpdate.test.ts`) and cover:
+  - `runCheck` sends `evener/update/check` with the selected channel, and `""` with none; of two overlapping checks, only the newest writes, and a late failure from a superseded one writes nothing;
+  - a failed check keeps a `WireError`'s own message, and shows the generic message for anything else, clearing the previous result;
+  - `setChannel` clears the result and a stale `restartTimedOut`;
+  - `apply` sends nothing without a check, for another channel's check, or for an up-to-date one, with each refusal's message;
+  - `apply` sends `evener/update/apply` with the channel and `{ timeoutMs: APPLY_TIMEOUT_MS }`, sets `restarting`, and calls `awaitRestart` with the check's `currentVersion`; `true` clears `restarting`, and `false` also sets `restartTimedOut`;
+  - `restarting: false` in the answer reports "Already up to date" and awaits nothing;
+  - a `WireError`, a `ConnectionClosedError` and a "cannot call" error stay errors and await nothing, while a plain `Error` awaits the restart;
+  - a second `apply` while one is in flight sends nothing;
+  - after `dispose()`, a listener hears nothing more.
+- [ ] **Step 2: Run them and watch them fail.** Run: `cd cmd/evener-hub/frontend && npx vitest run ../../../appwire-client/typescript/hubUpdate.test.ts`. Expected: FAIL, the module doesn't exist.
+- [ ] **Step 3: Implement** the controller by moving the web store's logic, add the root exports and the README line ("the hub's own update check and apply, with the restart wait as a port"), then make the web store the wrapper above.
+- [ ] **Step 4: Run them and watch them pass**, with the web's tests unchanged. Run: `cd cmd/evener-hub/frontend && npx vitest run ../../../appwire-client/typescript/hubUpdate.test.ts src/stores/hubUpdate.test.ts src/panes/settings/sections/hubUpdates.test.tsx && npm run typecheck && npx biome check --write ../../../appwire-client/typescript/hubUpdate.ts ../../../appwire-client/typescript/hubUpdate.test.ts src/stores/hubUpdate.ts`, then `make test-api-package` from the repository root.
+- [ ] **Step 5: Commit** (`refactor(appwire-client): one hub-update client for the web and the phone`).
 
-/** A hub whose answers the test hands out one request at a time. */
-function hub() {
-	const requests: { method: string; params: unknown; opts?: { timeoutMs?: number } }[] = [];
-	const settle: { resolve: (value: unknown) => void; reject: (error: unknown) => void }[] = [];
-	const client = {
-		request: (method: string, params: unknown, opts?: { timeoutMs?: number }) => {
-			requests.push({ method, params, opts });
-			return new Promise((resolve, reject) => settle.push({ resolve, reject }));
-		},
-	};
-	return {
-		client: client as unknown as Parameters<typeof createHubUpdateController>[0],
-		requests,
-		answer: (index: number, value: unknown) => settle[index]?.resolve(value),
-		fail: (index: number, error: unknown) => settle[index]?.reject(error),
-	};
-}
-
-async function checked(answer: UpdateCheckResponse) {
-	const h = hub();
-	const updates = createHubUpdateController(h.client);
-	const pending = updates.check();
-	h.answer(0, answer);
-	await pending;
-	return { h, updates };
-}
-
-describe("the hub's own updates", () => {
-	it("reads whether an update is waiting", async () => {
-		const h = hub();
-		const updates = createHubUpdateController(h.client);
-		const pending = updates.check();
-		expect(updates.getSnapshot().checking).toBe(true);
-		expect(h.requests[0]).toMatchObject({ method: "evener/update/check", params: {} });
-		h.answer(0, waiting);
-		await pending;
-		expect(updates.getSnapshot()).toMatchObject({ check: waiting, checking: false, error: null });
-	});
-
-	it("keeps the newest answer when two checks overlap", async () => {
-		const h = hub();
-		const updates = createHubUpdateController(h.client);
-		const first = updates.check();
-		const second = updates.check();
-		h.answer(1, upToDate);
-		await second;
-		h.answer(0, waiting);
-		await first;
-		expect(updates.getSnapshot().check).toEqual(upToDate);
-	});
-
-	it("says what went wrong when a check fails", async () => {
-		const h = hub();
-		const updates = createHubUpdateController(h.client);
-		const pending = updates.check();
-		h.fail(0, new WireError("could not reach GitHub", -32000));
-		await pending;
-		expect(updates.getSnapshot()).toMatchObject({ check: null, checking: false, error: "could not reach GitHub" });
-	});
-
-	it("applies only a waiting update, with the long deadline, and records the restart", async () => {
-		const { h, updates } = await checked(waiting);
-		const applying = updates.apply();
-		expect(h.requests[1]).toMatchObject({
-			method: "evener/update/apply",
-			params: {},
-			opts: { timeoutMs: APPLY_TIMEOUT_MS },
-		});
-		expect(updates.getSnapshot().applying).toBe(true);
-		h.answer(1, { release: "v0.9.413", channel: "release", installed: ["evener"], restarting: true });
-		await applying;
-		expect(updates.getSnapshot()).toMatchObject({ applying: false, restartingInto: "v0.9.413", error: null });
-		await updates.apply();
-		expect(h.requests).toHaveLength(2);
-	});
-
-	it("sends nothing when no update is waiting, or the hub can't update itself", async () => {
-		const current = await checked(upToDate);
-		await current.updates.apply();
-		expect(current.h.requests).toHaveLength(1);
-		const dev = await checked({ ...waiting, applicable: false, buildChannel: "dev" });
-		await dev.updates.apply();
-		expect(dev.h.requests).toHaveLength(1);
-	});
-
-	it("reports a refused apply and lets it be tried again", async () => {
-		const { h, updates } = await checked(waiting);
-		const refused = updates.apply();
-		h.fail(1, new WireError("in-place restart is not supported on this platform", -32000));
-		await refused;
-		expect(updates.getSnapshot()).toMatchObject({
-			applying: false,
-			restartingInto: null,
-			error: "in-place restart is not supported on this platform",
-		});
-		void updates.apply();
-		expect(h.requests).toHaveLength(3);
-	});
-
-	it("goes quiet once disposed", async () => {
-		const h = hub();
-		const updates = createHubUpdateController(h.client);
-		let heard = 0;
-		updates.subscribe(() => {
-			heard += 1;
-		});
-		const pending = updates.check();
-		const before = heard;
-		updates.dispose();
-		h.answer(0, waiting);
-		await pending;
-		expect(heard).toBe(before);
-		expect(updates.getSnapshot().check).toBeNull();
-	});
-});
-```
-
-- [ ] **Step 2: Run the tests and watch them fail**
-
-Run: `cd mobile-native && npx vitest run src/hub/hubUpdate.test.ts`
-Expected: FAIL: `Cannot find module './hubUpdate'`.
-
-- [ ] **Step 3: Implement**
-
-```ts
-// mobile-native/src/hub/hubUpdate.ts
-// The hub's own updates (spec 12's header and About). evener/update/check says
-// whether the hub's release channel is ahead of the running build, and
-// evener/update/apply installs it and restarts the hub in place, as the web's
-// Updates section does (frontend/src/stores/hubUpdate.ts). The phone's
-// connection drops with the restart and comes back on its own
-// (hubConnection.ts), and the next check reads the new version.
-import { friendlyErrorMessage, type UpdateCheckResponse } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
-
-/** evener/update/apply downloads, verifies and installs before it answers,
- * which the hub bounds at four minutes; six clears that with room for the
- * reply (the web's APPLY_TIMEOUT_MS). */
-export const APPLY_TIMEOUT_MS = 6 * 60_000;
-
-export interface HubUpdateState {
-	/** The last answer: null before one lands, or after a check failed. */
-	check: UpdateCheckResponse | null;
-	checking: boolean;
-	applying: boolean;
-	/** The release the hub said it is restarting into, once apply answered. */
-	restartingInto: string | null;
-	error: string | null;
-}
-
-export interface HubUpdateController {
-	getSnapshot(): HubUpdateState;
-	subscribe(listener: () => void): () => void;
-	check(): Promise<void>;
-	apply(): Promise<void>;
-	dispose(): void;
-}
-
-const INITIAL: HubUpdateState = {
-	check: null,
-	checking: false,
-	applying: false,
-	restartingInto: null,
-	error: null,
-};
-
-export function createHubUpdateController(client: Pick<ConversationClientLike, "request">): HubUpdateController {
-	let state = INITIAL;
-	let generation = 0;
-	let disposed = false;
-	const listeners = new Set<() => void>();
-	const publish = (change: Partial<HubUpdateState>) => {
-		if (disposed) return;
-		state = { ...state, ...change };
-		for (const listener of listeners) listener();
-	};
-	return {
-		getSnapshot: () => state,
-		subscribe(listener) {
-			listeners.add(listener);
-			return () => {
-				listeners.delete(listener);
-			};
-		},
-		async check() {
-			const mine = ++generation;
-			publish({ checking: true, error: null });
-			try {
-				const answer = await client.request("evener/update/check", {});
-				if (mine === generation) publish({ check: answer, checking: false });
-			} catch (error) {
-				if (mine === generation) publish({ check: null, checking: false, error: friendlyErrorMessage(error) });
-			}
-		},
-		async apply() {
-			const { check, applying, restartingInto } = state;
-			if (disposed || applying || restartingInto !== null || !check?.applicable || !check.updateAvailable) return;
-			publish({ applying: true, error: null });
-			try {
-				const result = await client.request("evener/update/apply", {}, { timeoutMs: APPLY_TIMEOUT_MS });
-				publish({ applying: false, restartingInto: result.release });
-			} catch (error) {
-				publish({ applying: false, error: friendlyErrorMessage(error) });
-			}
-		},
-		dispose() {
-			disposed = true;
-			listeners.clear();
-		},
-	};
-}
-```
-
-- [ ] **Step 4: Run the tests and watch them pass**
-
-Run: `cd mobile-native && npx vitest run src/hub/hubUpdate.test.ts && npm run check`
-Expected: PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add mobile-native/src/hub/hubUpdate.ts mobile-native/src/hub/hubUpdate.test.ts
-git commit -m "feat(native): check for and apply the hub's own updates"
-```
-
-### Task 5: About on the Hub's home, and the old hub settings screen goes
+### Task 5: About on the Hub's home, and the old upgrade goes
 
 **Files:**
 - Modify:
   - `mobile-native/package.json`, `package-lock.json` and `Podfile.lock`: add `expo-application`.
   - `mobile-native/src/hub/HubSheet.tsx`: the context gains `updates`.
   - `mobile-native/src/hub/HubHome.tsx`.
-  - `mobile-native/App.tsx` and `mobile-native/src/screens.tsx`: `HubSettings` goes.
+  - `mobile-native/src/HubSettingsScreen.tsx` (requirement 4) and `mobile-native/src/HubSettingsScreen.reconnect.test.tsx` (its upgrade cases go).
   - `mobile-native/src/location.ts` and `mobile-native/src/location.test.ts`.
-- Delete (Question 3):
-  - `src/HubSettingsScreen.tsx` and `src/HubSettingsScreen.reconnect.test.tsx`;
+- Delete (ruling 22), each once nothing imports it:
   - `src/HubUpgradeSection.tsx` and `src/HubUpgradeSection.test.tsx`;
   - `src/hubUpgrade.ts`, `src/hubUpgrade.test.ts`, `src/hubUpgradeRepository.ts`, `src/hubUpgradeRepository.test.ts`, `src/hubUpgradeValidation.ts` and `src/nativeHubUpgrade.ts`.
 - Test: `mobile-native/src/hub/HubHome.test.tsx`.
 
 **Interfaces:**
-- Consumes: Task 4's controller; `nativeApplicationVersion` and `nativeBuildVersion` from `expo-application`.
-- Produces: `HubSheetContextValue.updates: HubUpdateController`, created per `client` in `HubSheet` with `useMemo`, disposed when the client changes, and checked (`check()`) whenever `ready` turns true for a client: on opening, and after every reconnect.
+- Consumes: Task 4's `createHubUpdateController` from `@evener/appwire-client`; `nativeApplicationVersion` and `nativeBuildVersion` from `expo-application`.
+- Produces: `HubSheetContextValue.updates: HubUpdateController`, created per `client` in `HubSheet` with `useMemo`, disposed when the client changes, and checked (`runCheck()`) whenever `ready` turns true for a client: on opening, and after every reconnect. Its ports:
+  - `client` returns the sheet's client, and throws while there is none;
+  - `awaitRestart(previousVersion)` resolves `true` once the connection is ready again and `evener/update/check` reads a `currentVersion` other than `previousVersion`. It has no timeout of its own, because while the hub is away the sheet's connection line says so (spec 14); it resolves `false` if the controller is disposed first.
 
 **Requirements (spec 12, rulings 12 and 22):**
 1. The status line passes the controller's `check` into `hubStatusLine`, so the header reads "Connected · evener 0.9.412 · up to date" or "… · Update available".
 2. **ABOUT** is the last group on the home page:
    - "Evener for iPhone", valued `${nativeApplicationVersion} (${nativeBuildVersion})`: "0.1.0 (5)". With one of them missing it shows the other; with both missing, "Unknown".
-   - "Update hub", an accent row. It shows only while `check?.applicable && check.updateAvailable && restartingInto === null`, and is disabled while `!ready` or `applying`, reading "Updating…" then.
+   - "Update hub", an accent row. It shows only while `check?.applicable && check.updateAvailable && !restarting`, and is disabled while `!ready` or `applying`, reading "Updating…" then.
    - Tapping "Update hub" asks `Alert.alert(\`Update ${hubName}?\`, \`Install evener ${check.latestTag ?? "the latest release"} on ${hubName}. The hub restarts, and the app reconnects on its own.\`, [{ text: "Cancel", style: "cancel" }, { text: "Update", onPress: () => void updates.apply() }])`.
-   - While `restartingInto` is set, a footer says "Restarting into <release>…".
-   - An `error` shows as a danger footer, with no button: the next opening checks again.
+   - While `restarting`, a footer says `Restarting into ${check.latestTag ?? "the new release"}…`.
+   - `checkError` or `applyError` shows as a danger footer, with no button: the next opening checks again.
    - About doesn't show the hub's version (spec 12: the header already does).
-3. **MORE** stays until Task 28. It holds "Keyboard shortcuts" (replace to `KeybindingPreferences` with `{ hubId }`) and "Launch defaults" (replace to `LaunchSettings` with `{ hubId }`) in place of "Hub settings" (ruling 12; Question 2).
-4. `HubSettings` leaves `App.tsx` and `Routes`. The old screen's other sections leave the phone (spec 12's footer): runtime, storage, agents and MCP servers.
-5. `restoredStack` (`src/location.ts`) restores a saved `keybindings` location as `KeybindingPreferences` alone, without the `HubSettings` screen that used to sit under it. `LocationRepository.read` still accepts the saved shape, so a phone restored mid-edit still reopens the editor. Update `location.test.ts`'s keybindings case to the new stack.
+3. **MORE** is the last group before ABOUT, and it stays (ruling 12). In place of "Hub settings" alone, it holds three rows: "Keyboard shortcuts" (replace to `KeybindingPreferences` with `{ hubId }`), "Launch defaults" (replace to `LaunchSettings` with `{ hubId }`) and "Hub settings" (replace to `HubSettings` with `{ hubId }`).
+4. **`HubSettings` stays**, for the hub's runtime, storage, agents and MCP servers (ruling 12). Its "Hub update" section goes with the old upgrade modules (About replaces it), and so do its links to Providers, Plugins, Transcript display, Keyboard shortcuts and Launch defaults: the Hub sheet has a row for each, and phase 5 retires the routes the first three open (Tasks 7, 13 and 15). Its `HubSettingsScreen.reconnect.test.tsx` keeps its overview cases, and the upgrade cases go with the section.
+5. `restoredStack` (`src/location.ts`) restores a saved `keybindings` location as `KeybindingPreferences` alone, without the `HubSettings` screen that used to sit under it, since the Hub's MORE row now opens it straight from the Board. `LocationRepository.read` still accepts the saved shape, so a phone restored mid-edit still reopens the editor. Update `location.test.ts`'s keybindings case to the new stack.
 6. Stored upgrade checkpoints (`evener:hub-upgrade:<hubId>`) stay where they are: nothing reads them, and deleting them isn't worth a migration.
 
 - [ ] **Step 1: Add expo-application.** From `mobile-native`, with `[ -L node_modules ]` printing nothing, run `npx expo install expo-application`. Then regenerate the pod lock as phase 2's Task 4 Step 6 does. Expected: the lock's diff adds `EXApplication` only.
 - [ ] **Step 2: Write the failing tests** in `HubHome.test.tsx`.
-  - Mock `expo-application` as `{ nativeApplicationVersion: "0.1.0", nativeBuildVersion: "5" }`, and provide `updates` in the context from a real `createHubUpdateController` over a scripted client.
+  - Mock `expo-application` as `{ nativeApplicationVersion: "0.1.0", nativeBuildVersion: "5" }`, and provide `updates` in the context from a real `createHubUpdateController` over a scripted client, with the sheet's ports.
   - About reads "Evener for iPhone" with "0.1.0 (5)".
   - With an up-to-date check, the status line ends "up to date", and no "Update hub" row exists.
   - With a waiting update, "Update hub" shows. Pressing it records one `Alert.alert` (the kit's `alertRequests`) titled "Update Work hub?", and invoking its "Update" button sends `evener/update/apply`.
   - After the apply answers, the row is gone and "Restarting into v0.9.413…" shows.
   - With `ready: false`, the row is disabled.
   - A failed check shows its message as a footer, and no element's text is "Retry" or matches `/\bReconnect\b/`.
-  - MORE's two rows dispatch `REPLACE` to `KeybindingPreferences` and `LaunchSettings`.
+  - MORE's three rows dispatch `REPLACE` to `KeybindingPreferences`, `LaunchSettings` and `HubSettings`.
 - [ ] **Step 3: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/hub/HubHome.test.tsx src/location.test.ts`
 - [ ] **Step 4: Implement**, then delete the old files. Run `npm run check` and remove every import it reports as missing, with no other edits.
-- [ ] **Step 5: Run them and watch them pass.** Run: `cd mobile-native && npx vitest run src/hub src/location.test.ts && npm run check && make test-native-bundle`
+- [ ] **Step 5: Run them and watch them pass.** Run: `cd mobile-native && npx vitest run src/hub src/location.test.ts src/HubSettingsScreen.reconnect.test.tsx && npm run check && make test-native-bundle`
 - [ ] **Step 6: Commit and open PR 2.**
 
 ```bash
-git add mobile-native/package.json mobile-native/package-lock.json mobile-native/Podfile.lock mobile-native/src/hub mobile-native/App.tsx mobile-native/src/screens.tsx mobile-native/src/location.ts mobile-native/src/location.test.ts
-git rm mobile-native/src/HubSettingsScreen.tsx mobile-native/src/HubSettingsScreen.reconnect.test.tsx mobile-native/src/HubUpgradeSection.tsx mobile-native/src/HubUpgradeSection.test.tsx mobile-native/src/hubUpgrade.ts mobile-native/src/hubUpgrade.test.ts mobile-native/src/hubUpgradeRepository.ts mobile-native/src/hubUpgradeRepository.test.ts mobile-native/src/hubUpgradeValidation.ts mobile-native/src/nativeHubUpgrade.ts
+git add mobile-native/package.json mobile-native/package-lock.json mobile-native/Podfile.lock mobile-native/src/hub mobile-native/src/HubSettingsScreen.tsx mobile-native/src/HubSettingsScreen.reconnect.test.tsx mobile-native/src/location.ts mobile-native/src/location.test.ts
+git rm mobile-native/src/HubUpgradeSection.tsx mobile-native/src/HubUpgradeSection.test.tsx mobile-native/src/hubUpgrade.ts mobile-native/src/hubUpgrade.test.ts mobile-native/src/hubUpgradeRepository.ts mobile-native/src/hubUpgradeRepository.test.ts mobile-native/src/hubUpgradeValidation.ts mobile-native/src/nativeHubUpgrade.ts
 git commit -m "feat(native): About and hub updates on the Hub's home"
 ```
 
-Open PR 2: "feat(native): About and hub updates (phase 5, PR 2)". The description names Question 3 and what was deleted with it.
+Open PR 2: "feat(native): the shared hub-update client, About and hub updates (phase 5, PR 2)". The description names ruling 22, the lift the web now wraps, and what was deleted.
 
 ---
 
@@ -3106,7 +2900,7 @@ Expected: PASS.
    - Each row has a chevron and opens the instance's detail sheet (ruling 9: a `Modal` page sheet over the list, as today).
    - No pull-to-refresh: the list follows the credential store's own notifications and `evener/auth/updated`.
    - `SheetStatus` sits on top, and `Connecting` shows before the first listing, in place of today's wall.
-   - Until Question 2 is answered, a "MANAGE" group at the bottom keeps "Add provider" (today's create flow). Task 28 replaces it with the footer "Add providers from the web app."
+   - A "MANAGE" group at the bottom keeps "Add provider" (today's create flow), since provider management stays on the phone (ruling 12).
 3. **The detail sheet** (titled with the instance's name, header "Done"):
    - The first group holds "Status" (the word, amber when expired), "Type" (the provider id) and "Sign-in" (`signInKind`).
    - "MODELS" lists the instance's models that aren't disabled, each id in Menlo, or "No models listed".
@@ -3116,7 +2910,7 @@ Expected: PASS.
      - "Replace credential JSON", or "Set credential JSON": `credentialJson` instances;
      - "Test connection": its result is one line under the group, "Works" or the test's own message.
    - Replacing a key pushes nothing. The group becomes a form: a secure field, "Paste the API key", with Save and Cancel, and the footer "The key is stored on the hub, not on this phone." The save path is today's `setApiKey` or `setCredentialJson`, fingerprint and all.
-   - Until Question 2 is answered, a "MANAGE" group keeps today's Edit, Make default, Clear stored key, Clear credentials and Remove, with their confirmations, as accent and danger rows.
+   - A "MANAGE" group keeps today's Edit, Make default, Clear stored key, Clear credentials and Remove, with their confirmations, as accent and danger rows (ruling 12).
    - Errors and warnings show as danger and attention footers.
 4. **Deep links.** With `focus`, the page opens that instance's detail once on mount. With `signIn` too, it starts the sign-in flow as the detail's Sign in does. Then it clears both params.
 5. **The Hub's home:** Providers pushes `Providers`, valued with the number of instances, plus an amber `Tag` "N to sign in" when any is "Sign-in expired".
@@ -4397,7 +4191,7 @@ export interface NewSessionService {
   - `changeHost(host: string, hostLabel: string): Promise<void>`;
   - `applySetup(setup: LaunchSetup): void` and `applySeed(seed: SessionSeed): void`.
 
-  Also: `CreationDraft.source?: string` (Question 4); `creationModel` now matches through `modelFromId`.
+  Also: `CreationDraft.source?: string` (ruling 28); `creationModel` now matches through `modelFromId`.
 
 - [ ] **Step 1: Write the failing tests.** Add to `newSession.test.ts`, reusing its `setup()` and `deferred()`:
 
@@ -4618,7 +4412,7 @@ export function creationModel(
 ```
 
   9. `submit` checks `loadedContext !== JSON.stringify([source, cwd.trim(), harness])`. It previews through `current.previewPlugins({ cwd: cwd.trim(), launchOverrides }, source)`, and adds `source` to the `current.start({ … })` call's params (the service leaves it out for the hub's own machine).
-  10. `snapshot()` adds `source: state.source`. `restoreDraft` sets `source: draft.source ?? LOCAL_HOST`, because a draft saved before this phase has no host (Question 4).
+  10. `snapshot()` adds `source: state.source`. `restoreDraft` sets `source: draft.source ?? LOCAL_HOST`, because a draft saved before this phase has no host (ruling 28).
   11. In `creationDraftRepository.ts`, `CreationDraft` gains `source?: string`. `decode` also refuses a draft whose `source` is neither absent nor a string: `(value.source !== undefined && typeof value.source !== "string")`.
 - [ ] **Step 4: Run them and watch them pass.** Run: `cd mobile-native && npx vitest run src/newSession.test.ts src/creationDraftRepository.test.ts src/creationPlugins.test.ts && npm run check`
 - [ ] **Step 5: Commit and open PR 8** (`feat(native): the New session's rules, memory and host-routed reads (phase 5, PR 8)`).
@@ -4985,7 +4779,7 @@ export function modelFacts(model: ModelDescriptor): string {
      - An accent row, "Use this folder", calls `setCwd(dir, true)` and pops to the form. It is hidden while `dir` is `""`, because the phone doesn't know which folder home resolves to.
      - A row, "New folder", asks `Alert.prompt("New folder", \`In ${dir || "your home folder"}\`, …)`, then calls `createDirectory(source, childrenPrefix(dir) + name)` and moves into the folder it made. The hub's refusal shows as a danger footer.
   4. **The model picker (`Model`, title "Model"):**
-     - If phase 3 built a model list for the composer's model sheet, reuse it with no effort control. Otherwise build `ModelList`:
+     - If phase 3 built a model list for the composer's model sheet, reuse that list (not the `ModelSheet` route, which reads a session's host; ruling 27) with no effort control. Otherwise build `ModelList`:
        - a search field;
        - a first row, "Hub default", checked when no model is chosen;
        - "RECENT" with up to five `recentModels`;
@@ -5175,7 +4969,7 @@ export function pluginWarnings(preview: PluginPreviewResponse, name: string): st
        - "MAX TURNS": Default, 100, 500, No limit (−1).
      - Under each, the hub's default from `useLaunchDefaults`: "The hub's default is compact.", "The hub's default is 2.", "The hub's default is no limit." (for −1).
      - A value that isn't a segment (a recipe's 4) lights no segment, and the footer says "This session uses 4. The hub's default is 2."
-     - The page's last footer: "Everything else uses the hub's launch defaults. Edit those in the web app."
+     - The page's last footer: "Everything else uses the hub's launch defaults. Edit them from the Hub, under Launch defaults." (ruling 12 keeps that screen on the phone).
      - The form's row: "More options", second line "Context strategy, subagent depth, turn limit", valued "Custom" when any of the three is set.
 - [ ] **Step 5: Write the failing tests**, one per requirement above. Cover:
   - `useLaunchDefaults` dropping a stale answer;
@@ -5346,7 +5140,7 @@ Phase 2's demo fleet (`mobile-native/src/dev/demoFleet.ts`, PR #2471, on main) a
 
 ---
 
-## PR 13: the last Reconnect, the desktop-only screens, and screenshots
+## PR 13: the last Reconnect, DESIGN.md, and screenshots
 
 ### Task 27: No screen asks you to reconnect
 
@@ -5356,11 +5150,12 @@ Phase 2's demo fleet (`mobile-native/src/dev/demoFleet.ts`, PR #2471, on main) a
   - `mobile-native/src/PinAssignmentScreen.tsx` and `mobile-native/src/PinAssignmentEditor.tsx`;
   - `mobile-native/src/retainedScreen.tsx` (`HUB_NO_LONGER_SELECTED`);
   - `mobile-native/src/connectionRecovery.ts`;
+  - the administration screens ruling 12 keeps: `KeybindingPreferencesScreen.tsx`, `LaunchSettingsScreen.tsx`, `LaunchModelPicker.tsx`, `LaunchFallbackEditor.tsx`, `LaunchScalarEditor.tsx`, `LaunchResourceEditor.tsx` and `HubSettingsScreen.tsx`;
   - every other file the guard names.
 - Delete: `mobile-native/src/ConnectionStatus.tsx`, and `ConnectionWall` and `ModalConnectionStatus` in `retainedScreen.tsx`, once nothing imports them (`grep -rn "ConnectionStatus\b\|ConnectionWall\|ModalConnectionStatus" mobile-native/src`).
 - Test: the guard, and the touched screens' tests.
 
-With a yes to Question 2, do Task 28 first. Otherwise the guard names `KeybindingPreferencesScreen.tsx`, `LaunchSettingsScreen.tsx` and the `Launch*Editor` and `LaunchModelPicker` files, which Task 28 deletes. With a no, Step 3's rules retire their Reconnect copy like any other file's.
+Today's administration screens stay on the phone (ruling 12), so the guard names them too, and Step 3 retires their Reconnect copy like any other file's.
 
 - [ ] **Step 1: Write the guard**
 
@@ -5425,6 +5220,7 @@ it("no screen asks you to reconnect (spec principle 2)", () => {
   - `retainedScreen.tsx`;
   - `connectionRecovery.ts`;
   - `ConnectionStatus.tsx`, if it still has importers;
+  - the administration screens: `KeybindingPreferencesScreen.tsx`, `LaunchSettingsScreen.tsx`, `LaunchModelPicker.tsx`, `LaunchFallbackEditor.tsx`, `LaunchScalarEditor.tsx` and `LaunchResourceEditor.tsx`, and `HubSettingsScreen.tsx` if its wall still offers Reconnect;
   - any other phase's leftovers.
 - [ ] **Step 3: Retire each one.**
   - **A Reconnect button:** delete it. The app reconnects on its own, and `SheetStatus` or the Board's toolbar says so.
@@ -5434,49 +5230,35 @@ it("no screen asks you to reconnect (spec principle 2)", () => {
   - **`connectionRecovery.ts`:**
     - the protocol message becomes `INCOMPATIBLE_VERSIONS`, which Task 2 declared in this same module;
     - the transport message becomes "Couldn't reach the hub. Check its address, its token and your network.".
+  - **The administration screens** (ruling 12), which keep their own controls until #2539 but lose the ask:
+    - `KeybindingPreferencesScreen.tsx`: its Reconnect button (`:172`) goes, with `SheetStatus` above the editor and its controls disabled while `!connected`, as pin assignment does; its "This hub is no longer selected. Return to Hubs to reconnect." (`:151`) becomes `HUB_NO_LONGER_SELECTED`.
+    - `LaunchSettingsScreen.tsx`: its Reconnect button (`:140`) goes the same way.
+    - `HubSettingsScreen.tsx`: its `ConnectionWall` and `ConnectionStatus` give way to `SheetStatus`, and the page keeps its last data while the connection is away.
+    - The offline sentences keep their promise and drop the ask: `LaunchModelPicker.tsx:71` becomes "This hub's models show when it's back. Your selection is kept."; `LaunchFallbackEditor.tsx:168`, "This hub's models show when it's back. Your fallbacks are kept here."; `LaunchResourceEditor.tsx:213`, "Entries are checked when the hub is back. Your draft is kept here."
+    - The errors a save raises offline say what happened: `LaunchScalarEditor.tsx:68` becomes "This path can't be checked until the hub is back.", and `LaunchResourceEditor.tsx:66`, "This entry can't be checked until the hub is back."
   - **`ConnectionStatus`, `ConnectionWall` and `ModalConnectionStatus`:** delete them once unimported.
   - **`useConnection().retry`:** keep it only if something still calls it (`grep -rn "\.retry\b\|retry()" mobile-native/src`). If nothing does, remove it from `ConnectionProvider` too, since the app retries on its own.
   - Update each touched screen's test to the new copy.
-- [ ] **Step 4: Run it and watch it pass**, with the touched tests. Run: `cd mobile-native && npx vitest run src/noReconnect.test.ts src/PinAssignmentScreen.test.tsx src/connection.test.ts && npm run check`. If a pin assignment test file has another name, run that file.
+- [ ] **Step 4: Run it and watch it pass**, with the touched tests. Run: `cd mobile-native && npx vitest run src/noReconnect.test.ts src/PinAssignmentScreen.test.tsx src/connection.test.ts src/KeybindingPreferencesScreen.render.test.tsx src/HubSettingsScreen.reconnect.test.tsx && npm run check`. If a pin assignment test file has another name, run that file.
 - [ ] **Step 5: Commit** (`fix(native): no screen asks you to reconnect`).
 
-### Task 28: The desktop-only screens leave the phone
+### Task 28: DESIGN.md describes the two sheets
 
-Only with a yes to Question 2. With a no, skip this task, and keep the Hub's MORE group and the providers' MANAGE groups.
+Ruling 12 keeps today's administration screens on the phone, so this task deletes nothing: the Hub's MORE group and Providers' MANAGE groups stay.
 
 **Files:**
-- Delete, first checking each has no importer left (`npm run check` after each deletion names any):
-  - keyboard shortcuts: `KeybindingPreferencesScreen.tsx` (and `.render.test.tsx`), `keybindingRules.ts`, `keybindingOfflineRecovery.ts`, and their tests;
-  - launch configuration:
-    - `LaunchSettingsScreen.tsx` and `RepositoryLaunchReview.tsx`;
-    - `LaunchFieldEditor.tsx`, `LaunchScalarEditor.tsx`, `LaunchResourceEditor.tsx`, `LaunchEnvironmentEditor.tsx`, `LaunchFallbackEditor.tsx`, `LaunchResourceRow.tsx` and `LaunchModelPicker.tsx`;
-    - `launchScalar.ts`, `launchPaths.ts`, `launchEnvironment.ts`, `launchMcp.ts`, `launchLists.ts` and `hubModels.ts`;
-    - and their tests;
-  - provider instances: `ProviderEditor.tsx`, `providerForm.ts` and `appliedInstanceWrite.ts`, and their tests.
-  - Keep `HubPathField.tsx` and `hubPaths.ts`: `MarketplaceBrowser` uses them.
-- Modify:
-  - `mobile-native/App.tsx` and `mobile-native/src/screens.tsx`: the `KeybindingPreferences` and `LaunchSettings` routes go.
-  - `mobile-native/src/location.ts` and its test (requirement 3).
-  - The keybindings half of `NativePreferences` (requirement 4).
-  - `mobile-native/src/hub/HubHome.tsx` and `mobile-native/src/hub/ProvidersPage.tsx`.
-  - `mobile-native/DESIGN.md` and `mobile-native/.impeccable/design.json`.
+- Modify: `mobile-native/DESIGN.md` and `mobile-native/.impeccable/design.json`.
 
 **Requirements:**
-1. The Hub's home loses its MORE group. Its last footer becomes "More settings are in the web app: keyboard shortcuts, launch configuration, AGENTS.md, MCP servers and storage." (spec 12, in the prototype's words).
-2. Providers loses its MANAGE groups (Add, Edit, Make default, Clear stored key, Clear credentials, Remove). The list's footer becomes "Add providers from the web app." Delete the tests of the removed actions with them, and say so in the commit.
-3. `locationForRoute` no longer meets a `KeybindingPreferences` route. `restoredStack` restores a saved `keybindings` location as the Board, pushing nothing past `Sessions`. `LocationRepository.read` keeps accepting the saved shape, so an old saved location still opens the Board rather than the first-run screen.
-4. `NativePreferences` keeps only what the phone still reads.
-   - Remove the keybindings state, its drafts and its bindings from `nativePreferences.ts`, `NativePreferencesProvider.tsx`, `nativePreferenceDrafts.ts` and `bindNativePreferences.ts`, with their keybindings test cases.
-   - The transcript display half and its tests stay untouched. If that half's tests need more than their keybindings cases removed, stop and report instead of rewriting them.
-5. `DESIGN.md` describes the two sheets:
+1. `DESIGN.md` describes the two sheets:
    - the grouped list and its rules (glyphs in `inkMid`, amber only where a human is needed, the gray drift tag);
    - the New session's chips, rows and pickers;
-   - the Hub's pages;
+   - the Hub's pages, and its MORE group of today's administration screens, which keep their own look until #2539;
    - the calm connection line.
 
    `design.json` gains their components.
 
-- [ ] Steps: delete, `npm run check`, run the touched tests (`npx vitest run src/location.test.ts src/hub src/NativePreferencesProvider.test.tsx src/nativePreferences.test.ts`), `make test-native-bundle`, then commit (`refactor(native): desktop-only settings leave the phone`).
+- [ ] Steps: edit both, then commit (`docs(native): DESIGN.md describes the New session and Hub sheets`).
 
 ### Task 29: Screenshots for the phase's last PR
 
@@ -5498,7 +5280,7 @@ Run the demo hub with `EVENER_DEMO_FLEET=1` and a Release simulator build (iPhon
 
 Save them under `docs/design/mobile/assets/2026-09-2x-redesign-phase5-*.png`, named by frame and theme. Attach them to PR 13, with the demo hub's command in its description.
 
-- [ ] Commit the screenshots (`docs(mobile): phase 5 screenshots`) and open PR 13: "feat(native): the last Reconnect goes, desktop-only settings leave the phone, and screenshots (phase 5, PR 13)".
+- [ ] Commit the screenshots (`docs(mobile): phase 5 screenshots`) and open PR 13: "feat(native): the last Reconnect goes, DESIGN.md, and screenshots (phase 5, PR 13)".
 
 ---
 
@@ -5528,8 +5310,8 @@ Save them under `docs/design/mobile/assets/2026-09-2x-redesign-phase5-*.png`, na
   - Display: Tasks 6 and 7 (ruling 8);
   - In-app alerts: phase 6 (ruling 11);
   - Hubs: Tasks 8 and 9;
-  - About: Task 5 (ruling 22; Question 3);
-  - "More settings are in the web app": Task 28 (ruling 12; Question 2).
+  - About: Tasks 4 and 5 (ruling 22);
+  - More, today's administration screens, and Providers' MANAGE groups: Tasks 5, 13 and 27 (ruling 12).
 - **Spec 14 and principle 2:**
   - the connection line: Task 2;
   - no Reconnect anywhere: Tasks 3 to 23 for this phase's screens, and Task 27's sweep and guard (ruling 21).

@@ -247,6 +247,7 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		WorktreeManaged:          s.worktreeCurrentManaged,
 		WorktreeRestoreRoot:      restoreRoot,
 		WorkMillis:               s.workMillis,
+		LastTurnEndedAt:          s.lastTurnEndedAt,
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
 		JobTreeRevision:          jobTreeRevision,
@@ -322,7 +323,7 @@ func (s *Session) finishProcessingAtBoundary(ctx context.Context, state SessionS
 func (s *Session) transitionProcessingAtBoundaryLocked(state SessionState) (transitioned bool, turnMS int64) {
 	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 		s.state = state
-		turnMS = s.accumulateWorkLocked()
+		turnMS = s.endTurnLocked()
 		transitioned = true
 	}
 	return transitioned, turnMS
@@ -433,17 +434,29 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	}
 }
 
-// accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and
-// returns that turn's duration in ms. Caller holds s.mu; a zero turnStartedAt
-// (no turn was timed) contributes nothing.
-func (s *Session) accumulateWorkLocked() int64 {
+// accumulateWorkLocked adds the just-ended turn's wall-clock, up to end, to
+// workMillis and returns that turn's duration in ms. Caller holds s.mu; a zero
+// turnStartedAt (no turn was timed) contributes nothing.
+func (s *Session) accumulateWorkLocked(end time.Time) int64 {
 	if s.turnStartedAt.IsZero() {
 		return 0
 	}
-	ms := max(s.sclock().Now().Sub(s.turnStartedAt).Milliseconds(), 0)
+	ms := max(end.Sub(s.turnStartedAt).Milliseconds(), 0)
 	s.workMillis += ms
 	s.turnStartedAt = time.Time{}
 	return ms
+}
+
+// endTurnLocked settles the turn that just ended: it adds the turn's
+// wall-clock to workMillis, stamps lastTurnEndedAt, and returns the turn's
+// duration in ms. Both places a turn ends call it: the processing boundary,
+// and a Close that lands mid-turn, which never reaches the boundary. Caller
+// holds s.mu.
+func (s *Session) endTurnLocked() int64 {
+	end := s.sclock().Now()
+	turnMS := s.accumulateWorkLocked(end)
+	s.lastTurnEndedAt = end.UTC()
+	return turnMS
 }
 
 func (s *Session) abortIfClosing(ctx context.Context) error {

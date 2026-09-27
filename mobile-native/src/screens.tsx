@@ -5,6 +5,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import {
 	Component,
+	type RefObject,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -426,6 +427,28 @@ export function HubsScreen({
 	);
 }
 
+// Refocuses the composer after a modal closes, on AppState's "focus" event.
+// That event is Android-only (react-native's AppState "focus"/"blur" pair
+// never fires on iOS, and subscribing there raises a dev-mode red box), so
+// the subscription itself is Android-only. Extracted so this is testable
+// without mounting the whole screen.
+export function useFocusAfterModal(
+	navigation: { isFocused: () => boolean },
+	focusAfterModal: RefObject<boolean>,
+	composerInput: RefObject<TextInput | null>,
+): void {
+	useEffect(() => {
+		if (Platform.OS !== "android") return;
+		const subscription = AppState.addEventListener("focus", () => {
+			if (focusAfterModal.current && navigation.isFocused()) {
+				focusAfterModal.current = false;
+				composerInput.current?.focus();
+			}
+		});
+		return () => subscription.remove();
+	}, [navigation, focusAfterModal, composerInput]);
+}
+
 export function ConversationScreen({
 	route,
 	navigation,
@@ -537,15 +560,7 @@ export function ConversationScreen({
 		null,
 	);
 	const focusAfterModal = useRef(false);
-	useEffect(() => {
-		const subscription = AppState.addEventListener("focus", () => {
-			if (focusAfterModal.current && navigation.isFocused()) {
-				focusAfterModal.current = false;
-				composerInput.current?.focus();
-			}
-		});
-		return () => subscription.remove();
-	}, [navigation]);
+	useFocusAfterModal(navigation, focusAfterModal, composerInput);
 	const [refreshing, setRefreshing] = useState(false);
 	const [queueOpen, setQueueOpen] = useState(false);
 	const [recoveryOpen, setRecoveryOpen] = useState(false);

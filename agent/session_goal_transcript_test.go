@@ -58,7 +58,7 @@ func TestGoalContinuationPersistsDisplayAndModelInput(t *testing.T) {
 		t.Fatalf("persisted %d entries, want one continuation", len(entries))
 	}
 	persisted := entries[0].Turn
-	if !reflect.DeepEqual(live, persisted) {
+	if !reflect.DeepEqual(live, withoutRecordedIdentity(persisted)) {
 		t.Fatal("persisted continuation differs from live model history")
 	}
 	if persisted.Kind != schema.TurnSteering || persisted.Message.Text() != input {
