@@ -101,7 +101,21 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	if err != nil {
 		return appwire.HostTeardownRetryResult{}, err
 	}
-	defer releaseGate()
+	// The gate is held only while this attempt is *claiming and finalizing*; the
+	// run itself releases it, the same discipline the mutations apply across
+	// their post-commit teardowns ("released across post-commit teardowns"). It
+	// has to: the pinned teardown goes through the manager's own paths, which
+	// take the same non-reentrant per-host gate ��� holding the reservation across
+	// the run would refuse our own call. The attempt record is the fence for the
+	// window the reservation is released, exactly as it is after a timeout.
+	gateHeld := true
+	releaseOnce := func() {
+		if gateHeld {
+			gateHeld = false
+			releaseGate()
+		}
+	}
+	defer releaseOnce()
 
 	// Claim under the mutation lock: one atomic hub.toml write that fences any
 	// prior timed-out attempt and writes this attempt's durable record.
@@ -155,7 +169,17 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	// path returns through it.
 	runCtx, cancel := context.WithTimeout(ctx, m.cfg.policy.teardownTimeout)
 	defer cancel()
+	releaseOnce()
 	result, runErr := m.runPinnedTeardown(runCtx, remnantID, remnant)
+	// Re-acquire the reservation for the finalizing write. A held gate means
+	// another path is inside the name; the attempt record still owns the
+	// remnant, so the finalization proceeds and the busy holder hears about the
+	// fence through the record rather than through a refusal we would have to
+	// swallow.
+	if reacquire, gateErr := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderManager, Activity: "teardown-retry"}); gateErr == nil {
+		gateHeld = true
+		releaseGate = reacquire
+	}
 
 	m.cfg.mu.Lock()
 	defer m.cfg.mu.Unlock()
@@ -477,8 +501,22 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 	}
 	if !live {
 		// Nothing live carries the pinned pair (a post-remove remnant, or a
-		// crash): the teardown has nothing left to stop, and the remnant's
-		// durability is what the clearance records.
+		// crash). For a removal that is the end of it — there is nothing left to
+		// stop. For an edit the staged runtime set may still need re-applying:
+		// "every phase re-applies the staged runtime set first (`hub.toml`
+		// already holds the new config, so the live runtime must converge to
+		// it)", so a name the file still carries is registered back into the live
+		// set — the entry the commit landed, never a fresh identity.
+		if remnant.PendingTeardown.Kind != hostTeardownKindUpdate {
+			return teardownRunResult{}, nil
+		}
+		entry, ok := m.hubTOMLFileEntry(remnant.Host)
+		if !ok {
+			return teardownRunResult{}, nil
+		}
+		if err := m.reapplyStagedEntry(ctx, entry); err != nil {
+			return teardownRunResult{Seam: "update-host"}, fmt.Errorf("teardown-retry %s: re-apply host %q: %w", remnantID, remnant.Host, err)
+		}
 		return teardownRunResult{}, nil
 	}
 	switch remnant.PendingTeardown.Kind {
@@ -534,6 +572,21 @@ func (m *hubHostManager) runPinnedTeardown(ctx context.Context, remnantID string
 	default:
 		return teardownRunResult{Seam: remnant.Seam}, teardownUnknownKeyRefusal(remnantID)
 	}
+}
+
+// reapplyStagedEntry registers entry back into the live set: the runtime half of
+// the phase-aware recovery's "re-apply the staged runtime set first". It is the
+// same insert the mutation's own swap performs (the manager's AddHost when one is
+// wired, else the registry's Add), so a crash-window entry converges to the
+// configuration hub.toml already holds.
+func (m *hubHostManager) reapplyStagedEntry(ctx context.Context, entry hostreg.Host) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m.cfg.manager != nil {
+		return m.cfg.manager.AddHost(entry)
+	}
+	return m.cfg.hosts.Add(entry)
 }
 
 // resolveCleanupHandle resolves a remnant's persisted cleanup handle without any

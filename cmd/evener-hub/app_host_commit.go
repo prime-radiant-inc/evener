@@ -373,6 +373,16 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 		return nil, nil
 	}
 	m.cfg.mu.Lock()
+	if m.isMutating(name) {
+		// The commit that staged this marker is still in flight in this process
+		// (the name's mutation mark stands for the whole released window). Spec
+		// §5: "A replay naming a still-staged marker never re-applies. While the
+		// original commit holds the mutation lock the replay fails fast with the
+		// transient busy form" — so the finder leaves the marker alone and the
+		// caller's own mutation refuses as a conflict.
+		m.cfg.mu.Unlock()
+		return nil, nil
+	}
 	marker, ok := m.cfg.store.stagedSnapshot()[name]
 	if !ok {
 		m.cfg.mu.Unlock()

@@ -584,6 +584,9 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	m.markMutating(name)
 	m.cfg.mu.Unlock()
 	releaseGate()
+	if m.testOnlyParkPostCommit != nil {
+		m.testOnlyParkPostCommit(name)
+	}
 
 	var liveErr error
 	switch {

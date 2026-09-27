@@ -591,32 +591,21 @@ func TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes(t *testing.T) {
 // attach record, the cache generation, or the retained list behind keeps facts
 // for a name the live registry no longer holds, and a later Add reuses the stale
 // source instance.
-func TestHostManageUpdateRollsBackAsARemovalWhenTheLiveEntryVanishes(t *testing.T) {
+// TestHostManageUpdateCommitsWithRemnantWhenTheLiveEntryVanishes pins spec 08
+// §6's commit-point rule against the vanished-entry seam: a registry driven
+// directly under the update's gate hold drops the name, so the rebind cannot
+// find it. The commit landed before that, so the edit is COMMITTED — the store
+// row and the file keep the edited entry, the receipt is the
+// committed-with-teardown-failure arm, and a durable remnant pins the identity
+// whose rebind failed. Compensation, the pre-commit rule, is over: restoring
+// bytes cannot rebuild the handles the rebind was to retire.
+func TestHostManageUpdateCommitsWithRemnantWhenTheLiveEntryVanishes(t *testing.T) {
 	pu := startParkedUpdate(t, "side")
-	// The commit landed (the helper waited on the file) and the live phase is
-	// parked on the gate the Ensure holds. Drive the registry directly, bypassing
-	// the hub's mark, so UpdateHost's own update observes the vanished entry.
 	pu.m.cfg.mu.Lock()
 	_, present := pu.m.cfg.hosts.Get("side")
 	pu.m.cfg.mu.Unlock()
 	if !present {
 		t.Fatal("the live entry vanished before the test could drop it")
-	}
-	// Seed the derived state a lifecycle event and an attached row would leave:
-	// a name-keyed attach record, plus the fixture's own cache generation and
-	// source registration for the name. The assertions below prove the rollback
-	// takes all of them with the dropped row.
-	seeded, _ := pu.m.cfg.hosts.Get("side")
-	pu.m.cfg.mu.Lock()
-	pu.m.cfg.state.recordKnown(appwire.HostRow{
-		Name: "side", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
-	}, hostFactsValidity{handshake: true}, seeded.Generation)
-	pu.m.cfg.mu.Unlock()
-	if _, ok := pu.cache.SourceGeneration("side"); !ok {
-		t.Fatal("the fixture host's source has no cache generation to retire")
-	}
-	if _, ok := pu.sources.Source("side"); !ok {
-		t.Fatal("the fixture host has no source registration to retire")
 	}
 	if err := pu.m.cfg.hosts.Remove("side"); err != nil {
 		t.Fatalf("direct registry removal: %v", err)
@@ -624,39 +613,61 @@ func TestHostManageUpdateRollsBackAsARemovalWhenTheLiveEntryVanishes(t *testing.
 	pu.release()
 	done := pu.waitUpdateDone(t)
 	if done.err == nil {
-		t.Fatal("Update whose live entry vanished succeeded, want the un-commit")
+		t.Fatal("Update whose live entry vanished succeeded, want the teardown-failure arm")
 	}
 	if _, ok := pu.m.cfg.hosts.Get("side"); ok {
 		t.Fatal("the directly removed live entry reappeared")
 	}
-	// The store holds the other names the window committed ("keep"); the vanished
-	// name must be gone, not just restored to its edit.
+	// The committed row and the file keep the edit: the commit is not undone.
+	var stored *hostreg.Host
 	for _, e := range pu.m.cfg.store.snapshot() {
 		if e.Name == "side" {
-			t.Fatalf("store still holds %q after the failed edit = %+v", e.Name, pu.m.cfg.store.snapshot())
+			copyEntry := e
+			stored = &copyEntry
 		}
 	}
-	if names := hubTOMLHostNames(t, pu.configPath); slices.Contains(names, "side") {
-		t.Fatalf("hub.toml still holds %q after the failed edit = %v", "side", names)
+	if stored == nil || stored.SSH != "edited.example" {
+		t.Fatalf("store rows = %+v, want the committed edit for side", pu.m.cfg.store.snapshot())
 	}
-	// The derived state is gone too, exactly as the success-side vanished arm
-	// retires it and in the same order. The cache and the retention hook are the
-	// fixture's own seams (startParkedUpdate's RemoteThreadCache and
-	// forgottenSources), observed the way the success arm's test observes them.
-	if _, ok := pu.sources.Source("side"); ok {
-		t.Fatal("the vanished host's source registration survived the failed edit")
+	if names := hubTOMLHostNames(t, pu.configPath); !slices.Contains(names, "side") {
+		t.Fatalf("hub.toml lost the committed edit: %v", names)
 	}
-	if _, ok := pu.cache.SourceGeneration("side"); ok {
-		t.Fatal("the vanished host's remote-thread cache entry survived the failed edit")
+	cfg, err := LoadConfig(pu.configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
 	}
-	if got := pu.forgotten.snapshot(); !slices.Equal(got, []string{"side"}) {
-		t.Fatalf("forgotten = %v, want the vanished host's own last-known-good drop", got)
+	if len(cfg.Hosts) != 2 || cfg.Hosts[1].SSH != "edited.example" {
+		t.Fatalf("hub.toml = %+v, want the committed edit", cfg.Hosts)
 	}
-	pu.m.cfg.state.mu.Lock()
-	_, hasRecord := pu.m.cfg.state.records["side"]
-	pu.m.cfg.state.mu.Unlock()
-	if hasRecord {
-		t.Fatal("the vanished host's attach record survived the failed edit")
+	// The remnant is durable and open, and the fence holds the name until the
+	// repair converges.
+	remnants := pu.m.cfg.store.remnantSnapshot()
+	if len(remnants) != 1 {
+		t.Fatalf("remnants = %+v, want exactly one open remnant", remnants)
+	}
+	var remnantID string
+	for id, remnant := range remnants {
+		remnantID = id
+		if !remnant.open() || remnant.PendingTeardown.Kind != hostTeardownKindUpdate {
+			t.Fatalf("remnant = %+v, want an open update remnant", remnant)
+		}
+	}
+	// The retry re-applies the staged runtime set first (the file's entry, which
+	// hub.toml already holds), so the vanished name converges back into the live
+	// set and the remnant clears.
+	retry, err := pu.m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
+	if err != nil {
+		t.Fatalf("TeardownRetry = %v", err)
+	}
+	if retry.HostTeardownRetryCompleteLive == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete live arm", retry)
+	}
+	live, ok := pu.m.cfg.hosts.Get("side")
+	if !ok || live.SSH != "edited.example" {
+		t.Fatalf("live entry after the retry = %+v (ok=%v), want the committed edit re-applied", live, ok)
+	}
+	if _, open := pu.m.cfg.store.markedRemnantFor("side"); open {
+		t.Fatal("the fence still stands after the retry")
 	}
 }
 
@@ -795,12 +806,6 @@ func (f *forgottenSources) forget(sourceID string) {
 	f.mu.Lock()
 	f.names = append(f.names, sourceID)
 	f.mu.Unlock()
-}
-
-func (f *forgottenSources) snapshot() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.names)
 }
 
 func startParkedUpdate(t *testing.T, name string) *parkedUpdate {
