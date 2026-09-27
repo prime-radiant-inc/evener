@@ -3,7 +3,6 @@ package hub
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -118,21 +117,18 @@ func canonicalEntry(t *testing.T, e transcript.Entry) (transcript.Entry, []byte)
 // but once after reload" (#2653). Remove this exclusion when it is resolved.
 //
 // Keep synthesizeLiveEvents faithful; the caller removes only the extra live item
-// with the matching CallID and still compares every other item. The reload
-// registry remembers the last individual raw-nonempty text part (not
-// Message.Text's concatenation); a later whitespace-only part therefore resets
-// the trimmed value to empty. This detector deliberately mirrors that rule.
+// with the matching CallID and still compares every other item. Derive the echo
+// state through ProjectTurn itself so the exclusion follows the reload registry's
+// rule: only a non-empty final text candidate updates the state, while an
+// assistant record whose final candidate is empty preserves prior registry state.
 func knownClosingCallIDEchoes(turn schema.Turn) map[string]string {
 	if turn.Kind != schema.TurnAssistant {
 		return nil
 	}
-	lastAssistantText := ""
-	for _, part := range turn.Message.Content {
-		if part.Kind == llm.ContentText && part.Text != "" {
-			lastAssistantText = strings.TrimSpace(part.Text)
-		}
-	}
-	if lastAssistantText == "" {
+	const turnID = "replay_oracle_echo_detector"
+	reg := apptranscript.NewToolCallRegistry()
+	apptranscript.ProjectTurn(turnID, 0, turn, reg, nil, apptranscript.ToolResultOutputImages)
+	if reg.LastAssistantTurnID != turnID || reg.LastAssistantText == "" {
 		return nil
 	}
 	echoes := make(map[string]string)
@@ -143,7 +139,7 @@ func knownClosingCallIDEchoes(turn schema.Turn) map[string]string {
 		repaired := argrepair.RepairJSON([]byte(part.ToolCall.SentArguments()))
 		normalized := apptranscript.NormalizeCommunicateArguments(repaired)
 		message := apptranscript.CommunicateMessageFromArguments(normalized)
-		if message != "" && apptranscript.EchoesAssistantText(lastAssistantText, message) {
+		if message != "" && apptranscript.EchoesAssistantText(reg.LastAssistantText, message) {
 			echoes[part.ToolCall.ID] = message
 		}
 	}
@@ -176,7 +172,7 @@ func TestClosingCallIDEchoDivergenceExclusionIsNarrow(t *testing.T) {
 	}{
 		{name: "last individual text echoes", texts: []string{"first", "last"}, callID: "call-1", message: "last", want: true},
 		{name: "earlier text does not echo", texts: []string{"first", "last"}, callID: "call-1", message: "first"},
-		{name: "later whitespace clears reload echo state", texts: []string{"first", "  "}, callID: "call-1", message: "first"},
+		{name: "later whitespace leaves fresh reload echo state empty", texts: []string{"first", "  "}, callID: "call-1", message: "first"},
 		{name: "missing call ID uses projector dedup", texts: []string{"same"}, message: "same"},
 		{name: "different message remains covered", texts: []string{"shown"}, callID: "call-1", message: "delivered"},
 	}
@@ -199,6 +195,51 @@ func TestClosingCallIDEchoDivergenceExclusionIsNarrow(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("whitespace-only assistant record keeps prior reload echo state", func(t *testing.T) {
+		reg := apptranscript.NewToolCallRegistry()
+		apptranscript.ProjectTurn("turn_1", 1, schema.Turn{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "shown"},
+			}},
+		}, reg, nil, apptranscript.ToolResultOutputImages)
+		apptranscript.ProjectTurn("turn_2", 2, schema.Turn{
+			Kind: schema.TurnAssistant,
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "  "},
+			}},
+		}, reg, nil, apptranscript.ToolResultOutputImages)
+		if reg.LastAssistantText != "shown" || reg.LastAssistantTurnID != "turn_1" {
+			t.Fatalf("whitespace-only record changed prior echo state: text=%q turn=%q", reg.LastAssistantText, reg.LastAssistantTurnID)
+		}
+		if !apptranscript.EchoesAssistantText(reg.LastAssistantText, "shown") {
+			t.Fatal("preserved reload state did not suppress the repeated assistant message")
+		}
+	})
+
+	t.Run("mixed echo and non-echo items preserve non-echo", func(t *testing.T) {
+		arguments := func(message string) json.RawMessage {
+			b, err := json.Marshal(map[string]string{"message": message})
+			if err != nil {
+				t.Fatalf("marshal communicate arguments: %v", err)
+			}
+			return b
+		}
+		turn := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "shown"},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "echo-call", Name: "communicate", Arguments: arguments("shown")}},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "other-call", Name: "communicate", Arguments: arguments("different")}},
+		}}}
+		items := []appwire.ThreadItem{
+			{Type: "agentMessage", CallID: "echo-call", Text: "shown"},
+			{Type: "agentMessage", CallID: "other-call", Text: "different"},
+		}
+		got := excludeKnownClosingCallIDEchoes(turn, items)
+		if len(got) != 1 || got[0].CallID != "other-call" || got[0].Text != "different" {
+			t.Fatalf("exclusion removed more than the known echo item: %+v", got)
+		}
+	})
 }
 
 // FuzzHubReplayLiveVsReload is the full live-vs-reload metamorphic: it compares
@@ -406,9 +447,6 @@ func projectReloadThroughHub(t *testing.T, turns ...schema.Turn) []appwire.Threa
 	const openerText = "replay oracle fixed opener"
 	stateDir := t.TempDir()
 	sessionsDir := filepath.Join(stateDir, "sessions")
-	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
-		t.Fatalf("create replay sessions directory: %v", err)
-	}
 	w, err := transcript.NewWriter(filepath.Join(sessionsDir, sessionID+".transcript.jsonl"), transcript.Header{
 		SessionID: sessionID,
 		CreatedAt: time.Date(2026, time.June, 1, 10, 0, 0, 0, time.UTC),
@@ -448,21 +486,34 @@ func projectReloadThroughHub(t *testing.T, turns ...schema.Turn) []appwire.Threa
 	if err != nil {
 		t.Fatalf("hub full-transcript projection: %v", err)
 	}
-	var items []appwire.ThreadItem
-	removedOpener := false
-	for _, turn := range projected {
-		for _, item := range turn.Items {
-			if !removedOpener && item.Type == "userMessage" && item.Text == openerText {
-				removedOpener = true
-				continue
-			}
-			items = append(items, item)
-		}
+	if len(projected) == 0 || len(projected[0].Items) == 0 {
+		t.Fatal("hub full-transcript projection omitted fixed opener turn")
 	}
-	if !removedOpener {
-		t.Fatal("hub full-transcript projection omitted fixed opener")
+	opener := projected[0].Items[0]
+	if opener.Type != "userMessage" || opener.Text != openerText {
+		t.Fatalf("hub full-transcript projection first item is not fixed opener: %+v", opener)
+	}
+	var items []appwire.ThreadItem
+	for turnIndex, turn := range projected {
+		start := 0
+		if turnIndex == 0 {
+			start = 1
+		}
+		items = append(items, turn.Items[start:]...)
 	}
 	return items
+}
+
+func TestProjectReloadThroughHubDropsOnlyFixedOpener(t *testing.T) {
+	const openerText = "replay oracle fixed opener"
+	items := projectReloadThroughHub(t, schema.Turn{
+		Kind:      schema.TurnUserInput,
+		Message:   llm.User(openerText),
+		Timestamp: time.Date(2026, time.June, 1, 10, 0, 0, 0, time.UTC),
+	})
+	if len(items) != 1 || items[0].Type != "userMessage" || items[0].Text != openerText {
+		t.Fatalf("expected only the fuzzed user message after dropping the fixed opener, got: %+v", items)
+	}
 }
 
 // synthesizeLiveEvents builds the SessionEvent stream the live path would have
@@ -804,26 +855,11 @@ func buildReplayEntry(turnSel, partsSel byte, text, think, query, name, cmd stri
 		`]},"timestamp":"2026-06-01T10:00:00Z"}}`)
 }
 
-// TestHubReplay_UnpairedCommunicateFlushParity is a dedicated strengthening test
-// for the unpaired-communicate flush path that FuzzHubReplayLiveVsReload cannot
-// cheaply reach. The fuzz target processes one entry in isolation: its reload
-// side calls ProjectTurn directly (no FlushUnpairedCommunicates), and its live
-// side (synthesizeLiveEvents) skips ALL communicates because a single entry
-// cannot disambiguate paired from unpaired. Making the fuzz target flush would
-// require both (a) restructuring checkLiveVsReload to build turns and track a
-// registry across the flush call, and (b) teaching synthesizeLiveEvents to emit
-// EventCommunicate for a communicate it cannot yet know is unpaired — which
-// would break the existing rejected/healed communicate seeds (11–14) that rely
-// on the skip. That is a harness redesign, not a cheap seed extension, so this
-// test exercises the flush through the server's own projection path instead.
-//
-// The fixture is one assistant turn with a valid-JSON communicate call and no
-// paired result turn — the unpaired shape. The reload side projects through
-// ProjectTurn (deferring the communicate) then calls FlushUnpairedCommunicates,
-// matching the server's appTurnProjectionFromTranscriptFile path. The live side
-// synthesizes the EventCommunicatePreviewStart + EventCommunicate stream the
-// live projector emitted for the delivered message. Both must render the same
-// agentMessage after normalizeMetamorphic strips stream-only identity.
+// TestHubReplay_UnpairedCommunicateFlushParity pins the exact item shape for the
+// unpaired-communicate close-time flush that the fuzz oracle now drives through
+// projectReloadThroughHub. The reload side below independently projects with a
+// shared registry and flushes it; the live side synthesizes the preview + commit
+// pair. Both must render one matching agentMessage after identity normalization.
 func TestHubReplay_UnpairedCommunicateFlushParity(t *testing.T) {
 	entryJSON := []byte(`{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"call_unpaired","name":"communicate","arguments":{"message":"hello there"}}}]},"timestamp":"2026-06-01T10:00:00Z"}}`)
 
