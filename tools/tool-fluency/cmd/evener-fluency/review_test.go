@@ -15,6 +15,8 @@ import (
 // writeReviewRun writes one run under base the way a run lays it out: a
 // state directory whose root transcript mentions a file in the work
 // directory, and result.json. It returns the work and state directories.
+// The transcript also names the version label outside any path, as an agent
+// that lists the directories above its work directory would.
 func writeReviewRun(t *testing.T, base string) (workDir, stateDir string) {
 	t.Helper()
 	workDir, stateDir = filepath.Join(base, "work"), filepath.Join(base, "state")
@@ -24,6 +26,7 @@ func writeReviewRun(t *testing.T, base string) (workDir, stateDir string) {
 			textPart("I read "+workDir+"/tally/sum.go and found the loop."),
 			fluencyToolCall("read_file", `{"file_path":"`+workDir+`/tally/sum.go"}`),
 		),
+		assistantTurn(textPart("The directory four levels up lists v1-A.")),
 	})
 	res := probeResult{Probe: "prose.bugfix-tally", Model: "lunarouter/m", Repetition: 1, WorkDir: workDir, StateDir: stateDir}
 	data, err := json.Marshal(res)
@@ -65,6 +68,29 @@ func TestWriteReviewPackMasksRunPaths(t *testing.T) {
 	}
 	if !strings.Contains(text, "found the loop") {
 		t.Errorf("packet lost the transcript text:\n%s", text)
+	}
+}
+
+// TestMaskRunDetailsMasksTheResolvedRoot: a tool that resolves symlinks
+// prints a run path under the root's real location, which is masked as well.
+func TestMaskRunDetailsMasksTheResolvedRoot(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := "opened " + filepath.Join(resolved, "v1-A", "work", "sum.go") + " and " + filepath.Join(link, "v1-A", "work", "sum.go")
+	if got, want := maskRunDetails(text, link, "v1-A"), "opened <run> and <run>"; got != want {
+		t.Errorf("maskRunDetails = %q, want %q", got, want)
 	}
 }
 
