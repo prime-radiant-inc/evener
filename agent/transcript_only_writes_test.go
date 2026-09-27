@@ -105,6 +105,32 @@ func TestCommunicateWithoutATranscriptStillDelivers(t *testing.T) {
 	}
 }
 
+// A communicate delivery whose entry a poisoned writer refuses to record must
+// not announce a message that the transcript never got: EventCommunicate is
+// not emitted, and no COMMUNICATE entry lands (there is nowhere for one to
+// land). deliverCommunicate is exercised directly, past the tool call layer,
+// so the fault lands exactly on its own write rather than an earlier one in
+// the turn's admission.
+func TestCommunicateNotRecordedByAPoisonedWriterDoesNotAnnounce(t *testing.T) {
+	s, _ := newExecutionSession(t)
+	fs := attachEnvironmentFailureFS(t, s)
+	armEnvironmentPartialWrite(fs)
+	collectEvents := drainEvents(s)
+	s.deliverCommunicate(events.CommunicateData{CallID: "comm-poisoned", EndTurn: true, Message: "lost"})
+	if !s.attachedTranscript().Poisoned() {
+		t.Fatal("setup: the writer was not poisoned")
+	}
+	s.Close()
+	for _, ev := range collectEvents() {
+		if ev.Kind == events.EventCommunicate {
+			t.Fatalf("EventCommunicate emitted for a message a poisoned writer refused to record: %+v", ev.Data)
+		}
+	}
+	for _, turn := range entriesOfKind(transcriptTurnsOf(t, s), schema.TurnCommunicate) {
+		t.Fatalf("a COMMUNICATE entry landed despite the poisoned writer: %+v", turn)
+	}
+}
+
 func TestToolRepairIsRecordedAsANotice(t *testing.T) {
 	s, adapter := newExecutionSession(t)
 	s.RegisterTool("widget", "does a thing", widgetSchema(), func(context.Context, any) (any, error) { return "done", nil })
