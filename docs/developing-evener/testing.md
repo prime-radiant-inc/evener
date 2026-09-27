@@ -852,11 +852,11 @@ durably before the RPC) is awaited with `flushPendingTurnsProjectionForTests()`
 and the test asserts directly afterwards. Every storage transaction registers
 with the projection work tracker, so the flush returns once the whole chain
 has settled, and the dispatched request has gone out by then. A `waitFor`
-on the request races that chain against a 1000ms ceiling, and it returns
-while the chain is still running, so the rest of it (the receipt's settle,
-the refresh after it) lands outside act or in the next test. A test that
-holds tracked work open on purpose (a held read or commit) cannot flush
-until it releases it; it awaits the request at the fake's handler instead.
+on the request races that chain against a 1000ms ceiling, which a loaded
+host can outlast, and it stops as soon as the request appears, with the
+receipt's settle and the refresh after it still to come. A test that holds
+tracked work open on purpose (a held read or commit) cannot flush until it
+releases it; it awaits the request at the fake's handler instead.
 Other async effects are waited for with `waitFor` or a `findBy*` on the
 result. Leaving any of this unawaited is worse than a flake in one test:
 the store calls `requireClient()` when the RPC finally goes out, which by
