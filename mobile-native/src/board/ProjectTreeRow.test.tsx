@@ -132,6 +132,18 @@ describe("the rows inside a project", () => {
 		expect(onPress).toHaveBeenCalledTimes(1);
 	});
 
+	it("reads more projects when the section's last row is pressed", () => {
+		const onPress = vi.fn();
+		const tree = draw({ kind: "moreProjects", key: "m", depth: 0, remaining: 70 }, onPress);
+		expect(texts(tree)).toEqual(["70 more projects"]);
+		expect(texts(draw({ kind: "moreProjects", key: "m", depth: 0, remaining: 1 }))).toEqual(["1 more project"]);
+		const [row] = pressables(tree);
+		expect(row.props.accessibilityLabel).toBe("70 more projects");
+		expect(row.props.style({ pressed: false }).minHeight).toBe(44);
+		act(() => row.props.onPress());
+		expect(onPress).toHaveBeenCalledTimes(1);
+	});
+
 	it("draws a still placeholder while a tier loads", () => {
 		const tree = draw({ kind: "loading", key: "l", depth: 1 });
 		expect(tree.root.findAll((node) => node.props.testID === "project-loading")).toHaveLength(1);

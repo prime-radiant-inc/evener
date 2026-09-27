@@ -79,6 +79,7 @@ function items(over: Partial<ProjectTreeInput>): ProjectTreeItem[] {
 		organizeBy: "host-project",
 		isFolded: unfolded,
 		hostLiveCount: () => null,
+		remainingProjects: 0,
 		...over,
 	});
 }
@@ -101,6 +102,8 @@ function outline(list: readonly ProjectTreeItem[]): string[] {
 				return `${indent(item.depth)}${item.row.ref}`;
 			case "more":
 				return `${indent(item.depth)}${item.remaining} more ${item.tier}`;
+			case "moreProjects":
+				return `${indent(item.depth)}${item.remaining} more projects`;
 			case "loading":
 			case "failed":
 				return `${indent(item.depth)}${item.kind}`;
@@ -448,6 +451,7 @@ describe("keeping rows through a reconnect (part 1 Review Focus 1)", () => {
 	const retained: ProjectsView = {
 		projects: [project("a")],
 		loaded: true,
+		remaining: 0,
 		pages: new Map([["a", pages([session("local:old")], [session("local:older")])]]),
 	};
 
@@ -471,8 +475,15 @@ describe("keeping rows through a reconnect (part 1 Review Focus 1)", () => {
 		expect(view.pages.get("a")?.recent.rows.map((row) => row.ref)).toEqual(["local:older"]);
 	});
 
+	it("keeps the catalog's remaining count with its projects", () => {
+		const shownMore = { ...retained, remaining: 70 };
+		expect(projectsView(snapshot(false), shownMore).remaining).toBe(70);
+		const fresh = snapshot(true);
+		expect(projectsView({ ...fresh, projects: { ...fresh.projects, remaining: 20 } }, shownMore).remaining).toBe(20);
+	});
+
 	it("shows a first read as it is when nothing was shown before", () => {
-		expect(projectsView(snapshot(false), null)).toEqual({ projects: [], loaded: false, pages: new Map() });
+		expect(projectsView(snapshot(false), null)).toEqual({ projects: [], loaded: false, remaining: 0, pages: new Map() });
 	});
 
 	it("never keeps a failed first read, so a retry in flight reads as loading", () => {
@@ -480,6 +491,7 @@ describe("keeping rows through a reconnect (part 1 Review Focus 1)", () => {
 		const shownFailed: ProjectsView = {
 			projects: [project("a")],
 			loaded: true,
+			remaining: 0,
 			pages: new Map([["a", { current: failed, recent: failed, archived: failed }]]),
 		};
 		const retrying = projectsView(
@@ -500,5 +512,28 @@ describe("keeping rows through a reconnect (part 1 Review Focus 1)", () => {
 			"project a",
 			"  loading",
 		]);
+	});
+});
+
+describe("a catalog with more projects than its first pages", () => {
+	it("ends the section with one row that reads more, at depth 0, after everything else", () => {
+		const loaded = new Map([["evener", pages([session("local:a"), session("paradise-park:b", "paradise-park")])]]);
+		const hostFirst = items({ projects: [evener], pages: loaded, remainingProjects: 70 });
+		expect(hostFirst.at(-1)).toEqual({ kind: "moreProjects", key: "projects/more-projects", depth: 0, remaining: 70 });
+		expect(hostFirst.filter((item) => item.kind === "moreProjects")).toHaveLength(1);
+		const flat = items({ section: "archived", projects: [project("old")], isFolded: defaults, remainingProjects: 3 });
+		expect(outline(flat)).toEqual(["project old", "3 more projects"]);
+		expect(flat.at(-1)?.key).toBe("archived/more-projects");
+	});
+
+	it("draws no such row once every project is loaded", () => {
+		expect(outline(items({ organizeBy: "project-host", projects: [project("a")], isFolded: defaults }))).toEqual([
+			"project a",
+		]);
+	});
+
+	it("never asks for a project's session page", () => {
+		const list = items({ section: "archived", projects: [project("old")], remainingProjects: 3 });
+		expect(morePagesToLoad(list)).toEqual([]);
 	});
 });

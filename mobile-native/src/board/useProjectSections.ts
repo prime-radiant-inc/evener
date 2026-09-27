@@ -20,7 +20,7 @@ const CATALOGS: Record<ProjectSection, ProjectCatalog> = {
 	archived: "archived_projects",
 };
 const TIERS: readonly ProjectSessionTier[] = ["current", "recent", "archived"];
-const EMPTY_VIEW: ProjectsView = { projects: [], loaded: false, pages: new Map() };
+const EMPTY_VIEW: ProjectsView = { projects: [], loaded: false, remaining: 0, pages: new Map() };
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
 

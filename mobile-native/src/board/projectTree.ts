@@ -55,6 +55,8 @@ export type ProjectTreeItem =
 	| { kind: "archivedGroup"; key: string; fold: string; depth: number; count: number | null; folded: boolean }
 	| { kind: "session"; key: string; depth: number; row: NavigationSessionSummary; archived: boolean }
 	| { kind: "more"; key: string; depth: number; projectKey: string; tier: ProjectSessionTier; remaining: number }
+	/** The section's catalog has more projects than it has read. */
+	| { kind: "moreProjects"; key: string; depth: 0; remaining: number }
 	| { kind: "loading"; key: string; depth: number }
 	| { kind: "failed"; key: string; depth: number };
 
@@ -70,6 +72,8 @@ export interface ProjectTreeInput {
 	isFolded(fold: string, byDefault: boolean): boolean;
 	/** A connected host group's live count, or null when it can't be known. */
 	hostLiveCount(hostId: string): number | null;
+	/** The projects the section's catalog holds past the ones read. */
+	remainingProjects: number;
 }
 
 /** The sections' own folds (part 1's FoldedSections keys): Projects starts
@@ -122,6 +126,8 @@ export function projectTreeItems(input: ProjectTreeInput): ProjectTreeItem[] {
 	const mode = input.section === "projects" ? grouping(input.sources, input.organizeBy) : "flat";
 	if (mode === "host-project") hostFirst(out, input);
 	else for (const project of pinnedFirst(input.projects)) projectFirst(out, input, project, mode === "project-host");
+	if (input.remainingProjects > 0)
+		out.push({ kind: "moreProjects", key: `${input.section}/more-projects`, depth: 0, remaining: input.remainingProjects });
 	return out;
 }
 
@@ -333,6 +339,8 @@ export interface ProjectsView {
 	projects: readonly NavigationProjectSummary[];
 	/** A catalog read has landed for this section, on this connection or an earlier one. */
 	loaded: boolean;
+	/** The catalog's projects past the ones read. */
+	remaining: number;
 	pages: ReadonlyMap<string, ProjectPages>;
 }
 
@@ -343,7 +351,7 @@ export interface ProjectsView {
  * flight reads as loading. `retained` is the view shown last; pass null for a
  * new hub. */
 export function projectsView(fresh: ProjectBrowserSnapshot, retained: ProjectsView | null): ProjectsView {
-	const before = retained ?? { projects: [], loaded: false, pages: new Map<string, ProjectPages>() };
+	const before = retained ?? { projects: [], loaded: false, remaining: 0, pages: new Map<string, ProjectPages>() };
 	const pages = new Map(before.pages);
 	for (const group of fresh.groups) {
 		const previous = pages.get(group.project.key);
@@ -352,8 +360,8 @@ export function projectsView(fresh: ProjectBrowserSnapshot, retained: ProjectsVi
 		pages.set(group.project.key, { current: pick("current"), recent: pick("recent"), archived: pick("archived") });
 	}
 	return fresh.projects.loaded
-		? { projects: fresh.projects.rows, loaded: true, pages }
-		: { projects: before.projects, loaded: before.loaded, pages };
+		? { projects: fresh.projects.rows, loaded: true, remaining: fresh.projects.remaining, pages }
+		: { projects: before.projects, loaded: before.loaded, remaining: before.remaining, pages };
 }
 
 /** Each host's rows in Live, once each (a session that needs you is in both

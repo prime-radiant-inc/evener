@@ -197,8 +197,11 @@ function hub(
 			if (!rows) throw new Error(`no category ${params.sectionId}`);
 			return { sessions: rows, remaining: 0 };
 		}
-		if (params.resource === "catalog")
-			return { projects: shape.catalogs?.[params.catalog as ProjectCatalogName] ?? [], remaining: 0 };
+		if (params.resource === "catalog") {
+			const projects = shape.catalogs?.[params.catalog as ProjectCatalogName] ?? [];
+			const page = projects.slice(offset, offset + (params.limit ?? 50));
+			return { projects: page, remaining: projects.length - offset - page.length };
+		}
 		if (params.resource === "project_page") {
 			const rows = shape.projectPages?.[`${params.projectKey}:${params.tier}`] ?? [];
 			const page = rows.slice(offset, offset + (params.limit ?? 50));
@@ -1534,12 +1537,31 @@ it("starts Test runs and Archived folded, reading neither catalog until it is un
 	act(() => tree.unmount());
 });
 
-it("hides Projects once its catalog has loaded empty, and Test runs and Archived while they count none", async () => {
+it("shows no section while the manifest counts none, reading no catalog", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	const fake = hub({ ...fleet, manifest: manifest({ sources: [laptopSource], catalogs: catalogCounts(0, 0, 0) }) });
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
+	expect(catalogReads(fake)).toEqual([]);
+	expect(sectionHeaders(tree)).toEqual([]);
+	act(() => tree.unmount());
+});
+
+it("shows no PROJECTS header before the manifest lands, and hides it once its catalog loads empty", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	let holding = true;
+	const fake = hub(fleet, (read) => holding && (read.resource === "manifest" || read.section === "live"));
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(skeletonRows(tree)).toHaveLength(3);
+	expect(sectionHeaders(tree)).toEqual([]);
+	expect(catalogReads(fake)).toEqual([]);
+	holding = false;
+	fake.release();
+	await settle();
+	// The manifest counts 4 projects, but the catalog comes back empty.
 	expect(catalogReads(fake)).toEqual(["projects"]);
 	expect(sectionHeaders(tree)).toEqual([]);
 	act(() => tree.unmount());
@@ -1789,5 +1811,57 @@ it("offers the project menu as an alert off iOS, archiving the project", async (
 			params: { kind: "project", id: "evener", workingDir: "/home/jesse/git/evener", archived: true },
 		},
 	]);
+	act(() => tree.unmount());
+});
+
+const manyProjects = Array.from({ length: 70 }, (_, index) =>
+	evenerProject({ key: `project-${index}`, name: `project-${index}`, working_dir: `/home/jesse/git/project-${index}` }),
+);
+const manyProjectsFleet = {
+	...fleet,
+	manifest: manifest({ sources: [laptopSource], sections: fleetSections, catalogs: catalogCounts(70, 0, 0) }),
+	catalogs: { projects: manyProjects },
+};
+const projectCatalogPages = (fake: ReturnType<typeof hub>) =>
+	fake.requests.filter((read) => read.resource === "catalog").map((read) => read.offset ?? 0);
+
+it("reads the catalog's next page when its more projects row is pressed", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(manyProjectsFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(projectRows(tree, "project-49")).toHaveLength(1);
+	expect(projectRows(tree, "project-50")).toHaveLength(0);
+	pressLabel(tree, "20 more projects");
+	await settle();
+	expect(projectCatalogPages(fake)).toEqual([0, 50]);
+	expect(projectRows(tree, "project-69")).toHaveLength(1);
+	expect(texts(tree)).not.toContain("20 more projects");
+	act(() => tree.unmount());
+});
+
+it("reads the catalog's next page once its more projects row is at least half on screen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(manyProjectsFleet);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	const scroller = tree.root.find((node) => node.type === ("ScrollView" as never) && !node.props.horizontal);
+	const more = tree.root.find((node) => node.props.testID === "project-more-projects");
+	act(() => {
+		scroller.props.onLayout?.({ nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } });
+		projectSection(tree, "projects").props.onLayout({ nativeEvent: { layout: { x: 0, y: 600, width: 390, height: 2500 } } });
+		more.props.onLayout({ nativeEvent: { layout: { x: 0, y: 2400, width: 390, height: 44 } } });
+	});
+	await settle();
+	expect(projectCatalogPages(fake)).toEqual([0]);
+	// The row's top half is on screen.
+	act(() =>
+		scroller.props.onScroll({ nativeEvent: { contentOffset: { x: 0, y: 3022 - 700 }, layoutMeasurement: { width: 390, height: 700 } } }),
+	);
+	await settle();
+	expect(projectCatalogPages(fake)).toEqual([0, 50]);
+	expect(projectRows(tree, "project-69")).toHaveLength(1);
 	act(() => tree.unmount());
 });

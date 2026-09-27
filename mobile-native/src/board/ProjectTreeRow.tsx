@@ -141,10 +141,13 @@ export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }:
 				</View>
 			);
 		case "more":
+		case "moreProjects": {
+			const more =
+				item.kind === "more" ? `${item.remaining} more` : `${item.remaining} more ${item.remaining === 1 ? "project" : "projects"}`;
 			return (
 				<Pressable
 					accessibilityRole="button"
-					accessibilityLabel={`${item.remaining} more`}
+					accessibilityLabel={more}
 					onPress={onPress}
 					style={({ pressed }) => ({
 						minHeight: 44,
@@ -154,9 +157,10 @@ export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }:
 						backgroundColor: pressed ? palette.pressed : palette.page,
 					})}
 				>
-					{text(`${item.remaining} more`, { fontSize: 13 * scale, color: palette.inkLow })}
+					{text(more, { fontSize: 13 * scale, color: palette.inkLow })}
 				</Pressable>
 			);
+		}
 		case "loading":
 			return (
 				<View

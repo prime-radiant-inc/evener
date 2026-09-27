@@ -89,6 +89,8 @@ const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 	finished: "FINISHED",
 	working: "WORKING",
 };
+/** A row that reads a section's next page: a tier's sessions or the catalog's projects. */
+type MoreItem = Extract<ProjectTreeItem, { kind: "more" | "moreProjects" }>;
 const ORGANIZE_BY_LABELS: Record<OrganizeBy, string> = {
 	"project-host": "Project, then host",
 	"host-project": "Host, then project",
@@ -220,9 +222,9 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// Within about a screen of the end of Live, read its next page. Layout
 	// checks too, so a first page too short to scroll keeps reading.
 	const viewport = useRef({ offset: 0, height: 0 });
-	// The project sections' "more" rows on screen, and where each was last
-	// laid out inside its section.
-	const visibleMoreRows = useRef<{ section: ProjectSection; item: Extract<ProjectTreeItem, { kind: "more" }> }[]>([]);
+	// The project sections' "more" rows on screen (a tier's sessions, or the
+	// catalog's projects), and where each was last laid out inside its section.
+	const visibleMoreRows = useRef<{ section: ProjectSection; item: MoreItem }[]>([]);
 	const moreFrames = useRef(new Map<string, { y: number; height: number }>());
 	const readMoreLiveIfNear = () => {
 		const page = board.getSnapshot().live;
@@ -323,7 +325,9 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		projects: {
 			title: projectGrouping === "host-project" ? "HOSTS" : "PROJECTS",
 			label: projectGrouping === "host-project" ? "Hosts" : "Projects",
-			shown: !(projectSections.projects.view.loaded && projectSections.projects.view.projects.length === 0),
+			shown:
+				projects > 0 &&
+				!(projectSections.projects.view.loaded && projectSections.projects.view.projects.length === 0),
 		},
 		"test-runs": { title: `Test runs · ${testRuns}`, label: sectionLabel("Test runs", testRuns, "project"), shown: testRuns > 0 },
 		archived: { title: `ARCHIVED · ${archived}`, label: sectionLabel("Archived", archived, "project"), shown: archived > 0 },
@@ -341,6 +345,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 					organizeBy,
 					isFolded,
 					hostLiveCount,
+					remainingProjects: view.remaining,
 				});
 		return { section, folded, items };
 	});
@@ -365,8 +370,13 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// The "more" rows at least half on screen read their next page (checked
 	// on scroll and on layout, as Live's paging is).
 	visibleMoreRows.current = shownSections.flatMap(({ section, items }) =>
-		items.flatMap((item) => (item.kind === "more" ? [{ section, item }] : [])),
+		items.flatMap((item) => (item.kind === "more" || item.kind === "moreProjects" ? [{ section, item }] : [])),
 	);
+	const readMore = (section: ProjectSection, item: MoreItem) => {
+		const controller = projectSections[section].controller;
+		if (item.kind === "moreProjects") void controller?.loadMoreProjects();
+		else void controller?.loadMoreSessions(item.projectKey, item.tier);
+	};
 	const readVisibleMore = () => {
 		const { offset, height } = viewport.current;
 		if (height === 0) return;
@@ -382,6 +392,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			});
 			for (const page of morePagesToLoad(visible.map((more) => more.item)))
 				void projectSections[section].controller?.loadMoreSessions(page.projectKey, page.tier);
+			const moreProjects = visible.find((more) => more.item.kind === "moreProjects");
+			if (moreProjects) readMore(section, moreProjects.item);
 		}
 	};
 	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
@@ -409,20 +421,17 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 					/>
 				</View>
 			);
-		if (item.kind === "more")
+		if (item.kind === "more" || item.kind === "moreProjects")
 			return (
 				<View
 					key={item.key}
-					testID="project-more"
+					testID={item.kind === "more" ? "project-more" : "project-more-projects"}
 					onLayout={(event) => {
 						moreFrames.current.set(item.key, event.nativeEvent.layout);
 						readVisibleMore();
 					}}
 				>
-					<ProjectTreeRow
-						item={item}
-						onPress={() => void projectSections[section].controller?.loadMoreSessions(item.projectKey, item.tier)}
-					/>
+					<ProjectTreeRow item={item} onPress={() => readMore(section, item)} />
 				</View>
 			);
 		return (
