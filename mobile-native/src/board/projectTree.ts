@@ -86,14 +86,14 @@ export function grouping(sources: readonly Source[], organizeBy: OrganizeBy): Gr
 	return sources.some((source) => source.id !== CONTROLLER_SOURCE_ID) ? organizeBy : "flat";
 }
 
+const PROJECT_FOLD_PREFIX: Record<ProjectSection, string> = {
+	projects: "project",
+	"test-runs": "test-run",
+	archived: "archived-project",
+};
 /** The fold that holds a project's rows: the project row, or its copy under one host. */
 export function projectFold(section: ProjectSection, projectKey: string, hostId?: string): string {
-	const base =
-		section === "projects"
-			? `project:${projectKey}`
-			: section === "test-runs"
-				? `test-run:${projectKey}`
-				: `archived-project:${projectKey}`;
+	const base = `${PROJECT_FOLD_PREFIX[section]}:${projectKey}`;
 	return hostId === undefined ? base : `${base}@${hostId}`;
 }
 export const hostFold = (hostId: string) => `host:${hostId}`;
@@ -138,11 +138,12 @@ function placeholder(out: ProjectTreeItem[], prefix: string, pages: ProjectPages
  * two reads) shows once, under Today, as projectBrowser's `sessions` does. */
 function activeItems(out: ProjectTreeItem[], prefix: string, pages: ProjectPages, hostId: string | null, depth: number): void {
 	const shown = new Set<string>();
+	const belongs = onHost(hostId);
 	for (const [tier, label] of [
 		["current", "Today"],
 		["recent", "Recent"],
 	] as const) {
-		const rows = pages[tier].rows.filter((row) => onHost(hostId)(row) && !shown.has(row.ref));
+		const rows = pages[tier].rows.filter((row) => belongs(row) && !shown.has(row.ref));
 		if (rows.length === 0) continue;
 		out.push({ kind: "tier", key: `${prefix}/tier:${tier}`, depth, label });
 		for (const row of rows) {
@@ -164,7 +165,6 @@ function moreItems(out: ProjectTreeItem[], prefix: string, pages: ProjectPages, 
 function archivedItems(
 	out: ProjectTreeItem[],
 	input: ProjectTreeInput,
-	prefix: string,
 	containerFold: string,
 	pages: ProjectPages,
 	hostId: string | null,
@@ -177,7 +177,7 @@ function archivedItems(
 	if (rows.length === 0 && remaining === 0) return;
 	const fold = `${containerFold}:archived`;
 	const folded = input.isFolded(fold, input.section !== "archived");
-	const key = `${prefix}/archived`;
+	const key = `${itemKey(input.section, containerFold)}/archived`;
 	out.push({ kind: "archivedGroup", key, fold, depth, count: pages.archived.remaining === 0 ? rows.length : null, folded });
 	if (folded) return;
 	for (const row of rows) out.push({ kind: "session", key: `${key}/${row.ref}`, depth: depth + 1, row, archived: true });
@@ -206,23 +206,39 @@ function projectFirst(
 	if (hosts.length > 1)
 		for (const host of hosts) {
 			const branch = branchFold(project.key, host.id);
+			const branchKey = itemKey(input.section, branch);
 			const branchFolded = input.isFolded(branch, true);
-			out.push({ kind: "branch", key: itemKey(input.section, branch), fold: branch, host, folded: branchFolded });
-			if (!branchFolded) activeItems(out, itemKey(input.section, branch), pages, host.id, 2);
+			out.push({ kind: "branch", key: branchKey, fold: branch, host, folded: branchFolded });
+			if (!branchFolded) activeItems(out, branchKey, pages, host.id, 2);
 		}
 	else activeItems(out, prefix, pages, null, 1);
 	moreItems(out, prefix, pages, project.key, 1);
-	archivedItems(out, input, prefix, fold, pages, null, 1, project.key, true);
+	archivedItems(out, input, fold, pages, null, 1, project.key, true);
+}
+
+/** Where a project's copies sit when hosts come first: every host that owns
+ * it, the canonical copy, which carries its counts and its Today and Recent
+ * more rows (ruling 12), and the copy that carries its archived more row. */
+function hostCopies(project: NavigationProjectSummary, pages: ProjectPages | undefined, sources: readonly Source[]) {
+	const hostIds = projectHostIds(project.sources, allRows(pages));
+	return {
+		hostIds,
+		canonical: canonicalHostId(hostIds, activeRows(pages), sources),
+		// The first copy with archived rows loaded, so the archived more row
+		// never sits alone in a copy with nothing archived (the web anchors its
+		// overflow on a host with rows for the same reason).
+		archivedCarrier: canonicalHostId(hostIds, pages?.archived.rows ?? [], sources),
+	};
 }
 
 /** "Host, then project": a group per host that owns a project, each holding a
  * copy of every project it owns, and each copy holding only that host's rows. */
 function hostFirst(out: ProjectTreeItem[], input: ProjectTreeInput): void {
-	const projects = pinnedFirst(input.projects);
-	const owners = new Map<string, string[]>();
-	for (const project of projects)
-		owners.set(project.key, projectHostIds(project.sources, allRows(input.pages.get(project.key))));
-	for (const host of orderedHosts([...owners.values()].flat(), input.sources)) {
+	const placed = pinnedFirst(input.projects).map((project) => {
+		const pages = input.pages.get(project.key);
+		return { project, pages, ...hostCopies(project, pages, input.sources) };
+	});
+	for (const host of orderedHosts(placed.flatMap(({ hostIds }) => hostIds), input.sources)) {
 		const fold = hostFold(host.id);
 		const folded = input.isFolded(fold, false);
 		out.push({
@@ -234,11 +250,8 @@ function hostFirst(out: ProjectTreeItem[], input: ProjectTreeInput): void {
 			folded,
 		});
 		if (folded) continue;
-		for (const project of projects) {
-			const hostIds = owners.get(project.key) ?? [];
+		for (const { project, pages, hostIds, canonical, archivedCarrier } of placed) {
 			if (!hostIds.includes(host.id)) continue;
-			const pages = input.pages.get(project.key);
-			const canonical = canonicalHostId(hostIds, activeRows(pages), input.sources) === host.id;
 			const copyFold = projectFold(input.section, project.key, host.id);
 			const prefix = itemKey(input.section, copyFold);
 			const copyFolded = input.isFolded(copyFold, !(project.default_expanded ?? false));
@@ -248,7 +261,7 @@ function hostFirst(out: ProjectTreeItem[], input: ProjectTreeInput): void {
 				fold: copyFold,
 				depth: 1,
 				project,
-				liveCount: canonical ? projectLiveCount(project) : null,
+				liveCount: canonical === host.id ? projectLiveCount(project) : null,
 				folded: copyFolded,
 			});
 			if (copyFolded) continue;
@@ -257,12 +270,8 @@ function hostFirst(out: ProjectTreeItem[], input: ProjectTreeInput): void {
 				continue;
 			}
 			activeItems(out, prefix, pages, host.id, 2);
-			if (canonical) moreItems(out, prefix, pages, project.key, 2);
-			// The archived group's more row goes on the first copy with archived
-			// rows loaded, so it never sits alone in a copy with nothing archived
-			// (the web anchors its overflow on a host with rows for the same reason).
-			const archivedCarrier = canonicalHostId(hostIds, pages.archived.rows, input.sources) === host.id;
-			archivedItems(out, input, prefix, copyFold, pages, host.id, 2, project.key, archivedCarrier);
+			if (canonical === host.id) moreItems(out, prefix, pages, project.key, 2);
+			archivedItems(out, input, copyFold, pages, host.id, 2, project.key, archivedCarrier === host.id);
 		}
 	}
 }
@@ -288,7 +297,7 @@ export function projectRevealTarget(input: {
 		const fold = projectFold("projects", project.key);
 		return { unfold: [section, fold], scrollTo: itemKey("projects", fold) };
 	}
-	const host = canonicalHostId(projectHostIds(project.sources, allRows(pages)), activeRows(pages), sources);
+	const host = hostCopies(project, pages, sources).canonical;
 	const fold = projectFold("projects", project.key, host);
 	return { unfold: [section, hostFold(host), fold], scrollTo: itemKey("projects", fold) };
 }
