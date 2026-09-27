@@ -2205,3 +2205,65 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 	}
 	assertHubTOMLHostNames(t, pr.configPath, "keep", "other", "side")
 }
+
+// TestHostManageRemoveRollbackKeepsTheLiveIdentity pins the property roborev
+// round 7's rollback finding asks for, on the branch it names: a compensated
+// removal leaves the live entry's whole (generation, incarnation id, presence
+// epoch) triple exactly as it was, and hub.toml's records and the store row stay
+// that same triple. Compensation touches the store row and the file only — no
+// rollback path re-applies a captured entry through the registry's minting
+// methods (Add/Update), which would mint a fresh identity there while the
+// restored file kept the old triple. If such a re-apply were ever introduced,
+// this test would fail on the mismatched triple.
+func TestHostManageRemoveRollbackKeepsTheLiveIdentity(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	// A sidecar entry the boot migration folds in and records an identity for —
+	// the same shape TestHostManageRemoveRollsHubTOMLBackWhenLiveTeardownFails
+	// uses, with a manager that can never complete the teardown.
+	sidecarBytes := []byte(`{"hosts":[{"name":"side","ssh":"s.example","key_path":"/keys/s"}]}`)
+	if err := os.WriteFile(legacySidecarPathFor(configPath), sidecarBytes, 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	manager := sshconn.New(nil, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{}, configPath, nil, nil)
+
+	before, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("the boot left side out of the registry")
+	}
+	if !completeIdentity(before) {
+		t.Fatalf("the live entry carries no complete identity: %+v", before)
+	}
+	// The file already records the live triple, so a rollback that minted a new
+	// identity would disagree with these records.
+	recBefore, marksBefore := readHostRecords(t, configPath)
+	if recBefore["side"] != hostRecordFor(before) || marksBefore["side"] != hostGenerationFor(before) {
+		t.Fatalf("hub.toml records = (%+v, %+v), want the live triple (%+v, %+v)",
+			recBefore["side"], marksBefore["side"], hostRecordFor(before), hostGenerationFor(before))
+	}
+	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err == nil {
+		t.Fatal("Remove over a manager with no registry succeeded, want the live-teardown refusal")
+	}
+	after, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("the refused Remove dropped the live entry")
+	}
+	if after.Generation != before.Generation || after.IncarnationID != before.IncarnationID || after.PresenceEpoch != before.PresenceEpoch {
+		t.Fatalf("the refused Remove changed the live identity: %+v -> %+v", before, after)
+	}
+	recAfter, marksAfter := readHostRecords(t, configPath)
+	if recAfter["side"] != hostRecordFor(before) || marksAfter["side"] != hostGenerationFor(before) {
+		t.Fatalf("hub.toml records after the rollback = (%+v, %+v), want the live triple (%+v, %+v)",
+			recAfter["side"], marksAfter["side"], hostRecordFor(before), hostGenerationFor(before))
+	}
+	stored := m.cfg.store.snapshot()
+	if len(stored) != 1 || stored[0].Generation != before.Generation ||
+		stored[0].IncarnationID != before.IncarnationID || stored[0].PresenceEpoch != before.PresenceEpoch {
+		t.Fatalf("store rows after the rollback = %+v, want the live triple %+v", stored, before)
+	}
+}
