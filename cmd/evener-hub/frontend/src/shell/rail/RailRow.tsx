@@ -49,6 +49,7 @@ import {
   watchGloss,
   watchTitle,
 } from "@evener/appwire-client";
+import { sessionGroupHostId } from "@evener/appwire-client/state/navigation";
 import { memo, type ReactNode } from "react";
 import { jobStatusDisplay } from "../../panes/session/chrome/activityFormat";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
@@ -80,7 +81,6 @@ import {
   type RailProject,
   type RailSession,
   type SessionRailNode,
-  sessionGroupHostId,
   type WatchRailNode,
   watchCountLabel,
 } from "./railNodes";

@@ -90,6 +90,17 @@ export function boardState(
 	return "finished";
 }
 
+/** Classifies any of the Board's rows, Live's or a category's: the needs_you
+ * section marks approvals (approvalRefs), and isSeen splits Finished from
+ * Idle. */
+export function rowClassifier(
+	needsYouSection: readonly NavigationSessionSummary[],
+	isSeen: (row: NavigationSessionSummary) => boolean,
+): (row: NavigationSessionSummary) => ClassifiedRow {
+	const approvals = approvalRefs(needsYouSection);
+	return (row) => ({ row, state: boardState(row, approvals.has(row.ref), isSeen(row)) });
+}
+
 const BANDS: Record<BoardState, Band | null> = {
 	failed: "needsYou",
 	question: "needsYou",
@@ -141,15 +152,15 @@ export function liveBands(
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
 ): LiveBands {
-	const approvals = approvalRefs(needsYouSection);
+	const classify = rowClassifier(needsYouSection, isSeen);
 	const rows = new Map<string, NavigationSessionSummary>();
 	for (const row of live) rows.set(row.ref, row);
 	for (const row of needsYouSection) if (!rows.has(row.ref)) rows.set(row.ref, row);
 	const bands: LiveBands = { needsYou: [], finished: [], working: [], idle: [] };
 	for (const row of rows.values()) {
-		const state = boardState(row, approvals.has(row.ref), isSeen(row));
-		const band = bandOf(state);
-		if (band) bands[band].push({ row, state });
+		const item = classify(row);
+		const band = bandOf(item.state);
+		if (band) bands[band].push(item);
 	}
 	bands.needsYou.sort(needsYouOrder);
 	bands.finished.sort(newestFirst);
@@ -175,6 +186,10 @@ export function liveSummary(bands: LiveBands): LiveSummary | null {
 	};
 	return Object.values(counts).filter((count) => count > 0).length >= 2 ? counts : null;
 }
+
+export const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+/** A section's VoiceOver label, shared by its chip and its header. */
+export const sectionLabel = (name: string, count: number, noun: string) => `${name}, ${plural(count, noun)}`;
 
 export function summaryText(band: Band, count: number): string {
 	if (band === "needsYou") return `${count} ${count === 1 ? "needs you" : "need you"}`;

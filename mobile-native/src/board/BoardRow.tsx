@@ -3,6 +3,7 @@ import { relativeAge } from "@evener/appwire-client/state/navigation";
 import { SymbolView } from "expo-symbols";
 import type { ReactElement } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
+import type { Palette } from "../design/tokens";
 import { useColors, useTextScale } from "../ui";
 import { bandOf, type ClassifiedRow, lastLine, stateWord, type Usual, whyLine } from "./attention";
 import { StateMark } from "./StateMark";
@@ -26,6 +27,68 @@ export interface BoardRowProps {
 /** Where a row's title starts: its 16pt padding, the 28pt mark column and
  * the 10pt gap. */
 export const TITLE_INSET = 16 + 28 + 10;
+
+/** What every row in one of the Board's lists shares. */
+export type RowContext = Pick<BoardRowProps, "connected" | "usual" | "hostLabel" | "now" | "onOpen"> & {
+	draftRefs: ReadonlySet<string>;
+};
+
+function Hairline({ inset = 0 }: { inset?: number }) {
+	const { palette } = useColors();
+	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
+}
+
+/** A list of Board rows, separated by hairlines inset to the title. */
+export function BoardRows({
+	items,
+	variant,
+	moving,
+	context,
+}: {
+	items: readonly ClassifiedRow[];
+	variant: BoardRowProps["variant"];
+	moving: boolean;
+	context: RowContext;
+}): ReactElement {
+	const { draftRefs, ...shared } = context;
+	return (
+		<>
+			{items.map((item, index) => (
+				<View key={item.row.ref}>
+					{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
+					<BoardRow
+						item={item}
+						variant={variant}
+						moving={moving}
+						hasDraft={draftRefs.has(item.row.ref)}
+						{...shared}
+					/>
+				</View>
+			))}
+		</>
+	);
+}
+
+/** The type of the Board's section headers (spec 7.1): 13pt semibold,
+ * inkMid, 0.4 letter-spacing. */
+export const bandHeaderText = (palette: Palette, scale: number) => ({
+	fontSize: 13 * scale,
+	fontWeight: "600" as const,
+	letterSpacing: 0.4,
+	color: palette.inkMid,
+});
+
+/** A fold's chevron at a header's trailing edge: right while folded, turned
+ * down while open. */
+export function FoldChevron({ folded }: { folded: boolean }): ReactElement {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ transform: [{ rotate: folded ? "0deg" : "90deg" }] }}>
+			<SymbolView name="chevron.right" size={13 * scale} tintColor={palette.inkLow} />
+		</View>
+	);
+}
 
 const UNITS: Record<string, string> = { m: "minute", h: "hour", d: "day" };
 
