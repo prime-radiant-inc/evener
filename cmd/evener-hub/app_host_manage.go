@@ -302,6 +302,12 @@ type hostPersistChange struct {
 	// foreign edit won the race, and must adopt that file's records with it
 	// rather than drop them as an owned name's superseded history.
 	carryReceipts map[string]HostMutationReceipt
+	// dropReceipt names the scoped receipt key this write removes: a
+	// compensation must take the provisional receipt its own staged write
+	// installed with it, or an un-committed mutation leaves a receipt behind
+	// that a later replay reads as a recorded outcome (S10's un-commit paths
+	// dropped it the same way).
+	dropReceipt string
 	// dropMarker names a host whose staged-receipt marker this write removes:
 	// the post-commit write that replaces the marker with the finalized receipt
 	// is a write that carries no marker for its host, and the derivation must
@@ -1282,6 +1288,12 @@ type hubHostManager struct {
 	// deterministically instead of racing it — the testOnlyParkPostCommit
 	// precedent, for the *pre*-commit window. Nil in production.
 	testOnlyParkInCommit func(name string)
+	// testOnlyAfterStage, when non-nil, is called at the end of a commit's
+	// step-(2) write, with the mutation lock still held — the staged-write→flip
+	// window. It exists so a test can open that window deterministically (a
+	// foreign hub.toml write) and prove the compensation drops the marker and
+	// the provisional receipt the staged write installed. Nil in production.
+	testOnlyAfterStage func(name string)
 	// testOnlyTeardown, when non-nil, replaces the post-commit teardown the
 	// mutation handlers run (the manager's RemoveHost/UpdateHost, or the
 	// registry's own Remove/Update with no manager wired). It exists so a test
@@ -2432,8 +2444,8 @@ func (m *hubHostManager) mirrorBoundaries(entries, known []hostreg.Host, highWat
 // directory step failed is the other case: the file already holds previous,
 // so the state agrees and only the rollback's crash durability is uncertain
 // — reported as landed beside the cause, never as a failed rollback.
-func (m *hubHostManager) rollbackHubTOML(previous, known []hostreg.Host, cause error) error {
-	if err := m.persistHosts(previous, known, hostPersistChange{}); err != nil {
+func (m *hubHostManager) rollbackHubTOML(previous, known []hostreg.Host, cause error, change hostPersistChange) error {
+	if err := m.persistHosts(previous, known, change); err != nil {
 		if hubTOMLRenameCommitted(err) {
 			// The rollback's own rename landed: the file holds previous, the
 			// content the rollback exists to restore, and only its

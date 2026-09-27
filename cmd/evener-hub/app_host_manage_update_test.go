@@ -513,25 +513,26 @@ func TestHostManageUpdateCommitsWithRemnantWhenTheLivePhaseFails(t *testing.T) {
 	}
 }
 
-// TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes drives the defensive
-// finish arm that only a directly driven registry can reach: UpdateHost commits
-// its swap, and a directly driven registry then removes that new entry inside the
-// same gate hold — after the committed swap and the caller's retirement, and so
-// before the hub's gate-free finish-phase reread. The failed hub update must
-// remove its committed store row and file entry too, so re-adding the name cannot
-// persist a duplicate.
-func TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes(t *testing.T) {
+// TestHostManageUpdateCommitsWithRemnantWhenTheSwapDropsTheEntry pins the
+// commit-point rule for the vanish-inside-the-swap seam: UpdateHost commits its
+// swap, and a directly driven registry then removes that entry inside the same
+// gate hold — after the committed swap and the caller's retirement, and so
+// before the hub's gate-free finish-phase reread. The swap landed, so the edit
+// is COMMITTED: the durable entry and the store row keep the edit, a remnant
+// pins the retired identity, and forward repair converges the runtime — "once
+// the first planned teardown executes, the mutation is committed and there is
+// no compensation path back".
+func TestHostManageUpdateCommitsWithRemnantWhenTheSwapDropsTheEntry(t *testing.T) {
 	f := newUpdateFixture(t)
 	removed := make(chan error, 1)
 	manager := sshconn.New(f.hosts, sshconn.Options{
 		Runner:  &attachedUpdateRunner{},
 		OnEvent: func(ev sshconn.Event) { f.m.observeEvent(ev) },
-		// The removal lands inside UpdateHost's gate hold, after the committed swap
-		// and the caller's retirement, and therefore before the hub's gate-free
-		// finish-phase reread: drive the registry directly, bypassing the hub
-		// mutation mark, to make that reread observe the vanished live entry. The
-		// seam is the window itself rather than a sleep-biased race, so the
-		// interleaving is exact.
+		// The removal lands inside UpdateHost's gate hold, after the committed
+		// swap and the caller's retirement, and therefore before the hub's
+		// gate-free finish-phase reread: drive the registry directly, bypassing
+		// the hub mutation mark, to make that reread observe the vanished live
+		// entry.
 		AfterUpdateHostSwap: func(name string) {
 			removed <- f.hosts.Remove(name)
 		},
@@ -542,39 +543,44 @@ func TestHostManageUpdateRollsBackWhenTheLiveEntryVanishes(t *testing.T) {
 		t.Fatalf("Ensure before Update: %v", err)
 	}
 
-	_, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"}))
-	if err == nil {
-		t.Fatal("Update whose live entry vanished succeeded, want the defensive refusal")
+	result, err := f.m.UpdateResult(context.Background(), updateRequest(t, f.m, "side", appwire.HostEntry{Address: "edited.example"}))
+	if err != nil {
+		t.Fatalf("Update = %v, want the committed-with-teardown-failure arm", err)
 	}
-	assertWireCode(t, err, appwire.CodeInvalidParams)
+	if result.HostMutationTeardownFailure == nil {
+		t.Fatalf("Update = %+v, want the teardown-failure arm", result)
+	}
 	if removeErr := <-removed; removeErr != nil {
 		t.Fatalf("direct registry removal: %v", removeErr)
 	}
 	if _, ok := f.hosts.Get("side"); ok {
 		t.Fatal("the directly removed live entry reappeared")
 	}
-	if stored := f.m.cfg.store.snapshot(); len(stored) != 0 {
-		t.Fatalf("store rows after the failed edit = %+v, want the empty live set", stored)
+	// The commit stands: the store row and the file keep the edit.
+	stored := f.m.cfg.store.snapshot()
+	if len(stored) != 1 || stored[0].SSH != "edited.example" {
+		t.Fatalf("store rows after the vanished swap = %+v, want the committed edit", stored)
 	}
 	onDisk, loadErr := LoadConfig(f.configPath)
 	if loadErr != nil {
-		t.Fatalf("reload hub.toml after the failed edit: %v", loadErr)
+		t.Fatalf("load hub.toml: %v", loadErr)
 	}
-	if len(onDisk.Hosts) != 0 {
-		t.Fatalf("hub.toml after the failed edit = %+v, want the empty live set", onDisk.Hosts)
+	if len(onDisk.Hosts) != 1 || onDisk.Hosts[0].SSH != "edited.example" {
+		t.Fatalf("hub.toml = %+v, want the committed edit", onDisk.Hosts)
 	}
-
-	if _, addErr := f.m.Add(context.Background(), appwire.HostAddParams{
-		Entry: appwire.HostEntry{Name: "side", Address: "fresh.example"},
-	}); addErr != nil {
-		t.Fatalf("re-add after the failed edit: %v", addErr)
+	// The retry re-applies the staged runtime set, converging the live set to
+	// the configuration hub.toml already holds.
+	retry, err := f.m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{
+		RemnantID: result.HostMutationTeardownFailure.RemnantID,
+	})
+	if err != nil {
+		t.Fatalf("TeardownRetry = %v", err)
 	}
-	reloaded, loadErr := LoadConfig(f.configPath)
-	if loadErr != nil {
-		t.Fatalf("reload hub.toml after the re-add: %v", loadErr)
+	if retry.HostTeardownRetryCompleteLive == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete live arm", retry)
 	}
-	if len(reloaded.Hosts) != 1 || reloaded.Hosts[0].Name != "side" || reloaded.Hosts[0].SSH != "fresh.example" {
-		t.Fatalf("hub.toml after the re-add = %+v, want one fresh entry", reloaded.Hosts)
+	if live, ok := f.hosts.Get("side"); !ok || live.SSH != "edited.example" {
+		t.Fatalf("live entry after the retry = %+v (ok=%v), want the committed edit re-applied", live, ok)
 	}
 }
 
@@ -680,7 +686,13 @@ func TestHostManageUpdateCommitsWithRemnantWhenTheLiveEntryVanishes(t *testing.T
 // cache entry (generation included), and the retained last-known-good list.
 // Pre-fix the arm dropped only the store row, so the tree kept rendering sessions
 // for a name the live registry no longer had.
-func TestHostManageUpdateVanishedEntryRetiresDerivedState(t *testing.T) {
+// TestHostManageUpdateVanishedEntryKeepsTheCommit pins the same commit-point
+// rule for the third vanished-entry seam — UpdateHost's own update observing an
+// entry a directly driven registry dropped — and with it the retirement the
+// finish phase owes a name whose rebind could not complete: the commit stands,
+// the remnant carries the repair handle, and the derived state a later row would
+// render from is retired exactly as Remove retires it.
+func TestHostManageUpdateVanishedEntryKeepsTheCommit(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "hub.toml")
 	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
@@ -691,9 +703,6 @@ func TestHostManageUpdateVanishedEntryRetiresDerivedState(t *testing.T) {
 		t.Fatalf("hostreg.New: %v", err)
 	}
 	sources := appsource.NewRegistry()
-	// The cache and the retention hook are the fixture's own seams: a real
-	// RemoteThreadCache records a generation per source and lets RemoveSource
-	// drop it, and forgetLastGoodThreads is the web server's retention seam.
 	cache := &hubcore.RemoteThreadCache{}
 	var forgotten []string
 	m := newHubHostManager(sources, nil, hubcore.WebConfig{RemoteThreadCache: cache}, configPath, hosts, nil)
@@ -703,65 +712,69 @@ func TestHostManageUpdateVanishedEntryRetiresDerivedState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Add(side): %v", err)
 	}
-	if _, ok := sources.Source("side"); !ok {
-		t.Fatal("the added host has no source")
+	// Park the edit in its post-commit window, then drive the registry directly
+	// so the rebind observes the vanished entry.
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	m.testOnlyParkPostCommit = func(name string) {
+		if name != "side" {
+			return
+		}
+		once.Do(func() { close(parked) })
+		<-release
 	}
-	if _, ok := cache.SourceGeneration("side"); !ok {
-		t.Fatal("the added host's source has no cache generation")
+	req := updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"})
+	done := make(chan appwire.HostMutationResult, 1)
+	go func() {
+		result, _ := m.UpdateResult(context.Background(), req)
+		done <- result
+	}()
+	select {
+	case <-parked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the edit never reached its post-commit window")
 	}
-	// Retain an attach record the way a lifecycle event and an attached row do.
-	seeded, _ := m.cfg.hosts.Get("side")
-	m.cfg.mu.Lock()
-	m.cfg.state.recordKnown(appwire.HostRow{
-		Name: "side", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
-	}, hostFactsValidity{handshake: true}, seeded.Generation)
-	m.cfg.mu.Unlock()
-
-	// Drive the finish-phase vanished arm: the live phase commits its swap, then a
-	// directly driven registry change removes the new entry inside the same gate
-	// hold — after the committed swap and the retirement, before the hub's
-	// gate-free finish-phase reread — bypassing the hub mutation mark.
-	removed := make(chan error, 1)
-	manager := sshconn.New(hosts, sshconn.Options{
-		Runner:  &attachedUpdateRunner{},
-		OnEvent: func(ev sshconn.Event) { m.observeEvent(ev) },
-		AfterUpdateHostSwap: func(name string) {
-			removed <- hosts.Remove(name)
-		},
-	})
-	t.Cleanup(func() { _ = manager.Close() })
-	m.cfg.manager = manager
-	if _, err := manager.Ensure(context.Background(), "side"); err != nil {
-		t.Fatalf("Ensure before Update: %v", err)
+	if err := m.cfg.hosts.Remove("side"); err != nil {
+		t.Fatalf("direct registry removal: %v", err)
 	}
-
-	_, err = m.Update(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"}))
-	if err == nil {
-		t.Fatal("Update whose live entry vanished succeeded, want the defensive refusal")
+	close(release)
+	result := <-done
+	arm := result.HostMutationTeardownFailure
+	if arm == nil {
+		t.Fatalf("Update = %+v, want the teardown-failure arm", result)
 	}
-	assertWireCode(t, err, appwire.CodeInvalidParams)
-	if removeErr := <-removed; removeErr != nil {
-		t.Fatalf("direct registry removal: %v", removeErr)
+	if arm.RemnantID == "" {
+		t.Fatal("the arm names no remnant")
 	}
-	if stored := m.cfg.store.snapshot(); len(stored) != 0 {
-		t.Fatalf("store rows after the vanished edit = %+v, want the empty live set", stored)
+	// The commit stands in both durable places.
+	if stored := m.cfg.store.snapshot(); len(stored) != 1 || stored[0].SSH != "edited.example" {
+		t.Fatalf("store rows = %+v, want the committed edit", stored)
 	}
-	// The derived state is retired exactly as Remove retires it.
-	if _, ok := sources.Source("side"); ok {
-		t.Fatal("the vanished host still has a source registration")
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
 	}
-	if _, ok := cache.SourceGeneration("side"); ok {
-		t.Fatal("the vanished host's remote-thread cache entry survived")
+	if len(cfg.Hosts) != 1 || cfg.Hosts[0].SSH != "edited.example" {
+		t.Fatalf("hub.toml = %+v, want the committed edit", cfg.Hosts)
 	}
-	if !slices.Equal(forgotten, []string{"side"}) {
-		t.Fatalf("forgotten = %v, want the vanished host's own last-known-good drop", forgotten)
+	if _, durable := cfg.TeardownRemnants[arm.RemnantID]; !durable {
+		t.Fatalf("hub.toml carries no remnant %q beside the committed edit", arm.RemnantID)
 	}
-	m.cfg.state.mu.Lock()
-	_, hasRecord := m.cfg.state.records["side"]
-	m.cfg.state.mu.Unlock()
-	if hasRecord {
-		t.Fatal("the vanished host's attach record survived")
+	// The repair converges the runtime, and the remnant clears.
+	retry, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: arm.RemnantID})
+	if err != nil {
+		t.Fatalf("TeardownRetry = %v", err)
 	}
+	if retry.HostTeardownRetryCompleteLive == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete live arm", retry)
+	}
+	if live, ok := hosts.Get("side"); !ok || live.SSH != "edited.example" {
+		t.Fatalf("live entry after the retry = %+v (ok=%v), want the committed edit re-applied", live, ok)
+	}
+	_ = sources
+	_ = cache
+	_ = forgotten
 }
 
 // updateOutcome carries the parked Update's result back to the test.

@@ -354,7 +354,7 @@ func (m *hubHostManager) AddResult(ctx context.Context, params appwire.HostAddPa
 	// target is the no-op §5 defines.
 	if err := m.addHostToRegistry(entry); err != nil {
 		m.cfg.state.restore(entry.Name, priorState)
-		err = m.rollbackHubTOML(prev, unionHosts(prev, append([]hostreg.Host(nil), entry)), err)
+		err = m.rollbackHubTOML(prev, unionHosts(prev, append([]hostreg.Host(nil), entry)), err, compensationChange(plan))
 		m.cfg.mu.Unlock()
 		return appwire.HostMutationResult{}, err
 	}
@@ -404,7 +404,9 @@ func (m *hubHostManager) compensateStagedWrite(plan *hostCommitPlan, previous []
 		return cause
 	}
 	adopted := m.adoptedPreimage(plan, previous)
-	return m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause)
+	// The staged records go with the write that failed: the compensation drops
+	// the marker and the provisional receipt the staged write installed.
+	return m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, compensationChange(plan))
 }
 
 // compensateStagedCommit is the pre-commit compensation for a staged commit
@@ -414,7 +416,7 @@ func (m *hubHostManager) compensateStagedWrite(plan *hostCommitPlan, previous []
 // and the typed refusal is returned.
 func (m *hubHostManager) compensateStagedCommit(plan *hostCommitPlan, previous []hostreg.Host, priorState *hostAttachRecord, cause error) (appwire.HostMutationResult, error) {
 	adopted := m.adoptedPreimage(plan, previous)
-	err := m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause)
+	err := m.rollbackHubTOML(adopted, unionHosts(adopted, plan.Entries), cause, compensationChange(plan))
 	m.cfg.state.restore(plan.Name, priorState)
 	m.cfg.mu.Unlock()
 	return appwire.HostMutationResult{}, err
@@ -622,6 +624,16 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 
 	m.cfg.mu.Lock()
 	m.unmarkMutating(name)
+	if stored, ok := m.cfg.hosts.Get(name); !ok && liveErr == nil {
+		// A directly driven registry dropped the name while the edit's rebind
+		// ran: the swap landed (the registry no longer carries the name, so the
+		// rebind had nothing left to retire) and the commit stands, so this is
+		// the same forward-repair state a refused rebind leaves — the committed
+		// entry plus a remnant whose retry re-applies the staged runtime set,
+		// never an un-commit of an edit the file already holds.
+		_ = stored
+		liveErr = fmt.Errorf("update host %q: the live entry vanished during the rebind", name)
+	}
 	if liveErr != nil {
 		// The commit point: the staged runtime transition is durable and the
 		// planned teardown is running, so a failure here is
@@ -647,12 +659,9 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	}
 	stored, ok := m.cfg.hosts.Get(name)
 	if !ok {
-		refusal := appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
-		m.cfg.store.remove(name)
-		m.dropHostDerivedState(name)
-		_ = m.rollbackHubTOML(m.cfg.store.snapshot(), unionHosts(m.cfg.store.snapshot(), []hostreg.Host{entry}), refusal)
+		// Unreachable: the vanished-entry case was folded into liveErr above.
 		m.cfg.mu.Unlock()
-		return appwire.HostMutationResult{}, refusal
+		return appwire.HostMutationResult{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
 	if !slicesEqualStrs(before.Roots, stored.Roots) {
 		if m.cfg.remoteCache != nil {

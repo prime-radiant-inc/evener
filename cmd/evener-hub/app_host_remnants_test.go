@@ -765,3 +765,91 @@ func TestHostMutationCollisionDroppedHandEditDeletion(t *testing.T) {
 		t.Fatal("the deleted name is still live")
 	}
 }
+
+// TestHostStagedCompensationLeavesNoMarkerOrReceipt pins roborev's High finding
+// on the compensation path: a commit whose step-(2) write landed and whose flip
+// then refused must leave NEITHER the staged-receipt marker NOR the provisional
+// receipt behind — in the store or in the file. Leaving them would let the next
+// mutation (or any boot) finalize a `committed` receipt for a mutation the API
+// reported as refused, and the leaked provisional receipt would answer a replay
+// of that mutationId as though it had committed.
+func TestHostStagedCompensationLeavesNoMarkerOrReceipt(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	// The foreign write lands in the staged-write→flip window: the flip's
+	// fingerprint check observes it and refuses with the typed `concurrent-edit`,
+	// so the mutation compensates.
+	m.testOnlyAfterStage = func(name string) {
+		if name != "side" {
+			return
+		}
+		foreign := []byte("[[hosts]]\nname = \"side\"\nssh = \"foreign.example\"\n")
+		if err := os.WriteFile(configPath, foreign, 0o600); err != nil {
+			t.Fatalf("foreign hub.toml write: %v", err)
+		}
+	}
+	req := updateRequest(t, m, "side", appwire.HostEntry{Address: "staged.example"})
+	_, err := m.UpdateResult(context.Background(), req)
+	if err == nil {
+		t.Fatal("Update over the raced window succeeded, want the typed refusal")
+	}
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeConflict {
+		t.Fatalf("refusal = %v, want the typed concurrent-edit conflict", err)
+	}
+	if data, ok := wireErr.Data.(appwire.ConcurrentEditErrorData); !ok {
+		t.Fatalf("refusal data = %#v, want ConcurrentEditErrorData", wireErr.Data)
+	} else if data.StagedFingerprint == "" || data.ObservedFingerprint == "" {
+		t.Fatalf("refusal data = %+v, want both fingerprints", data)
+	}
+	// Nothing staged survives in memory...
+	if markers := m.cfg.store.stagedSnapshot(); len(markers) != 0 {
+		t.Fatalf("store still holds staged markers: %+v", markers)
+	}
+	if receipts := m.cfg.store.receiptsSnapshot(); len(receipts) != 0 {
+		t.Fatalf("store still holds receipts: %+v", receipts)
+	}
+	// ...and nothing staged survives on disk, for a reader that reloads it.
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
+	}
+	if len(cfg.StagedReceipts) != 0 || len(cfg.MutationReceipts) != 0 {
+		t.Fatalf("hub.toml carries staged records after the compensation: staged=%+v receipts=%+v",
+			cfg.StagedReceipts, cfg.MutationReceipts)
+	}
+	// A restart finalizes nothing for the name.
+	restarted := bootHostManager(t, configPath)
+	if markers := restarted.cfg.store.stagedSnapshot(); len(markers) != 0 {
+		t.Fatalf("a restart inherited staged markers: %+v", markers)
+	}
+	if receipts := restarted.cfg.store.receiptsSnapshot(); len(receipts) != 0 {
+		t.Fatalf("a restart inherited receipts: %+v", receipts)
+	}
+	// The same mutationId is no longer a dedup hit: the retry is a fresh
+	// mutation under that key, not a replay of a fabricated outcome.
+	if hit, err := restarted.lookupHostMutationReceipt(hostReceiptQuery{
+		MutationID: req.MutationID, Name: "side", Kind: hostMutationUpdate,
+	}); err != nil {
+		t.Fatalf("lookup after the compensation: %v", err)
+	} else if hit != nil {
+		t.Fatalf("the compensated mutationId still hit a receipt: %+v", hit.Receipt)
+	}
+	// The restart re-minted the name's incarnation (the foreign file carried no
+	// identity record), so the fresh attempt carries the pair the restarted
+	// manager now holds — the point is that the same mutationId is a fresh key,
+	// not that the old guard still fits.
+	retry := updateRequest(t, restarted, "side", appwire.HostEntry{Address: "staged.example"})
+	retry.MutationID = req.MutationID
+	fresh, err := restarted.UpdateResult(context.Background(), retry)
+	if err != nil {
+		t.Fatalf("fresh update under the same key = %v", err)
+	}
+	if fresh.HostMutationCommitted == nil || fresh.HostMutationCommitted.Host.Address != "staged.example" {
+		t.Fatalf("fresh update = %+v, want a normal fresh commit", fresh)
+	}
+}

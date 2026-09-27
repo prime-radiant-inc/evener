@@ -158,7 +158,24 @@ func (m *hubHostManager) stageCommit(plan *hostCommitPlan, now time.Time) error 
 	}
 	plan.Marker = marker
 	plan.lastFingerprint, _ = hubTOMLFingerprintAt(m.cfg.configPath)
+	if m.testOnlyAfterStage != nil {
+		// The seam opens the staged-write→flip window deterministically, so a
+		// test can prove what the compensation does with the marker and the
+		// provisional receipt the staged write just installed.
+		m.testOnlyAfterStage(plan.Name)
+	}
 	return nil
+}
+
+// compensationChange is the record-set change every pre-commit compensation
+// after a landed staged write carries: the staged marker AND the provisional
+// receipt that write installed go with the mutation that is being un-committed.
+// The derivation starts from the store's snapshots — which the staged write
+// installed into — so without both drops the rollback write re-emits them, the
+// marker survives to be finalized (fabricating a `committed` receipt for a
+// refused mutation) and the provisional receipt survives as a dedup hit.
+func compensationChange(plan *hostCommitPlan) hostPersistChange {
+	return hostPersistChange{dropMarker: plan.Name, dropReceipt: plan.Key}
 }
 
 // flipRuntimeSwapped runs spec §5's step (3)'s second half: the runtime phase
