@@ -122,9 +122,15 @@ import {
 	currentLevel,
 	levelToast,
 } from "./session/detailLevels";
+import { useConnectionStatusText } from "./board/connectionStatus";
 import { detailLevels } from "./session/nativeDetailLevels";
+import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
-import { sessionStateLine } from "./session/sessionState";
+import {
+	type ChipKind,
+	contextChips,
+	sessionStateLine,
+} from "./session/sessionState";
 import { SessionTitle } from "./session/SessionTitle";
 import { localSessionId } from "./sessionDeletionResult";
 import { leaveScreen, screenInFront, useScreenInFront } from "./sheet/useScreenInFront";
@@ -475,6 +481,7 @@ export function ConversationScreen({
 		client,
 		retry,
 		state: connectionState,
+		fatal,
 	} = useConnection();
 	const focused = useScreenInFront(route.key);
 	const colors = useColors();
@@ -966,6 +973,29 @@ export function ConversationScreen({
 		? sessionStateLine(headerConversation, Date.now())
 		: null;
 	const headerTitleText = headerConversation?.name || route.params.title;
+	const connectionText = useConnectionStatusText(connectionState, fatal);
+	const chips = headerConversation ? contextChips(headerConversation) : [];
+	const headerHiding = useHeaderHiding();
+	// The header block floats over the list; the list reserves its height.
+	const [sessionHeaderHeight, setSessionHeaderHeight] = useState(0);
+	function openChip(kind: ChipKind) {
+		switch (kind) {
+			case "subagents":
+				openSessionDestination("activity");
+				return;
+			case "tasks":
+				openSessionDestination("tasks");
+				return;
+			case "goal":
+				openSessionDestination("session");
+				return;
+			case "queue":
+				// Today's QueueSheet modal, until the queue sheet route lands.
+				Keyboard.dismiss();
+				setQueueOpen(true);
+				return;
+		}
+	}
 	const menuLevel = currentLevel(chosenLevel, hubDisplayConfig);
 	const hasSubagents =
 		connected && (headerConversation?.delegates?.length ?? 0) > 0;
@@ -1924,7 +1954,11 @@ export function ConversationScreen({
 									/>
 								</View>
 							)}
-							contentContainerStyle={{ padding: 16, paddingBottom: 72 }}
+							contentContainerStyle={{
+								padding: 16,
+								paddingTop: 16 + sessionHeaderHeight,
+								paddingBottom: 72,
+							}}
 							onContentSizeChange={(_width, height) => {
 								readerContentHeight.current = height;
 								setLayoutRevision((revision) => revision + 1);
@@ -1935,6 +1969,7 @@ export function ConversationScreen({
 							}}
 							scrollEventThrottle={100}
 							onScroll={(event) => {
+								headerHiding.onScroll(event.nativeEvent.contentOffset.y);
 								if (!focused || captureSuppressed.current) {
 									return;
 								}
@@ -2042,7 +2077,6 @@ export function ConversationScreen({
 							}}
 							ListHeaderComponent={
 								<View style={{ gap: 12, paddingBottom: 16 }}>
-									<ConnectionStatus />
 									<ErrorMessage message={snapshot.error || actionError} />
 									<ErrorMessage message={draft.error} />
 									{unconfirmedDelivery()}
@@ -2079,6 +2113,20 @@ export function ConversationScreen({
 								</Copy>
 							}
 						/>
+						<View
+							pointerEvents="box-none"
+							style={{ position: "absolute", top: 0, left: 0, right: 0 }}
+							onLayout={(event) =>
+								setSessionHeaderHeight(event.nativeEvent.layout.height)
+							}
+						>
+							<SessionHeader
+								status={connectionText}
+								chips={chips}
+								hidden={headerHiding.hidden}
+								onChip={openChip}
+							/>
+						</View>
 						{focused && snapshot.status === "opening" && conversation ? (
 							<View
 								pointerEvents="none"

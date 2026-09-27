@@ -22,7 +22,6 @@ vi.mock("react-native", async () => {
 	return {
 		...mock,
 		Platform: native.platform,
-		AccessibilityInfo: { announceForAccessibility: vi.fn() },
 		ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 		AppState: {
 			currentState: "active",

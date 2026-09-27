@@ -12,6 +12,7 @@ import type {
 } from "@react-navigation/native-stack";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { createElement } from "react";
+import { FlatList } from "react-native";
 import { act } from "react-test-renderer";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { Thread } from "@evener/appwire-client";
@@ -23,8 +24,11 @@ import {
 } from "./renderNative.testkit";
 import { ConversationScreen } from "./screens";
 import { detailLevels } from "./session/nativeDetailLevels";
+import { SessionHeader } from "./session/SessionHeader";
 import { SessionTitle } from "./session/SessionTitle";
 import { SessionSheet } from "./SessionSheet";
+import { ActivitySheet } from "./ActivitySheet";
+import { QueueSheet } from "./QueueSheet";
 
 const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
@@ -43,7 +47,6 @@ vi.mock("react-native", async () => {
 	const mock = (await import("./renderNative.testkit")).nativeModuleMock();
 	return {
 		...mock,
-		AccessibilityInfo: { announceForAccessibility: vi.fn() },
 		ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 		AppState: {
 			currentState: "active",
@@ -537,5 +540,83 @@ it("projects the transcript at the level chosen for it, from the menu or elsewhe
 	await flush();
 	expect(renderedText(tree)).toContain("pondering the fix");
 	expect(menuItems()[0]).toMatchObject({ label: "Detail level · Full" });
+	tree.unmount();
+});
+
+it("floats the context chips over the list, opens each one's sheet, and hides them on a downward scroll", async () => {
+	const busy = {
+		...thread,
+		evener: {
+			...thread.evener,
+			queue: { revision: 1, depth: 2 },
+			goal: { objective: "Ship it", status: "blocked", iterations: 2 },
+			diagnostics: {
+				delegates: [
+					{
+						delegateId: "d1",
+						ownerSessionId: "root",
+						rootSessionId: "root",
+						childSessionId: "c1",
+						transcriptRef: "local:c1",
+						type: "subagent",
+						lifecycle: "running",
+						phase: "running",
+						status: "running",
+						resumable: false,
+						needsAttention: false,
+						projectionRevision: 1,
+					},
+				],
+			},
+		},
+	} as unknown as Thread;
+	const { tree } = mount(busy);
+	await flush();
+
+	const block = () => tree.root.findByType(SessionHeader);
+	// A live connection says nothing, and the old Reconnect row is gone.
+	expect(block().props.status).toBeNull();
+	expect(renderedText(tree)).not.toMatch(/Connected|Reconnect/);
+	const chip = (label: string) => {
+		const found = block().findAll(
+			(node) => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === label,
+		)[0];
+		if (!found) throw new Error(`no ${label} chip`);
+		return found;
+	};
+
+	// The list reserves the block's height under its own top padding.
+	const list = () => tree.root.findByType(FlatList);
+	act(() => block().parent?.props.onLayout({ nativeEvent: { layout: { height: 48 } } }));
+	expect(list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
+
+	expect(tree.root.findAllByType(ActivitySheet)).toEqual([]);
+	act(() => chip("Subagents, 1").props.onPress());
+	expect(tree.root.findAllByType(ActivitySheet)).toHaveLength(1);
+
+	act(() => chip("Tasks, 1 of 2 done").props.onPress());
+	expect(navigation.navigate).toHaveBeenCalledWith("TasksSheet", {
+		hubId: "hub-1",
+		ref,
+		threadId: "thread-1",
+		hasTasks: true,
+	});
+
+	expect(tree.root.findAllByType(SessionSheet)).toEqual([]);
+	act(() => chip("Goal, blocked").props.onPress());
+	expect(tree.root.findAllByType(SessionSheet)).toHaveLength(1);
+
+	expect(tree.root.findAllByType(QueueSheet)).toEqual([]);
+	act(() => chip("2 queued messages").props.onPress());
+	expect(tree.root.findAllByType(QueueSheet)).toHaveLength(1);
+
+	const scroll = (y: number) =>
+		act(() => list().props.onScroll({ nativeEvent: { contentOffset: { y } } }));
+	scroll(40);
+	expect(block().props.hidden).toBe(true);
+	scroll(30);
+	expect(block().props.hidden).toBe(false);
+	// Hiding never moves the list.
+	expect(list().props.contentContainerStyle).toMatchObject({ paddingTop: 64 });
 	tree.unmount();
 });

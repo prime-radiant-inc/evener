@@ -68,7 +68,6 @@ const harness = vi.hoisted(() => ({
 
 vi.mock("react-native", async () => ({
 	...(await import("./renderNative.testkit")).nativeModuleMock(),
-	AccessibilityInfo: { announceForAccessibility: vi.fn() },
 	ActionSheetIOS: { showActionSheetWithOptions: vi.fn() },
 	AppState: {
 		currentState: "active",
