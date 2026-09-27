@@ -650,6 +650,17 @@ type HighWater struct {
 // only ever rise here — a mark below a counter the registry already reached
 // changes nothing — so seeding is safe to run beside live entries the boot
 // already restored, and it is idempotent.
+//
+// A live entry is carried up with its name's marks: its presence epoch to the
+// seeded counter and its generation to the mark itself — the value a seeded
+// boot gives a live name whose file carries a mark and no live pair
+// (resolveHostIdentity). That matters when the registry was built before the
+// marks were known (New, then a later seed): the entry was minted below the
+// mark, and the write that materializes it derives the file's mark from the
+// entry, so recording the lower value would lower the durable mark and let a
+// later re-add mint at or below a generation the name already carried. The
+// entry's incarnation id is never touched — seeding registers no new
+// incarnation.
 func (r *Registry) SeedHighWater(marks map[string]HighWater) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -663,12 +674,22 @@ func (r *Registry) SeedHighWater(marks map[string]HighWater) {
 		if mark.PresenceEpoch > r.presence[name] {
 			r.presence[name] = mark.PresenceEpoch
 		}
-		// A live entry carries the name's counter: seeding can arrive after the
+		// A live entry carries the name's counters: seeding can arrive after the
 		// entry was minted (a registry built by New and seeded later), and an
-		// entry left below the counter would let the next write lower the file's
-		// retained mark when it records the entry's epoch.
-		if live, ok := r.hosts[name]; ok && live.PresenceEpoch < r.presence[name] {
-			live.PresenceEpoch = r.presence[name]
+		// entry left below them would let the next write lower the file's
+		// retained marks when it records the entry's own pair. The presence
+		// epoch is carried to the seeded counter; the generation is carried to
+		// the name's mark itself — the value a seeded boot gives a live name
+		// whose file carries a mark and no live pair (resolveHostIdentity) — so
+		// materialization never writes a generation below the retained mark, and
+		// the next mint still rises above the registry-wide counter.
+		if live, ok := r.hosts[name]; ok {
+			if live.PresenceEpoch < r.presence[name] {
+				live.PresenceEpoch = r.presence[name]
+			}
+			if live.Generation < mark.Generation {
+				live.Generation = mark.Generation
+			}
 			r.hosts[name] = live
 		}
 	}

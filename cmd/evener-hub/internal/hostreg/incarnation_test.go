@@ -455,3 +455,46 @@ func TestRegistryRefusesToMintPastTheCountersMaximum(t *testing.T) {
 		}
 	})
 }
+
+// TestSeedHighWaterCarriesALiveEntryUpToItsGenerationMark pins roborev round 6's
+// first finding: a registry built before its marks were known (plain New, then a
+// seed) minted the live entry below the name's retained generation mark, and the
+// boot write derives the file's mark from the entry — so materializing would
+// lower the durable mark, and a later re-add could mint at or below a generation
+// the name already carried. Seeding carries the entry up to the mark, the same
+// shape a seeded boot gives it (resolveHostIdentity).
+func TestSeedHighWaterCarriesALiveEntryUpToItsGenerationMark(t *testing.T) {
+	r, err := New([]Host{{Name: "a", SSH: "a.example"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	before, _ := r.Get("a")
+	if before.Generation != 1 {
+		t.Fatalf("plain New minted generation %d, want 1", before.Generation)
+	}
+	r.SeedHighWater(map[string]HighWater{"a": {Generation: 7, PresenceEpoch: 5}})
+	live, _ := r.Get("a")
+	if live.Generation != 7 {
+		t.Fatalf("the live entry's generation after the late seed = %d, want the mark 7", live.Generation)
+	}
+	if live.IncarnationID != before.IncarnationID {
+		t.Fatalf("seeding rotated the live incarnation id: %q -> %q", before.IncarnationID, live.IncarnationID)
+	}
+	// A later mutation mints above the mark, never at or below a generation the
+	// name already carried.
+	if err := r.Add(Host{Name: "b", SSH: "b.example"}); err != nil {
+		t.Fatalf("Add(b): %v", err)
+	}
+	if b, _ := r.Get("b"); b.Generation != 8 {
+		t.Fatalf("Add(b) minted generation %d, want 8 (one above the mark)", b.Generation)
+	}
+	if err := r.Remove("a"); err != nil {
+		t.Fatalf("Remove(a): %v", err)
+	}
+	if err := r.Add(Host{Name: "a", SSH: "a.example"}); err != nil {
+		t.Fatalf("re-Add(a): %v", err)
+	}
+	if re, _ := r.Get("a"); re.Generation <= 8 {
+		t.Fatalf("the re-add minted generation %d, want above every retained mark", re.Generation)
+	}
+}

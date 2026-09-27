@@ -707,3 +707,36 @@ func TestHubTOMLKeepsRecordsForNamesTheWriteDoesNotOwn(t *testing.T) {
 		t.Fatalf("the rewrite dropped the hand-added host's high-water record: %+v", generations["beta"])
 	}
 }
+
+// TestHubTOMLKeepsARetainedGenerationWhenTheRegistryWasSeededLate pins roborev
+// round 6's materialization half: a registry whose entry was minted before the
+// file's marks were known must not have the boot write record a generation below
+// the file's retained mark — the entry is carried up with the seed instead, so
+// the durable mark is never lowered and a later re-add still mints above it.
+func TestHubTOMLKeepsARetainedGenerationWhenTheRegistryWasSeededLate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	doc := "[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n" +
+		"\n[generations.alpha]\ngeneration = 7\nincarnation_id = \"old-incarnation\"\npresence_epoch = 5\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	// The registry is built without the file's marks: plain New mints the entry
+	// at generation 1 before newHubHostManager seeds the retained mark 7.
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "alpha", SSH: "alpha.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(string, ...any) {})
+	entry, _ := hosts.Get("alpha")
+	if entry.Generation < 7 {
+		t.Fatalf("the live entry's generation = %d, seeding did not carry it up to the mark 7", entry.Generation)
+	}
+	mark := highWaterFor(t, path, "alpha")
+	if mark.Generation < 7 {
+		t.Fatalf("the boot write lowered the retained mark's generation to %d, want at least 7", mark.Generation)
+	}
+	if mark.Generation != entry.Generation {
+		t.Fatalf("recorded generation %d, want the live entry's %d", mark.Generation, entry.Generation)
+	}
+}

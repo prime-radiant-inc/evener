@@ -239,6 +239,19 @@ func decodeConfig(name, data string) (Config, error) {
 	if err := validateHostRecords(cfg.HostRecords, cfg.Generations); err != nil {
 		return cfg, fmt.Errorf("validate host records: %w", err)
 	}
+	// Every field of a reserved record must decode: the two tables are decoded
+	// into typed structs and rebuilt on every rewrite, so a field this build does
+	// not know would be silently dropped by the next write. Spec 08 §6 is
+	// explicit that forward preservation is not offered — "a reserved value whose
+	// shape this build cannot decode is refused loudly before any rewrite" — and
+	// a downgrade meeting a newer record must refuse to rewrite rather than
+	// preserve or drop it. Unknown keys outside the reserved set stay the
+	// operator's data and are not this check's business.
+	for _, key := range metadata.Undecoded() {
+		if len(key) > 1 && (key[0] == "host_records" || key[0] == "generations") {
+			return cfg, fmt.Errorf("config %s: reserved record %s carries a field this build does not decode; refusing rather than dropping it on the next rewrite", name, key.String())
+		}
+	}
 	if err := validateMobileBaseURL(cfg.MobileBaseURL); err != nil {
 		return cfg, fmt.Errorf("validate mobile_base_url: %w", err)
 	}
