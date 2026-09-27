@@ -307,13 +307,16 @@ func (s *Session) recordNotice(notice schema.NoticeInfo) {
 
 // deliverCommunicate delivers a communicate message: it is recorded as a
 // COMMUNICATE entry first, and announced once the entry is recorded, so a
-// delivered message is never missing from history.
-func (s *Session) deliverCommunicate(data events.CommunicateData) {
+// delivered message is never missing from history. recorded reports whether
+// the entry landed; the caller has a tool result to fail when it did not, so
+// a refused delivery is never mistaken for a successful one.
+func (s *Session) deliverCommunicate(data events.CommunicateData) (recorded bool) {
 	turn := schema.Turn{Kind: schema.TurnCommunicate, Communicate: &schema.CommunicateInfo{CallID: data.CallID, EndTurn: data.EndTurn, Message: data.Message}}
 	if !s.recordTranscriptOnlyAt(turn, transcript.PlaceSession) {
-		return
+		return false
 	}
 	s.emit(events.EventCommunicate, data)
+	return true
 }
 
 // highestClientMutationTurnSequence is the highest turn_m<N> sequence any of

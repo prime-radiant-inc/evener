@@ -70,11 +70,17 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				return nil, err
 			}
 
-			deps.deliverCommunicate(events.CommunicateData{
+			if !deps.deliverCommunicate(events.CommunicateData{
 				CallID:  callIDFromContext(ctx),
 				EndTurn: endTurn,
 				Message: message,
-			})
+			}) {
+				// The transcript refused the entry (a poisoned or closed
+				// writer): nothing announced it, so the model must not be told
+				// it succeeded -- a captured terminal message it believes
+				// delivered would otherwise never reach a client or history.
+				return nil, errors.New("communicate was not recorded")
+			}
 
 			inbox := []string{}
 			if endTurn {

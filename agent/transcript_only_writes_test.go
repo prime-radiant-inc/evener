@@ -131,6 +131,23 @@ func TestCommunicateNotRecordedByAPoisonedWriterDoesNotAnnounce(t *testing.T) {
 	}
 }
 
+// The communicate tool call itself must fail when its entry is not recorded:
+// silently swallowing the failure (no event, but a reported success) would
+// let the model believe a message reached the client when it reached neither
+// the client nor the transcript.
+func TestCommunicateToolFailsWhenNotRecorded(t *testing.T) {
+	s, _ := newExecutionSession(t)
+	fs := attachEnvironmentFailureFS(t, s)
+	armEnvironmentPartialWrite(fs)
+	res := s.reg.ExecuteCall(context.Background(), s.env, communicateCallArgs("comm-poisoned", map[string]any{"message": "lost", "end_turn": true}))
+	if !res.IsError {
+		t.Fatalf("communicate call succeeded despite a poisoned writer refusing to record it: %+v", res)
+	}
+	if !s.attachedTranscript().Poisoned() {
+		t.Fatal("setup: the writer was not poisoned")
+	}
+}
+
 func TestToolRepairIsRecordedAsANotice(t *testing.T) {
 	s, adapter := newExecutionSession(t)
 	s.RegisterTool("widget", "does a thing", widgetSchema(), func(context.Context, any) (any, error) { return "done", nil })
