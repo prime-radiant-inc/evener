@@ -29,19 +29,15 @@ type hubTreeNode struct {
 	Title       string
 	Project     string
 	State       string
-	// IsSubagent marks a delegate thread (any depth: Evener.Kind is
-	// "subagent" for a direct child and for a nested delegate of a delegate
-	// alike). buildDashboardRows uses it to cap what a descendant may raise
-	// its project's rollup to (#2558, mirroring the hub's #2557 fix).
-	IsSubagent bool
-	AskPending bool
-	Model      string
-	Age        string
-	RowID      string
-	CreatedAt  int64
-	UpdatedAt  int64
-	Live       bool
-	Children   []hubTreeNode
+	IsSubagent  bool // a delegate thread at any depth (thread.Evener.Kind == "subagent")
+	AskPending  bool
+	Model       string
+	Age         string
+	RowID       string
+	CreatedAt   int64
+	UpdatedAt   int64
+	Live        bool
+	Children    []hubTreeNode
 }
 
 type hubSessionCapabilities struct {
@@ -214,7 +210,7 @@ func hubTreeFromThreads(threads []appwire.Thread) hubTreeResponse {
 		if !ok {
 			idx = len(out.Projects)
 			projectIndexes[identity] = idx
-			out.Projects = append(out.Projects, hubTreeProject{Key: thread.ProjectID, Name: projectName, WorkingDir: workingDir, RollupState: subagentRollupSeed(node), identity: identity})
+			out.Projects = append(out.Projects, hubTreeProject{Key: thread.ProjectID, Name: projectName, WorkingDir: workingDir, RollupState: rollupContribution(node), identity: identity})
 		}
 		out.Projects[idx].Sessions = append(out.Projects[idx].Sessions, node)
 	}
