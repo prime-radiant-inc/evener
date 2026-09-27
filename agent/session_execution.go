@@ -108,8 +108,13 @@ func (s *Session) noteRecordedLocked(rec transcript.Record) {
 
 // noteRecordedExecutionLocked remembers that an execution turn is recorded,
 // so that it reopens if it runs again. Only a client-mutation name can run
-// again (every other execution runs under a fresh id), so the set stays
-// bounded by client turns. Callers hold s.mu.
+// again (every other execution runs under a fresh id), but every client-
+// mutation-spelled TurnID recorded is kept here for the life of the session,
+// including turn_m<N> names minted for a continuation or a notification wake
+// that never recur (mintRunningTurnID) — those are inserted and never
+// reclaimed, so the set grows with the session rather than staying bounded by
+// its client turns. Reopen still answers correctly (every TurnID is unique);
+// the cost is memory, slowly, over a very long session. Callers hold s.mu.
 func (s *Session) noteRecordedExecutionLocked(turnID string) {
 	if _, ok := clientMutationStartSequence(turnID); !ok {
 		return
@@ -222,6 +227,17 @@ func (s *Session) takeOpenPendingExecution(turnID string) bool {
 	open := s.openPendingExecutions[turnID]
 	delete(s.openPendingExecutions, turnID)
 	return open
+}
+
+// hasOpenPendingExecution is takeOpenPendingExecution without forgetting: a
+// caller that still might not get to finish turnID (its own record of the
+// failure to complete it with may yet fail) checks here first and takes the
+// marker only once that record has actually succeeded, so a failed attempt
+// leaves it for the next one — never dropping it for good.
+func (s *Session) hasOpenPendingExecution(turnID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.openPendingExecutions[turnID]
 }
 
 // closeCrashedExecutionTargets is the open executions resume closes: every

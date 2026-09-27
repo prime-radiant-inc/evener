@@ -6,12 +6,15 @@ import "primeradiant.com/evener/agent/schema"
 // (a turn whose first entry carries TurnKind execution) to whether it is
 // still open: a turn is open until a completion entry follows its start or
 // its latest reopen marker. Legacy entries carry no identity and are not
-// counted.
+// counted, and neither is a fold's copy of an already-persisted entry
+// (OriginalOrdinal set): it restamps the same TurnKind its original carried,
+// so counting it as a fresh start would resurrect a turn its own completion,
+// recorded earlier in the file, already closed.
 func ExecutionTurns(entries []Entry) map[string]bool {
 	open := map[string]bool{}
 	for _, entry := range entries {
 		turn := entry.Turn
-		if turn.Format == 0 || turn.TurnID == "" {
+		if turn.Format == 0 || turn.TurnID == "" || turn.OriginalOrdinal != nil {
 			continue
 		}
 		if turn.TurnKind == schema.TurnSpanExecution {

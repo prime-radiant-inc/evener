@@ -1578,7 +1578,11 @@ func (s *Session) recoverClientMutationFailures(publishEnvironment bool) error {
 		items := s.clientMutationTranscriptItems(id, pending.TurnID)
 		idle := s.attachedTranscript().RunningTurnID() == ""
 		own := idle && (!items.User || !items.Failure)
-		wasOpen := idle && s.takeOpenPendingExecution(pending.TurnID)
+		// Only peeked here: taking it now, before the record below runs,
+		// would drop it for good if that record fails — closeAbandonedExecutions
+		// can then never close the turn. It is taken below, once the record
+		// that lets this branch complete the turn has actually succeeded.
+		wasOpen := idle && s.hasOpenPendingExecution(pending.TurnID)
 		if own {
 			s.beginExecution(pending.TurnID)
 		}
@@ -1586,7 +1590,16 @@ func (s *Session) recoverClientMutationFailures(publishEnvironment bool) error {
 		switch {
 		case own:
 			s.completeExecution(schema.TurnFailed)
+			if wasOpen {
+				// This turn also crashed open once before (closeCrashedExecutions
+				// left the marker at restore) and is completed above,
+				// regardless of err: closeAbandonedExecutions must not find
+				// the marker still here and complete it a second time,
+				// interrupted, over the failed completion just written.
+				s.takeOpenPendingExecution(pending.TurnID)
+			}
 		case wasOpen && err == nil:
+			s.takeOpenPendingExecution(pending.TurnID)
 			rec, completeErr := s.completeTurn(pending.TurnID, schema.TurnFailed)
 			if completeErr != nil {
 				err = fmt.Errorf("complete recovered failed turn: %w", completeErr)

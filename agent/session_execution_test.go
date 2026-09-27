@@ -247,3 +247,27 @@ func TestExecutionTurnIDKeepsOnlyReservedSpellings(t *testing.T) {
 		}
 	}
 }
+
+// A session with no state directory has no transcript writer at all
+// (attachTranscript installs a nil *transcript.Writer for it, same as a
+// writer that failed to open). beginExecution and completeExecution must
+// treat that exactly like any other nil-safe transcript call: processing
+// input still runs the model and delivers its answer.
+func TestProcessInputWithNoTranscriptDoesNotPanic(t *testing.T) {
+	adapter := &executionAdapter{}
+	client := llm.NewClient()
+	client.Register(adapter)
+	s := newSession(t, withClient(client), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		LLMRetryPolicy:   &llm.RetryPolicy{MaxRetries: 2},
+		LLMSleep:         func(context.Context, time.Duration) error { return nil },
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	if s.TranscriptPath() != "" {
+		t.Fatalf("TranscriptPath() = %q, want empty for a no-state-dir session", s.TranscriptPath())
+	}
+	if _, err := s.ProcessInput(context.Background(), "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+}
