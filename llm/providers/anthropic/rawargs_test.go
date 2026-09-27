@@ -221,4 +221,111 @@ func TestRawArgs_Stream_FallbackOnEmpty(t *testing.T) {
 	}
 }
 
-// Ensure imports are used.
+func TestRawArgs_NonStream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	body := []byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-x-wire","content":[` +
+		`{"type":"tool_use","id":"toolu_1","name":"first","input":` + first + `},` +
+		`{"type":"tool_use","id":"toolu_2","name":"second","input":` + second + `}` +
+		`],"stop_reason":"tool_use"}`)
+
+	got := decodeRawArgsCompleteMany(t, body)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second)})
+}
+
+func TestRawArgs_Stream_MultipleToolCallsPreserveIndex(t *testing.T) {
+	first := `{ "first" : "` + "\xff" + `" }`
+	second := `{ "second" : "` + "\xfe" + `" }`
+	firstToken := string(chatJSONToken(first))
+	secondToken := string(chatJSONToken(second))
+	sseBody := "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x-wire\",\"content\":[],\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"first\",\"input\":{}}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":" + firstToken + "}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_2\",\"name\":\"second\",\"input\":{}}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":" + secondToken + "}}\n\n" +
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n" +
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":3}}\n\n" +
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
+	got := decodeRawArgsStreamMany(t, sseBody)
+	assertRawArgsByIndex(t, got, [][]byte{[]byte(first), []byte(second)})
+}
+
+func decodeRawArgsCompleteMany(t *testing.T, body []byte) [][]byte {
+	t.Helper()
+	srv, _ := protoServer(t, func(*http.Request) (int, string) { return http.StatusOK, string(body) })
+	res := protoLive(srv)
+	resp, err := (&Protocol{Client: srv.Client()}).Complete(context.Background(), protoReq(""), res)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	return anthropicToolCallArguments(resp)
+}
+
+func decodeRawArgsStreamMany(t *testing.T, sseBody string) [][]byte {
+	t.Helper()
+	srv, _ := protoServer(t, func(*http.Request) (int, string) { return http.StatusOK, sseBody })
+	res := protoLive(srv)
+	s, err := (&Protocol{Client: srv.Client()}).Stream(context.Background(), llm.ShapeRequest(protoReq(""), res), res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var final *llm.Response
+	for ev := range s.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("stream error: %v", ev.Err)
+		}
+		if ev.Type == llm.StreamEventFinish {
+			final = ev.Response
+		}
+	}
+	if final == nil {
+		t.Fatal("stream ended without a finish event")
+	}
+	return anthropicToolCallArguments(*final)
+}
+
+func anthropicToolCallArguments(resp llm.Response) [][]byte {
+	calls := resp.ToolCalls()
+	args := make([][]byte, len(calls))
+	for i := range calls {
+		args[i] = calls[i].Arguments
+	}
+	return args
+}
+
+func assertRawArgsByIndex(t *testing.T, got, want [][]byte) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("got %d tool calls, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("tool call %d Arguments = %q (% x), want %q (% x)", i, got[i], got[i], want[i], want[i])
+		}
+	}
+}
+
+func chatJSONToken(content string) []byte {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, c := range []byte(content) {
+		switch c {
+		case '"':
+			b.WriteString(`\"`)
+		case '\\':
+			b.WriteString(`\\`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		case '\t':
+			b.WriteString(`\t`)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteByte('"')
+	return []byte(b.String())
+}
