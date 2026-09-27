@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,6 +14,45 @@ func newSeenTestStore(path string, now *time.Time) *SessionSeenStore {
 	store := NewSessionSeenStore(path)
 	store.now = func() time.Time { return *now }
 	return store
+}
+
+// setupErrorSeenStore returns a SessionSeenStore whose openDB routes through
+// the shared error-injecting driver (pin_section_nonretry_test.go), so a test
+// can fail one exec inside MarkBatch's transaction on demand.
+func setupErrorSeenStore(t *testing.T, path string) *SessionSeenStore {
+	t.Helper()
+	initErrorDriver()
+	store := newSeenTestStore(path, &seenTestNow)
+	store.openDB = func(_, dataSourceName string) (*sql.DB, error) {
+		return sql.Open(errorDriverName, dataSourceName)
+	}
+	return store
+}
+
+// TestSessionSeenStoreMarkBatchIsOneTransaction pins that MarkBatch's writes
+// share one index.db transaction: a failure partway through must roll back
+// every mark in the call, not just the one that failed, so a malformed or
+// unlucky batch cannot leave some sessions marked and others not (S4).
+func TestSessionSeenStoreMarkBatchIsOneTransaction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	store := setupErrorSeenStore(t, path)
+	resetErrorCounters()
+	errorExecTarget.Store(2) // fail the second mark's write inside the tx
+	turn := seenTestNow.Add(10 * time.Minute)
+	if _, err := store.MarkBatch([]SessionSeenMark{
+		{SessionID: "01A", SeenThrough: turn},
+		{SessionID: "01B", SeenThrough: turn},
+	}); err == nil {
+		t.Fatal("MarkBatch with a failing second write returned no error")
+	}
+	resetErrorCounters()
+	snapshot, err := newSeenTestStore(path, &seenTestNow).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Records) != 0 {
+		t.Fatalf("after a failed batch, records = %+v, want none: the first write must roll back with the second", snapshot.Records)
+	}
 }
 
 // fuzzScenarioSessionSeenStore_EpochIsSetOnceAndSurvivesReopen: the epoch is
