@@ -155,6 +155,25 @@ function readResponse(ref: string, overrides: TestThreadOverrides = {}): ThreadR
   return { thread: testThread(ref, overrides) };
 }
 
+// Like readResponse, but stamped with the same live-history identity
+// ("1"/epoch 1/"inc-1") this file's history/updated fixtures carry, so a
+// thread/read a test pairs with a live history/updated notification hydrates
+// straight into the versioned-history path instead of getting invalidated by
+// a boot-generation mismatch (EMPTY_HISTORY's "" vs the frame's "1") the
+// instant the first live frame lands.
+function versionedReadResponse(
+  ref: string,
+  overrides: TestThreadOverrides = {},
+  snapshotLength = 0,
+): ThreadReadResponse {
+  return {
+    ...readResponse(ref, overrides),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: snapshotLength },
+  };
+}
+
 // readResponse derives the wire thread id as thr_<ref>. The routing-index
 // tests need models with known and sometimes SHARED thread ids (a lean watch
 // of a ref that is also pane-owned resolves to the same thread id), so this
@@ -743,7 +762,7 @@ describe("useThreadsStore.ensureThread", () => {
     const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
     finishRead(
       markResponseCut(
-        readResponse("ref_a", {
+        versionedReadResponse("ref_a", {
           status: { type: "active" },
           turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
           evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
@@ -772,6 +791,7 @@ describe("useThreadsStore.ensureThread", () => {
               type: "systemMessage",
               id: "item_plugin_loaded_1",
               turnId: "turn_system",
+              position: { entry: 0, item: 0 },
               description: "Plugin loaded: superpowers",
               text: "",
               eventKind: "plugin_loaded",
@@ -807,7 +827,7 @@ describe("useThreadsStore.ensureThread", () => {
     const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
     finishRead(
       markResponseCut(
-        readResponse("ref_a", {
+        versionedReadResponse("ref_a", {
           status: { type: "active" },
           turns: [{ id: "turn_1", status: "inProgress", itemsView: "full", items: [] }],
           evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
@@ -822,7 +842,6 @@ describe("useThreadsStore.ensureThread", () => {
         method: "history/updated",
         params: {
           threadId: "thr_ref_a",
-          ref: "ref-1",
           bootGeneration: "1",
           epoch: 1,
           snapshot: { incarnation: "inc-1", length: 1 },
@@ -838,6 +857,7 @@ describe("useThreadsStore.ensureThread", () => {
               type: "systemMessage",
               id: "item_hook_completed_1",
               turnId: "turn_system",
+              position: { entry: 0, item: 0 },
               description: "Hook completed",
               text: "exit 0",
               eventKind: "hook_completed",
@@ -876,7 +896,7 @@ describe("useThreadsStore.ensureThread", () => {
     const finishRead = resolveRead as unknown as (response: ThreadReadResponse) => void;
     finishRead(
       markResponseCut(
-        readResponse("ref_a", {
+        versionedReadResponse("ref_a", {
           status: { type: "active" },
           evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
         }),
@@ -989,15 +1009,17 @@ describe("useThreadsStore.ensureThread", () => {
     let readCount = 0;
     const cut = { reached: false };
     let resolveRefresh: ((response: ThreadReadResponse) => void) | null = null;
-    fake.on("thread/read", () => {
+    let refreshRequestGeneration: number | undefined;
+    fake.on("thread/read", (params) => {
       readCount += 1;
       if (readCount === 1) {
-        return readResponse("ref_a", {
+        return versionedReadResponse("ref_a", {
           status: { type: "active" },
           turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
           evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
         });
       }
+      refreshRequestGeneration = (params as { requestGeneration?: number } | undefined)?.requestGeneration;
       return new Promise<ThreadReadResponse>((resolve) => {
         resolveRefresh = resolve;
       });
@@ -1028,16 +1050,22 @@ describe("useThreadsStore.ensureThread", () => {
     const finishRefresh = resolveRefresh as unknown as (response: ThreadReadResponse) => void;
     finishRefresh(
       markResponseCut(
-        readResponse("ref_a", {
-          status: { type: "active" },
-          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
-          evener: {
-            ref: "ref_a",
-            capabilities: CAPABILITIES,
-            queue: { revision: 0 },
-            activeTurnId: "turn_m6",
-          },
-        }),
+        {
+          ...versionedReadResponse(
+            "ref_a",
+            {
+              status: { type: "active" },
+              turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+              evener: {
+                ref: "ref_a",
+                capabilities: CAPABILITIES,
+                queue: { revision: 0 },
+              },
+            },
+            1,
+          ),
+          ...(refreshRequestGeneration !== undefined ? { requestGeneration: refreshRequestGeneration } : {}),
+        },
         cut,
       ),
     );
@@ -1157,7 +1185,7 @@ describe("useThreadsStore.ensureThread", () => {
 
   test("a targeted resync preserves identical ordered streaming deltas and their frame times", async () => {
     const fake = connectFakeClient();
-    const snapshot = readResponse("ref_a", {
+    const snapshot = versionedReadResponse("ref_a", {
       status: { type: "active", activeFlags: ["streaming"] },
       turns: [
         {
@@ -1171,9 +1199,11 @@ describe("useThreadsStore.ensureThread", () => {
     });
     const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
     let readCount = 0;
-    fake.on("thread/read", () => {
+    let replacementRequestGeneration: number | undefined;
+    fake.on("thread/read", (params) => {
       readCount += 1;
       if (readCount === 1) return snapshot;
+      replacementRequestGeneration = (params as { requestGeneration?: number } | undefined)?.requestGeneration;
       return new Promise<ThreadReadResponse>((resolve) => {
         replacementRead.resolve = resolve;
       });
@@ -1208,7 +1238,13 @@ describe("useThreadsStore.ensureThread", () => {
         items: [{ type: "agentMessage", id: "item_1", turnId: "turn_1", text: "haha", status: "inProgress" }],
       },
     };
-    replacementRead.resolve?.({ thread: { ...snapshot.thread, name: "replacement" } });
+    replacementRead.resolve?.({
+      thread: { ...snapshot.thread, name: "replacement" },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 0 },
+      ...(replacementRequestGeneration !== undefined ? { requestGeneration: replacementRequestGeneration } : {}),
+    });
     await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.name === "replacement");
     fake.emitNotification(delta);
     fake.emitNotification(delta2);
@@ -3034,12 +3070,12 @@ describe("notification routing", () => {
     fake.on("thread/read", (params) => {
       const ref = (params as { ref: string }).ref;
       if (ref === "ref_a") {
-        return readResponse("ref_a", {
+        return versionedReadResponse("ref_a", {
           turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
           evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
         });
       }
-      return readResponse("ref_b", {
+      return versionedReadResponse("ref_b", {
         turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }],
         evener: { ref: "ref_b", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
       });
@@ -3102,8 +3138,12 @@ describe("notification routing", () => {
     });
 
     // The rightful owner (A, whose activeTurnId matched) settles...
+    // activeTurnId is the read-only snapshot field (reducer.ts's model
+    // comment) - a history/updated settling the turn does not clear it, only
+    // a later thread/status/changed would - so the settled turn's own
+    // persisted status is what a v6 model tracks "no longer running" through.
     const modelA = threadsStore.getState().threads.get("ref_a");
-    expect(modelA?.activeTurnId).toBeUndefined();
+    expect(modelA?.turns[0]?.status).toBe("completed");
     expect(modelA?.turns[0]?.items[0]?.text).toBe("A's answer");
 
     // ...while B, simultaneously active on the same numbered turn_1, is a
@@ -3122,7 +3162,7 @@ describe("notification routing", () => {
     // reducer's call.
     const fake = connectFakeClient();
     fake.on("thread/read", () =>
-      readResponse("ref_a", {
+      versionedReadResponse("ref_a", {
         turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }],
         evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
       }),
@@ -3144,6 +3184,7 @@ describe("notification routing", () => {
             type: "systemMessage",
             id: "item_plugin_loaded_1",
             turnId: "turn_system",
+            position: { entry: 0, item: 0 },
             description: "Plugin loaded: superpowers",
             text: "",
             eventKind: "plugin_loaded",
@@ -3525,7 +3566,16 @@ describe("notification routing differential (randomized: index vs scan reference
       const ref = (params as { ref: string }).ref;
       const threadId = threadIds[ref];
       if (!threadId) throw new Error(`unexpected thread/read ref ${ref}`);
-      return readResponseWithId(ref, threadId);
+      // Versioned: the generators below fire history/updated at bootGeneration
+      // "1" throughout, so an unversioned hydrate (EMPTY_HISTORY's
+      // bootGeneration "") would invalidate on the very first one and never
+      // apply another.
+      return {
+        ...readResponseWithId(ref, threadId),
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 0 },
+      };
     });
     for (const ref of refs) await threadsStore.getState().ensureThread(ref);
     await threadsStore.getState().watchThread("ref_a");
@@ -6821,7 +6871,7 @@ describe("useThreadsStore.watchThread", () => {
   test("a watched refresh preserves a live active turn omitted by the snapshot cut", async () => {
     const a = connectFakeClient();
     a.on("thread/read", () =>
-      readResponse("ref_a", {
+      versionedReadResponse("ref_a", {
         turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
         evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
       }),
@@ -6845,16 +6895,27 @@ describe("useThreadsStore.watchThread", () => {
     const b = new FakeClient("ready");
     const cut = { reached: false };
     let resolveRefresh: ((response: ThreadReadResponse) => void) | null = null;
-    b.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRefresh = resolve)));
+    let refreshRequestGeneration: number | undefined;
+    b.on("thread/read", (params) => {
+      refreshRequestGeneration = (params as { requestGeneration?: number } | undefined)?.requestGeneration;
+      return new Promise<ThreadReadResponse>((resolve) => (resolveRefresh = resolve));
+    });
     connectionStore.getState().connect(b);
     await flushUntil(() => resolveRefresh !== null);
     const finishRefresh = resolveRefresh as unknown as (response: ThreadReadResponse) => void;
     finishRefresh(
       markResponseCut(
-        readResponse("ref_a", {
-          turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
-          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_m6" },
-        }),
+        {
+          ...versionedReadResponse(
+            "ref_a",
+            {
+              turns: [{ id: "turn_m5", status: "completed", itemsView: "full", items: [] }],
+              evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+            },
+            1,
+          ),
+          ...(refreshRequestGeneration !== undefined ? { requestGeneration: refreshRequestGeneration } : {}),
+        },
         cut,
       ),
     );
@@ -6896,7 +6957,14 @@ describe("useThreadsStore.watchThread", () => {
           },
         });
       },
-      () => threadsStore.getState().watchedThreads.get("ref_a") !== liveWatched,
+      // A versioned refresh's own beginWatchedHydration bumps and republishes
+      // the model's issuedGeneration bookkeeping the instant the refresh
+      // starts (issuedGenerationFor), before the network round trip even
+      // begins - a legitimate content-preserving republish (a new model
+      // object, the SAME turns array), not the race this checks for. Compare
+      // turns, not the whole model, so this still detects the real content
+      // update the response cut race is about.
+      () => threadsStore.getState().watchedThreads.get("ref_a")?.turns !== liveWatched?.turns,
     );
 
     const model = threadsStore.getState().watchedThreads.get("ref_a");
@@ -8137,7 +8205,13 @@ describe("useThreadsStore.loadOlderTurns", () => {
 
   test("a live notification arriving while an older page is in flight survives the merge", async () => {
     const fake = connectFakeClient();
-    fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+    fake.on("thread/read", () => ({
+      thread: testThread("ref_a"),
+      olderCursor: "cursor_1",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 0 },
+    }));
     let resolvePage!: (response: ThreadTurnsListResponse) => void;
     fake.on("thread/turns/list", () => new Promise<ThreadTurnsListResponse>((resolve) => (resolvePage = resolve)));
     await threadsStore.getState().ensureThread("ref_a");
@@ -8151,13 +8225,16 @@ describe("useThreadsStore.loadOlderTurns", () => {
         ref: "ref_a",
         bootGeneration: "1",
         epoch: 1,
-        snapshot: { incarnation: "inc-1", length: 1 },
-        turns: [{ id: "live-turn", status: "inProgress", itemsView: "" }],
+        snapshot: { incarnation: "inc-1", length: 2 },
+        turns: [{ id: "live-turn", status: "inProgress", itemsView: "", version: 2 }],
       },
     });
     resolvePage({
-      data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [] }],
+      data: [{ id: "older-turn", status: "completed", itemsView: "full", items: [], version: 1 }],
       nextCursor: "cursor_0",
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
     });
     await loading;
 

@@ -891,24 +891,41 @@ test("a replayed pending receipt keeps a long-running steer until its authoritat
 });
 
 test("first-frame state derives from the identified active turn and needs no confirmation timer", async () => {
-  await connect({
-    turns: [
-      {
-        id: "turn_1",
-        status: "inProgress",
-        itemsView: "full",
-        items: [
+  // A plain connect() response carries no snapshot, so hydrateThread takes
+  // its legacy branch, which never derives runningTurnId (only the versioned
+  // branch's runningTurn() helper does) - awaitingFirstFrameSend reads
+  // runningTurnId (reducer.ts's model comment: the live-tracked field), so
+  // this fixture needs the versioned read path to seed it from
+  // evener.activeTurnId, exactly as a real read would.
+  const fake = new FakeClient("ready");
+  fake.on(
+    "thread/read",
+    (): ThreadReadResponse => ({
+      thread: thread({
+        turns: [
           {
-            id: "user_1",
-            turnId: "turn_1",
-            type: "userMessage",
-            text: "hello",
-            clientMutationId: "mutation_1",
+            id: "turn_1",
+            status: "inProgress",
+            itemsView: "full",
+            items: [
+              {
+                id: "user_1",
+                turnId: "turn_1",
+                type: "userMessage",
+                text: "hello",
+                clientMutationId: "mutation_1",
+              },
+            ],
           },
         ],
-      },
-    ],
-  });
+      }),
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread("ref_a");
   const awaiting = renderHook(() => useAwaitingFirstFrameSend("ref_a"));
   expect(awaiting.result.current).toBe(true);
 });
