@@ -219,7 +219,7 @@ export function BoardRow({
 				) : null}
 				{last ? (
 					<View style={{ marginTop: 4, flexDirection: "row", alignItems: "center", columnGap: 6, overflow: "hidden" }}>
-						{last.task ? <Fact glyph="checklist" text={last.task} scale={scale} /> : null}
+						{last.task ? <Fact glyph="checklist" text={last.task} scale={scale} shrink /> : null}
 						{last.project ? <Fact glyph="folder" text={last.project} scale={scale} /> : null}
 						{last.host ? <Fact glyph="server.rack" text={last.host} scale={scale} /> : null}
 					</View>
@@ -229,28 +229,35 @@ export function BoardRow({
 	);
 }
 
-/** A glyph and a fact on the last line, which never wraps. A fact whose text
- * is a fixed prefix plus something longer (the task's "Task 4 of 7 · " plus
- * its title) puts the variable part last, so tail ellipsis erodes it before
- * touching the prefix: the title truncates first (spec 7.2). */
+/** A glyph and a fact on the last line, which never wraps. Project and host
+ * are short identifiers that hold their width; only `shrink` (the task line,
+ * "Task 4 of 7 · " plus a title that can run long) gives up space under
+ * pressure, so it eroding is what "the task's title truncates first" (spec
+ * 7.2) means in practice: equal flexShrink on every fact would compress them
+ * together instead of protecting the fixed ones. Tail ellipsis on the task's
+ * one Text then erodes the title before the "Task 4 of 7 · " prefix, since
+ * the title sits last in that string. */
 function Fact({
 	glyph,
 	text,
 	scale,
+	shrink = false,
 }: {
 	glyph: "checklist" | "folder" | "server.rack";
 	text: string;
 	scale: number;
+	shrink?: boolean;
 }) {
 	const { palette } = useColors();
+	const flexShrink = shrink ? 1 : 0;
 	return (
-		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink: 1 }}>
+		<View style={{ flexDirection: "row", alignItems: "center", columnGap: 3, flexShrink }}>
 			<SymbolView name={glyph} size={13 * scale} tintColor={palette.inkLow} />
 			<Text
 				allowFontScaling={Platform.OS !== "ios"}
 				numberOfLines={1}
 				ellipsizeMode="tail"
-				style={{ flexShrink: 1, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+				style={{ flexShrink, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
 			>
 				{text}
 			</Text>

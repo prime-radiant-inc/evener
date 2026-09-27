@@ -268,11 +268,11 @@ export function usualPlace(rows: readonly NavigationSessionSummary[]): Usual {
 /** The task now in progress, by its position among every task already done
  * or cancelled ("Task 4 of 7 · Fix the settle/drain race", spec 7.2). The hub
  * sends current/current_id only while a task is actually in progress
- * (NavigationTaskProgress), which is exactly "the session keeps a task list
- * and hasn't finished it": absent both before the first task starts and
- * after the last one settles. That single check covers spec 7.2's condition
- * without a separate done/total comparison. A cancelled task counts as
- * settled too, so it advances the position the same as a done one. */
+ * (NavigationTaskProgress): never before the session starts one, and never
+ * once the list is finished (spec 7.2's "hasn't finished it"), so checking
+ * current alone covers that condition without a separate done/total
+ * comparison. A cancelled task counts as settled too, so it advances the
+ * position the same as a done one. */
 export function taskLine(row: NavigationSessionSummary): string | null {
 	const tasks = row.tasks;
 	if (!tasks?.current) return null;
