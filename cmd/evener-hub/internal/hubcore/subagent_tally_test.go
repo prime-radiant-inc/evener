@@ -54,17 +54,13 @@ func fuzzScenarioBuildTree_RootRowsCarryTheTreesSubagentTally(t *testing.T) {
 	live := []LiveEntry{{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusAwaiting, RunningSubagentIDs: []string{"01CHILD"}, Subagents: tally}}
 	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01ROOT")
-	if !inLive || !inProject || liveRow.Subagents != tally || projectRow.Subagents != tally {
-		t.Fatalf("Live row %+v (%v), project row %+v (%v): both must carry %+v", liveRow.Subagents, inLive, projectRow.Subagents, inProject, tally)
+	if !inLive || !inProject || len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "01ROOT" {
+		t.Fatalf("rows of the awaiting root: live=%v project=%v needsYou=%+v", inLive, inProject, tree.NeedsYou)
 	}
-	needsYou := false
-	for _, row := range tree.NeedsYou {
-		if row.ID == "01ROOT" {
-			needsYou = row.Subagents == tally
+	for name, row := range map[string]TreeNode{"Live": liveRow, "project": projectRow, "NeedsYou": tree.NeedsYou[0]} {
+		if row.Subagents != tally {
+			t.Fatalf("%s row tally = %+v, want %+v", name, row.Subagents, tally)
 		}
-	}
-	if !needsYou {
-		t.Fatalf("NeedsYou = %+v, want the awaiting root carrying %+v", tree.NeedsYou, tally)
 	}
 	if len(liveRow.Children) != 1 || liveRow.Children[0].Subagents != (appwire.SubagentTally{}) {
 		t.Fatalf("children = %+v, want one subagent row with no tally", liveRow.Children)
@@ -84,20 +80,13 @@ func fuzzScenarioBuildTree_CrashedRootCarriesNoSubagentTally(t *testing.T) {
 	live := []LiveEntry{{PID: 1, SessionID: "01CRASHED", Status: "errored", Crashed: true, Subagents: appwire.SubagentTally{Running: 2, Failed: 1}}}
 	tree := BuildTreeAt(metas, live, map[ArchiveKey]bool{}, now)
 	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01CRASHED")
-	if !inLive || !inProject || liveRow.Subagents != (appwire.SubagentTally{}) || projectRow.Subagents != (appwire.SubagentTally{}) {
-		t.Fatalf("Live row %+v (%v), project row %+v (%v): a crashed root must carry no tally", liveRow.Subagents, inLive, projectRow.Subagents, inProject)
+	if !inLive || !inProject || len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "01CRASHED" {
+		t.Fatalf("rows of the errored crashed root: live=%v project=%v needsYou=%+v", inLive, inProject, tree.NeedsYou)
 	}
-	inNeedsYou := false
-	for _, row := range tree.NeedsYou {
-		if row.ID == "01CRASHED" {
-			inNeedsYou = true
-			if row.Subagents != (appwire.SubagentTally{}) {
-				t.Fatalf("NeedsYou row carries %+v, want no tally", row.Subagents)
-			}
+	for name, row := range map[string]TreeNode{"Live": liveRow, "project": projectRow, "NeedsYou": tree.NeedsYou[0]} {
+		if row.Subagents != (appwire.SubagentTally{}) {
+			t.Fatalf("%s row carries %+v, want no tally: a crashed root runs nothing", name, row.Subagents)
 		}
-	}
-	if !inNeedsYou {
-		t.Fatalf("NeedsYou = %+v, want the errored crashed root", tree.NeedsYou)
 	}
 }
 

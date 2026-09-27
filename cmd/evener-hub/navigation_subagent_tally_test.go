@@ -32,15 +32,7 @@ func TestNavigationRowsCarryTheWholeTreesSubagentTally(t *testing.T) {
 		{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusActive, Subagents: tally},
 		{PID: 2, SessionID: "01QUIET", Status: appwire.ThreadStatusIdle},
 	}
-	tree := hubcore.BuildTreeAt(metas, live, nil, now)
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: tree})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rows := map[string]hubapi.NavigationSessionSummary{}
-	for _, row := range projection.LivePage(0, 0).Sessions {
-		rows[row.SessionID] = row
-	}
+	rows := liveTaskRows(t, hubcore.BuildTreeAt(metas, live, nil, now).Live)
 	root := rows["01ROOT"]
 	if len(root.Children) >= 60 {
 		t.Fatalf("root row carries %d children; the fixture must exceed the row's cap", len(root.Children))
@@ -64,23 +56,20 @@ func TestNavigationRowsDropAMalformedSubagentTally(t *testing.T) {
 	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{{ID: "01ROOT", CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}}}
 	live := []hubcore.LiveEntry{{PID: 1, SessionID: "01ROOT", Status: appwire.ThreadStatusActive, Subagents: appwire.SubagentTally{Running: 2, Failed: -1}}}
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.BuildTreeAt(metas, live, nil, now)})
-	if err != nil {
-		t.Fatalf("a malformed tally failed the build: %v", err)
-	}
-	if rows := projection.LivePage(0, 0).Sessions; len(rows) != 1 || rows[0].Subagents != nil {
-		t.Fatalf("rows = %+v, want the root with no tally", rows)
+	if root, listed := liveTaskRows(t, hubcore.BuildTreeAt(metas, live, nil, now).Live)["01ROOT"]; !listed || root.Subagents != nil {
+		t.Fatalf("root row = %+v (listed %v), want it listed with no tally", root, listed)
 	}
 }
 
 // The hub schema refuses a tally the codec would refuse.
 func TestNavigationSchemaRefusesANegativeSubagentCount(t *testing.T) {
-	valid := hubapi.NavigationSessionSummary{Ref: "local:01A", HostID: "local", SessionID: "01A", State: "active", Kind: "session", Subagents: &hubapi.NavigationSubagentTally{Running: 1}}
-	if !navigationSessionValueValid(valid) {
+	session := navigationSchemaSession("local:schema-session", "schema-session")
+	session.Subagents = &hubapi.NavigationSubagentTally{Running: 1}
+	if !navigationSessionValueValid(session) {
 		t.Fatal("a valid tally was refused")
 	}
-	valid.Subagents = &hubapi.NavigationSubagentTally{Failed: -1}
-	if navigationSessionValueValid(valid) {
+	session.Subagents = &hubapi.NavigationSubagentTally{Failed: -1}
+	if navigationSessionValueValid(session) {
 		t.Fatal("a negative subagent count was accepted")
 	}
 }

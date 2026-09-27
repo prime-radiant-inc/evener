@@ -558,8 +558,10 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		writeTaskFingerprint(h, bySess[id].Tasks)
 		// A subagent failing or finishing changes the row's last line (S3).
 		tally := bySess[id].Subagents
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(strconv.Itoa(tally.Running) + "/" + strconv.Itoa(tally.Failed) + "/" + strconv.Itoa(tally.Done)))
+		for _, count := range []int{tally.Running, tally.Failed, tally.Done} {
+			_, _ = h.Write([]byte(strconv.Itoa(count)))
+			_, _ = h.Write([]byte{0})
+		}
 	}
 	return h.Sum64()
 }

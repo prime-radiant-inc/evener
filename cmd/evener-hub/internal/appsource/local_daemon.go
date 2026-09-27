@@ -1154,7 +1154,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}
-	if tally := item.Subagents; !item.ReadOnlyAlias && tally != (appwire.SubagentTally{}) {
+	if tally := item.Subagents; tally != (appwire.SubagentTally{}) {
 		thread.Evener.Subagents = &tally
 	}
 	if status == appwire.ThreadStatusRestartRequired {
