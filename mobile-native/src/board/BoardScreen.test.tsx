@@ -793,10 +793,8 @@ const hubFleet: Fleet = {
 };
 /** A device an hour past first run that marked Hub seen unread itself. */
 function deviceDisagrees(hub: string) {
-	harness.kv.set(
-		`evener.native.seen.${hub}`,
-		JSON.stringify({ adopted: true, epoch: minutesAgo(60), sessions: { "local:hub-seen": { unread: true } } }),
-	);
+	adoptedAnHourAgo(hub);
+	seenMarkers(hub).markUnread("local:hub-seen");
 }
 const stateOf = (tree: ReactTestRenderer, title: string) => rowTitled(tree, title).props.accessibilityLabel.split(", ")[1];
 
