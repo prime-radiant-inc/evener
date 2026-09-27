@@ -56,6 +56,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -423,10 +424,12 @@ func fencedAttemptRecord(attempt HostTeardownAttempt, now time.Time) HostTeardow
 }
 
 // isTeardownDeadline reports whether a run's error is the bounded deadline
-// expiring rather than a refusal of the pinned target.
+// expiring rather than a refusal of the pinned target. It classifies by TYPE —
+// errors.Is against context.DeadlineExceeded — never by matching the message
+// text, so a refusal that happens to carry the phrase is not recorded as a
+// timeout and a real timeout is not read as a refusal.
 func isTeardownDeadline(err error) bool {
-	return err != nil && (strings.Contains(err.Error(), context.DeadlineExceeded.Error()) ||
-		strings.Contains(err.Error(), "context deadline exceeded"))
+	return errors.Is(err, context.DeadlineExceeded)
 }
 
 // validateRecoveryOperator checks the attestation's operator against the
@@ -480,10 +483,10 @@ func (m *hubHostManager) recoverySafetyCheckLocked(remnantID string, remnant Hos
 	if !ok {
 		host, ok = m.cfg.hosts.Get(remnant.Host)
 	}
-	if ok && host.IncarnationID == remnant.IncarnationID {
+	if ok && host.IncarnationID == remnant.IncarnationID && host.Generation == remnant.Generation {
 		return appwire.Conflict(fmt.Sprintf(
-			"teardown-recover %s refused: the live entry for %q still carries the remnant's pinned incarnation %q",
-			remnantID, remnant.Host, remnant.IncarnationID))
+			"teardown-recover %s refused: the live entry for %q still carries the remnant's pinned pair (%d, %q)",
+			remnantID, remnant.Host, remnant.Generation, remnant.IncarnationID))
 	}
 	return nil
 }
@@ -507,11 +510,14 @@ func (m *hubHostManager) recoverySafetyCheck(remnantID string, remnant HostTeard
 	}
 	// "no live handle tagged with the remnant's `(generation, incarnationId)`
 	// pair exists": the live registry entry carries the pair every handle is
-	// tagged with.
-	if host, ok := m.liveHost(remnant.Host); ok && host.IncarnationID == remnant.IncarnationID {
+	// tagged with — the FULL pair, never the incarnation alone, because an edit
+	// preserves the incarnation while advancing the generation and refusing on
+	// the incarnation would make every update remnant unrecoverable.
+	if host, ok := m.liveHost(remnant.Host); ok &&
+		host.IncarnationID == remnant.IncarnationID && host.Generation == remnant.Generation {
 		return appwire.Conflict(fmt.Sprintf(
-			"teardown-recover %s refused: the live entry for %q still carries the remnant's pinned incarnation %q",
-			remnantID, remnant.Host, remnant.IncarnationID))
+			"teardown-recover %s refused: the live entry for %q still carries the remnant's pinned pair (%d, %q)",
+			remnantID, remnant.Host, remnant.Generation, remnant.IncarnationID))
 	}
 	return nil
 }
@@ -649,7 +655,13 @@ func (m *hubHostManager) resolveCleanupHandle(remnantID string, remnant HostTear
 	handle := remnant.CleanupHandle
 	switch handle.Kind {
 	case cleanupHandleKindLocal:
-		if handle.Generation != remnant.Generation || handle.IncarnationID != remnant.IncarnationID {
+		// Incarnation equality only: generations advance on every edit, so an
+		// update remnant pins the RETIRED generation while the mirrored boundary
+		// carries the committed one — and §6 is explicit that the retry targets
+		// handles "by incarnation-id equality — never by generation alone". The
+		// incarnation id is never reused, so it is what keeps a retry off a
+		// successor's handles.
+		if handle.IncarnationID != remnant.IncarnationID {
 			return teardownUnknownKeyRefusal(remnantID)
 		}
 		if m.cfg.ops == nil {
@@ -661,7 +673,7 @@ func (m *hubHostManager) resolveCleanupHandle(remnantID string, remnant HostTear
 		if !ok {
 			return teardownUnknownKeyRefusal(remnantID)
 		}
-		if mark.Generation != handle.Generation || mark.IncarnationID != handle.IncarnationID {
+		if mark.IncarnationID != handle.IncarnationID {
 			return teardownUnknownKeyRefusal(remnantID)
 		}
 		return nil

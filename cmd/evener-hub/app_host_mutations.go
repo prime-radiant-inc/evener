@@ -559,8 +559,11 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	// rebind destroys are the ones tagged with the pair the edit replaced.
 	pinned := pendingTeardownFor(before, hostTeardownKindUpdate)
 	// An identity-only edit — no effective field changed — has nothing to tear
-	// down; its pinned target is empty so the finalization's re-run is a no-op.
-	if sameEffectiveHostEntry(before, entry) {
+	// down even though the commit bumped the generation, so its pinned target is
+	// empty and the finalization's re-run is the no-op §5 defines. The comparison
+	// is over the effective fields alone: `entry` is already stamped, so a
+	// pair-including check could never be true here.
+	if sameEffectiveHostEntryFields(before, entry) {
 		pinned = HostPendingTeardown{Name: before.Name, Kind: hostTeardownKindUpdate,
 			Generation: before.Generation, IncarnationID: before.IncarnationID}
 	}
@@ -737,16 +740,20 @@ func (m *hubHostManager) RemoveResult(ctx context.Context, params appwire.HostRe
 	if hit != nil {
 		return m.receiptArm(hit, hostMutationRemove), nil
 	}
-	// The foreign-marker rule (spec §5), the removal half.
+	// The foreign-marker rule (spec §5), the removal half. The pair is re-read
+	// after the finalization: it can advance the name's identity (a boot/foreign
+	// marker's recovery re-applies the staged runtime set), and a dedup lookup
+	// against the stale pair would miss the receipt the finalization just wrote.
 	if _, err := m.finalizeOrphanMarkerIfAny(ctx, name, false); err != nil {
 		return appwire.HostMutationResult{}, err
 	}
+	removeCurrent, removeCurrentKnown := m.currentHostIdentity(name)
 	if hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
 		MutationID:   params.MutationID,
 		Name:         name,
 		Kind:         hostMutationRemove,
-		Current:      current,
-		CurrentKnown: currentKnown,
+		Current:      removeCurrent,
+		CurrentKnown: removeCurrentKnown,
 	}); err != nil {
 		return appwire.HostMutationResult{}, err
 	} else if hit != nil {

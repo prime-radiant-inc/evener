@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
@@ -1314,5 +1315,144 @@ func TestHostTeardownRetryRefusalIsNotRecordedAsATimeout(t *testing.T) {
 		if attempt.open() {
 			t.Fatalf("attempt = %+v: the refused attempt was left open", attempt)
 		}
+	}
+}
+
+// TestHostUpdateRemnantRepairsThroughRetryAndRecover pins roborev's High on the
+// update remnant: an edit preserves the incarnation while advancing the
+// generation, so a handle resolution that compared generations could never
+// resolve an update remnant, and a recovery safety check that compared the
+// incarnation alone could never clear one. Both paths are driven here against a
+// NON-NIL operation store — the state every test with a zero WebConfig never
+// reaches — with the name still live, which is the state a real operator's
+// failed edit leaves behind.
+func TestHostUpdateRemnantRepairsThroughRetryAndRecover(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	reg, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(reg, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	ops, err := hostops.Open(filepath.Join(dir, "operations.json"))
+	if err != nil {
+		t.Fatalf("hostops.Open: %v", err)
+	}
+	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{RemoteHostOpsStore: ops}, configPath, reg, nil)
+	m.cfg.bootID = "boot-1"
+
+	// The edit: it commits, its rebind refuses, and its remnant therefore pins
+	// the RETIRED identity while the mirrored boundary below carries the
+	// committed one — the mismatch the old resolution could not survive.
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected rebind failure") }
+	before, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("fixture lost the host")
+	}
+	result, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"}))
+	if err != nil {
+		t.Fatalf("Update = %v", err)
+	}
+	arm := result.HostMutationTeardownFailure
+	if arm == nil {
+		t.Fatalf("Update = %+v, want the teardown-failure arm", result)
+	}
+	m.testOnlyTeardown = nil
+	// The COMMITTED row is the store's (the registry was never swapped: the
+	// injected rebind failure replaced the manager call), and it carries the
+	// bumped generation under the preserved incarnation — the pair the mirror
+	// below publishes, and the one the old generation-comparing resolution could
+	// not match.
+	var committed hostreg.Host
+	for _, entry := range m.cfg.store.snapshot() {
+		if entry.Name == "side" {
+			committed = entry
+		}
+	}
+	if committed.Name == "" {
+		t.Fatal("the committed edit left no store row")
+	}
+	if committed.Generation == before.Generation || committed.IncarnationID != before.IncarnationID {
+		t.Fatalf("committed row = %+v, want a bumped generation under the same incarnation (before %+v)", committed, before)
+	}
+	remnant, ok := m.cfg.store.remnantByID(arm.RemnantID)
+	if !ok {
+		t.Fatalf("no durable remnant %q", arm.RemnantID)
+	}
+	if remnant.Generation != before.Generation || remnant.IncarnationID != before.IncarnationID {
+		t.Fatalf("remnant = %+v, want the retired pair %d/%s", remnant, before.Generation, before.IncarnationID)
+	}
+	// The mirrored boundary is the name's live record: the committed generation
+	// under the preserved incarnation, exactly what the mutation's own mirror
+	// write leaves.
+	if err := ops.MirrorBoundaries(map[string]hostops.Boundary{
+		"side": {
+			Generation:    committed.Generation,
+			IncarnationID: committed.IncarnationID,
+			PresenceEpoch: committed.PresenceEpoch,
+		},
+	}, nil); err != nil {
+		t.Fatalf("MirrorBoundaries: %v", err)
+	}
+
+	// Retry: resolution must succeed on incarnation equality, and the pinned
+	// rebind (re-applying the committed entry) must complete.
+	retry, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: arm.RemnantID})
+	if err != nil {
+		t.Fatalf("TeardownRetry over an update remnant = %v, want the teardown-complete arm", err)
+	}
+	if retry.HostTeardownRetryCompleteLive == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete live arm", retry)
+	}
+	if _, open := m.cfg.store.markedRemnantFor("side"); open {
+		t.Fatal("the fence still stands after the retry")
+	}
+
+	// Recover: a second failed edit whose SWAP landed and whose teardown then
+	// failed — the real shape, and the one the reviewer named: the live entry is
+	// the committed pair (bumped generation, preserved incarnation) while the
+	// remnant pins the retired pair, so a safety check comparing the incarnation
+	// alone would refuse forever.
+	m.testOnlyTeardown = func(_ context.Context, name string) error {
+		for _, entry := range m.cfg.store.snapshot() {
+			if entry.Name == name {
+				if err := m.cfg.hosts.Update(entry); err != nil {
+					return err
+				}
+			}
+		}
+		return errors.New("injected teardown failure after the swap")
+	}
+	result, err = m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited2.example"}))
+	if err != nil {
+		t.Fatalf("second Update = %v", err)
+	}
+	m.testOnlyTeardown = nil
+	arm = result.HostMutationTeardownFailure
+	if arm == nil {
+		t.Fatalf("second Update = %+v, want the teardown-failure arm", result)
+	}
+	cleared, err := m.TeardownRecover(context.Background(), appwire.HostTeardownRecoverParams{
+		RemnantID: arm.RemnantID,
+		Attestation: appwire.HostTeardownAttestation{
+			Operator: "op", Statement: hostRecoveryStatement, ObservedAt: "2026-09-27T12:00:00Z",
+		},
+	})
+	if err != nil {
+		t.Fatalf("TeardownRecover over a live update remnant = %v, want the audited clearance", err)
+	}
+	if cleared.Outcome != appwire.HostTeardownOutcomeRecovered || cleared.HostKind != appwire.HostKindLive {
+		t.Fatalf("recover response = %+v, want recovered-cleared for the live generation", cleared)
+	}
+	if _, open := m.cfg.store.markedRemnantFor("side"); open {
+		t.Fatal("the fence still stands after the recovery")
 	}
 }
