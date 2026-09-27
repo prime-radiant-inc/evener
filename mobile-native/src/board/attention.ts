@@ -138,9 +138,23 @@ function oldestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 function newestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 	return time(b.row) - time(a.row) || byRef(a, b);
 }
+// Mirrors hubapi.NeedsYouBand (hubapi/attention.go): failed leads, then a
+// question or approval, then a warning or restart-needed, regardless of age
+// (Jesse's ruling 2026-09-27 picks the web's three-band order for both
+// clients). Age only breaks ties within a band.
+function needsYouRank(state: BoardState): number {
+	switch (state) {
+		case "failed":
+			return 0;
+		case "question":
+		case "approval":
+			return 1;
+		default:
+			return 2;
+	}
+}
 function needsYouOrder(a: ClassifiedRow, b: ClassifiedRow): number {
-	const rank = (item: ClassifiedRow) => (item.state === "failed" ? 0 : 1);
-	return rank(a) - rank(b) || oldestFirst(a, b);
+	return needsYouRank(a.state) - needsYouRank(b.state) || oldestFirst(a, b);
 }
 
 /** Splits Live into the spec's four bands. Rows from the needs_you section
