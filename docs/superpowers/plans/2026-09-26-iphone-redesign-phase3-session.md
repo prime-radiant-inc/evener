@@ -215,11 +215,11 @@ Decisions this plan makes where the spec is silent, contradicts itself, or asks 
 
     - **Hosts.** Each registry lives in its sheet's module, keyed by `sheetKey(hubId, ref)`. `ConversationScreen` provides each one while mounted (`useProvideSheetHost`), memoized on what it carries, so an open sheet re-renders when the session changes. A sheet whose host is gone closes.
     - **The session stays live under its sheets.** `ConversationScreen` asks whether it is in front (phase 2's Task 18.3), so a sheet over it keeps its thread subscribed, its controls alive and its actions allowed. A focus check this plan adds to `ConversationScreen` uses `useScreenInFront` or `screenInFront`, never `useIsFocused` or `navigation.isFocused()`.
-    - **A sheet closes before it leads elsewhere.** The Session sheet's Pin, Delete, Aside, Fork, Archive, Shut down and Edit goal, the Queue sheet's Edit, and a Commands choice finish their sheet first, then hand the action to the screen (`sheet.finish(() => { navigation.goBack(); ... })`). A sheet may open another sheet over itself: the Session sheet opens the Model, Tasks and Notes & links sheets that way.
+    - **A sheet closes before it leads elsewhere.** The Session sheet's Pin, Delete, Aside, Fork, Archive, Shut down and Edit goal, the Queue sheet's Edit, and a Commands choice finish their sheet first, then hand the action to the screen: `sheet.finish(() => { navigation.goBack(); void host.act(action); })`. A sheet may open another sheet over itself: the Session sheet opens the Model, Tasks and Notes & links sheets that way.
     - **Toasts.** A sheet that stays open shows its toast in its own header (`accessory`): the Notes sheet's link removal, the Session sheet's rename and compact, and a Queue action that failed. An action that closes a sheet leaves its toast to the session.
     - **Unsaved input.** The Session sheet's title edit is this plan's one sheet input that can be lost: swiping it away with a changed name asks "Discard the new name?". Notes & links saves as it closes, so it never asks.
     - **One layout.** A sheet's header holds whatever is pinned, so the Model sheet's search field and its Effort control sit under its title, where spec 8.5 puts Effort at the bottom. A formSheet sizes one scroll view under one header, and has no pinned footer (phase 2's ruling 28).
-    - **What stays an RN `Modal`:** the full-screen views, which are the composer's expanded editor (Task 5), a message's Select text (Task 24) and the log viewer (Task 26); and today's `ActivitySheet` until phase 4 retires it (ruling 7).
+    - **What stays an RN `Modal`:** the full-screen views, which are the composer's expanded editor (Task 5), a message's Select text (Task 24), the log viewer (Task 26) and the image viewer (Task 29); and today's `ActivitySheet` until phase 4 retires it (ruling 7).
 
 ## Questions for Jesse
 
@@ -3772,7 +3772,7 @@ git commit -m "feat(native): the shared notes controller, which never loses a no
 - Consumes: Task 16; phase 2's Task 18 (`useSheet`, `<Sheet>`, `sheetHosts`, `sheetKey`, `useSheetHost`, `useProvideSheetHost`); `useToast` and `<Toast>` (Task 1).
 - Produces:
   - `<NotesBar preview={NotesBarPreview} onPress={() => void} />`
-  - `interface NotesHost { session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "status" | "resumeRequired" | "capabilities">; notes: NotesController; saved(outcome: SaveOutcome): void }` and `notesHosts = sheetHosts<NotesHost>()`, from `NotesSheet.tsx`. Phase 4's Task 15 adds `cwd` and `name` to `session`.
+  - `interface NotesHost { session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "status" | "resumeRequired" | "capabilities">; notes: NotesController; saved(outcome: SaveOutcome): void }` and `notesHosts = sheetHosts<NotesHost>()`, from `NotesSheet.tsx`. Phase 4's Task 15 adds `cwd` and `title` to the host, for file links.
   - `NotesSheet`, the route component for `"NotesSheet"`.
 
 **Requirements (spec 8.8; ruling 37):**
