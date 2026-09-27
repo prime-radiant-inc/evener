@@ -80,3 +80,18 @@ func TestIOSWorkflowArchiveVerifiesTagOnMain(t *testing.T) {
 		t.Error("archive-and-upload does not deepen a shallow checkout before rejecting a tag")
 	}
 }
+
+func TestIOSWorkflowRecoveryAcceptsTagPushRuns(t *testing.T) {
+	workflow := readWorkflow(t, iosWorkflowPath)
+
+	job, ok := workflow.Jobs["verify-upload"]
+	if !ok {
+		t.Fatal("ios-testflight workflow is missing the verify-upload job")
+	}
+	if !workflowRuns(job.Steps, `run["event"] == "push"`) {
+		t.Error("verify-upload cannot recover a tag-push run, which is now the primary upload lane")
+	}
+	if !workflowRuns(job.Steps, "git merge-base --is-ancestor") {
+		t.Error("verify-upload does not confirm a tag-push run's commit is on main")
+	}
+}
