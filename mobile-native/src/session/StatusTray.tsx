@@ -88,8 +88,8 @@ export function StatusTray({
 }
 
 /** The tray with its own one-second clock, so only the tray re-renders each
- * second. The clock runs only while the agent works: trayLine is null for
- * every other status, and an idle session runs no timer. */
+ * second. The clock runs only while the tray shows a line, so an idle session
+ * runs no timer. */
 export function LiveStatusTray({
 	session,
 	frames,
@@ -98,15 +98,15 @@ export function LiveStatusTray({
 	session: TraySource | null;
 	frames: FrameCounter;
 }) {
-	const working = session?.status.type === "active";
 	const [, tick] = useReducer((count: number) => count + 1, 0);
-	useEffect(() => {
-		if (!working) return;
-		const clock = setInterval(tick, 1000);
-		return () => clearInterval(clock);
-	}, [working]);
 	const now = Date.now();
 	const line = session ? trayLine(session, now) : null;
+	const shown = line !== null;
+	useEffect(() => {
+		if (!shown) return;
+		const clock = setInterval(tick, 1000);
+		return () => clearInterval(clock);
+	}, [shown]);
 	return (
 		<StatusTray {...tray} line={line} perMinute={line && frames.hasFrames() ? frames.perMinute(now) : undefined} />
 	);
