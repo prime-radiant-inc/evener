@@ -210,10 +210,7 @@ it("renders the Recovery entry and mounts the recovery panel end to end, row-con
 	// The screen's own recovery hook acquires this singleton once connected;
 	// reading it here is the same runtime the screen reads.
 	const runtime = getNativeMutationRuntime();
-	navigationState.state = {
-		index: 0,
-		routes: [{ key: conversationRoute(ref).key, name: "Conversation" }],
-	};
+	navigationState.state = { index: 0, routes: [conversationRoute(ref)] };
 
 	const tree = render(
 		<ConversationScreen

@@ -314,10 +314,7 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 
 	const hubId = "hub-1";
 	let targetRef = "ref-1";
-	navigationState.state = {
-		index: 0,
-		routes: [{ key: conversationRoute(targetRef).key, name: "Conversation" }],
-	};
+	navigationState.state = { index: 0, routes: [conversationRoute(targetRef)] };
 	function tree(): ReactElement {
 		return (
 			<PhaseMarker>
@@ -392,10 +389,7 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	// old generation's subscription is released and the new one reads the
 	// new route's composite key only.
 	targetRef = "ref-2";
-	navigationState.state = {
-		index: 0,
-		routes: [{ key: conversationRoute(targetRef).key, name: "Conversation" }],
-	};
+	navigationState.state = { index: 0, routes: [conversationRoute(targetRef)] };
 	act(() => {
 		renderer.update(tree());
 	});
