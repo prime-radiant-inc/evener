@@ -599,3 +599,317 @@ func deployPathLogLines(stderr string) []string {
 	}
 	return out
 }
+
+// stubHubExecutable points the hub's own-executable seam at path (or err) for
+// one test. The deploy default is this hub's own executable, so asserting it
+// needs the seam to name a controlled artifact instead of whatever binary is
+// running this test.
+func stubHubExecutable(t *testing.T, path string, err error) {
+	t.Helper()
+	orig := hubExecutable
+	hubExecutable = func() (string, error) { return path, err }
+	t.Cleanup(func() { hubExecutable = orig })
+}
+
+// TestParseHubOptionsDefaultsDeployBinaryToOwnExecutable pins the directive's
+// default: with neither -deploy-binary nor -build-source set, the hub wires its
+// own running executable as the deploy artifact, so a host that needs the
+// controller's build is offered one with no flags. The wired seam is invoked,
+// not merely inspected, so "carries the own-executable source" means the bytes
+// it stages are the byte-identical running executable.
+func TestParseHubOptionsDefaultsDeployBinaryToOwnExecutable(t *testing.T) {
+	exe := evenerArtifact(t)
+	stubHubExecutable(t, exe, nil)
+
+	opts, err := parseHubOptions(nil, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("parseHubOptions with no deploy flags: %v", err)
+	}
+	want, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatalf("canonicalize the artifact: %v", err)
+	}
+	if opts.deployBinary != want {
+		t.Fatalf("deployBinary = %q, want this hub's own executable %q", opts.deployBinary, want)
+	}
+	dw := opts.deployWiring()
+	if dw.buildBinary == nil {
+		t.Fatalf("deployWiring did not wire the own-executable source: %+v", dw)
+	}
+	if dw.buildSource != "" {
+		t.Fatalf("deployWiring wired a build source %q alongside the own executable", dw.buildSource)
+	}
+	out := filepath.Join(t.TempDir(), "evener")
+	if err := dw.buildBinary(t.Context(), runtime.GOOS, runtime.GOARCH, out); err != nil {
+		t.Fatalf("the wired own-executable seam refused this hub's own build: %v", err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read the staged artifact: %v", err)
+	}
+	wantBytes, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("read the hub's own executable: %v", err)
+	}
+	if !bytes.Equal(got, wantBytes) {
+		t.Fatalf("the staged default artifact (%d bytes) is not the byte-identical hub executable (%d bytes)", len(got), len(wantBytes))
+	}
+}
+
+// TestParseHubOptionsNoDeployKeepsTheDeployUnwired pins the opt-out: -no-deploy
+// wins over the own-executable default (and over the explicit flags), so no
+// deploy seam is wired even though a deployable default exists — and the
+// refusals still name the remedy, so the state is explicit rather than a
+// silent nothing.
+func TestParseHubOptionsNoDeployKeepsTheDeployUnwired(t *testing.T) {
+	exe := evenerArtifact(t)
+	stubHubExecutable(t, exe, nil)
+	want, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatalf("canonicalize the artifact: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		// wantStored is the validated deploy-binary value kept for the startup
+		// log's "ignoring ..." clause; an opted-out flag is still validated and
+		// reported, and it is deployWiring that refuses to use it.
+		wantStored string
+	}{
+		{name: "alone", args: []string{"-no-deploy"}},
+		{name: "with its own executable on the line", args: []string{"-no-deploy", "-deploy-binary", exe}, wantStored: want},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, err := parseHubOptions(tc.args, &bytes.Buffer{})
+			if err != nil {
+				t.Fatalf("parseHubOptions(%v): %v", tc.args, err)
+			}
+			if opts.deployBinary != tc.wantStored || opts.buildSource != "" {
+				t.Fatalf("-no-deploy stored deployBinary=%q buildSource=%q, want deployBinary=%q and no build source", opts.deployBinary, opts.buildSource, tc.wantStored)
+			}
+			if opts.deployDefault {
+				t.Fatal("-no-deploy still adopted the own-executable default")
+			}
+			dw := opts.deployWiring()
+			if dw.buildBinary != nil || dw.buildSource != "" {
+				t.Fatalf("-no-deploy still wired a deploy source: %+v", dw)
+			}
+			if dw.help == "" {
+				t.Fatal("-no-deploy left the refusal help empty, so a host that needs a deploy would be refused with no remedy named")
+			}
+			for _, want := range []string{"-deploy-binary", "-build-source"} {
+				if !strings.Contains(dw.help, want) {
+					t.Fatalf("the -no-deploy refusal remedy %q does not name %s", dw.help, want)
+				}
+			}
+		})
+	}
+}
+
+// TestParseHubOptionsDefaultNeverFiresForANonEvenerExecutable pins the other
+// half of the default: only an evener runtime build may become the deploy
+// artifact, so an embedder or test binary leaves the deploy unwired exactly as
+// today — refused with the named remedy, never a silent no-op and never a
+// non-evener program pushed to a host.
+func TestParseHubOptionsDefaultNeverFiresForANonEvenerExecutable(t *testing.T) {
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		path string
+		err  error
+	}{
+		{name: "a foreign Go program", path: nonEvenerGoBinary(t)},
+		{name: "this package's test binary", path: testBinary},
+		{name: "an unresolvable executable", err: errors.New("no executable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubHubExecutable(t, tc.path, tc.err)
+			opts, err := parseHubOptions(nil, &bytes.Buffer{})
+			if err != nil {
+				t.Fatalf("parseHubOptions: %v", err)
+			}
+			if opts.deployBinary != "" || opts.buildSource != "" {
+				t.Fatalf("a non-evener executable was adopted as the deploy source: deployBinary=%q buildSource=%q", opts.deployBinary, opts.buildSource)
+			}
+			dw := opts.deployWiring()
+			if dw.buildBinary != nil || dw.buildSource != "" {
+				t.Fatalf("deployWiring wired a non-evener executable: %+v", dw)
+			}
+			if dw.help == "" || !strings.Contains(dw.help, "-deploy-binary") {
+				t.Fatalf("the unwired refusal does not name the remedy: %q", dw.help)
+			}
+		})
+	}
+}
+
+// TestParseHubOptionsExplicitDeployFlagsOverrideTheOwnExecutableDefault pins the
+// precedence: an operator-named source wins over the own-executable default, so
+// the default is a fallback and not a second, silently-preferred path. The own
+// executable is a different file from the explicit artifact, so the assertions
+// say which one was stored, not merely that something was.
+func TestParseHubOptionsExplicitDeployFlagsOverrideTheOwnExecutableDefault(t *testing.T) {
+	own := evenerArtifact(t)
+	stubHubExecutable(t, own, nil)
+	explicit := copyExecutableArtifact(t, 0o755)
+
+	t.Run("-deploy-binary", func(t *testing.T) {
+		opts, err := parseHubOptions([]string{"-deploy-binary", explicit}, &bytes.Buffer{})
+		if err != nil {
+			t.Fatalf("parseHubOptions(-deploy-binary): %v", err)
+		}
+		want, err := filepath.EvalSymlinks(explicit)
+		if err != nil {
+			t.Fatalf("canonicalize the explicit artifact: %v", err)
+		}
+		ownCanonical, err := filepath.EvalSymlinks(own)
+		if err != nil {
+			t.Fatalf("canonicalize the own executable: %v", err)
+		}
+		if opts.deployBinary != want {
+			t.Fatalf("deployBinary = %q, want the explicit artifact %q (not the default %q)", opts.deployBinary, want, ownCanonical)
+		}
+		if opts.deployDefault {
+			t.Fatal("the own-executable default fired alongside an explicit -deploy-binary")
+		}
+		dw := opts.deployWiring()
+		if dw.buildBinary == nil || !dw.binaryArtifact {
+			t.Fatalf("explicit -deploy-binary wiring = %+v, want a binary artifact seam", dw)
+		}
+	})
+
+	t.Run("-build-source", func(t *testing.T) {
+		checkout := evenerCheckoutFixture(t)
+		opts, err := parseHubOptions([]string{"-build-source", checkout}, &bytes.Buffer{})
+		if err != nil {
+			t.Fatalf("parseHubOptions(-build-source): %v", err)
+		}
+		if opts.deployBinary != "" || opts.deployDefault {
+			t.Fatalf("the own-executable default fired alongside -build-source: deployBinary=%q deployDefault=%v", opts.deployBinary, opts.deployDefault)
+		}
+		if opts.buildSource != checkout {
+			t.Fatalf("buildSource = %q, want %q", opts.buildSource, checkout)
+		}
+		dw := opts.deployWiring()
+		if dw.buildSource != checkout || dw.buildBinary != nil || dw.binaryArtifact {
+			t.Fatalf("-build-source wiring = %+v, want the source seam and no binary artifact", dw)
+		}
+	})
+}
+
+// evenerCheckoutFixture writes the smallest tree sshconn's build-source
+// validation accepts: an evener go.mod and a cmd/evener package. buildinfo's
+// GitSHA is pinned empty so the revision check — which compares a checkout to a
+// stamped controller, not the flag precedence under test — is skipped, exactly
+// as TestRunMainLogsTheDeployPathItWasGiven does.
+func evenerCheckoutFixture(t *testing.T) string {
+	t.Helper()
+	origSHA := buildinfo.GitSHA
+	t.Cleanup(func() { buildinfo.GitSHA = origSHA })
+	buildinfo.GitSHA = ""
+	checkout, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("canonicalize the checkout: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(checkout, "go.mod"), []byte("module primeradiant.com/evener\n\ngo 1.27\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(checkout, "cmd", "evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return checkout
+}
+
+// TestRunMainWiresAndLogsTheOwnExecutableDeploy pins the default at the seam the
+// hub actually hands sshconn: with no deploy flags the Options carry the
+// own-executable BuildBinary marked as a binary artifact (the fact that lets a
+// dirty controller deploy it, inside sshconn), no BuildSource, and startup logs
+// the defaulted source instead of the old no-deploy-path silence.
+func TestRunMainWiresAndLogsTheOwnExecutableDeploy(t *testing.T) {
+	exe := evenerArtifact(t)
+	stubHubExecutable(t, exe, nil)
+	want, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatalf("canonicalize the artifact: %v", err)
+	}
+	_, cfg, deps := newTraceMainTestDeps(t)
+	var got sshconn.Options
+	deps.newSSHManager = func(reg *hostreg.Registry, opts sshconn.Options) *sshconn.Manager {
+		got = opts
+		return sshconn.New(reg, opts)
+	}
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if got.BuildBinary == nil {
+		t.Fatal("sshconn.Options.BuildBinary was not wired to this hub's own executable")
+	}
+	if got.BuildSource != "" {
+		t.Fatalf("sshconn.Options.BuildSource = %q alongside the own-executable default", got.BuildSource)
+	}
+	if !got.BinaryArtifact {
+		t.Fatal("the own-executable default was not marked as a binary artifact, so a dirty controller would still refuse to install it")
+	}
+	logged := deployPathLogLines(stderr.String())
+	wantLine := "[hub] deploy path: -deploy-binary " + want + " (default: this hub's own executable)"
+	if len(logged) != 1 || logged[0] != wantLine {
+		t.Fatalf("deploy path log = %v, want exactly [%q]", logged, wantLine)
+	}
+}
+
+// TestRunMainNoDeployWiresAndLogsNone pins -no-deploy end to end at the same
+// seam: no build seam reaches sshconn (even though a deployable own executable
+// and an explicit artifact are both on offer), and the startup line says the
+// effective source is none and which named sources it overrode.
+func TestRunMainNoDeployWiresAndLogsNone(t *testing.T) {
+	exe := evenerArtifact(t)
+	stubHubExecutable(t, exe, nil)
+	want, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		t.Fatalf("canonicalize the artifact: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "alone",
+			args: []string{"-no-deploy"},
+			want: "[hub] deploy path: -no-deploy (deploys disabled)",
+		},
+		{
+			name: "wins over an explicit artifact",
+			args: []string{"-no-deploy", "-deploy-binary", exe},
+			want: "[hub] deploy path: -no-deploy (deploys disabled); ignoring -deploy-binary " + want,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cfg, deps := newTraceMainTestDeps(t)
+			var got sshconn.Options
+			deps.newSSHManager = func(reg *hostreg.Registry, opts sshconn.Options) *sshconn.Manager {
+				got = opts
+				return sshconn.New(reg, opts)
+			}
+			var stderr bytes.Buffer
+			args := append([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, tc.args...)
+			if err := runMain(args, &stderr, deps); err != nil {
+				t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+			}
+			if got.BuildBinary != nil || got.BuildSource != "" || got.BinaryArtifact {
+				t.Fatalf("-no-deploy still wired a deploy source: BuildBinary=%v BuildSource=%q BinaryArtifact=%v", got.BuildBinary != nil, got.BuildSource, got.BinaryArtifact)
+			}
+			if !got.DeployDisabled {
+				t.Fatal("-no-deploy did not tell sshconn deploying is disabled, so the installer fallback could still install on a host")
+			}
+			logged := deployPathLogLines(stderr.String())
+			if len(logged) != 1 || logged[0] != tc.want {
+				t.Fatalf("deploy path log = %v, want exactly [%q]", logged, tc.want)
+			}
+		})
+	}
+}

@@ -17,6 +17,7 @@ import (
 const (
 	deployBinaryFlag = "-deploy-binary"
 	buildSourceFlag  = "-build-source"
+	noDeployFlag     = "-no-deploy"
 )
 
 // evenerMainPackage is the main package of the artifact -deploy-binary accepts:
@@ -43,10 +44,13 @@ func verifyDeployArtifactIdentity(path string, info *buildinfo.BuildInfo) error 
 	return fmt.Errorf("%s %q is not evener: its main package is %q, want %q; supply a pre-built evener for the host's target", deployBinaryFlag, path, info.Path, evenerMainPackage)
 }
 
-// hubDeployHelp is the remedy the sshconn terminal version refusal appends when
-// no deploy path is configured. It names the hub's own flags; sshconn's default
-// ("set Options.BuildSource") names an internal field the operator cannot act on.
-const hubDeployHelp = "set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path> (an evener checkout to cross-compile from)"
+// hubDeployHelp is the remedy the sshconn refusals append when no deploy path is
+// configured. It names the hub's own state and flags; sshconn's default ("set
+// Options.BuildSource") names an internal field the operator cannot act on. The
+// default sentence leads because that is how a hub normally has a deploy source —
+// its own executable — so the refusals a -no-deploy or non-evener hub produces
+// tell the operator the shortest way back to a deploy.
+const hubDeployHelp = "run an evener hub without -no-deploy so it deploys its own executable, or set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path> (an evener checkout to cross-compile from)"
 
 // deployWiring is the deploy half of sshconn.Options the hub derives from its
 // flags. Constructing it is a pure function of hubOptions, so the precedence
@@ -54,28 +58,80 @@ const hubDeployHelp = "set -deploy-binary <path> (a pre-built evener for the hos
 type deployWiring struct {
 	buildBinary func(ctx context.Context, goos, goarch, out string) error
 	buildSource string
-	help        string
+	// binaryArtifact records that buildBinary is a pre-built binary artifact
+	// (the hub's own executable, or -deploy-binary) rather than a compile of
+	// buildSource. sshconn's Options.BinaryArtifact carries it.
+	binaryArtifact bool
+	// disabled records -no-deploy: the hub wires no source, and sshconn must
+	// refuse every deploy path rather than only the push, so the installer
+	// fallback cannot quietly install a published artifact on a host either.
+	disabled bool
+	help     string
 }
 
 // deployWiring resolves the deploy flags into sshconn.Options' build seams, with
 // -deploy-binary preferred when both are set — the manager's own dispatch
 // prefers BuildBinary too, so the two cannot disagree. The help text is always
-// supplied: the hub always has flags to name, including the no-flag case where
-// the refusal actually fires.
+// supplied: the hub always has a state to name, including the -no-deploy and
+// non-evener-executable cases where the refusal actually fires. -no-deploy wins
+// over both flags: it is the explicit opt-in to the pre-default behavior, so a
+// named deploy source alongside it is ignored (and validateDeployFlags still
+// validates it, so a typo cannot hide behind the opt-out). The defaulted
+// own-executable source arrives here as an ordinary deployBinary: by the time a
+// hubOptions reaches this method, validateDeployFlags has resolved the default
+// the same way it stores an explicit flag.
 //
 // The fields are read directly, with no second TrimSpace: validateDeployFlags has
 // already stored the one trimmed, canonical value the hub validates, logs, and
 // wires, so re-trimming here would be a second, divergent reading of the same
 // flag. Production always constructs hubOptions through parseHubOptions.
 func (o hubOptions) deployWiring() deployWiring {
-	dw := deployWiring{help: hubDeployHelp}
+	dw := deployWiring{help: hubDeployHelp, disabled: o.noDeploy}
+	if o.noDeploy {
+		return dw
+	}
 	switch {
 	case o.deployBinary != "":
 		dw.buildBinary = deployBinaryBuild(o.deployBinary)
+		dw.binaryArtifact = true
 	case o.buildSource != "":
 		dw.buildSource = o.buildSource
 	}
 	return dw
+}
+
+// deployPathLogLine is the one startup line that records the deploy source the
+// hub actually chose, so an operator can see whether the default fired, an
+// explicit source won, or -no-deploy disabled deploys — and which named sources
+// an opt-out overrode. It returns "" when there is no deploy source and nothing
+// to say: a non-evener executable (an embedder or test binary) keeps exactly the
+// old silence, and its refusals still name the remedy through hubDeployHelp.
+func (o hubOptions) deployPathLogLine() string {
+	if o.noDeploy {
+		line := "[hub] deploy path: " + noDeployFlag + " (deploys disabled)"
+		var ignored []string
+		if o.deployBinary != "" {
+			ignored = append(ignored, deployBinaryFlag+" "+o.deployBinary)
+		}
+		if o.buildSource != "" {
+			ignored = append(ignored, buildSourceFlag+" "+o.buildSource)
+		}
+		if len(ignored) > 0 {
+			line += "; ignoring " + strings.Join(ignored, " and ")
+		}
+		return line
+	}
+	switch {
+	case o.deployBinary != "" && o.buildSource != "":
+		return fmt.Sprintf("[hub] deploy path: %s %s takes precedence over %s %s", deployBinaryFlag, o.deployBinary, buildSourceFlag, o.buildSource)
+	case o.deployDefault:
+		return fmt.Sprintf("[hub] deploy path: %s %s (default: this hub's own executable)", deployBinaryFlag, o.deployBinary)
+	case o.deployBinary != "":
+		return fmt.Sprintf("[hub] deploy path: %s %s", deployBinaryFlag, o.deployBinary)
+	case o.buildSource != "":
+		return fmt.Sprintf("[hub] deploy path: %s %s", buildSourceFlag, o.buildSource)
+	}
+	return ""
 }
 
 // validateDeployFlags validates both deploy flags at startup and stores the one
@@ -86,7 +142,11 @@ func (o hubOptions) deployWiring() deployWiring {
 // to the one a later deploy reads. -build-source reuses sshconn's checkout
 // validation through its exported entry point so the rules cannot drift;
 // -deploy-binary is checked here because only the hub reads the file. Every error
-// names the flag the operator must fix.
+// names the flag the operator must fix. When neither flag is given and -no-deploy
+// is not set, the hub's own executable is adopted as the deploy artifact through
+// the same validation — so the default cannot wire anything an explicit flag
+// could not, and a binary that is not an evener build leaves the hub unwired (a
+// named refusal state) rather than being pushed to a host.
 func (o *hubOptions) validateDeployFlags() error {
 	o.deployBinary = strings.TrimSpace(o.deployBinary)
 	if o.deployBinary != "" {
@@ -104,7 +164,34 @@ func (o *hubOptions) validateDeployFlags() error {
 		}
 		o.buildSource = abs
 	}
+	if o.deployBinary == "" && o.buildSource == "" && !o.noDeploy {
+		o.defaultDeployBinary()
+	}
 	return nil
+}
+
+// defaultDeployBinary adopts this hub's own running executable as the deploy
+// artifact when the operator named no source, so connecting to a bare host
+// provisions it with the controller's exact build by default. Resolution and
+// validation are the explicit flag's: the executable is run through
+// validateDeployBinary (stat, exec bits, readable buildinfo, evener main
+// package), and anything that fails leaves the deploy unwired exactly as the
+// no-flag case was before this default existed. That is deliberate: an embedder
+// or test binary has no evener build to offer, and wiring it would push a
+// non-evener program — or nothing — while claiming a deploy source exists. The
+// refusal such a hub produces still names the remedy (hubDeployHelp), so the
+// state is explicit rather than a silent no-op.
+func (o *hubOptions) defaultDeployBinary() {
+	exe, err := hubExecutable()
+	if err != nil || strings.TrimSpace(exe) == "" {
+		return
+	}
+	abs, err := validateDeployBinary(exe)
+	if err != nil {
+		return
+	}
+	o.deployBinary = abs
+	o.deployDefault = true
 }
 
 // validateDeployBinary checks an operator-supplied artifact where the flag is

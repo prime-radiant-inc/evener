@@ -30,7 +30,10 @@ import (
 // instead of ErrDeploy: the supervisor stops, the cause is reported, and no
 // build, restart, or attach is attempted. The test drives the decision and the
 // supervisor's own per-iteration path (reconnectOnce), not BuildBinary alone —
-// which is how the round-twelve test missed the loop.
+// which is how the round-twelve test missed the loop. The build source here is an
+// undeclared BuildBinary (an embedder's own compile of the controller's tree);
+// a declared binary artifact is deployable from a dirty controller and is pinned
+// by TestDirtyControllerDeploysABinaryArtifact.
 func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 	const dirty = "abc1234-dirty"
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
@@ -92,7 +95,7 @@ func TestRound13DirtyControllerDeployRefusalIsTerminal(t *testing.T) {
 		t.Fatalf("error does not name the dirty-tree cause: %v", err)
 	}
 	if builds != 0 {
-		t.Fatalf("build attempts = %d, want 0 (a dirty controller has no deployable build)", builds)
+		t.Fatalf("build attempts = %d, want 0 (a dirty controller has no deployable source build)", builds)
 	}
 	if got := len(fr.recordedStarts()); got != 0 {
 		t.Fatalf("bridge Start calls = %d, want 0 (never attach to a host the dirty version cannot verify)", got)

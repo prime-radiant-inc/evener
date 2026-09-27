@@ -111,6 +111,28 @@ type Options struct {
 	// BuildBinary is set.
 	BuildSource string
 
+	// BinaryArtifact, when set, records that BuildBinary is a pre-built binary
+	// artifact — a hub's own running executable, or an operator-supplied
+	// -deploy-binary — rather than a compile of a source checkout. It changes
+	// exactly one decision: a dirty controller (a "<sha>-dirty" build) refuses a
+	// SOURCE deploy terminally (errControllerDirty: no checkout can be proven to
+	// reproduce a dirty tree), but a declared artifact IS the bytes themselves,
+	// so publishing it needs no reproduction proof. The artifact's identity is
+	// still judged where it can be: the push re-reads it (evener identity and
+	// host target) before staging, and the on-host launch contract re-read after
+	// the deploy is compared against this controller (errDeployUnstamped).
+	BinaryArtifact bool
+
+	// DeployDisabled, when set, turns deploying off for this whole Manager: no
+	// push and no installer fallback, so a release or snapshot controller cannot
+	// quietly install a published artifact on a host either. canDeploy reports
+	// false (the decision ladder never deploys, and a host that needs a build is
+	// left on its own exactly as with no deploy source), and every deploy that
+	// still reaches deploy — the explicit host-deploy operation — is refused
+	// terminally (errDeployDisabled) with DeployHelp's remedy. It is the hub's
+	// -no-deploy.
+	DeployDisabled bool
+
 	// DeployHelp is the remedy clause the refusals that have nothing to install
 	// append: the missing-executable preflight refusal and the installer fallbacks.
 	// An embedder with its own CLI fills in the flags an operator must set; sshconn
@@ -1807,11 +1829,14 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 	// deploy is configured the controller installs its own build once per Manager
 	// and then trusts the host for this process's lifetime; with no deploy
 	// configured there is nothing to install and the literal comparison stands.
-	// A DIRTY controller with a deploy configured cannot install anything (deploy
-	// refuses it terminally: see errControllerDirty), so the force below is what
-	// keeps it from attaching to a host whose code equality cannot prove; the
-	// refusal is terminal rather than a retryable ErrDeploy, so the same forced
-	// deploy cannot become an endless cross-compile.
+	// A DIRTY controller whose deploy source is a source checkout or the installer
+	// fallback cannot install anything (deploy refuses it terminally: see
+	// errControllerDirty), so the force below is what keeps it from attaching to a
+	// host whose code equality cannot prove; that refusal is terminal rather than a
+	// retryable ErrDeploy, so the same forced deploy cannot become an endless
+	// cross-compile. A declared binary artifact (Options.BinaryArtifact) is
+	// installable, and once installed it settles the question for this Manager's
+	// lifetime like any other deploy.
 	deployPossible := m.canDeploy()
 	devUnverified := UnverifiableVersion(expected) && deployPossible && !m.isDevDeployed(name)
 
@@ -2387,6 +2412,7 @@ func isTerminal(err error) bool {
 		errors.Is(err, errRunTargetUnservable),
 		errors.Is(err, errDeployArtifactUnusable),
 		errors.Is(err, errDeployUnstamped),
+		errors.Is(err, errDeployDisabled),
 		errors.Is(err, ErrManagerClosed):
 		return true
 	default:
@@ -2854,8 +2880,17 @@ func (m *Manager) canBuild() bool {
 // accept this build": a dirty controller with a build source reaches deploy,
 // which refuses it terminally (errControllerDirty) instead of returning false
 // here — returning false would let the decision ladder attach to a host whose
-// code equality the dirty version cannot prove.
+// code equality the dirty version cannot prove. A dirty controller with a
+// declared binary artifact (Options.BinaryArtifact) is accepted by deploy: the
+// bytes are the build, so there is no reproduction proof to make. And a
+// controller with deploying turned off (Options.DeployDisabled) has no deploy
+// path at all, so it is false before even the installer fallback is considered:
+// -no-deploy must not let a release or snapshot controller quietly install a
+// published artifact.
 func (m *Manager) canDeploy() bool {
+	if m.opts.DeployDisabled {
+		return false
+	}
 	if m.canBuild() {
 		return true
 	}

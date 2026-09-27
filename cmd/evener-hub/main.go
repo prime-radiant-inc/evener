@@ -134,10 +134,22 @@ type hubOptions struct {
 	evenerBinary   string
 	appwireTrace   string
 	// deployBinary and buildSource describe how a missed host gets the
-	// controller's build pushed to it. They are empty for a local-only
-	// controller, which needs no deploy path at all.
+	// controller's build pushed to it. With neither set, deployBinary defaults to
+	// this hub's own executable (deployDefault records that), so a host that
+	// needs the controller's build is provisioned by default; -no-deploy disables
+	// the default and both flags, leaving a local-only controller with no deploy
+	// path at all.
 	deployBinary string
 	buildSource  string
+	// noDeploy is the explicit opt-out: the hub wires no deploy source (not even
+	// the own-executable default) and a host that needs one is refused with the
+	// remedy named. deployWiring applies it before the flags, so -no-deploy wins
+	// over both of them.
+	noDeploy bool
+	// deployDefault records that deployBinary was not named by the operator: it
+	// is this hub's own executable, adopted by validateDeployFlags. Only the
+	// startup log reads it, to say the source was defaulted rather than given.
+	deployDefault bool
 }
 
 type mainDeps struct {
@@ -484,26 +496,25 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// background loops start attaching hosts.
 	var hostManageEvents func(sshconn.Event)
 	// The deploy wiring is a pure function of the flags: -deploy-binary wins over
-	// -build-source, matching the manager's own BuildBinary-first dispatch. When
-	// both are set, say which one is used rather than silently ignoring the other.
+	// -build-source, matching the manager's own BuildBinary-first dispatch, and
+	// with neither set the default is this hub's own executable — unless
+	// -no-deploy disables deploying. Startup says which source is effective, so
+	// the default and an opt-out are visible rather than inferred.
 	deploy := opts.deployWiring()
-	switch {
-	case opts.deployBinary != "" && opts.buildSource != "":
-		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -deploy-binary %s takes precedence over -build-source %s\n", opts.deployBinary, opts.buildSource)
-	case opts.deployBinary != "":
-		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -deploy-binary %s\n", opts.deployBinary)
-	case opts.buildSource != "":
-		_, _ = fmt.Fprintf(stderr, "[hub] deploy path: -build-source %s\n", opts.buildSource)
+	if line := opts.deployPathLogLine(); line != "" {
+		_, _ = fmt.Fprintln(stderr, line)
 	}
 	newSSHManager := deps.newSSHManager
 	if newSSHManager == nil {
 		newSSHManager = sshconn.New
 	}
 	sshManager := newSSHManager(hostRegistry, sshconn.Options{
-		Logger:      func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
-		BuildBinary: deploy.buildBinary,
-		BuildSource: deploy.buildSource,
-		DeployHelp:  deploy.help,
+		Logger:         func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
+		BuildBinary:    deploy.buildBinary,
+		BuildSource:    deploy.buildSource,
+		BinaryArtifact: deploy.binaryArtifact,
+		DeployDisabled: deploy.disabled,
+		DeployHelp:     deploy.help,
 		OnEvent: func(ev sshconn.Event) {
 			hubSSHStateInvalidation(
 				func() {
@@ -956,6 +967,7 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	fs.StringVar(&opts.appwireTrace, "appwire-trace", "", "write raw per-connection browser AppWire frames to a new JSONL file")
 	fs.StringVar(&opts.deployBinary, "deploy-binary", "", "path to a pre-built evener for the host's target, pushed as-is (no build source or Go toolchain needed)")
 	fs.StringVar(&opts.buildSource, "build-source", "", "path to an evener checkout's module root to cross-compile the host's target from")
+	fs.BoolVar(&opts.noDeploy, "no-deploy", false, "never deploy to hosts: disable the own-executable default and ignore -deploy-binary/-build-source")
 	fs.Usage = func() {
 		_, _ = fmt.Fprintf(stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		fs.PrintDefaults()

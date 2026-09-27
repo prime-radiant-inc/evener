@@ -277,13 +277,17 @@ func declaresEvenerModule(dir string) bool {
 }
 
 // errControllerDirty marks a deploy refused because this controller was built
-// from a dirty tree. Such a build has no reproducible identity: the push path
+// from a dirty tree and the configured deploy source needs a reproduction proof
+// it cannot give. Such a build has no reproducible identity: the push path
 // refuses to compile a tree it cannot prove matches this process
 // (verifyBuildRevision), the installer fallback has no published artifact to pin
 // (installerRefFor), and version auto-match cannot prove a host reporting the
-// same "<sha>-dirty" names the same code. The refusal is terminal rather than
-// ErrDeploy: the same install can never succeed by being retried, and a
-// supervisor that retried it cross-compiled forever while the host was never
+// same "<sha>-dirty" names the same code. A declared binary artifact
+// (Options.BinaryArtifact) is not refused: its bytes are the build — the hub's
+// own executable by construction, an operator's artifact by declaration — and its
+// on-host identity is still judged (errDeployUnstamped). The refusal is terminal
+// rather than ErrDeploy: the same install can never succeed by being retried, and
+// a supervisor that retried it cross-compiled forever while the host was never
 // attached (round thirteen).
 var errControllerDirty = errors.New("sshconn: controller build is a dirty tree")
 
@@ -312,15 +316,33 @@ var errDeployUnstamped = errors.New("sshconn: deployed build is not stamped by t
 // attach paths address the binary that was actually installed instead of a bare
 // `evener` a fresh host's non-interactive PATH may not carry.
 func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
-	// A dirty controller can neither install its own build nor verify a host's.
-	// deployRequired forces this deploy for an unverifiable version (a dirty
-	// "<sha>-dirty" is not an identity: another dirty checkout at the same commit
-	// reports it too), and attaching instead of deploying would silently serve a
-	// build version auto-match cannot verify. Refuse terminally, naming the
-	// cause: retrying is what turned this refusal into an endless cross-compile,
-	// because every attempt failed as a retryable ErrDeploy and markDevDeployed
-	// was never reached.
-	if version := m.opts.controllerVersion(); isDirtyVersion(version) {
+	// Deploying turned off wins over every deploy source: a hub started with
+	// -no-deploy installs nothing on a host, not even through the installer
+	// fallback a release or snapshot controller would otherwise use. The attach
+	// ladder never gets here (canDeploy is false), so this refusal is the
+	// explicit host-deploy operation's answer: terminal, naming the remedy.
+	if m.opts.DeployDisabled {
+		return "", fmt.Errorf("%w: host %q: this controller was started with deploying disabled, so it will not install a build on any host; %s",
+			errDeployDisabled, host.Name, m.deployHelp())
+	}
+	// A dirty controller cannot install a build it cannot reproduce. deployRequired
+	// forces this deploy for an unverifiable version (a dirty "<sha>-dirty" is not
+	// an identity: another dirty checkout at the same commit reports it too), and
+	// attaching instead of deploying would silently serve a build version
+	// auto-match cannot verify.
+	//
+	// The refusal is about SOURCE deploys: compiling a checkout requires proving
+	// the checkout reproduces the running "<sha>-dirty" tree, which is exactly what
+	// cannot be done, and the installer fallback has no published artifact to pin
+	// either. A declared binary artifact (Options.BinaryArtifact) needs no such
+	// proof: the hub's own executable IS this controller's build by construction,
+	// and an operator-supplied artifact is still judged on the host after the push
+	// (errDeployUnstamped), so refusing those would only keep a dirty controller
+	// from provisioning hosts with the exact build it runs. Refuse the rest
+	// terminally, naming the cause: retrying is what turned this refusal into an
+	// endless cross-compile, because every attempt failed as a retryable ErrDeploy
+	// and markDevDeployed was never reached.
+	if version := m.opts.controllerVersion(); isDirtyVersion(version) && !m.opts.BinaryArtifact {
 		return "", fmt.Errorf("%w: host %q: this controller was built from a dirty tree (version %q), so it cannot install its own build (a dirty tree cannot be reproduced from a checkout, and the installer fallback has no published artifact to pin) or prove that a host's build matches it; rebuild the controller from a clean checkout",
 			errControllerDirty, host.Name, version)
 	}
@@ -406,6 +428,16 @@ var errRunTargetUnservable = errors.New("sshconn: run target cannot serve a hub"
 // also keeps this sentinel out of the retryable ErrDeploy wrap, so terminal is the
 // class that reaches both the reconnect loop and the hub's attach handler.
 var errDeployArtifactUnusable = errors.New("sshconn: deploy artifact cannot serve the host")
+
+// errDeployDisabled marks a deploy refused because deploying is turned off for
+// this Manager (Options.DeployDisabled, the hub's -no-deploy). It is terminal
+// rather than ErrDeploy: the setting is a deliberate configuration, so a retry
+// re-refuses identically, and the refusal names the remedy through DeployHelp so
+// an operator who wants deploys back knows how to get them. canDeploy reports
+// false under the same option, so the attach ladder never reaches this refusal;
+// the explicit host-deploy operation does, which is why the sentinel exists at
+// all.
+var errDeployDisabled = errors.New("sshconn: deploying is disabled on this controller")
 
 // checkRunTarget refuses a configured evener_path that cannot be the host hub's
 // run target. Only the shipped `evener` binary can serve a hub: release archives
