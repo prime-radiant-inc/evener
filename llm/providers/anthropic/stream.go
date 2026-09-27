@@ -268,7 +268,7 @@ func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp 
 							tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Type: "function"}
 							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 						}
-						tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: st.toolArgs.Bytes(), Type: "function"}
+						tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: append([]byte(nil), st.toolArgs.Bytes()...), Type: "function"}
 						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
 						st.toolStarted = false
 					}
