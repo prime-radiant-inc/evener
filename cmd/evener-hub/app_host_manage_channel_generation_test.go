@@ -73,7 +73,7 @@ func TestHostRowPairsTheChannelWithTheEntryItRenders(t *testing.T) {
 	}
 
 	// The channel's own registration: the row adopts it and renders its facts.
-	row := f.m.hostRow(context.Background(), live, hostOriginSidecar)
+	row := f.m.hostRow(context.Background(), live)
 	if !row.Attached || row.OS != "linux" || row.Arch != "amd64" {
 		t.Fatalf("row for the channel's own registration = %+v, want attached with its facts", row)
 	}
@@ -82,7 +82,7 @@ func TestHostRowPairsTheChannelWithTheEntryItRenders(t *testing.T) {
 	// generation — the identity a swap leaves behind while the name is unchanged.
 	other := live
 	other.Generation = live.Generation + 1
-	row = f.m.hostRow(context.Background(), other, hostOriginSidecar)
+	row = f.m.hostRow(context.Background(), other)
 	if rowHasLiveState(row) {
 		t.Fatalf("row for another registration = %+v, want offline with none of the installed channel's state", row)
 	}
@@ -92,7 +92,7 @@ func TestHostRowPairsTheChannelWithTheEntryItRenders(t *testing.T) {
 	// from this row's, so it must not pass on generation alone.
 	other = live
 	other.SSH = "elsewhere.example"
-	row = f.m.hostRow(context.Background(), other, hostOriginSidecar)
+	row = f.m.hostRow(context.Background(), other)
 	if rowHasLiveState(row) {
 		t.Fatalf("row for changed content = %+v, want offline with no facts", row)
 	}
@@ -132,14 +132,14 @@ func TestHostRowAcrossTheUpdateWindowDoesNotAdoptTheNewGenerationsChannel(t *tes
 
 	// The stale row resolves while the new generation's channel is installed: it
 	// must not read that channel's live state.
-	stale := f.m.hostRow(context.Background(), preSwap, hostOriginSidecar)
+	stale := f.m.hostRow(context.Background(), preSwap)
 	if rowHasLiveState(stale) {
 		t.Fatalf("row built from the pre-swap entry = %+v, want offline with none of the new channel's state", stale)
 	}
 
 	// The new identity's own row still adopts its channel: the guard refuses
 	// only the mismatched pairing, not the live one.
-	fresh := f.m.hostRow(context.Background(), current, hostOriginSidecar)
+	fresh := f.m.hostRow(context.Background(), current)
 	if !fresh.Attached || fresh.OS != "linux" || fresh.Arch != "amd64" {
 		t.Fatalf("row for the edited identity = %+v, want attached with its channel's facts", fresh)
 	}
@@ -164,6 +164,11 @@ func (*resolvingUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader)
 	case strings.Contains(joined, " evener launch-check"):
 		// The host's non-interactive PATH does not carry the binary.
 		return []byte("sh: 1: evener: not found\n"), evenerMissingExitStatus()
+	case strings.Contains(joined, "command -v evener >/dev/null 2>&1"):
+		// The dedicated executable probe: the binary is absent from the
+		// non-interactive PATH. Only this probe's own 1 is the verified absent
+		// answer; the launch-check's 127 and its text are not the recognizer.
+		return nil, executableProbeAbsentExitStatus()
 	case strings.Contains(joined, "[ -f ") && strings.Contains(joined, ".local/bin/evener"):
 		return []byte("/home/dev/.local/bin/evener\n"), nil
 	default:
@@ -172,10 +177,17 @@ func (*resolvingUpdateRunner) Run(_ context.Context, argv []string, _ io.Reader)
 }
 
 // evenerMissingExitStatus builds the real *exec.ExitError a shell reports for a
-// command that cannot be found (status 127), the fixture preflight's
-// errExecutableMissing classifier requires.
+// command that cannot be found (status 127). The launch-check still fails this
+// way on a host with no evener on the PATH, but the missing-executable result is
+// recognized from executableProbeAbsentExitStatus below, not from this status.
 func evenerMissingExitStatus() error {
 	return exec.Command("sh", "-c", "exit 127").Run()
+}
+
+// executableProbeAbsentExitStatus builds the real *exec.ExitError the dedicated
+// executable probe reports for an absent target (status 1).
+func executableProbeAbsentExitStatus() error {
+	return exec.Command("sh", "-c", "exit 1").Run()
 }
 
 // TestHostRowRendersAttachedWhenTheManagerResolvedTheTarget pins the roborev
@@ -217,7 +229,7 @@ func TestHostRowRendersAttachedWhenTheManagerResolvedTheTarget(t *testing.T) {
 
 	// The row renders from the registry entry (empty EvenerPath) and must pair
 	// it with the installed channel by its registration.
-	row := f.m.hostRow(context.Background(), live, hostOriginSidecar)
+	row := f.m.hostRow(context.Background(), live)
 	if !row.Attached || row.OS != "linux" || row.Arch != "amd64" {
 		t.Fatalf("row for the resolved-target host = %+v, want attached with its facts", row)
 	}

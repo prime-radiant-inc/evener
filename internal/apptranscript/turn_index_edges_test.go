@@ -27,7 +27,7 @@ func TestFullProjectorNilProjectReturnsNil(t *testing.T) {
 // TestFullProjectorNonNilProject covers the non-nil path in fullProjector.
 func TestFullProjectorNonNilProjectInvokesProject(t *testing.T) {
 	called := false
-	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames *ToolCallRegistry) []appwire.ThreadItem {
 		called = true
 		return nil
 	}
@@ -486,7 +486,7 @@ func TestTurnIndexJournalStampObservedWithStats(t *testing.T) {
 // is non-nil but FuncForPC returns nil (which is very rare). Instead, we test
 // the normal non-nil path.
 func TestProjectionIdentityNonNil(t *testing.T) {
-	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames *ToolCallRegistry) []appwire.ThreadItem {
 		return nil
 	}
 	got := projectionIdentity(project)

@@ -22,6 +22,7 @@ import (
 // park in place). Delivery stays a steering injection, not a converted new
 // instruction.
 func TestStopParksPendingUserSteering(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -111,6 +112,7 @@ func TestStopParksPendingUserSteering(t *testing.T) {
 // turn/start clears SteeringHeld, so the opening turn drains the parked steer
 // at its boundary and delivers it to the model.
 func TestTurnStartReleasesTheParkedSteer(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -174,6 +176,7 @@ func TestTurnStartReleasesTheParkedSteer(t *testing.T) {
 // This is the mutation test for requirement (c): deleting the SteeringHeld
 // guard turns a test red.
 func TestStopParksPendingUserSteering_GuardMutation(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -224,6 +227,7 @@ func TestStopParksPendingUserSteering_GuardMutation(t *testing.T) {
 // This is the mutation test for requirement (d): deleting a clear turns a test
 // red.
 func TestTurnStartClearMutation(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -265,6 +269,7 @@ func TestTurnStartClearMutation(t *testing.T) {
 // retriggered by a second steer instead of by Stop. A steer arriving while
 // held must append to SteeringOrder and stay parked with the rest.
 func TestASecondSteerWhileHeldStaysParked(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -305,6 +310,7 @@ func TestASecondSteerWhileHeldStaysParked(t *testing.T) {
 // added BEFORE the Stop so this test exercises drainAsSteer's own clear, not
 // turn/queue's.
 func TestDrainAsSteerReleasesTheParkedSteer(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -342,6 +348,7 @@ func TestDrainAsSteerReleasesTheParkedSteer(t *testing.T) {
 // TestPromoteQueuedAsSteerReleasesTheParkedSteer is promoteQueuedAsSteer's
 // half of the same clear-trigger list.
 func TestPromoteQueuedAsSteerReleasesTheParkedSteer(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -381,6 +388,7 @@ func TestPromoteQueuedAsSteerReleasesTheParkedSteer(t *testing.T) {
 // hold on the user's own steering must not block, clear, or otherwise
 // interact with delegate SteerCaller traffic.
 func TestDelegateSteerCallerUnaffectedByHold(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -439,6 +447,7 @@ func TestDelegateSteerCallerUnaffectedByHold(t *testing.T) {
 // through the production resume path, and the claim gate must still refuse
 // after restore.
 func TestAHeldSteerSurvivesRestart(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -482,6 +491,7 @@ func TestAHeldSteerSurvivesRestart(t *testing.T) {
 // method==turn/start||turn/queue AND state==incorporated -- so PendingChips
 // keeps rendering it.
 func TestParkedSteerStillProjectsAsAccepted(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -520,6 +530,7 @@ func TestParkedSteerStillProjectsAsAccepted(t *testing.T) {
 // have any notion of queue/steering state -- the drain must simply see
 // nothing outstanding and return.
 func TestDrainJobTreeDoesNotHangWithAHeldSteer(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -576,6 +587,7 @@ func TestDrainJobTreeDoesNotHangWithAHeldSteer(t *testing.T) {
 // With nothing pending there is no such steer, so arming the gate can only
 // catch one the Stop never saw.
 func TestStopWithNothingToParkLeavesTheSteeringRailOpen(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -626,6 +638,7 @@ func TestStopWithNothingToParkLeavesTheSteeringRailOpen(t *testing.T) {
 // never. Setting the flag conditionally is not enough -- it has to be
 // normalized from what is actually pending, on Stop and on restore.
 func TestARestoredHoldOverAnEmptyRailIsReleased(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -673,6 +686,7 @@ func TestARestoredHoldOverAnEmptyRailIsReleased(t *testing.T) {
 // window is still deliverable across a restart, and a Stop must park it
 // rather than let it through on the next wake (#174).
 func TestStopParksSteeringPoppedButNotYetIncorporated(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -727,6 +741,7 @@ func TestStopParksSteeringPoppedButNotYetIncorporated(t *testing.T) {
 // steer -- it is still accepted in the store and the user's next run carries
 // it -- and the hold it arms names that steer, not nothing (#710).
 func TestStopOnACarrierParksItsUnrecordedSteerAndTheHoldNamesIt(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)

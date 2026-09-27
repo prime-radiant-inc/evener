@@ -34,7 +34,7 @@ func coldTurnIDs(t *testing.T, entries []transcript.Entry) []string {
 	t.Helper()
 	turns, err := apptranscript.ItemTurnsFromEntries(transcript.Header{SessionID: "th_1"}, entries,
 		func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-			return apptranscript.ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, apptranscript.ToolResultOutputImages)
+			return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, apptranscript.ToolResultOutputImages)
 		})
 	if err != nil {
 		t.Fatal(err)

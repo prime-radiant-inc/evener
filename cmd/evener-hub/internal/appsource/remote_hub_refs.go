@@ -369,6 +369,10 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Threa
 		thread.Evener.PendingEscalations[index].Ref = s.fromRemoteNestedRef(thread.Evener.PendingEscalations[index].Ref)
 	}
 	s.fromRemoteDiagnostics(thread.Evener.Diagnostics)
+	// The remote hub stamps its own origin-relative image URLs into the thread;
+	// the shared visitor moves every one of them onto the host-qualified
+	// controller route the browser fetches them from.
+	rewriteThreadImageURLs(s.id, &thread)
 	return thread, nil
 }
 
@@ -492,9 +496,11 @@ func (s *RemoteHubSource) fromRemoteRefOrOpaque(raw string) string {
 	return translated
 }
 
-// translateOut applies outbound ref translation to whichever response type
-// embeds a Thread. Responses without refs (e.g. thread/turns/list, model/list)
-// pass through unchanged.
+// translateOut applies outbound translation to whichever response type embeds
+// a Thread, Turn, or ThreadItem: refs are rewritten into the controller
+// namespace and every remote-stamped image URL is moved onto the
+// host-qualified controller route (see rewriteThreadImageURLs). Responses
+// without either (e.g. model/list) pass through unchanged.
 func (s *RemoteHubSource) translateOut(out any) error {
 	switch response := out.(type) {
 	case *appwire.ThreadListResponse:
@@ -526,6 +532,7 @@ func (s *RemoteHubSource) translateOut(out any) error {
 			return err
 		}
 		response.Thread = thread
+		rewriteTurnImageURLs(s.id, &response.Turn)
 	case *appwire.ThreadResumeResponse:
 		thread, err := s.fromRemoteThread(response.Thread)
 		if err != nil {
@@ -549,6 +556,20 @@ func (s *RemoteHubSource) translateOut(out any) error {
 			return err
 		}
 		response.Ref = ref
+	case *appwire.ThreadTurnsListResponse:
+		for index := range response.Data {
+			rewriteTurnImageURLs(s.id, &response.Data[index])
+		}
+	case *appwire.ThreadTurnItemsListResponse:
+		for index := range response.Data {
+			rewriteItemImageURLs(s.id, &response.Data[index])
+		}
+	case *appwire.TurnStartResponse:
+		rewriteTurnImageURLs(s.id, &response.Turn)
+	case *appwire.EvenerSubagentPreviewResponse:
+		for index := range response.Items {
+			rewriteItemImageURLs(s.id, &response.Items[index])
+		}
 	case *appwire.JobsListResponse:
 		response.Data = s.translateActivityRefs(response.Data)
 	}

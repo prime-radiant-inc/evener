@@ -120,16 +120,17 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			continue
 		}
 		entry := appsource.LocalDaemonEntry{
-			Entry:             item.Entry,
-			SessionID:         item.SessionID,
-			Status:            item.Status,
-			PendingAsk:        item.PendingAsk,
-			PendingEscalation: item.PendingEscalation,
-			RunningJobs:       item.RunningJobs,
-			CompletedJobs:     item.CompletedJobs,
-			Watches:           item.Watches,
-			Capabilities:      item.Capabilities,
-			CapabilitiesKnown: item.CapabilitiesKnown,
+			Entry:              item.Entry,
+			SessionID:          item.SessionID,
+			Status:             item.Status,
+			PendingAsk:         item.PendingAsk,
+			PendingEscalation:  item.PendingEscalation,
+			PendingEscalations: item.PendingEscalations,
+			RunningJobs:        item.RunningJobs,
+			CompletedJobs:      item.CompletedJobs,
+			Watches:            item.Watches,
+			Capabilities:       item.Capabilities,
+			CapabilitiesKnown:  item.CapabilitiesKnown,
 		}
 		entries = append(entries, entry)
 		// In-process descendants are addressed as their own AppWire
@@ -152,6 +153,13 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
 				child.Status = childState
 			}
+			// A pending question or approval is the root's: a subagent
+			// never asks the user or escalates (the agent's escalationAllowed
+			// and ask_user gates are root-only), so the alias drops the copy
+			// it took of the root's, or its row shows the root's question.
+			child.PendingAsk = false
+			child.PendingEscalation = false
+			child.PendingEscalations = nil
 			child.ReadOnlyAlias = true
 			entries = append(entries, child)
 		}
@@ -249,25 +257,46 @@ func enrichLocalSourcedThreadImages(thread appwire.Thread) appwire.Thread {
 // hub mints both /s/<session>/images/<sha> (stamped by stampThreadImageURLs) and
 // /doc/image?session=<session>&path=<rel> (attached to file-backed output images
 // by outputImagesForToolCall/resolveOutputImageFile), so any root-relative path
-// must be neutralized, not just the /s/... one. External URLs and data: URLs are
-// untouched, because the browser resolves them against their own origin.
+// that still names a bare session must be neutralized, not just the /s/... one.
+// External URLs and data: URLs are untouched, because the browser resolves them
+// against their own origin.
+//
+// A route whose session id already names another source (`<sourceID>:<session>`)
+// is the exception: the source's own outbound translation writes it as the
+// host-qualified controller route this hub serves by proxying to that host (see
+// appsource's image URL visitor), so neutralization must leave it alone. Only a
+// route still naming a bare session — one the remote hub minted for itself — is
+// removed.
 func stripRemoteImageRoutes(thread appwire.Thread) appwire.Thread {
 	for turnIndex := range thread.Turns {
 		items := thread.Turns[turnIndex].Items
 		for itemIndex := range items {
 			for imageIndex := range items[itemIndex].Images {
-				if isHubRelativeImageRoute(items[itemIndex].Images[imageIndex].URL) {
+				if isHubRelativeImageRoute(items[itemIndex].Images[imageIndex].URL) &&
+					!hostQualifiedImageRoute(items[itemIndex].Images[imageIndex].URL) {
 					items[itemIndex].Images[imageIndex].URL = ""
 				}
 			}
 			for imageIndex := range items[itemIndex].OutputImages {
-				if isHubRelativeImageRoute(items[itemIndex].OutputImages[imageIndex].URL) {
+				if isHubRelativeImageRoute(items[itemIndex].OutputImages[imageIndex].URL) &&
+					!hostQualifiedImageRoute(items[itemIndex].OutputImages[imageIndex].URL) {
 					items[itemIndex].OutputImages[imageIndex].URL = ""
 				}
 			}
 		}
 	}
 	return thread
+}
+
+// hostQualifiedImageRoute reports whether raw is a controller image route whose
+// session id already names another source, in the host-qualified form
+// `/s/<sourceID>:<session>/images/<sha>` or
+// `/doc/image?session=<sourceID>:<session>`. Such a route is one this hub serves
+// by proxying to the owning host, so it is not a route the remote hub minted for
+// itself and must not be neutralized. The grammar lives with the visitor that
+// writes those routes, so the two cannot drift.
+func hostQualifiedImageRoute(raw string) bool {
+	return appsource.HostQualifiedControllerImageRoute(raw)
 }
 
 // isHubRelativeImageRoute reports whether raw is an origin-relative image route
@@ -1090,8 +1119,8 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// tick.
 	// The manager, the live host registry, and the selected hub.toml path all
 	// come from cfg — main.go threads the real sshconn.Manager, the one
-	// registry shared with the attach handler, and the config path whose
-	// sidecar persists UI-added hosts, so the surface is wired, not a
+	// registry shared with the attach handler, and the config path the
+	// surface rewrites in place, so the surface is wired, not a
 	// placeholder. It returns the manager so newWebServer can expose it
 	// (main.go binds its event recorder to the SSH manager's lifecycle).
 	hostManage := registerHostManageHandlers(server, sources, cfg, cfg.RemoteHostRegistry, navigation, hubLogf)
@@ -1152,6 +1181,13 @@ func registerThreadHandlers(
 	relays hubRelayFunctions,
 	logf func(format string, args ...any),
 ) {
+	// evener/session/image is the AppWire counterpart of the local image routes:
+	// the controller's host-qualified image routes proxy through it to the hub
+	// that owns the session (multi-host component 05). It resolves only against
+	// this hub's own local session state.
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionImage, func(_ context.Context, params appwire.SessionImageParams) (appwire.SessionImageResponse, error) {
+		return sessionImageFromHub(cfg, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
 	})

@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { expect, test } from "vitest";
 import type { ActivityDelegate, ActivityEntry, ActivityJob, ActivityTree } from "./activityData";
 import { buildEntityView, type DelegateEntityView, entityOpenTarget, watchFoldKey, watchItems } from "./entityView";

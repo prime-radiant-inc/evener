@@ -110,7 +110,7 @@ func cycleSkillReloadSelection(s *Session) schema.SkillReloadSelection {
 // restart reconciles from, including pre-marker entries.
 func publicationReceiptsFromTranscript(t *testing.T, stateDir, id string) []schema.SkillCompactionReceipt {
 	t.Helper()
-	data, err := readTranscriptFull(transcriptPath(stateDir, id))
+	data, err := readTranscriptFull(transcriptPath(stateDir, id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
@@ -738,7 +738,7 @@ func TestSkillCompaction_ConcurrentSteering(t *testing.T) {
 	}
 	// The merged-back steering turn must be durably represented after the
 	// marker, so a restart keeps it.
-	data, err := readTranscriptFull(transcriptPath(stateDir, id))
+	data, err := readTranscriptFull(transcriptPath(stateDir, id), "")
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}

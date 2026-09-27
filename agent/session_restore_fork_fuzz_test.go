@@ -176,7 +176,7 @@ func FuzzRfzForkSession(f *testing.F) {
 		}
 
 		childPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-		_, entries, _, rerr := readTranscript(childPath)
+		_, entries, _, rerr := readTranscript(childPath, "")
 		if rerr != nil {
 			t.Fatalf("child transcript unreadable after successful fork: %v", rerr)
 		}

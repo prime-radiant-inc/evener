@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/internal/procgroup"
+	"primeradiant.com/evener/execsupport/procgroup"
 )
 
 // TestCommandRuntimeFactoryDrivesExecArgvWithoutForking pins the narrow command

@@ -33,7 +33,11 @@ var defaultUpgradeTimeout = 5 * time.Minute
 // the checksum ever runs. A var so tests can shrink it.
 var defaultMaxArchiveBytes = int64(128 << 20)
 
-var installBinaries = []string{"evener", "evener-dev"}
+// installBinaries are the binaries an upgrade installs from the release
+// archive. evener-dev is dev tooling and is not installed; release archives
+// still carry it for now, so versions that required it can upgrade into this
+// one, and extraction skips it.
+var installBinaries = []string{"evener"}
 
 var (
 	copyStream = io.Copy
@@ -571,11 +575,11 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 		return nil, err
 	}
 	defer release()
-	// Stage then commit: copy both new binaries to temp names first, so
-	// a failure before the commit point leaves the live pair untouched.
-	// Commit renames each staged file over its destination and swaps
-	// both symlinks; a commit failure rolls back to the pre-install
-	// binaries captured below, never leaving a mixed-release pair.
+	// Stage then commit: copy each new binary to a temp name first, so a
+	// failure before the commit point leaves the live install untouched.
+	// Commit renames each staged file over its destination and swaps its
+	// symlink; a commit failure rolls back to the pre-install binaries and
+	// entrypoints captured below.
 	type staged struct {
 		bin      string
 		tmp      string
@@ -721,8 +725,9 @@ func installExtractedBinaries(ctx context.Context, extractDir, shareBinDir, binD
 		}
 	}
 	// Digest before committing the transaction: a digest failure must roll
-	// back the swapped pair like any other commit error, not leave the new
-	// binaries live while the install reports failure and no restart runs.
+	// back the swapped install like any other commit error, not leave the
+	// new binaries live while the install reports failure and no restart
+	// runs.
 	digests, err := digestsUnderLock(shareBinDir)
 	if err != nil {
 		restore()
@@ -752,7 +757,7 @@ func digestsUnderLock(shareBinDir string) (map[string]string, error) {
 // stageExecutable copies src into a temp file beside the managed dir and
 // returns its path; the caller commits it with renameFile or removes it.
 // Staging (not direct copy) keeps a failed install from touching the live
-// pair before the commit point.
+// install before the commit point.
 func stageExecutable(ctx context.Context, src, shareBinDir, bin string) (string, error) {
 	in, err := os.Open(src)
 	if err != nil {

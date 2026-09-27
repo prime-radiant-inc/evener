@@ -153,7 +153,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	}
 	closed = true
 
-	transcriptData, err := readTranscriptFull(transcriptPath)
+	transcriptData, err := readTranscriptFull(transcriptPath, "")
 	if err != nil {
 		t.Fatalf("read semantic transcript: %v", err)
 	}

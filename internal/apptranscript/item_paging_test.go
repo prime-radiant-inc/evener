@@ -277,8 +277,8 @@ func TestItemPageCancellationDuringFinalProjectorReturnsContextError(t *testing.
 	cache := NewTurnCache()
 	armed := false
 	var cancel context.CancelFunc
-	project := func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
-		items := boundedTestProjector(turn, turnID, turnIndex, toolNames)
+	project := func(turn schema.Turn, turnID string, turnIndex int, reg *ToolCallRegistry) []appwire.ThreadItem {
+		items := boundedTestProjector(turn, turnID, turnIndex, reg)
 		if armed {
 			cancel()
 		}

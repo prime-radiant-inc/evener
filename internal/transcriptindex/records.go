@@ -10,9 +10,10 @@ import (
 // Record sizes. Records are fixed-size so a record's slot names its offset,
 // and an append can rewrite one in place.
 const (
-	itemRecordSize   = 112
+	itemRecordSize   = 124
 	turnRecordSize   = 96
 	contributorSize  = 32
+	contextEntrySize = contributorSize + 12 // contributor + TurnID strRef
 	updateRecordSize = 24
 )
 
@@ -46,6 +47,26 @@ type itemRecord struct {
 	Opener    contributor
 	Completer contributor // Length 0 until a later entry contributes
 	Middle    strRef      // contributors between opener and completer, encoded
+	// Context is the entries whose ToolCallRegistry state (Names/CommRawArgs/
+	// LastAssistantText/LastAssistantTurnID) the projection needs before
+	// Opener projects the visible item, encoded as a []contextEntry, oldest
+	// first. Empty for every item type but a deferred communicate result: a
+	// communicate call's assistant entry never projects a visible item (the
+	// whole-file projection defers to the paired result), so unlike an
+	// ordinary tool call/result pair, the result entry's own Opener contains
+	// no in-progress item and reg.CommRawArgs/LastAssistantText must be
+	// replayed from elsewhere before it can be reconstructed.
+	Context strRef
+}
+
+// contextEntry is one entry a communicate result item's registry replay must
+// visit before Opener: the assistant entry's position (reused from
+// contributor, though its Name is unused here) plus the logical turn id the
+// whole-file projection threaded it under, needed to reproduce
+// LastAssistantTurnID exactly.
+type contextEntry struct {
+	contributor
+	TurnID strRef
 }
 
 // Turn statuses, as the summary's latest lifecycle entry sets them.
@@ -184,6 +205,7 @@ func encodeItem(r itemRecord) []byte {
 	c.putContributor(r.Opener)
 	c.putContributor(r.Completer)
 	c.putRef(r.Middle)
+	c.putRef(r.Context)
 	return c.buf
 }
 
@@ -198,6 +220,7 @@ func decodeItem(buf []byte) itemRecord {
 	c.contributor(&r.Opener)
 	c.contributor(&r.Completer)
 	c.ref(&r.Middle)
+	c.ref(&r.Context)
 	return r
 }
 
@@ -252,6 +275,36 @@ func decodeContributors(buf []byte) ([]contributor, error) {
 	c := codec{buf: buf}
 	for i := range list {
 		c.contributor(&list[i])
+	}
+	return list, nil
+}
+
+func (c *codec) contextEntry(v *contextEntry) {
+	c.contributor(&v.contributor)
+	c.ref(&v.TurnID)
+}
+
+func (c *codec) putContextEntry(v contextEntry) {
+	c.putContributor(v.contributor)
+	c.putRef(v.TurnID)
+}
+
+func encodeContextEntries(list []contextEntry) []byte {
+	c := codec{buf: make([]byte, len(list)*contextEntrySize)}
+	for _, v := range list {
+		c.putContextEntry(v)
+	}
+	return c.buf
+}
+
+func decodeContextEntries(buf []byte) ([]contextEntry, error) {
+	if len(buf)%contextEntrySize != 0 {
+		return nil, fmt.Errorf("%w: context entry list of %d bytes", errCorrupt, len(buf))
+	}
+	list := make([]contextEntry, len(buf)/contextEntrySize)
+	c := codec{buf: buf}
+	for i := range list {
+		c.contextEntry(&list[i])
 	}
 	return list, nil
 }

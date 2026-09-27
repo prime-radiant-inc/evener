@@ -21,6 +21,7 @@ import (
 )
 
 func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnchor(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	adapter := &agenttest.FakeAdapter{
 		Provider: "openai",
@@ -106,6 +107,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnc
 }
 
 func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	adapter := &agenttest.FakeAdapter{
 		Provider: "openai",
@@ -195,6 +197,7 @@ func TestSession_OpenAIResponsesContinuationPhase4DIIConsumesStoredAnchorAsDelta
 }
 
 func TestSession_OpenAIResponsesContinuationRegistryClientUsesFullHistoryWhenAnchorFingerprintMismatches(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	var mu sync.Mutex
 	var requestBodies [][]byte

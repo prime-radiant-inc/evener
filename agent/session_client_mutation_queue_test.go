@@ -24,6 +24,7 @@ import (
 )
 
 func TestClientMutation_QueuePublicPathUsesDurableAuthority(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 
 	if err := sess.Enqueue(context.Background(), "durable follow-up"); err != nil {
@@ -50,6 +51,7 @@ func TestClientMutation_QueuePublicPathUsesDurableAuthority(t *testing.T) {
 }
 
 func TestClientMutation_InputShapesMatchDaemonBoundary(t *testing.T) {
+	t.Parallel()
 	invalidInputs := []struct {
 		name  string
 		input []appwire.InputItem
@@ -187,6 +189,7 @@ func TestClientMutation_InputShapesMatchDaemonBoundary(t *testing.T) {
 }
 
 func TestClientMutation_SkillInputRoundTrip(t *testing.T) {
+	t.Parallel()
 	items := []appwire.InputItem{{Type: "text", Text: "REQUEST_612"}, {Type: "skill", Name: "pkg:probe"}}
 	normalized, err := appwire.NormalizeMutationInput(items)
 	if err != nil {
@@ -200,6 +203,7 @@ func TestClientMutation_SkillInputRoundTrip(t *testing.T) {
 }
 
 func TestClientMutation_DrainRejectsSemanticallyEmptyExtraInputWithEmptyQueue(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	setTestClientMutationActiveTurn(t, sess, "turn_1")
@@ -216,6 +220,7 @@ func TestClientMutation_DrainRejectsSemanticallyEmptyExtraInputWithEmptyQueue(t 
 }
 
 func TestClientMutation_CanonicalTextAndImagePayloadsArePreserved(t *testing.T) {
+	t.Parallel()
 	input := []appwire.InputItem{
 		{Type: "text", Text: "canonical text"},
 		{Type: "image", MediaType: "image/png", Data: []byte{1, 2, 3}, Name: "proof.png", Metadata: map[string]string{"source": "test"}},
@@ -258,6 +263,7 @@ func TestClientMutation_CanonicalTextAndImagePayloadsArePreserved(t *testing.T) 
 }
 
 func TestClientMutation_QueuePublicationRejectsOlderRevision(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	if err := sess.Enqueue(context.Background(), "durable"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -311,6 +317,7 @@ func disarmTestInterruptFence(t *testing.T, sess *Session) {
 // the journal, leave the queue untouched, and replay the same rejection rather
 // than applying on the second attempt.
 func TestClientMutation_QueueRejectionIsRecordedDurably(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	armTestInterruptFence(t, sess, "interrupt-in-flight")
 	params := appwire.TurnQueueParams{
@@ -344,6 +351,7 @@ func TestClientMutation_QueueRejectionIsRecordedDurably(t *testing.T) {
 }
 
 func TestClientMutation_QueueRejectedImagePayloadIsCompactedAndReplayable(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	armTestInterruptFence(t, sess, "interrupt-in-flight")
 	params := appwire.TurnQueueParams{
@@ -373,6 +381,7 @@ func TestClientMutation_QueueRejectedImagePayloadIsCompactedAndReplayable(t *tes
 }
 
 func TestClientMutation_QueueReplayDoesNotDuplicateEffect(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	setTestClientMutationActiveTurn(t, sess, "turn-1")
 	params := appwire.TurnQueueParams{
@@ -401,6 +410,7 @@ func TestClientMutation_QueueReplayDoesNotDuplicateEffect(t *testing.T) {
 }
 
 func TestClientMutation_BudgetSerializesConcurrentFinalSlot(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t, withConfig(SessionConfig{
 		MaxTurns:         1,
 		MaxSubagentDepth: 1,
@@ -464,6 +474,7 @@ func TestClientMutation_BudgetSerializesConcurrentFinalSlot(t *testing.T) {
 }
 
 func TestClientMutation_BudgetSerializesDirectTurnAgainstQueuedFinalSlot(t *testing.T) {
+	t.Parallel()
 	sess := newSession(t, withConfig(SessionConfig{
 		MaxTurns:         1,
 		MaxSubagentDepth: 1,
@@ -507,6 +518,7 @@ func TestClientMutation_BudgetSerializesDirectTurnAgainstQueuedFinalSlot(t *test
 }
 
 func TestClientMutation_CancelPublicPathReleasesDurableReservation(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	if err := sess.Enqueue(context.Background(), "cancel me"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -530,6 +542,7 @@ func TestClientMutation_CancelPublicPathReleasesDurableReservation(t *testing.T)
 }
 
 func TestClientMutation_DrainPublicPathReleasesDurableReservations(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
 		t.Fatalf("Enqueue alpha: %v", err)
@@ -555,6 +568,7 @@ func TestClientMutation_DrainPublicPathReleasesDurableReservations(t *testing.T)
 }
 
 func TestClientMutation_PromotePublicPathReleasesDurableReservation(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	if err := sess.Enqueue(context.Background(), "promote me"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -578,6 +592,7 @@ func TestClientMutation_PromotePublicPathReleasesDurableReservation(t *testing.T
 }
 
 func TestClientMutation_SteerPublicPathUsesDurableAuthority(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	markProcessing(sess)
 
@@ -595,6 +610,7 @@ func TestClientMutation_SteerPublicPathUsesDurableAuthority(t *testing.T) {
 }
 
 func TestClientMutation_DrainRejectsStaleQueueRevisionDurably(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	setTestClientMutationActiveTurn(t, sess, "turn-1")
 	if err := sess.Enqueue(context.Background(), "queued"); err != nil {
@@ -616,6 +632,7 @@ func TestClientMutation_DrainRejectsStaleQueueRevisionDurably(t *testing.T) {
 }
 
 func TestClientMutation_DrainPreservesMessageBoundaries(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	setTestClientMutationActiveTurn(t, sess, "turn-1")
 	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
@@ -646,6 +663,7 @@ func TestClientMutation_DrainPreservesMessageBoundaries(t *testing.T) {
 // so a client can settle those optimistic records by positive evidence instead
 // of inferring consumption from sequence order.
 func TestClientMutation_DrainEmitsConsumedClientMutationIDs(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	setTestClientMutationActiveTurn(t, sess, "turn-1")
 	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
@@ -692,6 +710,7 @@ func TestClientMutation_DrainEmitsConsumedClientMutationIDs(t *testing.T) {
 // still reports them, so a client whose first receipt was lost can settle
 // those optimistic records from the retry's own response.
 func TestClientMutation_DrainReplayCarriesConsumedClientMutationIDs(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	setTestClientMutationActiveTurn(t, sess, "turn-1")
 	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
@@ -731,6 +750,7 @@ func TestClientMutation_DrainReplayCarriesConsumedClientMutationIDs(t *testing.T
 }
 
 func TestClientMutation_PromoteRejectsShiftedEntryDurably(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	setTestClientMutationActiveTurn(t, sess, "turn-1")
 	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
@@ -817,6 +837,7 @@ func TestClientMutation_QueueReplayReportsRemovedAfterTransform(t *testing.T) {
 }
 
 func TestClientMutation_PromoteSerializerSpansValidationAndEffect(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	setTestClientMutationActiveTurn(t, sess, "turn-1")
@@ -861,6 +882,7 @@ func TestClientMutation_PromoteSerializerSpansValidationAndEffect(t *testing.T) 
 }
 
 func TestClientMutation_QueueCrashBoundariesDoNotDuplicateEffect(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		setFault   func(*clientMutationFaults, func() error)
@@ -920,6 +942,7 @@ func TestClientMutation_QueueCrashBoundariesDoNotDuplicateEffect(t *testing.T) {
 }
 
 func TestClientMutation_QueueRecoveryRunsAfterReservationSeamOnTakeover(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	setTestClientMutationActiveTurn(t, sess, "turn-1")
@@ -954,6 +977,7 @@ func TestClientMutation_QueueRecoveryRunsAfterReservationSeamOnTakeover(t *testi
 }
 
 func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
+	t.Parallel()
 	for _, transform := range []string{"drain", "promote", "cancel"} {
 		t.Run(transform, func(t *testing.T) {
 			sess := newQueuePersistTestSession(t, t.TempDir())
@@ -1086,6 +1110,7 @@ func TestClientMutation_TransformTakeoverTargetsReservedEntryIDs(t *testing.T) {
 }
 
 func TestClientMutation_QueueClaimAndTranscriptIncorporationRetainsRunnableIdentity(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "queue-claim",
@@ -1139,6 +1164,7 @@ func TestClientMutation_QueueClaimAndTranscriptIncorporationRetainsRunnableIdent
 // (mutationOutboxIndexedDB.ts:172 retains only on "pending") while nothing had
 // replaced it.
 func TestClientMutation_QueueReplayStaysPendingWhileClaimed(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "queue-claimed-reflection",
@@ -1167,6 +1193,7 @@ func TestClientMutation_QueueReplayStaysPendingWhileClaimed(t *testing.T) {
 }
 
 func TestClientMutation_CompletedQueueReplayStaysReflectedByTranscript(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "queue-terminal-reflection",
@@ -1205,6 +1232,7 @@ func TestClientMutation_CompletedQueueReplayStaysReflectedByTranscript(t *testin
 }
 
 func TestClientMutation_QueueAppendFailureReturnsSameIdentityRunnable(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "queue-append-failure",
@@ -1246,6 +1274,7 @@ func TestClientMutation_QueueAppendFailureReturnsSameIdentityRunnable(t *testing
 // shows it pending) until its transcript append lands, and in between it is
 // out of the in-memory queue.
 func TestClientMutation_SteerStaysAcceptedUntilDurableAppend(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	params := appwire.TurnSteerParams{
 		ClientMutationID: "steer-claim",
@@ -1302,6 +1331,7 @@ func projectedClientMutation(sess *Session, clientMutationID string) (appwire.Pe
 }
 
 func TestClientMutation_SteerAppendFailureReturnsSameIdentityRunnable(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	params := appwire.TurnSteerParams{
 		ClientMutationID: "steer-append-failure",
@@ -1336,6 +1366,7 @@ func TestClientMutation_SteerAppendFailureReturnsSameIdentityRunnable(t *testing
 }
 
 func TestClientMutation_SteeringClaimRestoreDoesNotConsumeTurnBudget(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	params := appwire.TurnSteerParams{
 		ClientMutationID: "steer-claimed-budget-restore",
@@ -1369,6 +1400,7 @@ func TestClientMutation_SteeringClaimRestoreDoesNotConsumeTurnBudget(t *testing.
 }
 
 func TestClientMutation_CommunicateEndTurnDefersClientSteering(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	clientImage := appwire.InputItem{
 		Type:      "image",
@@ -1444,6 +1476,7 @@ func TestClientMutation_CommunicateEndTurnDefersClientSteering(t *testing.T) {
 }
 
 func TestClientMutation_SteeringProducerReplayStaysReflectedAfterTranscriptIncorporation(t *testing.T) {
+	t.Parallel()
 	for _, operation := range []string{"steer", "drain", "promote"} {
 		t.Run(operation, func(t *testing.T) {
 			sess := newTestSession(t)
@@ -1531,6 +1564,7 @@ func TestClientMutation_SteeringProducerReplayStaysReflectedAfterTranscriptIncor
 }
 
 func TestClientMutation_QueueRecoveryUsesFullTranscriptIdentityAfterCompaction(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "queue-compacted-identity",
@@ -1557,6 +1591,7 @@ func TestClientMutation_QueueRecoveryUsesFullTranscriptIdentityAfterCompaction(t
 }
 
 func TestClientMutation_QueueRestoreFencesPreRestartRevision(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -1584,6 +1619,7 @@ func TestClientMutation_QueueRestoreFencesPreRestartRevision(t *testing.T) {
 }
 
 func TestClientMutation_EmptyQueueRestoreStillFencesRevision(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -1598,6 +1634,7 @@ func TestClientMutation_EmptyQueueRestoreStillFencesRevision(t *testing.T) {
 }
 
 func TestClientMutation_CancelCompactsImagePayloadButKeepsHashReplay(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	params := appwire.TurnQueueParams{
 		ClientMutationID: "queue-image-payload",
@@ -1639,6 +1676,7 @@ func TestClientMutation_CancelCompactsImagePayloadButKeepsHashReplay(t *testing.
 }
 
 func TestClientMutation_CancelOperationIsCompactRemovedTombstone(t *testing.T) {
+	t.Parallel()
 	sess := newTestSession(t)
 	queued, err := sess.clientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "cancel-operation-source",
@@ -1695,6 +1733,7 @@ func TestClientMutation_CancelOperationIsCompactRemovedTombstone(t *testing.T) {
 }
 
 func TestClientMutation_QueueRestoreKeepsIncorporatedTurnWithoutDuplicateInput(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -1785,6 +1824,7 @@ func TestClientMutation_QueueRestoreKeepsIncorporatedTurnWithoutDuplicateInput(t
 // same not-yet-visible state a fresh queue entry starts in -- not reassert
 // the reflected state that only a genuine transcript append earns.
 func TestClientMutation_QueueClaimedWithoutTranscriptRestoresPendingOnRequeue(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()
@@ -1976,6 +2016,7 @@ func requireEnvelopeRequest(t *testing.T, requests []llm.Request, name, body, so
 }
 
 func TestClientMutation_SkillSelectionStartConsumesAtTurnBoundary(t *testing.T) {
+	t.Parallel()
 	root := skillFixtureRoot(t)
 	body := skillSelectionFixtureBody("BODY_612")
 	source := writeSkillMDAndReturn(t, root, "probe", body)
@@ -2034,6 +2075,7 @@ func TestClientMutation_SkillSelectionStartConsumesAtTurnBoundary(t *testing.T) 
 }
 
 func TestClientMutation_InlineSkillReferencesReachProviderAndTranscript(t *testing.T) {
+	t.Parallel()
 	root := skillFixtureRoot(t)
 	names := []string{"skill-1", "skill-2"}
 	body := skillSelectionFixtureBody("INLINE_BODY")
@@ -2103,6 +2145,7 @@ func TestClientMutation_InlineSkillReferencesReachProviderAndTranscript(t *testi
 }
 
 func TestClientMutation_SkillSelectionOnlyStartIsContent(t *testing.T) {
+	t.Parallel()
 	root := skillFixtureRoot(t)
 	body := skillSelectionFixtureBody("BODY_613")
 	source := writeSkillMDAndReturn(t, root, "probe", body)
@@ -2134,6 +2177,7 @@ func TestClientMutation_SkillSelectionOnlyStartIsContent(t *testing.T) {
 }
 
 func TestClientMutation_SkillSelectionQueueConsumesCurrentDiskBytes(t *testing.T) {
+	t.Parallel()
 	root := skillFixtureRoot(t)
 	firstBody := skillSelectionFixtureBody("BODY_ORIG")
 	source := writeSkillMDAndReturn(t, root, "probe", firstBody)
@@ -2176,6 +2220,7 @@ func TestClientMutation_SkillSelectionQueueConsumesCurrentDiskBytes(t *testing.T
 }
 
 func TestClientMutation_SkillSelectionMissingSecondNameFailsVisible(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	body := skillSelectionFixtureBody("BODY_612")
 	writeSkillMDAndReturn(t, root, "probe", body)
@@ -2399,6 +2444,7 @@ func TestClientMutation_SkillSelectionSteerFailedPreparationKeepsTurnRunning(t *
 }
 
 func TestClientMutation_SkillSelectionDrainCombinesQueueAndExtraSelections(t *testing.T) {
+	t.Parallel()
 	root := skillFixtureRoot(t)
 	probeBody := skillSelectionFixtureBody("BODY_PROBE")
 	probe2Body := skillSelectionFixtureBody("BODY_PROBE2")
@@ -2465,6 +2511,7 @@ func TestClientMutation_SkillSelectionDrainCombinesQueueAndExtraSelections(t *te
 }
 
 func TestClientMutation_SkillSelectionCancelThenDrainUsesRemainingSelection(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	probeBody := skillSelectionFixtureBody("BODY_PROBE")
 	probe2Body := skillSelectionFixtureBody("BODY_PROBE2")
@@ -2530,6 +2577,7 @@ func TestClientMutation_SkillSelectionCancelThenDrainUsesRemainingSelection(t *t
 }
 
 func TestClientMutation_SkillSelectionQueueReturnKeepsSelectionRunnable(t *testing.T) {
+	t.Parallel()
 	root := skillFixtureRoot(t)
 	body := skillSelectionFixtureBody("BODY_612")
 	writeSkillMDAndReturn(t, root, "probe", body)
@@ -2569,6 +2617,7 @@ func TestClientMutation_SkillSelectionQueueReturnKeepsSelectionRunnable(t *testi
 }
 
 func TestClientMutation_SkillSelectionSameIDAlteredSelectionConflicts(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	setTestClientMutationActiveTurn(t, sess, "turn_1")
@@ -2594,6 +2643,7 @@ func TestClientMutation_SkillSelectionSameIDAlteredSelectionConflicts(t *testing
 }
 
 func TestClientMutation_SkillSelectionSurvivesRestartBeforeClaim(t *testing.T) {
+	t.Parallel()
 	dir := skillFixtureRoot(t)
 	markGitRoot(t, dir)
 	body := skillSelectionFixtureBody("BODY_612")
@@ -2633,6 +2683,7 @@ func TestClientMutation_SkillSelectionSurvivesRestartBeforeClaim(t *testing.T) {
 }
 
 func TestClientMutation_SkillSelectionRestartAfterClaimRequeuesSelection(t *testing.T) {
+	t.Parallel()
 	dir := skillFixtureRoot(t)
 	markGitRoot(t, dir)
 	body := skillSelectionFixtureBody("BODY_612")

@@ -14,6 +14,7 @@ import (
 )
 
 func TestLoadSessionJobOutputTail(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
 	jobsPath := filepath.Join(jobsDir(dir, sessionID), "jobs.jsonl")

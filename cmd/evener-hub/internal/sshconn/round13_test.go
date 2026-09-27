@@ -469,6 +469,10 @@ func TestRound13RestartBareRefusesAnIPv6WildcardListenerForAnIPv4Endpoint(t *tes
 		return &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 			joined := strings.Join(argv, " ")
 			switch {
+			case strings.Contains(joined, "id -un"):
+				return []byte("dev\n"), nil
+			case strings.Contains(joined, pidOwnerRemote("4242")):
+				return []byte("dev\n"), nil
 			case strings.Contains(joined, "lsof -ti :9180"):
 				if *killed {
 					return []byte(noListenerMarker + "\n"), nil

@@ -11,7 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
-	"primeradiant.com/evener/internal/valueexpr"
+	"primeradiant.com/evener/execsupport/valueexpr"
 )
 
 // ServerConfig describes a single MCP server connection.

@@ -2,7 +2,7 @@ import type { AttentionSummary, NavigationSessionLocation, ThreadModel } from "@
 import { keyID } from "@evener/appwire-client/state/navigation";
 import type { ComponentType } from "react";
 import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { type PaneProps, registerPaneForTests } from "../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
@@ -15,24 +15,13 @@ function summary(needsYou: number, error: number): AttentionSummary {
 
 // A real PaneTypeId ("doc"), fixture component, title driven off the same
 // threadName ctx DockHost builds (DockHost.tsx:210) so baseTitle's own ctx
-// wiring is exercised, not stubbed. paneRegistry.ts is a shared module
-// singleton - the restorer (called in the afterAll below) puts back
-// whatever "doc" resolved to before this file ran, so a later file sharing
-// the same registry never inherits this fixture (whose own fallback title
-// literally reads "New session", which corrupted panes/doc/register.test.ts's
-// assertion on the REAL doc pane's title before this fix).
-let restoreDocPane: () => void;
-
+// wiring is exercised, not stubbed.
 beforeAll(() => {
-  restoreDocPane = registerPaneForTests<{ ref?: string }>({
+  registerPaneForTests<{ ref?: string }>({
     id: "doc",
     title: (params, ctx) => ctx.threadName?.(params.ref ?? "") ?? "New session",
     component: lazy(() => new Promise<{ default: ComponentType<PaneProps<{ ref?: string }>> }>(() => {})),
   });
-});
-
-afterAll(() => {
-  restoreDocPane();
 });
 
 beforeEach(() => {

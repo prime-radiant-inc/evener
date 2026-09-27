@@ -544,11 +544,13 @@ func TestRunServeRetrySafeTurnPublishesControllableStableIdentity(t *testing.T) 
 	})
 }
 
-// TestRunServe_StreamErrorPublishesIdleStatus proves the real serve input loop
-// publishes owning Session state after an exhausted streaming failure. The
-// wrapper observes the production true -> false -> SetState boundary while
-// forwarding every state mutation to the real AppWire server projection.
-func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
+// TestRunServe_StreamErrorPublishesSystemErrorStatus proves the real serve
+// input loop publishes owning Session state after an exhausted streaming
+// failure: the session rests on a failed turn, so it reports systemError until
+// its next turn (agent RestingWireState). The wrapper observes the production
+// true -> false -> SetState boundary while forwarding every state mutation to
+// the real AppWire server projection.
+func TestRunServe_StreamErrorPublishesSystemErrorStatus(t *testing.T) {
 	adapter := &closedStreamAdapter{}
 	deps := defaultServeDeps()
 	deps.ensureConfigDirs = func() error { return nil }
@@ -626,13 +628,13 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 		t.Fatalf("post-turn state publication: %v", ctx.Err())
 	}
 
-	if got := observedServer.postTurnState(); got != string(agent.SessionIdle) {
-		t.Fatalf("published post-turn state = %q, want %q", got, agent.SessionIdle)
+	if got := observedServer.postTurnState(); got != appwire.ThreadStatusSystemError {
+		t.Fatalf("published post-turn state = %q, want %q", got, appwire.ThreadStatusSystemError)
 	}
 	// Everything below reads the server's published status, which the loop's
 	// write above does not settle: the bridge projects the same turn's carriers
 	// on its own goroutine, republishing active for the user-input carrier and
-	// idle again only for the session-end one. Wait for that last write rather
+	// systemError again only for the session-end one. Wait for that last write rather
 	// than for the loop's.
 	select {
 	case <-observedServer.turnProjected:
@@ -640,8 +642,8 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 		t.Fatalf("post-turn terminal projection: %v", ctx.Err())
 	}
 
-	if got := observedServer.GetStatus().State; got != string(agent.SessionIdle) {
-		t.Fatalf("stored server state = %q, want %q", got, agent.SessionIdle)
+	if got := observedServer.GetStatus().State; got != appwire.ThreadStatusSystemError {
+		t.Fatalf("stored server state = %q, want %q", got, appwire.ThreadStatusSystemError)
 	}
 	streamCalls, completeCalls := adapter.calls()
 	if streamCalls != 1 || completeCalls != 0 {
@@ -652,10 +654,10 @@ func TestRunServe_StreamErrorPublishesIdleStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	// Queue and Interrupt advertise harness support, so an idle thread on this
-	// wired daemon reads them true (#1375); the client applies the status.
-	if thread.Thread.Status.Type != appwire.ThreadStatusIdle || !thread.Thread.Evener.Capabilities.Send || !thread.Thread.Evener.Capabilities.Queue || !thread.Thread.Evener.Capabilities.Interrupt {
-		t.Fatalf("thread/read = status %q, capabilities %+v; want idle with send/queue/interrupt advertised (queue and interrupt are harness support)", thread.Thread.Status.Type, thread.Thread.Evener.Capabilities)
+	// Queue and Interrupt advertise harness support, so a resting thread on
+	// this wired daemon reads them true (#1375); the client applies the status.
+	if thread.Thread.Status.Type != appwire.ThreadStatusSystemError || !thread.Thread.Evener.Capabilities.Send || !thread.Thread.Evener.Capabilities.Queue || !thread.Thread.Evener.Capabilities.Interrupt {
+		t.Fatalf("thread/read = status %q, capabilities %+v; want systemError with send/queue/interrupt advertised (queue and interrupt are harness support)", thread.Thread.Status.Type, thread.Thread.Evener.Capabilities)
 	}
 
 	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {

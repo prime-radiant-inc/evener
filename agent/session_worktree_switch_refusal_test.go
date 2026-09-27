@@ -16,6 +16,7 @@ import (
 // would strand the lane under a dead session's marker, which prune skips and
 // remove refuses. The session's recorded state stays where it was.
 func TestWorktreeSwitch_RefusedMidSwapRestoresThePreviousLocks(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	resA, err := r.create(t, map[string]any{"name": "a"})
@@ -67,6 +68,7 @@ func TestWorktreeSwitch_RefusedMidSwapRestoresThePreviousLocks(t *testing.T) {
 // target keeps this session's own marker, which prune skips and nothing
 // automatic ever clears.
 func TestWorktreeSwitch_CloseWaitsForTheRefusedSwitchTargetUnlock(t *testing.T) {
+	t.Parallel()
 	sr := newScriptedLaneRepo(t)
 	r := sr.wt()
 	resA, err := r.create(t, map[string]any{"name": "a"})

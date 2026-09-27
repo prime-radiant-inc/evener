@@ -49,8 +49,8 @@ func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, 
 // Ensure validates against and AddHost/RemoveHost mutate — never a fresh copy
 // from the configured entries: a fresh copy alongside a manager would split
 // the surfaces, because the host-management surface commits runtime adds and
-// removals through the manager while boot sidecar entries load into whatever
-// registry it was handed (sidecar entries would land where the manager never
+// removals through the manager while the configured host entries load into
+// whatever registry it was handed (entries would land where the manager never
 // dials, Ensure answering ErrHostNotFound, and a runtime Add would insert
 // where host/list and host/attach never read).
 // A manager with no registry keeps the fresh copy: its AddHost and RemoveHost
@@ -234,9 +234,10 @@ func classifyHostAttachError(sources *appsource.Registry, host string, err error
 //   - deploy failures (ErrDeploy), the dirty-controller deploy refusal
 //     (ErrControllerDirty), the unservable-run-target deploy refusal
 //     (ErrRunTargetUnservable), the post-deploy identity refusal
-//     (ErrDeployUnstamped), the wrong-platform-artifact refusal
-//     (ErrDeployArtifactUnusable), a version mismatch a deploy would have to fix,
-//     and the missing-executable refusal a host with no deploy path produces
+//     (ErrDeployUnstamped), the unusable-artifact refusal
+//     (ErrDeployArtifactUnusable: the artifact targets another platform or is
+//     not evener), a version mismatch a deploy would have to fix, and the
+//     missing-executable refusal a host with no deploy path produces
 //     (ErrExecutableMissing) → HubLaunchError (hubLaunch): the controller could
 //     not install or match its build on the host, so the host cannot be
 //     attached/launched.

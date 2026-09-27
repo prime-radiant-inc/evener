@@ -125,6 +125,7 @@ func TestQueuePersist_EnqueueMixedItems_SurvivesRestart(t *testing.T) {
 }
 
 func TestQueuePersist_TaskCompletionMachinePayloadSurvivesRestartToLLM(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
 	id := sess.ID()

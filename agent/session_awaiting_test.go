@@ -26,6 +26,7 @@ func newTestSessionForState(t *testing.T) *Session {
 }
 
 func TestSettleTerminalState(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name                                                             string
 		hadOutput, goalKicked, notifsPending, queuePending, childrenLive bool
@@ -51,6 +52,7 @@ func TestSettleTerminalState(t *testing.T) {
 }
 
 func TestSettleGoalOnIdle_ReportsKick(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForState(t)
 	// No goal set: settle must report kicked=false.
 	if kicked := sess.settleGoalOnIdle(); kicked {
@@ -165,6 +167,7 @@ func TestProcessInput_NextInputClearsAwaiting(t *testing.T) {
 }
 
 func TestWireState_LiveChildDoesNotMakeIdleParentActive(t *testing.T) {
+	t.Parallel()
 	parent := newTestSessionForState(t)
 	child := newTestSessionForState(t)
 	parent.subagents.mu.Lock()
@@ -180,6 +183,7 @@ func TestWireState_LiveChildDoesNotMakeIdleParentActive(t *testing.T) {
 }
 
 func TestWireState_PendingParentWorkMakesIdleParentActive(t *testing.T) {
+	t.Parallel()
 	withNotification := newTestSessionForState(t)
 	// Idle with no autonomy: wire state == raw state.
 	if got := withNotification.WireState(); got != string(SessionIdle) {

@@ -69,6 +69,7 @@ func TestCreateJobOutputRetriesWithoutOverwritingCollision(t *testing.T) {
 }
 
 func TestCreateJobOutputRetriesDurableRecordCollision(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	first := "job_" + jm.sessionID + "_000000000000"
 	second := "job_" + jm.sessionID + "_000000000001"
@@ -101,6 +102,7 @@ func TestCreateJobOutputRetriesDurableRecordCollision(t *testing.T) {
 }
 
 func TestCreateJobOutputExhaustsExactlyEightCollisions(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jobID := "job_" + jm.sessionID + "_000000000000"
 	generationCalls := 0
@@ -127,6 +129,7 @@ func TestCreateJobOutputExhaustsExactlyEightCollisions(t *testing.T) {
 }
 
 func TestCreateJobOutputRandomSourceFailureReturnsImmediately(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	want := errors.New("random source failed")
 	generationCalls := 0
@@ -149,6 +152,7 @@ func TestCreateJobOutputRandomSourceFailureReturnsImmediately(t *testing.T) {
 }
 
 func TestCreateJobOutputOrdinaryCreationFailureReturnsImmediately(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jobID := "job_" + jm.sessionID + "_000000000000"
 	want := errors.New("output filesystem failed")
@@ -198,6 +202,7 @@ func requireOutputEvidence(t *testing.T, path string) {
 }
 
 func TestPreDurableJobStartFailureRemovesOutputArtifacts(t *testing.T) {
+	t.Parallel()
 	t.Run("shell manager closing", func(t *testing.T) {
 		jm := newTestJM(t)
 		jobID := jobstore.NewJobID(jm.sessionID)
@@ -256,6 +261,7 @@ func TestPreDurableJobStartFailureRemovesOutputArtifacts(t *testing.T) {
 }
 
 func TestShellDurableStartForwardFailureRetainsOutputArtifacts(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	jobID := jobstore.NewJobID(jm.sessionID)
 	jm.newJobID = func(string) (string, error) { return jobID, nil }
@@ -271,6 +277,7 @@ func TestShellDurableStartForwardFailureRetainsOutputArtifacts(t *testing.T) {
 }
 
 func TestCreateJobOutputForIDValidatesOwnerBeforeFilesystemAccess(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 	filesystemAccessed := false
 	jm.createOutput = func(string, int64) (*jobstore.OutputStore, error) {

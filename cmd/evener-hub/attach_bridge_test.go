@@ -150,7 +150,7 @@ func TestAttachBridgeErrorWritesNothingToStdout(t *testing.T) {
 	deps := defaultMainDeps()
 	deps.stdin = strings.NewReader("")
 	deps.stdout = &stdout
-	deps.loadConfig = func(string) (Config, error) {
+	deps.loadConfig = func(string, bool) (Config, error) {
 		return Config{Addr: addr, HubStateRoot: root}, nil
 	}
 
@@ -230,7 +230,7 @@ func TestAttachRefusesNonLoopbackAddr(t *testing.T) {
 	deps := defaultMainDeps()
 	deps.stdin = strings.NewReader("")
 	deps.stdout = &stdout
-	deps.loadConfig = func(string) (Config, error) {
+	deps.loadConfig = func(string, bool) (Config, error) {
 		return Config{Addr: "10.1.2.3:9180", HubStateRoot: root}, nil
 	}
 	cfgPath := filepath.Join(root, "hub.toml")

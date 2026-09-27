@@ -1132,6 +1132,7 @@ func TestLifecycleAdapter_PromotesDeterministicFailure(t *testing.T) {
 // replays, so the K=5 guard fails and the promoter quarantines instead of
 // writing a regression test.
 func TestLifecycleAdapter_QuarantinesFlaky(t *testing.T) {
+	t.Parallel()
 	adapter := &flakyLifecycleAdapter{}
 	store, err := promoter.OpenBucketStore(filepath.Join(t.TempDir(), "buckets.json"))
 	if err != nil {

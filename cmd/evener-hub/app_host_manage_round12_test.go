@@ -194,7 +194,7 @@ func TestHostManageRowAfterRemoveReAddDoesNotRecordStaleFacts(t *testing.T) {
 		},
 	}, "", hosts, nil)
 
-	// The victim enters as a sidecar host (so Remove accepts it), rendered
+	// The victim enters as a live host (Remove accepts every live host), rendered
 	// offline so no facts read runs yet.
 	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "old.example"}}); err != nil {
 		t.Fatalf("Add = %v", err)

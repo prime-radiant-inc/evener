@@ -160,7 +160,7 @@ func TestRecoveredFailedStartCompletesItsOpenExecution(t *testing.T) {
 	sess.Close()
 	// The process died before the completion entry: cut it off the file.
 	path := transcriptPath(dir, id)
-	_, entries, _, err := readTranscript(path)
+	_, entries, _, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatal(err)
 	}

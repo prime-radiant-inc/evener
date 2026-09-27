@@ -15,6 +15,7 @@ import (
 // TestNormalizeAskArgs_BatchFormPassthrough covers the batch form (Case 1,
 // line 109-110) which is already covered; here for completeness.
 func TestNormalizeAskArgs_BatchFormPassthrough(t *testing.T) {
+	t.Parallel()
 	args := askUserArgsValid()
 	out, err := normalizeAskArgs(args)
 	if err != nil {
@@ -28,6 +29,7 @@ func TestNormalizeAskArgs_BatchFormPassthrough(t *testing.T) {
 // TestNormalizeAskArgs_ShorthandWithAllOptional covers the shorthand wrapping
 // path with all optional fields present (lines 116-131).
 func TestNormalizeAskArgs_ShorthandWithAllOptional(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{
 		"question":      "Which option?",
 		"options":       []any{map[string]any{"label": "A", "detail": "x"}},
@@ -68,6 +70,7 @@ func TestNormalizeAskArgs_ShorthandWithAllOptional(t *testing.T) {
 // path where optional fields are empty/zero and should be skipped (lines
 // 120, 123, 126, 129 — the `!= ""` and `== true` guards).
 func TestNormalizeAskArgs_ShorthandEmptyOptional(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{
 		"question":      "Which option?",
 		"options":       []any{map[string]any{"label": "A", "detail": "x"}},
@@ -93,6 +96,7 @@ func TestNormalizeAskArgs_ShorthandEmptyOptional(t *testing.T) {
 // shorthand form with only question + options, no optional fields (lines
 // 116-119, 134-141).
 func TestNormalizeAskArgs_ShorthandOnlyQuestionAndOptions(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{
 		"question": "Which option?",
 		"options":  []any{map[string]any{"label": "A"}},
@@ -114,6 +118,7 @@ func TestNormalizeAskArgs_ShorthandOnlyQuestionAndOptions(t *testing.T) {
 // TestNormalizeAskArgs_BothFormsError covers the error when both questions
 // and question are present (line 147-149).
 func TestNormalizeAskArgs_BothFormsError(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{
 		"questions": []any{map[string]any{}},
 		"question":  "Which?",
@@ -131,6 +136,7 @@ func TestNormalizeAskArgs_BothFormsError(t *testing.T) {
 // TestNormalizeAskArgs_QuestionWithoutOptionsError covers the error when
 // question is present but options is missing (line 153-155).
 func TestNormalizeAskArgs_QuestionWithoutOptionsError(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{
 		"question": "Which?",
 	}
@@ -146,6 +152,7 @@ func TestNormalizeAskArgs_QuestionWithoutOptionsError(t *testing.T) {
 // TestNormalizeAskArgs_NeitherFormError covers the error when neither
 // questions nor question+options is present (line 158-160).
 func TestNormalizeAskArgs_NeitherFormError(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{"unrelated": "field"}
 	_, err := normalizeAskArgs(args)
 	if err == nil {
@@ -158,6 +165,7 @@ func TestNormalizeAskArgs_NeitherFormError(t *testing.T) {
 
 // TestNormalizeAskArgs_EmptyArgs covers the empty-args case.
 func TestNormalizeAskArgs_EmptyArgs(t *testing.T) {
+	t.Parallel()
 	_, err := normalizeAskArgs(map[string]any{})
 	if err == nil {
 		t.Fatal("expected error for empty args")
@@ -168,6 +176,7 @@ func TestNormalizeAskArgs_EmptyArgs(t *testing.T) {
 // questions is absent, question is absent, but options is present (falls
 // through to the "neither form" error at line 158-160).
 func TestNormalizeAskArgs_OptionsOnlyWithoutQuestion(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{
 		"options": []any{map[string]any{"label": "A"}},
 	}
@@ -179,6 +188,7 @@ func TestNormalizeAskArgs_OptionsOnlyWithoutQuestion(t *testing.T) {
 
 // TestParseAskQuestions_EmptyQuestions covers parsing with no questions.
 func TestParseAskQuestions_EmptyQuestions(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{"questions": []any{}}
 	parsed, err := parseAskQuestions(args)
 	if err != nil {
@@ -191,6 +201,7 @@ func TestParseAskQuestions_EmptyQuestions(t *testing.T) {
 
 // TestParseAskQuestions_NilQuestions covers parsing with missing questions key.
 func TestParseAskQuestions_NilQuestions(t *testing.T) {
+	t.Parallel()
 	parsed, err := parseAskQuestions(map[string]any{})
 	if err != nil {
 		t.Fatalf("parseAskQuestions nil: %v", err)
@@ -203,6 +214,7 @@ func TestParseAskQuestions_NilQuestions(t *testing.T) {
 // TestParseAskQuestions_QuestionWithoutHeader covers a question that has no
 // header field (line 202 — the `_, ok` falls to empty string).
 func TestParseAskQuestions_QuestionWithoutHeader(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{
 		"questions": []any{
 			map[string]any{
@@ -223,6 +235,7 @@ func TestParseAskQuestions_QuestionWithoutHeader(t *testing.T) {
 // TestParseAskQuestions_OneRecommended covers the happy path with one
 // recommended option (line 194-195).
 func TestParseAskQuestions_OneRecommended(t *testing.T) {
+	t.Parallel()
 	args := map[string]any{
 		"questions": []any{
 			map[string]any{
@@ -262,6 +275,7 @@ func askToolResultContent(id, name string, isError bool) llm.ContentPart {
 // TestQuestionsFromAskCalls covers the backward scan and call filtering
 // (lines 395-421).
 func TestQuestionsFromAskCalls(t *testing.T) {
+	t.Parallel()
 	// Build a history with an assistant turn carrying two ask_user calls
 	// (one with good args, one with bad JSON), followed by a tool-results
 	// turn.
@@ -299,6 +313,7 @@ func TestQuestionsFromAskCalls(t *testing.T) {
 // TestQuestionsFromAskCalls_NoAssistantTurn covers the case where no
 // preceding assistant turn is found (line 420-421).
 func TestQuestionsFromAskCalls_NoAssistantTurn(t *testing.T) {
+	t.Parallel()
 	toolResultsTurn := schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{
@@ -318,6 +333,7 @@ func TestQuestionsFromAskCalls_NoAssistantTurn(t *testing.T) {
 // TestQuestionsFromAskCalls_NonMatchingName covers the skip for calls whose
 // name is not ask_user (line 401-402).
 func TestQuestionsFromAskCalls_NonMatchingName(t *testing.T) {
+	t.Parallel()
 	assistantTurn := schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{
@@ -344,6 +360,7 @@ func TestQuestionsFromAskCalls_NonMatchingName(t *testing.T) {
 // TestQuestionsFromAskCalls_NormalizeError covers the case where
 // normalizeAskArgs fails on a call's arguments (line 409-411).
 func TestQuestionsFromAskCalls_NormalizeError(t *testing.T) {
+	t.Parallel()
 	// Args with an invalid shape (both questions and question present).
 	badArgs := map[string]any{
 		"questions": []any{map[string]any{}},
@@ -375,6 +392,7 @@ func TestQuestionsFromAskCalls_NormalizeError(t *testing.T) {
 // TestQuestionsFromAskCalls_ParseError covers the case where parseAskQuestions
 // fails on a call's arguments (line 413-415).
 func TestQuestionsFromAskCalls_ParseError(t *testing.T) {
+	t.Parallel()
 	// Valid shape but duplicate labels — parseAskQuestions will reject it.
 	dupArgs := askUserArgsDuplicateLabels()
 	assistantTurn := schema.Turn{
@@ -403,6 +421,7 @@ func TestQuestionsFromAskCalls_ParseError(t *testing.T) {
 // TestQuestionsFromAskCalls_SkipsNonAssistantTurns covers the backward
 // scan past non-TurnAssistant turns (line 396-397).
 func TestQuestionsFromAskCalls_SkipsNonAssistantTurns(t *testing.T) {
+	t.Parallel()
 	goodArgs := askUserArgsValid()
 	assistantTurn := schema.Turn{
 		Kind: schema.TurnAssistant,
@@ -433,6 +452,7 @@ func TestQuestionsFromAskCalls_SkipsNonAssistantTurns(t *testing.T) {
 // 219-220) by registering the ask tool with a deps that returns an error
 // from abort.
 func TestRegisterAskTool_AbortError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -463,6 +483,7 @@ func TestRegisterAskTool_AbortError(t *testing.T) {
 // TestRegisterAskTool_NonInteractive covers the NonInteractive guard (line
 // 222-223).
 func TestRegisterAskTool_NonInteractive(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -485,6 +506,7 @@ func TestRegisterAskTool_NonInteractive(t *testing.T) {
 
 // TestMinimalExampleQuestionsArray covers the example serialization.
 func TestMinimalExampleQuestionsArray(t *testing.T) {
+	t.Parallel()
 	got := minimalExampleQuestionsArray()
 	if !strings.Contains(got, "questions") || !strings.Contains(got, "question") || !strings.Contains(got, "options") {
 		t.Fatalf("minimal example missing expected fields: %s", got)

@@ -21,6 +21,7 @@ func s4covWriteFile(t *testing.T, content string) string {
 }
 
 func TestTranscriptReadersRejectUnsupportedFormat(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		body string
@@ -34,13 +35,13 @@ func TestTranscriptReadersRejectUnsupportedFormat(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			path := s4covWriteFile(t, tc.body)
-			if _, _, _, err := readTranscript(path); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+			if _, _, _, err := readTranscript(path, ""); !errors.Is(err, transcript.ErrUnsupportedFormat) {
 				t.Fatalf("readTranscript error = %v, want ErrUnsupportedFormat", err)
 			}
-			if _, err := readTranscriptFull(path); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+			if _, err := readTranscriptFull(path, ""); !errors.Is(err, transcript.ErrUnsupportedFormat) {
 				t.Fatalf("readTranscriptFull error = %v, want ErrUnsupportedFormat", err)
 			}
-			if _, err := readStrictChildTranscript(path, "01SESS", 0); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+			if _, err := readStrictChildTranscript(path, "", "01SESS", 0); !errors.Is(err, transcript.ErrUnsupportedFormat) {
 				t.Fatalf("readStrictChildTranscript error = %v, want ErrUnsupportedFormat", err)
 			}
 		})
@@ -48,6 +49,7 @@ func TestTranscriptReadersRejectUnsupportedFormat(t *testing.T) {
 }
 
 func TestTranscriptReadersAndRawOutputRejectUnknownFields(t *testing.T) {
+	t.Parallel()
 	header := `{"kind":"header","format_version":2,"session_id":"01SESS"}`
 	tests := []struct {
 		name string
@@ -60,16 +62,16 @@ func TestTranscriptReadersAndRawOutputRejectUnknownFields(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			path := s4covWriteFile(t, tc.body)
-			if _, _, _, err := readTranscript(path); err == nil {
+			if _, _, _, err := readTranscript(path, ""); err == nil {
 				t.Fatal("readTranscript accepted unknown field")
 			}
-			if _, err := readTranscriptFull(path); err == nil {
+			if _, err := readTranscriptFull(path, ""); err == nil {
 				t.Fatal("readTranscriptFull accepted unknown field")
 			}
-			if _, err := readStrictChildTranscript(path, "01SESS", 0); err == nil {
+			if _, err := readStrictChildTranscript(path, "", "01SESS", 0); err == nil {
 				t.Fatal("readStrictChildTranscript accepted unknown field")
 			}
-			if content, _, _, _, err := rawLinesForRange(path, 0, 0); err == nil || content != "" {
+			if content, _, _, _, err := rawLinesForRange(path, "", 0, 0); err == nil || content != "" {
 				t.Fatalf("rawLinesForRange = (%q, %v), want no raw bytes and an error", content, err)
 			}
 		})
@@ -77,9 +79,10 @@ func TestTranscriptReadersAndRawOutputRejectUnknownFields(t *testing.T) {
 }
 
 func TestStrictChildTranscriptUsesPayloadOnlyLineBoundAndDiscardsTail(t *testing.T) {
+	t.Parallel()
 	header := `{"kind":"header","format_version":2,"session_id":"01SESS"}`
 	path := s4covWriteFile(t, header+"\n"+strings.Repeat("x", len(header)+1))
-	data, err := readStrictChildTranscript(path, "01SESS", len(header))
+	data, err := readStrictChildTranscript(path, "", "01SESS", len(header))
 	if err != nil {
 		t.Fatalf("readStrictChildTranscript exact-max header plus unterminated tail: %v", err)
 	}
@@ -88,7 +91,7 @@ func TestStrictChildTranscriptUsesPayloadOnlyLineBoundAndDiscardsTail(t *testing
 	}
 
 	path = s4covWriteFile(t, header+"x\n")
-	if _, err := readStrictChildTranscript(path, "01SESS", len(header)); err == nil {
+	if _, err := readStrictChildTranscript(path, "", "01SESS", len(header)); err == nil {
 		t.Fatal("readStrictChildTranscript accepted max+1 complete header")
 	}
 }
@@ -103,7 +106,7 @@ func TestS4covReadTranscript_HappyPath(t *testing.T) {
 {"kind":"entry","seq":3,"turn":{}}
 `
 	path := s4covWriteFile(t, content)
-	header, entries, skipped, err := readTranscript(path)
+	header, entries, skipped, err := readTranscript(path, "")
 	if err != nil {
 		t.Fatalf("readTranscript: %v", err)
 	}
@@ -126,7 +129,7 @@ func TestS4covReadTranscript_CorruptInteriorLineRejected(t *testing.T) {
 {"kind":"entry","seq":2,"turn":{}}
 `
 	path := s4covWriteFile(t, content)
-	_, entries, skipped, err := readTranscript(path)
+	_, entries, skipped, err := readTranscript(path, "")
 	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
 		t.Fatalf("readTranscript = entries %d skipped %d err %v, want corruption error", len(entries), skipped, err)
 	}
@@ -135,7 +138,7 @@ func TestS4covReadTranscript_CorruptInteriorLineRejected(t *testing.T) {
 func TestS4covReadTranscript_EmptyFile(t *testing.T) {
 	t.Parallel()
 	path := s4covWriteFile(t, "")
-	_, _, _, err := readTranscript(path)
+	_, _, _, err := readTranscript(path, "")
 	if err == nil || !strings.Contains(err.Error(), "transcript file is empty: no header") {
 		t.Fatalf("err = %v, want 'transcript file is empty: no header'", err)
 	}
@@ -144,7 +147,7 @@ func TestS4covReadTranscript_EmptyFile(t *testing.T) {
 func TestS4covReadTranscript_BadHeader(t *testing.T) {
 	t.Parallel()
 	path := s4covWriteFile(t, "{not valid json}\n")
-	_, _, _, err := readTranscript(path)
+	_, _, _, err := readTranscript(path, "")
 	if err == nil || !strings.Contains(err.Error(), "parsing transcript header") {
 		t.Fatalf("err = %v, want 'parsing transcript header'", err)
 	}
@@ -152,7 +155,7 @@ func TestS4covReadTranscript_BadHeader(t *testing.T) {
 
 func TestS4covReadTranscript_OpenFail(t *testing.T) {
 	t.Parallel()
-	_, _, _, err := readTranscript(filepath.Join(t.TempDir(), "does-not-exist.jsonl"))
+	_, _, _, err := readTranscript(filepath.Join(t.TempDir(), "", "does-not-exist.jsonl"), "")
 	if err == nil || !strings.Contains(err.Error(), "open transcript") {
 		t.Fatalf("err = %v, want 'open transcript'", err)
 	}
@@ -163,7 +166,7 @@ func TestS4covReadTranscript_OpenFail(t *testing.T) {
 func TestS4covReadTranscriptFull_EmptyFile(t *testing.T) {
 	t.Parallel()
 	path := s4covWriteFile(t, "")
-	_, err := readTranscriptFull(path)
+	_, err := readTranscriptFull(path, "")
 	if err == nil || !strings.Contains(err.Error(), "transcript file is empty: no header") {
 		t.Fatalf("err = %v, want 'transcript file is empty: no header'", err)
 	}
@@ -172,7 +175,7 @@ func TestS4covReadTranscriptFull_EmptyFile(t *testing.T) {
 func TestS4covReadTranscriptFull_BadHeader(t *testing.T) {
 	t.Parallel()
 	path := s4covWriteFile(t, "{bad header}\n")
-	_, err := readTranscriptFull(path)
+	_, err := readTranscriptFull(path, "")
 	if err == nil || !strings.Contains(err.Error(), "parsing transcript header") {
 		t.Fatalf("err = %v, want 'parsing transcript header'", err)
 	}
@@ -180,7 +183,7 @@ func TestS4covReadTranscriptFull_BadHeader(t *testing.T) {
 
 func TestS4covReadTranscriptFull_OpenFail(t *testing.T) {
 	t.Parallel()
-	_, err := readTranscriptFull(filepath.Join(t.TempDir(), "nope.jsonl"))
+	_, err := readTranscriptFull(filepath.Join(t.TempDir(), "", "nope.jsonl"), "")
 	if err == nil || !strings.Contains(err.Error(), "open transcript") {
 		t.Fatalf("err = %v, want 'open transcript'", err)
 	}
@@ -194,7 +197,7 @@ func TestS4covStrictChildTranscript_HappyPath(t *testing.T) {
 {"kind":"entry","seq":1,"turn":{}}
 `
 	path := s4covWriteFile(t, content)
-	data, err := readStrictChildTranscript(path, "01SESS", 0)
+	data, err := readStrictChildTranscript(path, "", "01SESS", 0)
 	if err != nil {
 		t.Fatalf("readStrictChildTranscript: %v", err)
 	}
@@ -212,7 +215,7 @@ func TestS4covStrictChildTranscript_ValidateDoesNotRetain(t *testing.T) {
 {"kind":"entry","seq":1,"turn":{}}
 `
 	path := s4covWriteFile(t, content)
-	header, err := validateStrictChildTranscript(path, "01SESS", 0)
+	header, err := validateStrictChildTranscript(path, "", "01SESS", 0)
 	if err != nil {
 		t.Fatalf("validateStrictChildTranscript: %v", err)
 	}
@@ -224,7 +227,7 @@ func TestS4covStrictChildTranscript_ValidateDoesNotRetain(t *testing.T) {
 func TestS4covStrictChildTranscript_EmptyFile(t *testing.T) {
 	t.Parallel()
 	path := s4covWriteFile(t, "")
-	_, err := readStrictChildTranscript(path, "01SESS", 0)
+	_, err := readStrictChildTranscript(path, "", "01SESS", 0)
 	if !errors.Is(err, errStrictChildTranscriptCorrupt) {
 		t.Fatalf("err = %v, want errStrictChildTranscriptCorrupt", err)
 	}
@@ -238,7 +241,7 @@ func TestS4covStrictChildTranscript_HeaderKindWrong(t *testing.T) {
 	content := `{"kind":"entry","session_id":"01SESS"}
 `
 	path := s4covWriteFile(t, content)
-	_, err := readStrictChildTranscript(path, "01SESS", 0)
+	_, err := readStrictChildTranscript(path, "", "01SESS", 0)
 	if !errors.Is(err, transcript.ErrUnsupportedFormat) {
 		t.Fatalf("err = %v, want transcript.ErrUnsupportedFormat", err)
 	}
@@ -247,7 +250,7 @@ func TestS4covStrictChildTranscript_HeaderKindWrong(t *testing.T) {
 func TestS4covStrictChildTranscript_BadHeaderJSON(t *testing.T) {
 	t.Parallel()
 	path := s4covWriteFile(t, "{bad header json\n")
-	_, err := readStrictChildTranscript(path, "01SESS", 0)
+	_, err := readStrictChildTranscript(path, "", "01SESS", 0)
 	if !errors.Is(err, errStrictChildTranscriptCorrupt) {
 		t.Fatalf("err = %v, want errStrictChildTranscriptCorrupt", err)
 	}
@@ -261,7 +264,7 @@ func TestS4covStrictChildTranscript_SessionMismatch(t *testing.T) {
 	content := `{"kind":"header","format_version":2,"session_id":"01SESS"}
 `
 	path := s4covWriteFile(t, content)
-	_, err := readStrictChildTranscript(path, "01OTHER", 0)
+	_, err := readStrictChildTranscript(path, "", "01OTHER", 0)
 	if !errors.Is(err, errStrictChildTranscriptSessionMismatch) {
 		t.Fatalf("err = %v, want errStrictChildTranscriptSessionMismatch", err)
 	}
@@ -276,7 +279,7 @@ func TestS4covStrictChildTranscript_CorruptNonFinalLine(t *testing.T) {
 {"kind":"entry","seq":1,"turn":{}}
 `
 	path := s4covWriteFile(t, content)
-	_, err := readStrictChildTranscript(path, "01SESS", 0)
+	_, err := readStrictChildTranscript(path, "", "01SESS", 0)
 	if !errors.Is(err, errStrictChildTranscriptCorrupt) {
 		t.Fatalf("err = %v, want errStrictChildTranscriptCorrupt", err)
 	}
@@ -291,7 +294,7 @@ func TestS4covStrictChildTranscript_UnknownKind(t *testing.T) {
 {"kind":"mystery","seq":1}
 `
 	path := s4covWriteFile(t, content)
-	_, err := readStrictChildTranscript(path, "01SESS", 0)
+	_, err := readStrictChildTranscript(path, "", "01SESS", 0)
 	if !errors.Is(err, transcript.ErrUnsupportedFormat) {
 		t.Fatalf("err = %v, want transcript.ErrUnsupportedFormat", err)
 	}
@@ -303,7 +306,7 @@ func TestS4covStrictChildTranscript_LineExceedsMaxBytes(t *testing.T) {
 `
 	path := s4covWriteFile(t, content)
 	// A tiny maxLineBytes makes even the header line exceed the cap.
-	_, err := readStrictChildTranscript(path, "01SESS", 4)
+	_, err := readStrictChildTranscript(path, "", "01SESS", 4)
 	if !errors.Is(err, errStrictChildTranscriptCorrupt) {
 		t.Fatalf("err = %v, want errStrictChildTranscriptCorrupt", err)
 	}
@@ -320,7 +323,7 @@ func TestS4covStrictChildTranscript_FinalIncompleteTolerated(t *testing.T) {
 {"kind":"entry","seq":1,"turn":{}}
 {"kind":"entry","seq":2,"tur`
 	path := s4covWriteFile(t, content)
-	data, err := readStrictChildTranscript(path, "01SESS", 0)
+	data, err := readStrictChildTranscript(path, "", "01SESS", 0)
 	if err != nil {
 		t.Fatalf("readStrictChildTranscript: %v", err)
 	}
@@ -337,7 +340,7 @@ func TestS4covStrictChildTranscript_FinalIncompleteTolerated(t *testing.T) {
 
 func TestS4covStrictChildTranscript_OpenFail(t *testing.T) {
 	t.Parallel()
-	_, err := readStrictChildTranscript(filepath.Join(t.TempDir(), "missing.jsonl"), "01SESS", 0)
+	_, err := readStrictChildTranscript(filepath.Join(t.TempDir(), "missing.jsonl"), "", "01SESS", 0)
 	if err == nil || !strings.Contains(err.Error(), "open transcript") {
 		t.Fatalf("err = %v, want 'open transcript'", err)
 	}

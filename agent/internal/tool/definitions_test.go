@@ -3,10 +3,14 @@ package tool
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/llm"
 )
 
@@ -28,6 +32,12 @@ func required(t *testing.T, def llm.ToolDefinition, name string, want []string) 
 			t.Fatalf("%s missing required property %q", name, param)
 		}
 	}
+}
+
+// descriptionMentions asserts desc carries n at a word boundary, so a longer
+// number containing the same digits (1000 vs 100) cannot satisfy the pin.
+func descriptionMentions(desc string, n int) bool {
+	return regexp.MustCompile(`\b` + strconv.Itoa(n) + `\b`).MatchString(desc)
 }
 
 func containsString(values []string, want string) bool {
@@ -936,6 +946,93 @@ func TestDefGrepContextLinesParam(t *testing.T) {
 	}
 	if !strings.Contains(desc, "context") {
 		t.Errorf("context_lines description should mention context lines, got: %q", desc)
+	}
+}
+
+func TestDefGrepMaxResultsParam(t *testing.T) {
+	def := DefGrep()
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("grep properties = %T, want map[string]any", def.Parameters["properties"])
+	}
+	mr, ok := props["max_results"].(map[string]any)
+	if !ok {
+		t.Fatalf("grep missing max_results property; got properties: %v", props)
+	}
+	if mr["type"] != "integer" {
+		t.Errorf("max_results type = %v, want integer", mr["type"])
+	}
+	desc, _ := mr["description"].(string)
+	// Pin the cap's contract the way TestDefGrepContextLinesParam pins its
+	// range and default: what the field limits, and the default the
+	// implementation falls back to. Deriving the pin from
+	// execenv.DefaultGrepMaxResults — the constant every implementation site
+	// shares — keeps the advertised prose from drifting off the enforced
+	// default.
+	if !strings.Contains(desc, "Maximum number") {
+		t.Errorf("max_results description should state the results cap, got: %q", desc)
+	}
+	if !descriptionMentions(desc, execenv.DefaultGrepMaxResults) {
+		t.Errorf("max_results description should document the default of %d, got: %q", execenv.DefaultGrepMaxResults, desc)
+	}
+}
+
+// TestDefModelListBoundsMatchContract pins model_list's advertised page
+// bounds to the named constants the enforcing handler reads
+// (modelavailability.DefaultInlineMaxCount/DefaultInlineMaxBytes), so the
+// schema, its prose, and the enforced bounds cannot drift apart silently.
+func TestDefModelListBoundsMatchContract(t *testing.T) {
+	def := DefModelList()
+	props, ok := def.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("model_list properties = %T, want map[string]any", def.Parameters["properties"])
+	}
+	for _, tc := range []struct {
+		param string
+		deflt int
+	}{
+		{"max_count", modelavailability.DefaultInlineMaxCount},
+		{"max_bytes", modelavailability.DefaultInlineMaxBytes},
+	} {
+		prop, ok := props[tc.param].(map[string]any)
+		if !ok {
+			t.Fatalf("model_list missing %s property; got properties: %v", tc.param, props)
+		}
+		if bound, ok := prop["maximum"].(int); !ok || bound != tc.deflt {
+			t.Errorf("model_list %s maximum = %v (%T), want the enforced bound %d", tc.param, prop["maximum"], prop["maximum"], tc.deflt)
+		}
+		desc, _ := prop["description"].(string)
+		if !descriptionMentions(desc, tc.deflt) {
+			t.Errorf("model_list %s description should document the default of %d, got: %q", tc.param, tc.deflt, desc)
+		}
+	}
+}
+
+// TestAllBuiltinParametersCarryDescriptions is the description audit as a
+// permanent gate: every property the model sees, nested object and array-item
+// properties included, must document itself. A bare parameter name banks on
+// the model's training prior naming it the way we do, and the harvested
+// FuzzToolArgsValidate corpus records where that fails (a real grep call
+// shaped like Claude Code's schema: -i, head_limit). The walk reads the raw
+// Def* schemas: the one property WithIntentParameter adds, intent, is
+// injected from the constant toolIntentDescription and pinned by the
+// read_file intent test, so it cannot lack a description.
+func TestAllBuiltinParametersCarryDescriptions(t *testing.T) {
+	defs := []llm.ToolDefinition{
+		DefReadFile(), DefWriteFile(), DefListDir(), DefEditFile(), DefShell(),
+		DefDelegate(nil), DefDelegateWithSandbox(nil, DelegateSandboxSchema{}),
+		DefDelegateSend(), DefModelList(), DefJobWatch(nil),
+		DefJobStatus(), DefJobList(), DefJobStop(), DefGrep(), DefGlob(),
+		DefApplyPatch(), DefWebFetch(), DefWebSearch(), DefCommunicate(),
+		DefTaskList(nil), DefUseSkill(), DefFindSessionTranscripts(),
+		DefDoctorEvener(), DefManageWorktree(), DefManageWorktreeDisposeOnly(),
+		DefReadTranscript(), DefAskUser(), DefUpdateGoal(), DefNotesAgentSet(),
+		DefUrlsAdd(), DefUrlsRemove(), DefNotesRead(),
+	}
+	for _, def := range defs {
+		if missing := UndocumentedProperties(def); len(missing) > 0 {
+			t.Errorf("%s parameters carry no description: %s", def.Name, strings.Join(missing, ", "))
+		}
 	}
 }
 

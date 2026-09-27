@@ -207,7 +207,7 @@ func fuzzInitWorktreePureEdges(t *testing.T) {
 	s := &Session{env: &worktreeFaultExecEnv{}, cfg: SessionConfig{}}
 	s.resumeWorktreeReentry(schema.SessionMeta{WorktreePath: "/tmp/not-local"})
 	s.disposeDelegateLanesAtClose(context.Background())
-	s.unlockOwnManagedWorktreeAtClose()
+	s.unlockOwnManagedWorktreeAtClose(context.Background())
 }
 
 func hooksRunResultZero() hooks.RunResult { return hooks.RunResult{} }

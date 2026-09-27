@@ -315,7 +315,7 @@ func assertEnvironmentTrackerMatchesModelHistory(t *testing.T, sess *Session) {
 // the session goes on to write must not land on top of it.
 func assertDurableSequenceStrictlyIncreases(t *testing.T, sess *Session) {
 	t.Helper()
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +330,7 @@ func assertDurableSequenceStrictlyIncreases(t *testing.T, sess *Session) {
 // reader of the session's transcript would see, in file order.
 func durableEnvironmentTurnIDs(t *testing.T, sess *Session) []string {
 	t.Helper()
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,6 +344,7 @@ func durableEnvironmentTurnIDs(t *testing.T, sess *Session) []string {
 }
 
 func TestRestoreDeferredHookWaitsForEnvironmentDurability(t *testing.T) {
+	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("ok") },
 	}}
@@ -373,7 +374,7 @@ func TestRestoreDeferredHookWaitsForEnvironmentDurability(t *testing.T) {
 	if len(adapter.Requests()) != 1 {
 		t.Fatalf("provider requests = %d, want one accepted retry", len(adapter.Requests()))
 	}
-	retained, err := readTranscriptFull(sess.TranscriptPath())
+	retained, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,6 +388,7 @@ func TestRestoreDeferredHookWaitsForEnvironmentDurability(t *testing.T) {
 }
 
 func TestQueuedEnvironmentFailureReportsRollbackFailure(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	mutationID := "rollback-error"
@@ -432,6 +434,7 @@ func TestQueuedEnvironmentFailureReportsRollbackFailure(t *testing.T) {
 }
 
 func TestQueuedEnvironmentFailureReturnsRunnableClaimAndWakesRetry(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	var wakes atomic.Int32
 	sess.SetPendingUserInputWakeFunc(func() { wakes.Add(1) })
@@ -485,6 +488,7 @@ func TestQueuedEnvironmentFailureReturnsRunnableClaimAndWakesRetry(t *testing.T)
 // and every reader projecting it show duplicate context; the barrier confirming
 // the entry is what keeps it to one.
 func TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
@@ -521,6 +525,7 @@ func TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry(t *testing.T) {
 // that treated this absent entry as retained would keep the environment silent
 // forever and fail here.
 func TestEnvironmentRolledBackWriteReemitsEntry(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
 	seekFailure := errors.New("environment transcript rollback seek failure")
@@ -560,6 +565,7 @@ func TestEnvironmentRolledBackWriteReemitsEntry(t *testing.T) {
 // The next durable write settles the record's durability; the sync failure is
 // surfaced as a warning.
 func TestEnvironmentUnestablishedDurabilityAdoptsTheRetainedRecord(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
@@ -605,6 +611,7 @@ func TestEnvironmentUnestablishedDurabilityAdoptsTheRetainedRecord(t *testing.T)
 // live ENVIRONMENT event — or the model and every watching client omit a block
 // that cold restore reads straight out of the transcript.
 func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
@@ -652,6 +659,7 @@ func TestEnvironmentAmbiguousWriteCommitsConfirmedEntry(t *testing.T) {
 // error its caller aborts on and the warning a client sees — never a turn that
 // quietly proceeds without the environment it owes the model.
 func TestEnvironmentPoisonedWriterFailsEveryTurnLoudly(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	writeFailure := errors.New("environment transcript write failure")
 	rollbackFailure := errors.New("environment transcript rollback failure")
@@ -753,6 +761,7 @@ func assertRefusalEndedTheInput(t *testing.T, sess *Session, drained []events.Se
 // session stops accepting input until it is restarted against the records the
 // file still holds, which is the failure that can be seen.
 func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	// Two scripted responses: the turn that emits the environment, and the one
 	// the refused input must never make.
@@ -802,6 +811,7 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 // continues. A drained queue message is claimed durably first ("append claimed
 // user input"), so that path already refuses ahead of the model on its own.
 func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	// Three: the turn that emits the environment, the turn whose own record
 	// poisons the writer, and the follow-up that must never run.
@@ -843,6 +853,7 @@ func TestPoisonedWriterRefusesTheTurnBehindAPoisoningTurn(t *testing.T) {
 // and not in the session. A turn the gate will refuse must not consume one:
 // the message stays queued for the restart that recovers the transcript.
 func TestPoisonedWriterLeavesAQueuedMessageQueued(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	steps := countingFinalResponses(&requests, 3)
 	sess := newTestSessionForEnvctx(t, withSteps(steps...))
@@ -887,6 +898,7 @@ func TestPoisonedWriterLeavesAQueuedMessageQueued(t *testing.T) {
 // return, and the session carries a turn nobody is using toward its max-turn
 // limit for the rest of its life.
 func TestReturnedDirectTurnClaimReleasesItsOwnUnit(t *testing.T) {
+	t.Parallel()
 	orders := []struct {
 		name    string
 		release []int
@@ -932,6 +944,7 @@ func TestReturnedDirectTurnClaimReleasesItsOwnUnit(t *testing.T) {
 // a direct input claims a turn, its durable environment append fails, and the
 // claim goes back. One failed input, one claim, one return.
 func TestFailedDirectInputReturnsItsTurnClaim(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	start := sess.clientMutations.snapshot().AcceptedTurns
 	failure := errors.New("environment transcript durability failure")
@@ -965,6 +978,7 @@ func poisonSessionTranscript(t *testing.T, sess *Session) {
 // start claimed and the budget gone, with nothing to run it and nothing to give
 // it back until a restart recovers the session.
 func TestPoisonedWriterDoesNotClaimAStartMutation(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
 		ClientMutationID: "start-behind-a-dead-transcript",
@@ -991,6 +1005,7 @@ func TestPoisonedWriterDoesNotClaimAStartMutation(t *testing.T) {
 // ProcessPendingUserInput takes the queue head durably before the gate can
 // refuse, so a refusal leaves the message in no queue and no transcript.
 func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	if _, err := sess.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "queued-behind-a-dead-transcript",
@@ -1021,6 +1036,7 @@ func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
 // order is transcript order. A publication that can take the door is a
 // publication that happens outside it.
 func TestEnvironmentEventPublishesInsideTheTranscriptOrderingBoundary(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	publications := 0
 	updateSessionTestConfig(sess, func(cfg *testConfig) {
@@ -1050,6 +1066,7 @@ func TestEnvironmentEventPublishesInsideTheTranscriptOrderingBoundary(t *testing
 // transcript is not its business — answering it with an error turns every poll
 // into a logged failure while the session waits for its restart.
 func TestPoisonedWriterStandsDownOnAnIdleWake(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	poisonSessionTranscript(t, sess)
 	if got := sess.QueueDepth(); got != 0 {
@@ -1067,6 +1084,7 @@ func TestPoisonedWriterStandsDownOnAnIdleWake(t *testing.T) {
 // way it refuses a queued message — and leave the steering where it is, for the
 // turn that runs after the restart.
 func TestPoisonedWriterRefusesAWakeCarryingSteering(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	poisonSessionTranscript(t, sess)
 	sess.SteerFromUser("waits for the restart")
@@ -1098,6 +1116,7 @@ func TestPoisonedWriterRefusesAWakeCarryingSteering(t *testing.T) {
 // the session was never going to claim, which is the idle case in a different
 // coat.
 func TestPoisonedWriterStandsDownOnParkedQueuedWork(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 
@@ -1128,6 +1147,7 @@ func TestPoisonedWriterStandsDownOnParkedQueuedWork(t *testing.T) {
 // rail. A parked steer stays pending — it never moves — so the raw count says
 // work while the claim gate says none.
 func TestPoisonedWriterStandsDownOnParkedSteering(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)
@@ -1189,6 +1209,7 @@ func interruptDrainTurnContext(t *testing.T) (context.Context, context.CancelFun
 // restarting. The claim has to be refused ahead of the pop, the same way the
 // completed-turn drain below it refuses.
 func TestPoisonedWriterLeavesTheInterruptDrainedMessageQueued(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	steps := countingFinalResponses(&requests, 3)
 	sess := newTestSessionForEnvctx(t, withSteps(steps...))
@@ -1270,6 +1291,7 @@ func TestRejectedInputDoesNotPersistItsProvisionalTurn(t *testing.T) {
 // closed on this writer before admitting a turn; the fold has to fail closed
 // before publishing, for the same reason and at the same door.
 func TestPoisonedWriterRefusesToPublishAFold(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newScriptedSummaryCompactSession(t, "poisoned-fold-cheap", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
@@ -1325,6 +1347,7 @@ func TestPoisonedWriterRefusesToPublishAFold(t *testing.T) {
 // lock held -- so the append runs there the way a racing turn's would, without
 // a second goroutine or a sleep to make the interleaving happen.
 func TestClosingSessionRefusesEnvironmentPublication(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	var appendErr error
 	var appended bool
@@ -1377,6 +1400,7 @@ func TestClosingSessionRefusesEnvironmentPublication(t *testing.T) {
 // writer never will be, so the operator retyping /compact against a dead
 // transcript has to be told what actually stopped it.
 func TestPoisonedCompactionReportsDurabilityNotARace(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	sess := newScriptedSummaryCompactSession(t, "poisoned-compaction-message", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
@@ -1405,6 +1429,7 @@ func TestPoisonedCompactionReportsDurabilityNotARace(t *testing.T) {
 // has to be refused where the poisoning happened: before the input is announced
 // and before the model is asked.
 func TestTurnWhoseOwnInputPoisonedTheTranscriptNeverRuns(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	steps := countingFinalResponses(&requests, 3)
 	sess := newTestSessionForEnvctx(t, withSteps(steps...))
@@ -1454,6 +1479,7 @@ func TestTurnWhoseOwnInputPoisonedTheTranscriptNeverRuns(t *testing.T) {
 // hold before each subsequent round of the same input, not only before the
 // first.
 func TestPoisonedToolResultStopsTheInputBeforeTheNextRound(t *testing.T) {
+	t.Parallel()
 	var requests atomic.Int32
 	steps := make([]func(llm.Request) llm.Response, 3)
 	steps[0] = func(llm.Request) llm.Response { requests.Add(1); return finalResponse("ok") }
@@ -1494,6 +1520,7 @@ func TestPoisonedToolResultStopsTheInputBeforeTheNextRound(t *testing.T) {
 // the buffered path owns draining it after the write, outside the lock — rather
 // than sitting on the writer's queue unsurfaced.
 func TestBufferedRetainedWriteDiagnosticReachesTheSink(t *testing.T) {
+	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
 	fs := attachEnvironmentFailureFS(t, sess)
 	syncFailure := errors.New("buffered sync failure diagnostic")
@@ -1533,6 +1560,7 @@ func TestBufferedRetainedWriteDiagnosticReachesTheSink(t *testing.T) {
 // before attach would lose. writeTranscriptSyncedLocked returns an error there
 // instead (M3).
 func TestSyncedWriteRefusesAHeldPreAttachTurn(t *testing.T) {
+	t.Parallel()
 	s := &Session{id: "sess-not-ready", stateDir: t.TempDir()}
 	// transcriptReady is false: attachTranscript has not run.
 	if err := s.writeTranscriptSyncedLocked(schema.NewTurn(schema.TurnUserInput, llm.User("held"))); err == nil {

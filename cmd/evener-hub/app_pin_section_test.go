@@ -31,7 +31,7 @@ func newPinNavigationAppWireWeb(t *testing.T, withSection bool) (*WebServer, *hu
 	if !withSection {
 		return web, nil
 	}
-	section, _, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1_700_000_000, 0).UTC())
+	section, _, err := store.CreateOrReuseAndAssign("Research", "", "session-a", time.Unix(1_700_000_000, 0).UTC())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,15 +196,15 @@ func TestHubPinSectionRenameAndDeletePreserveCanonicalReceipts(t *testing.T) {
 
 func TestHubPinCatalogRetainsDormantAssignmentsAndEmptySections(t *testing.T) {
 	store := hubcore.NewPinSectionStore(filepath.Join(t.TempDir(), "pins.db"))
-	dormant, _, err := store.CreateOrReuseAndAssign("Dormant", "02wMz5Txv1C3Hut0M8GCeB", time.Now())
+	dormant, _, err := store.CreateOrReuseAndAssign("Dormant", "", "02wMz5Txv1C3Hut0M8GCeB", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	empty, _, err := store.CreateOrReuseAndAssign("Empty", "temporary-session", time.Now())
+	empty, _, err := store.CreateOrReuseAndAssign("Empty", "", "temporary-session", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Unpin("temporary-session"); err != nil {
+	if _, err := store.Unpin("", "temporary-session"); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), PinSections: store})
@@ -241,7 +241,7 @@ func TestHubPinCatalogRetainsDormantAssignmentsAndEmptySections(t *testing.T) {
 
 func TestHubPinningErrorsPreserveTypedFailureKinds(t *testing.T) {
 	web, section := newPinNavigationAppWireWeb(t, true)
-	second, _, err := web.cfg.PinSections.CreateOrReuseAndAssign("Writing", "session-b", time.Now())
+	second, _, err := web.cfg.PinSections.CreateOrReuseAndAssign("Writing", "", "session-b", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

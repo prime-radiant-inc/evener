@@ -35,6 +35,7 @@ import (
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/internal/selfupdate"
@@ -590,6 +591,10 @@ func (*metadataErrorRemoteImageRPCSource) EnrichThreadFileBackedImages() bool { 
 // not have (404, or another session's bytes on an id collision). Metadata only
 // supplies the session id and CWD the local stamp/file-backed pass needs, so a
 // failed metadata read must not skip the neutralization that does not need them.
+// A source that translates its own payload (RemoteHubSource) has already
+// rewritten its stamped routes onto the host-qualified controller form by the
+// time this pass runs; the pass still strips a bare-session route no translator
+// left behind.
 func TestListItemTurnsNeutralizesRemoteImageRoutesWithoutMetadata(t *testing.T) {
 	const external = "https://images.example.test/plot.png"
 	route := "/s/remote-session/images/" + strings.Repeat("a", 64)
@@ -1609,7 +1614,10 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := apptranscript.NewToolCallRegistry()
+	// Finding 1a (round 6): ALL communicates are deferred to the paired tool
+	// result, so the assistant turn alone renders no items — the message
+	// is recovered from CommRawArgs at the result turn.
 	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -1622,19 +1630,20 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 		}}},
 	}, toolNames)
 
-	if len(items) != 1 || items[0].Type != "agentMessage" || items[0].Text != "done" {
-		t.Fatalf("communicate items=%+v", items)
+	if len(items) != 0 {
+		t.Fatalf("assistant turn should defer communicate to result, got items=%+v", items)
 	}
 
+	// The result turn recovers the agentMessage from the seeded CommRawArgs.
 	results := appItemsFromReplayTurn("turn_2", 2, schema.Turn{
 		Kind: "TOOL_RESULTS",
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind:       "tool_result",
-			ToolResult: &llm.ToolResultData{ToolCallID: "call_1", Content: `{"accepted":true}`},
+			ToolResult: &llm.ToolResultData{ToolCallID: "call_1", Name: "communicate", Content: `{"accepted":true}`},
 		}}},
 	}, toolNames)
-	if len(results) != 0 {
-		t.Fatalf("communicate tool results should be hidden, got %+v", results)
+	if len(results) != 1 || results[0].Type != "agentMessage" || results[0].Text != "done" {
+		t.Fatalf("communicate result should render agentMessage, got %+v", results)
 	}
 }
 
@@ -1650,7 +1659,7 @@ func TestAppItemsFromReplayTurnCarriesToolStateRaw(t *testing.T) {
 				ToolState:  []byte(`{"job_id":"job_1","status":"running"}`),
 			},
 		}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 || items[0].ToolName != "delegate_send" || items[0].Output != "started delegate turn" {
 		t.Fatalf("tool result items=%+v", items)
@@ -1669,7 +1678,7 @@ func TestAppItemsFromReplayTurnProjectsThinking(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 2 {
 		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
@@ -1691,7 +1700,7 @@ func TestAppItemsFromReplayTurnProjectsRedactedThinking(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 2 {
 		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
@@ -1709,7 +1718,7 @@ func TestAppItemsFromReplayTurnProjectsWebSearch(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 	if len(items) != 1 || items[0].Type != "commandExecution" || items[0].ToolName != "web_search" {
 		t.Fatalf("web_search items=%+v", items)
 	}
@@ -1736,7 +1745,7 @@ func TestAppItemsFromReplayTurnKeepsNonImagePartsOutOfImages(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, apptranscript.NewToolCallRegistry())
 	if len(items) != 1 || items[0].Type != "userMessage" {
 		t.Fatalf("expected userMessage, got %+v", items)
 	}
@@ -1760,7 +1769,7 @@ func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 				Arguments: []byte(`{"file_path":"/tmp/example.txt"}`),
 			},
 		}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 0 {
 		t.Fatalf("legacy commandExecution transcript part should be ignored, got %+v", items)
@@ -1768,7 +1777,7 @@ func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
-	toolNames := map[string]string{}
+	toolNames := apptranscript.NewToolCallRegistry()
 	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
 		Message: llm.Message{Content: []llm.ContentPart{{
@@ -1802,7 +1811,7 @@ func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 				MediaType: "image/png",
 			},
 		}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1830,7 +1839,7 @@ func TestAppItemsFromReplayTurnSteeringCarriesUserSource(t *testing.T) {
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_3", 3, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_3", 3, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1850,7 +1859,7 @@ func TestAppItemsFromReplayTurnSteeringWithoutSourceStaysAnonymous(t *testing.T)
 	if err := json.Unmarshal(raw, &entry); err != nil {
 		t.Fatalf("unmarshal replay entry: %v", err)
 	}
-	items := appItemsFromReplayTurn("turn_4", 4, entry.Turn, map[string]string{})
+	items := appItemsFromReplayTurn("turn_4", 4, entry.Turn, apptranscript.NewToolCallRegistry())
 
 	if len(items) != 1 {
 		t.Fatalf("items=%+v, want one steering item", items)
@@ -1864,7 +1873,7 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 	checkpoint := appItemsFromReplayTurn("turn_4", 4, schema.Turn{
 		Kind:    "CHECKPOINT",
 		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT CHECKPOINT]\nfirst compacted state"}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 	if len(checkpoint) != 1 {
 		t.Fatalf("checkpoint items=%+v", checkpoint)
 	}
@@ -1875,7 +1884,7 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 	summary := appItemsFromReplayTurn("turn_5", 5, schema.Turn{
 		Kind:    "SUMMARY",
 		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT SUMMARY]\nsecond compacted state"}}},
-	}, map[string]string{})
+	}, apptranscript.NewToolCallRegistry())
 	if len(summary) != 1 {
 		t.Fatalf("summary items=%+v", summary)
 	}
@@ -10481,7 +10490,9 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	// Source, not Harness, names the host source: a harness naming a registered
+	// source is now refused (TestHubThreadStartRefusesHarnessNamingHostSource).
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Source: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
@@ -10532,7 +10543,9 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	// Source, not Harness, names the host source: a harness naming a registered
+	// source is now refused (TestHubThreadStartRefusesHarnessNamingHostSource).
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Source: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
@@ -12652,6 +12665,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 	expected := []string{
 		appwire.MethodThreadList,
 		appwire.MethodThreadRead,
+		appwire.MethodEvenerSessionImage,
 		appwire.MethodThreadUnsubscribe,
 		appwire.MethodThreadTurnsList,
 		appwire.MethodEvenerSubagentPreview,

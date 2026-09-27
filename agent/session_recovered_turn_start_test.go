@@ -118,6 +118,7 @@ func acceptFollowUp(t *testing.T, s *Session, id, text string) appwire.TurnStart
 // the recovered turn is only accepted is what produced the earlier ownership,
 // ordering and Stop-targeting findings, so the window stays closed.
 func TestAcceptBehindRecoveredTurnRefusedUntilTheInheritedTurnIsClaimed(t *testing.T) {
+	t.Parallel()
 	restored, inheritedTurnID, deadMutationID := recoveredTurnSession(t)
 
 	pending := restored.clientMutations.snapshot().PendingExecutions[deadMutationID]
@@ -172,6 +173,7 @@ func TestAcceptBehindRecoveredTurnRefusedUntilTheInheritedTurnIsClaimed(t *testi
 // turn, because restore never rewinds an incorporated start to accepted and the
 // runner's reclaim leaves it incorporated.
 func TestAcceptBehindRecoveredTurnAdmittedOnceItRuns(t *testing.T) {
+	t.Parallel()
 	restored, inheritedTurnID, deadMutationID := recoveredIncorporatedTurnSession(t)
 
 	pending := restored.clientMutations.snapshot().PendingExecutions[deadMutationID]
@@ -193,6 +195,7 @@ func TestAcceptBehindRecoveredTurnAdmittedOnceItRuns(t *testing.T) {
 // aim a Stop at the wrong turn and clear the guard the follow-up was admitted
 // through. The follow-up names the slot when it is CLAIMED instead.
 func TestAcceptBehindRecoveredTurnKeepsTheRunningName(t *testing.T) {
+	t.Parallel()
 	restored, inheritedTurnID, _ := recoveredTurnSession(t)
 	if _, ok, err := restored.claimClientMutationStart(); err != nil || !ok {
 		t.Fatalf("claim the inherited turn: ok=%v err=%v", ok, err)
@@ -213,6 +216,7 @@ func TestAcceptBehindRecoveredTurnKeepsTheRunningName(t *testing.T) {
 // sequence is the order the user spoke: the inherited turn was reserved before
 // the crash, so it is claimed first and the follow-up runs after it.
 func TestClaimBehindRecoveredTurnTakesTheInheritedTurnFirstThenTheFollowUp(t *testing.T) {
+	t.Parallel()
 	restored, inheritedTurnID, _ := recoveredTurnSession(t)
 
 	first, ok, err := restored.claimClientMutationStart()
@@ -245,6 +249,7 @@ func TestClaimBehindRecoveredTurnTakesTheInheritedTurnFirstThenTheFollowUp(t *te
 // free-slot grab -- dropping its prompt -- while the turn actually running is
 // never stopped.
 func TestClaimAfterRecoveredTurnReleasedNamesTheClaimedTurnActive(t *testing.T) {
+	t.Parallel()
 	restored, _, deadMutationID := recoveredTurnSession(t)
 
 	// The inherited turn runs and the older follow-up is admitted behind it, so
@@ -315,6 +320,7 @@ func TestClaimAfterRecoveredTurnReleasedNamesTheClaimedTurnActive(t *testing.T) 
 // brand-new pending start interrupted and clearing the slot, silently dropping
 // the prompt they just sent.
 func TestInterruptWhileRecoveredTurnRunsFencesTheInheritedTurn(t *testing.T) {
+	t.Parallel()
 	restored, inheritedTurnID, _ := recoveredTurnSession(t)
 
 	if _, ok, err := restored.claimClientMutationStart(); err != nil || !ok {
@@ -366,6 +372,7 @@ func TestInterruptWhileRecoveredTurnRunsFencesTheInheritedTurn(t *testing.T) {
 // claim refuses while the fence exists, and the follow-up stays pending until
 // the fence is finalized -- and is claimable the moment it clears.
 func TestClaimDuringInterruptFenceLeavesTheFollowUpPending(t *testing.T) {
+	t.Parallel()
 	restored, inheritedTurnID, _ := recoveredTurnSession(t)
 
 	if _, ok, err := restored.claimClientMutationStart(); err != nil || !ok {
@@ -450,6 +457,7 @@ func TestClaimDuringInterruptFenceLeavesTheFollowUpPending(t *testing.T) {
 // parked the queue and the steering wake only serves steering. Without an
 // explicit start wake the follow-up is accepted and never runs.
 func TestClearedInterruptFenceWakesThePendingFollowUp(t *testing.T) {
+	t.Parallel()
 	restored, _, _ := recoveredTurnSession(t)
 
 	if _, ok, err := restored.claimClientMutationStart(); err != nil || !ok {
@@ -512,6 +520,7 @@ drain:
 // equality-only check let through: the follow-up's id differs from
 // ExpectedTurnID, so it was reported runnable under the fence.
 func TestInterruptFenceHoldsTheFollowUpOutOfTheRunnableCheck(t *testing.T) {
+	t.Parallel()
 	restored, inheritedTurnID, _ := recoveredTurnSession(t)
 
 	if _, ok, err := restored.claimClientMutationStart(); err != nil || !ok {
@@ -561,6 +570,7 @@ func TestInterruptFenceHoldsTheFollowUpOutOfTheRunnableCheck(t *testing.T) {
 // claims the oldest reserved turn -- and cancellation would be armed for the
 // wrong turn. The predicate must name exactly the turn the claim takes.
 func TestRunnableStartNamesTheOldestReservedFollowUpLikeTheClaim(t *testing.T) {
+	t.Parallel()
 	restored, _, _ := recoveredTurnSession(t)
 
 	if _, ok, err := restored.claimClientMutationStart(); err != nil || !ok {
@@ -607,6 +617,7 @@ func TestRunnableStartNamesTheOldestReservedFollowUpLikeTheClaim(t *testing.T) {
 // turn after the newer prompt. The recovered turn's claim is handed back
 // instead, so it is claimed again before the follow-up.
 func TestFailedRecoveredTurnGivesItsClaimBackSoTheFollowUpCannotJumpAhead(t *testing.T) {
+	t.Parallel()
 	restored, inheritedTurnID, deadMutationID := recoveredTurnSession(t)
 
 	// The follow-up is admitted the way the flow admits one: once the recovered
@@ -670,6 +681,7 @@ func TestFailedRecoveredTurnGivesItsClaimBackSoTheFollowUpCannotJumpAhead(t *tes
 // The transcript refusal is delivered through the run seam (the writer is not
 // actually broken), so the session can still run the turn again afterwards.
 func TestTranscriptRefusalDoesNotSpendTheRecoveredOneShotRetry(t *testing.T) {
+	t.Parallel()
 	restored, _, deadMutationID := recoveredTurnSession(t)
 
 	var refusal error
@@ -711,6 +723,7 @@ func TestTranscriptRefusalDoesNotSpendTheRecoveredOneShotRetry(t *testing.T) {
 // The store fault is armed at the announce seam -- after the claim committed and
 // before the run -- so the give-back's own write is the next store mutation.
 func TestFailedGiveBackDoesNotSpendTheOneShotRetry(t *testing.T) {
+	t.Parallel()
 	restored, inheritedTurnID, deadMutationID := recoveredTurnSession(t)
 
 	var followUp appwire.TurnStartResponse
@@ -768,6 +781,7 @@ func TestFailedGiveBackDoesNotSpendTheOneShotRetry(t *testing.T) {
 // leaves: the recovered turn's user entry is in the transcript, the pending is
 // still claimed, and the run then fails.
 func TestRecordedRecoveredTurnIsNotHandedBackEvenWhenTheMarkWriteFailed(t *testing.T) {
+	t.Parallel()
 	restored, inheritedTurnID, deadMutationID := recoveredTurnSession(t)
 
 	restored.cfg.testOnly.clientMutationStartAnnounced = func() {
@@ -819,6 +833,7 @@ func TestRecordedRecoveredTurnIsNotHandedBackEvenWhenTheMarkWriteFailed(t *testi
 // recovered turn, so its prompt is not lost -- it just runs after the follow-up
 // in that case.
 func TestFailedRecoveredTurnGivesItsClaimBackOnlyOnce(t *testing.T) {
+	t.Parallel()
 	restored, inheritedTurnID, deadMutationID := recoveredTurnSession(t)
 
 	var followUp appwire.TurnStartResponse
@@ -873,6 +888,7 @@ func TestFailedRecoveredTurnGivesItsClaimBackOnlyOnce(t *testing.T) {
 // claim exactly as it does today. Only the inherited recovered turn's claim is
 // handed back.
 func TestFailedOrdinaryTurnKeepsItsClaim(t *testing.T) {
+	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	t.Cleanup(sess.Close)
 	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
@@ -899,6 +915,7 @@ func TestFailedOrdinaryTurnKeepsItsClaim(t *testing.T) {
 // a turn the session started in THIS process is not inherited work, so a
 // turn/start while it is active keeps today's refusal.
 func TestAcceptBehindProcessLocalTurnStillRefused(t *testing.T) {
+	t.Parallel()
 	s := newTestSession(t)
 	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
 		ClientMutationID: "cm-live-turn",
@@ -924,6 +941,7 @@ func TestAcceptBehindProcessLocalTurnStillRefused(t *testing.T) {
 // leaves recoveredTurnID empty and the follow-up stays refused, the pre-fix
 // behaviour.
 func TestQueueOriginInheritedTurnLeavesNoRecoveredTurn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	crashed := newQueuePersistTestSession(t, dir)
 	id := crashed.ID()

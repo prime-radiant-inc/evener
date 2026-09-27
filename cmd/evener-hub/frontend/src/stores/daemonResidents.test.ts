@@ -7,7 +7,7 @@
 
 import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "./connection";
 import {
@@ -42,7 +42,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // No fake timers used in this file; real timer reset not needed here.
+  cleanup();
 });
 
 describe("initial state", () => {

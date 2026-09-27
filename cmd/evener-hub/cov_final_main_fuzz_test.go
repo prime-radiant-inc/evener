@@ -59,7 +59,7 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 		stop := errors.New("serve stop")
 		deps := mainDeps{
 			loadRegistry:    hermeticRegistryLoader,
-			loadConfig:      func(string) (Config, error) { return cfg, nil },
+			loadConfig:      func(string, bool) (Config, error) { return cfg, nil },
 			ensureDirs:      func() error { return nil },
 			acquireLock:     func(string) (func(), error) { return func() {}, nil },
 			newToken:        func() (string, error) { return "hub-token", nil },

@@ -103,7 +103,7 @@ func TestSetModel_PersistsModelSwitchIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	data, err := readTranscriptFull(sess.TranscriptPath())
+	data, err := readTranscriptFull(sess.TranscriptPath(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

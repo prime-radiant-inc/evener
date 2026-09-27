@@ -1454,7 +1454,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// one turn behind the file. Both refresh triggers share it so there is
 	// one refresh, not two mechanisms.
 	refreshFromDisk := func(reason string) error {
-		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+		refreshed, err := readTranscriptFull(transcriptPath(s.stateDir, s.id), s.stateDir)
 		if err != nil {
 			return fmt.Errorf("refresh transcript after %s: %w", reason, err)
 		}
@@ -1597,7 +1597,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		Turns:             s.modelResponses,
 		LastInputTokens:   meta.LastInputTokens,
 		ContextWindowSize: profile.ContextWindowSize(),
-		State:             string(restoredState),
+		State:             s.WireState(),
 		// TranscriptEntries is the exact count OpenWriterForSession validated
 		// above, from the same transcript file and the same entry-by-entry scan
 		// internal/apptranscript's reload path counts by (kata eptj) — not

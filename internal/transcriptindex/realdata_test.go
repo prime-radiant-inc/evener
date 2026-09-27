@@ -72,6 +72,9 @@ func TestRealTranscriptWindowsEqualTheReference(t *testing.T) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			x := openIndex(t, path, t.TempDir())
 			want := referenceCandidates(t, path)
+			if len(want) == 0 {
+				t.Skip("transcript has no entries yet (header-only)")
+			}
 			window, err := x.Latest(windowLimit)
 			if err != nil {
 				t.Fatal(err)
@@ -105,6 +108,9 @@ func TestRealTranscriptLatency(t *testing.T) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			name := filepath.Base(path)
 			tail := entryTail(t, path, 50)
+			if len(tail) == 0 {
+				t.Skip("transcript has no entries yet (header-only)")
+			}
 			started := time.Now()
 			x := openIndex(t, path, t.TempDir())
 			t.Logf("build file=%s took=%v items=%d turns=%d", name, time.Since(started), x.items.n, x.turns.n)

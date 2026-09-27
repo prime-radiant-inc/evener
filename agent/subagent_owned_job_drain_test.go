@@ -254,6 +254,7 @@ func loadStableDelegateTerminalPacket(t *testing.T, owner *Session, delegateID s
 }
 
 func TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification(t *testing.T) {
+	t.Parallel()
 	fixture := newOwnedJobDrainFixture(t)
 	fixture.releaseAndWait(t)
 	fixture.requireHandledResult(t, 3, "owned shell handled")
@@ -276,6 +277,7 @@ func TestSubagentDrainRestoresParentDriveCallbackForFreshChildNotification(t *te
 }
 
 func TestSubagentDrainRestoresParentDriveAfterTerminalStatePublication(t *testing.T) {
+	t.Parallel()
 	fixture := newOwnedJobDrainFixture(t)
 	var armOnce sync.Once
 	fixture.drainClock.onDrainStop = func() {
@@ -301,6 +303,7 @@ func TestSubagentDrainRestoresParentDriveAfterTerminalStatePublication(t *testin
 }
 
 func TestSubagentOwnedJobDrainAcceptsStableSteeringWithoutBlockingNotifications(t *testing.T) {
+	t.Parallel()
 	fixture := newOwnedJobDrainFixture(t)
 	fixture.child.mu.Lock()
 	finalizing := fixture.child.finalizing
@@ -340,6 +343,7 @@ func TestSubagentOwnedJobDrainAcceptsStableSteeringWithoutBlockingNotifications(
 }
 
 func TestSubagentDrainReturnHandoffPreservesStableSteeringBeforeTerminalPublication(t *testing.T) {
+	t.Parallel()
 	requireDrainReturnHandoffMergesSteering(t, newOwnedJobDrainFixture(t))
 }
 
@@ -355,6 +359,7 @@ func TestSubagentDrainReturnHandoffPreservesStableSteeringBeforeTerminalPublicat
 // cannot see the mid-finalization record at all, and the handoff below must
 // merge every accepted send exactly as in the unperturbed test.
 func TestSubagentDrainReturnHandoffNoPhantomTurnInFinalizationWindow(t *testing.T) {
+	t.Parallel()
 	fixture := newOwnedJobDrainFixture(t)
 	// Hold the window open until the drain loop's own recheck has provably run
 	// rematerializeDurablePendings inside it: windowHeld blocks the
@@ -471,6 +476,7 @@ func requireDrainReturnHandoffMergesSteering(t *testing.T, fixture *ownedJobDrai
 }
 
 func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T) {
+	t.Parallel()
 	releaseInitial := make(chan struct{})
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseInitial) }) })
@@ -575,6 +581,7 @@ func TestSubagentRunPreservesStructuredResultAcrossLateNotification(t *testing.T
 }
 
 func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testing.T) {
+	t.Parallel()
 	// All three resume/deliver entry points converge on a single code path:
 	// delegateRuntime.send (explicit resume, delegate_send, and watch-origin
 	// stable send all route through Steer/ReserveStart/CommitStart). There is no
@@ -657,6 +664,7 @@ func TestSubagentFinalizationRefusesResumeAndDriveUntilCallbackRestored(t *testi
 }
 
 func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) {
+	t.Parallel()
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "provider failed after shell launch", nil, nil)
 	enteredFatal := make(chan struct{})
 	releaseFatal := make(chan struct{})
@@ -806,6 +814,7 @@ func TestSubagentFatalRunStopsOwnedShellAndGatesNotificationDrive(t *testing.T) 
 }
 
 func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
+	t.Parallel()
 	fatalErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal before watch delivery", nil, nil)
 	adapter := &fakeErrAdapter{
 		name: "openai",
@@ -958,6 +967,7 @@ func TestIdleFatalGatedWatchSendDropsAndDoesNotPinDrain(t *testing.T) {
 }
 
 func TestSubagentFatalDriveTurnStopsOwnedShellAndSuppressesRedrive(t *testing.T) {
+	t.Parallel()
 	driveErr := llm.ErrorFromHTTPStatus("openai", 403, "fatal notification turn", nil, nil)
 	enteredFatalDrive := make(chan struct{})
 	releaseFatalDrive := make(chan struct{})
@@ -1193,6 +1203,7 @@ func (f *ownedJobDrainFixture) requireHandledResult(t *testing.T, wantRequests i
 }
 
 func TestSubagentRunDrainsOwnedShellBeforeFinalizingDelegate(t *testing.T) {
+	t.Parallel()
 	fixture := newOwnedJobDrainFixture(t)
 
 	fixture.child.mu.Lock()
@@ -1220,6 +1231,7 @@ func TestSubagentRunDrainsOwnedShellBeforeFinalizingDelegate(t *testing.T) {
 }
 
 func TestRetentionDoesNotReclaimSubagentDrainingOwnedWork(t *testing.T) {
+	t.Parallel()
 	fixture := newOwnedJobDrainFixture(t)
 
 	terminalSession := newSession(t, withConfig(SessionConfig{NoProjectPrompts: true}))
@@ -1284,6 +1296,7 @@ func TestRetentionDoesNotReclaimSubagentDrainingOwnedWork(t *testing.T) {
 // the current (buggy) code rematerializeDurablePendings re-enqueues the record, so
 // peekNotifications becomes > 0 and the assertion fails red.
 func TestSubagentFinalizationDrainReenqueueRaceDeterministic(t *testing.T) {
+	t.Parallel()
 	fixture := newOwnedJobDrainFixture(t)
 
 	hookFired := make(chan struct{})
@@ -1374,6 +1387,7 @@ func TestSubagentFinalizationDrainReenqueueRaceDeterministic(t *testing.T) {
 // rematerialize pass on its already-loaded durable snapshot, lets finalization
 // complete, releases the pass, and asserts nothing was re-enqueued.
 func TestSubagentFinalizationRematerializeLoadSnapshotStraddle(t *testing.T) {
+	t.Parallel()
 	fixture := newOwnedJobDrainFixture(t)
 	childSess := fixture.child.sess
 	jm := childSess.jobManager

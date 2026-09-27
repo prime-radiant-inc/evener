@@ -24,7 +24,7 @@ import (
 // set is every Go module in the workspace, fuzz included: the fuzz module sits
 // out the test gate, not the linter.
 const (
-	defaultLintModules  = ". agent llm auth envvars invariant identifier fuzz"
+	defaultLintModules  = ". agent llm auth envvars invariant identifier execsupport fuzz"
 	defaultLintParallel = 4
 )
 

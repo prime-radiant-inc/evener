@@ -16,8 +16,8 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/execsupport/valueexpr"
 	"primeradiant.com/evener/internal/credentials"
-	"primeradiant.com/evener/internal/valueexpr"
 	"primeradiant.com/evener/llm/registry"
 )
 

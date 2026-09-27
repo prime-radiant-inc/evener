@@ -190,6 +190,7 @@ export {
   isActiveItem,
   isInProgressStatus,
   isNonZeroExit,
+  isTurnError,
 } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
@@ -398,6 +399,7 @@ export {
   canSteer,
   decideSteerRoute,
   decideSubmitRoute,
+  isSessionResting,
   isTurnActive,
   NO_ACTIVE_TURN,
   QUEUE_EMPTY,
@@ -529,6 +531,7 @@ export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
 export { METHOD_NAMES, NOTIFICATION_NAMES, STEERING_KINDS, THREAD_ITEM_EVENT_KINDS } from "./types.gen";
+export { isInformationalWarning, WarningCodeContextBudget } from "./warnings";
 export type { ConditionSpec, JsonObject, WatchDisplayState, WatchRow, WatchSummary } from "./watchRows";
 export {
   asJsonObject,

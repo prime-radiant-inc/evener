@@ -28,7 +28,7 @@ import (
 // attach's next event, which a terminal failure never sends.
 //
 // Deterministic, no sleeps on the assertion path: the add parks inside its
-// commit at the sidecar store's first take (the pre-save snapshot) because
+// commit at the store's first take (the pre-write snapshot) because
 // the test holds the store's mutex, the commit's cfg.mu hold proves the add
 // is inside its critical section, and the stale-record wait below proves the
 // reset already ran before the event fires (post-fix the reset precedes the
@@ -48,10 +48,10 @@ func TestHostManageAddKeepsConcurrentAttachStateRecordedMidCommit(t *testing.T) 
 	// not inherit.
 	m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventFailed, Err: errors.New("stale attach error")})
 
-	// Park the add inside its commit: the sidecar store's mutex is held, so
+	// Park the add inside its commit: the store's mutex is held, so
 	// the add blocks at its first store take — the pre-save snapshot — with
 	// the mutation mutex held and nothing exposed yet.
-	m.cfg.sidecar.mu.Lock()
+	m.cfg.store.mu.Lock()
 	type addResult struct {
 		row appwire.HostRow
 		err error
@@ -106,7 +106,7 @@ func TestHostManageAddKeepsConcurrentAttachStateRecordedMidCommit(t *testing.T) 
 	m.observeEvent(sshconn.Event{Host: "side", Kind: sshconn.EventState, State: sshconn.StatePreflighting})
 
 	// Let the commit finish.
-	m.cfg.sidecar.mu.Unlock()
+	m.cfg.store.mu.Unlock()
 	res := <-addDone
 	if res.err != nil {
 		t.Fatalf("Add = %v", res.err)
@@ -132,8 +132,8 @@ func TestHostManageAddKeepsConcurrentAttachStateRecordedMidCommit(t *testing.T) 
 	}
 }
 
-// TestHostManageSidecarSaveSyncsItsDirectory pins the durable-commit
-// contract's missing half (the round-15 second finding): the sidecar temp
+// TestHostManageHubTOMLSaveSyncsItsDirectory pins the durable-commit
+// contract's missing half (the round-15 second finding): the rewrite's temp
 // file was synced before the rename, but the containing directory never was,
 // so a crash right after a successful add/remove could lose the committed
 // entry despite the synced file. The save must open and sync the parent
@@ -147,39 +147,39 @@ func TestHostManageAddKeepsConcurrentAttachStateRecordedMidCommit(t *testing.T) 
 // renamed inside it (create and rename need write permission, not read), so
 // a save that never touches the directory succeeds — the pre-fix behavior —
 // while the directory-syncing save refuses it.
-func TestHostManageSidecarSaveSyncsItsDirectory(t *testing.T) {
+func TestHostManageHubTOMLSaveSyncsItsDirectory(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("the permission-based check cannot fail for root")
 	}
 	dir := t.TempDir()
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 	if err := os.Chmod(dir, 0o300); err != nil {
-		t.Fatalf("chmod the sidecar directory write-only: %v", err)
+		t.Fatalf("chmod the hub.toml directory write-only: %v", err)
 	}
-	path := filepath.Join(dir, hostSidecarFileName)
-	err := saveHostSidecar(path, []hostreg.Host{{Name: "side", SSH: "s.example"}})
+	path := filepath.Join(dir, "hub.toml")
+	err := writeHubTOMLHosts(path, []hostreg.Host{{Name: "side", SSH: "s.example"}})
 	if err == nil {
-		t.Fatal("saveHostSidecar succeeded into a directory it cannot open, want the post-rename directory sync to refuse the commit")
+		t.Fatal("writeHubTOMLHosts succeeded into a directory it cannot open, want the post-rename directory sync to refuse the commit")
 	}
-	if !strings.Contains(err.Error(), "host sidecar directory") {
-		t.Fatalf("saveHostSidecar error = %q, want the directory-sync step's refusal", err)
+	if !strings.Contains(err.Error(), "hub.toml directory") {
+		t.Fatalf("writeHubTOMLHosts error = %q, want the directory-sync step's refusal", err)
 	}
 }
 
-// TestHostSidecarSyncUnsupported covers the sync tolerance the save shares
+// TestHubTOMLSyncUnsupported covers the sync tolerance the write shares
 // with the hubcore deletion store and the thread-clear journal: a filesystem
 // that cannot sync a directory at all (ENOSYS, ENOTSUP, EINVAL) keeps a
 // working save instead of a hard failure, while every other error surfaces.
-func TestHostSidecarSyncUnsupported(t *testing.T) {
+func TestHubTOMLSyncUnsupported(t *testing.T) {
 	for _, err := range []error{syscall.ENOSYS, syscall.ENOTSUP, syscall.EINVAL} {
-		if !hostSidecarSyncUnsupported(err) {
-			t.Fatalf("hostSidecarSyncUnsupported(%v) = false, want true", err)
+		if !hubTOMLSyncUnsupported(err) {
+			t.Fatalf("hubTOMLSyncUnsupported(%v) = false, want true", err)
 		}
 	}
-	if hostSidecarSyncUnsupported(nil) {
-		t.Fatal("hostSidecarSyncUnsupported(nil) = true, want false")
+	if hubTOMLSyncUnsupported(nil) {
+		t.Fatal("hubTOMLSyncUnsupported(nil) = true, want false")
 	}
-	if hostSidecarSyncUnsupported(errors.New("other")) {
-		t.Fatal(`hostSidecarSyncUnsupported("other") = true, want false`)
+	if hubTOMLSyncUnsupported(errors.New("other")) {
+		t.Fatal(`hubTOMLSyncUnsupported("other") = true, want false`)
 	}
 }

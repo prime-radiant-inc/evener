@@ -12,6 +12,7 @@ import (
 // are the uncovered arms — a nil pointer must render nothing, a non-nil pointer
 // must render the same block as its value form.
 func TestW2Watch_writeWatchFrameEventPointerForms(t *testing.T) {
+	t.Parallel()
 	render := func(data events.EventData) string {
 		var b strings.Builder
 		writeWatchFrameEvent(&b, events.SessionEvent{Data: data})

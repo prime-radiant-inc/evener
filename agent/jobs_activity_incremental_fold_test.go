@@ -68,9 +68,18 @@ func writeJobLogFast(t *testing.T, stateDir, sessID string, n int) string {
 // TestLoadSessionJobActivityTree_BoundsSingleSessionScanAtWorkUnitBudget
 // covers the same property at roughly 1% the scale.
 func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	rootID := "tuesdayroot"
-	const totalJobs = 200_000
+	totalJobs := 200_000
+	if raceDetectorEnabled {
+		// The walk copies every record on every page, ~100 pages at full
+		// scale: 42s under -race on a CI runner, run one test at a time. Three
+		// full pages and a partial fourth still take every continuation step
+		// the walk has, so the race detector sees the same paths, and the
+		// uninstrumented run keeps the Tuesday-sized history.
+		totalJobs = 3*activityMaxWorkUnits + 1
+	}
 	jobsPath := writeJobLogFast(t, stateDir, rootID, totalJobs)
 	savePastActivityMeta(t, stateDir, rootID, "Root")
 
@@ -93,7 +102,7 @@ func TestLoadSessionJobActivityTree_TuesdayFullyFoldsAndFullyPaginates(t *testin
 	// continuation that never advances, looping the same page forever).
 	seen := make(map[string]bool, totalJobs)
 	params := appwire.JobsListParams{Ref: "local:" + rootID}
-	const maxPages = 200 // generous: totalJobs/activityMaxWorkUnits ~= 100
+	const maxPages = 200 // generous: totalJobs/activityMaxWorkUnits is at most ~100
 	pages := 0
 	for {
 		pages++
@@ -196,6 +205,7 @@ func TestLoadCachedJobRecords_SecondRequestReadsOnlyTheAppendedDelta(t *testing.
 // the correct result for the NEW content — not a stale view, and not a
 // broken merge of old and new.
 func TestLoadCachedJobRecords_RewrittenJournalForcesFullRescanWithCorrectResult(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sessID := "rewriteroot"
 	started := time.Unix(3_000_000_000, 0).UTC()

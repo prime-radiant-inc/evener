@@ -488,3 +488,38 @@ func TestEnrichOutputImageNotificationKeepsOneEntryWhenBothMechanismsSeeTheSameF
 		t.Fatalf("OutputImages[0]=%+v, want the sha-routed tool-result descriptor", item.OutputImages[0])
 	}
 }
+
+// TestOutputImagesForToolCallRepairableMalformedWriteFile (F5 round 6):
+// a repairable-malformed write_file call carries byte-faithful invalid JSON
+// (bare keys without quotes). The live path repaired the same bytes to
+// dispatch; the consumer must repair too so the file-backed thumbnail
+// recovers the path instead of producing nothing.
+func TestOutputImagesForToolCallRepairableMalformedWriteFile(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "out.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bare-key malformed JSON — repair.RepairJSON wraps unquoted keys in quotes.
+	imgs := outputImagesForToolCall("01DOC", cwd, "write_file", `{file_path: "out.png"}`, "wrote")
+	if len(imgs) != 1 || imgs[0].Source != "written-file" || imgs[0].Path != "out.png" || imgs[0].URL == "" {
+		t.Fatalf("repairable-malformed write_file should recover thumbnail, got %+v", imgs)
+	}
+}
+
+// TestOutputImagesForToolCallRepairableMalformedReadFile (F5 round 6):
+// same repair for read_file — the file-backed thumbnail recovers the path
+// from repairable-malformed args.
+func TestOutputImagesForToolCallRepairableMalformedReadFile(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(cwd, "shot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	imgs := outputImagesForToolCall("01DOC", cwd, "read_file", `{file_path: "shot.png"}`, "[image: png, 12 bytes, base64 data follows]")
+	if len(imgs) != 1 || imgs[0].Source != "read-file" || imgs[0].Path != "shot.png" || imgs[0].URL == "" {
+		t.Fatalf("repairable-malformed read_file should recover thumbnail, got %+v", imgs)
+	}
+}

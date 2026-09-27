@@ -21,8 +21,8 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/execsupport/orphanpipe"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/internal/orphanpipe"
 	"primeradiant.com/evener/llm/registry"
 	"primeradiant.com/evener/rendezvous"
 )

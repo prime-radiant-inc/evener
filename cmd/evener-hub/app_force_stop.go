@@ -16,12 +16,43 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+// forceStopRemoteThread is forceStopThread's non-local branch (component 07,
+// §"Dedicated ref-translating dispatch (evener/thread/forceStop)"): it resolves
+// the ref's host, refuses an unknown or unattached host typed, and issues
+// evener/thread/forceStop on the owning host's client with the ref translated
+// into that host's own "local:" spelling. The daemon to signal lives on the
+// host, so the local ownership path must not run for a host ref.
+//
+// It dispatches exactly as the in-band session stop does — the owning
+// RemoteHubSource translates the ref and sends it over the shared per-host
+// client — so it inherits that seam's host-routing origin guard, which refuses
+// a remote-originated request typed before any request is sent.
+func forceStopRemoteThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadForceStopParams, sources *appsource.Registry, ref appwire.Ref) error {
+	host := ref.SourceID
+	// The host registry is the unknown-host authority: only a configured host may
+	// be dialed, and "local" is never one (it was handled above).
+	if cfg.RemoteHostRegistry == nil {
+		return appwire.InvalidParams(fmt.Sprintf("unknown host %q", host))
+	}
+	if _, ok := cfg.RemoteHostRegistry.Get(host); !ok {
+		return appwire.InvalidParams(fmt.Sprintf("unknown host %q", host))
+	}
+	remote, err := attachedRemoteHostSource(sources, host)
+	if err != nil {
+		return err
+	}
+	return remote.ForceStopThread(ctx, params)
+}
+
 // forceStopThread bypasses daemon RPC only after verifying the local process.
 // The session remains reserved until the exact process has exited.
 func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadForceStopParams, sources *appsource.Registry) (stopErr error) {
 	ref, err := appwire.ParseRef(params.Ref)
-	if err != nil || ref.SourceID != "local" {
+	if err != nil {
 		return appwire.InvalidParams("force stop requires a local session ref")
+	}
+	if ref.SourceID != "local" {
+		return forceStopRemoteThread(ctx, cfg, params, sources, ref)
 	}
 	if cfg.RunDir == "" || cfg.ResumeLocks == nil {
 		return appwire.Unavailable("local session ownership is not configured")

@@ -1,3 +1,4 @@
+import type { SyncStringStorage } from "./syncStringStorage";
 import type { TimelineRow } from "./timeline";
 
 export interface ReaderAnchor {
@@ -10,11 +11,6 @@ export interface ReaderAnchor {
 	touchedAt: number;
 }
 
-export interface ReaderStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
-}
 export interface ReaderMeasurement {
 	key: string;
 	y: number;
@@ -24,7 +20,7 @@ export interface ReaderMeasurement {
 const key = "evener.reader-positions";
 const limit = 100;
 type Stored = Record<string, ReaderAnchor>;
-const memory = new WeakMap<ReaderStorage, Stored>();
+const memory = new WeakMap<SyncStringStorage, Stored>();
 
 function mergeStored(...maps: readonly Stored[]): Stored {
 	const merged: Stored = {};
@@ -104,7 +100,7 @@ export function resolveReaderAnchor(
 }
 export function isReaderAnchorLoaded(
 	anchor: ReaderAnchor,
-	items: readonly import("../../mobile/src/conversation/project").MobileTimelineItem[],
+	items: readonly import("./projectedRows").MobileTimelineItem[],
 ): boolean {
 	for (const item of items) {
 		if (resolveReaderAnchor(anchor, [item]) !== null) return true;
@@ -267,7 +263,7 @@ export function storageKey(hubId: string, sessionRef: string) {
 	return `${hubId}\u0000${sessionRef}`;
 }
 export class ReaderPositionRepository {
-	constructor(private readonly storage: ReaderStorage) {}
+	constructor(private readonly storage: SyncStringStorage) {}
 	read(hubId: string, sessionRef: string): ReaderAnchor | null {
 		let raw: string | null;
 		try {

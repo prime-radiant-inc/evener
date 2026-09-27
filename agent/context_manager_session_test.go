@@ -127,7 +127,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 
 	// Use a window large enough for the base prompt but small enough for the
 	// tool result to cross the compaction threshold.
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_000)
+	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_500)
 
 	sess, err := NewSession(c, profile, env, SessionConfig{})
 	if err != nil {
@@ -146,8 +146,8 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 	}()
 
 	// Verify the session is configured with the constrained window.
-	if sess.Profile().ContextWindowSize() != 27_000 {
-		t.Fatalf("expected context window 27000, got %d", sess.Profile().ContextWindowSize())
+	if sess.Profile().ContextWindowSize() != 27_500 {
+		t.Fatalf("expected context window 27500, got %d", sess.Profile().ContextWindowSize())
 	}
 
 	ctx := context.Background()
@@ -210,7 +210,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_000)
+	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 27_500)
 
 	sess, err := NewSession(c, profile, env, SessionConfig{})
 	if err != nil {

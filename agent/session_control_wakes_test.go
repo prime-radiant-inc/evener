@@ -39,6 +39,7 @@ func countingWake(t *testing.T, s *Session) func() int {
 }
 
 func TestQueueWakesAnIdleSessionToRunIt(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -70,6 +71,7 @@ func TestQueueWakesAnIdleSessionToRunIt(t *testing.T) {
 }
 
 func TestDrainWakesAnIdleSessionToDeliverIt(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -99,6 +101,7 @@ func TestDrainWakesAnIdleSessionToDeliverIt(t *testing.T) {
 }
 
 func TestPromoteWakesAnIdleSessionToDeliverIt(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
@@ -133,6 +136,7 @@ func TestPromoteWakesAnIdleSessionToDeliverIt(t *testing.T) {
 // queue, and nothing asks the session to run. Registering the notify callback
 // is the moment a wake can provably be delivered.
 func TestRestoredQueuedInputWakesWhenTheDaemonAttaches(t *testing.T) {
+	t.Parallel()
 	s := newTestSessionForEnvctx(t)
 	serveSession(t, s)
 	if err := s.ensureClientMutationStore(); err != nil {
