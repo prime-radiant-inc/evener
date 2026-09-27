@@ -150,19 +150,19 @@ describe("createMutationProjectionWorkTracker", () => {
       yieldMacrotask: () =>
         new Promise<void>((resolve) => {
           hops += 1;
-          setImmediate(resolve);
+          setTimeout(resolve, 0);
         }),
     });
     let working = true;
     void (async () => {
-      while (working) await tracker.track(new Promise<void>((resolve) => setImmediate(resolve)));
+      while (working) await tracker.track(new Promise<void>((resolve) => setTimeout(resolve, 0)));
     })();
     const settling = tracker.settle().catch((error: unknown) => error);
-    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setTimeout(resolve, 0));
     trip?.();
     await expect(settling).resolves.toMatchObject({ message: expect.stringMatching(/projection work stalled/) });
     const hopsAtTrip = hops;
-    for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
     working = false;
     expect(hops - hopsAtTrip).toBeLessThanOrEqual(1);
   });
