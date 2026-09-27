@@ -215,13 +215,18 @@ function Signal({ wireState }: { wireState: string }) {
 }
 
 // leadsOverWork says the session's own state is something a person must do, a
-// restart or a pending approval (approvalWaiting), which outranks any work
-// still running on the row. activityGloss leads its line with that state's
-// word and SessionRow keeps the row's needs-you dot; both read this one
-// predicate, so the gloss and the dot cannot disagree about which states
-// outrank work.
+// restart, a question or a pending approval (approvalWaiting), which outranks
+// any work still running on the row. A plain your-move row does not: its turn
+// ended and its subagents' work is what is happening. activityGloss leads its
+// line with that state's word and SessionRow keeps the row's needs-you dot;
+// both read this one predicate, so the gloss and the dot cannot disagree about
+// which states outrank work.
 function leadsOverWork(session: RailSession): boolean {
-  return session.state === "restartRequired" || approvalWaiting(session.state, session.approval_pending === true);
+  return (
+    session.state === "restartRequired" ||
+    (session.state === "awaiting" && session.ask_pending === true) ||
+    approvalWaiting(session.state, session.approval_pending === true)
+  );
 }
 
 // The gloss a SIGNAL row gets: the state in words, plus the branch when the
@@ -242,9 +247,9 @@ function leadsOverWork(session: RailSession): boolean {
 // 280px. Exported for direct testing of the join, which the rendered line can
 // only assert on as one flat string.
 //
-// A restart or a pending approval leads the line whatever else is running:
-// each is something a person must do, and a subagent or job count in its
-// place would read as work in progress.
+// A state a person must act on (leadsOverWork) leads the line whatever else
+// is running: a subagent or job count in its place would read as work in
+// progress.
 export function activityGloss(session: RailSession, activity = activeWorkSummary(session)): string {
   const workingCount = activity.workingSubagents;
   const jobCount = activity.runningJobs;
@@ -669,9 +674,9 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   const hasRunningJobs = activity.runningJobs > 0;
   const hasActiveWork = session.state === "active" || hasWorkingDescendants || hasRunningJobs;
   // Descendant/job activity is a working signal for the owning session. A
-  // failure, a restart and a pending approval still win over that rollup, so
-  // none can disappear behind a green child - nor, for an approval, behind
-  // the row's own "active" wire state (the escalation blocks mid-turn).
+  // failure, a restart, a question and a pending approval still win over that
+  // rollup, so none can disappear behind a green child - nor, for an approval,
+  // behind the row's own "active" wire state (the escalation blocks mid-turn).
   const outranksWork = presented === "errored" || leadsOverWork(session);
   let effectiveState = presented;
   if (!outranksWork && hasActiveWork) effectiveState = "active";

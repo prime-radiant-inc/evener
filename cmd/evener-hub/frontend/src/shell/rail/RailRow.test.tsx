@@ -564,6 +564,16 @@ describe("activityGloss", () => {
     expect(activityGloss(session)).toBe("approval waiting · 1 subagent working · 1 job running");
   });
 
+  // A question blocks its session on a person's answer the same way, so it
+  // leads too; a plain your-move row still reads as its subagents' work.
+  test("a question leads the gloss beside working subagents", () => {
+    const child = apiNode({ kind: "subagent", state: "active" });
+    expect(activityGloss(apiNode({ state: "awaiting", ask_pending: true, children: [child] }))).toBe(
+      "question waiting · 1 subagent working",
+    );
+    expect(activityGloss(apiNode({ state: "awaiting", children: [child] }))).toBe("1 subagent working");
+  });
+
   test("omits an empty branch", () => {
     expect(activityGloss(apiNode({ state: "idle", branch: "" }))).toBe("idle");
   });
@@ -1411,6 +1421,17 @@ describe("session row", () => {
     render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
     expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
     expect(screen.getByTestId("rail-row-activity").textContent).toBe("approval waiting · 1 subagent working");
+  });
+
+  test("a question row keeps the needs-you dot while its subagents work", () => {
+    const session = apiNode({
+      state: "awaiting",
+      ask_pending: true,
+      children: [apiNode({ row_id: "child", ref: "local:child", kind: "subagent", state: "active" })],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("question waiting · 1 subagent working");
   });
 
   test("a failed row stays failed with an approval pending", () => {
