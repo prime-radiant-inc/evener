@@ -110,11 +110,12 @@ function invalidate(
 	hub: Hub,
 	sequence: number,
 	targets: NavigationInvalidationTarget[],
+	generationId = "generation-test",
 ) {
 	for (const listener of hub.listeners)
 		listener({
 			method: "evener/navigation/invalidated",
-			params: { generationId: "generation-test", sequence, targets },
+			params: { generationId, sequence, targets },
 		});
 }
 const refs = (page: { rows: Array<{ ref: string }> }) =>
@@ -441,6 +442,33 @@ it("re-reads the manifest after a missed invalidation, whatever the next one nam
 	// A repeat of a sequence already seen is a duplicate, even one that
 	// names the manifest.
 	invalidate(hub, 3, [{ kind: "manifest", revision: 2 }]);
+	expect(requestsFor(hub, "manifest")).toHaveLength(2);
+});
+
+it("a missed invalidation during a manifest read earns a follow-up read", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	await answerAll(hub);
+	invalidate(hub, 1, [{ kind: "manifest", revision: 2 }]);
+	expect(requestsFor(hub, "manifest")).toHaveLength(2);
+	// Sequence 2 is lost while that read is out; the read can't cover it.
+	invalidate(hub, 3, [{ kind: "pin_catalog", revision: 3 }]);
+	answer(hub, "manifest", manifest({ sources }), 2);
+	await tick();
+	expect(requestsFor(hub, "manifest")).toHaveLength(3);
+});
+
+it("numbers sequences afresh when the hub's generation changes", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	await answerAll(hub);
+	invalidate(hub, 1, [{ kind: "pin_catalog", revision: 2 }]);
+	invalidate(hub, 2, [{ kind: "pin_catalog", revision: 3 }]);
+	expect(requestsFor(hub, "manifest")).toHaveLength(1);
+	// A restarted hub counts from 1 again: news, not a repeat.
+	invalidate(hub, 1, [{ kind: "manifest", revision: 1 }], "generation-restarted");
 	expect(requestsFor(hub, "manifest")).toHaveLength(2);
 });
 
