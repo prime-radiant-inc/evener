@@ -92,6 +92,20 @@ function methods(client: FakeClient): string[] {
 	return client.calls.map((call) => call.method);
 }
 
+/** Every settle the flush starts, in order. The flush awaits each one before
+ * a test can, so once a test's await of one resolves, that settle's end in
+ * the flush has run. */
+function settles(outbox: NativeMutationRuntime): Promise<unknown>[] {
+	const started: Promise<unknown>[] = [];
+	const settleTarget = outbox.settleTarget.bind(outbox);
+	vi.spyOn(outbox, "settleTarget").mockImplementation((...args) => {
+		const settle = settleTarget(...args);
+		started.push(settle);
+		return settle;
+	});
+	return started;
+}
+
 it("sends a message kept while offline once the connection returns, even after a relaunch", async () => {
 	const opened = openSqliteSyncDouble();
 	database = opened.database;
@@ -197,6 +211,7 @@ it("keeps a new connection's mark on a screen's target when an older settle fini
 	const oldReads = reads(old);
 	const fresh = new FakeClient("ready");
 	const freshReads = reads(fresh);
+	const started = settles(outbox);
 	// A covered session screen, registered with the connection it sees.
 	outbox.registerTarget("hub-1", "ref-1", old);
 	const flush = new OutboxFlush(() => outbox);
@@ -209,7 +224,7 @@ it("keeps a new connection's mark on a screen's target when an older settle fini
 
 	// The old read answers late; its settle ends without clearing the new mark.
 	oldReads.answer?.(read("ref-1"));
-	await new Promise((resolve) => setTimeout(resolve, 0));
+	await expect(started[0]).resolves.toBe("stale");
 	await flush.flush();
 	expect(freshReads.count).toBe(1);
 
@@ -408,6 +423,7 @@ it("never uses a read an older connection started, nor lets it touch the new one
 	const oldRead = held(old);
 	const fresh = new FakeClient("ready");
 	const freshRead = held(fresh);
+	const started = settles(outbox);
 	const flush = new OutboxFlush(() => outbox);
 	flush.bind("hub-1", old);
 	await vi.waitFor(() => expect(oldRead.answer).toBeDefined());
@@ -417,7 +433,7 @@ it("never uses a read an older connection started, nor lets it touch the new one
 	// The old read answers late, while the new connection's own read is out.
 	// The runtime calls it stale, and the old settle leaves the new claim be.
 	oldRead.answer?.(read("ref-1"));
-	await new Promise((resolve) => setTimeout(resolve, 0));
+	await expect(started[0]).resolves.toBe("stale");
 	freshRead.answer?.(read("ref-1"));
 
 	await vi.waitFor(() => expect(methods(fresh)).toEqual(["thread/read", "turn/start"]));
@@ -583,6 +599,10 @@ export class OutboxFlush {
 		this.owned.clear();
 		this.touched.clear();
 		this.settlingForScreens.clear();
+		// The runtime calls storage listeners synchronously, and unsubscribing
+		// deletes this one at once, so no callback of an earlier bind runs after
+		// this line. A check one started before holds the claim it found, and
+		// release() lets go of that claim only.
 		this.unsubscribe?.();
 		this.unsubscribe = null;
 		this.hubId = hubId;
