@@ -141,6 +141,12 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 // in the same logical turn, so the healed-communicate echo check scopes
 // correctly on the full read (where per-entry IDs differ within a group).
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
+	if turn.Kind.TranscriptOnly() {
+		// Written for the history projection phase 3 introduces. Today's
+		// projection passes over it: it joins no group, closes none, and
+		// projects nothing, though its line still takes an entry index.
+		return
+	}
 	// Project under the id of the group appendEntry will buffer the entry
 	// into: the same grouping decision, made on a copy so appendEntry still
 	// places the entry itself. A steering opener takes its own group's id,
