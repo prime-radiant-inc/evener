@@ -295,7 +295,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	// Replay prefix entries into the child transcript.
 	for _, entry := range prefixEntries {
 		// A copy keeps the identity it was recorded with.
-		if _, err := tw.Record(entry.Turn, transcript.RecordOptions{Place: transcript.PlaceVerbatim}); err != nil {
+		if _, err := tw.Record(entry.Turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
 			return "", fmt.Errorf("append prefix turn to child transcript: %w", err)
 		}
 		if entry.Turn.Kind == schema.TurnAssistant {
@@ -311,7 +311,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	if editedMessage != nil {
 		editedTurn := schema.NewTurn(schema.TurnUserInput, llm.User(*editedMessage))
 		// Written with no session to run it: a delivery turn of its own.
-		if _, err := tw.Record(editedTurn, transcript.RecordOptions{Place: transcript.PlaceDelivery}); err != nil {
+		if _, err := tw.Record(editedTurn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceDelivery}); err != nil {
 			return "", fmt.Errorf("append edited turn to child transcript: %w", err)
 		}
 		acceptedInputTurns++
