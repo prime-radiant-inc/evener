@@ -99,11 +99,12 @@ class ManifestReader {
 		this.loading = false;
 		this.owed = true;
 	}
-	/** Catch up on invalidations held while paused, and retry a first read
-	 * that never landed. */
+	/** Catch up on invalidations held while paused, and retry a read that
+	 * never landed or failed. A failed read doesn't re-arm itself, which
+	 * would loop while the link is down; resuming is its retry. */
 	resume() {
 		this.paused = false;
-		if (!this.state.loaded) this.owed = true;
+		if (!this.state.loaded || this.state.error !== null) this.owed = true;
 		this.drain();
 	}
 	dispose() {

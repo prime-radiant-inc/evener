@@ -517,6 +517,26 @@ it("a failed manifest read reports its error", async () => {
 	expect(board.getSnapshot().manifest).toBeNull();
 });
 
+it("reads a manifest whose re-read failed again when the Board resumes", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	await answerAll(hub);
+	invalidate(hub, 1, [{ kind: "manifest", revision: 2 }]);
+	fail(hub, "manifest", "The hub went away.");
+	await tick();
+	expect(board.getSnapshot().manifest?.sources).toEqual(sources);
+	expect(requestsFor(hub, "manifest")).toHaveLength(2);
+	board.pause();
+	board.resume();
+	expect(requestsFor(hub, "manifest")).toHaveLength(3);
+	const moved = [...sources, { id: "studio", label: "Studio Mac", kind: "ssh", online: true }];
+	answer(hub, "manifest", manifest({ sources: moved }), 2);
+	await tick();
+	expect(board.getSnapshot().manifest?.sources).toEqual(moved);
+	expect(board.getSnapshot().error).toBeNull();
+});
+
 it("a failed later read keeps the rows", async () => {
 	const hub = boundary();
 	const board = createBoardController();
