@@ -144,6 +144,7 @@ type serveServer interface {
 	RecordDescendantAppEvent(string, events.SessionEvent)
 	SetDescendantTranscriptPathFunc(func(threadID string) string)
 	SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo)
+	SetSubagentTallyFunc(func() (appwire.SubagentTally, bool))
 	InputCh() <-chan server.InputMessage
 	SubmitContinuation(string)
 	SubmitNotification()
@@ -1308,6 +1309,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		srv.SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo {
 			return s.LiveWatchRowsForSessions(threadIDs)
 		})
+		// The root's row carries its whole tree's subagent tally (S3), read from
+		// the delegate controller when the list is served. Set per session so it
+		// follows the replacement a thread/clear installs.
+		srv.SetSubagentTallyFunc(s.SubagentTally)
 		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
 		// is actually watching this thread; the probe reads the live AppWire
 		// subscriber count. Set per-session (like the kick/notify wakes) so it tracks

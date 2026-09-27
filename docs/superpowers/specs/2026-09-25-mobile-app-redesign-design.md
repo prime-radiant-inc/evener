@@ -54,7 +54,7 @@ Success looks like:
 3. Starting a session with the right host, project, model, effort and plugins takes seconds.
 4. The app never loses your place: drafts, reading position, filters and scroll survive reconnects, backgrounding and relaunch.
 
-Non-goals for this version: a decision inbox (a future design; Jesse has not designed it yet), iPad, Android, voice, OS push notifications (designed here as phase 2, not built), a cross-session document library, and desktop-only administration (keyboard shortcuts, raw launch configuration fields, AGENTS.md editing, MCP server configuration).
+Non-goals for this version: a decision inbox (a future design; Jesse has not designed it yet), iPad, Android, voice, OS push notifications (designed here as phase 2, not built), a cross-session document library, and full administration in the redesign's language (keyboard shortcuts, launch configuration, AGENTS.md editing, MCP server configuration): a later phase (#2539), while today's administration screens stay reachable from the Hub (section 12).
 
 ## 4. Principles
 
@@ -111,7 +111,7 @@ No tab bar. The app is a list-then-detail workbench, like Mail: one home, one pl
 Board (home)
 ├── Notices (hub-level problems, only when present)
 ├── Session
-│   ├── Subagents → one subagent (read-only transcript)
+│   ├── Subagents → one subagent (its own session)
 │   ├── Files & artifacts → Reader | Artifact viewer
 │   ├── Session sheet: where, model, effort, plugins, access, usage, goal, tasks, notes and links, actions
 │   └── Queue, tasks, Notes & links → Reader | in-app browser (sheets)
@@ -144,7 +144,7 @@ magic-kingdom ▾                                            ⌕
 NEEDS YOU · 4
 ✕  Fix Endless Provider Retry Loop                         2m
    Failed · codex-jesse-fsck.com sign-in expired (401)
-   ☑ Task 3 of 4 · Cap retries per… · 1 subagent failed · ⌂ paradise-park
+   ☑ Task 3 of 4 · Cap retries per… · ⌂ paradise-park
 ?  Audit Tool Descriptions for Implied Options            14m
    Question · keep or drop the implied options?
 ✋ Mirror Docs Site Locally                                21m
@@ -157,7 +157,7 @@ FINISHED · 4
 WORKING · 9
 ▂▅▇  Get PR 2138 Test Clean                               38m
    Waiting on 31 subagents
-   ☑ Task 4 of 7 · Fix the settle/drain race · 2 subagents failed
+   ☑ Task 4 of 7 · Fix the settle/drain race
 Idle · 3                                                    ›
 📌 RELEASE · 2                                              ⋯
   …
@@ -198,10 +198,10 @@ Signal rows (needs you, finished and not yet seen, working) have up to three lin
 | Age | Trailing on line 1, 13pt tabular, ink-low. "2m", "1h", "3d". For working rows, time since the session last started a turn. |
 | Why line | 15/20, up to two lines for Needs you so the reason's key words survive. Needs you: the state word, semibold in its hue ("Failed", "Question", "Approval", "Restart needed", "May be stuck"), a middle dot, then the reason in ink. Only the word takes the hue; the reason is what you read. Finished (not yet seen): the opening of the last agent message in Source Serif 15/21, ink-mid, without quotation marks, up to two lines; the typeface says the agent is speaking. Working: the current activity in ink-mid ("Running go test ./agent/...", "Thinking", "Waiting on 31 subagents", "Quiet 4m"). |
 | Attachments (finished, not yet seen) | Up to two chips for documents or artifacts named in the final message: "[Plan] Host and project hierarchy", "[Artifact] Hierarchy layouts". Tapping a chip opens it on top of its session, so Back goes to the session. |
-| Last line | 13/18, ink-low, only what applies, in this order: task progress when the session keeps a task list and hasn't finished it ("☑ Task 4 of 7 · Fix the settle/drain race"); "2 subagents failed" in red ink when any failed; the project with a folder glyph, and the host with a server glyph, only when they differ from the fleet's usual ones; the model's display name when "Show model on Board rows" is on. With none of these, the row has no last line. The line never wraps: the task's title truncates first. |
+| Last line | 13/18, ink-low, only what applies, in this order: task progress when the session keeps a task list and hasn't finished it ("☑ Task 4 of 7 · Fix the settle/drain race"); the project with a folder glyph, and the host with a server glyph, only when they differ from the fleet's usual ones; the model's display name when "Show model on Board rows" is on. With none of these, the row has no last line. The line never wraps: the task's title truncates first. |
 | Draft tag | A small blue "Draft" tag before the age when the session has an unsent draft. |
 
-Why task progress rather than subagents: the task line says where a session is in its own plan, and the activity line says what it's doing now. A subagent count says how big a job is, not how far along it is ("31 running" looks the same at minute 2 and minute 40), so subagents appear on a row only as an exception, when some failed. The strip and the full counts live on the session's Subagents chip (Jesse's call, 2026-09-25). "Task 4 of 7" is spelled out because a bare "3/7" beside a task name read like a setting to a first-glance participant.
+Why task progress rather than subagents: the task line says where a session is in its own plan, and the activity line says what it's doing now. A subagent count says how big a job is, not how far along it is ("31 running" looks the same at minute 2 and minute 40), so subagents never appear on a row's last line. A row is red only when its own session failed: a subagent's failure shows on the session's Subagents chip and in its Subagents list (section 9), never on the coordinator's row. The strip and the full counts live on the Subagents chip (Jesse's calls, 2026-09-25 and 2026-09-26). "Task 4 of 7" is spelled out because a bare "3/7" beside a task name read like a setting to a first-glance participant.
 
 Row heights: signal rows about 64 to 88pt; quiet rows 48pt. Horizontal padding 16pt. Hairline separators inset to the title. Printing project and host only when unusual keeps most rows to two or three short lines; on the fixture fleet it takes "magic-kingdom" off every row but one.
 
@@ -222,7 +222,7 @@ Tapping Search (or pulling down) shows the search field at the top with scope ch
 
 - **First launch after pairing:** three skeleton rows, then content. After that, the Board opens instantly from its cache and updates live.
 - **Nothing live:** "Nothing's running. Start a session to put an agent to work." with a New session button, then Pinned, Projects and Archived as usual.
-- **Reconnecting / offline:** content stays visible and navigable. The toolbar status changes. Rows keep their last known state; the pulse meters stop moving and gray out. Actions go to the outbox (section 14).
+- **Reconnecting / offline:** content stays visible and navigable. The toolbar status changes. Rows keep their last known state; the pulse meters stop moving and gray out. Actions go to the outbox (section 14) and are sent when the connection returns. A held Stop names the turn it stops, and is dropped rather than sent if that turn ended before the connection returned.
 
 ## 8. Session (the workbench)
 
@@ -273,12 +273,12 @@ The default detail level on the phone is Intent, matching the hub's shipped mobi
 | Level | Shows |
 |---|---|
 | Chat | Just the conversation |
-| Intent | Plus one line for each step the agent took |
+| Intent | Plus one folded line for each run of steps |
 | Tools | Plus every command it ran; tap one for its output |
-| Activity | Plus system events, like compaction and model changes |
-| Full | Everything, with command output shown |
+| Activity | Plus every command's output, open as it arrives |
+| Full | Everything, including the agent's reasoning |
 
-These are the hub's levels and names, shared with the web because the setting is one hub-backed display config; Custom lives in Hub > Display. The choice is per session and remembered.
+These are the hub's levels and names, shared with the web because the setting is one hub-backed display config; Custom lives in Hub > Display. Tools, Activity and Full are the shared presets. Intent is the shared preset too: one folded "12 steps" line per run of steps, whose steps show when you tap it. Chat leaves out the step lines that the shared Chat preset keeps, so it is just the conversation (Jesse, 2026-09-26). The choice is per session and remembered.
 
 | Item | Rendering |
 |---|---|
@@ -292,9 +292,9 @@ These are the hub's levels and names, shared with the web because the setting is
 | Artifact card | Title, one-line summary, a static preview image when available, version ("v3"), and "Open". If you answered its proposal, the card says so ("You chose B"). |
 | Question (history) | Amber left rule, the question, and your answer beneath ("You answered: Drop them"). While the question is still open, the dock is the question, so the transcript doesn't repeat it. |
 | Approval (history) | "Allowed: write ~/sites/docs" or "Denied: …" in ink-mid with the mark. Not repeated in the transcript while the dock is open. |
-| System event | A ◇ gutter mark with 13pt ink-low text, shown at Tools level and above: "Context compacted · 412K → 38K tokens", "Model changed to GLM 5.3 Vision · XHigh", "Plugin superpowers loaded". Model changes and compactions also show at Intent. |
+| System event | A ◇ gutter mark with 13pt ink-low text: "Context compacted · 412K → 38K tokens", "Model changed to GLM 5.3 Vision · XHigh", "Plugin superpowers loaded". Shown at every level when the hub's display settings turn system events on (Hub > Display, shared with the web), and at none when they don't. |
 | Your note, saved | "You updated your note" over the note in the serif, with a left rule, at every level (section 8.8). |
-| Error | Red left rule, the error in plain words, and one action (Retry, Resume, Sign in). |
+| Error | Red left rule, the error in plain words, and at most one action: Resume when the session is paused, Sign in when a sign-in expired, and otherwise Retry when the failed turn is the session's latest. Retry sends "Something went wrong. Please try again." as your message, through the composer's one Send (Jesse, 2026-09-26). |
 | Images | Thumbnails in a row (96pt), tap for a full-screen viewer with swipe between images. |
 
 Scrolling:
@@ -415,7 +415,7 @@ Opened by tapping the title. A large-detent sheet:
 
 ### 8.7 ⋯ menu
 
-Detail level (with the current level and its description as a second line, "Intent · Plus one line for each step the agent took") ▸, Find in session, Files & artifacts, Subagents, Tasks, Notes & links (always present, so a session with neither can still get your note), Session info, Ask aside… ("A side question in its own session; this one keeps working"), Pin to category…, Archive, Shut down. Choosing a detail level confirms with a toast naming the level and what it shows ("Full: everything, with command output shown"): the change often happens above the visible part of the transcript, and two round-4 participants weren't sure it had taken.
+Detail level (with the current level and its description as a second line, "Intent · Plus one folded line for each run of steps") ▸, Find in session, Files & artifacts, Subagents, Tasks, Notes & links (always present, so a session with neither can still get your note), Session info, Ask aside… ("A side question in its own session; this one keeps working"), Pin to category…, Archive, Shut down. Choosing a detail level confirms with a toast naming the level and what it shows ("Full: everything, including the agent's reasoning"): the change often happens above the visible part of the transcript, and two round-4 participants weren't sure it had taken.
 
 ### 8.8 Notes & links
 
@@ -456,8 +456,8 @@ Done · 21                                          ›
 - One flat list by state: failed first, then running (newest first), then done (folded as "Done · 21"). Every section's count matches its chip. A subagent started by another subagent says so in its last line ("from Fix race in tree settle"); nesting it under its parent had put a running row inside the Failed section.
 - Rows: a still mark (a green dot for running, ✕ failed, ✓ done; one pulse meter per view, and on this screen that's none), the mandate as title, the latest activity or outcome as the why line, and a last line with the model's display name (only when it differs from the coordinator's), a branch glyph and the branch name when the subagent works in its own worktree, and tokens. The trailing time is bare time in the current state, as the Board's ages are: how long a running subagent has run, how long since one failed or finished.
 - The list virtualizes; trees of 500 must scroll smoothly. A search field filters by title.
-- **Subagent transcript** opens read-only with the same renderer. A banner at the top: "Subagent of Get PR 2138 Test Clean. Talk to it through its coordinator." The composer is replaced by an action bar: **Ask coordinator to stop it** and **Open coordinator**.
-- **Ask coordinator to stop it** opens a sheet with a prefilled, editable message to the coordinator ("Stop subagent 'Fix race in tree settle': it has failed three times."), the line "Arrives at the coordinator's next step" under it, and one Send. This Send steers instead of queueing, because the request is about the turn that is running. The row then says "Stop requested from the coordinator" until the subagent's state changes, and when it stops the row reads "Stopped at your request" with a toast naming it; a round-4 participant didn't trust a request that never visibly completed. When the hub gains a direct stop call (server addition S6), this becomes **Stop subagent** with a confirmation and no message.
+- **A subagent's screen is its own session:** the same transcript, tray and composer as any session, and the composer's Send goes to the subagent. You talk to whichever session you have open, a coordinator or one of its subagents (Jesse, 2026-09-26), as on the web, whose rail opens a subagent as its own session with the normal composer. The hub takes a message for a subagent once its run has ended, and sending resumes it. While a subagent runs inside its coordinator, the hub serves it read-only and takes no message for it (server addition S6). Until then a running subagent's screen holds **Ask coordinator to stop it** and **Open coordinator** where the composer would be, and the composer returns when the subagent's run ends.
+- **Ask coordinator to stop it** is offered only while the subagent, or work it started, is still running: a failed subagent with nothing running has nothing left to stop (Jesse, 2026-09-26). It opens a sheet with a prefilled, editable message to the coordinator ("Stop subagent 'Fix race in tree settle': it has failed three times."), the line "Arrives at the coordinator's next step" under it, and one Send. This Send steers instead of queueing, because the request is about the turn that is running. The row then says "Stop requested from the coordinator" until the subagent's state changes, and when it stops the row reads "Stopped at your request" with a toast naming it; a round-4 participant didn't trust a request that never visibly completed. When the hub gains a direct stop call (server addition S6), this becomes **Stop subagent** with a confirmation and no message.
 
 ## 10. Review: plans, documents and artifacts
 
@@ -486,8 +486,8 @@ both take the tree lock, but…              💬 1
 - Header: an empty nav bar until the document's own first heading scrolls away; then its title takes the nav bar, with the kind and age beneath. Above the heading, one caption line in ink-low: "Plan · updated 3m ago", then "3 changes since you read it yesterday" in accent when there are changes. The outline button (headings list for jumping) and ⋯ (Open session, Copy path, Copy text). Back carries a small amber dot while alerts are held (section 13.3).
 - **Changes since you last read:** changed paragraphs get a blue left rule, and nothing else (no "Changed" label); the caption says how many ("3 changes since you read it yesterday"), and the bottom bar steps through them ("‹ Change 1 of 3 ›"), within thumb reach. The caption says when you read it, so it can't be mistaken for a first read.
 - **Comment:** long-press a paragraph (or select text) for Comment, Quote in reply, Copy. In a list, the comment attaches to the item under your finger, which is highlighted while the menu is open. A comment attaches to its paragraph or item, and its marker (with a count) sits on that paragraph or on that list item, never on the list's first line. Comments are drafts until sent and persist per document. Until you comment, a one-line caption above the bottom bar says "Touch and hold a paragraph to comment on it"; there is no tip card over the text.
-- **Review bar (bottom):** Comments (a count, once there are any; opens the list), the change stepper when there are changes, and Send review. No Next capsule here: the Reader stays quiet.
-- **Review** sheet (titled "Review" so its title never repeats the "Send review" button): choose Approve, Request changes, or Comment only (nothing is chosen for you, and Send stays disabled until you choose); an optional overall note; the comments listed with their quoted paragraphs. The primary button is the composer's one Send: it sends while the agent is idle and queues while it works, and the queued review offers Steer now like any queued message (section 8.5). The message format:
+- **Review bar (bottom):** Comments (a count, once there are any; opens the list), the change stepper when there are changes, and Send review while the review's session can take a message (a running subagent can't yet, section 9; comments still collect). No Next capsule here: the Reader stays quiet.
+- **Review** sheet (titled "Review" so its title never repeats the "Send review" button): choose Approve, Request changes, or Comment only (nothing is chosen for you, and Send stays disabled until you choose); an optional overall note; the comments listed with their quoted paragraphs. The primary button is the composer's one Send: it sends while the agent is idle and queues while it works, and the queued review offers Steer now like any queued message (section 8.5). The review goes to the session the document was opened in, whether that is a coordinator or a subagent: the phone never reroutes it (Jesse, 2026-09-26). The message format:
 
 ```
 Review of docs/superpowers/plans/2026-09-25-settle-race.md: request changes.
@@ -561,7 +561,7 @@ Opened from the hub button. A large-detent sheet with a grouped list.
 - **Hubs:** the connected hub, add a hub (scan pairing code or paste link), switch, remove.
 - **About:** phone app version, and Update hub (confirms) only when an update is available.
 
-Not on the phone, with a footer line "More settings are in the web app": keyboard shortcuts, raw launch configuration fields, AGENTS.md, MCP servers, storage paths and daemon tuning.
+- **More:** today's administration screens stay reachable from here as they are: keyboard shortcuts, launch defaults and project launch settings, and the hub's runtime, storage, agents and MCP servers (Hub settings). Providers keeps adding, editing and removing provider instances. Jesse wants full administration on the phone; it comes in the redesign's language in a later phase (#2539), and until then these screens keep their own controls.
 
 ## 13. Attention system
 
@@ -575,19 +575,21 @@ Not on the phone, with a footer line "More settings are in the web app": keyboar
 | `warning` | Warning | ⚠ amber (`exclamationmark.triangle.fill`) | Needs you | the warning text |
 | `restartRequired` | Restart needed | two-arrow cycle, amber (`arrow.triangle.2.circlepath.circle.fill`; a single arc read as a "C" or a spinner) | Needs you | "Restart needed · restart this session to pick up the hub's update" (says what to restart) |
 | `active` | Working | pulse meter, green | Working | current activity |
-| `active`, no activity 3 to 10 min | Quiet | flat pulse meter | Working | "Quiet 4m" |
-| `active`, no activity 10 min or more | May be stuck | the pulse meter gone flat and amber (a ring read like the restart mark at row size) | top of Working | "May be stuck · no updates for 12m" (amber ink) |
+| `active`, no subagent running, no activity 3 to 10 min | Quiet | flat pulse meter | Working | "Quiet 4m" |
+| `active`, no subagent running, no activity 10 min or more | May be stuck | the pulse meter gone flat and amber (a ring read like the restart mark at row size) | top of Working | "May be stuck · no updates for 12m" (amber ink) |
 | turn ended, not seen since | Finished | blue dot (`circle.fill`, 8pt) | Finished | last message excerpt |
 | turn ended, seen | Idle | none | Idle (collapsed) | age only |
 | shut down / not loaded | Shut down | none | Projects only | age only |
 
 Marks always pair shape with color so they read without color.
 
+A session waiting on its subagents is never Quiet or May be stuck, however long it has been silent: its line reads "Waiting on 8 subagents", on the Board and in the tray (Jesse, 2026-09-26). The web's liveness line still reports a stall there; the phone doesn't.
+
 ### 13.2 Counts
 
 - **Needs you** = Failed + Question + Approval + Warning + Restart needed, over live, unarchived, top-level sessions. This is the single number used on the Live chip badge, the session Back button, the Live summary line and the Next capsule.
 - Finished and Working counts appear only in their band headers.
-- Subagent failures never count toward Needs you; they show on the row's last line ("2 subagents failed"), on the Subagents chip ("55 · 2 failed") and in the Subagents list's strip.
+- Subagent failures never count toward Needs you and never mark the coordinator's Board row, which is red only when the coordinator itself failed (Jesse, 2026-09-26). They show on the session's Subagents chip ("55 · 2 failed") and in the Subagents list's strip.
 
 ### 13.3 In-app alerts (this version's push)
 
@@ -599,7 +601,7 @@ Marks always pair shape with color so they read without color.
 
 ### 13.4 Phase 2: OS notifications, Live Activity, widget (designed, not built)
 
-- **Notifications:** categories Question (actions: up to three options plus "Reply…" with text input), Approval (Allow once, Deny; requires device unlock), Failed (Open, Retry), Finished (Open; delivered passively). Grouped per session. Questions and approvals use the time-sensitive interruption level. Payloads carry only titles and short reasons unless the user opts into message previews.
+- **Notifications:** categories Question (actions: up to three options plus "Reply…" with text input), Approval (Allow once, Deny; requires device unlock), Failed (Open, Retry, which sends what the transcript's Retry sends, 8.2), Finished (Open; delivered passively). Grouped per session. Questions and approvals use the time-sensitive interruption level. Payloads carry only titles and short reasons unless the user opts into message previews.
 - **Live Activity:** "Follow" a session from its ⋯ menu. Lock Screen: title, state, the subagent strip with counts, current activity, elapsed time. Dynamic Island compact: leading pulse meter, trailing "31 ▸ 2 ✕"; it turns amber when the session needs you. Expanded: title, activity, strip, and an Open button.
 - **Widget:** small shows the Needs you count and the oldest item; medium shows the top three Needs you rows. Taps deep-link.
 - **App icon badge:** the Needs you count.
@@ -610,7 +612,7 @@ Marks always pair shape with color so they read without color.
 - **Connection.** The app reconnects on its own, and nothing offers a Reconnect button: it retries at once, then backs off to every 30 seconds while it is in the foreground, and retries at once when it returns to the foreground. A close that retrying can't fix (a hub that speaks a different protocol version) stops the retries and says what to do, with no button, since nothing on the phone can fix it: "This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub." The app tries again each time it returns to the foreground, so an update on either side is picked up without a Reconnect button. Live: nothing extra (the Board header's fleet meter moves; the toolbar says nothing). Reconnecting (after 2 seconds without a connection): the Board toolbar says "Reconnecting…" and the session shows a thin ink-low bar under the nav bar; everything stays visible and scrollable. Offline (after 30 seconds): "Offline · updated 3m ago". Coming back is silent: content updates in place.
 - **Outbox.** Every action taken while disconnected or unconfirmed shows its state where it was taken: a message ghost says "Sending…", then disappears into the transcript; an archive shows the row dimmed until confirmed. If delivery can't be confirmed after reconnecting, the item says "Couldn't confirm this was sent" with Check and Discard, inline. There is no separate recovery screen.
 - **Drafts.** Per session and per document (review comments), persisted locally. Board rows show a Draft tag.
-- **Errors.** Inline, specific, one action. Starting a session that the hub rejects keeps the sheet open with the reason. A failed session shows its error in the transcript with Retry or Resume.
+- **Errors.** Inline, specific, one action. Starting a session that the hub rejects keeps the sheet open with the reason. A failed session shows its error in the transcript with Retry, which sends "Something went wrong. Please try again." (8.2), or Resume.
 - **Loading.** The Board and each session open from cache and update live. Older transcript pages load automatically when scrolling up. The only skeletons are on the very first load.
 - **Empty.** Absence is the signal: empty bands and chips are hidden. The only full empty state is "Nothing's running" on the Board.
 
@@ -726,10 +728,10 @@ Each has a fallback so the phone works before it lands.
 |---|---|---|---|
 | S1 | Row "why" payload on navigation summaries: first pending question (text, option labels), pending approval (action, target), error summary, last agent message excerpt (about 200 characters), documents and artifacts named in the final message | Rows say why they are there | Generic copy ("Has a question", "Failed"); fetch details by subscribing to the few Needs you sessions |
 | S2 | Pending approval flag on navigation summaries and in attention state | Approvals show as ✋, not "working" (also fixes the web's rail) | Subscribe to sessions counted in Needs you to find escalations |
-| S3 | Subagent tallies per top-level session: running, failed, done (the hub's job counts are active, failed, completed), including omitted descendants | The Subagents chip's strip and the row's "2 subagents failed" on 500-node trees | Tally loaded children; show "+N more" |
+| S3 | Subagent tallies per top-level session: running, failed, done (the hub's job counts are active, failed, completed), including omitted descendants | The Subagents chip's strip and counts on 500-node trees | Tally loaded children; show "+N more" |
 | S4 | A per-user "seen through" marker per session, with a method to set it, included in summaries | Finished-and-unseen vs Idle agrees across phone and web | Phone-local marker |
 | S5 | Activity buckets per live session (events per minute, last 7 to 10 minutes) and last activity time | The pulse meter and "may be stuck" | Use `updated_at`; show a single bar |
-| S6 | Direct subagent stop (and optionally message) | Stop a runaway subagent without asking the coordinator | Steer the coordinator |
+| S6 | Direct subagent stop, and a message to a running subagent | Stop a runaway subagent without asking the coordinator, and talk to a running one from its screen (section 9): today the hub serves a running subagent read-only and takes messages only once its run has ended | Steer the coordinator; a running subagent's screen holds Ask coordinator to stop it where its composer would be |
 | S7 | Image and document proxying for sessions on other hosts | Images and plans in remote sessions render | Show "Open on the host" notice |
 | S8 | Launch recipes stored on the hub (shared with the web) | Recipes follow you across devices | Phone-local recipes |
 | S9 | Document revision identity in doc reads | "Changes since you last read" | Diff against the phone's cached copy |
@@ -746,7 +748,9 @@ Each has a fallback so the phone works before it lands.
 ## 19. Out of scope and future
 
 - **Decision inbox.** Jesse expects to want one eventually and has not designed it. The Board keeps decisions inside sessions. When it exists, it would slot in as a destination from the Board header and reuse the ask dock's question and approval components.
-- iPad and Android (paused and deferred), voice, a cross-session document library, desktop-only administration, and diff review beyond the evidence rendering in 8.2.
+- **Full administration on the phone** (#2539). Jesse wants it, in the redesign's language, in a later phase. Until then today's administration screens stay reachable from the Hub (section 12).
+- **A view of running work** (#2538): the commands and subagents running now, which Jesse expects to want once the old Activity sheet is gone (the Subagents list and each step's evidence replace the rest of it).
+- iPad and Android (paused and deferred), voice, a cross-session document library, and diff review beyond the evidence rendering in 8.2.
 
 ## 20. Prototype and usability testing
 
@@ -777,7 +781,7 @@ For Claude Design or any visual pass. Each frame at 393×852pt, light and dark u
 13a. Notes & links: the notes bar on a working session; the sheet with your note, the agent's note and three links (two web, one file); the in-app browser over it; an ended session's read-only notes.
 14. Model sheet with Effort control.
 15. Subagents: strip, filters, failed first, nested running rows, Done folded.
-16. Subagent transcript, read-only, with "Ask coordinator to stop it" and its sheet.
+16. A running subagent's screen, with "Ask coordinator to stop it" where the composer would be, and its sheet; a finished subagent's screen with the composer.
 17. Reader: plan with changes since last read and comment markers.
 18. Reader: Send review sheet.
 19. Artifact viewer with a proposal sheet.
