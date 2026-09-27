@@ -6,9 +6,9 @@ import (
 )
 
 // delegateRunTerminal reports whether a delegate's latest run has ended with
-// no run open after it: the Subagents list's terminal rule
-// (projectStableActivityDelegate) and the row tally's, kept in one place so
-// the row and the list cannot disagree.
+// no run open after it. It is the one statement of that rule: every reader
+// that needs the answer calls this instead of restating the check, so they
+// cannot disagree.
 func delegateRunTerminal(outcome *delegatestore.Outcome, currentRunOpen bool) bool {
 	return outcome != nil && !currentRunOpen
 }

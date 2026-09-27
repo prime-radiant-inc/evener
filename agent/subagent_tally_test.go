@@ -84,7 +84,7 @@ func TestDelegateStatusInfoTerminalFollowsTheSharedRule(t *testing.T) {
 		{"outcome present, run not open", outcome, false, true},
 	} {
 		row := delegateSnapshot{id: "d1", lastOutcome: tc.lastOutcome, currentRunOpen: tc.currentRunOpen}
-		got := delegateStatusInfoFromSnapshot(time.Now(), "root", row).Terminal
+		got := delegateStatusInfoFromSnapshot(time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC), "root", row).Terminal
 		if shared := delegateRunTerminal(row.lastOutcome, row.currentRunOpen); got != shared {
 			t.Errorf("%s: Terminal = %v, delegateRunTerminal = %v; want them equal", tc.name, got, shared)
 		}

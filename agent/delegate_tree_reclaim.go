@@ -255,7 +255,7 @@ func (c *delegateTreeController) armRuntimeReclamationClaimLocked(roots, entries
 }
 
 func (c *delegateTreeController) isResidentTerminalRuntimeLocked(id string, aggregate *delegatestore.Aggregate) bool {
-	if aggregate == nil || aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.Phase != delegatestore.PhaseIdle && aggregate.Phase != delegatestore.PhaseClosed {
+	if aggregate == nil || !delegateRunTerminal(aggregate.LatestOutcome, aggregate.CurrentRunOpen) || aggregate.Phase != delegatestore.PhaseIdle && aggregate.Phase != delegatestore.PhaseClosed {
 		return false
 	}
 	if c.attentionRestoreHeldLocked(id) {
@@ -275,7 +275,7 @@ func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([
 	entries := make([]delegateRuntimeReclamationEntry, 0, len(members))
 	for _, id := range c.memberIDsLeafFirstLocked(members) {
 		aggregate := c.durable[id]
-		if aggregate == nil || aggregate.CurrentRunOpen || aggregate.LatestOutcome == nil || aggregate.Phase != delegatestore.PhaseIdle && aggregate.Phase != delegatestore.PhaseClosed {
+		if aggregate == nil || !delegateRunTerminal(aggregate.LatestOutcome, aggregate.CurrentRunOpen) || aggregate.Phase != delegatestore.PhaseIdle && aggregate.Phase != delegatestore.PhaseClosed {
 			return nil, false
 		}
 		if c.attentionRestoreHeldLocked(id) {
