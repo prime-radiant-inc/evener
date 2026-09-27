@@ -2,13 +2,14 @@
 
 import { describe, expect, test, vi } from "vitest";
 import { deferred } from "../../testing/deferred";
+import { nextMacrotask } from "../../testing/macrotask";
 import { createMutationProjectionWorkTracker, type MutationProjectionWorkPorts } from "./projectionWork";
 
 function realPorts(): MutationProjectionWorkPorts<ReturnType<typeof setTimeout>> {
   return {
     setTimeout: (callback, milliseconds) => globalThis.setTimeout(callback, milliseconds),
     clearTimeout: (timerId) => globalThis.clearTimeout(timerId),
-    yieldMacrotask: () => new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0)),
+    yieldMacrotask: nextMacrotask,
   };
 }
 
@@ -70,7 +71,7 @@ describe("createMutationProjectionWorkTracker", () => {
     });
     void tracker.track(second.promise);
     first.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextMacrotask();
     expect(settled).toBe(false);
     second.resolve();
     await expect(settling).resolves.toBe(2);
@@ -82,12 +83,11 @@ describe("createMutationProjectionWorkTracker", () => {
   // One settle still covers the whole chain.
   test("one settle waits out a chain whose steps start only after the previous one settles", async () => {
     const tracker = createMutationProjectionWorkTracker(realPorts());
-    const macrotask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
     let finished = false;
     void (async () => {
-      await tracker.track(macrotask());
-      await tracker.track(macrotask());
-      await tracker.track(macrotask());
+      await tracker.track(nextMacrotask());
+      await tracker.track(nextMacrotask());
+      await tracker.track(nextMacrotask());
       finished = true;
     })();
     await expect(tracker.settle()).resolves.toBe(3);
@@ -107,7 +107,7 @@ describe("createMutationProjectionWorkTracker", () => {
       return count;
     });
     before.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextMacrotask();
     expect(settled).toBe(false);
     after.resolve();
     await expect(settling).resolves.toBe(1);
@@ -116,11 +116,7 @@ describe("createMutationProjectionWorkTracker", () => {
   test("the stall tripwire fires after 4s of fake time when tracked work never settles", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const tracker = createMutationProjectionWorkTracker({
-        setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
-        clearTimeout: (timerId) => globalThis.clearTimeout(timerId),
-        yieldMacrotask: () => Promise.resolve(),
-      });
+      const tracker = createMutationProjectionWorkTracker(microtaskHopPorts());
       tracker.track(new Promise<void>(() => undefined));
       const settling = tracker.settle().then(
         () => undefined,
@@ -147,22 +143,21 @@ describe("createMutationProjectionWorkTracker", () => {
         return 0;
       },
       clearTimeout: () => undefined,
-      yieldMacrotask: () =>
-        new Promise<void>((resolve) => {
-          hops += 1;
-          setTimeout(resolve, 0);
-        }),
+      yieldMacrotask: () => {
+        hops += 1;
+        return nextMacrotask();
+      },
     });
     let working = true;
     void (async () => {
-      while (working) await tracker.track(new Promise<void>((resolve) => setTimeout(resolve, 0)));
+      while (working) await tracker.track(nextMacrotask());
     })();
     const settling = tracker.settle().catch((error: unknown) => error);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await nextMacrotask();
     trip?.();
     await expect(settling).resolves.toMatchObject({ message: expect.stringMatching(/projection work stalled/) });
     const hopsAtTrip = hops;
-    for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    for (let turn = 0; turn < 20; turn += 1) await nextMacrotask();
     working = false;
     expect(hops - hopsAtTrip).toBeLessThanOrEqual(1);
   });
