@@ -159,14 +159,12 @@ function workingOrder(isStuck: (row: NavigationSessionSummary) => boolean) {
  * you is never hidden behind "load more"; a row in both keeps its Live copy,
  * which carries children. Working keeps the hub's Live order (ruling 10),
  * except a row isStuck marks (S5's quietState "stuck", from the activity
- * poll), which floats to the top of the band (spec 7.1). isStuck is optional
- * because the poll's data isn't always at hand (an older hub, or before the
- * first read): omitting it leaves Working exactly as it read before S5. */
+ * poll), which floats to the top of the band (spec 7.1). */
 export function liveBands(
 	live: readonly NavigationSessionSummary[],
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
-	isStuck?: (row: NavigationSessionSummary) => boolean,
+	isStuck: (row: NavigationSessionSummary) => boolean = () => false,
 ): LiveBands {
 	const classify = rowClassifier(needsYouSection, isSeen);
 	const rows = new Map<string, NavigationSessionSummary>();
@@ -181,7 +179,7 @@ export function liveBands(
 	bands.needsYou.sort(needsYouOrder);
 	bands.finished.sort(newestFirst);
 	bands.idle.sort(newestFirst);
-	if (isStuck) bands.working.sort(workingOrder(isStuck));
+	bands.working.sort(workingOrder(isStuck));
 	return bands;
 }
 
@@ -244,7 +242,7 @@ function durationLabel(forMs: number): string {
 }
 
 function subagentsText(count: number): string {
-	return `Waiting on ${count} ${count === 1 ? "subagent" : "subagents"}`;
+	return `Waiting on ${plural(count, "subagent")}`;
 }
 
 /** whyLine's working-row text once a real activity read exists (S5): the
@@ -272,9 +270,9 @@ function workingWhyLine(
  * Board polls evener/activity/read); omitting them keeps every state exactly
  * as it read before S5, including a working row's pre-S5 fallback
  * (workingActivity). */
-export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSinceReadMs?: number): WhyLine | null {
+export function whyLine(item: ClassifiedRow, activity?: SessionActivity, msSinceReadMs = 0): WhyLine | null {
 	if (item.state === "working")
-		return activity ? workingWhyLine(item.row, activity, msSinceReadMs ?? 0) : { text: workingActivity(item.row) };
+		return activity ? workingWhyLine(item.row, activity, msSinceReadMs) : { text: workingActivity(item.row) };
 	const reason = REASONS[item.state];
 	return reason ? { word: WORDS[item.state], ...reason } : null;
 }
@@ -285,9 +283,10 @@ function commandOrWorking(row: NavigationSessionSummary): string {
 }
 
 /** What a working session is doing when there is no activity read at all (an
- * older hub, or before the first poll): the row's own children stand in for
- * S5's subagent tally, and more_subagents says how many more there are past
- * the hub's per-row cap (spec 18, S3's eventual replacement for this guess). */
+ * older hub, before the first poll, or while disconnected): the row's own
+ * children stand in for S5's subagent tally, and more_subagents says how many
+ * more there are past the hub's per-row cap (spec 18, S3's eventual
+ * replacement for this guess). */
 export function workingActivity(row: NavigationSessionSummary): string {
 	const subagents = row.children.filter((child) => child.state === "active").length;
 	const more = row.more_subagents ?? 0;
