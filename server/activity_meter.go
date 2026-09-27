@@ -98,12 +98,12 @@ func (m *activityMeter) snapshot() *appwire.ThreadActivity {
 	}
 	current := m.clock().Unix() / activitySlotSeconds
 	minutes := make([]int, activityBars)
-	for bar := range activityBars {
-		newest := current - int64((activityBars-1-bar)*activitySlotsPerBar)
-		for index := newest - activitySlotsPerBar + 1; index <= newest; index++ {
-			if slot := m.slots[index%activitySlotCount]; slot.index == index {
-				minutes[bar] += slot.count
-			}
+	for _, slot := range m.slots {
+		// A slot's age in slots picks its bar, the newest last. A slot a whole
+		// lap old or more, or ahead of a clock that stepped back, counts for
+		// nothing.
+		if age := current - slot.index; age >= 0 && age < activitySlotCount {
+			minutes[activityBars-1-age/activitySlotsPerBar] += slot.count
 		}
 	}
 	return &appwire.ThreadActivity{Minutes: minutes, LastActivityAt: m.lastMotion.UnixMilli()}
