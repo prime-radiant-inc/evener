@@ -57,10 +57,7 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 func cloneThreadItem(item ThreadItem) ThreadItem {
 	item.Images = cloneInputItems(item.Images)
 	item.OutputImages = CloneOutputImages(item.OutputImages)
-	if item.Position != nil {
-		position := *item.Position
-		item.Position = &position
-	}
+	item.Position = clonePointer(item.Position)
 	item.StartedAt = clonePointer(item.StartedAt)
 	item.CompletedAt = clonePointer(item.CompletedAt)
 	item.DurationMS = clonePointer(item.DurationMS)
@@ -85,10 +82,7 @@ func cloneTurnError(e *TurnError) *TurnError {
 		return nil
 	}
 	cp := *e
-	if cp.Cause != nil {
-		cause := *cp.Cause
-		cp.Cause = &cause
-	}
+	cp.Cause = clonePointer(cp.Cause)
 	cp.CodexErrorInfo = cloneCodexErrorInfo(e.CodexErrorInfo)
 	return &cp
 }
@@ -180,10 +174,7 @@ func CloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	cp.Jobs = CloneEvenerJobs(d.Jobs)
 	cp.Delegates = cloneDelegateInfos(d.Delegates)
 	cp.Watches = CloneEvenerWatches(d.Watches)
-	if d.TurnSlots != nil {
-		ts := *d.TurnSlots
-		cp.TurnSlots = &ts
-	}
+	cp.TurnSlots = clonePointer(d.TurnSlots)
 	cp.Agents = append([]string(nil), d.Agents...)
 	cp.DelegateDiagnostics = append([]string(nil), d.DelegateDiagnostics...)
 	cp.SkillDiagnostics = append([]EvenerSkillDiagnostic(nil), d.SkillDiagnostics...)
@@ -250,10 +241,7 @@ func cloneDelegateInfo(d EvenerDelegateInfo) EvenerDelegateInfo {
 	d.DurationMS = clonePointer(d.DurationMS)
 	d.StructuredValid = clonePointer(d.StructuredValid)
 	d.Usage = clonePointer(d.Usage)
-	if d.Worktree != nil {
-		worktree := *d.Worktree
-		d.Worktree = &worktree
-	}
+	d.Worktree = clonePointer(d.Worktree)
 	d.Warnings = append([]string(nil), d.Warnings...)
 	d.Diagnostics = append([]string(nil), d.Diagnostics...)
 	d.Message = append(json.RawMessage(nil), d.Message...)
