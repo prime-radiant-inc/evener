@@ -3,7 +3,7 @@ import * as React from "react";
 import { afterAll, afterEach, aroundEach, beforeAll, beforeEach } from "vitest";
 import { reactActScopeGuardPorts, waitOutLeakedActScope } from "./testActScopeGuard";
 import { guardConsoleOutput } from "./testConsoleGuard";
-import { guardTestingLibraryAgainstEndedBodies, runAsTheCurrentTest } from "./testEndedBodyGuard";
+import { guardTestingLibraryAgainstEndedBodies, runAsTheCurrentTest, stopMarkingTests } from "./testEndedBodyGuard";
 
 // Every test file must get its own VM context: stores, pane registrations and
 // module mocks are module-scoped. Vitest's vmThreads pool gives each file one
@@ -72,11 +72,14 @@ afterAll(() => {
 
 // A body that outlives its test (vitest cannot stop one that timed out) is
 // stopped at its Testing Library waits, and its events are dropped, instead of
-// acting on the next test (testEndedBodyGuard.ts). A wait it stopped in had
-// turned the act environment off and never turns it back on, so every test
-// starts with it on.
+// acting on the next test (testEndedBodyGuard.ts). The marking that tells the
+// guard which test is running stops once the file is done, so the file's
+// storage does not stay live in its worker. A wait a body stopped in had turned
+// the act environment off and never turns it back on, so every test starts
+// with it on.
 guardTestingLibraryAgainstEndedBodies();
 aroundEach((runTest, context) => runAsTheCurrentTest(runTest, context.signal));
+afterAll(stopMarkingTests);
 beforeEach(() => {
   reactEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });

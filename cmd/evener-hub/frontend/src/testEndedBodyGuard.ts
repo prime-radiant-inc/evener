@@ -39,6 +39,20 @@ export function runAsTheCurrentTest(runTest: () => Promise<void>, signal: AbortS
   return currentTest.run(run, runTest);
 }
 
+// Before Node 24 (CI runs 22), every AsyncLocalStorage that has run and was
+// never disabled writes a property onto each promise its worker creates from
+// then on. vmThreads evaluates this module afresh for every test file, so each
+// file turns its own storage off once its tests are done; otherwise a worker
+// carries one live storage per file it has run.
+export function stopMarkingTests(): void {
+  currentTest.disable();
+}
+
+// The running test's marker, as a wait or an event begun here would read it.
+export function currentTestMarkerForTests(): TestRun | undefined {
+  return currentTest.getStore();
+}
+
 const whenStopped = new Set<() => void>();
 
 function stopBody(): Promise<never> {
