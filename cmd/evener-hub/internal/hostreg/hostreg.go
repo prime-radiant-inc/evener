@@ -559,7 +559,12 @@ func (r *Registry) Update(entry Host) error {
 	// but the generation.
 	entry.IncarnationID = live.IncarnationID
 	entry.PresenceEpoch = live.PresenceEpoch
-	r.presence[entry.Name] = entry.PresenceEpoch
+	// The name's counter only rises: seeding (SeedHighWater) can have raised it
+	// above the live entry's own value, and lowering it here would let a later
+	// re-add mint at or below a mark the file already carries.
+	if entry.PresenceEpoch > r.presence[entry.Name] {
+		r.presence[entry.Name] = entry.PresenceEpoch
+	}
 	r.hosts[entry.Name] = entry
 	return nil
 }
@@ -604,12 +609,23 @@ type HighWater struct {
 func (r *Registry) SeedHighWater(marks map[string]HighWater) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.presence == nil {
+		r.presence = map[string]uint64{}
+	}
 	for name, mark := range marks {
 		if mark.Generation > r.gen {
 			r.gen = mark.Generation
 		}
 		if mark.PresenceEpoch > r.presence[name] {
 			r.presence[name] = mark.PresenceEpoch
+		}
+		// A live entry carries the name's counter: seeding can arrive after the
+		// entry was minted (a registry built by New and seeded later), and an
+		// entry left below the counter would let the next write lower the file's
+		// retained mark when it records the entry's epoch.
+		if live, ok := r.hosts[name]; ok && live.PresenceEpoch < r.presence[name] {
+			live.PresenceEpoch = r.presence[name]
+			r.hosts[name] = live
 		}
 	}
 }
@@ -807,6 +823,10 @@ func (r *Registry) Remove(name string) error {
 	}
 	delete(r.hosts, name)
 	delete(r.edges, name)
+	// A pending stamp describes the live entry this call removes (or an insert
+	// that never landed); either way it must not survive to be consumed by a
+	// later insert, which would re-adopt the removed incarnation's id and epoch.
+	delete(r.pending, name)
 	host.PresenceEpoch = r.nextPresenceLocked(name)
 	r.presence[name] = host.PresenceEpoch
 	return nil

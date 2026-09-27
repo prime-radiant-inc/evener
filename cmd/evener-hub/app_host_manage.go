@@ -936,15 +936,18 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		mutating:         map[string]struct{}{},
 		logf:             logf,
 	}}
-	m.cfg.store.set(hosts.All())
 	// The file's records are read once, before anything else can mint: its
 	// retained marks seed the counters, so a host folded in below mints above
 	// every mark the file carries, and any live host the file carries no
-	// identity for gets its pair recorded in the same boot.
+	// identity for gets its pair recorded in the same boot. Seeding runs before
+	// the store takes its snapshot, so the entries the snapshot carries are the
+	// seeded ones — a registry built before the marks were known would otherwise
+	// record its pre-seed epochs.
 	fileRecords, hasFile := m.hostFileRecords()
 	if hasFile {
 		m.seedHighWater(fileRecords)
 	}
+	m.cfg.store.set(hosts.All())
 	migrated, err := m.migrateLegacyHostSidecar()
 	if err != nil {
 		// Loud, not fatal: the hub.toml hosts still serve. The store stays

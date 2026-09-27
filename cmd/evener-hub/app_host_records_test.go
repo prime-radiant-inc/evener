@@ -62,6 +62,42 @@ func highWaterFor(t *testing.T, path, name string) HostGeneration {
 	return record
 }
 
+// TestHubTOMLKeepsARetainedMarkWhenTheRegistryWasSeededLate pins roborev round
+// 4's late-seeding finding: a registry built with plain hostreg.New mints a live
+// entry before the manager seeds the file's marks, so seeding must carry the
+// live entry up with the counter — otherwise the boot write records the minted
+// low epoch and lowers the file's retained mark.
+func TestHubTOMLKeepsARetainedMarkWhenTheRegistryWasSeededLate(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	doc := "[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n" +
+		"\n[generations.alpha]\ngeneration = 7\nincarnation_id = \"old-incarnation\"\npresence_epoch = 5\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	// Plain New: the entry is minted before the manager seeds the marks.
+	hosts, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(string, ...any) {})
+	entry, _ := hosts.Get("alpha")
+	if entry.PresenceEpoch < 5 {
+		t.Fatalf("the live entry's presence epoch = %d, seeding did not carry it up to the mark 5", entry.PresenceEpoch)
+	}
+	mark := highWaterFor(t, path, "alpha")
+	if mark.PresenceEpoch < 5 {
+		t.Fatalf("the boot write lowered the retained mark's epoch to %d, want at least 5", mark.PresenceEpoch)
+	}
+	if mark.PresenceEpoch != entry.PresenceEpoch {
+		t.Fatalf("recorded epoch %d, want the live entry's %d", mark.PresenceEpoch, entry.PresenceEpoch)
+	}
+}
+
 // TestHubTOMLGenerationsMarkIsNotALiveIdentity pins roborev round 2's High
 // finding: a live host whose [host_records] entry is missing must be loaded as a
 // new incarnation — the [generations] mark restores the generation and seeds

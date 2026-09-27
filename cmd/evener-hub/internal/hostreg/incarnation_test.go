@@ -113,6 +113,74 @@ func TestPresenceEpochAdvancesExactlyOncePerPresenceEvent(t *testing.T) {
 	}
 }
 
+// TestRegistryForgotTheRemovedNamesPendingStamp pins roborev round 4's first
+// finding: a replacement stamp minted for a live entry must not survive the
+// entry's removal to be consumed by a later insert, which would re-adopt the
+// removed incarnation's id and epoch.
+func TestRegistryForgotTheRemovedNamesPendingStamp(t *testing.T) {
+	r, err := New([]Host{{Name: "a", SSH: "a.example"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	live, _ := r.Get("a")
+	stamp, err := r.Stamp(Host{Name: "a", SSH: "a2.example"})
+	if err != nil {
+		t.Fatalf("Stamp(a): %v", err)
+	}
+	if stamp.IncarnationID != live.IncarnationID {
+		t.Fatalf("the replace stamp = %+v, want the live incarnation %q", stamp, live.IncarnationID)
+	}
+	if err := r.Remove("a"); err != nil {
+		t.Fatalf("Remove(a): %v", err)
+	}
+	reAdded := Host{
+		Name: "a", SSH: "a.example",
+		Generation: stamp.Generation, IncarnationID: stamp.IncarnationID, PresenceEpoch: stamp.PresenceEpoch,
+	}
+	if err := r.Add(reAdded); err != nil {
+		t.Fatalf("re-Add(a): %v", err)
+	}
+	got, _ := r.Get("a")
+	if got.IncarnationID == live.IncarnationID {
+		t.Fatal("the insert consumed the removed entry's replacement stamp and reused its incarnation id")
+	}
+	if got.PresenceEpoch <= stamp.PresenceEpoch {
+		t.Fatalf("re-added presence epoch = %d, want above the removed %d", got.PresenceEpoch, stamp.PresenceEpoch)
+	}
+}
+
+// TestSeedHighWaterNeverLowersTheCounterOrALiveEntry pins roborev round 4's
+// second and fourth findings: seeding raises the counters without lowering one
+// (an update preserves the max) and raises a live entry that was minted before
+// the seed, so a later write cannot record an epoch below the retained mark.
+func TestSeedHighWaterNeverLowersTheCounterOrALiveEntry(t *testing.T) {
+	// A registry built by plain New mints the live entry against unseeded
+	// counters; seeding then has to carry the entry up with the mark.
+	r, err := New([]Host{{Name: "a", SSH: "a.example"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	r.SeedHighWater(map[string]HighWater{"a": {Generation: 4, PresenceEpoch: 5}})
+	live, _ := r.Get("a")
+	if live.PresenceEpoch != 5 {
+		t.Fatalf("the live entry's presence epoch = %d, want the seeded counter 5", live.PresenceEpoch)
+	}
+	// An update must not lower the counter the seed raised.
+	if err := r.Update(Host{Name: "a", SSH: "a2.example"}); err != nil {
+		t.Fatalf("Update(a): %v", err)
+	}
+	updated, _ := r.Get("a")
+	if updated.PresenceEpoch != 5 {
+		t.Fatalf("the update lowered the presence epoch to %d, want 5", updated.PresenceEpoch)
+	}
+	if next := r.NextPresenceEpoch("a"); next != 6 {
+		t.Fatalf("NextPresenceEpoch(a) = %d, want 6", next)
+	}
+	// A zero-value Registry's seeding is a no-op, not a panic.
+	var zero Registry
+	zero.SeedHighWater(map[string]HighWater{"a": {Generation: 1, PresenceEpoch: 1}})
+}
+
 // TestRegistryRefusesAStampThatNoLongerAdvances pins roborev round 3's Low
 // finding: an edit that carries a matching pending stamp whose generation no
 // longer advances past the live entry's is refused — leaving the stamp
