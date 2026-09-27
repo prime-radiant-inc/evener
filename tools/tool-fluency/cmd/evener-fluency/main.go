@@ -1163,7 +1163,7 @@ func commitFixture(workDir string) error {
 		{"add", "-A"},
 		{"commit", "-q", "--allow-empty", "-m", "init"},
 	} {
-		cmd := exec.Command("git", args...)
+		cmd := exec.CommandContext(context.Background(), "git", args...)
 		cmd.Dir = workDir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))

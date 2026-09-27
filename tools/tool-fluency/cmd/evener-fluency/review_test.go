@@ -171,12 +171,12 @@ func TestReviewPackMasksUnderARelativeMaskRoot(t *testing.T) {
 func TestMaskRunDetailsMasksTheResolvedRoot(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	real := filepath.Join(dir, "real")
-	if err := os.Mkdir(real, 0o755); err != nil {
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(dir, "link")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(realDir, link); err != nil {
 		t.Fatal(err)
 	}
 	resolved, err := filepath.EvalSymlinks(link)

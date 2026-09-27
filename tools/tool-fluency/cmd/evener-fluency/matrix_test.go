@@ -16,15 +16,15 @@ func TestMatrixConfigsExpandsVersionsByModels(t *testing.T) {
 	base := runConfig{repetitions: 3, probesDir: "tasks"}
 	cfgs := matrixConfigs(base,
 		[]matrixVersion{{Label: "baseline", Bin: "/b/base"}, {Label: "v1-A", Bin: "/b/a"}},
-		[]string{"lunarouter/m1", "lunarouter/m2"}, "/out")
+		[]string{"lunarouter/m1", "lunarouter/m2"}, "out")
 	if len(cfgs) != 4 {
 		t.Fatalf("got %d configs, want 4", len(cfgs))
 	}
 	want := map[string]string{
-		filepath.Join("/out", "baseline", "lunarouter-m1"): "/b/base",
-		filepath.Join("/out", "baseline", "lunarouter-m2"): "/b/base",
-		filepath.Join("/out", "v1-A", "lunarouter-m1"):     "/b/a",
-		filepath.Join("/out", "v1-A", "lunarouter-m2"):     "/b/a",
+		filepath.Join("out", "baseline", "lunarouter-m1"): "/b/base",
+		filepath.Join("out", "baseline", "lunarouter-m2"): "/b/base",
+		filepath.Join("out", "v1-A", "lunarouter-m1"):     "/b/a",
+		filepath.Join("out", "v1-A", "lunarouter-m2"):     "/b/a",
 	}
 	for _, cfg := range cfgs {
 		if bin, ok := want[cfg.outDir]; !ok || cfg.evenerBin != bin {

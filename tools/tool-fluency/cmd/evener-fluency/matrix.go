@@ -46,15 +46,13 @@ func runMatrix(cfgs []runConfig, maxConcurrent int) error {
 	errs := make([]error, len(cfgs))
 	var wg sync.WaitGroup
 	for i, cfg := range cfgs {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			if err := runMatrixSuite(cfg); err != nil {
 				errs[i] = fmt.Errorf("%s: %w", cfg.outDir, err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	return errors.Join(errs...)
