@@ -60,7 +60,6 @@ vi.mock("@react-navigation/native", async () => {
 	return {
 		useFocusEffect: (effect: () => void | (() => void)) =>
 			useEffect(effect, []),
-		useIsFocused: () => stack.focused,
 		useNavigationState: <T,>(select: (state: typeof stack.state) => T) =>
 			select(stack.state),
 	};

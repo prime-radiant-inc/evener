@@ -136,12 +136,7 @@ vi.mock("expo-file-system", () => ({
 		constructor(public uri: string) {}
 	},
 }));
-vi.mock("expo-image-manipulator", () => ({
-	ImageManipulator: {
-		manipulateAsync: vi.fn(async () => ({ uri: "manipulated" })),
-	},
-	SaveFormat: { JPEG: "jpeg" },
-}));
+vi.mock("expo-image-manipulator", () => ({}));
 vi.mock("expo-image-picker", () => ({
 	launchImageLibraryAsync: vi.fn(async () => ({ canceled: true, assets: [] })),
 	UIImagePickerPreferredAssetRepresentationMode: { Current: "current" },
