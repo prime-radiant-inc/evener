@@ -125,6 +125,34 @@ test-native-bundle: native-preflight
 test-api-package:
 	@cd appwire-client/typescript && NODE_DISABLE_COMPILE_CACHE=1 npm run qualification
 
+## The hub MCP server's unit gate (typecheck plus node:test).
+## proves: The hub-mcp package compiles under its tsconfig and its unit tests
+##   pass — configuration resolution, event classification and wait semantics,
+##   session/transcript rendering, and the send_message state machine driven
+##   against a scripted fake hub port.
+## trigger: Hub MCP CI; local pre-merge when hub-mcp sources change.
+## requires: Node 22+ and network access to the npm registry on a fresh
+##   checkout (its preflight installs from the committed lockfile and builds
+##   the appwire-client dist); after that, no network, hub, or provider.
+## fails-when: Preflight cannot repair the environment (it refuses symlinked
+##   node_modules by design), tsc reports errors, or any node:test fails.
+test-hub-mcp:
+	@cd hub-mcp && NODE_DISABLE_COMPILE_CACHE=1 npm run test
+
+## The hub MCP server's end-to-end gate: the PM workflow through real MCP.
+## proves: One raw JSON-RPC MCP client drives every hub-mcp tool over stdio
+##   against a real HOME-isolated hub whose provider is fakellm — orient,
+##   delegate, watch, steer mid-turn, review the transcript, interrupt,
+##   report, and stop — with real daemon sessions running real turns.
+## trigger: Hub MCP CI; local pre-merge for this area.
+## requires: Go toolchain (builds evener and fakellm), Node 22+, and the
+##   hub-mcp package's preflight; no credential, no external network beyond
+##   the registry installs above, no hardcoded ports.
+## fails-when: Any stack component fails to start, any MCP tool call errors,
+##   or a workflow assertion fails; the run directory is kept for diagnosis.
+test-hub-mcp-e2e:
+	@scripts/e2e/hub-mcp-e2e.sh
+
 # The module sets a scope selects, shared by `make test` (TEST_SCOPE) and
 # `make test-race` (RACE_SCOPE). Every set derives from GO_MODULES, so a new
 # module joins each scope it belongs to without an edit here.
