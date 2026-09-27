@@ -449,6 +449,11 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/host/status": false,
 		"evener/host/remove": false,
 		"evener/host/update": false,
+		// The deploy pipeline's planning read (08b) is controller-LOCAL for the
+		// same reason, and stronger: it mints and persists a confirmation token
+		// against this controller's own host, so a peer hub forwarding it would
+		// plan another hub's deploy.
+		"evener/host/plan": false,
 		// The credential push is controller-LOCAL: it reads this controller's
 		// own store and dispatches to a host itself, like evener/host/request.
 		// It is never a proxied call, so a peer hub cannot make this hub push

@@ -1091,6 +1091,44 @@ export interface HostNotificationParams {
   params?: unknown;
 }
 
+export interface HostPlan {
+  host: string;
+  generation: number;
+  targetPath: string;
+  controllerRevision: string;
+  restartFollows: boolean;
+  factsRevision: string;
+  hubTomlFingerprint: string;
+  factsCapturedAt: string;
+  factsAgeSec: number;
+  runningVersion: string;
+  runningHealthy: boolean;
+  runningProcessStartTime?: string;
+}
+
+export interface HostPlanNoToken {
+  outcome: string;
+  staleFacts: HostPlanStaleFacts;
+  terminal: boolean;
+  remnantId?: string;
+}
+
+export interface HostPlanParams {
+  name: string;
+}
+
+export interface HostPlanPlanned {
+  outcome: string;
+  plan: HostPlan;
+  token: string;
+}
+
+export interface HostPlanStaleFacts {
+  message: string;
+  attached: boolean;
+  reason: string;
+}
+
 export interface HostPushCredentialsParams {
   host: string;
 }
@@ -3787,6 +3825,7 @@ export const METHOD_NAMES = [
   "evener/host/status",
   "evener/host/remove",
   "evener/host/update",
+  "evener/host/plan",
   "evener/host/pushCredentials",
   "evener/session/image",
 ] as const;
@@ -4002,6 +4041,7 @@ export interface MethodTypes {
   "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
   "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
   "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
+  "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
   "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };
 }

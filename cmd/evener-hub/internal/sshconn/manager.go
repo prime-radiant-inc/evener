@@ -369,7 +369,7 @@ type Manager struct {
 	chans     map[string]*Channel
 	// devDeployed records hosts this Manager has installed its own
 	// identity-less build on — "dev", or a dirty "<sha>-dirty" build whose
-	// version cannot prove the code matches (see isUnverifiableVersion) — so the
+	// version cannot prove the code matches (see UnverifiableVersion) — so the
 	// deploy happens at most once per process rather than on every reconnect.
 	devDeployed map[string]bool
 	// resolvedTargets records, per host, the executable path this Manager
@@ -1752,7 +1752,7 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 	// refusal is terminal rather than a retryable ErrDeploy, so the same forced
 	// deploy cannot become an endless cross-compile.
 	deployPossible := m.canDeploy()
-	devUnverified := isUnverifiableVersion(expected) && deployPossible && !m.isDevDeployed(name)
+	devUnverified := UnverifiableVersion(expected) && deployPossible && !m.isDevDeployed(name)
 
 	// A deploy is only a decision when there is something to deploy. With no
 	// BuildSource/BuildBinary configured, attempting one fails at
@@ -2560,12 +2560,16 @@ func isDirtyVersion(v string) bool {
 	return strings.HasSuffix(strings.TrimSpace(v), "-dirty")
 }
 
-// isUnverifiableVersion reports whether v cannot prove two builds are the same
+// UnverifiableVersion reports whether v cannot prove two builds are the same
 // code. An empty version and "dev" are identity-less by construction; a dirty
 // version is a commit plus a marker rather than a content identity, so a host
 // reporting the controller's own "<sha>-dirty" may be running a different dirty
 // checkout of that commit.
-func isUnverifiableVersion(v string) bool {
+//
+// It is exported for evener/host/plan, which must apply the same rule the deploy
+// paths do: deploy pipeline 08b §6 states that "a probed unverifiable revision
+// (`dev` or dirty) always reads as outdated: restart follows".
+func UnverifiableVersion(v string) bool {
 	return isDevVersion(v) || isDirtyVersion(v)
 }
 

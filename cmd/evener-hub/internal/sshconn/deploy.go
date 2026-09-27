@@ -742,6 +742,24 @@ func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, run
 	return bindir, shareBindir, p, nil
 }
 
+// DeployRunTargetFor resolves the run target a deploy would install to for host,
+// as a pure function of its entry and preflight facts: the configured
+// evener_path — refused here when it cannot serve a hub (checkRunTarget) — or
+// the installer's default ~/.local/bin/evener under the host's home. It is
+// installerDirs' own rule, exported for evener/host/plan, which must name the
+// resolved deploy target it would deploy to (deploy pipeline 08b §6 step 1)
+// before anything dials: a plan that named a different path than the deploy
+// uses would be a plan for a different deploy.
+//
+// The extra resolutions the deploy paths apply on top — the running hub's own
+// executable, then whatever `evener` resolves to on the remote PATH — need
+// remote commands and belong to the paths that dial, so a plan resolves the
+// entry-and-facts rule and the deploy re-resolves with what it finds live.
+func DeployRunTargetFor(host hostreg.Host, facts Preflight) (string, error) {
+	_, _, runTarget, err := installerDirs(host, facts)
+	return runTarget, err
+}
+
 // deployInstaller is the fallback deploy path for a controller with no build
 // source: it streams the embedded installer to the host pinned to the
 // controller's own build channel, then verifies the installed binary is the

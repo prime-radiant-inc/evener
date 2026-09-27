@@ -137,7 +137,7 @@ func build() docData {
 			Scope:      string(m.Scope),
 			Summary:    m.Summary,
 			ParamsType: register(m.Params),
-			ResultType: register(m.Result),
+			ResultType: resultType(register, m),
 		})
 	}
 	for _, n := range appwire.Notifications {
@@ -153,6 +153,22 @@ func build() docData {
 	}
 	sort.Slice(d.Types, func(i, j int) bool { return d.Types[i].Name < d.Types[j].Name })
 	return d
+}
+
+// resultType renders one method's result type. An ordinary method is its single
+// result struct; a method registered as a union (appwire.MethodResultArms) is
+// the union over its arm names, with every arm registered so each gets its own
+// field table — the union type itself carries no fields of its own to document.
+func resultType(register func(any) string, m appwire.MethodSpec) string {
+	arms, union := appwire.MethodResultArms[m.Name]
+	if !union {
+		return register(m.Result)
+	}
+	names := make([]string, 0, len(arms))
+	for _, arm := range arms {
+		names = append(names, register(arm))
+	}
+	return strings.Join(names, " | ")
 }
 
 func registerType(typeNames map[string]typeView, v any) string {

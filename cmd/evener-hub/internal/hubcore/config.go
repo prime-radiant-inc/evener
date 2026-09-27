@@ -163,6 +163,23 @@ type WebConfig struct {
 	// currently attached (component 06). Nil leaves every remote host online
 	// (tests).
 	RemoteHostOnline func(host string) bool
+	// RemoteHostPlanFacts refreshes one host's preflight facts for
+	// evener/host/plan (deploy pipeline 08b §6 step 1): the ungated refresh a
+	// plan is built from, on the attached channel. The returned CapturedAt must
+	// be the instant the facts were actually read — the plan's freshness term
+	// and the minted token's deadline both measure from it (§3). An error is the
+	// no-token `refresh-failed` arm, whatever its cause. Nil leaves the hub with
+	// no facts seam: a plan then refuses `refresh-failed` rather than minting
+	// from facts nothing read.
+	RemoteHostPlanFacts func(ctx context.Context, host hostreg.Host) (HostPlanFacts, error)
+	// RemoteHostPlanProbe probes one host's running state for evener/host/plan
+	// (§6 step 2): the gated running read over the attach bridge, given the
+	// client this plan resolved for the host's live channel. An error that
+	// reports the remote predates the deploy pipeline's running handler is the
+	// no-token `handler-absent` arm; any other error is `probe-failed`. Nil
+	// leaves the hub with no probe seam — the honest state until
+	// evener/host/running ships — so a plan refuses `handler-absent`.
+	RemoteHostPlanProbe func(ctx context.Context, host hostreg.Host, client *appwire.Client) (HostRuntimeProbe, error)
 
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)

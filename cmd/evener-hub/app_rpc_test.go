@@ -12777,6 +12777,10 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerHostStatus,
 		appwire.MethodEvenerHostRemove,
 		appwire.MethodEvenerHostUpdate,
+		// The deploy pipeline's planning read (08b): a mutation — it mints and
+		// persists the confirmation token — controller-local like the rest of
+		// the host surface, so a peer hub cannot plan against this hub's hosts.
+		appwire.MethodEvenerHostPlan,
 		// Component 07c's credential push: controller-local like the proxy, so a
 		// peer hub cannot make this hub push its credentials by forwarding it.
 		appwire.MethodEvenerHostPushCredentials,

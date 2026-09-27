@@ -144,6 +144,22 @@ type hostManagerConfig struct {
 	// facts returns the preflight facts for the connection behind client.
 	// Nil leaves rows without preflight facts.
 	facts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
+	// planFacts refreshes one host's preflight facts for evener/host/plan
+	// (deploy pipeline 08b §6 step 1). It is the ungated refresh a plan is built
+	// from: the handler calls it on the attached channel and refuses the
+	// no-token `refresh-failed` arm on any error. Nil (tests, embedders, and a
+	// hub with no live channel) refuses `refresh-failed`.
+	planFacts func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error)
+	// planProbe probes one host's running state for evener/host/plan (§6 step
+	// 2), given the client the handler resolved for the host's live channel. Nil
+	// refuses the no-token `handler-absent` arm — the honest state until
+	// evener/host/running ships and the gate slice wires the gated probe.
+	planProbe func(ctx context.Context, host hostreg.Host, client *appwire.Client) (hubcore.HostRuntimeProbe, error)
+	// planControllerDirty reports whether the running controller's build is
+	// unverifiable (built from a dirty tree), the §6 terminal `controller-dirty`
+	// arm's condition. Nil reads buildinfo, the same signal the deploy paths
+	// refuse on (sshconn's errControllerDirty).
+	planControllerDirty func() bool
 	// state retains per-host attach state from the manager's lifecycle
 	// events plus the last-known facts of the last attached render, so
 	// offline and in-progress rows keep the metadata the wire contract
@@ -955,10 +971,28 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		clientIfAttached: cfg.RemoteHostClientIfAttached,
 		handshake:        cfg.RemoteHostHandshake,
 		facts:            cfg.RemoteHostFacts,
+		planFacts:        cfg.RemoteHostPlanFacts,
+		planProbe:        cfg.RemoteHostPlanProbe,
 		state:            newHostAttachState(),
 		mutating:         map[string]struct{}{},
 		logf:             logf,
 	}}
+	if m.cfg.planFacts == nil && manager != nil {
+		// The production refresh seam (deploy pipeline 08b §6 step 1): the facts
+		// the live channel already carries. The dedicated ungated one-shot SSH
+		// refresh — an explicit read whose capture instant this handler can stamp
+		// from the read itself — belongs to the slice that ships the gate and
+		// probe (§5, §6 step 2), so until then the capture instant is the moment
+		// this seam reads the channel's captured preflight, which is what a
+		// token's freshness term must measure from.
+		m.cfg.planFacts = func(_ context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
+			preflight, ok := manager.PreflightIfAttached(host.Name)
+			if !ok {
+				return hubcore.HostPlanFacts{}, fmt.Errorf("host %q has no live channel to read preflight facts from", host.Name)
+			}
+			return hostPlanFactsFromPreflight(host, preflight), nil
+		}
+	}
 	// The file's records are read once, before anything else can mint: its
 	// retained marks seed the counters, so a host folded in below mints above
 	// every mark the file carries, and any live host the file carries no
@@ -1268,6 +1302,11 @@ func registerHostManageHandlers(server *appserver.Server, sources *appsource.Reg
 		}
 		return resp, err
 	}))
+	// evener/host/plan rides the same manager and the same registration-time
+	// origin guard the settings mutations do (app_host_ops.go): plan is a
+	// mutation — it mints and persists the confirmation token — so it admits
+	// exactly like them and never through a second, weaker path.
+	m.registerOpsHandlers(server)
 	return m
 }
 
