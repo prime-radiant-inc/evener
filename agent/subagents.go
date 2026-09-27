@@ -436,14 +436,14 @@ func removeRootOnlySubagentTools(items []string) []string {
 //     cannot compact can only wait for the automatic compaction unsteered;
 //   - use_skill is the skill-activation capability, without which a brief that
 //     directs a delegate to run a skill cannot be followed literally;
-//   - job_status, job_stop, and job_watch supervise the session's OWN jobs.
-//     Each authorizes its target itself — a watch's `parent` source needs
+//   - job_list, job_status, job_stop, and job_watch supervise the session's OWN
+//     jobs. Each authorizes its target itself — a watch's `parent` source needs
 //     delegate(watch_parent=true), and a concrete job id must be owned by the
 //     reading or stopping session (see rootOnlyJobControlTools) — so a leaf
 //     gains no reach over its parent's jobs. Without them a long foreground
 //     command promoted to a background job is unawaitable, and the one-shot
 //     drain kills it after its two escalation turns (#2645).
-var intrinsicSubagentTools = []string{"task_list", "compact_context", "use_skill", "job_status", "job_stop", "job_watch"}
+var intrinsicSubagentTools = []string{"task_list", "compact_context", "use_skill", "job_list", "job_status", "job_stop", "job_watch"}
 
 func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools bool, allowed []string, denied []string) {
 	switch {

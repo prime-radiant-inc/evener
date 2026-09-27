@@ -76,6 +76,12 @@ func TestSubagentRegistryHasIntrinsicTools(t *testing.T) {
 					t.Errorf("agent_type=%q: child registry has no %q — a session that can run jobs must be able to supervise its own jobs", agentType, want)
 				}
 			}
+			// Literal, not read off intrinsicSubagentTools: the untyped surface
+			// keeps job_list, so a typed leaf must be able to enumerate its own
+			// jobs too, and this pin must fail if job_list leaves the set.
+			if prepared.sub.sess.reg.Get("job_list") == nil {
+				t.Errorf("agent_type=%q: child registry has no job_list to enumerate its own jobs", agentType)
+			}
 			releasePreparedTreeSlot(prepared)
 			prepared.sub.sess.Close()
 		})
