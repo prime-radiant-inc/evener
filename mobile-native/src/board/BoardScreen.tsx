@@ -1,9 +1,8 @@
 import type { NavigationSessionSummary, SearchResult } from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import type { SearchBarCommands, SearchBarProps } from "react-native-screens";
 import { type SFSymbol, SymbolView } from "expo-symbols";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
 	ActionSheetIOS,
 	Alert,
@@ -14,6 +13,7 @@ import {
 	Pressable,
 	ScrollView,
 	Text,
+	TextInput,
 	useWindowDimensions,
 	View,
 } from "react-native";
@@ -140,35 +140,34 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		setIdleFolded(folded);
 	};
 
+	// Where each section starts in the scroller, for the chips and the
+	// summary line to jump to. Bands measure inside the Live block.
+	const scroller = useRef<ScrollView>(null);
 	const search = useSearch(connected ? client : null);
-	const searchBar = useRef<SearchBarCommands>(null);
-	// Searching from the moment the search bar takes focus until Cancel.
+	const searchInput = useRef<TextInput>(null);
+	const [searchText, setSearchText] = useState("");
+	// Searching from the moment the field takes focus until Cancel.
 	const [searching, setSearching] = useState(false);
 	const [scope, setScope] = useState<SearchScope>("all");
 	const recent = recentSearches(hubId);
 	const [recentList, setRecentList] = useState(() => recent.list());
-	const searchBarOptions = useMemo(
-		(): SearchBarProps => ({
-			ref: searchBar,
-			placeholder: "Search sessions",
-			// Hidden until you pull the Board down (spec 7.3), under the title
-			// rather than in a toolbar.
-			hideWhenScrolling: true,
-			placement: "stacked",
-			// Recent searches and results replace the Board, so nothing needs
-			// dimming behind them.
-			obscureBackground: false,
-			autoCapitalize: "none",
-			onFocus: () => setSearching(true),
-			onChangeText: (event) => search.controller.setQuery(event.nativeEvent.text),
-			onCancelButtonPress: () => {
-				search.controller.setQuery("");
-				setSearching(false);
-			},
-		}),
-		[search.controller],
-	);
-	useHeader(navigation, hubId, hubName, connected, searchBarOptions);
+	const typeSearch = (text: string) => {
+		setSearchText(text);
+		search.controller.setQuery(text);
+	};
+	const cancelSearch = () => {
+		typeSearch("");
+		setSearching(false);
+		searchInput.current?.blur?.();
+	};
+	// The field sits above the Board, scrolled out of view, so Search brings
+	// it down (spec 7.4). A test renderer's host views have no instances.
+	const revealSearch = useCallback(() => {
+		scroller.current?.scrollTo?.({ y: 0, animated: true });
+		searchInput.current?.focus?.();
+	}, []);
+	useHeader(navigation, hubId, hubName, connected, revealSearch);
+	const searchFieldHeight = searchFieldHeightAt(useTextScale());
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
@@ -189,31 +188,20 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		setRecentList(recent.list());
 		openResult(result);
 	};
-	const searchAgain = (query: string) => {
-		searchBar.current?.setText(query);
-		search.controller.setQuery(query);
-	};
 	const clearRecent = () => {
 		recent.clear();
 		setRecentList(recent.list());
 	};
 
-	// Where each section starts in the scroller, for the chips and the
-	// summary line to jump to. Bands measure inside the Live block.
-	const scroller = useRef<ScrollView>(null);
 	const offsets = useRef<Record<string, number>>({});
 	const liveEnd = useRef<number | null>(null);
-	// The chips stay pinned at the top of the scroller, so a section jumped
-	// to lands just under them.
-	const chipsHeight = useRef(0);
 	const measure = (key: string) => (event: LayoutChangeEvent) => {
 		offsets.current[key] = event.nativeEvent.layout.y;
 	};
 	const scrollTo = (key: string, withinLive = false) => {
-		const pinned = chips.length ? chipsHeight.current : 0;
-		const y = (withinLive ? (offsets.current.live ?? 0) : 0) + (offsets.current[key] ?? 0) - pinned;
+		const y = (withinLive ? (offsets.current.live ?? 0) : 0) + (offsets.current[key] ?? 0);
 		// A test renderer's host ScrollView has no instance to scroll.
-		scroller.current?.scrollTo?.({ y: Math.max(0, y), animated: true });
+		scroller.current?.scrollTo?.({ y, animated: true });
 	};
 	const jumpToBand = (band: Band) => {
 		if (band === "idle") foldIdle(false);
@@ -224,7 +212,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const viewport = useRef({ offset: 0, height: 0 });
 	const readMoreLiveIfNear = () => {
 		const page = board.getSnapshot().live;
-		if (liveEnd.current === null || page.remaining === 0 || page.loading || page.stale || page.error) return;
+		// Search results fill the scroller in Live's place.
+		if (searching || liveEnd.current === null || page.remaining === 0 || page.loading || page.stale || page.error) return;
 		const { offset, height } = viewport.current;
 		if (offset + 2 * height >= liveEnd.current) void board.loadMoreLive();
 	};
@@ -327,87 +316,94 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	return (
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
-			{/* Whichever list shows is the screen's first scroll view: UIKit's
-			    search bar tracks that one to hide and reveal itself. */}
-			{searching ? (
-				<SearchResults
-					search={search.snapshot}
-					scope={scope}
-					onScope={setScope}
-					connected={connected}
-					recent={recentList}
-					onOpen={openSearchResult}
-					onRecent={searchAgain}
-					onClearRecent={clearRecent}
+			{/* Fixed under the header; their sections aren't there while
+			    search results are. */}
+			{chips.length && !searching ? <Chips chips={chips} /> : null}
+			<ScrollView
+				ref={scroller}
+				style={{ flex: 1 }}
+				// Starts just past the search field: pulling down reveals it
+				// (spec 7.3). iOS applies this once, when the scroller mounts.
+				contentOffset={{ x: 0, y: searchFieldHeight }}
+				keyboardShouldPersistTaps="handled"
+				keyboardDismissMode="on-drag"
+				contentContainerStyle={{ paddingBottom: 24 }}
+				onScroll={onScroll}
+				onLayout={(event) => {
+					viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
+					readMoreLiveIfNear();
+				}}
+				onContentSizeChange={readMoreLiveIfNear}
+				scrollEventThrottle={100}
+			>
+				<SearchField
+					inputRef={searchInput}
+					height={searchFieldHeight}
+					text={searchText}
+					searching={searching}
+					onFocus={() => setSearching(true)}
+					onChangeText={typeSearch}
+					onCancel={cancelSearch}
 				/>
-			) : (
-				<ScrollView
-					ref={scroller}
-					style={{ flex: 1 }}
-					contentInsetAdjustmentBehavior="automatic"
-					contentContainerStyle={{ paddingBottom: 24 }}
-					stickyHeaderIndices={chips.length ? [0] : undefined}
-					onScroll={onScroll}
-					onLayout={(event) => {
-						viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
-						readMoreLiveIfNear();
-					}}
-					onContentSizeChange={readMoreLiveIfNear}
-					scrollEventThrottle={100}
-				>
-					{chips.length ? (
-						<Chips
-							chips={chips}
+				{searching ? (
+					<SearchResults
+						search={search.snapshot}
+						scope={scope}
+						onScope={setScope}
+						connected={connected}
+						recent={recentList}
+						onOpen={openSearchResult}
+						onRecent={typeSearch}
+						onClearRecent={clearRecent}
+					/>
+				) : (
+					<>
+						{fatal ? <NoticeRow text={INCOMPATIBLE} /> : null}
+						<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
+						<View
+							testID="live-block"
 							onLayout={(event) => {
-								chipsHeight.current = event.nativeEvent.layout.height;
+								const { y, height } = event.nativeEvent.layout;
+								offsets.current.live = y;
+								liveEnd.current = y + height;
+								readMoreLiveIfNear();
 							}}
-						/>
-					) : null}
-					{fatal ? <NoticeRow text={INCOMPATIBLE} /> : null}
-					<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
-					<View
-						testID="live-block"
-						onLayout={(event) => {
-							const { y, height } = event.nativeEvent.layout;
-							offsets.current.live = y;
-							liveEnd.current = y + height;
-							readMoreLiveIfNear();
-						}}
-					>
-						{live}
-					</View>
-					{pins.map((pin) => (
-						<View key={pin.id} onLayout={measure(`pin:${pin.id}`)}>
-							<SectionRow
-								glyph="pin.fill"
-								text={`${pin.name} · ${pin.count}`}
-								label={sectionLabel(pin.name, pin.count, "session")}
-								onPress={() =>
-									navigation.navigate("PinnedSection", { hubId, sectionId: pin.id, title: pin.name })
-								}
-							/>
+						>
+							{live}
 						</View>
-					))}
-					{projects > 0 ? (
-						<View testID="projects-section" onLayout={measure("projects")}>
-							<SectionRow
-								text={`Projects · ${projects}`}
-								label={sectionLabel("Projects", projects, "project")}
-								onPress={() => navigation.navigate("Projects", { hubId, archived: false })}
-							/>
-						</View>
-					) : null}
-					{archived > 0 ? (
-						<View onLayout={measure("archived")}>
-							<SectionRow
-								text={`Archived · ${archived}`}
-								label={sectionLabel("Archived", archived, "project")}
-								onPress={() => navigation.navigate("Projects", { hubId, archived: true })}
-							/>
-						</View>
-					) : null}
-				</ScrollView>
-			)}
+						{pins.map((pin) => (
+							<View key={pin.id} onLayout={measure(`pin:${pin.id}`)}>
+								<SectionRow
+									glyph="pin.fill"
+									text={`${pin.name} · ${pin.count}`}
+									label={sectionLabel(pin.name, pin.count, "session")}
+									onPress={() =>
+										navigation.navigate("PinnedSection", { hubId, sectionId: pin.id, title: pin.name })
+									}
+								/>
+							</View>
+						))}
+						{projects > 0 ? (
+							<View testID="projects-section" onLayout={measure("projects")}>
+								<SectionRow
+									text={`Projects · ${projects}`}
+									label={sectionLabel("Projects", projects, "project")}
+									onPress={() => navigation.navigate("Projects", { hubId, archived: false })}
+								/>
+							</View>
+						) : null}
+						{archived > 0 ? (
+							<View onLayout={measure("archived")}>
+								<SectionRow
+									text={`Archived · ${archived}`}
+									label={sectionLabel("Archived", archived, "project")}
+									onPress={() => navigation.navigate("Projects", { hubId, archived: true })}
+								/>
+							</View>
+						) : null}
+					</>
+				)}
+			</ScrollView>
 			<BoardToolbar state={state} fatal={fatal} newSessionDisabled={!connected} onNewSession={newSession} />
 		</View>
 	);
@@ -420,6 +416,81 @@ function useSearch(client: ConversationClientLike | null) {
 	useEffect(() => controller.setClient(client), [controller, client]);
 	const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
 	return { controller, snapshot };
+}
+
+/** The search field's row: an 8pt margin around a field that grows with
+ * the text size. */
+const searchFieldHeightAt = (scale: number) => 16 + Math.round(36 * scale);
+
+/** Board search's field (spec 7.4), first in the Board's scroller. Cancel
+ * shows while you search. */
+function SearchField({
+	inputRef,
+	height,
+	text,
+	searching,
+	onFocus,
+	onChangeText,
+	onCancel,
+}: {
+	inputRef: RefObject<TextInput | null>;
+	height: number;
+	text: string;
+	searching: boolean;
+	onFocus: () => void;
+	onChangeText: (text: string) => void;
+	onCancel: () => void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View
+			testID="search-field"
+			style={{ height, paddingHorizontal: 16, paddingVertical: 8, flexDirection: "row", alignItems: "center", columnGap: 12 }}
+		>
+			<View
+				style={{
+					flex: 1,
+					alignSelf: "stretch",
+					flexDirection: "row",
+					alignItems: "center",
+					columnGap: 6,
+					paddingHorizontal: 8,
+					borderRadius: 10,
+					backgroundColor: palette.inset,
+				}}
+			>
+				<SymbolView name="magnifyingglass" size={15 * scale} tintColor={palette.inkLow} />
+				<TextInput
+					ref={inputRef}
+					accessibilityLabel="Search sessions"
+					placeholder="Search sessions"
+					placeholderTextColor={palette.inkLow}
+					value={text}
+					onFocus={onFocus}
+					onChangeText={onChangeText}
+					returnKeyType="search"
+					autoCapitalize="none"
+					autoCorrect={false}
+					clearButtonMode="while-editing"
+					allowFontScaling={Platform.OS !== "ios"}
+					style={{ flex: 1, alignSelf: "stretch", fontSize: 17 * scale, color: palette.inkHi }}
+				/>
+			</View>
+			{searching ? (
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel="Cancel search"
+					onPress={onCancel}
+					style={({ pressed }) => ({ minHeight: 44, justifyContent: "center", opacity: pressed ? 0.6 : 1 })}
+				>
+					<Text allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 17 * scale, color: palette.accentInk }}>
+						Cancel
+					</Text>
+				</Pressable>
+			) : null}
+		</View>
+	);
 }
 
 /** The drafts saved on this device for a hub's sessions, or none when the
@@ -492,13 +563,8 @@ function useReadRetry(
 	}, [board, client, failed, count]);
 }
 
-function useHeader(
-	navigation: Navigation,
-	hubId: string,
-	hubName: string,
-	connected: boolean,
-	searchBar: SearchBarProps,
-) {
+function useHeader(navigation: Navigation, hubId: string, hubName: string, connected: boolean, revealSearch: () => void) {
+	const { fontScale } = useWindowDimensions();
 	useEffect(() => {
 		const hubButton = (
 			<HubButton
@@ -511,10 +577,23 @@ function useHeader(
 		navigation.setOptions({
 			title: "",
 			unstable_headerLeftItems: () => [{ type: "custom", element: hubButton }],
+			unstable_headerRightItems: () => [
+				{
+					type: "button",
+					label: "Search",
+					accessibilityLabel: "Search sessions",
+					icon: { type: "sfSymbol", name: "magnifyingglass" },
+					onPress: revealSearch,
+				},
+			],
 			headerLeft: () => hubButton,
-			headerSearchBarOptions: searchBar,
+			headerRight: () => (
+				<Action label="Search sessions" onPress={revealSearch}>
+					{fontScale > 1.4 ? "Find" : "Search"}
+				</Action>
+			),
 		});
-	}, [navigation, hubId, hubName, connected, searchBar]);
+	}, [navigation, hubId, hubName, connected, revealSearch, fontScale]);
 }
 
 /** The hub button (spec 7.1): the hub's name and a chevron as one control,
@@ -567,7 +646,7 @@ function HubButton({
 			onPress={open}
 			style={{
 				// A custom header view sizes itself, so a long hub name needs a
-				// cap to truncate against instead of growing across the header.
+				// cap to truncate against instead of growing into Search.
 				maxWidth: Math.round(width * 0.6),
 				minHeight: 44,
 				paddingHorizontal: 12,
@@ -598,13 +677,13 @@ interface ChipProps {
 	onPress: () => void;
 }
 
-/** The section chips, pinned under the header (spec 7.1). The row fades at its
+/** The section chips, fixed under the header (spec 7.1). The row fades at its
  * trailing edge, so a cut-off chip reads as "there's more". */
-function Chips({ chips, onLayout }: { chips: ChipProps[]; onLayout: (event: LayoutChangeEvent) => void }) {
+function Chips({ chips }: { chips: ChipProps[] }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View testID="chips" onLayout={onLayout} style={{ backgroundColor: palette.page }}>
+		<View testID="chips" style={{ backgroundColor: palette.page }}>
 			<ScrollView
 				horizontal
 				showsHorizontalScrollIndicator={false}

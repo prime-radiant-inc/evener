@@ -1,7 +1,7 @@
 import type { SearchResult } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
-import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { useColors, useTextScale } from "../ui";
 import { stateWord } from "./attention";
 import { BandHeader, Hairline, spokenAge } from "./BoardRow";
@@ -25,22 +25,11 @@ const SCOPES: Array<{ scope: SearchScope; name: string }> = [
 	{ scope: "live", name: "Live" },
 ];
 
-/** What the Board shows while you search (spec 7.4): recent searches for an
- * empty field, then the scope chips and the Sessions group. It's the
- * screen's first scroll view, so the header's search bar tracks it. */
+/** What the Board shows under its search field while you search (spec
+ * 7.4): recent searches for an empty field, then the scope chips and the
+ * Sessions group. */
 export function SearchResults(props: SearchResultsProps) {
-	const { palette } = useColors();
-	return (
-		<ScrollView
-			style={{ flex: 1, backgroundColor: palette.page }}
-			contentInsetAdjustmentBehavior="automatic"
-			keyboardShouldPersistTaps="handled"
-			keyboardDismissMode="on-drag"
-			contentContainerStyle={{ paddingBottom: 24 }}
-		>
-			{props.search.query ? <Found {...props} /> : <Recent {...props} />}
-		</ScrollView>
-	);
+	return props.search.query ? <Found {...props} /> : <Recent {...props} />;
 }
 
 function Recent({ recent, onRecent, onClearRecent }: SearchResultsProps) {
