@@ -9,6 +9,7 @@
 // imports it, and its test harnesses mock kv-store only partly.
 import { type NavigationSessionSummary, type SessionSeenMark, WireError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import { hubTime } from "./attention";
 import type { SeenMarkers } from "./boardMemory";
 
 /** The hub caps one seen/set call at 500 marks. */
@@ -100,10 +101,11 @@ export class HubSeenMarks {
 		for (const row of rows) {
 			const entry = this.pending.get(row.ref);
 			if (!entry) continue;
+			const ended = hubTime(row.turn_ended_at);
 			const done =
 				"unread" in entry.mark
 					? row.unseen === true
-					: row.unseen !== true || hubMillis(row.turn_ended_at) > entry.mark.seenThrough;
+					: row.unseen !== true || (ended !== null && ended > entry.mark.seenThrough);
 			if (done) {
 				this.pending.delete(row.ref);
 				changed = true;
@@ -155,12 +157,6 @@ export class HubSeenMarks {
 		this.revision++;
 		for (const listener of [...this.listeners]) listener();
 	}
-}
-
-// A turn_ended_at that doesn't parse compares as no turn end at all.
-function hubMillis(value: string | undefined): number {
-	const time = value ? Date.parse(value) : Number.NaN;
-	return Number.isFinite(time) ? time : Number.NEGATIVE_INFINITY;
 }
 
 // One controller per hub, in memory only, like seenMarkers(hubId).
