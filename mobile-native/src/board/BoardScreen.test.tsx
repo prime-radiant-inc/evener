@@ -10,10 +10,11 @@ import type {
 	NavigationReadParams,
 	NavigationSessionSummary,
 	PluginEntry,
+	SearchParams,
 } from "@evener/appwire-client";
 import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ReactTestInstance, ReactTestRenderer } from "react-test-renderer";
-import { act } from "react-test-renderer";
+import { act, create } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
@@ -137,8 +138,10 @@ interface Fleet {
 	needsYou: NavigationSessionSummary[];
 	pins: Array<{ id: string; name: string; count: number }>;
 	manifest: ReturnType<typeof manifest>;
-	/** Sessions only search finds: the Board doesn't list them. */
+	/** Sessions only search finds, as past results: the Board doesn't list them. */
 	searchOnly?: NavigationSessionSummary[];
+	/** Whether evener/search fails. */
+	searchFails?: boolean;
 	/** What evener/auth/list and evener/plugin/list answer; none by default. */
 	auth?: AuthStatusResponse[];
 	plugins?: PluginEntry[];
@@ -160,8 +163,8 @@ const fleet: Fleet = {
 	}),
 };
 
-/** A hub that answers navigation reads by params, and the sign-in and plugin
- * lists from the fleet; `hold` keeps a navigation read unanswered until the
+/** A hub that answers navigation reads by params, and search and the
+ * sign-in and plugin lists from the fleet; `hold` keeps a navigation read unanswered until the
  * test releases it, and `fail` rejects it. */
 function hub(
 	shape: Fleet,
@@ -170,6 +173,7 @@ function hub(
 ) {
 	const requests: NavigationReadParams[] = [];
 	const lists: string[] = [];
+	const searches: string[] = [];
 	const listeners = new Set<(event: AnyNotification) => void>();
 	const held: Array<() => void> = [];
 	const answer = (params: NavigationReadParams) => {
@@ -191,20 +195,31 @@ function hub(
 	const client: ConversationClientLike = {
 		request: (method, params) =>
 			new Promise((resolve, reject) => {
-				if (method === "thread/list") {
-					// Search answers with every session the hub has, as wire threads.
-					const sessions = [...shape.live.flat(), ...shape.needsYou, ...(shape.searchOnly ?? [])].filter(
+				if (method === "evener/search") {
+					// Search matches titles: the Board's sessions are live, and
+					// sessions only search finds are past.
+					const query = ((params as SearchParams).query ?? "").toLowerCase();
+					searches.push(query);
+					if (shape.searchFails) {
+						reject(new Error("request timed out"));
+						return;
+					}
+					const board = [...shape.live.flat(), ...shape.needsYou].filter(
 						(row, index, all) => all.findIndex((other) => other.ref === row.ref) === index,
 					);
-					resolve({
-						data: sessions.map((row) => ({
-							id: row.session_id,
-							name: row.title,
-							status: { type: "idle" },
-							updatedAt: 0,
-							evener: { ref: row.ref },
-						})),
-					} as never);
+					const found = (rows: NavigationSessionSummary[], state?: string) =>
+						rows
+							.filter((row) => row.title.toLowerCase().includes(query))
+							.map((row) => ({
+								id: row.session_id,
+								title: row.title,
+								project: row.project,
+								state: state ?? row.state,
+								age: "5m",
+								ref: row.ref,
+								...(row.ask_pending ? { askPending: true } : {}),
+							}));
+					resolve({ live: found(board), past: found(shape.searchOnly ?? [], "ended") } as never);
 					return;
 				}
 				if (method === "evener/auth/list" || method === "evener/plugin/list") {
@@ -243,6 +258,7 @@ function hub(
 		client,
 		requests,
 		lists,
+		searches,
 		authUpdated: () => {
 			for (const listener of listeners) listener({ method: "evener/auth/updated", params: {} } as AnyNotification);
 		},
@@ -327,6 +343,10 @@ function pressLabel(tree: ReactTestRenderer, label: string) {
 	);
 	act(() => target.props.onPress());
 }
+function pressChip(tree: ReactTestRenderer, label: string) {
+	const chip = tree.root.find((node) => node.props.testID === "chip" && node.props.accessibilityLabel === label);
+	act(() => chip.props.onPress());
+}
 const chipLabels = (tree: ReactTestRenderer) =>
 	tree.root
 		.findAll((node) => node.type === ("Pressable" as never) && node.props.testID === "chip")
@@ -357,6 +377,33 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 	);
 	act(() => idleCount.props.onPress());
 	expect(hasRow(tree, "Old chore")).toBe(true);
+	act(() => tree.unmount());
+});
+
+it("jumps a chip's section to just under the chips, which stay pinned at the top of the Board's scroller", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const scrollTo = vi.fn();
+	let tree!: ReactTestRenderer;
+	act(() => {
+		tree = create(screen(navigation()), { createNodeMock: () => ({ scrollTo }) });
+	});
+	mounted.push(tree);
+	await settle();
+	const layout = (testID: string, y: number, height: number) =>
+		tree.root
+			.find((node) => node.props.testID === testID && node.props.onLayout)
+			.props.onLayout({ nativeEvent: { layout: { x: 0, y, width: 390, height } } });
+	act(() => {
+		layout("chips", 0, 48);
+		layout("live-block", 48, 400);
+		layout("projects-section", 700, 48);
+	});
+	pressChip(tree, "Live, 5 sessions, 2 need you");
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 0, animated: true });
+	pressChip(tree, "Projects, 4 projects");
+	expect(scrollTo).toHaveBeenLastCalledWith({ y: 652, animated: true });
 	act(() => tree.unmount());
 });
 
@@ -465,30 +512,180 @@ it("offers the hub menu as an alert off iOS, without Hub settings while the hub 
 	act(() => tree.unmount());
 });
 
-it("opens a search result the way the Board opens its row, marking it seen", async () => {
+/** The header's search bar, driven the way UIKit drives it. */
+function searchBar(nav: Navigation) {
+	const options = headerOptions(nav).headerSearchBarOptions;
+	return {
+		options,
+		focus: () => act(() => options.onFocus({ nativeEvent: {} })),
+		type: async (text: string) => {
+			act(() => options.onChangeText({ nativeEvent: { text } }));
+			await advance(250);
+		},
+		cancel: () => act(() => options.onCancelButtonPress({ nativeEvent: {} })),
+	};
+}
+/** A search result, found by its accessibility label's start. */
+function resultTitled(tree: ReactTestRenderer, title: string) {
+	return tree.root.find(
+		(node) =>
+			node.props.testID === "search-result" &&
+			typeof node.props.accessibilityLabel === "string" &&
+			node.props.accessibilityLabel.startsWith(`${title}, `),
+	);
+}
+const resultTitles = (tree: ReactTestRenderer) =>
+	tree.root
+		.findAll((node) => node.props.testID === "search-result")
+		.map((node) => node.props.accessibilityLabel.split(", ")[0]);
+/** The screen's first scroll view down the first-child chain, the one
+ * UIKit's search bar tracks to hide and reveal itself. */
+function firstScrollView(tree: ReactTestRenderer) {
+	let node = tree.toJSON();
+	while (node && !Array.isArray(node) && node.type !== "ScrollView") node = node.children?.[0] as never;
+	return node && !Array.isArray(node) ? node : null;
+}
+
+it("puts search in the header's search bar, which pulling the Board down reveals", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(fleet).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const { options } = searchBar(nav);
+	expect(options).toMatchObject({
+		placeholder: "Search sessions",
+		hideWhenScrolling: true,
+		placement: "stacked",
+		obscureBackground: false,
+		autoCapitalize: "none",
+	});
+	// The search bar replaces the Search button.
+	expect(headerOptions(nav).unstable_headerRightItems).toBeUndefined();
+	expect(headerOptions(nav).headerRight).toBeUndefined();
+	// The Board's own scroller is the first scroll view, so it's the one the
+	// search bar tracks, and the chips stay pinned inside it.
+	const board = firstScrollView(tree);
+	expect(board?.props.horizontal).toBeFalsy();
+	expect(board?.props.contentInsetAdjustmentBehavior).toBe("automatic");
+	expect(board?.props.stickyHeaderIndices).toEqual([0]);
+	act(() => tree.unmount());
+});
+
+it("searches the hub as you type, and a result opens the way the Board opens its row, marking it seen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	const gone = session("local:gone", { title: "Old report" });
-	connect(id, hub({ ...fleet, searchOnly: [gone] }).client, "ready");
+	const fake = hub({ ...fleet, searchOnly: [gone] });
+	connect(id, fake.client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
 	expect(bandHeaders(tree)).toContain("FINISHED · 1");
-	act(() => headerOptions(nav).unstable_headerRightItems({})[0].onPress());
-	const field = tree.root.findByType("TextInput" as never);
-	act(() => field.props.onChangeText("report"));
-	act(() => field.props.onSubmitEditing());
-	await settle();
-	pressLabel(tree, "Open Ship it");
+	const bar = searchBar(nav);
+	bar.focus();
+	// Search takes the Board's place, and its list is the first scroll view.
+	expect(hasRow(tree, "Ship it")).toBe(false);
+	expect(firstScrollView(tree)?.props.keyboardShouldPersistTaps).toBe("handled");
+	await bar.type("i");
+	expect(fake.searches).toEqual(["i"]);
+	expect(resultTitles(tree)).toEqual(["Fix retry loop", "Build docs", "Ship it", "Pick a name"]);
+	expect(resultTitled(tree, "Pick a name").props.accessibilityLabel).toBe("Pick a name, Question, evener, 5 minutes");
+	act(() => resultTitled(tree, "Ship it").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:done", title: "Ship it" });
 	expect(seenMarkers(id).isSeen(finished)).toBe(true);
 	// A session only in Needs you (past Live's loaded pages) is found too.
 	expect(seenMarkers(id).isSeen(asking)).toBe(false);
-	pressLabel(tree, "Open Pick a name");
+	act(() => resultTitled(tree, "Pick a name").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:ask", title: "Pick a name" });
 	expect(seenMarkers(id).isSeen(asking)).toBe(true);
+	// Live results come first, then past ones.
+	await bar.type("re");
+	expect(resultTitles(tree)).toEqual(["Fix retry loop", "Old chore", "Older chore", "Old report"]);
+	expect(resultTitled(tree, "Old report").props.accessibilityLabel).toBe("Old report, evener, 5 minutes");
 	// A session the Board doesn't list has no Finished state to clear.
-	pressLabel(tree, "Open Old report");
+	act(() => resultTitled(tree, "Old report").props.onPress());
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:gone", title: "Old report" });
+	// Cancel brings the Board back.
+	bar.cancel();
+	expect(hasRow(tree, "Build docs")).toBe(true);
+	expect(tree.root.findAll((node) => node.props.testID === "search-result")).toHaveLength(0);
+	act(() => tree.unmount());
+});
+
+it("narrows results to live sessions in the Live scope", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub({ ...fleet, searchOnly: [session("local:gone", { title: "Old report" })] }).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchBar(nav);
+	bar.focus();
+	await bar.type("report");
+	expect(resultTitles(tree)).toEqual(["Old report"]);
+	pressLabel(tree, "Live");
+	expect(resultTitles(tree)).toEqual([]);
+	expect(texts(tree)).toContain("No sessions match.");
+	pressLabel(tree, "All");
+	expect(resultTitles(tree)).toEqual(["Old report"]);
+	act(() => tree.unmount());
+});
+
+it("says a failed search failed, and never asks you to retry", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub({ ...fleet, searchFails: true });
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchBar(nav);
+	bar.focus();
+	await bar.type("fix");
+	expect(texts(tree)).toContain("Couldn't search this hub's sessions.");
+	expect(renderedText(tree)).not.toMatch(/retry|try again|refresh/i);
+	// A new query tries again.
+	await bar.type("fixes");
+	expect(fake.searches).toEqual(["fix", "fixes"]);
+	act(() => tree.unmount());
+});
+
+it("remembers the queries you opened a result from, per hub, and clears them", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const fake = hub(fleet);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	const bar = searchBar(nav);
+	bar.focus();
+	// Nothing searched yet, so an empty field shows nothing.
+	expect(texts(tree)).not.toContain("RECENT");
+	await bar.type("ship");
+	act(() => resultTitled(tree, "Ship it").props.onPress());
+	await bar.type("build");
+	act(() => resultTitled(tree, "Build docs").props.onPress());
+	// A query you didn't open anything from isn't remembered.
+	await bar.type("chore");
+	await bar.type("");
+	expect(texts(tree)).toContain("RECENT");
+	expect(
+		tree.root
+			.findAll((node) => node.type === ("Pressable" as never) && node.props.accessibilityLabel?.startsWith("Search for "))
+			.map((node) => node.props.accessibilityLabel),
+	).toEqual(["Search for build", "Search for ship"]);
+	expect(JSON.parse(harness.kv.get(`evener.native.recent-searches.${id}`) ?? "null")).toEqual(["build", "ship"]);
+	// Tapping one searches for it again, and fills the search bar.
+	const setText = vi.fn();
+	bar.options.ref.current = { setText };
+	pressLabel(tree, "Search for ship");
+	expect(setText).toHaveBeenCalledWith("ship");
+	await advance(250);
+	expect(fake.searches.at(-1)).toBe("ship");
+	expect(resultTitles(tree)).toEqual(["Ship it"]);
+	bar.options.ref.current = null;
+	await bar.type("");
+	pressLabel(tree, "Clear recent searches");
+	expect(texts(tree)).not.toContain("RECENT");
+	expect(JSON.parse(harness.kv.get(`evener.native.recent-searches.${id}`) ?? "null")).toEqual([]);
 	act(() => tree.unmount());
 });
 
@@ -561,13 +758,14 @@ it("offers no Reconnect or Refresh anywhere", async () => {
 		vi.advanceTimersByTime(60_000);
 	});
 	const options = headerOptions(nav);
-	const headerItems = [...options.unstable_headerLeftItems({}), ...options.unstable_headerRightItems({})];
-	const headerLabels = headerItems
-		.flatMap((item: { label?: string; menu?: { items: Array<{ label: string }> } }) => [
+	const headerItems = options.unstable_headerLeftItems({});
+	const headerLabels = [
+		...headerItems.flatMap((item: { label?: string; menu?: { items: Array<{ label: string }> } }) => [
 			item.label,
 			...(item.menu?.items.map((entry) => entry.label) ?? []),
-		])
-		.filter((label): label is string => typeof label === "string");
+		]),
+		options.headerSearchBarOptions.placeholder,
+	].filter((label): label is string => typeof label === "string");
 	// The hub button is a custom view: read what it draws and the menu it opens.
 	const hubButton = render(headerItems[0].element);
 	act(() => hubButton.root.findByType("Pressable" as never).props.onPress());
@@ -684,7 +882,7 @@ it("shows the Draft tag on sessions with a saved draft", async () => {
 	act(() => tree.unmount());
 });
 
-it("puts the hub's name and menu on the left and search on the right", async () => {
+it("puts the hub's name and menu on the left", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
@@ -703,7 +901,7 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	const press = hubButton.root.findByType("Pressable" as never);
 	expect(press.props.accessibilityLabel).toBe("Work hub, hub menu");
 	// A long hub name truncates inside the capsule instead of growing it
-	// into Search (the window is 390pt wide here).
+	// across the header (the window is 390pt wide here).
 	expect(press.props.style.maxWidth).toBeLessThanOrEqual(390 * 0.6);
 	const hubName = hubButton.root.findByType("Text" as never);
 	expect(hubName.props.numberOfLines).toBe(1);
@@ -724,11 +922,6 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	act(() => offline.root.findByType("Pressable" as never).props.onPress());
 	expect(harness.actionSheet.mock.calls.at(-1)?.[0].disabledButtonIndices).toEqual([0]);
 	act(() => offline.unmount());
-	const [search] = options.unstable_headerRightItems({});
-	expect(search).toMatchObject({ type: "button", icon: { type: "sfSymbol", name: "magnifyingglass" } });
-	expect(tree.root.findAll((node) => node.type === ("TextInput" as never))).toHaveLength(0);
-	act(() => search.onPress());
-	expect(tree.root.findAll((node) => node.type === ("TextInput" as never))).toHaveLength(1);
 	act(() => tree.unmount());
 });
 

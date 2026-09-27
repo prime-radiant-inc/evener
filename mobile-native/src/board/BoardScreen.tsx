@@ -1,13 +1,12 @@
-import { humanizeState, type NavigationSessionSummary } from "@evener/appwire-client";
+import type { NavigationSessionSummary, SearchResult } from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+import type { SearchBarCommands, SearchBarProps } from "react-native-screens";
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
 	ActionSheetIOS,
 	Alert,
-	FlatList,
-	Keyboard,
 	type LayoutChangeEvent,
 	type NativeScrollEvent,
 	type NativeSyntheticEvent,
@@ -15,18 +14,15 @@ import {
 	Pressable,
 	ScrollView,
 	Text,
-	TextInput,
 	useWindowDimensions,
 	View,
 } from "react-native";
-import { createRosterService } from "../../../mobile/src/services/roster";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { useConnection } from "../ConnectionProvider";
 import { reconnectDelay } from "../hubConnection";
 import { drafts } from "../nativeDrafts";
-import { RosterSearch } from "../rosterSearch";
 import type { Routes } from "../screens";
-import { Action, Copy, styles, useColors, useTextScale } from "../ui";
+import { Action, useColors, useTextScale } from "../ui";
 import {
 	type Band,
 	type ClassifiedRow,
@@ -38,17 +34,18 @@ import {
 } from "./attention";
 import type { SeenMarkers } from "./boardMemory";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
-import { BoardRow, TITLE_INSET } from "./BoardRow";
+import { BandHeader, BoardRow, Hairline } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
-import { foldedSections, seenMarkers } from "./nativeBoardMemory";
+import { createSearchController, type SearchScope } from "./boardSearch";
+import { foldedSections, recentSearches, seenMarkers } from "./nativeBoardMemory";
 import { notices } from "./notices";
 import { PulseMeter } from "./PulseMeter";
+import { SearchResults } from "./SearchResults";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
 
-const SEARCH_PAGE_SIZE = 50;
 const MINUTE = 60_000;
 const INCOMPATIBLE =
 	"This app and the hub need compatible versions. Update the app from TestFlight, or update Evener on the hub.";
@@ -143,14 +140,35 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		setIdleFolded(folded);
 	};
 
-	const [searchOpen, setSearchOpen] = useState(false);
-	const search = useBoardSearch(client, connected);
-	const closeSearch = search.clear;
-	const toggleSearch = useCallback(() => {
-		if (searchOpen) closeSearch();
-		setSearchOpen(!searchOpen);
-	}, [searchOpen, closeSearch]);
-	useHeader(navigation, hubId, hubName, connected, toggleSearch);
+	const search = useSearch(connected ? client : null);
+	const searchBar = useRef<SearchBarCommands>(null);
+	// Searching from the moment the search bar takes focus until Cancel.
+	const [searching, setSearching] = useState(false);
+	const [scope, setScope] = useState<SearchScope>("all");
+	const recent = recentSearches(hubId);
+	const [recentList, setRecentList] = useState(() => recent.list());
+	const searchBarOptions = useMemo(
+		(): SearchBarProps => ({
+			ref: searchBar,
+			placeholder: "Search sessions",
+			// Hidden until you pull the Board down (spec 7.3), under the title
+			// rather than in a toolbar.
+			hideWhenScrolling: true,
+			placement: "stacked",
+			// Recent searches and results replace the Board, so nothing needs
+			// dimming behind them.
+			obscureBackground: false,
+			autoCapitalize: "none",
+			onFocus: () => setSearching(true),
+			onChangeText: (event) => search.controller.setQuery(event.nativeEvent.text),
+			onCancelButtonPress: () => {
+				search.controller.setQuery("");
+				setSearching(false);
+			},
+		}),
+		[search.controller],
+	);
+	useHeader(navigation, hubId, hubName, connected, searchBarOptions);
 
 	const newSession = () => navigation.navigate("NewSession", { hubId, hubName });
 	const openSession = (row: NavigationSessionSummary) => {
@@ -166,19 +184,36 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		if (row) openSession(row);
 		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
 	};
+	const openSearchResult = (result: SearchResult) => {
+		recent.add(search.snapshot.query);
+		setRecentList(recent.list());
+		openResult(result);
+	};
+	const searchAgain = (query: string) => {
+		searchBar.current?.setText(query);
+		search.controller.setQuery(query);
+	};
+	const clearRecent = () => {
+		recent.clear();
+		setRecentList(recent.list());
+	};
 
 	// Where each section starts in the scroller, for the chips and the
 	// summary line to jump to. Bands measure inside the Live block.
 	const scroller = useRef<ScrollView>(null);
 	const offsets = useRef<Record<string, number>>({});
 	const liveEnd = useRef<number | null>(null);
+	// The chips stay pinned at the top of the scroller, so a section jumped
+	// to lands just under them.
+	const chipsHeight = useRef(0);
 	const measure = (key: string) => (event: LayoutChangeEvent) => {
 		offsets.current[key] = event.nativeEvent.layout.y;
 	};
 	const scrollTo = (key: string, withinLive = false) => {
-		const y = (withinLive ? (offsets.current.live ?? 0) : 0) + (offsets.current[key] ?? 0);
+		const pinned = chips.length ? chipsHeight.current : 0;
+		const y = (withinLive ? (offsets.current.live ?? 0) : 0) + (offsets.current[key] ?? 0) - pinned;
 		// A test renderer's host ScrollView has no instance to scroll.
-		scroller.current?.scrollTo?.({ y, animated: true });
+		scroller.current?.scrollTo?.({ y: Math.max(0, y), animated: true });
 	};
 	const jumpToBand = (band: Band) => {
 		if (band === "idle") foldIdle(false);
@@ -245,7 +280,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean) =>
 		items.map((item, index) => (
 			<View key={item.row.ref}>
-				{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
+				{index > 0 ? <Hairline /> : null}
 				<BoardRow
 					item={item}
 					variant={variant}
@@ -292,73 +327,99 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	return (
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
-			{searchOpen ? <SearchField search={search} connected={connected} /> : null}
-			{search.active ? (
-				<SearchResults search={search} connected={connected} onOpen={openResult} />
+			{/* Whichever list shows is the screen's first scroll view: UIKit's
+			    search bar tracks that one to hide and reveal itself. */}
+			{searching ? (
+				<SearchResults
+					search={search.snapshot}
+					scope={scope}
+					onScope={setScope}
+					connected={connected}
+					recent={recentList}
+					onOpen={openSearchResult}
+					onRecent={searchAgain}
+					onClearRecent={clearRecent}
+				/>
 			) : (
-				<>
-					{chips.length ? <Chips chips={chips} /> : null}
-					<ScrollView
-						ref={scroller}
-						style={{ flex: 1 }}
-						contentContainerStyle={{ paddingBottom: 24 }}
-						onScroll={onScroll}
+				<ScrollView
+					ref={scroller}
+					style={{ flex: 1 }}
+					contentInsetAdjustmentBehavior="automatic"
+					contentContainerStyle={{ paddingBottom: 24 }}
+					stickyHeaderIndices={chips.length ? [0] : undefined}
+					onScroll={onScroll}
+					onLayout={(event) => {
+						viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
+						readMoreLiveIfNear();
+					}}
+					onContentSizeChange={readMoreLiveIfNear}
+					scrollEventThrottle={100}
+				>
+					{chips.length ? (
+						<Chips
+							chips={chips}
+							onLayout={(event) => {
+								chipsHeight.current = event.nativeEvent.layout.height;
+							}}
+						/>
+					) : null}
+					{fatal ? <NoticeRow text={INCOMPATIBLE} /> : null}
+					<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
+					<View
+						testID="live-block"
 						onLayout={(event) => {
-							viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
+							const { y, height } = event.nativeEvent.layout;
+							offsets.current.live = y;
+							liveEnd.current = y + height;
 							readMoreLiveIfNear();
 						}}
-						onContentSizeChange={readMoreLiveIfNear}
-						scrollEventThrottle={100}
 					>
-						{fatal ? <NoticeRow text={INCOMPATIBLE} /> : null}
-						<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
-						<View
-							testID="live-block"
-							onLayout={(event) => {
-								const { y, height } = event.nativeEvent.layout;
-								offsets.current.live = y;
-								liveEnd.current = y + height;
-								readMoreLiveIfNear();
-							}}
-						>
-							{live}
+						{live}
+					</View>
+					{pins.map((pin) => (
+						<View key={pin.id} onLayout={measure(`pin:${pin.id}`)}>
+							<SectionRow
+								glyph="pin.fill"
+								text={`${pin.name} · ${pin.count}`}
+								label={sectionLabel(pin.name, pin.count, "session")}
+								onPress={() =>
+									navigation.navigate("PinnedSection", { hubId, sectionId: pin.id, title: pin.name })
+								}
+							/>
 						</View>
-						{pins.map((pin) => (
-							<View key={pin.id} onLayout={measure(`pin:${pin.id}`)}>
-								<SectionRow
-									glyph="pin.fill"
-									text={`${pin.name} · ${pin.count}`}
-									label={sectionLabel(pin.name, pin.count, "session")}
-									onPress={() =>
-										navigation.navigate("PinnedSection", { hubId, sectionId: pin.id, title: pin.name })
-									}
-								/>
-							</View>
-						))}
-						{projects > 0 ? (
-							<View onLayout={measure("projects")}>
-								<SectionRow
-									text={`Projects · ${projects}`}
-									label={sectionLabel("Projects", projects, "project")}
-									onPress={() => navigation.navigate("Projects", { hubId, archived: false })}
-								/>
-							</View>
-						) : null}
-						{archived > 0 ? (
-							<View onLayout={measure("archived")}>
-								<SectionRow
-									text={`Archived · ${archived}`}
-									label={sectionLabel("Archived", archived, "project")}
-									onPress={() => navigation.navigate("Projects", { hubId, archived: true })}
-								/>
-							</View>
-						) : null}
-					</ScrollView>
-				</>
+					))}
+					{projects > 0 ? (
+						<View testID="projects-section" onLayout={measure("projects")}>
+							<SectionRow
+								text={`Projects · ${projects}`}
+								label={sectionLabel("Projects", projects, "project")}
+								onPress={() => navigation.navigate("Projects", { hubId, archived: false })}
+							/>
+						</View>
+					) : null}
+					{archived > 0 ? (
+						<View onLayout={measure("archived")}>
+							<SectionRow
+								text={`Archived · ${archived}`}
+								label={sectionLabel("Archived", archived, "project")}
+								onPress={() => navigation.navigate("Projects", { hubId, archived: true })}
+							/>
+						</View>
+					) : null}
+				</ScrollView>
 			)}
 			<BoardToolbar state={state} fatal={fatal} newSessionDisabled={!connected} onNewSession={newSession} />
 		</View>
 	);
+}
+
+/** The Board's search controller, bound to the ready client or none. */
+function useSearch(client: ConversationClientLike | null) {
+	const [controller] = useState(createSearchController);
+	useEffect(() => () => controller.dispose(), [controller]);
+	useEffect(() => controller.setClient(client), [controller, client]);
+	const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+	return { controller, snapshot };
 }
 
 /** The drafts saved on this device for a hub's sessions, or none when the
@@ -431,8 +492,13 @@ function useReadRetry(
 	}, [board, client, failed, count]);
 }
 
-function useHeader(navigation: Navigation, hubId: string, hubName: string, connected: boolean, toggleSearch: () => void) {
-	const { fontScale } = useWindowDimensions();
+function useHeader(
+	navigation: Navigation,
+	hubId: string,
+	hubName: string,
+	connected: boolean,
+	searchBar: SearchBarProps,
+) {
 	useEffect(() => {
 		const hubButton = (
 			<HubButton
@@ -445,23 +511,10 @@ function useHeader(navigation: Navigation, hubId: string, hubName: string, conne
 		navigation.setOptions({
 			title: "",
 			unstable_headerLeftItems: () => [{ type: "custom", element: hubButton }],
-			unstable_headerRightItems: () => [
-				{
-					type: "button",
-					label: "Search",
-					accessibilityLabel: "Search sessions",
-					icon: { type: "sfSymbol", name: "magnifyingglass" },
-					onPress: toggleSearch,
-				},
-			],
 			headerLeft: () => hubButton,
-			headerRight: () => (
-				<Action label="Search sessions" onPress={toggleSearch}>
-					{fontScale > 1.4 ? "Find" : "Search"}
-				</Action>
-			),
+			headerSearchBarOptions: searchBar,
 		});
-	}, [navigation, hubId, hubName, connected, toggleSearch, fontScale]);
+	}, [navigation, hubId, hubName, connected, searchBar]);
 }
 
 /** The hub button (spec 7.1): the hub's name and a chevron as one control,
@@ -514,7 +567,7 @@ function HubButton({
 			onPress={open}
 			style={{
 				// A custom header view sizes itself, so a long hub name needs a
-				// cap to truncate against instead of growing into Search.
+				// cap to truncate against instead of growing across the header.
 				maxWidth: Math.round(width * 0.6),
 				minHeight: 44,
 				paddingHorizontal: 12,
@@ -535,11 +588,6 @@ function HubButton({
 	);
 }
 
-function Hairline({ inset = 0 }: { inset?: number }) {
-	const { palette } = useColors();
-	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
-}
-
 interface ChipProps {
 	key: string;
 	name: string;
@@ -550,13 +598,13 @@ interface ChipProps {
 	onPress: () => void;
 }
 
-/** The section chips, fixed under the header (spec 7.1). The row fades at its
+/** The section chips, pinned under the header (spec 7.1). The row fades at its
  * trailing edge, so a cut-off chip reads as "there's more". */
-function Chips({ chips }: { chips: ChipProps[] }) {
+function Chips({ chips, onLayout }: { chips: ChipProps[]; onLayout: (event: LayoutChangeEvent) => void }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
-		<View style={{ backgroundColor: palette.page }}>
+		<View testID="chips" onLayout={onLayout} style={{ backgroundColor: palette.page }}>
 			<ScrollView
 				horizontal
 				showsHorizontalScrollIndicator={false}
@@ -704,29 +752,6 @@ function SummaryLine({
 	);
 }
 
-function BandHeader({ text }: { text: string }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<Text
-			testID="band-header"
-			accessibilityRole="header"
-			allowFontScaling={Platform.OS !== "ios"}
-			style={{
-				paddingTop: 22,
-				paddingBottom: 6,
-				paddingHorizontal: 16,
-				fontSize: 13 * scale,
-				fontWeight: "600",
-				letterSpacing: 0.4,
-				color: palette.inkMid,
-			}}
-		>
-			{text}
-		</Text>
-	);
-}
-
 /** Idle's header, folded by default; its state persists per device. */
 function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean; onToggle: () => void }) {
 	const { palette } = useColors();
@@ -828,190 +853,5 @@ function EmptyBoard({ disabled, onNewSession }: { disabled: boolean; onNewSessio
 				New session
 			</Action>
 		</View>
-	);
-}
-
-type BoardSearch = ReturnType<typeof useBoardSearch>;
-
-/** Today's roster search until PR 5 replaces it: thread/list matched on the
- * hub, results in place of the Board. */
-function useBoardSearch(client: ConversationClientLike | null, connected: boolean) {
-	const [text, setText] = useState("");
-	const [active, setActive] = useState(false);
-	const roster = useMemo(
-		() => new RosterSearch(client ? createRosterService(client, SEARCH_PAGE_SIZE) : null),
-		[client],
-	);
-	const results = useSyncExternalStore(roster.subscribe, roster.getSnapshot);
-	useEffect(() => {
-		setText("");
-		setActive(false);
-		return () => roster.cancel();
-	}, [roster]);
-	useFocusEffect(
-		useCallback(
-			() => (client && connected && active ? roster.watch(client) : () => {}),
-			[roster, client, connected, active],
-		),
-	);
-	const search = useCallback(
-		(value: string) => {
-			if (!connected) return;
-			Keyboard.dismiss();
-			if (!value.trim()) {
-				setActive(false);
-				roster.cancel();
-				return;
-			}
-			setActive(true);
-			void roster.load(value);
-		},
-		[connected, roster],
-	);
-	const clear = useCallback(() => {
-		setText("");
-		setActive(false);
-		roster.cancel();
-	}, [roster]);
-	return { ...results, text, setText, active, search, clear };
-}
-
-function SearchField({ search, connected }: { search: BoardSearch; connected: boolean }) {
-	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	return (
-		<View style={{ paddingHorizontal: 16, paddingVertical: 8, gap: 4 }}>
-			<View style={[styles.row, { flexWrap: "wrap" }]}>
-				<TextInput
-					accessibilityLabel="Search sessions"
-					placeholder="Search sessions"
-					placeholderTextColor={colors.secondary}
-					value={search.text}
-					onChangeText={search.setText}
-					onSubmitEditing={() => search.search(search.text)}
-					returnKeyType="search"
-					autoCapitalize="none"
-					autoCorrect={false}
-					autoFocus
-					style={[
-						styles.input,
-						styles.fill,
-						{
-							minWidth: fontScale > 1.4 ? "100%" : "50%",
-							color: colors.text,
-							borderColor: colors.border,
-							backgroundColor: colors.surface,
-						},
-					]}
-				/>
-				<Action disabled={!connected} onPress={() => search.search(search.text)}>
-					Search
-				</Action>
-				{search.text || search.active ? <Action onPress={search.clear}>Clear</Action> : null}
-			</View>
-			{search.active && search.query ? <Copy muted>{`Results for “${search.query}”`}</Copy> : null}
-		</View>
-	);
-}
-
-function SearchResults({
-	search,
-	connected,
-	onOpen,
-}: {
-	search: BoardSearch;
-	connected: boolean;
-	onOpen: (result: { ref: string; title: string }) => void;
-}) {
-	const colors = useColors();
-	const { fontScale } = useWindowDimensions();
-	return (
-		<FlatList
-			style={{ flex: 1 }}
-			keyboardShouldPersistTaps="handled"
-			data={search.rows}
-			keyExtractor={(item) => item.ref}
-			contentContainerStyle={{ paddingBottom: 16, gap: 12 }}
-			ListEmptyComponent={
-				<View style={{ paddingHorizontal: 16 }}>
-					<Copy muted>
-						{search.loading
-							? "Loading sessions…"
-							: search.error
-								? "Could not search this hub's sessions."
-								: search.query
-									? "No sessions match your search."
-									: ""}
-					</Copy>
-				</View>
-			}
-			ListFooterComponent={
-				search.hasMore ? (
-					<View style={{ paddingHorizontal: 16 }}>
-						<Copy muted>
-							Showing up to {SEARCH_PAGE_SIZE} sessions. Narrow your search to find others.
-						</Copy>
-					</View>
-				) : null
-			}
-			renderItem={({ item }) => {
-				const stateLabel = humanizeState(item.status, item.askPending === true);
-				const signals = [
-					["active", "awaiting", "warning", "errored"].includes(item.status) ? stateLabel : "",
-					item.askPending && item.status !== "awaiting" ? humanizeState("awaiting", true) : "",
-				].filter(Boolean);
-				const metadataStyle = {
-					fontSize: 13 * (Platform.OS === "ios" ? fontScale : 1),
-					lineHeight: 19 * (Platform.OS === "ios" ? fontScale : 1),
-				};
-				return (
-					<Pressable
-						accessibilityRole="button"
-						accessibilityLabel={`Open ${item.title || "Untitled session"}`}
-						accessibilityHint={[...(signals.length ? signals : [stateLabel]), item.project].filter(Boolean).join(". ")}
-						disabled={!connected}
-						onPress={() => onOpen(item)}
-						style={{
-							marginHorizontal: 16,
-							paddingVertical: 13,
-							minHeight: Platform.OS === "android" ? 72 : 68,
-							borderBottomWidth: 0.5,
-							borderColor: colors.border,
-							gap: 4,
-						}}
-					>
-						<Text
-							allowFontScaling={Platform.OS !== "ios"}
-							numberOfLines={2}
-							style={{
-								color: colors.text,
-								fontSize: 17 * (Platform.OS === "ios" ? fontScale : 1),
-								fontWeight: "500",
-							}}
-						>
-							{item.title || "Untitled session"}
-						</Text>
-						{signals.length ? (
-							<Text
-								allowFontScaling={Platform.OS !== "ios"}
-								style={[metadataStyle, { color: item.attention === "needsYou" ? colors.accent : colors.secondary }]}
-							>
-								{signals.join(" · ")}
-							</Text>
-						) : null}
-						{item.project ? (
-							<Text
-								allowFontScaling={Platform.OS !== "ios"}
-								numberOfLines={fontScale > 1.4 ? 2 : 1}
-								ellipsizeMode={fontScale > 1.4 ? "tail" : "middle"}
-								style={[metadataStyle, { color: colors.secondary }]}
-							>
-								{item.projectLabel}
-							</Text>
-						) : null}
-					</Pressable>
-				);
-			}}
-		/>
 	);
 }

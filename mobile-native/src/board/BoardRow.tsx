@@ -30,11 +30,41 @@ export const TITLE_INSET = 16 + 28 + 10;
 const UNITS: Record<string, string> = { m: "minute", h: "hour", d: "day" };
 
 /** relativeAge's "2m" as VoiceOver should say it: "2 minutes". */
-function spokenAge(age: string): string {
+export function spokenAge(age: string): string {
 	const match = /^(\d+)([mhd])$/.exec(age);
 	if (!match) return age;
 	const count = Number(match[1]);
 	return `${count} ${UNITS[match[2]]}${count === 1 ? "" : "s"}`;
+}
+
+/** The separator between rows, inset to the title by default. */
+export function Hairline({ inset = TITLE_INSET }: { inset?: number }) {
+	const { palette } = useColors();
+	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
+}
+
+/** A group's header: a Live band, or a search group. */
+export function BandHeader({ text }: { text: string }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Text
+			testID="band-header"
+			accessibilityRole="header"
+			allowFontScaling={Platform.OS !== "ios"}
+			style={{
+				paddingTop: 22,
+				paddingBottom: 6,
+				paddingHorizontal: 16,
+				fontSize: 13 * scale,
+				fontWeight: "600",
+				letterSpacing: 0.4,
+				color: palette.inkMid,
+			}}
+		>
+			{text}
+		</Text>
+	);
 }
 
 /** One Board row (spec 7.2). It draws no separator: the list draws hairlines

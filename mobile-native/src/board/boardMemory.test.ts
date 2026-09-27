@@ -171,11 +171,12 @@ describe("folded sections", () => {
 });
 
 describe("forgetBoard", () => {
-	it("removes both of a hub's keys and nothing else, without throwing", () => {
+	it("removes all three of a hub's keys and nothing else, without throwing", () => {
 		const storage = memoryStorage(
 			new Map([
 				["evener.native.seen.hub-a", "{}"],
 				["evener.native.board-sections.hub-a", "{}"],
+				["evener.native.recent-searches.hub-a", "[]"],
 				["evener.native.seen.hub-b", "{}"],
 			]),
 		);
@@ -183,7 +184,7 @@ describe("forgetBoard", () => {
 		expect([...storage.values.keys()]).toEqual(["evener.native.seen.hub-b"]);
 	});
 
-	it("still removes the folded key when the seen key's removal fails, then throws", () => {
+	it("still removes the other keys when the seen key's removal fails, then throws", () => {
 		const removed: string[] = [];
 		const storage: SyncStringStorage = {
 			getItemSync: () => null,
@@ -194,6 +195,6 @@ describe("forgetBoard", () => {
 			},
 		};
 		expect(() => forgetBoard(storage, "hub-a")).toThrow();
-		expect(removed).toEqual(["evener.native.board-sections.hub-a"]);
+		expect(removed).toEqual(["evener.native.board-sections.hub-a", "evener.native.recent-searches.hub-a"]);
 	});
 });

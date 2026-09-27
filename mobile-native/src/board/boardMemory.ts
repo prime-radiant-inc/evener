@@ -1,5 +1,5 @@
 // What this device remembers about one hub's Board: which sessions you have
-// seen and which sections you folded. Kept in expo-sqlite's kv-store under
+// seen, which sections you folded and what you searched for. Kept in expo-sqlite's kv-store under
 // per-hub keys that ConnectionProvider.removeHub clears.
 import { isPlainObject } from "@evener/appwire-client";
 import type { SyncStringStorage } from "../syncStringStorage";
@@ -7,9 +7,10 @@ import { hubTime } from "./attention";
 
 const seenKey = (hubId: string) => `evener.native.seen.${hubId}`;
 const foldedKey = (hubId: string) => `evener.native.board-sections.${hubId}`;
+export const recentSearchesKey = (hubId: string) => `evener.native.recent-searches.${hubId}`;
 const MARK_LIMIT = 500;
 
-function readJson(storage: SyncStringStorage, key: string): unknown {
+export function readJson(storage: SyncStringStorage, key: string): unknown {
 	try {
 		const raw = storage.getItemSync(key);
 		return raw ? JSON.parse(raw) : null;
@@ -17,7 +18,7 @@ function readJson(storage: SyncStringStorage, key: string): unknown {
 		return null;
 	}
 }
-function writeJson(storage: SyncStringStorage, key: string, value: unknown): void {
+export function writeJson(storage: SyncStringStorage, key: string, value: unknown): void {
 	try {
 		storage.setItemSync(key, JSON.stringify(value));
 	} catch {
@@ -172,11 +173,11 @@ export class FoldedSections {
 
 export function forgetBoard(storage: SyncStringStorage, hubId: string): void {
 	let failed = false;
-	for (const key of [seenKey(hubId), foldedKey(hubId)])
+	for (const key of [seenKey(hubId), foldedKey(hubId), recentSearchesKey(hubId)])
 		try {
 			storage.removeItemSync(key);
 		} catch {
-			// Keep trying the other key: a storage failure orphans this one (hub
+			// Keep trying the other keys: a storage failure orphans this one (hub
 			// ids are fresh UUIDs, never reused, so nothing reads it again), but
 			// the caller must still hear about it. ConnectionProvider's removeHub
 			// cleanup runs this last, alongside cleanups that surface their own

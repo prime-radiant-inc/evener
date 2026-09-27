@@ -1,0 +1,247 @@
+import type { SearchResult } from "@evener/appwire-client";
+import { SymbolView } from "expo-symbols";
+import type { ReactNode } from "react";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { useColors, useTextScale } from "../ui";
+import { stateWord } from "./attention";
+import { BandHeader, Hairline, spokenAge } from "./BoardRow";
+import { type SearchScope, type SearchSnapshot, searchResultMark, sessionResults } from "./boardSearch";
+import { StateMark } from "./StateMark";
+
+export interface SearchResultsProps {
+	search: SearchSnapshot;
+	scope: SearchScope;
+	onScope: (scope: SearchScope) => void;
+	connected: boolean;
+	/** The recent searches, shown while the field is empty. */
+	recent: string[];
+	onOpen: (result: SearchResult) => void;
+	onRecent: (query: string) => void;
+	onClearRecent: () => void;
+}
+
+const SCOPES: Array<{ scope: SearchScope; name: string }> = [
+	{ scope: "all", name: "All" },
+	{ scope: "live", name: "Live" },
+];
+
+/** What the Board shows while you search (spec 7.4): recent searches for an
+ * empty field, then the scope chips and the Sessions group. It's the
+ * screen's first scroll view, so the header's search bar tracks it. */
+export function SearchResults(props: SearchResultsProps) {
+	const { palette } = useColors();
+	return (
+		<ScrollView
+			style={{ flex: 1, backgroundColor: palette.page }}
+			contentInsetAdjustmentBehavior="automatic"
+			keyboardShouldPersistTaps="handled"
+			keyboardDismissMode="on-drag"
+			contentContainerStyle={{ paddingBottom: 24 }}
+		>
+			{props.search.query ? <Found {...props} /> : <Recent {...props} />}
+		</ScrollView>
+	);
+}
+
+function Recent({ recent, onRecent, onClearRecent }: SearchResultsProps) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	if (!recent.length) return null;
+	return (
+		<>
+			<View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingRight: 16 }}>
+				<BandHeader text="RECENT" />
+				<Pressable
+					accessibilityRole="button"
+					accessibilityLabel="Clear recent searches"
+					onPress={onClearRecent}
+					// The action draws 30pt tall; the slop makes a 44pt target.
+					hitSlop={{ top: 7, bottom: 7 }}
+					style={({ pressed }) => ({ minHeight: 30, marginTop: 16, justifyContent: "center", opacity: pressed ? 0.6 : 1 })}
+				>
+					<Text
+						allowFontScaling={Platform.OS !== "ios"}
+						style={{ fontSize: 15 * scale, fontWeight: "600", color: palette.accentInk }}
+					>
+						Clear
+					</Text>
+				</Pressable>
+			</View>
+			{recent.map((query, index) => (
+				<View key={query}>
+					{index > 0 ? <Hairline /> : null}
+					<Pressable
+						accessibilityRole="button"
+						accessibilityLabel={`Search for ${query}`}
+						onPress={() => onRecent(query)}
+						style={({ pressed }) => ({
+							minHeight: 48,
+							paddingHorizontal: 16,
+							flexDirection: "row",
+							alignItems: "center",
+							columnGap: 10,
+							backgroundColor: pressed ? palette.pressed : palette.page,
+						})}
+					>
+						<View style={{ width: 28, alignItems: "center" }}>
+							<SymbolView name="magnifyingglass" size={15 * scale} tintColor={palette.inkLow} />
+						</View>
+						<Text
+							allowFontScaling={Platform.OS !== "ios"}
+							numberOfLines={1}
+							style={{ flex: 1, fontSize: 17 * scale, color: palette.inkHi }}
+						>
+							{query}
+						</Text>
+					</Pressable>
+				</View>
+			))}
+		</>
+	);
+}
+
+function Found({ search, scope, onScope, connected, onOpen }: SearchResultsProps) {
+	let body: ReactNode;
+	if (search.failed) body = <Note text="Couldn't search this hub's sessions." />;
+	else if (search.results) {
+		const rows = sessionResults(search.results, scope);
+		body = rows.length ? (
+			<>
+				<BandHeader text={`SESSIONS · ${rows.length}`} />
+				{rows.map((result, index) => (
+					<View key={result.ref}>
+						{index > 0 ? <Hairline /> : null}
+						<ResultRow result={result} connected={connected} onOpen={onOpen} />
+					</View>
+				))}
+			</>
+		) : (
+			<Note text="No sessions match." />
+		);
+	} else if (!connected) body = <Note text="Search works when the hub is connected." />;
+	else if (search.searching) body = <Note text="Searching…" />;
+	return (
+		<>
+			<Scopes scope={scope} onScope={onScope} />
+			{body}
+		</>
+	);
+}
+
+function Scopes({ scope, onScope }: { scope: SearchScope; onScope: (scope: SearchScope) => void }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<View style={{ flexDirection: "row", columnGap: 8, paddingHorizontal: 16, paddingVertical: 8 }}>
+			{SCOPES.map((chip) => {
+				const selected = chip.scope === scope;
+				return (
+					<Pressable
+						key={chip.scope}
+						accessibilityRole="button"
+						accessibilityLabel={chip.name}
+						accessibilityState={{ selected }}
+						onPress={() => onScope(chip.scope)}
+						// The chip draws 32pt tall; the slop makes a 44pt target.
+						hitSlop={{ top: 6, bottom: 6 }}
+						style={({ pressed }) => ({
+							minHeight: 32,
+							paddingHorizontal: 14,
+							borderRadius: 16,
+							justifyContent: "center",
+							backgroundColor: pressed ? palette.pressed : selected ? palette.accentBg : palette.surface,
+							borderWidth: 0.5,
+							borderColor: palette.edge,
+						})}
+					>
+						<Text
+							allowFontScaling={Platform.OS !== "ios"}
+							style={{ fontSize: 14 * scale, fontWeight: "600", color: selected ? palette.accentInk : palette.inkHi }}
+						>
+							{chip.name}
+						</Text>
+					</Pressable>
+				);
+			})}
+		</View>
+	);
+}
+
+function ResultRow({
+	result,
+	connected,
+	onOpen,
+}: {
+	result: SearchResult;
+	connected: boolean;
+	onOpen: (result: SearchResult) => void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const state = searchResultMark(result);
+	const title = result.title || "Untitled session";
+	// Idle and Shut down draw no mark, so the label names no state either.
+	const word = state === "idle" || state === "shutDown" ? null : stateWord(state);
+	const label = [title, word, result.project, result.age && spokenAge(result.age)].filter(Boolean).join(", ");
+	return (
+		<Pressable
+			testID="search-result"
+			accessibilityRole="button"
+			accessibilityLabel={label}
+			onPress={() => onOpen(result)}
+			style={({ pressed }) => ({
+				minHeight: 56,
+				paddingHorizontal: 16,
+				paddingVertical: 8,
+				flexDirection: "row",
+				alignItems: "center",
+				columnGap: 10,
+				backgroundColor: pressed ? palette.pressed : palette.page,
+			})}
+		>
+			<StateMark state={state} connected={connected} />
+			<View style={{ flex: 1, minWidth: 0 }}>
+				<View style={{ flexDirection: "row", alignItems: "center", columnGap: 8 }}>
+					<Text
+						allowFontScaling={Platform.OS !== "ios"}
+						numberOfLines={1}
+						style={{ flex: 1, fontSize: 17 * scale, lineHeight: 22 * scale, fontWeight: "600", color: palette.inkHi }}
+					>
+						{title}
+					</Text>
+					{result.age ? (
+						<Text
+							allowFontScaling={Platform.OS !== "ios"}
+							style={{ fontSize: 13 * scale, color: palette.inkLow, fontVariant: ["tabular-nums"] }}
+						>
+							{result.age}
+						</Text>
+					) : null}
+				</View>
+				{result.project ? (
+					<Text
+						allowFontScaling={Platform.OS !== "ios"}
+						numberOfLines={1}
+						ellipsizeMode="middle"
+						style={{ marginTop: 2, fontSize: 13 * scale, lineHeight: 18 * scale, color: palette.inkLow }}
+					>
+						{result.project}
+					</Text>
+				) : null}
+			</View>
+		</Pressable>
+	);
+}
+
+function Note({ text }: { text: string }) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	return (
+		<Text
+			allowFontScaling={Platform.OS !== "ios"}
+			style={{ paddingHorizontal: 16, paddingVertical: 24, fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid }}
+		>
+			{text}
+		</Text>
+	);
+}
