@@ -2060,7 +2060,7 @@ git commit -m "feat(native): project data reads any catalog and the archived tie
 **Interfaces:**
 - Produces:
   - `type OrganizeBy = "project-host" | "host-project"`
-  - `class OrganizeByPreference`: constructor `(storage: BoardStorage, hubId: string)`, `get(): OrganizeBy`, `set(value: OrganizeBy): void`
+  - `class OrganizeByPreference`: constructor `(storage: SyncStringStorage, hubId: string)` (`src/syncStringStorage.ts`, which `boardMemory.ts` and its test already import, #2536), `get(): OrganizeBy`, `set(value: OrganizeBy): void`
   - `organizeByPreference(hubId: string): OrganizeByPreference` (per-hub singleton, from `nativeBoardMemory.ts`)
   - `forgetBoard(storage, hubId)` also removes `evener.native.board-organize.${hubId}`.
 
@@ -2101,7 +2101,7 @@ describe("the Organize by choice", () => {
 	});
 
 	it("keeps working in memory when storage throws", () => {
-		const broken: BoardStorage = {
+		const broken: SyncStringStorage = {
 			getItemSync: () => {
 				throw new Error("disk");
 			},
@@ -2175,7 +2175,7 @@ export class OrganizeByPreference {
 	private value: OrganizeBy;
 
 	constructor(
-		private readonly storage: BoardStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
 		// Unreadable storage, or a value this build doesn't know, reads as the default.
