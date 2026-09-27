@@ -214,6 +214,22 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }
 
+// The pane's clock tests fake the now-tick's interval and Date, and nothing
+// else. Faking every timer would also fake setImmediate and
+// requestAnimationFrame, which fake-indexeddb and the transcript's virtualizer
+// schedule on, and advanceTimersByTimeAsync yields one real macrotask per fake
+// timer it fires: a 21s advance would take about 750 real turns (the storage
+// steps of ten discovery scans and a scroll-reconcile frame loop), enough for a
+// starved host to push the test past its timeout. With only these faked, the
+// same advance fires about seventeen timers. setTimeout stays real as well:
+// the storage's 10s transaction deadlines and the projection flush's 4s stall
+// tripwire run on it, and a long fake advance would fire them while
+// fake-indexeddb's work still runs in real time. The discovery scans the faked
+// interval still starts run on real IndexedDB, so a test settles them with the
+// projection flush after it advances, before the file's afterEach resets the
+// pending-turns store they publish into.
+const FAKE_CLOCK_ONLY: Parameters<typeof vi.useFakeTimers>[0] = { toFake: ["setInterval", "clearInterval", "Date"] };
+
 // jsdom performs no real layout (every element's offsetHeight is 0, no
 // ResizeObserver) - VirtualList's own test suite stubs this for the exact
 // same reason (see widgets/virtuallist/virtuallist.test.tsx's file-level
@@ -1311,7 +1327,9 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   // millisecond after the component's last-rendered `now` reads as
   // "timestamped after now" and Cadence's own clock-skew guard (see
   // widgets/cadence's ticksFor) correctly hides it until the next tick.
-  vi.useFakeTimers();
+  // Only the interval and the clock are faked (FAKE_CLOCK_ONLY), so the
+  // storage and the transcript's frames keep running on real scheduling.
+  vi.useFakeTimers(FAKE_CLOCK_ONLY);
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
@@ -1325,6 +1343,9 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   });
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
 
+  // A live frame lands after the `now` the pane last rendered. Moving the clock
+  // one millisecond stamps this one that way; it fires no timer.
+  vi.advanceTimersByTime(1);
   act(() => {
     fake.emitNotification({
       method: "thread/status/changed",
@@ -1333,6 +1354,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   });
   // The ring itself (store-level) grows immediately - no timer involved.
   expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(1);
+  expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
 
   // The pane's own `now` prop only advances on its 3s tick (Cadence itself
   // is pure/prop-driven - see widgets/cadence's own doc comment); advance
@@ -1341,6 +1363,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   await act(async () => {
     await vi.advanceTimersByTimeAsync(3_000);
   });
+  await flushPendingTurnsProjectionForTests();
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect').length).toBeGreaterThan(0);
 });
 
@@ -1577,7 +1600,7 @@ test("clicking the real NewContentPill clears it", async () => {
 // footer (flex: none, always laid out after body - panescaffold.module.css)
 // beside the composer, never inside the transcript's floating overlay.
 test("the liveness line renders in the reserved footer beside the composer, never inside the transcript's floating overlay", async () => {
-  vi.useFakeTimers();
+  vi.useFakeTimers(FAKE_CLOCK_ONLY);
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", { status: { type: "active" }, turns: [turnFixture("turn_1", "hi")] }),
@@ -1598,6 +1621,7 @@ test("the liveness line renders in the reserved footer beside the composer, neve
   await act(async () => {
     await vi.advanceTimersByTimeAsync(21_000);
   });
+  await flushPendingTurnsProjectionForTests();
 
   const line = screen.getByTestId("liveness-line");
   expect(line.textContent).toContain("Quiet");
