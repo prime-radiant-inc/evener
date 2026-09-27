@@ -3,6 +3,7 @@ import * as React from "react";
 import { afterAll, beforeAll, beforeEach } from "vitest";
 import { reactActScopeGuardPorts, waitOutLeakedActScope } from "./testActScopeGuard";
 import { guardConsoleOutput } from "./testConsoleGuard";
+import { unmountEveryTree } from "./testUnmount";
 
 // Every test file must get its own VM context: stores, pane registrations and
 // module mocks are module-scoped. Vitest's vmThreads pool gives each file one
@@ -30,10 +31,10 @@ const consoleGuard = guardConsoleOutput(console);
 // them, so the steps after it still run for that test.
 const teardownFailures: unknown[] = [];
 
-// The last step of each test's teardown, and registered first as an afterAll,
-// so it runs last of all: it fails the test on what it left behind, which is an
-// act() scope it left open, errors from work that ran in that scope, a tree
-// whose unmount threw, and console output.
+// Fails the test on what it left behind: an act() scope it left open, errors
+// from work that ran in that scope, a tree whose unmount threw, and console
+// output. It is the last step of each test's teardown. As an afterAll it is
+// registered first, so it runs after every other afterAll.
 function failOnTestLeftovers() {
   const failures = teardownFailures.splice(0);
   const unexpectedOutput = consoleGuard.takeUnexpectedOutput();
@@ -44,25 +45,6 @@ function failOnTestLeftovers() {
 }
 
 afterAll(failOnTestLeftovers);
-
-// Testing Library registers its automatic unmount only when vitest exposes a
-// global afterEach, which it does not here, so a test's rendered trees and
-// hooks would otherwise stay mounted into the next test. The teardown runs it
-// before the leftovers check, so output from the unmount counts.
-//
-// cleanup() unmounts each tree inside act() and stops at the first whose
-// unmount throws (an effect cleanup that throws), before it removes that
-// tree's container or unmounts the trees after it. A tree already unmounted
-// does nothing when unmounted again, so each run gets past the tree that threw
-// the last time, and the leftovers check reports what each one threw.
-function unmountEveryTree(): void {
-  try {
-    cleanup();
-  } catch (error) {
-    teardownFailures.push(error);
-    unmountEveryTree();
-  }
-}
 
 const reactEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 let previousActEnvironment: boolean | undefined;
@@ -128,15 +110,20 @@ async function waitOutAnActScopeLeftOpen(): Promise<void> {
 
 // Each test's teardown runs as an onTestFinished, not an afterEach. Vitest runs
 // a file's afterEach hooks in one loop, so a throw from any of them skips the
-// rest, and a test file's own afterEach hooks run before this file's would.
+// rest, and as an afterEach the teardown would run after the test file's own.
 // Vitest runs finish hooks after every afterEach, even one that threw, and each
 // in a try of its own. This file's beforeEach runs before any of the test
 // file's, so the teardown is registered before anything else in the test can
 // fail.
+//
+// Testing Library registers its automatic unmount only when vitest exposes a
+// global afterEach, which it does not here, so a test's rendered trees and
+// hooks would otherwise stay mounted into the next test. The teardown unmounts
+// them before the leftovers check, so output from the unmount counts.
 beforeEach(({ onTestFinished }) => {
   onTestFinished(async () => {
     await waitOutAnActScopeLeftOpen();
-    unmountEveryTree();
+    unmountEveryTree(cleanup, (error) => teardownFailures.push(error));
     failOnTestLeftovers();
   });
 });
