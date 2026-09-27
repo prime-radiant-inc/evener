@@ -1300,7 +1300,7 @@ S1 is split three more ways because each part needs agent and daemon state the h
 
 - **Plan.** PRs 10 and 11, rulings 17 to 24.
 - **Adds.** The Finished row's why line: the opening of the last agent message, about 200 characters (spec 18), in the reading serif (spec 7.2).
-- **Settled there.** The session records the opening of each agent message as it writes it (an assistant response's last text part, or a delivered communicate message), so compaction never folds it away, and persists it in `SessionMeta.LastMessage`. It rides the envelope's meta facet as a plain string, `lastMessage`, with no timestamp of its own: the row's `turn_ended_at` dates it. It carries only the agent's own words, never reasoning or a tool's output (ruling 20). The byte-budget question is settled without the fitter: rows carry it for top-level sessions only, live and ended, at most 150 per project resource, about 120 KB of the 2 MiB cap at worst; subagent rows carry none (ruling 21).
+- **Settled there.** The session records the opening of each agent message as it writes it (an assistant response's last text part, or a delivered communicate message), so compaction never folds it away, and persists it in `SessionMeta.LastMessage`. It rides the envelope's meta facet as a plain string, `lastMessage`, with no timestamp of its own: the row's `turn_ended_at` dates it. It carries only the agent's own words, never reasoning or a tool's output (ruling 20). The byte-budget question is settled without the fitter: rows carry it for top-level sessions only, live and ended, at most 150 per project resource, about 180 KB of the 2 MiB cap at worst; subagent rows carry none (ruling 21).
 - **Fallback.** Generic copy.
 
 ### Documents and artifacts named in the final message
