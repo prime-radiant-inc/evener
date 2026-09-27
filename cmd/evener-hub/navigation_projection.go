@@ -1810,16 +1810,6 @@ func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hub
 
 func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.NavigationSessionSummary {
 	ref, _ := navigationNodeRef(node)
-	updated := node.UpdatedAt
-	var updatedAt *time.Time
-	if !updated.IsZero() {
-		updatedAt = &updated
-	}
-	var turnEndedAt *time.Time
-	if !node.TurnEndedAt.IsZero() {
-		ended := node.TurnEndedAt
-		turnEndedAt = &ended
-	}
 	pinned := p.projection.pinSectionIDFor(ref) != ""
 	watches, omittedWatches, omittedArmedWatches := navigationWatches(node.Watches)
 	return hubapi.NavigationSessionSummary{
@@ -1847,9 +1837,9 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		ApprovalTarget:      truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
 		Dormant:             node.Dormant,
 		Offline:             p.projection.sourceOffline(ref.HostID),
-		UpdatedAt:           updatedAt,
+		UpdatedAt:           optionalTime(node.UpdatedAt),
 		MoreSubagents:       node.MoreSubagents,
-		TurnEndedAt:         turnEndedAt,
+		TurnEndedAt:         optionalTime(node.TurnEndedAt),
 		Unseen:              p.projection.unseen(ref, node.TurnEndedAt),
 		RunningJobs:         navigationJobs(node.RunningJobs),
 		CompletedJobs:       navigationJobs(node.CompletedJobs),
@@ -1859,6 +1849,15 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Tasks:               navigationTaskProgress(node.Tasks),
 		Children:            hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
+}
+
+// optionalTime is t as an optional wire timestamp: nil when t is zero, so the
+// summary omits the key.
+func optionalTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 // navigationTaskProgress is the row's task line: a session's task-list progress
@@ -2156,14 +2155,8 @@ func (p navigationProjection) unseen(ref hubapi.Ref, turnEndedAt time.Time) bool
 
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {
 	clone := summary
-	if summary.UpdatedAt != nil {
-		updated := *summary.UpdatedAt
-		clone.UpdatedAt = &updated
-	}
-	if summary.TurnEndedAt != nil {
-		ended := *summary.TurnEndedAt
-		clone.TurnEndedAt = &ended
-	}
+	clone.UpdatedAt = clonePointer(summary.UpdatedAt)
+	clone.TurnEndedAt = clonePointer(summary.TurnEndedAt)
 	clone.RunningJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.RunningJobs...)
 	clone.CompletedJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.CompletedJobs...)
 	clone.Watches = append(hubapi.NavigationArray[hubapi.NavigationWatchSummary](nil), summary.Watches...)
@@ -2172,15 +2165,21 @@ func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.Navi
 		clone.Watches[index].Events = append([]string(nil), watch.Events...)
 		clone.Watches[index].DeliveryTimes = append([]string(nil), watch.DeliveryTimes...)
 	}
-	if summary.Tasks != nil {
-		tasks := *summary.Tasks
-		clone.Tasks = &tasks
-	}
+	clone.Tasks = clonePointer(summary.Tasks)
 	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
 	for index, child := range summary.Children {
 		clone.Children[index] = cloneNavigationSummary(child)
 	}
 	return clone
+}
+
+// clonePointer returns a new pointer to a copy of *value, or nil for nil.
+func clonePointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 func navigationPage[T any](rows []T, offset uint32, limit, maximum int) ([]T, int) {

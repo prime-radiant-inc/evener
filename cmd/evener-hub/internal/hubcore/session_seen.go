@@ -67,11 +67,7 @@ func (s SessionSeenSnapshot) Unseen(key ArchiveKey, turnEndedAt time.Time) bool 
 	if record.Unread {
 		return true
 	}
-	through := s.Epoch
-	if record.SeenThrough.After(through) {
-		through = record.SeenThrough
-	}
-	return turnEndedAt.After(through)
+	return turnEndedAt.After(s.Epoch) && turnEndedAt.After(record.SeenThrough)
 }
 
 // Clone returns a snapshot whose records the caller owns.
