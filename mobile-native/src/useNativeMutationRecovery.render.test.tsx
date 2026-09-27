@@ -32,6 +32,13 @@ import {
 	useNativeMutationRecovery,
 } from "./useNativeMutationRecovery";
 
+// The root stack the screen sits in, read by useScreenInFront (screens.tsx).
+// Kept at the screen's own route on top, so the screen is in front the way a
+// real mounted conversation is; updated when the route change below swaps
+// targetRef, so the new route reads as in front too.
+const navigationState = vi.hoisted(() => ({
+	state: { index: 0, routes: [] as { key: string; name: string }[] },
+}));
 const recorder = vi.hoisted(() => ({
 	inRenderPass: true,
 	opens: [] as { database: string; phase: "render" | "effect" }[],
@@ -97,8 +104,8 @@ vi.mock("@react-navigation/native", async () => {
 	return {
 		useFocusEffect: (effect: () => void | (() => void)) =>
 			useEffect(effect, []),
-		useIsFocused: () => true,
-		useNavigationState: () => false,
+		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) =>
+			select(navigationState.state),
 	};
 });
 vi.mock("expo-clipboard", () => ({
@@ -311,6 +318,10 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 
 	const hubId = "hub-1";
 	let targetRef = "ref-1";
+	navigationState.state = {
+		index: 0,
+		routes: [{ key: conversationRoute(targetRef).key, name: "Conversation" }],
+	};
 	function tree(): ReactElement {
 		return (
 			<PhaseMarker>
@@ -385,6 +396,10 @@ it("renders the real ConversationScreen without constructing a runtime or regist
 	// old generation's subscription is released and the new one reads the
 	// new route's composite key only.
 	targetRef = "ref-2";
+	navigationState.state = {
+		index: 0,
+		routes: [{ key: conversationRoute(targetRef).key, name: "Conversation" }],
+	};
 	act(() => {
 		renderer.update(tree());
 	});
