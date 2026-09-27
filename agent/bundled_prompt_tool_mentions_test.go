@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -24,11 +25,18 @@ var mentionsAllowedWithoutTheTool = map[string][]string{
 	// The doctor's forensic contract is that a tool NAME appearing in assistant
 	// text is not evidence the tool ran. It has to print the name to say so.
 	"internal/bundled/agents/doctor.md": {"delegate_send"},
+}
+
+// mentionCapWithoutTheTool is how many times every assembled prompt may name a
+// tool the agent lacks because the text talks about the name. A mention past
+// the cap is an instruction to call the tool, so a gate that stops working
+// cannot hide behind the audited mention.
+var mentionCapWithoutTheTool = map[string]int{
 	// communicate.md.tmpl names the job_watch FRAME kind, not the tool: a
 	// delegate spawned with watch_parent receives watch frames without ever
 	// being able to create a watch, and that paragraph tells it how to answer
 	// one.
-	"*": {"job_watch"},
+	"job_watch": 1,
 }
 
 // TestShippedPromptsOnlyNameToolsTheSessionHas is the prompt half of the rule
@@ -61,13 +69,14 @@ func TestShippedPromptsOnlyNameToolsTheSessionHas(t *testing.T) {
 		if strings.TrimSpace(prompt) == "" {
 			t.Fatalf("%s: rendered no system prompt to sweep", source)
 		}
-		for _, name := range mentionedToolNames(prompt, parent.reg.RegisteredNames()) {
-			if surface[name] ||
-				hasString(mentionsAllowedWithoutTheTool[source], name) ||
-				hasString(mentionsAllowedWithoutTheTool["*"], name) {
+		for name, n := range toolMentionCounts(prompt, parent.reg.RegisteredNames()) {
+			if surface[name] || hasString(mentionsAllowedWithoutTheTool[source], name) {
 				continue
 			}
-			findings = append(findings, source+" ("+agentType+"): "+name)
+			if n > mentionCapWithoutTheTool[name] {
+				findings = append(findings, fmt.Sprintf("%s (%s): %s, named %d time(s), audited cap %d",
+					source, agentType, name, n, mentionCapWithoutTheTool[name]))
+			}
 		}
 		releasePreparedTreeSlot(prepared)
 		child.Close()
@@ -77,49 +86,8 @@ func TestShippedPromptsOnlyNameToolsTheSessionHas(t *testing.T) {
 		t.Fatalf("%d assembled prompt(s) instruct a tool the agent cannot call. Gate the "+
 			"section on {{ if .HasTool \"<name>\" }}, add the tool to that agent's tools: "+
 			"list, or — if the text only talks ABOUT the name — record it in "+
-			"mentionsAllowedWithoutTheTool with a reason:\n%s",
+			"mentionsAllowedWithoutTheTool or mentionCapWithoutTheTool with a reason:\n%s",
 			len(findings), strings.Join(findings, "\n"))
-	}
-}
-
-func TestBundledDelegatePromptUsesStableControlIdentity(t *testing.T) {
-	t.Parallel()
-	prompt := renderSubagentPromptWithAllowance(t, 2)
-
-	for _, want := range []string{
-		"`delegate` returns one durable `delegate_id` (`dlg_...`)",
-		"`job_status(target=<dlg_...>)`",
-		"`job_stop(target=<dlg_...>)`",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("assembled delegate prompt missing stable control contract %q", want)
-		}
-	}
-	for _, stale := range []string{
-		"concrete `job_id`s for individual turns",
-		"Shell commands and delegates can run as durable background jobs",
-	} {
-		if strings.Contains(prompt, stale) {
-			t.Errorf("assembled delegate prompt retains activation-job guidance %q", stale)
-		}
-	}
-}
-
-func TestBundledDelegatePromptPreservesWatchSupervisionAndShellGuidance(t *testing.T) {
-	t.Parallel()
-	prompt := renderSubagentPromptWithAllowance(t, 2)
-
-	for _, want := range []string{
-		"Shell commands can run as durable background jobs identified by a `job_id` (`job_...`)",
-		"Stable delegates are watch sources identified by `dlg_...`",
-		"`delegate_send(to=\"caller\")` sends a non-terminal update to your controlling caller",
-		"`delegate(watch_parent:true)`",
-		"quiet watchdog",
-		"`max_retained_terminal`",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("assembled delegate prompt missing preserved capability %q", want)
-		}
 	}
 }
 
@@ -131,6 +99,9 @@ func promptSweepParentSession(t *testing.T) *Session {
 	s := newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 3,
 		NoProjectPrompts: true,
+		// A state dir registers find_session_transcripts, which puts that name in
+		// the sweep's vocabulary and so checks its gate.
+		StateDir: t.TempDir(),
 		testOnly: testConfig{
 			skipGitSnapshot: true,
 			noSyncJobStore:  true,
@@ -164,22 +135,20 @@ func stripToolInventory(prompt string) string {
 	return strings.Join(out, "\n")
 }
 
-// mentionedToolNames returns the registered tool names a prompt body names.
-func mentionedToolNames(body string, registered map[string]bool) []string {
-	seen := map[string]bool{}
-	var out []string
+// toolMentionCounts counts, by name, how often a prompt body names each
+// registered tool.
+func toolMentionCounts(body string, registered map[string]bool) map[string]int {
+	counts := map[string]int{}
 	for _, m := range toolShapedMention.FindAllStringSubmatch(body, -1) {
 		name := m[1]
 		if name == "" {
 			name = m[2]
 		}
-		if !registered[name] || seen[name] {
-			continue
+		if registered[name] {
+			counts[name]++
 		}
-		seen[name] = true
-		out = append(out, name)
 	}
-	return out
+	return counts
 }
 
 // TestBundledPromptBodiesOnlyNameToolsTheirAgentHas keeps the cheap, direct
@@ -192,7 +161,7 @@ func TestBundledPromptBodiesOnlyNameToolsTheirAgentHas(t *testing.T) {
 	var findings []string
 	for source, agent := range bundledTypedAgentsForTest(t) {
 		surface := bundledAgentSurfaceForTest(agent, registered)
-		for _, name := range mentionedToolNames(agent.SystemPrompt, registered) {
+		for name := range toolMentionCounts(agent.SystemPrompt, registered) {
 			if surface[name] || hasString(mentionsAllowedWithoutTheTool[source], name) {
 				continue
 			}

@@ -1653,18 +1653,10 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 		t.Fatal("expected non-empty system_prompt in transcript header")
 	}
 
-	// System prompt should contain identity section content.
-	if !strings.Contains(header.SystemPrompt, "## Identity") {
-		t.Errorf("system_prompt missing expected content; got (first 200 chars): %s",
-			truncStr(header.SystemPrompt, 200))
+	if header.SystemPrompt != sess.cachedSystemPrompt {
+		t.Errorf("transcript header system_prompt differs from the rendered prompt (%d vs %d bytes)",
+			len(header.SystemPrompt), len(sess.cachedSystemPrompt))
 	}
-}
-
-func truncStr(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }
 
 // --- Periodic sync tests ---
