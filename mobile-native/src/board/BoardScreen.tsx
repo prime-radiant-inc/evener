@@ -33,14 +33,13 @@ import type { Routes } from "../screens";
 import { Action, Copy, styles, useColors, useTextScale } from "../ui";
 import { usePinNavigation } from "../usePinNavigation";
 import {
-	approvalRefs,
 	type Band,
-	boardState,
 	type ClassifiedRow,
 	type LiveSummary,
 	liveBands,
 	liveSummary,
 	plural,
+	rowClassifier,
 	sectionLabel,
 	summaryText,
 	usualPlace,
@@ -129,11 +128,10 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		return (hostId: string) => labels.get(hostId) ?? hostId;
 	}, [sources]);
 
-	const approvals = useMemo(() => approvalRefs(snapshot.needsYou.rows), [snapshot.needsYou.rows]);
-	const classify = (row: NavigationSessionSummary): ClassifiedRow => ({
-		row,
-		state: boardState(row, approvals.has(row.ref), markers.isSeen(row)),
-	});
+	const classify = useMemo(
+		() => rowClassifier(snapshot.needsYou.rows, (row) => markers.isSeen(row)),
+		[snapshot.needsYou.rows, markers],
+	);
 	const folds = useCategoryFolds(hubId);
 	const categoryMenu = useCategoryMenu(hubId, () => board.getSnapshot().pins.rows);
 
