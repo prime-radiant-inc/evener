@@ -21,12 +21,15 @@ export interface MutationProjectionWorkPorts<TimerId = unknown> {
 export interface MutationProjectionWorkTracker {
   // Registers `work` as outstanding until it settles either way.
   track<T>(work: Promise<T>): Promise<T>;
-  // Waits until nothing tracked is outstanding (or the stall tripwire fires,
-  // whichever comes first), yields one macrotask, and reports how much work
-  // the round saw: what was outstanding when it started plus what registered
-  // while it ran. Work chained a few microtasks behind an operation that just
-  // finished registers during the round, so zero is the only answer that
-  // means the round began and ended quiet.
+  // Waits until nothing tracked is outstanding and a macrotask hop passes with
+  // nothing new registered (or the stall tripwire fires, whichever comes
+  // first), and reports how much work it saw: what was outstanding when it
+  // started plus everything that registered while it ran. A durable chain
+  // whose next step starts only once the step before it settled - the
+  // dispatcher's next read, a refresh after a commit's notify - leaves the
+  // tracker empty between steps, and the hop is what lets that next step
+  // register before settle decides the chain is over. Zero means settle
+  // began and ended quiet.
   settle(): Promise<number>;
   // Forgets every currently tracked promise with no wait at all - a fence
   // reset already knows their result no longer matters to this host.
@@ -62,33 +65,28 @@ export function createMutationProjectionWorkTracker<TimerId = unknown>(
   ports: MutationProjectionWorkPorts<TimerId>,
 ): MutationProjectionWorkTracker {
   let generation = createWorkGeneration();
-  // Every registration so far. A round compares it before and after, which is
+  // Every registration so far. A settle compares it across each hop, which is
   // how it sees work that registered while it ran.
   let registrations = 0;
 
-  async function drainedOrStalled(current: WorkGeneration): Promise<void> {
-    // The executor below runs synchronously, so `timer` is always assigned
-    // before the `finally` reads it - TypeScript cannot see that through a
-    // closure, hence the assertion.
-    let timer!: TimerId;
-    const tripwire = new Promise<never>((_resolve, reject) => {
-      timer = ports.setTimeout(
-        () =>
-          reject(
-            new Error(
-              `projection work stalled: ${current.outstanding} operation(s) still unsettled after ${STALL_TRIPWIRE_MS}ms - release whatever storage or transport is holding this work open`,
-            ),
-          ),
-        STALL_TRIPWIRE_MS,
-      );
-    });
-    const drained = new Promise<void>((resolve) => {
+  function drained(current: WorkGeneration): Promise<void> {
+    if (current.outstanding === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
       current.whenDrained.push(resolve);
     });
-    try {
-      await Promise.race([drained, tripwire]);
-    } finally {
-      ports.clearTimeout(timer);
+  }
+
+  // Drains, hops, and drains again for as long as each hop let new work
+  // register. The tripwire bounds the whole settle, so a chain that keeps
+  // going past it fails as loudly as work that never settles (the count in
+  // its message is what was still in flight when it fired); once the settle
+  // is over, `abandoned` stops the loop.
+  async function drainedAndQuiet(current: WorkGeneration, abandoned: () => boolean): Promise<void> {
+    for (;;) {
+      await drained(current);
+      const registrationsBeforeHop = registrations;
+      await ports.yieldMacrotask();
+      if (abandoned() || (registrations === registrationsBeforeHop && current.outstanding === 0)) return;
     }
   }
 
@@ -103,10 +101,28 @@ export function createMutationProjectionWorkTracker<TimerId = unknown>(
       const current = generation;
       const outstandingAtStart = current.outstanding;
       const registrationsAtStart = registrations;
-      // With nothing outstanding there is no stall to race a tripwire
-      // against, so no timer is built.
-      if (outstandingAtStart > 0) await drainedOrStalled(current);
-      await ports.yieldMacrotask();
+      // The executor below runs synchronously, so `timer` is always assigned
+      // before the `finally` reads it - TypeScript cannot see that through a
+      // closure, hence the assertion.
+      let timer!: TimerId;
+      const tripwire = new Promise<never>((_resolve, reject) => {
+        timer = ports.setTimeout(
+          () =>
+            reject(
+              new Error(
+                `projection work stalled: ${current.outstanding} operation(s) still unsettled after ${STALL_TRIPWIRE_MS}ms - release whatever storage or transport is holding this work open`,
+              ),
+            ),
+          STALL_TRIPWIRE_MS,
+        );
+      });
+      let over = false;
+      try {
+        await Promise.race([drainedAndQuiet(current, () => over), tripwire]);
+      } finally {
+        over = true;
+        ports.clearTimeout(timer);
+      }
       return outstandingAtStart + (registrations - registrationsAtStart);
     },
 

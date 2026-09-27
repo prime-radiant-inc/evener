@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, test, vi } from "vitest";
+import { deferred } from "../../testing/deferred";
 import { createMutationProjectionWorkTracker, type MutationProjectionWorkPorts } from "./projectionWork";
 
 function realPorts(): MutationProjectionWorkPorts<ReturnType<typeof setTimeout>> {
@@ -47,6 +48,61 @@ describe("createMutationProjectionWorkTracker", () => {
     const tracker = createMutationProjectionWorkTracker(realPorts());
     const settling = tracker.settle();
     void tracker.track(Promise.resolve());
+    await expect(settling).resolves.toBe(1);
+  });
+
+  test("a round waits for work registered while it waits, and reports it", async () => {
+    const tracker = createMutationProjectionWorkTracker(realPorts());
+    const first = deferred<void>();
+    const second = deferred<void>();
+    void tracker.track(first.promise);
+    let settled = false;
+    const settling = tracker.settle().then((count) => {
+      settled = true;
+      return count;
+    });
+    void tracker.track(second.promise);
+    first.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    second.resolve();
+    await expect(settling).resolves.toBe(2);
+  });
+
+  // Each step of a durable chain starts only once the step before it has
+  // settled - the dispatcher's next read after its previous one, a refresh
+  // after a commit's notify - so the tracker is briefly empty between steps.
+  // One settle still covers the whole chain.
+  test("one settle waits out a chain whose steps start only after the previous one settles", async () => {
+    const tracker = createMutationProjectionWorkTracker(realPorts());
+    const macrotask = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+    let finished = false;
+    void (async () => {
+      await tracker.track(macrotask());
+      await tracker.track(macrotask());
+      await tracker.track(macrotask());
+      finished = true;
+    })();
+    await expect(tracker.settle()).resolves.toBe(3);
+    expect(finished).toBe(true);
+  });
+
+  test("work tracked before a clear never releases a later round", async () => {
+    const tracker = createMutationProjectionWorkTracker(realPorts());
+    const before = deferred<void>();
+    const after = deferred<void>();
+    void tracker.track(before.promise);
+    tracker.clear();
+    void tracker.track(after.promise);
+    let settled = false;
+    const settling = tracker.settle().then((count) => {
+      settled = true;
+      return count;
+    });
+    before.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    after.resolve();
     await expect(settling).resolves.toBe(1);
   });
 
