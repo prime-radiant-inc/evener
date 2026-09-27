@@ -819,6 +819,14 @@ export interface EvenerThread {
    */
   askPending?: boolean;
   /**
+   * PendingQuestion is the first question of the session's pending ask and
+   * how many the ask holds (S1b). The daemon reads both from one sample of
+   * the pending set, so it is present exactly when AskPending is true; it is
+   * absent from an older daemon. Snapshot-only: thread/status/changed
+   * carries AskPending, and nothing carries the question's text.
+   */
+  pendingQuestion?: PendingQuestion;
+  /**
    * PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
    * cards for any sandbox-exemption escalations currently blocked on this session,
    * so a client entering / reconnecting to / not-having-seen-live this session
@@ -2428,6 +2436,12 @@ export interface PendingMutation {
   turnId?: string;
   queueEntryIds?: string[];
   projectionState: string;
+}
+
+export interface PendingQuestion {
+  question: string;
+  options?: string[];
+  count: number;
 }
 
 export interface PinSection {

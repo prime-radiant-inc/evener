@@ -896,6 +896,12 @@ type EvenerThread struct {
 	// absent on old daemons and source-backed threads that omit the field,
 	// decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
+	// PendingQuestion is the first question of the session's pending ask and
+	// how many the ask holds (S1b). The daemon reads both from one sample of
+	// the pending set, so it is present exactly when AskPending is true; it is
+	// absent from an older daemon. Snapshot-only: thread/status/changed
+	// carries AskPending, and nothing carries the question's text.
+	PendingQuestion *PendingQuestion `json:"pendingQuestion,omitempty"`
 	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
 	// cards for any sandbox-exemption escalations currently blocked on this session,
 	// so a client entering / reconnecting to / not-having-seen-live this session
@@ -956,6 +962,19 @@ type SubagentTally struct {
 	Running int `json:"running"`
 	Failed  int `json:"failed"`
 	Done    int `json:"done"`
+}
+
+// PendingQuestion is the first question of a session's pending ask (S1b): what
+// its Needs you row says ("Question · keep or drop the implied options?") and
+// the option labels a long-press preview lists. The daemon cuts Question and
+// each label to one line (Excerpt, at MaxQuestionTextRunes and
+// MaxQuestionOptionRunes) and sends at most MaxQuestionOptions labels. Count
+// is how many questions the pending ask holds, so a client can say "Question
+// 1 of 2".
+type PendingQuestion struct {
+	Question string   `json:"question"`
+	Options  []string `json:"options,omitempty"`
+	Count    int      `json:"count"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
