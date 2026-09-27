@@ -1,12 +1,12 @@
 name: iOS TestFlight
 
 on:
+  # TestFlight builds ship only from tagged releases on main. The mutable
+  # `snapshot` tag that binaries.yml force-moves on every green main build does
+  # not match `v*`, so refreshing that channel never uploads to TestFlight, and
+  # the archive job verifies the tag's commit is on main before building.
   push:
-    branches: [main]
-    paths:
-      - "mobile/**"
-      - "mobile-native/**"
-      - "appwire-client/typescript/**"
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       build_number:
@@ -37,7 +37,7 @@ env:
 
 jobs:
   validate-dispatch:
-    if: github.ref != 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Reject non-main dispatch
@@ -47,12 +47,23 @@ jobs:
           exit 1
 
   archive-and-upload:
-    if: inputs.recovery_run_id == '' && github.ref == 'refs/heads/main'
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.recovery_run_id == '' && github.ref == 'refs/heads/main')
     runs-on: macos-26
     timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify the release tag is on main
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          # actions/checkout fetches a single commit for the tag; fetch main
+          # (without --depth) so the tag's ancestry can be checked.
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD; then
+            echo "Release tag ${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not on main" >&2
+            exit 1
+          fi
       - name: Select and verify Xcode
         run: |
           sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
@@ -91,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            # A main-push run carries no manual input: take the next build
+            # A tag-push run carries no manual input: take the next build
             # number from App Store Connect for the current marketing version.
             IOS_MARKETING_VERSION="$(node -p 'require("./app.json").expo.version')" \
               bundle exec fastlane ios next_build_number
@@ -264,7 +275,7 @@ jobs:
           exit "$cleanup_status"
 
   verify-upload:
-    if: inputs.recovery_run_id != '' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && inputs.recovery_run_id != '' && github.ref == 'refs/heads/main'
     runs-on: macos-26
     permissions:
       contents: read
