@@ -994,27 +994,32 @@ func TestBuildTree_RollupCapsNestedSubagentToActive(t *testing.T) {
 // fuzzScenarioBuildTree_RollupCoordinatorErrorStillCounts: issue #2557. Only
 // a top-level session's own state may raise its project's rollup into an
 // attention state. A coordinator that is itself errored must still turn the
-// project red and count once toward RollupAttn; an idle delegate under it
-// proves the delegate neither blocks nor inflates that count.
+// project red and count once toward RollupAttn. The delegate under it is
+// genuinely active — the one state that raises a task tree's rollup at
+// all — to prove the errored coordinator's own state is never downgraded
+// (or double-counted) by a child that legitimately ranks below it.
 func fuzzScenarioBuildTree_RollupCoordinatorErrorStillCounts(t *testing.T) {
 	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
 	metas := []schema.SessionMeta{
 		{ID: "01FAILEDCOORD", CreatedAt: now, UpdatedAt: now,
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
-		{ID: "01IDLEDELEGATE", CreatedAt: now, UpdatedAt: now, IsSubagent: true, ParentSessionID: "01FAILEDCOORD",
+		{ID: "01ACTIVEDELEGATE", CreatedAt: now, UpdatedAt: now, IsSubagent: true, ParentSessionID: "01FAILEDCOORD",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
 		{PID: 1, SessionID: "01FAILEDCOORD", Status: appwire.ThreadStatusSystemError},
-		{PID: 2, SessionID: "01IDLEDELEGATE", Status: appwire.ThreadStatusIdle},
+		{PID: 2, SessionID: "01ACTIVEDELEGATE", Status: appwire.ThreadStatusActive},
 	}
 
 	project := projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
 	if project.RollupState != "errored" {
-		t.Errorf("rollup state = %q, want errored (the coordinator itself failed)", project.RollupState)
+		t.Errorf("rollup state = %q, want errored (the coordinator itself failed, and an active child must not downgrade that)", project.RollupState)
 	}
 	if project.RollupAttn != 1 {
 		t.Errorf("rollup attn = %d, want 1 (unchanged: the coordinator's own state still counts in full)", project.RollupAttn)
+	}
+	if project.RollupLive != 0 {
+		t.Errorf("rollup live = %d, want 0 (the active child must not ALSO count toward live once the coordinator's errored state wins)", project.RollupLive)
 	}
 }
 
@@ -1049,6 +1054,46 @@ func fuzzScenarioBuildTree_RollupIgnoresChildAwaiting(t *testing.T) {
 
 func TestBuildTree_RollupIgnoresChildAwaiting(t *testing.T) {
 	fuzzScenarioBuildTree_RollupIgnoresChildAwaiting(t)
+}
+
+// fuzzScenarioBuildTree_RollupNestedRunningJobsCountAsActive: issue #2557's
+// fix shape lets a descendant raise the rollup to "active" via running jobs
+// as well as via its own active state. A grandchild whose own projected
+// state is idle, but which is running a non-agent job (shell, watch), must
+// still keep the project working — the RunningJobs check in
+// includeDescendants applies at every depth, not only to the top-level
+// session.
+func fuzzScenarioBuildTree_RollupNestedRunningJobsCountAsActive(t *testing.T) {
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		{ID: "01COORD3", CreatedAt: now, UpdatedAt: now,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01QUIETDELEGATE", CreatedAt: now, UpdatedAt: now, IsSubagent: true, ParentSessionID: "01COORD3",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		{ID: "01BUSYGRANDDELEGATE", CreatedAt: now, UpdatedAt: now, IsSubagent: true, ParentSessionID: "01QUIETDELEGATE",
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+	}
+	live := []LiveEntry{
+		{PID: 1, SessionID: "01COORD3", Status: appwire.ThreadStatusIdle},
+		{PID: 2, SessionID: "01QUIETDELEGATE", Status: appwire.ThreadStatusIdle},
+		{PID: 3, SessionID: "01BUSYGRANDDELEGATE", Status: appwire.ThreadStatusIdle,
+			RunningJobs: []appwire.EvenerJobInfo{{JobID: "job-running", JobType: "shell", Status: "running"}}},
+	}
+
+	project := projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
+	if project.RollupState != "active" {
+		t.Errorf("rollup state = %q, want active (a nested grandchild's running job keeps the project working)", project.RollupState)
+	}
+	if project.RollupLive != 1 {
+		t.Errorf("rollup live = %d, want 1", project.RollupLive)
+	}
+	if project.RollupAttn != 0 {
+		t.Errorf("rollup attn = %d, want 0", project.RollupAttn)
+	}
+}
+
+func TestBuildTree_RollupNestedRunningJobsCountAsActive(t *testing.T) {
+	fuzzScenarioBuildTree_RollupNestedRunningJobsCountAsActive(t)
 }
 
 func fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention(t *testing.T) {

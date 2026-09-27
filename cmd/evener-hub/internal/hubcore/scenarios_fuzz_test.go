@@ -64,6 +64,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioBuildTree_RollupCapsNestedSubagentToActive,
 		fuzzScenarioBuildTree_RollupCoordinatorErrorStillCounts,
 		fuzzScenarioBuildTree_RollupIgnoresChildAwaiting,
+		fuzzScenarioBuildTree_RollupNestedRunningJobsCountAsActive,
 		fuzzScenarioBuildTree_RollupMagnitudeCountsLiveAndAttention,
 		fuzzScenarioBuildTree_ShortTitleNotTruncated,
 		fuzzScenarioBuildTree_TruncatesLongForkBaseTitleKeepingLabel,
