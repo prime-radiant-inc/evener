@@ -3,7 +3,7 @@
 // actually runs in. Each pair is a test that times out on purpose, which
 // test.fails counts as a pass, and the test after it, which must not feel its
 // body.
-import { deferred } from "@evener/appwire-client/testing/deferred";
+import { type Deferred, deferred } from "@evener/appwire-client/testing/deferred";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useEffect, useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
@@ -104,6 +104,19 @@ test("its body stops when that wait fails too, before its finally runs", async (
   expect(outcome).toBe("it stopped");
 });
 
+// Updates from a timer, outside act, and resolves `updated` once it has.
+function Late({ updated }: { updated: Deferred<void> }) {
+  const [text, setText] = useState("before");
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setText("after");
+      updated.resolve();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [updated]);
+  return <p>{text}</p>;
+}
+
 // Every wait turns the act environment off while it runs, and this one never
 // gets to turn it back on.
 test.fails("a test that times out while it waits for more text that never comes", async () => {
@@ -113,18 +126,7 @@ test.fails("a test that times out while it waits for more text that never comes"
 test("the test after it still hears about an update outside act", async () => {
   const errors = vi.spyOn(console, "error").mockImplementation(() => {});
   const updated = deferred<void>();
-  function Late() {
-    const [text, setText] = useState("before");
-    useEffect(() => {
-      const timer = setTimeout(() => {
-        setText("after");
-        updated.resolve();
-      }, 0);
-      return () => clearTimeout(timer);
-    }, []);
-    return <p>{text}</p>;
-  }
-  render(<Late />);
+  render(<Late updated={updated} />);
   await updated.promise;
   expect(errors.mock.calls.some(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
   errors.mockRestore();
@@ -141,26 +143,16 @@ test.fails("a test that times out while it awaits something before its next wait
 test("a wait its body begins once it resumes leaves this test's act environment alone", async () => {
   const errors = vi.spyOn(console, "error").mockImplementation(() => {});
   const updated = deferred<void>();
-  function Late() {
-    const [text, setText] = useState("before");
-    useEffect(() => {
-      const timer = setTimeout(() => {
-        setText("after");
-        updated.resolve();
-      }, 0);
-      return () => clearTimeout(timer);
-    }, []);
-    return <p>{text}</p>;
-  }
   const stopped = whenAnEndedBodyStopsForTests();
   resumeBeforeItsNextWait.resolve();
   await stopped;
-  render(<Late />);
+  render(<Late updated={updated} />);
   await updated.promise;
   expect(errors.mock.calls.some(([message]) => String(message).includes("not wrapped in act"))).toBe(true);
   errors.mockRestore();
 });
 
+const testWhoseHooksEndItsWait = "a test that times out while its own hooks will end its wait";
 const whatItsBodyDid = deferred<string>();
 const itsBodyWentOn = deferred<void>();
 
@@ -168,7 +160,7 @@ const itsBodyWentOn = deferred<void>();
 // afterEach, which runs before the next test starts, then waits to learn what
 // its body did once that wait ended.
 afterEach(async (context) => {
-  if (context.task.name !== "a test that times out while its own hooks will end its wait") return;
+  if (context.task.name !== testWhoseHooksEndItsWait) return;
   const stopped = whenAnEndedBodyStopsForTests();
   render(<span>rendered by its own afterEach</span>);
   whatItsBodyDid.resolve(
@@ -178,7 +170,7 @@ afterEach(async (context) => {
 
 // Its wait ends during its own hooks, before the next test starts: the body
 // stops there too, because its test timed out.
-test.fails("a test that times out while its own hooks will end its wait", async () => {
+test.fails(testWhoseHooksEndItsWait, async () => {
   await screen.findByText("rendered by its own afterEach", {}, { timeout: 2_000 });
   itsBodyWentOn.resolve();
 }, 100);
