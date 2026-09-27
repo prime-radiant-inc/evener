@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// LastTurnEndedAt persists as last_turn_ended_at at millisecond precision and
+// LastTurnEndedAt persists as last_turn_ended_at and round-trips exactly, and
 // is absent until a turn has ended, so an older meta and a session that never
 // ran read the same.
 func TestSessionMeta_LastTurnEndedAtRoundTrip(t *testing.T) {

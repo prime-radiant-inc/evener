@@ -61,3 +61,32 @@ func TestRestoreSeedsLastTurnEndedAt(t *testing.T) {
 		t.Fatalf("restored LastTurnEndedAt = %v, want %v", got, ended)
 	}
 }
+
+// Close ends a turn that is still in flight without passing the processing
+// boundary. That turn's end is stamped too, and Close's autosave persists it,
+// so a daemon shut down mid-turn restores knowing when the turn ended (S4).
+func TestLastTurnEndedAt_StampedWhenCloseEndsATurn(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	clk := agenttest.NewFakeClock()
+	sess := newSession(t, withConfig(SessionConfig{clock: clk, StateDir: dir}))
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.turnStartedAt = clk.Now()
+	sess.mu.Unlock()
+	clk.Advance(3 * time.Second)
+
+	sess.Close()
+
+	want := clk.Now().UTC()
+	if got := sess.Meta().LastTurnEndedAt; !got.Equal(want) {
+		t.Fatalf("LastTurnEndedAt after Close = %v, want the close's %v", got, want)
+	}
+	reloaded, err := schema.LoadSessionMeta(dir, sess.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if !reloaded.LastTurnEndedAt.Equal(want) {
+		t.Fatalf("on-disk LastTurnEndedAt after Close = %v, want %v", reloaded.LastTurnEndedAt, want)
+	}
+}
