@@ -1,6 +1,5 @@
 import type { SearchResult } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
-import type { ReactNode } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
 import { useColors, useTextScale } from "../ui";
 import { stateWord } from "./attention";
@@ -26,10 +25,15 @@ const SCOPES: Array<{ scope: SearchScope; name: string }> = [
 ];
 
 /** What the Board shows under its search field while you search (spec
- * 7.4): recent searches for an empty field, then the scope chips and the
- * Sessions group. */
+ * 7.4): the scope chips, then recent searches for an empty field or the
+ * Sessions group for a query. */
 export function SearchResults(props: SearchResultsProps) {
-	return props.search.query ? <Found {...props} /> : <Recent {...props} />;
+	return (
+		<>
+			<Scopes scope={props.scope} onScope={props.onScope} />
+			{props.search.query ? <Found {...props} /> : <Recent {...props} />}
+		</>
+	);
 }
 
 function Recent({ recent, onRecent, onClearRecent }: SearchResultsProps) {
@@ -89,12 +93,11 @@ function Recent({ recent, onRecent, onClearRecent }: SearchResultsProps) {
 	);
 }
 
-function Found({ search, scope, onScope, connected, onOpen }: SearchResultsProps) {
-	let body: ReactNode;
-	if (search.failed) body = <Note text="Couldn't search this hub's sessions." />;
-	else if (search.results) {
+function Found({ search, scope, connected, onOpen }: SearchResultsProps) {
+	if (search.failed) return <Note text="Couldn't search this hub's sessions." />;
+	if (search.results) {
 		const rows = sessionResults(search.results, scope);
-		body = rows.length ? (
+		return rows.length ? (
 			<>
 				<BandHeader text={`SESSIONS · ${rows.length}`} />
 				{rows.map((result, index) => (
@@ -107,14 +110,9 @@ function Found({ search, scope, onScope, connected, onOpen }: SearchResultsProps
 		) : (
 			<Note text="No sessions match." />
 		);
-	} else if (!connected) body = <Note text="Search works when the hub is connected." />;
-	else if (search.searching) body = <Note text="Searching…" />;
-	return (
-		<>
-			<Scopes scope={scope} onScope={onScope} />
-			{body}
-		</>
-	);
+	}
+	if (!connected) return <Note text="Search works when the hub is connected." />;
+	return search.searching ? <Note text="Searching…" /> : null;
 }
 
 function Scopes({ scope, onScope }: { scope: SearchScope; onScope: (scope: SearchScope) => void }) {

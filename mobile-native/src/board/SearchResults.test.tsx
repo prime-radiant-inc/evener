@@ -143,8 +143,8 @@ it("shows recent searches when the field is empty, each one searchable, with Cle
 	const { tree, props } = mount({ search: empty, recent: ["fix", "docs"] });
 	expect(textWith(tree, "RECENT")).toBeTruthy();
 	expect(resultRows(tree)).toHaveLength(0);
-	// No scope chips until there's a query.
-	expect(tree.root.findAll((node) => node.props.accessibilityLabel === "All")).toHaveLength(0);
+	// The scope chips show with the field, before there's a query (spec 7.4).
+	expect(pressables(tree).map((node) => node.props.accessibilityLabel).slice(0, 2)).toEqual(["All", "Live"]);
 	act(() => labelled(tree, "Search for docs").props.onPress());
 	expect(props.onRecent).toHaveBeenCalledWith("docs");
 	const clear = labelled(tree, "Clear recent searches");
@@ -153,10 +153,13 @@ it("shows recent searches when the field is empty, each one searchable, with Cle
 	expect(props.onClearRecent).toHaveBeenCalled();
 });
 
-it("shows nothing when the field is empty and there are no recent searches", () => {
-	const { tree } = mount({ search: { query: "", results: null, searching: false, failed: false } });
-	expect(renderedText(tree)).toBe("");
-	expect(pressables(tree)).toHaveLength(0);
+it("shows only the scope chips when the field is empty and there are no recent searches", () => {
+	const { tree, props } = mount({ search: { query: "", results: null, searching: false, failed: false } });
+	expect(pressables(tree).map((node) => node.props.accessibilityLabel)).toEqual(["All", "Live"]);
+	expect(renderedText(tree)).not.toContain("RECENT");
+	// A scope chosen before typing holds for the query that follows.
+	act(() => labelled(tree, "Live").props.onPress());
+	expect(props.onScope).toHaveBeenCalledWith("live");
 });
 
 it("names an untitled session", () => {
