@@ -144,7 +144,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 		// root's alone (a subagent never asks the user or escalates, and its
 		// own diagnostics carry its own jobs where they belong), so an alias
 		// row never has them to begin with, and a future root-only field
-		// needs no clearing line added here (fixes #2589).
+		// needs no clearing line added here (#2589).
 		for _, childID := range item.RunningSubagentIDs {
 			status := entry.Status
 			// The child's own projected status when the daemon carries it —
