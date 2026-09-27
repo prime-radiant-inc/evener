@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
 	"sort"
 
@@ -39,17 +40,13 @@ func (x *Index) Latest(limit int) (Window, error) {
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	var window Window
-	err = x.locked(false, func() (err error) {
-		r := newReader(x)
+	return x.readWindow(func(r *reader) (Window, error) {
 		flush, err := x.pendingFlush(r)
 		if err != nil {
-			return err
+			return Window{}, err
 		}
-		window, err = x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
-		return err
+		return x.window(r, x.preludeCount()+x.items.n+uint64(len(flush)), limit, flush)
 	})
-	return window, err
 }
 
 // Before returns up to limit items immediately before the exclusive position.
@@ -61,21 +58,48 @@ func (x *Index) Before(before appwire.ThreadItemPosition, limit int) (Window, er
 	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	var window Window
-	err = x.locked(false, func() error {
-		r := newReader(x)
+	return x.readWindow(func(r *reader) (Window, error) {
 		flush, err := x.pendingFlush(r)
 		if err != nil {
-			return err
+			return Window{}, err
 		}
 		rank, err := x.rank(before, flush)
 		if err != nil {
-			return err
+			return Window{}, err
 		}
-		window, err = x.window(r, rank, limit, flush)
-		return err
+		return x.window(r, rank, limit, flush)
 	})
-	return window, err
+}
+
+// readWindow runs compute under a shared lock, the common case for a read.
+// compute must not run when the builder is stale (adopt sets builderStale
+// without repairing x.builder — see repairBuilder), so a stale builder skips
+// straight to repair under the exclusive lock that can need, then retries.
+// The non-stale case — every read once a staleness is repaired — takes the
+// shared lock exactly once.
+func (x *Index) readWindow(compute func(r *reader) (Window, error)) (Window, error) {
+	for {
+		var window Window
+		stale := false
+		err := x.locked(false, func() error {
+			if x.builderStale {
+				stale = true
+				return nil
+			}
+			w, err := compute(newReader(x))
+			window = w
+			return err
+		})
+		if err != nil {
+			return Window{}, err
+		}
+		if !stale {
+			return window, nil
+		}
+		if err := x.locked(true, func() error { return x.repairBuilder(x.meta.Length) }); err != nil {
+			return Window{}, err
+		}
+	}
 }
 
 func (x *Index) preludeCount() uint64 {
@@ -90,16 +114,19 @@ func (x *Index) preludeCount() uint64 {
 // if any, at the very end.
 func (x *Index) rank(position appwire.ThreadItemPosition, flush []appitempaging.TranscriptItemCandidate) (uint64, error) {
 	prelude := x.preludeCount()
+	// Checked before the Entry==0 prelude case below: a flushed item can
+	// itself sit at Entry 0 when the transcript's tail flushes into the
+	// prelude turn (no item record exists yet; see pendingFlush).
+	for i, f := range flush {
+		if f.Position == position {
+			return prelude + x.items.n + uint64(i), nil
+		}
+	}
 	if position.Entry == 0 {
 		if uint64(position.Item) < prelude {
 			return uint64(position.Item), nil
 		}
 		return 0, appwire.TranscriptItemCursorStale()
-	}
-	for i, f := range flush {
-		if f.Position == position {
-			return prelude + x.items.n + uint64(i), nil
-		}
 	}
 	slot, err := x.items.search(func(buf []byte) bool {
 		record := decodeItem(buf)
@@ -129,6 +156,12 @@ func (x *Index) window(r *reader, end uint64, limit int, flush []appitempaging.T
 	prelude := x.preludeCount()
 	for rank := start; rank < min(end, prelude); rank++ {
 		window.Candidates = append(window.Candidates, x.preludeCandidate(int(rank)))
+	}
+	if x.items.n == 0 && len(flush) > 0 && end >= prelude && len(window.Candidates) > 0 {
+		// No item record exists at all: the flushed items continue directly
+		// from the prelude (see pendingFlush), the same rule the real-items
+		// branch below applies for its own last candidate.
+		window.Candidates[len(window.Candidates)-1].HasLaterItems = true
 	}
 	indexed := prelude + x.items.n
 	realEnd := min(end, indexed)
@@ -318,6 +351,29 @@ func (x *Index) lastTurnItemCount(turnSlot uint32) (uint64, error) {
 	return count, nil
 }
 
+// remapFlushPositions reassigns flushed's positions from
+// apptranscript.FlushUnpairedCommunicates' own dense count (last.Items'
+// append order) to a namespace reserved for this package's v2 positions.
+// That count is not a safe Item value here: content parts can be sparse (a
+// hidden echoed communicate call, an empty text part), so the same count can
+// already be a persisted item's real part index within the entry — e.g. a
+// single assistant entry [communicate, read_file] flushing its deferred
+// communicate alongside its own part-1 read_file item. Real part indices
+// never approach the top of uint32, so a flushed item positioned there can
+// never collide with a persisted {Entry, Part} position (roborev finding on
+// PR #2303, round 4). Scoped to this package: FlushUnpairedCommunicates'
+// own numbering is production's v1 contract (server/appwire_turns.go and
+// the bounded item-window/turn-window readers agree on it independently),
+// left untouched.
+func remapFlushPositions(turnID string, flushed []appwire.ThreadItem) {
+	base := uint32(math.MaxUint32) - uint32(len(flushed)) + 1
+	for i := range flushed {
+		position := appwire.ThreadItemPosition{Entry: flushed[i].Position.Entry, Item: base + uint32(i)}
+		flushed[i].Position = &position
+		flushed[i].TranscriptKey = ItemKey(turnID, position)
+	}
+}
+
 // pendingFlush computes the trailing items a communicate call the transcript
 // ends on (no result yet) contributes: the same rendering
 // apptranscript.FlushUnpairedCommunicates gives the whole-file projection,
@@ -331,42 +387,58 @@ func (x *Index) pendingFlush(r *reader) ([]appitempaging.TranscriptItemCandidate
 	if len(x.builder.commCalls) == 0 {
 		return nil, nil
 	}
-	last, err := x.lastCandidate(r)
-	if err != nil || last == nil {
-		return nil, err
-	}
+	var turnID string
+	var stub appwire.Turn
+	var items []appwire.ThreadItem
 	if x.items.n == 0 {
-		// A prelude-only tail has no assistant entries to open a call, so
-		// commCalls could not be non-empty; guard anyway for a future
-		// bounded-read call that mixes prelude and pendingFlush.
-		return nil, nil
-	}
-	buf, err := x.items.read(x.items.n-1, 1)
-	if err != nil {
-		return nil, x.fail(err)
-	}
-	itemCount, err := x.lastTurnItemCount(decodeItem(buf).Turn)
-	if err != nil {
-		return nil, err
+		// No item record exists yet: every entry so far produced no visible
+		// item — for instance the transcript opens on a bare deferred
+		// communicate call. The whole-file projection still flushes into
+		// the prelude turn when one exists (a system prompt); with neither
+		// a prelude nor any item, there is nothing for
+		// FlushUnpairedCommunicates to attach to, matching its own
+		// len(*turns)==0 no-op.
+		if x.prelude == nil {
+			return nil, nil
+		}
+		turnID = x.prelude.ID
+		stub = *x.prelude
+		stub.Items = nil
+		items = append([]appwire.ThreadItem(nil), x.prelude.Items...)
+	} else {
+		last, err := x.lastCandidate(r)
+		if err != nil || last == nil {
+			return nil, err
+		}
+		buf, err := x.items.read(x.items.n-1, 1)
+		if err != nil {
+			return nil, x.fail(err)
+		}
+		itemCount, err := x.lastTurnItemCount(decodeItem(buf).Turn)
+		if err != nil {
+			return nil, err
+		}
+		turnID = last.TurnID
+		stub = last.Turn
+		items = make([]appwire.ThreadItem, itemCount)
+		items[itemCount-1] = last.Item
 	}
 	reg, err := x.pendingRegistry(r)
 	if err != nil {
 		return nil, err
 	}
-	turn := last.Turn
-	turn.Items = make([]appwire.ThreadItem, itemCount)
-	turn.Items[itemCount-1] = last.Item
-	turns := []appwire.Turn{turn}
+	before := len(items)
+	turns := []appwire.Turn{{ID: turnID, Items: items}}
 	if !apptranscript.FlushUnpairedCommunicates(&turns, reg) {
 		return nil, nil
 	}
-	flushed := turns[0].Items[itemCount:]
+	flushed := turns[0].Items[before:]
+	remapFlushPositions(turnID, flushed)
 	candidates := make([]appitempaging.TranscriptItemCandidate, len(flushed))
 	for i := range flushed {
-		flushed[i].TranscriptKey = ItemKey(last.TurnID, *flushed[i].Position)
 		candidates[i] = appitempaging.TranscriptItemCandidate{
-			TurnID:          last.TurnID,
-			Turn:            last.Turn,
+			TurnID:          turnID,
+			Turn:            stub,
 			Item:            flushed[i],
 			Position:        *flushed[i].Position,
 			HasEarlierItems: true,
