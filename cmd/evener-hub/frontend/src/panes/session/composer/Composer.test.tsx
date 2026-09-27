@@ -187,22 +187,24 @@ class PausedCommitStorage extends MutationOutboxIndexedDB {
     this.releaseCommit?.();
   }
 
-  override async enqueueIntent(
+  override enqueueIntent(
     intent: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>[0],
   ): ReturnType<MutationOutboxIndexedDB["enqueueIntent"]> {
-    this.markCommitStarted?.();
-    await this.commitGate;
-    return super.enqueueIntent(intent);
+    return this.holdCommit(() => super.enqueueIntent(intent));
   }
 
   // Stop's write (the interrupt record and the cancellations it makes in the
   // same transaction) is a local outbox commit too, held by the same gate.
-  override async enqueueInterruptAndCancel(
+  override enqueueInterruptAndCancel(
     intent: Parameters<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]>[0],
   ): ReturnType<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]> {
+    return this.holdCommit(() => super.enqueueInterruptAndCancel(intent));
+  }
+
+  private async holdCommit<T>(commit: () => Promise<T>): Promise<T> {
     this.markCommitStarted?.();
     await this.commitGate;
-    return super.enqueueInterruptAndCancel(intent);
+    return commit();
   }
 }
 
@@ -3736,26 +3738,39 @@ test("a typed /interrupt on an active fenced session still mints its intent: Sto
 });
 
 // The test above settles its press with the projection flush, which awaits
-// only what registered with the pending-turns work tracker. A typed built-in
-// runs fire-and-forget from the form's submit and enqueues through the threads
-// store, and the refreshes its commit starts register only once the write
-// lands. Untracked, a flush that begins first finds nothing outstanding and
-// returns, and the late commit's refreshes then render outside act. The
-// fenced mount parks the intent, so the held write is all of the run's
-// durable work.
-test("a flush cannot settle while a typed built-in's durable write is still in flight", async () => {
+// only what registered with the pending-turns work tracker. Both Stop routes
+// run fire-and-forget, the typed /interrupt from the form's submit and the
+// button from its click, and both enqueue through the threads store, where the
+// refreshes a commit starts register only once the write lands. Untracked, a
+// flush that begins first finds nothing outstanding and returns, and the late
+// commit's refreshes then render outside act. The fenced mount parks the
+// intent, so the held write is all of the press's durable work.
+test.each<[string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]>([
+  [
+    "a typed /interrupt",
+    async (user) => {
+      await user.type(textarea(), "/interrupt");
+      await user.keyboard("{Escape}");
+      await user.keyboard("{Meta>}{Enter}{/Meta}");
+    },
+  ],
+  [
+    "the Stop button",
+    async (user) => {
+      await user.click(stopButton());
+    },
+  ],
+])("a flush cannot settle while %s's durable write is still in flight", async (_route, press) => {
   const storage = new PausedCommitStorage();
   setMutationStorageForTests(storage);
   const user = userEvent.setup();
-  const ref = "local:active-fenced-typed-interrupt-held";
+  const ref = "local:active-fenced-interrupt-held";
   await mountActiveFencedForTypedCommands(ref);
   // Settle the mount's own projection work, so only the held write can keep
   // the flush below open.
   await flushPendingTurnsProjectionForTests();
 
-  await user.type(textarea(), "/interrupt");
-  await user.keyboard("{Escape}");
-  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await press(user);
   await storage.commitStarted;
 
   let flushResolved = false;
@@ -3763,7 +3778,7 @@ test("a flush cannot settle while a typed built-in's durable write is still in f
     flushResolved = true;
   });
   // Give the flush every chance to finish early: more macrotask hops than its
-  // own settle round takes. If the typed run is tracked, it cannot return here.
+  // own settle round takes. If the press is tracked, it cannot return here.
   for (let hop = 0; hop < 5; hop += 1) {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }

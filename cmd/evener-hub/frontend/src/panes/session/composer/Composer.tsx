@@ -1732,7 +1732,9 @@ export function Composer({ ref, focused }: ComposerProps) {
                             size="xs"
                             type="button"
                             data-testid="composer-stop"
-                            onClick={() => void handleInterruptClick()}
+                            // Tracked from the press like a typed /interrupt:
+                            // Stop enqueues durably through the threads store.
+                            onClick={() => void trackProjectionWork(handleInterruptClick())}
                             // busy + the interrupt capability are already what
                             // makes this render at all, so only an in-flight
                             // request of our own is left to gate on.
