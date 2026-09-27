@@ -426,6 +426,24 @@ it("ignores invalidations that don't name the manifest", async () => {
 	expect(requestsFor(hub, "manifest")).toHaveLength(1);
 });
 
+it("re-reads the manifest after a missed invalidation, whatever the next one names", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	await answerAll(hub);
+	invalidate(hub, 1, [{ kind: "pin_catalog", revision: 2 }]);
+	expect(requestsFor(hub, "manifest")).toHaveLength(1);
+	// Sequence 2 never arrived, and it may have named the manifest.
+	invalidate(hub, 3, [{ kind: "pin_catalog", revision: 3 }]);
+	expect(requestsFor(hub, "manifest")).toHaveLength(2);
+	answer(hub, "manifest", manifest({ sources }), 1);
+	await tick();
+	// A repeat of a sequence already seen is a duplicate, even one that
+	// names the manifest.
+	invalidate(hub, 3, [{ kind: "manifest", revision: 2 }]);
+	expect(requestsFor(hub, "manifest")).toHaveLength(2);
+});
+
 it("an approval that resolves leaves Needs you", async () => {
 	const hub = boundary();
 	const board = createBoardController();

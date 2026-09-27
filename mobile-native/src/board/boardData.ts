@@ -6,6 +6,7 @@ import type {
 } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
+	isSequenceGap,
 	matchingTargets,
 	materializeSnapshot,
 	navigationParamsToResourceKey,
@@ -69,6 +70,8 @@ class ManifestReader {
 	private disposed = false;
 	private generation = "";
 	private required = 0;
+	/** The last notification sequence accepted in this generation. */
+	private sequence = 0;
 	/** Invalidations seen, and the count as of the last one without a
 	 * revision: only a read started after that one can cover it. */
 	private invalidations = 0;
@@ -108,14 +111,20 @@ class ManifestReader {
 		this.request++;
 	}
 	private invalidate(payload: NavigationInvalidatedPayload) {
-		const targets = matchingTargets(MANIFEST_KEY, payload.targets);
-		if (!targets.length) return;
 		if (payload.generationId !== this.generation) {
 			this.generation = payload.generationId;
 			this.required = 0;
+			this.sequence = 0;
 		}
+		if (payload.sequence <= this.sequence) return;
+		// A skipped sequence means an invalidation was missed, and it may have
+		// named the manifest, so it earns a read like one with no revision.
+		const gap = isSequenceGap(this.sequence, payload.sequence);
+		this.sequence = payload.sequence;
+		const targets = matchingTargets(MANIFEST_KEY, payload.targets);
+		if (!targets.length && !gap) return;
 		this.invalidations++;
-		if (targets.some((target) => target.revision === undefined))
+		if (gap || targets.some((target) => target.revision === undefined))
 			this.unversionedAt = this.invalidations;
 		this.required = Math.max(
 			this.required,
