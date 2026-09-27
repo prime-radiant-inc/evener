@@ -115,15 +115,67 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bandOf(state)).toBe(band);
 	});
 
-	it("puts failures first, oldest first, then the rest of Needs you oldest waiting first", () => {
+	it("sorts Needs you by failed, then question or approval, then warning or restart-needed, then oldest first", () => {
+		// Every row is newer than each row in the bands below it, ages interleave
+		// within a band, and the rows arrive newest first: age order, arrival
+		// order and any merged or split band would each give a different sequence.
 		const live = [
-			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(30) }),
-			row("f-new", { state: "errored", updated_at: at(20) }),
-			row("w-old", { state: "warning", updated_at: at(5) }),
-			row("f-old", { state: "errored", updated_at: at(10) }),
+			row("f-new", { state: "errored", updated_at: at(8) }),
+			row("f-old", { state: "errored", updated_at: at(7) }),
+			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(6) }),
+			row("a", { state: "active", approval_pending: true, updated_at: at(5) }),
+			row("q-old", { state: "awaiting", ask_pending: true, updated_at: at(4) }),
+			row("w-new", { state: "warning", updated_at: at(3) }),
+			row("r", { state: "restartRequired", updated_at: at(2) }),
+			row("w-old", { state: "warning", updated_at: at(1) }),
 		];
-		const bands = liveBands(live, [], never);
-		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["f-old", "f-new", "w-old", "q-new"]);
+		const needsYou = liveBands(live, [], never).needsYou.map((item) => item.row.ref);
+		expect(needsYou).toEqual(["f-old", "f-new", "q-old", "a", "q-new", "w-old", "r", "w-new"]);
+	});
+
+	// boardState's mark precedence returns "warning"/"restartNeeded" for these
+	// rows before it ever looks at ask_pending/approval_pending, so ranking by
+	// mark alone would bury a row the hub still counts as blocked on you under
+	// every plain warning or restart-needed row, however old. The band must
+	// read the flags directly instead.
+	it("a warning that also carries ask_pending sorts in the middle band, above an older plain warning", () => {
+		const bands = liveBands(
+			[
+				row("w-plain", { state: "warning", updated_at: at(5) }),
+				row("w-asking", { state: "warning", ask_pending: true, updated_at: at(30) }),
+			],
+			[],
+			never,
+		);
+		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["w-asking", "w-plain"]);
+		// The mark itself is untouched: it still reads Warning, not Question.
+		expect(bands.needsYou.find((item) => item.row.ref === "w-asking")?.state).toBe("warning");
+	});
+
+	it("a restart-needed row that also carries approval_pending sorts in the middle band, above an older plain restart-needed", () => {
+		const bands = liveBands(
+			[
+				row("r-plain", { state: "restartRequired", updated_at: at(5) }),
+				row("r-approving", { state: "restartRequired", approval_pending: true, updated_at: at(30) }),
+			],
+			[],
+			never,
+		);
+		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["r-approving", "r-plain"]);
+		expect(bands.needsYou.find((item) => item.row.ref === "r-approving")?.state).toBe("restartNeeded");
+	});
+
+	// A hub that predates S2a never sends approval_pending; approvalRefs infers
+	// the approval from needs_you section membership instead (the row's raw
+	// approval_pending is absent). That inferred approval must still land in
+	// the middle band, not fall to "everything else" for lack of the raw flag.
+	it("an approval inferred from the needs_you section (no raw approval_pending) still sorts in the middle band", () => {
+		const bands = liveBands(
+			[row("w", { state: "warning", updated_at: at(30) }), row("inferred", { state: "active", updated_at: at(1) })],
+			[row("inferred", { state: "active" })],
+			never,
+		);
+		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["inferred", "w"]);
 	});
 
 	it("orders Finished and Idle newest first and keeps the hub's order for Working", () => {
