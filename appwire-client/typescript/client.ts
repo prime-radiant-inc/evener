@@ -806,8 +806,9 @@ export class AppwireClient {
 
   private handleMessage(data: unknown): void {
     // Any frame proves the hub is still reachable, whatever it carries, so it
-    // restarts the heartbeat's quiet countdown. This runs before dispatch so a
-    // subscriber that closes the client reentrantly leaves no timer behind.
+    // restarts the heartbeat's quiet countdown. It comes first because the
+    // branches below return early for non-text and unparseable frames and for
+    // every response, including a late reply nothing is waiting for.
     if (this.connectionState === "ready") this.armHeartbeat();
     if (typeof data !== "string") return;
     let msg: WireMessage;
