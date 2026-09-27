@@ -149,6 +149,8 @@ Run both renders on the same day, since the environment block carries today's da
 
 ## PR 1: assembly tests
 
+PR 1 shipped as #2562. For its helpers the shipped code is the reference: execution departed from the snippets below where they were wrong or left a gap. The surface tests also check the render's source record. `promptResourceCaps(t, s)` reads `s.env` and decodes strictly. The git-snapshot test compares the commit subject after the short hash. `promptConfig` carries each configuration's `check`, and `checkPromptInput` takes any comparable value. The final review and /simplify added `TestSystemPromptRendersTheSessionData`, the `ERROR:` source check, the sweep's state dir and `job_watch` mention cap, and the no-override premise on every configuration that sets no override.
+
 Work on the current branch, `claude/evener-system-prompt-cleanup-69b0b3`, which already holds the spec and this plan.
 
 ### Task 1: The eight configurations and the render test
@@ -1158,21 +1160,26 @@ In `agent/resource_caps_boundary_test.go`, replace `parseRenderedEnvironmentReso
 ```go
 // promptResourceCaps decodes the resource caps the environment block renders,
 // from the typed prompt input; ok is false when the session renders none.
-func promptResourceCaps(t *testing.T, s *Session, env execenv.ExecutionEnvironment) (renderedResourceCaps, bool) {
+func promptResourceCaps(t *testing.T, s *Session) (renderedResourceCaps, bool) {
 	t.Helper()
-	data := s.buildPromptData(env)
+	data := s.buildPromptData(s.env)
 	if data.ResourceCapsJSON == "" {
 		return renderedResourceCaps{}, false
 	}
 	var caps renderedResourceCaps
-	if err := json.Unmarshal([]byte(data.ResourceCapsJSON), &caps); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(data.ResourceCapsJSON))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&caps); err != nil {
 		t.Fatalf("decode resource caps %q: %v", data.ResourceCapsJSON, err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		t.Fatalf("resource caps %q have trailing data: %v", data.ResourceCapsJSON, err)
 	}
 	return caps, true
 }
 ```
 
-Replace each call `caps, ok := parseRenderedEnvironmentResourceCaps(t, prompt)` with `caps, ok := promptResourceCaps(t, sess, sess.env)` in this file, and with `caps, ok := promptResourceCaps(t, sess, local)` in `agent/resource_caps_sandbox_linux_test.go`. Keep each test's `renderSystemPrompt` call and its warning check (the render must still succeed); if the compiler then reports `prompt` unused, change `prompt, warning :=` to `_, warning :=`. Remove the `bufio`, `encoding/xml`, and `io` imports if unused.
+Replace each call `caps, ok := parseRenderedEnvironmentResourceCaps(t, prompt)` with `caps, ok := promptResourceCaps(t, sess)` in this file and in `agent/resource_caps_sandbox_linux_test.go`. Keep each test's `renderSystemPrompt` call and its warning check (the render must still succeed); if the compiler then reports `prompt` unused, change `prompt, warning :=` to `_, warning :=`. Remove the `bufio` and `encoding/xml` imports; `io` stays for the trailing-data check.
 
 - [ ] **Step 7: `agent/session_config_test.go`**
 
@@ -1239,13 +1246,7 @@ func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("hi\nmore\n"), 0o644) // modified tracked file
 	_ = os.WriteFile(filepath.Join(dir, "UNTRACKED.txt"), []byte("u\n"), 0o644)    // untracked file
 
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
+	sess := newSession(t, withDir(dir))
 
 	data := sess.buildPromptData(sess.env)
 	if !data.IsGitRepo || data.GitBranch == "" {
@@ -1254,8 +1255,12 @@ func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {
 	if data.GitModifiedFiles != 1 || data.GitUntrackedFiles != 1 {
 		t.Fatalf("modified/untracked = %d/%d, want 1/1", data.GitModifiedFiles, data.GitUntrackedFiles)
 	}
-	if !slices.Equal(data.GitRecentCommitTitles, []string{"init"}) {
-		t.Fatalf("GitRecentCommitTitles = %q, want [init]", data.GitRecentCommitTitles)
+	if len(data.GitRecentCommitTitles) != 1 {
+		t.Fatalf("GitRecentCommitTitles = %q, want one commit", data.GitRecentCommitTitles)
+	}
+	// Each entry is git log's "%h %s": the short hash, a space, the subject.
+	if _, subject, _ := strings.Cut(data.GitRecentCommitTitles[0], " "); subject != "init" {
+		t.Fatalf("GitRecentCommitTitles = %q, want the init commit", data.GitRecentCommitTitles)
 	}
 }
 ```

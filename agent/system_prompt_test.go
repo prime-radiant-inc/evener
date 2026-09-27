@@ -40,6 +40,7 @@ type promptConfig struct {
 func promptConfigs() []promptConfig {
 	return []promptConfig{
 		{"root interactive anthropic", buildRootInteractiveAnthropicSession, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, true)
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, false)
@@ -75,6 +76,7 @@ func promptConfigs() []promptConfig {
 			}
 		}},
 		{"root headless openai coordinator", buildRootHeadlessCoordinatorSession, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
 			checkPromptInput(t, "HasTool apply_patch", d.HasTool("apply_patch"), true)
@@ -89,23 +91,28 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "workspace block empty", d.WorkspaceTree == "" && d.BuildInfo == "", true)
 		}},
 		{"delegate that can delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 1, "") }, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "DelegationAllowance", d.DelegationAllowance, 1)
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
 		}},
 		{"leaf delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "") }, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
 		}},
 		{"explorer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "explorer") }, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
 			checkPromptInput(t, "sandbox line present", d.Sandbox != "", true)
 			checkPromptInput(t, "unavailable profile tools listed", len(d.UnavailableProfileToolNames) > 0, true)
 		}},
 		{"implementer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "implementer") }, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
 		}},
 		{"delegate with role override and preloaded skills", buildDelegateWithRoleOverrideSession, func(t *testing.T, d promptData) {
+			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
 			checkPromptInput(t, "ActivatedSkillBodies holds the preloaded body",
 				len(d.ActivatedSkillBodies) == 1 && d.ActivatedSkillBodies[0] == sentinelActivatedSkill, true)
@@ -279,7 +286,7 @@ func TestPromptDataTypedInputs(t *testing.T) {
 func checkPromptInput[T comparable](t *testing.T, name string, got, want T) {
 	t.Helper()
 	if got != want {
-		t.Errorf("%s = %v, want %v", name, got, want)
+		t.Errorf("%s = %#v, want %#v", name, got, want)
 	}
 }
 
