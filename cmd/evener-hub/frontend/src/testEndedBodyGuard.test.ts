@@ -22,6 +22,9 @@ test("once the marking stops, the guard's storage carries no marker, even into a
 // What the stop saves shows only in the files a worker runs later, which no
 // test in this file can see, so this pins where the setup file makes it.
 test("the setup file stops the marking once a file's tests and hooks are done", () => {
-  const setup = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "testSetup.ts"), "utf8");
+  const setup = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "testSetup.ts"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
   expect(setup).toMatch(/^afterAll\(stopMarkingTests\);$/m);
 });
