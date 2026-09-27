@@ -184,7 +184,9 @@ function hub(
 			new Promise((resolve, reject) => {
 				if (method === "thread/list") {
 					// Search answers with every session the hub has, as wire threads.
-					const sessions = [...shape.live.flat(), ...(shape.searchOnly ?? [])];
+					const sessions = [...shape.live.flat(), ...shape.needsYou, ...(shape.searchOnly ?? [])].filter(
+						(row, index, all) => all.findIndex((other) => other.ref === row.ref) === index,
+					);
 					resolve({
 						data: sessions.map((row) => ({
 							id: row.session_id,
@@ -459,6 +461,10 @@ it("opens a search result the way the Board opens its row, marking it seen", asy
 	pressLabel(tree, "Open Ship it");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:done", title: "Ship it" });
 	expect(seenMarkers(id).isSeen(finished)).toBe(true);
+	// A session only in Needs you (past Live's loaded pages) is found too.
+	expect(seenMarkers(id).isSeen(asking)).toBe(false);
+	pressLabel(tree, "Open Pick a name");
+	expect(seenMarkers(id).isSeen(asking)).toBe(true);
 	// A session the Board doesn't list has no Finished state to clear.
 	pressLabel(tree, "Open Old report");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:gone", title: "Old report" });
