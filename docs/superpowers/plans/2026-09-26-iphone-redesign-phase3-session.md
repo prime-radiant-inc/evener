@@ -58,7 +58,7 @@ Related plans:
     - sheet: title "Notes & links", placeholder "Make a note…", "No agent note yet", "No links yet", "No shared notes", and the footer "The agent adds links as it works. Swipe left on one to remove it.";
     - status lines: "Your note stays on this session. Saving it will wake the agent.", "Your note stays on this session. The agent is told when it changes.", "Saves in 10 seconds, or when you close this.", "Saved";
     - toasts: "Note saved" and "Note saved. The agent is reading it."
-  - Transcript: "You updated your note", "Steered in mid-turn", "Today 2:14 PM", "Show all 412 lines", "+18 −4", "Thought for 12s ›", "You answered: Drop them", "↓ 3 new".
+  - Transcript: "You updated your note", "Steered in mid-turn", "Today 2:14 PM", "Show all 412 lines", "+18 −4", "Thought for 12s ›", "You answered: Drop them", "↓ 3 new", and an error's "Retry", which sends "Something went wrong. Please try again." (ruling 26).
   - Session sheet: "10 plugins · chosen at start"; "Plugins are chosen when a session starts. To change them, start a new session or fork this one."; "Applies from the next turn" (model sheet).
   - Style:
     - Sentence case everywhere.
@@ -141,7 +141,12 @@ Decisions this plan makes where the spec is silent, contradicts itself, or asks 
 5. **Haptics wait for phase 6**, beside the Hub > Alerts haptics setting, so every haptic lands behind one switch.
 6. **The Files chip, document chips and "Files & artifacts" wait for phase 4's Reader.** A chip that opens nothing breaks Calm. `file://` links in Notes & links aren't tappable until the Reader exists.
 7. **Subagents open today's `ActivitySheet` until phase 4.** The chip counts `conversation.delegates` by the tone `projectDelegateEntry` gives each one (S3's fallback: the loaded tree).
-8. **Detail level is per session, on this device** (`evener.native.detail-level.${hubId}`). The level table lives in one file, `src/session/detailLevels.ts`. Question 1 decides its final content; until Jesse answers, it carries the provisional table in Task 12.
+8. **Detail level is per session, on this device** (`evener.native.detail-level.${hubId}`). The level table lives in one file, `src/session/detailLevels.ts`, and Jesse settled its content on 2026-09-26: "'Intent' should show Chat and just the 'n actions' lines with the intents folded away."
+   - Chat is just the conversation. The shared Chat preset keeps one line per step (its vector matches Intent's since e868e2a20), so the phone projects the projector's no-intent Custom vector instead.
+   - Intent is the shared preset as it is (`toolIntent` on, `expandByDefault` off): one folded line per run of steps, "12 steps · 8m · …" (Task 23's `runSummaryText`, the web's `runLabel`, `toolRuns.ts:89-99`), whose steps show when you tap it.
+   - Tools, Activity and Full are the shared presets.
+   - The descriptions say what each shows: "Just the conversation", "Plus one folded line for each run of steps", "Plus every command it ran; tap one for its output", "Plus every command's output, open as it arrives", "Everything, including the agent's reasoning".
+   - System events follow Hub > Display at every level (the advanced toggle, `transcriptDisplayConfig.ts:61-67`, `transcriptProjector.ts:237-253`), as the spec's 8.2 now says.
 9. **The ⋯ menu is the native header menu** (`unstable_headerRightItems`, a UIMenu).
    - react-native-screens gives a subtitle to actions only, never to submenus (`RNSBarButtonItem.mm`). So the submenu reads "Detail level · Intent" on one line.
    - Inside it, an inline section headed "How much of the agent's work this session shows" lists each level with its description as the subtitle and a check on the current one.
@@ -176,7 +181,11 @@ Decisions this plan makes where the spec is silent, contradicts itself, or asks 
 23. **Delivered messages carry "Steered in mid-turn" only.** Steering items are marked; a queued message's delivery isn't. So "Queued" waits for a new server addition, S16.
 24. **Approval history waits for S16.** The transcript has no record of an escalation's decision. The resolved call's own step shows its outcome.
 25. **Message long-press menus use `ActionSheetIOS`**, the app's existing native action surface, until phase 2 PR 4's context-menu spike settles a library.
-26. **An error row offers Sign in or Resume when they apply.** Retry waits for Question 3.
+26. **An error row offers at most one action**, and Retry sends "Something went wrong. Please try again." (Jesse, 2026-09-26: "Retry on a failed turn sends. 'Something went wrong. Please try again.'"):
+    - Resume when the session is paused (`resumeRequired`);
+    - Sign in when the error names a sign-in failure;
+    - otherwise Retry, on the failure row of the session's latest turn only, and only while the composer's Send can act (`sendAction` isn't `"none"`). It sends that sentence as your message, the way Send does.
+    - The web's end cap retries by re-sending the failed turn's own input (`TurnFailureEndCap.tsx:459-490`); the phone sends Jesse's sentence instead. It offers Retry only on the latest turn because the sentence speaks about where the session is now: under an older failure it would read as being about the newest turn.
 27. **One toast primitive for the app**, `src/Toast.tsx`. Phase 2 PR 4's "Archived · Undo" imports it if this lands first.
 28. **Shared helpers move into the package**, each in the task that first needs it on the phone, and the web imports them from there:
     - `mergeDraftText` (web `Composer.tsx:177-180`);
@@ -202,27 +211,12 @@ Decisions this plan makes where the spec is silent, contradicts itself, or asks 
 
 ## Questions for Jesse
 
-1. **Detail levels.** The spec's level table says Chat is "Just the conversation" and Activity adds "system events, like compaction and model changes". The shared presets say otherwise:
-   - Chat and Intent have had the same content vector since e868e2a20 ("correct chat and intent verbosity").
-   - Activity opens tool details rather than adding system events.
-   - System events are an advanced toggle (Hub > Display) at every level (`transcriptDisplayConfig.ts:61-67`, `transcriptProjector.ts:237-253`).
+Jesse answered all three on 2026-09-26. Question 1 (detail levels) is now ruling 8, and question 3 (what Retry sends) is ruling 26. Question 2 stays open, because its answer names behavior the web doesn't have.
 
-   Should the phone follow the spec with its own mapping, should the shared presets change for both clients, or should the spec's descriptions change?
-
-   *Recommendation:* the phone follows the spec for Chat, projecting it without step lines. That is the projector's documented Custom behavior (the no-intent vector). For the other four it follows the hub's presets, with descriptions that say what each really shows:
-   - Chat: "Just the conversation"
-   - Intent: "Plus one line for each step the agent took"
-   - Tools: "Plus every command it ran; tap one for its output"
-   - Activity: "Plus every command's output, open as it arrives"
-   - Full: "Everything, including the agent's reasoning"
-
-   System events keep following Hub > Display. This is Task 12's provisional table, a one-file change either way.
 2. **"Tell the agent something else…" during an approval.** The agent is blocked mid-step, so a queued message would wait behind the very turn it is trying to redirect. What should that composer's Send do?
-
-   *Recommendation:* it denies the request and steers your text in, so the agent reads the denial and your message together at its next step. Its accessibility label says "Deny and send". Task 11 builds this provisionally.
-3. **What should Retry on a failed turn send?** The hub has no retry call.
-
-   *Recommendation:* a new message, "Try that again.", so the agent retries its last step with the history in view. Until you answer, error rows offer only Sign in and Resume (ruling 26).
+   - Jesse answered: "during an approval, 'tell the agent something else' does what it does on the web. it says that the user picked 'Do something else' and said '....'"
+   - The web has no such path for an approval. Its approval card offers only Allow and Deny (`cmd/evener-hub/frontend/src/panes/session/transcript/tools/sandboxEscalation.tsx:106-113`), and `evener/sandbox/escalation/resolve` carries nothing but `approve` (`appwire/types.go:1021-1026`); the TUI offers the same two (`cmd/evener-tui/hub_escalation.go:137`). The web's "Something else…" belongs to the question dock (`panes/session/composer/askDock/AskQuestionCard.tsx:182-195`), whose free-text answer goes out as `1. [Header] → free text: "…"` (`appwire-client/typescript/askAnswers.ts:74,95`).
+   - Until Jesse says what an approval's redirect sends, Task 11 keeps its provisional behavior: it denies the request and steers your text in, so the agent reads the denial and your message together at its next step, with the accessibility label "Deny and send".
 
 ## Review Focus
 
@@ -2400,7 +2394,7 @@ PR 4 gives the Session its header. Its parts:
 - Test: `mobile-native/src/session/detailLevels.test.ts`
 
 **Interfaces:**
-- Consumes: `ContentLevel`, `TranscriptDisplayConfigV1`, `makeTranscriptDisplayConfig` and `shippedConfig` from `@evener/appwire-client`.
+- Consumes: `ContentLevel`, `TranscriptDisplayConfigV1`, `makeTranscriptDisplayConfig` and `shippedConfig` from `@evener/appwire-client`; `SyncStringStorage` (`src/syncStringStorage.ts`, the kv-store's sync methods, #2536).
 - Produces:
   - From `detailLevels.ts`:
     - `interface DetailLevel { level: ContentLevel; label: string; description: string }`
@@ -2408,9 +2402,8 @@ PR 4 gives the Session its header. Its parts:
     - `configForLevel(chosen: ContentLevel | null, hubConfig: TranscriptDisplayConfigV1 | null): TranscriptDisplayConfigV1 | null`
     - `currentLevel(chosen: ContentLevel | null, hubConfig: TranscriptDisplayConfigV1 | null): ContentLevel | "custom" | null`
     - `detailMenuLabel(current: ContentLevel | "custom" | null): string` and `levelToast(level: ContentLevel): string`
-    - `interface DetailLevelStorage { getItemSync; setItemSync; removeItemSync }` (the kv-store's sync methods)
-    - `class DetailLevels`: constructor `(storage: DetailLevelStorage, hubId: string)`, with `get(ref: string): ContentLevel | null`, `set(ref: string, level: ContentLevel): void`, `subscribe(listener: () => void): () => void` and `getRevision(): number`
-    - `forgetDetailLevels(storage: DetailLevelStorage, hubId: string): void`
+    - `class DetailLevels`: constructor `(storage: SyncStringStorage, hubId: string)`, with `get(ref: string): ContentLevel | null`, `set(ref: string, level: ContentLevel): void`, `subscribe(listener: () => void): () => void` and `getRevision(): number`
+    - `forgetDetailLevels(storage: SyncStringStorage, hubId: string): void`
   - From `nativeDetailLevels.ts`: `detailLevels(hubId: string): DetailLevels` and `forgetDetailLevelsForHub(hubId: string): void`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2419,18 +2412,18 @@ PR 4 gives the Session its header. Its parts:
 // mobile-native/src/session/detailLevels.test.ts
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
+import type { SyncStringStorage } from "../syncStringStorage";
 import {
 	configForLevel,
 	currentLevel,
 	DETAIL_LEVELS,
-	type DetailLevelStorage,
 	DetailLevels,
 	detailMenuLabel,
 	forgetDetailLevels,
 	levelToast,
 } from "./detailLevels";
 
-function memoryStorage(values = new Map<string, string>()): DetailLevelStorage & { values: Map<string, string> } {
+function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
 		values,
 		getItemSync: (key) => values.get(key) ?? null,
@@ -2440,11 +2433,11 @@ function memoryStorage(values = new Map<string, string>()): DetailLevelStorage &
 }
 const hub = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }, { systemEvents: true });
 
-describe("the levels (spec 8.2; Question 1's provisional table)", () => {
+describe("the levels (spec 8.2; ruling 8)", () => {
 	it("lists the hub's five levels in order, each saying what it shows", () => {
 		expect(DETAIL_LEVELS.map((level) => [level.label, level.description])).toEqual([
 			["Chat", "Just the conversation"],
-			["Intent", "Plus one line for each step the agent took"],
+			["Intent", "Plus one folded line for each run of steps"],
 			["Tools", "Plus every command it ran; tap one for its output"],
 			["Activity", "Plus every command's output, open as it arrives"],
 			["Full", "Everything, including the agent's reasoning"],
@@ -2453,7 +2446,7 @@ describe("the levels (spec 8.2; Question 1's provisional table)", () => {
 
 	it("confirms a change with the level and what it shows", () => {
 		expect(levelToast("full")).toBe("Full: everything, including the agent's reasoning");
-		expect(levelToast("intent")).toBe("Intent: plus one line for each step the agent took");
+		expect(levelToast("intent")).toBe("Intent: plus one folded line for each run of steps");
 	});
 
 	it("names the current level in the menu", () => {
@@ -2530,7 +2523,7 @@ describe("the level chosen for each session", () => {
 	});
 
 	it("keeps working in memory when storage throws", () => {
-		const broken: DetailLevelStorage = {
+		const broken: SyncStringStorage = {
 			getItemSync: () => {
 				throw new Error("disk");
 			},
@@ -2584,15 +2577,16 @@ Expected: FAIL: `Cannot find module './detailLevels'`.
 // replaces the hub config's content and keeps its advanced settings, so
 // Hub > Display still owns system events, timings and costs.
 //
-// DETAIL_LEVELS is Question 1's provisional table, and the one place its
-// answer changes: the hub's presets under their hub names, described by what
-// each shows on the phone, with Chat projected without step lines.
+// DETAIL_LEVELS is ruling 8's table, Jesse's answer: the hub's presets under
+// their hub names, described by what each shows on the phone, with Chat
+// projected without step lines.
 import {
 	type ContentLevel,
 	makeTranscriptDisplayConfig,
 	shippedConfig,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
+import type { SyncStringStorage } from "../syncStringStorage";
 
 export interface DetailLevel {
 	level: ContentLevel;
@@ -2602,7 +2596,7 @@ export interface DetailLevel {
 
 export const DETAIL_LEVELS: readonly DetailLevel[] = [
 	{ level: "chat", label: "Chat", description: "Just the conversation" },
-	{ level: "intent", label: "Intent", description: "Plus one line for each step the agent took" },
+	{ level: "intent", label: "Intent", description: "Plus one folded line for each run of steps" },
 	{ level: "tools", label: "Tools", description: "Plus every command it ran; tap one for its output" },
 	{ level: "activity", label: "Activity", description: "Plus every command's output, open as it arrives" },
 	{ level: "full", label: "Full", description: "Everything, including the agent's reasoning" },
@@ -2616,7 +2610,7 @@ export function detailLevel(level: ContentLevel): DetailLevel {
 
 // Chat shows the conversation and nothing else. The shared Chat preset keeps
 // one line per step (its vector matches Intent's), so the phone projects the
-// projector's own no-intent Custom vector instead (Question 1).
+// projector's own no-intent Custom vector instead (ruling 8).
 const JUST_THE_CONVERSATION = {
 	kind: "custom",
 	toolIntent: false,
@@ -2659,12 +2653,6 @@ export function levelToast(level: ContentLevel): string {
 	return `${label}: ${description.charAt(0).toLowerCase()}${description.slice(1)}`;
 }
 
-export interface DetailLevelStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
-}
-
 const storageKey = (hubId: string) => `evener.native.detail-level.${hubId}`;
 const LIMIT = 500;
 const LEVELS = new Set<string>(DETAIL_LEVELS.map((level) => level.level));
@@ -2693,7 +2681,7 @@ export class DetailLevels {
 	private listeners = new Set<() => void>();
 
 	constructor(
-		private readonly storage: DetailLevelStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
 		let raw: string | null = null;
@@ -2729,7 +2717,7 @@ export class DetailLevels {
 	getRevision = (): number => this.revision;
 }
 
-export function forgetDetailLevels(storage: DetailLevelStorage, hubId: string): void {
+export function forgetDetailLevels(storage: SyncStringStorage, hubId: string): void {
 	try {
 		storage.removeItemSync(storageKey(hubId));
 	} catch {
@@ -3190,8 +3178,8 @@ PR 5 brings the web's shared notes to the phone (spec 8.8): the notes bar under 
   - `notesBarPreview(session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "capabilities">): NotesBarPreview | null`
   - `type NotePhase = "clean" | "editing" | "scheduled" | "saving" | "saved" | "failed"`
   - `noteStatusLine(phase: NotePhase, working: boolean): string`
-  - `interface NoteDraftStorage { getItemSync; setItemSync; removeItemSync }` and `forgetNoteDrafts(storage: NoteDraftStorage, hubId: string): void`
-  - `interface NotesControllerOptions { client: Pick<ConversationClientLike, "request">; hubId: string; ref: string; instanceId(): string | undefined; savedNote(): string; working(): boolean; storage: NoteDraftStorage; uuid(): string }`
+  - `forgetNoteDrafts(storage: SyncStringStorage, hubId: string): void`, over `SyncStringStorage` (`src/syncStringStorage.ts`, the kv-store's sync methods, #2536)
+  - `interface NotesControllerOptions { client: Pick<ConversationClientLike, "request">; hubId: string; ref: string; instanceId(): string | undefined; savedNote(): string; working(): boolean; storage: SyncStringStorage; uuid(): string }`
   - `interface SaveOutcome { saved: boolean; woke: boolean }`
   - `class NotesController`, with:
     - `getSnapshot(): { text: string; phase: NotePhase }` and `subscribe(listener: () => void): () => void`;
@@ -3206,9 +3194,9 @@ PR 5 brings the web's shared notes to the phone (spec 8.8): the notes bar under 
 import type { NotesHumanSetResponse, SessionURL, ThreadCapabilities } from "@evener/appwire-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { SyncStringStorage } from "../syncStringStorage";
 import {
 	NOTE_LIMIT,
-	type NoteDraftStorage,
 	NotesController,
 	notesBarPreview,
 	noteStatusLine,
@@ -3260,7 +3248,7 @@ describe("the editor's status line", () => {
 	});
 });
 
-function memoryStorage(values = new Map<string, string>()): NoteDraftStorage & { values: Map<string, string> } {
+function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
 		values,
 		getItemSync: (key) => values.get(key) ?? null,
@@ -3450,6 +3438,7 @@ Expected: FAIL: `Cannot find module './sessionNotes'`.
 // (Review Focus 5).
 import type { NotesHumanSetResponse, ThreadModel } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { SyncStringStorage } from "../syncStringStorage";
 
 /** The daemon clamps a note to 1,000 runes (agent/session_notes.go:29); the
  * editor stops there so nothing is clipped silently. */
@@ -3500,15 +3489,9 @@ export function noteStatusLine(phase: NotePhase, working: boolean): string {
 		: "Your note stays on this session. Saving it will wake the agent.";
 }
 
-export interface NoteDraftStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
-}
-
 const draftKey = (hubId: string) => `evener.native.note-draft.${hubId}`;
 
-function readDrafts(storage: NoteDraftStorage, hubId: string): Record<string, string> {
+function readDrafts(storage: SyncStringStorage, hubId: string): Record<string, string> {
 	try {
 		const value: unknown = JSON.parse(storage.getItemSync(draftKey(hubId)) ?? "{}");
 		if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
@@ -3520,7 +3503,7 @@ function readDrafts(storage: NoteDraftStorage, hubId: string): Record<string, st
 	}
 }
 
-function writeDrafts(storage: NoteDraftStorage, hubId: string, drafts: Record<string, string>): void {
+function writeDrafts(storage: SyncStringStorage, hubId: string, drafts: Record<string, string>): void {
 	try {
 		if (Object.keys(drafts).length > 0) storage.setItemSync(draftKey(hubId), JSON.stringify(drafts));
 		else storage.removeItemSync(draftKey(hubId));
@@ -3529,7 +3512,7 @@ function writeDrafts(storage: NoteDraftStorage, hubId: string, drafts: Record<st
 	}
 }
 
-export function forgetNoteDrafts(storage: NoteDraftStorage, hubId: string): void {
+export function forgetNoteDrafts(storage: SyncStringStorage, hubId: string): void {
 	try {
 		storage.removeItemSync(draftKey(hubId));
 	} catch {
@@ -3547,7 +3530,7 @@ export interface NotesControllerOptions {
 	savedNote(): string;
 	/** Whether a turn is running, read at each save. */
 	working(): boolean;
-	storage: NoteDraftStorage;
+	storage: SyncStringStorage;
 	uuid(): string;
 }
 
@@ -5253,13 +5236,15 @@ PR 9 finishes spec 8.2's table, with what the data carries today:
   - `mobile-native/src/TimelineItem.tsx`: `notice`, `details`, `failure` and `attachments`.
   - `mobile-native/src/TranscriptImages.tsx`: 96pt thumbnails, and a pager that swipes between images.
 - Create: `mobile-native/src/session/errorAction.ts` (pure)
-- Test: `mobile-native/src/session/errorAction.test.ts` and `mobile-native/src/TimelineItem.test.tsx`
+- Test: `mobile-native/src/session/errorAction.test.ts`, `mobile-native/src/TimelineItem.test.tsx` and `mobile-native/src/ConversationScreen.send.test.tsx`
 
 **Interfaces:**
-- Produces: `errorAction(row: { title: string; detail: string }, session: Pick<ThreadModel, "resumeRequired">): "resume" | "signIn" | null`.
+- Consumes: `failureRowIdentity` (`src/projectedRows.ts:990-992`), which names a turn's failure row `failure:<turn id>`; Task 22's `turnId` on rows; `sendAction` (Task 3).
+- Produces: `RETRY_MESSAGE = "Something went wrong. Please try again."` (ruling 26) and `errorAction(row: { id: string; title: string; detail: string; turnId?: string }, session: Pick<ThreadModel, "resumeRequired" | "turns">, canSend: boolean): "resume" | "signIn" | "retry" | null`.
   - `"resume"` when the session needs resuming.
   - `"signIn"` when the title or detail names a sign-in failure: `/sign[- ]?in|log[- ]?in|\b401\b|unauthori[sz]ed|credentials? (?:expired|invalid)/i`.
-  - Otherwise `null`: no Retry until Question 3.
+  - `"retry"` when `canSend`, the row is a turn's own failure row (`row.turnId` is set and `row.id === failureRowIdentity(row.turnId)`), and that turn is the session's last one in `session.turns`.
+  - Otherwise `null`.
 
 **Requirements (spec 8.2; rulings 24, 26):**
 1. **System events.** A non-critical `notice` (lifecycle, informational, diagnostic) renders a `diamond` SF Symbol at 8pt `inkLow` in a 16pt gutter, then its text 13/18 `inkLow`, two lines at most; tapping opens the rest.
@@ -5267,23 +5252,32 @@ PR 9 finishes spec 8.2's table, with what the data carries today:
    - A `details` group reads "Session details · 3" and opens its entries in the same style.
 2. **Errors.**
    - A `failure` row (other than a quiet thought) and a critical notice render a 2pt `dangerInk` left rule, the title in SF Pro semibold 15/20 `inkHi`, and the detail 15/20 `inkMid` when non-empty. Plain words: show the hub's text as it is; add no plumbing of our own.
-   - Beneath, at most one action, in `accentInk`, from `errorAction`:
+   - Beneath, at most one action, in `accentInk`, from `errorAction(row, conversation, action !== "none")`, where `action` is the screen's `sendAction(...)`, the value the composer's Send uses:
      - "Resume" calls `controls.resume()`;
-     - "Sign in" opens `Providers` with `{ hubId }`, today's sign-in route, until phase 5's Hub sheet.
+     - "Sign in" opens `Providers` with `{ hubId }`, today's sign-in route, until phase 5's Hub sheet;
+     - "Retry" sends `RETRY_MESSAGE` as your message, exactly as the composer's Send does for `action` (Task 5's requirement 7: `store.getState().queue(service, input)` for `"queue"`, `store.getState().send(service, input)` for `"send"` and `"resume"`, inside `document.submit`). It leaves the draft alone.
 3. **Images.**
    - An `attachments` row outside a run shows its images as 96pt thumbnails in a horizontal row, with a 12pt radius, keeping today's authenticated `HubImage` loading and its "Image unavailable" fallback.
    - Tapping one opens a full-screen viewer: a horizontal paging `FlatList` (`pagingEnabled`) that swipes between the row's images, with "i of N" and "Done". The "Previous image" and "Next image" buttons go.
 
 - [ ] **Step 1: Write the failing tests**
-  - `errorAction.test.ts` as a table: paused → resume; "Sign-in expired", "401 Unauthorized" and "Invalid credentials expired" → signIn; "go test exited 1" → null; paused and signed out → resume.
+  - `errorAction.test.ts` as a table, over the failure row of `turn_2` in a session whose turns are `turn_1` and `turn_2`:
+    - paused → resume; paused and signed out → resume;
+    - "Sign-in expired", "401 Unauthorized" and "Invalid credentials expired" → signIn;
+    - "go test exited 1" → retry;
+    - the same row with `canSend` false → null;
+    - `turn_1`'s failure row, while `turn_2` is the last turn → null;
+    - a warning's failure row (its id is the item's, not `failure:<turn id>`) → null;
+    - and `RETRY_MESSAGE` is "Something went wrong. Please try again.".
   - `TimelineItem.test.tsx`:
     - a lifecycle notice has the diamond and its text;
     - a labelled steering notice opens its text;
     - a failure with an auth message shows "Sign in", which navigates;
     - a failure on a paused session shows "Resume";
-    - a plain failure has no button and no "Retry";
+    - the last turn's plain failure shows "Retry", and an earlier turn's shows no button;
     - an attachments row renders 96pt thumbnails, and pressing one opens the viewer with "1 of 2".
-- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/errorAction.test.ts src/TimelineItem.test.tsx`
+  - `ConversationScreen.send.test.tsx`: for a thread read as `idle` whose last turn carries an `error`, pressing "Retry" sends `turn/start` whose input text is "Something went wrong. Please try again.", and the field keeps its draft.
+- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/errorAction.test.ts src/TimelineItem.test.tsx src/ConversationScreen.send.test.tsx`
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them and watch them pass**, then `npm run check`. Build Release in the simulator and read a real session with a compaction, a failed turn and a screenshot.
 - [ ] **Step 5: Commit** (`feat(native): system events, errors with one action, and images in the transcript`). Then open PR 9: "feat(native): the rest of the transcript (phase 3, PR 9)".
@@ -5821,13 +5815,13 @@ The demo fleet (phase 2 PR B, #2471, on main as `mobile-native/src/dev/demoFleet
   - tray and dock: Tasks 5, 10 and 11;
   - composer: Task 5.
 - **8.2 Transcript**, item by item:
-  - detail levels: Tasks 12 and 14 (Question 1);
+  - detail levels: Tasks 12 and 14 (ruling 8);
   - time markers: Tasks 23-24; your message: Task 24 ("Queued": ruling 23); agent message: Task 24;
   - activity runs: Tasks 23-24; step evidence: Tasks 25-26;
   - thinking: Task 28 and ruling 10; subagent: Task 28;
   - document chip: ruling 6; artifact card: waits for the shared-artifacts work, as the roadmap says;
   - question history: Task 28; approval history: ruling 24;
-  - system event: Task 29; your note: Task 18; error: Task 29 (Retry: Question 3); images: Task 29;
+  - system event: Task 29; your note: Task 18; error: Task 29 (Retry: ruling 26); images: Task 29;
   - scrolling: Task 27.
 - **8.3:**
   - tray: Tasks 4-5 (and ruling 10);
