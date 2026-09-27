@@ -20,7 +20,7 @@ import { connectionStore } from "../../../stores/connection";
 import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
-import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
   resetThreadsStoreForTests,
@@ -190,24 +190,12 @@ class PausedCommitStorage extends MutationOutboxIndexedDB {
     this.releaseCommit?.();
   }
 
-  override enqueueIntent(
+  override async enqueueIntent(
     ...args: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>
   ): ReturnType<MutationOutboxIndexedDB["enqueueIntent"]> {
-    return this.holdCommit(() => super.enqueueIntent(...args));
-  }
-
-  // Stop's write (the interrupt record and the cancellations it makes in the
-  // same transaction) is a local outbox commit too, held by the same gate.
-  override enqueueInterruptAndCancel(
-    ...args: Parameters<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]>
-  ): ReturnType<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]> {
-    return this.holdCommit(() => super.enqueueInterruptAndCancel(...args));
-  }
-
-  private async holdCommit<T>(commit: () => Promise<T>): Promise<T> {
     this.markCommitStarted?.();
     await this.commitGate;
-    return commit();
+    return super.enqueueIntent(...args);
   }
 }
 
@@ -3741,13 +3729,13 @@ test("a typed /interrupt on an active fenced session still mints its intent: Sto
 });
 
 // The test above settles its press with the projection flush, which awaits
-// only what registered with the pending-turns work tracker. Both Stop routes
-// run fire-and-forget, the typed /interrupt from the form's submit and the
-// button from its click, and both enqueue through the threads store, where the
-// refreshes a commit starts register only once the write lands. Untracked, a
-// flush that begins first finds nothing outstanding and returns, and the late
-// commit's refreshes then render outside act. The fenced mount parks the
-// intent, so the held write is all of the press's durable work.
+// only what registered with the projection work tracker. Both Stop routes run
+// fire-and-forget, the typed /interrupt from the form's submit and the button
+// from its click, and both enqueue through the threads store, whose storage
+// registers the write's transaction when it starts. Untracked, a flush that
+// begins first finds nothing outstanding and returns, and the late commit's
+// refreshes then render outside act. The fenced mount parks the intent, so the
+// held transaction is all of the press's durable work.
 test.each<[string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]>([
   [
     "a typed /interrupt",
@@ -3764,17 +3752,18 @@ test.each<[string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]>
     },
   ],
 ])("a flush cannot settle while %s's durable write is still in flight", async (_route, press) => {
-  const storage = new PausedCommitStorage();
-  setMutationStorageForTests(storage);
   const user = userEvent.setup();
   const ref = "local:active-fenced-interrupt-held";
   await mountActiveFencedForTypedCommands(ref);
   // Settle the mount's own projection work, so only the held write can keep
   // the flush below open.
   await flushPendingTurnsProjectionForTests();
+  // Stop's write: the interrupt record and the cancellations it makes, in one
+  // transaction over every mutation store.
+  const held = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
 
   await press(user);
-  await storage.commitStarted;
+  await held.reached;
 
   let flushResolved = false;
   const flushing = flushPendingTurnsProjectionForTests().then(() => {
@@ -3784,7 +3773,7 @@ test.each<[string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]>
   await outlastEmptyFlushRoundForTests();
   expect(flushResolved).toBe(false);
 
-  storage.release();
+  held.release();
   await flushing;
   expect((await parkedOutboxFor(ref)).map((record) => record.method)).toEqual(["turn/interrupt"]);
 });

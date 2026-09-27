@@ -10,6 +10,7 @@ import type {
   MutationRecoveryRecord,
   MutationStopBarrier,
 } from "./mutationOutbox";
+import { trackProjectionWork } from "./projectionWork";
 import { createSecureUUID } from "./secureUUID";
 
 type MutationOutboxOperation =
@@ -829,7 +830,20 @@ export class MutationOutboxIndexedDB {
     return this.#transaction(stores, "readwrite", operation, body);
   }
 
-  async #transaction<T>(
+  // Every transaction registers with the projection work tracker when it
+  // starts, which is what lets a flush wait for durable work whoever began it:
+  // a Force stop's cancellation, a queue action, the dispatcher settling a
+  // receipt once its RPC answers. A caller registers nothing of its own.
+  #transaction<T>(
+    stores: string | string[],
+    mode: "readonly" | "readwrite",
+    operation: MutationOutboxOperation | undefined,
+    body: (transaction: IDBTransaction) => Promise<T>,
+  ): Promise<T> {
+    return trackProjectionWork(this.#runTransaction(stores, mode, operation, body));
+  }
+
+  async #runTransaction<T>(
     stores: string | string[],
     mode: "readonly" | "readwrite",
     operation: MutationOutboxOperation | undefined,

@@ -2,9 +2,9 @@ import { act } from "@testing-library/react";
 
 import { settlePendingTurnsProjectionForTests } from "../pendingTurnsStore";
 
-// The repeat loop every test wants: run rounds until one of them finds
-// nothing outstanding. The bound is a tripwire for a livelock - it throws
-// rather than letting a test pass on a half-settled projection.
+// The repeat loop every test wants: run rounds until one of them sees no work
+// at all. The bound is a tripwire for a livelock - it throws rather than
+// letting a test pass on a half-settled projection.
 //
 // The act comes from @testing-library/react, not react: only RTL's wrapper
 // marks the environment as act-capable for the wrapped scope, and callers of
@@ -12,32 +12,20 @@ import { settlePendingTurnsProjectionForTests } from "../pendingTurnsStore";
 // react-dom log "The current testing environment is not configured to
 // support act(...)" on every render while the flag was clear.
 //
-// What it can settle is exactly what registers with trackProjectionWork, so a
-// round that found nothing is proof that nothing is left only while every
-// durable path registers before it can be observed. Every path in
-// pendingTurnsStore does: the last one that did not was
-// submitWithPendingTracking, which registered nothing until its own work had
-// already finished, and a flush starting in that window declared the
-// projection settled with a send still in flight (kata 3p22).
+// What it settles is what registers with the projection work tracker
+// (stores/projectionWork.ts), and every durable path registers at its source:
+// each transaction the mutation storage runs registers when it starts, and
+// pendingTurnsStore's reads and submissions register from the call that starts
+// them. A round also counts work registered while it runs, so work chained a
+// few microtasks behind an operation that just finished - a receipt write once
+// its RPC answers, a refresh once a commit notifies - keeps the loop going,
+// and only a round that began and ended quiet ends it.
 //
-// That is a claim about pendingTurnsStore, not about every caller. The round
-// below snapshots synchronously, in the same tick as the call, so a caller
-// that starts durable work which only registers a microtask later is
-// invisible to it - but only if that same caller flushes without yielding
-// first. Composer's queueRecoveryPersistence chains that way and every one of
-// its call sites yields, which is why it was measured unreachable rather than
-// fixed: zero occurrences in 1422 test executions under load (kata 5meh,
-// closed as an audit).
-//
-// So the hazard is the pattern, not that instance. A new path that registers
-// late reopens it as a load-sensitive false green rather than a failure.
-// pendingTurnsStore's "a flush cannot settle while a submit is still in
-// flight" pins the property for the paths there. A caller outside that file
-// must register its own durable work through trackProjectionWork from the
-// moment it starts. Composer's Stop button and typed built-ins do, and its
-// "a flush cannot settle while %s's durable write is still in flight" pins
-// both Stop routes. Issue #2571 lists the callers that do not register, and a
-// flush after one of their presses proves nothing about that press's write.
+// It does not wait for anything that is not durable storage work: an RPC in
+// flight (a test holding one open can still flush), a timer (the outbox's
+// discovery interval), or a component's own state. pendingTurnsStore's "a
+// flush cannot settle while ..." tests pin the property for submits and for
+// storage writes begun anywhere, and Composer's pin it for both Stop routes.
 export async function flushPendingTurnsProjectionForTests(): Promise<void> {
   for (let round = 0; round < 10; round += 1) {
     let awaited = 0;
@@ -50,9 +38,8 @@ export async function flushPendingTurnsProjectionForTests(): Promise<void> {
 }
 
 // Gives a flush every chance to finish early: more macrotask hops than one of
-// its rounds takes to return when it finds nothing outstanding. So a flush
-// still pending afterwards is waiting on work registered with
-// trackProjectionWork.
+// its rounds takes to return when it sees no work. So a flush still pending
+// afterwards is waiting on work registered with the projection work tracker.
 export async function outlastEmptyFlushRoundForTests(): Promise<void> {
   for (let hop = 0; hop < 5; hop += 1) {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
