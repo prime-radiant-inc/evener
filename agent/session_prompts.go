@@ -136,6 +136,8 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 		Agent:                    agentName,
 		BaseInstructionsOverride: strings.TrimSpace(s.systemPromptOverride),
 		RolePromptOverride:       strings.TrimSpace(s.cfg.spawn.rolePromptOverride),
+		IsSubagent:               s.depth > 0,
+		Surface:                  s.profile.Surface(),
 		WorkingDir:               s.envInfo.WorkingDir,
 		IsGitRepo:                s.envInfo.IsGitRepo,
 		GitBranch:                s.envInfo.GitBranch,
@@ -157,6 +159,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 		ProjectDocs:              s.projectDocs,
 		ActivatedSkillBodies:     append([]string(nil), s.cfg.spawn.activatedSkillBodies...),
 	}
+	data.Role, _ = resolveRolePrompt(s.cfg.spawn.rolePromptOverride, agentName, bundled.Agents())
 
 	// Skills
 	for _, descriptor := range s.skills.ModelEntries() {

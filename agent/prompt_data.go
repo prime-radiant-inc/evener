@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"io/fs"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/frontmatter"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
 )
@@ -16,6 +18,15 @@ type promptData struct {
 	Agent                    string // public agent name, e.g. "default", "explorer", "coordinator"
 	BaseInstructionsOverride string
 	RolePromptOverride       string
+	// IsSubagent is true for a delegate session (depth above zero): delegates
+	// get their own delegation guidance and none of the root-only sections.
+	IsSubagent bool
+	// Surface is the provider surface the session's profile speaks
+	// ("openai", "anthropic", ...), for surface-specific guidance.
+	Surface string
+	// Role is the resolved role body: the role prompt override, or the bundled
+	// agent definition's body without its frontmatter.
+	Role string
 
 	// Environment
 	WorkingDir      string
@@ -230,4 +241,25 @@ func formatToolNamesForPrompt(names []string) string {
 // deleted tools is a page the model can only fail.
 func (d promptData) HasTool(name string) bool {
 	return d.CallableTools[name]
+}
+
+// resolveRolePrompt returns the role body and its PROMPT_LOADED source: the
+// role prompt override when one is set, otherwise the bundled agent
+// definition's body with its frontmatter stripped. A bundled definition
+// reports its source even when its body is empty; an agent with no
+// definition, or one that does not parse, has no role and no source.
+func resolveRolePrompt(override, agentName string, agents fs.FS) (string, *promptSource) {
+	if body := strings.TrimSpace(override); body != "" {
+		return body, &promptSource{Label: "config:role_prompt_override", Size: len(body)}
+	}
+	raw, err := fs.ReadFile(agents, agentName+".md")
+	if err != nil {
+		return "", nil
+	}
+	doc, err := frontmatter.Parse(string(raw))
+	if err != nil {
+		return "", nil
+	}
+	body := strings.TrimSpace(doc.Body)
+	return body, &promptSource{Label: "agent:" + agentName, Size: len(body)}
 }

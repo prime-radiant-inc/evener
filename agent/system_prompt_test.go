@@ -2,14 +2,17 @@ package agent
 
 import (
 	"context"
+	"io/fs"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/clock"
+	"primeradiant.com/evener/agent/internal/frontmatter"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/internal/bundled"
 )
 
 // Opaque sentinels for the operator inputs the prompt must carry. They prove
@@ -44,6 +47,9 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, true)
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, false)
+			checkPromptInput(t, "IsSubagent", d.IsSubagent, false)
+			checkPromptInput(t, "Surface is anthropic", d.Surface == "anthropic", true)
+			checkPromptInput(t, "Role empty for the default agent", d.Role == "", true)
 			checkPromptInput(t, "HasUseSkill", d.HasUseSkill, true)
 			checkPromptInput(t, "skills present", len(d.Skills) > 0, true)
 			checkPromptInput(t, "IsGitRepo", d.IsGitRepo, true)
@@ -79,6 +85,10 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
 			checkPromptInput(t, "NonInteractive", d.NonInteractive, true)
+			checkPromptInput(t, "IsSubagent", d.IsSubagent, false)
+			checkPromptInput(t, "Surface is openai", d.Surface == "openai", true)
+			checkPromptInput(t, "Role is the coordinator plugin body",
+				d.Role == strings.TrimSpace(coordinatorWorkflowAgentForTest(t, "coordinator").SystemPrompt), true)
 			checkPromptInput(t, "HasTool apply_patch", d.HasTool("apply_patch"), true)
 			checkPromptInput(t, "IsGitRepo", d.IsGitRepo, false)
 			checkPromptInput(t, "workspace tree present", d.WorkspaceTree != "", true)
@@ -86,6 +96,7 @@ func promptConfigs() []promptConfig {
 		}},
 		{"root with overrides", buildRootWithOverridesSession, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, sentinelBaseInstructions)
+			checkPromptInput(t, "IsSubagent", d.IsSubagent, false)
 			checkPromptInput(t, "UserInstructionOverride", d.UserInstructionOverride, sentinelUserInstructions)
 			checkPromptInput(t, "CLIAppends holds the append file", len(d.CLIAppends) == 1 && d.CLIAppends[0] == sentinelAppend+"\n", true)
 			checkPromptInput(t, "workspace block empty", d.WorkspaceTree == "" && d.BuildInfo == "", true)
@@ -95,29 +106,56 @@ func promptConfigs() []promptConfig {
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, true)
 			checkPromptInput(t, "DelegationAllowance", d.DelegationAllowance, 1)
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
+			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
+			checkPromptInput(t, "Role is the delegating subagent override",
+				d.Role == strings.TrimSpace(defaultDelegatingSubagentInstructions), true)
 		}},
 		{"leaf delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "") }, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
+			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
+			checkPromptInput(t, "Role is the bundled subagent body", d.Role == bundledAgentBody(t, "subagent"), true)
 		}},
 		{"explorer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "explorer") }, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
 			checkPromptInput(t, "sandbox line present", d.Sandbox != "", true)
 			checkPromptInput(t, "unavailable profile tools listed", len(d.UnavailableProfileToolNames) > 0, true)
+			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
+			checkPromptInput(t, "Role is the bundled explorer body", d.Role == bundledAgentBody(t, "explorer"), true)
 		}},
 		{"implementer delegate", func(t *testing.T) *Session { return buildPromptDelegate(t, 0, "implementer") }, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "CanDelegate", d.CanDelegate, false)
+			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
+			checkPromptInput(t, "Role is the implementer plugin body",
+				d.Role == strings.TrimSpace(coordinatorWorkflowAgentForTest(t, "implementer").SystemPrompt), true)
 		}},
 		{"delegate with role override and preloaded skills", buildDelegateWithRoleOverrideSession, func(t *testing.T, d promptData) {
 			checkPromptInput(t, "BaseInstructionsOverride", d.BaseInstructionsOverride, "")
 			checkPromptInput(t, "HasAskUser", d.HasAskUser, false)
 			checkPromptInput(t, "ActivatedSkillBodies holds the preloaded body",
 				len(d.ActivatedSkillBodies) == 1 && d.ActivatedSkillBodies[0] == sentinelActivatedSkill, true)
+			checkPromptInput(t, "IsSubagent", d.IsSubagent, true)
+			checkPromptInput(t, "Role is the override", d.Role == sentinelRole, true)
 		}},
 	}
+}
+
+// bundledAgentBody is the body of a bundled agent definition with its
+// frontmatter stripped, the role text a builtin agent renders.
+func bundledAgentBody(t *testing.T, name string) string {
+	t.Helper()
+	raw, err := fs.ReadFile(bundled.Agents(), name+".md")
+	if err != nil {
+		t.Fatalf("read bundled agent %s: %v", name, err)
+	}
+	doc, err := frontmatter.Parse(string(raw))
+	if err != nil {
+		t.Fatalf("parse bundled agent %s: %v", name, err)
+	}
+	return strings.TrimSpace(doc.Body)
 }
 
 // buildRootInteractiveAnthropicSession is an interactive root on the anthropic
