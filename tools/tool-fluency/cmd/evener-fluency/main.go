@@ -278,6 +278,14 @@ type runConfig struct {
 	clearOpenAIAPIKey  bool
 }
 
+// holdsResults reports whether dir exists with anything in it. A run reuses
+// its directories, so a second run into one that holds results would mix the
+// two: the old work tree, the old sessions, and the old counts.
+func holdsResults(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	return err == nil && len(entries) > 0
+}
+
 // defaultMaxRounds is the runner's round cap when --max-rounds is not given.
 // It preserves the limit the runner hardcoded before the flag existed (#187).
 const defaultMaxRounds = 80
@@ -327,6 +335,9 @@ func runSuiteWithConfig(cfg runConfig) error {
 	}
 	if cfg.outDir == "" {
 		cfg.outDir = filepath.Join("tools", "tool-fluency", "results", time.Now().UTC().Format("20060102T150405Z"))
+	}
+	if holdsResults(cfg.outDir) {
+		return fmt.Errorf("--out %s already holds results; a second run there would mix with them, so name a new directory", cfg.outDir)
 	}
 	if err := os.MkdirAll(cfg.outDir, 0o755); err != nil {
 		return err

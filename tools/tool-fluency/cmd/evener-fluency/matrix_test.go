@@ -110,6 +110,37 @@ func TestRunMatrixCommandRefusesIncompleteInput(t *testing.T) {
 	}
 }
 
+// TestRunMatrixCommandRefusesCellsThatCollideOrHoldResults: two runs sharing a
+// directory, or a run into one that already holds results, would mix runs that
+// prose-stats and review-pack then read as one.
+func TestRunMatrixCommandRefusesCellsThatCollideOrHoldResults(t *testing.T) {
+	t.Parallel()
+	out := t.TempDir()
+	mustWrite(t, filepath.Join(out, "v1-A", "m2", "results.jsonl"), "{}\n")
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--out", out, "--version", "v0=/bin/a", "--models", "m1,m1"}, "share"},
+		{[]string{"--out", out, "--version", "v0=/bin/a", "--models", "a/b,a-b"}, "share"},
+		{[]string{"--out", out, "--version", "v1-A=/bin/a", "--models", "m1,m2"}, "already holds results"},
+	} {
+		if err := runMatrixCommand(c.args); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("runMatrixCommand(%q) = %v, want an error containing %q", c.args, err, c.want)
+		}
+	}
+}
+
+func TestRunSuiteRefusesAnOutDirThatHoldsResults(t *testing.T) {
+	t.Parallel()
+	out := t.TempDir()
+	mustWrite(t, filepath.Join(out, "results.jsonl"), "{}\n")
+	cfg := runConfig{repetitions: 1, maxRounds: 1, harness: "cli", outDir: out, evenerBin: filepath.Join(out, "missing-evener")}
+	if err := runSuiteWithConfig(cfg); err == nil || !strings.Contains(err.Error(), "already holds results") {
+		t.Fatalf("runSuiteWithConfig = %v, want a refusal", err)
+	}
+}
+
 // TestRunMatrixCommandRunsEveryPairOnTheCLIHarness: each version-model pair
 // reaches the suite runner on the CLI harness with the shared run flags. Not
 // parallel: it replaces the package's suite runner.

@@ -107,5 +107,26 @@ func runMatrixCommand(args []string) error {
 	}
 	base.harness = "cli"
 	base.systemPromptAppend = []string(systemPromptAppend)
-	return runMatrix(matrixConfigs(base, versions, modelList, base.outDir), *maxConcurrent)
+	cfgs := matrixConfigs(base, versions, modelList, base.outDir)
+	if err := checkMatrixCells(cfgs); err != nil {
+		return err
+	}
+	return runMatrix(cfgs, *maxConcurrent)
+}
+
+// checkMatrixCells refuses before any run starts when two cells would share a
+// directory, as a repeated model or two labels with the same safe name would,
+// or when a cell already holds results from an earlier run.
+func checkMatrixCells(cfgs []runConfig) error {
+	seen := map[string]bool{}
+	for _, cfg := range cfgs {
+		if seen[cfg.outDir] {
+			return fmt.Errorf("two runs would share %s; name each version and each model once", cfg.outDir)
+		}
+		seen[cfg.outDir] = true
+		if holdsResults(cfg.outDir) {
+			return fmt.Errorf("%s already holds results; name a new --out or a new version label", cfg.outDir)
+		}
+	}
+	return nil
 }
