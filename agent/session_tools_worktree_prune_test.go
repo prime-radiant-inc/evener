@@ -724,6 +724,42 @@ func TestP3CollectLane_GoneBranchStillDeletesSidecar(t *testing.T) {
 	}
 }
 
+// TestP3CollectLane_BranchProbeFailureIsNotAbsence: when the branch-existence
+// probe itself fails, the collector must treat it as doubt, not as "the branch
+// is gone" — deleting the sidecar off a failed probe orphans a branch that may
+// still exist, with no metadata for a later sweep to reconcile. Both the branch
+// delete and the existence probe are forced to fail, so collectLane must return
+// the deleting-branch error and leave the sidecar in place. The probe failure
+// is injected for both probe shapes (show-ref and for-each-ref) so the case is
+// red whichever command the collector probes with.
+func TestP3CollectLane_BranchProbeFailureIsNotAbsence(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
+	metaDir := metaDirForLane(path)
+	r.wrapRunner(func(next worktree.GitRunner, args []string) (string, error) {
+		fail := (len(args) == 3 && args[0] == "branch" && args[1] == "-D" && args[2] == id) ||
+			(len(args) == 4 && args[0] == "show-ref" && args[3] == "refs/heads/"+id) ||
+			(len(args) == 3 && args[0] == "for-each-ref" && args[2] == "refs/heads/"+id)
+		if fail {
+			return "", fmt.Errorf("injected probe failure for %s", id)
+		}
+		return next(args...)
+	})
+
+	run, done, err := r.s.worktreeControlRun(context.Background(), r.mainRoot)
+	if err != nil {
+		t.Fatalf("worktreeControlRun: %v", err)
+	}
+	defer done()
+	if err := r.s.collectLane(run, metaDir, id, id, path, true, r.s.residueSweepPolicy()); err == nil {
+		t.Fatal("collectLane returned nil after a failed branch probe; want the deleting-branch error")
+	}
+	if _, scErr := worktree.ReadSidecar(metaDir, id); scErr != nil {
+		t.Errorf("sidecar deleted off a failed branch probe: %v", scErr)
+	}
+}
+
 // TestWorktreePruneSweep2_NoMetaDirReturnsCleanly covers worktreePruneSweep2's
 // own os.IsNotExist tolerance for ListSidecars: a repo with no managed
 // worktree EVER created has no .meta directory at all, and prune must not

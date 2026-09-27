@@ -3109,9 +3109,11 @@ func (s *Session) collectLane(run worktree.GitRunner, metaDir, name, branch, pat
 		// Another path may have completed this deletion first (a dispose that
 		// deletes the branch before its worktree, or a collection whose sidecar
 		// outlived the branch). An already-absent branch is this step's success
-		// state, so continue to the sidecar delete; a branch that still exists is
-		// a real refusal and stays an error.
-		if branchExists(run, branch) {
+		// state, so continue to the sidecar delete. Doubt is non-destructive, as
+		// in the worktree remove above: a branch that still exists, or a probe
+		// that could not answer, stays a real failure.
+		gone, probeErr := branchGone(run, branch)
+		if probeErr != nil || !gone {
 			return fmt.Errorf("deleting branch %q: %w", branch, err)
 		}
 	}
@@ -3326,6 +3328,19 @@ func resolveBaseFromActiveRoot(run worktree.GitRunner, activeRoot, baseRef strin
 func branchExists(run worktree.GitRunner, name string) bool {
 	_, err := run("show-ref", "--verify", "--quiet", "refs/heads/"+name)
 	return err == nil
+}
+
+// branchGone reports whether refs/heads/<name> is confirmed absent. It uses
+// for-each-ref, which exits 0 with empty output when the pattern matches no
+// ref, so an empty result means "absent" and a non-nil error means the probe
+// itself could not answer. Callers must treat a failed probe as doubt, not as
+// absence: unlike branchExists, this distinguishes the two.
+func branchGone(run worktree.GitRunner, name string) (bool, error) {
+	out, err := run("for-each-ref", "--format=%(refname)", "refs/heads/"+name)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) == "", nil
 }
 
 // managedWorktreeExists reports whether a managed worktree already lives at
