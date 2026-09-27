@@ -377,6 +377,14 @@ export function createBoardController(): BoardController {
 			void page.more();
 	};
 
+	/** Follow a reader that must be complete: publish each of its changes,
+	 * then page on. */
+	const followInFull = <T,>(page: NavigationPages<T>) =>
+		page.subscribe(() => {
+			publish();
+			fill(page);
+		});
+
 	/** Every paged reader: Live, Needs you, the pin catalog and the
 	 * categories. */
 	const pages = (bound: Readers) => [
@@ -415,13 +423,7 @@ export function createBoardController(): BoardController {
 			);
 			bound.categories.set(id, {
 				pages,
-				stop: [
-					pages.subscribe(() => {
-						publish();
-						fill(pages);
-					}),
-					pages.watch(),
-				],
+				stop: [followInFull(pages), pages.watch()],
 			});
 			added.push(pages);
 		}
@@ -462,14 +464,8 @@ export function createBoardController(): BoardController {
 		};
 		bound.stop.push(
 			bound.live.subscribe(publish),
-			bound.needsYou.subscribe(() => {
-				publish();
-				fill(bound.needsYou);
-			}),
-			bound.pins.subscribe(() => {
-				publish();
-				fill(bound.pins);
-			}),
+			followInFull(bound.needsYou),
+			followInFull(bound.pins),
 		);
 		for (const page of pages(bound)) bound.stop.push(page.watch());
 		bound.stop.push(bound.manifest.watch());
