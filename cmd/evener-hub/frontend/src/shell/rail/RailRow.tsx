@@ -214,6 +214,16 @@ function Signal({ wireState }: { wireState: string }) {
   );
 }
 
+// leadsOverWork says the session's own state is something a person must do, a
+// restart or a pending approval (approvalWaiting), which outranks any work
+// still running on the row. activityGloss leads its line with that state's
+// word and SessionRow keeps the row's needs-you dot; both read this one
+// predicate, so the gloss and the dot cannot disagree about which states
+// outrank work.
+function leadsOverWork(session: RailSession): boolean {
+  return session.state === "restartRequired" || approvalWaiting(session.state, session.approval_pending === true);
+}
+
 // The gloss a SIGNAL row gets: the state in words, plus the branch when the
 // session carries one. Rendered only for the states worth spotting from across
 // the list (SIGNAL_STATES), which is what earns it the second line.
@@ -238,9 +248,8 @@ function Signal({ wireState }: { wireState: string }) {
 export function activityGloss(session: RailSession, activity = activeWorkSummary(session)): string {
   const workingCount = activity.workingSubagents;
   const jobCount = activity.runningJobs;
-  const approvalPending = session.approval_pending === true;
-  const word = humanizeState(session.state, session.ask_pending === true, approvalPending);
-  const wordLeads = session.state === "restartRequired" || approvalWaiting(session.state, approvalPending);
+  const word = humanizeState(session.state, session.ask_pending === true, session.approval_pending === true);
+  const wordLeads = leadsOverWork(session);
   const parts: string[] = [];
   if (wordLeads) parts.push(word);
   if (workingCount > 0) {
@@ -663,10 +672,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // failure, a restart and a pending approval still win over that rollup, so
   // none can disappear behind a green child - nor, for an approval, behind
   // the row's own "active" wire state (the escalation blocks mid-turn).
-  const outranksWork =
-    presented === "errored" ||
-    presented === "restartRequired" ||
-    approvalWaiting(session.state, session.approval_pending === true);
+  const outranksWork = presented === "errored" || leadsOverWork(session);
   let effectiveState = presented;
   if (!outranksWork && hasActiveWork) effectiveState = "active";
   const showsGloss = SIGNAL_STATES.has(cadenceStateFor(effectiveState));
