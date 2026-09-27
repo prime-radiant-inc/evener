@@ -1,8 +1,9 @@
 import { cleanup } from "@testing-library/react";
 import * as React from "react";
-import { afterAll, afterEach, beforeAll } from "vitest";
+import { afterAll, afterEach, aroundEach, beforeAll, beforeEach } from "vitest";
 import { reactActScopeGuardPorts, waitOutLeakedActScope } from "./testActScopeGuard";
 import { guardConsoleOutput } from "./testConsoleGuard";
+import { guardTestingLibraryAgainstEndedBodies, runAsTheCurrentTest } from "./testEndedBodyGuard";
 
 // Every test file must get its own VM context: stores, pane registrations and
 // module mocks are module-scoped. Vitest's vmThreads pool gives each file one
@@ -67,6 +68,17 @@ afterAll(() => {
   } else {
     reactEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
   }
+});
+
+// A body that outlives its test (vitest cannot stop one that timed out) is
+// stopped at its Testing Library waits, and its events are dropped, instead of
+// acting on the next test (testEndedBodyGuard.ts). A wait it stopped in had
+// turned the act environment off and never turns it back on, so every test
+// starts with it on.
+guardTestingLibraryAgainstEndedBodies();
+aroundEach((runTest, context) => runAsTheCurrentTest(runTest, context.signal));
+beforeEach(() => {
+  reactEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 
 // React's development build captures an owner stack for every JSX element it
