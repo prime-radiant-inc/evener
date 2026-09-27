@@ -19031,6 +19031,11 @@ describe("ConversationStore", () => {
       // images: the fold keeps them (the round-31 rule — absent images mean
       // unchanged), and the projection re-keys the attachment row to the
       // reissued source's id.
+      // Versioned (matches the frames below's bootGeneration/epoch/
+      // incarnation): an unversioned rehydrate here would invalidate on the
+      // very next history/updated frame (reducer.ts's classifySignal, any
+      // boot generation but the held "" one is a replace) and the
+      // withdrawal this test pins would never run at all.
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
           turns: [
@@ -19049,6 +19054,8 @@ describe("ConversationStore", () => {
             }),
           ],
         }),
+        ALL_TRUE_CAPS,
+        true,
       );
       store.getState().applyNotification({
         method: "evener/thread/resync",

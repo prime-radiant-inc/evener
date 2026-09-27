@@ -108,6 +108,28 @@ export type ConversationStatus =
   | "error"
   | "closed";
 
+// The wire's nil/non-nil-empty/non-empty rule (reducer.ts's own
+// ITEM_OMISSION_TOLERANT_FIELDS, mirrored here for the mobile-only merges
+// that fall outside the shared reducer's per-turn mergeHistory): an omitted
+// field means "this entry said nothing new here", not "cleared". Read by
+// both the rehydrate reconciliation below and reconcileCrossTurnReissues.
+const SNAPSHOT_AUTHORITY_FIELDS = [
+  "images",
+  "outputImages",
+  "output",
+  "error",
+  "raw",
+  "prevalOnly",
+  "exitCode",
+  "argumentsJSON",
+  "description",
+  "toolName",
+  "callId",
+  "eventKind",
+  "steeringKind",
+  "source",
+] as const;
+
 // The known thread-scalar notifications: reducer.ts's own case for each just
 // restamps one scalar field (and lastFrameAt), never `turns` — read straight
 // off applyNotificationToThread's switch, minus history/updated, the
@@ -609,6 +631,64 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   // applyHydrationResponseCut drops its buffer at the same point for the same
   // reason.
   //
+  // Task 17 (v6 read path): loadOlder and rehydrate fold page/reread content
+  // into `turns` through the pre-v6 array merges below (mergeOlderItemPageWithFolds,
+  // mergeTurnHistoryWithFolds), which know nothing of model.history — the
+  // versioned record every OTHER live frame (history/updated, overlay/*, via
+  // applyNotification -> the reducer's withDisplay) rebuilds `turns` FROM.
+  // Left unsynced, a page turn or a rehydrate's retained history lives only in
+  // `turns`, and the next such frame silently drops it (withDisplay derives
+  // `turns` from model.history.turns, not from the caller's prior `turns`).
+  // Both callers must therefore commit the SAME final turns array into both
+  // fields; this is the one place that happens; it also carries `.turns`
+  // unions of a model with no history at all (unversioned; a no-op there).
+  function withSyncedHistoryTurns<M extends MobileConversation>(
+    model: M,
+    turns: readonly TurnModel[],
+  ): M {
+    if (model.history === undefined) return model;
+    return { ...model, history: { ...model.history, turns: [...turns] } };
+  }
+
+  // A turn a history/updated frame marks itemsView "full" carries its
+  // complete current item list in this frame's own `items` (turnId-matched) —
+  // never accumulated across frames (Go's Turn.ItemsView, appwire/types.go).
+  // The shared reducer's mergeHistory deliberately never removes an item (an
+  // invariant reducer.history.test.ts pins for every OTHER caller), so a full
+  // turn's withdrawal of an item it omits is this store's own product
+  // decision (RoboRev round 18-20), applied after the reducer's own merge —
+  // to `turns` AND model.history.turns together (withSyncedHistoryTurns),
+  // or the next frame's withDisplay resurrects the withdrawn row from
+  // history.turns.
+  function withdrawOmittedFullTurns(
+    turns: readonly TurnModel[],
+    n: AnyNotification,
+  ): readonly TurnModel[] {
+    if (n.method !== "history/updated") return turns;
+    const fullTurnIds = (n.params.turns ?? [])
+      .filter((turn) => turn.itemsView === "full")
+      .map((turn) => turn.id);
+    if (fullTurnIds.length === 0) return turns;
+    const suppliedByTurn = new Map<string, Set<string>>();
+    for (const id of fullTurnIds) suppliedByTurn.set(id, new Set());
+    for (const item of n.params.items ?? []) {
+      if (item.turnId === undefined) continue;
+      suppliedByTurn.get(item.turnId)?.add(item.transcriptKey ?? item.id);
+    }
+    let changed = false;
+    const result = turns.map((turn) => {
+      const supplied = suppliedByTurn.get(turn.id);
+      if (supplied === undefined) return turn;
+      const kept = turn.items.filter((item) =>
+        supplied.has(item.transcriptKey ?? item.id),
+      );
+      if (kept.length === turn.items.length) return turn;
+      changed = true;
+      return { ...turn, items: kept };
+    });
+    return changed ? result : turns;
+  }
+
   // The package reducer over the conversation. The display rows are projected
   // from the model it returns (applyNotification below), so the rows a frame
   // produces and the rows a snapshot produces come from the one projector.
@@ -618,7 +698,135 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
   ): MobileConversation {
     const next = applyNotification(conversation, n, Date.now());
     carryFoldIdentities(conversation.turns, next.turns);
-    return next;
+    // Only a frame the reducer actually folded into `turns` can withdraw or
+    // reconcile anything: an invalidated/discarded/ignored frame (the
+    // reducer's own generation/epoch/incarnation rules, reducer.ts's
+    // classifySignal) returns `turns` unchanged by reference, and a
+    // full-turn descriptor riding such a frame describes a merge that never
+    // happened.
+    if (next.turns === conversation.turns) return next;
+    // mergeHistory matches an item only within its OWN wire turn id — never
+    // across turns the way a page/rehydrate merge's turnsMatch does. A live
+    // history/updated frame that reissues a page-owned (or otherwise
+    // retained) item under a NEW turn id therefore leaves two copies
+    // standing side by side instead of one, until reconcileCrossTurnReissues
+    // folds them; only history/updated can introduce this (every other
+    // method is scalar-only or overlay-only, per the reducer's own
+    // dispatch), so other methods skip the scan.
+    const reconciled =
+      n.method === "history/updated"
+        ? reconcileCrossTurnReissues(conversation.turns, next.turns)
+        : next.turns;
+    const turns = withdrawOmittedFullTurns(reconciled, n);
+    if (turns !== reconciled) {
+      // A withdrawn identity's page ownership must retire with it: a later
+      // rehydrate's twin filter (snapshotMatchFor/pageItemIds, above) is the
+      // ONLY thing standing between a live reissue of the same bare id or
+      // transcript key — "a same-id/key different-content replacement", the
+      // wire genuinely reuses both — and that filter treats page ownership
+      // as permanent once recorded. Leaving a withdrawn identity's ownership
+      // standing resurrects unrelated later content sharing its spelling as
+      // page history it never was (RoboRev round 18-20's own worry, applied
+      // to reuse rather than omission).
+      for (const turn of reconciled) {
+        for (const item of turn.items) {
+          const identity = item.transcriptKey ?? item.id;
+          if (turns.some((t) => t.items.some((kept) => (kept.transcriptKey ?? kept.id) === identity))) continue;
+          pageItemIds.delete(identity);
+          pageItemIds.delete(item.id);
+        }
+      }
+    }
+    return turns === next.turns ? next : withSyncedHistoryTurns({ ...next, turns: [...turns] }, turns);
+  }
+
+  // See applyThreadNotification's own comment: an identity `previous` held
+  // under one turn that this frame just reissued under ANOTHER turn stays
+  // positioned at its OLD turn — a page/rehydrate merge's turnsMatch
+  // coalesces the same way, beside the row's other page-owned neighbors, not
+  // wherever the live frame's own (often freshly-opened) turn happens to
+  // sort — absorbing the reissue's fields (SNAPSHOT_AUTHORITY_FIELDS, the
+  // same fallback rehydrate's applySnapshotAuthority uses) there, and the
+  // copy the reducer's own per-turn merge just landed at the new turn drops.
+  // An identity untouched by this frame, or one already reconciled in place
+  // (both locations agree), is left alone.
+  function reconcileCrossTurnReissues(
+    previous: readonly TurnModel[],
+    turns: readonly TurnModel[],
+  ): readonly TurnModel[] {
+    const heldTurnByIdentity = new Map<string, string>();
+    for (const turn of previous) {
+      for (const item of turn.items) {
+        heldTurnByIdentity.set(item.transcriptKey ?? item.id, turn.id);
+      }
+    }
+    if (heldTurnByIdentity.size === 0) return turns;
+    const locationsByIdentity = new Map<string, string[]>();
+    const itemByLocation = new Map<string, ItemModel>();
+    for (const turn of turns) {
+      for (const item of turn.items) {
+        const identity = item.transcriptKey ?? item.id;
+        const locations = locationsByIdentity.get(identity);
+        if (locations) locations.push(turn.id);
+        else locationsByIdentity.set(identity, [turn.id]);
+        itemByLocation.set(`${turn.id}\u0000${identity}`, item);
+      }
+    }
+    const reissues = new Map<string, { oldTurn: string; newTurn: string }>();
+    for (const [identity, locations] of locationsByIdentity) {
+      if (locations.length < 2) continue;
+      const oldTurn = heldTurnByIdentity.get(identity);
+      if (oldTurn === undefined || !locations.includes(oldTurn)) continue;
+      const newTurn = locations.find((turnId) => turnId !== oldTurn);
+      if (newTurn !== undefined) reissues.set(identity, { oldTurn, newTurn });
+    }
+    if (reissues.size === 0) return turns;
+    let changed = false;
+    const result = turns.map((turn) => {
+      let turnChanged = false;
+      let items = turn.items.filter((item) => {
+        const reissue = reissues.get(item.transcriptKey ?? item.id);
+        const drop = reissue !== undefined && reissue.newTurn === turn.id;
+        if (drop) turnChanged = true;
+        return !drop;
+      });
+      items = items.map((item) => {
+        const identity = item.transcriptKey ?? item.id;
+        const reissue = reissues.get(identity);
+        if (reissue === undefined || reissue.oldTurn !== turn.id) return item;
+        const fresh = itemByLocation.get(`${reissue.newTurn}\u0000${identity}`);
+        if (fresh === undefined) return item;
+        const merged = applyCrossTurnFallback(fresh, item);
+        turnChanged = true;
+        return merged;
+      });
+      if (!turnChanged) return turn;
+      changed = true;
+      return { ...turn, items };
+    });
+    return changed ? result : turns;
+  }
+
+  // A reissue is authoritative for every field it explicitly carries; an
+  // omitted omission-tolerant field, or an omitted text field, falls back to
+  // the superseded item's value instead of clearing it (the same rule
+  // reducer.ts's private mergeReplacedItem applies within one turn — see
+  // that function's own comment for why).
+  function applyCrossTurnFallback(fresh: ItemModel, held: ItemModel): ItemModel {
+    let merged = fresh;
+    for (const field of SNAPSHOT_AUTHORITY_FIELDS) {
+      const heldValue = (held as unknown as Record<string, unknown>)[field];
+      if (heldValue === undefined || (fresh as unknown as Record<string, unknown>)[field] !== undefined) continue;
+      if (merged === fresh) merged = { ...fresh };
+      (merged as unknown as Record<string, unknown>)[field] = heldValue;
+    }
+    if (itemTextPresence(fresh) === "omitted" && itemTextPresence(held) === "provided") {
+      merged = copyItemTextPresence(
+        fresh,
+        merged === fresh ? { ...fresh, text: held.text } : { ...merged, text: held.text },
+      );
+    }
+    return merged;
   }
   // D23d: page-owned timeline identities — the item identities (and
   // failure:<turn id> row identities) the merged model carries as older-page
@@ -3030,22 +3238,6 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
             // those are local/live state the snapshot cannot speak for.
             // Page-owned items keep everything (the round-31 rule: the
             // page's retained history is not the snapshot's to withdraw).
-            const SNAPSHOT_AUTHORITY_FIELDS = [
-              "images",
-              "outputImages",
-              "output",
-              "error",
-              "raw",
-              "prevalOnly",
-              "exitCode",
-              "argumentsJSON",
-              "description",
-              "toolName",
-              "callId",
-              "eventKind",
-              "steeringKind",
-              "source",
-            ] as const;
             const applySnapshotAuthority = (item: ItemModel): ItemModel => {
               const match = snapshotMatchFor(item);
               if (match === undefined) return item;
@@ -3506,18 +3698,21 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
           // shed rows, leave the notice no anchor to seat at, and the
           // carried-filter prune would retire a warning the cap kept.
           const committedConversation = capAndTruncate(
-            seatedRehydrateItems === null
-              ? projectConversation({
-                  ...merged,
-                  turns: mergedTurns,
-                  olderCursor: wireOlderCursor,
-                }, undefined, projectConfig)
-              : {
-                  ...merged,
-                  turns: mergedTurns,
-                  olderCursor: wireOlderCursor,
-                  items: seatedRehydrateItems,
-                },
+            withSyncedHistoryTurns(
+              seatedRehydrateItems === null
+                ? projectConversation({
+                    ...merged,
+                    turns: mergedTurns,
+                    olderCursor: wireOlderCursor,
+                  }, undefined, projectConfig)
+                : {
+                    ...merged,
+                    turns: mergedTurns,
+                    olderCursor: wireOlderCursor,
+                    items: seatedRehydrateItems,
+                  },
+              mergedTurns,
+            ),
           );
           // RoboRev review round 2: page turn ownership alone must not pin
           // the store's own paging cursor across a DISJOINT refresh —
@@ -3860,11 +4055,14 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
               // atCap only stops the STORE's own paging honestly (F8); it says
               // nothing about whether the daemon actually has more history, so
               // sessionTokens must not read it as "this is the whole session".
-              conversation: {
-                ...pageConversation,
-                turns: boundedTurns,
-                olderCursor: result.nextCursor,
-              },
+              conversation: withSyncedHistoryTurns(
+                {
+                  ...pageConversation,
+                  turns: boundedTurns,
+                  olderCursor: result.nextCursor,
+                },
+                boundedTurns,
+              ),
               olderCursor: nextCursor,
               hasEarlierItems: atCap
                 ? false
