@@ -1314,20 +1314,21 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// Rollup: highest-attention state (for the dot fallback) plus the
 		// magnitude counts the header renders. Each top-level session and its
 		// children form one task tree: child activity keeps the project working,
-		// but cannot inflate the count beyond one for that task tree.
+		// but cannot inflate the count beyond one for that task tree. A
+		// descendant (any depth) can only ever raise the task tree's state to
+		// "active"; only the top-level session's own state can raise the
+		// rollup into an attention state (#2557). Subagent failures still show
+		// in the session's own Subagents chip and list.
 		rollup := ""
 		rollupLive, rollupAttn := 0, 0
 		for _, s := range sessions {
 			taskState := s.State
 			var includeDescendants func(TreeNode)
 			includeDescendants = func(node TreeNode) {
-				if len(node.RunningJobs) > 0 && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
+				if (node.State == "active" || len(node.RunningJobs) > 0) && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
 					taskState = "active"
 				}
 				for _, child := range node.Children {
-					if hubapi.RollupRank(child.State) > hubapi.RollupRank(taskState) {
-						taskState = child.State
-					}
 					includeDescendants(child)
 				}
 			}
