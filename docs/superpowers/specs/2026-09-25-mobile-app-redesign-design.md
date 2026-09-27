@@ -385,7 +385,8 @@ Controls row, left to right:
 |---|---|
 | Idle / finished | Sends; the agent starts on it |
 | Working | Queues the message: it waits until this turn ends, and its **Steer now** (below) delivers it sooner |
-| Question or approval pending | The composer is hidden while the dock is open (section 8.4). After "Other answer…", Send sends your text as the answer, and the dock updates |
+| Question pending | The composer is hidden while the dock is open (section 8.4). After "Other answer…", Send sends your text as the answer, and the dock updates |
+| Approval pending | The composer is hidden while the dock is open (section 8.4) and never comes back; Send and the composer return once the approval is decided |
 | Shut down | Sends and resumes the session |
 | Offline | Holds the message in the outbox and sends it when the connection returns (section 14) |
 
