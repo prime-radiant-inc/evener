@@ -3,9 +3,7 @@ package hub
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -27,39 +25,37 @@ func registerActivityReadHandler(server *appserver.Server, cfg hubcore.WebConfig
 }
 
 // hubActivityRead answers evener/activity/read (S5): the live top-level
-// sessions of this hub's roster, filtered to params.Refs when it names any.
-// It never reads navigation and never changes it.
+// sessions of this hub's roster and of its attached hosts, filtered to
+// params.Refs when it names any. It never reads navigation and never changes
+// it.
 func hubActivityRead(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ActivityReadParams, now time.Time) (appwire.ActivityReadResponse, error) {
 	if len(params.Refs) > maxActivityReadRefs {
 		return appwire.ActivityReadResponse{}, appwire.InvalidParams(fmt.Sprintf("refs names at most %d sessions", maxActivityReadRefs))
 	}
 	wanted := make(map[string]struct{}, len(params.Refs))
+	refsByHost := make(map[string][]string)
 	for _, raw := range params.Refs {
 		ref, err := hubapi.ParseRef(raw)
 		if err != nil {
 			return appwire.ActivityReadResponse{}, appwire.InvalidParams("refs must be session refs: " + err.Error())
 		}
 		wanted[ref.String()] = struct{}{}
+		refsByHost[ref.HostID] = append(refsByHost[ref.HostID], ref.String())
 	}
 	keep := func(ref string) bool {
 		_, ok := wanted[ref]
 		return len(wanted) == 0 || ok
 	}
-	askedLocal := len(wanted) == 0
-	for ref := range wanted {
-		if strings.HasPrefix(ref, "local:") {
-			askedLocal = true
-		}
-	}
+	_, askedLocal := refsByHost["local"]
 	sessions := []appwire.SessionActivity{}
-	if cfg.Roster != nil && askedLocal {
+	if cfg.Roster != nil && (len(wanted) == 0 || askedLocal) {
 		for _, entry := range cfg.Roster.List() {
 			if activity, ok := localSessionActivity(entry, now); ok && keep(activity.Ref) {
 				sessions = append(sessions, activity)
 			}
 		}
 	}
-	for _, activity := range remoteSessionActivity(ctx, cfg, sources, params.Refs) {
+	for _, activity := range remoteSessionActivity(ctx, cfg, sources, refsByHost) {
 		if keep(activity.Ref) {
 			sessions = append(sessions, activity)
 		}
@@ -69,14 +65,16 @@ func hubActivityRead(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 }
 
 // localSessionActivity is one live root's activity as the hub reads it now.
-// Only a live, uncrashed root whose daemon reported a sample has one.
+// Only a live, uncrashed root whose daemon reported a sample has one. The
+// activity takes entry's minutes as they are: Roster.List hands each caller
+// its own CloneLiveEntry copy.
 func localSessionActivity(entry hubcore.LiveEntry, now time.Time) (appwire.SessionActivity, bool) {
 	if entry.Crashed || entry.SessionID == "" || entry.Activity == nil {
 		return appwire.SessionActivity{}, false
 	}
 	activity := appwire.SessionActivity{
 		Ref:              hubcore.LiveRowRef(entry),
-		Minutes:          slices.Clone(entry.Activity.Minutes),
+		Minutes:          entry.Activity.Minutes,
 		RunningSubagents: runningSubagents(entry),
 	}
 	// Jesse's ruling: an agent waiting on subagents is never stuck. A subagent
@@ -115,19 +113,13 @@ type remoteSessionActivityReader interface {
 	ReadSessionActivity(ctx context.Context, params appwire.ActivityReadParams) (appwire.ActivityReadResponse, error)
 }
 
-// remoteSessionActivity asks every attached host the filter names (every host
-// when it names none), in parallel, each bounded by remoteActivityReadBudget.
-// A host that fails or times out contributes nothing; an unattached host is
-// skipped without a call, never dialed.
-func remoteSessionActivity(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, refs []string) []appwire.SessionActivity {
+// remoteSessionActivity asks every attached host refsByHost names (every host
+// when it names none) for the refs it lists, in parallel, each bounded by
+// remoteActivityReadBudget. A host that fails or times out contributes
+// nothing; an unattached host is skipped without a call, never dialed.
+func remoteSessionActivity(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, refsByHost map[string][]string) []appwire.SessionActivity {
 	if sources == nil {
 		return nil
-	}
-	byHost := make(map[string][]string)
-	for _, raw := range refs {
-		if ref, err := hubapi.ParseRef(raw); err == nil {
-			byHost[ref.HostID] = append(byHost[ref.HostID], ref.String())
-		}
 	}
 	remoteHosts := remoteHostNames(cfg)
 	var (
@@ -138,8 +130,8 @@ func remoteSessionActivity(ctx context.Context, cfg hubcore.WebConfig, sources *
 	for _, source := range sources.All() {
 		id := source.ID()
 		reader, ok := source.(remoteSessionActivityReader)
-		hostRefs, named := byHost[id]
-		if !ok || (len(refs) > 0 && !named) || !remoteSourceAttached(cfg, remoteHosts, id) {
+		hostRefs, named := refsByHost[id]
+		if !ok || (len(refsByHost) > 0 && !named) || !remoteSourceAttached(cfg, remoteHosts, id) {
 			continue
 		}
 		wg.Go(func() {
