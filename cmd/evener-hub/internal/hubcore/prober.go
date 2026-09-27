@@ -163,6 +163,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		Watches:               diagnosticsWatches(root.Evener.Diagnostics),
 		ChildWatches:          childWatches,
 		Tasks:                 root.Evener.Tasks,
+		LastTurnEndedAt:       UnixMilliTime(root.Evener.LastTurnEndedAt),
 		OK:                    true,
 	}
 }
