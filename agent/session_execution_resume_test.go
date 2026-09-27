@@ -201,3 +201,62 @@ func TestRestoreClosesAnOpenExecutionItsPendingWorkAbandoned(t *testing.T) {
 		t.Fatal("a second pass closed the turn again")
 	}
 }
+
+// recoverClientMutationFailures must not lose the open-pending marker when
+// the failure it tries to record for an already-recorded (not "own")
+// execution fails to record: takeOpenPendingExecution consumes the marker
+// before the record runs, and a record failure here leaves nothing else that
+// will ever complete the turn -- closeAbandonedExecutions can only close what
+// is still in openPendingExecutions.
+func TestRecoverClientMutationFailuresKeepsTheMarkerWhenTheRecordFails(t *testing.T) {
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	started, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-marker-loss",
+		Input:            []appwire.InputItem{{Type: "text", Text: "fails, then the process dies"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := sess.claimClientMutationStart()
+	if err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	failure := errors.New("deterministic pre-append failure")
+	crash := errors.New("simulated crash after both entries are recorded")
+	sess.clientMutationPreAppendFailure = func(schema.Turn) error { return failure }
+	sess.clientMutationFailureRecoveryFault = func(point string) error {
+		if point == "after_failure" {
+			return crash
+		}
+		return nil
+	}
+	if err := sess.acceptUserInput(withQueuedClientMutation(context.Background(), claimed), claimed.Text, claimed.Images, nil, false); !errors.Is(err, crash) {
+		t.Fatalf("acceptUserInput = %v, want the simulated crash", err)
+	}
+	sess.clientMutationFailureRecoveryFault = nil
+
+	// A restart's closeCrashedExecutions would find the turn open (both
+	// entries recorded, no completion) and pending client work, and mark it
+	// exactly this way.
+	sess.mu.Lock()
+	sess.openPendingExecutions = map[string]bool{started.Turn.ID: true}
+	sess.mu.Unlock()
+
+	// The next attempt to record the failure (recoverClientMutationFailures,
+	// as restore runs it) fails at the store's own commit. Both items are
+	// already recorded, so "own" is false, and wasOpen && err == nil is the
+	// only outcome that ever completes the turn.
+	sess.clientMutations.faults.BeforeEffectSnapshotRename = func() error { return errors.New("store commit failure") }
+	if err := sess.recoverClientMutationFailures(false); err == nil {
+		t.Fatal("recovery reported success despite the store commit failing")
+	}
+	sess.clientMutations.faults.BeforeEffectSnapshotRename = nil
+
+	sess.mu.Lock()
+	stillOpen := sess.openPendingExecutions[started.Turn.ID]
+	sess.mu.Unlock()
+	if !stillOpen {
+		t.Fatal("the open-pending marker was consumed although the failure was never recorded; closeAbandonedExecutions can never close this turn now")
+	}
+}

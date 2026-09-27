@@ -223,6 +223,17 @@ func (s *Session) takeOpenPendingExecution(turnID string) bool {
 	return open
 }
 
+// hasOpenPendingExecution is takeOpenPendingExecution without forgetting: a
+// caller that still might not get to finish turnID (its own record of the
+// failure to complete it with may yet fail) checks here first and takes the
+// marker only once that record has actually succeeded, so a failed attempt
+// leaves it for the next one — never dropping it for good.
+func (s *Session) hasOpenPendingExecution(turnID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.openPendingExecutions[turnID]
+}
+
 // closeCrashedExecutionTargets is the open executions resume closes: every
 // open one but those pending work names, in TurnID order.
 func closeCrashedExecutionTargets(executions map[string]bool, pending map[string]bool) []string {
