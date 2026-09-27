@@ -969,11 +969,7 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 // epoch above the removal's advance, never back at 1.
 func (m *hubHostManager) seedHighWater(cfg Config) {
 	m.cfg.store.setHighWaterMap(cfg.Generations)
-	marks := make(map[string]hostreg.HighWater, len(cfg.Generations))
-	for name, mark := range cfg.Generations {
-		marks[name] = hostreg.HighWater{Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch}
-	}
-	m.cfg.hosts.SeedHighWater(marks)
+	m.cfg.hosts.SeedHighWater(hostHighWaterMarks(cfg))
 }
 
 // materializeHostRecords performs spec 08 §15's boot mint: a hub.toml host the
@@ -998,9 +994,14 @@ func (m *hubHostManager) materializeHostRecords(cfg Config, hasFile bool) {
 	entries := m.cfg.store.snapshot()
 	for _, entry := range entries {
 		record := cfg.HostRecords[entry.Name]
-		if !record.complete() {
+		mark := cfg.Generations[entry.Name]
+		// Both records must be present and complete: a file carrying only one
+		// of them would leave the other's value unrecorded — the incarnation
+		// pair or the generation the next boot restores — so the boot write
+		// repairs the pair in the canonical shape instead of skipping it.
+		if !record.complete() || !mark.complete() {
 			if err := m.persistHosts(entries, entries); err != nil {
-				m.logf("host records for %s not recorded yet: %v", m.cfg.configPath, err)
+				m.logf("host %q records for %s not recorded yet: %v", entry.Name, m.cfg.configPath, err)
 			}
 			return
 		}

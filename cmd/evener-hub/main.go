@@ -433,8 +433,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	hostEntries := hostRegistryEntries(cfg)
 	// Config loading already validated these through hostreg.New; build the
 	// real registry used by the SSH manager and handle the (impossible) error
-	// like any other startup failure.
-	hostRegistry, err := hostreg.New(hostEntries)
+	// like any other startup failure. The file's retained high-water marks seed
+	// the counters first, so a hub.toml host with no persisted record is minted
+	// above every mark the file carries (registry spec 08 §1) rather than below
+	// a mark another name retained.
+	hostRegistry, err := hostreg.NewSeeded(hostEntries, hostHighWaterMarks(cfg))
 	if err != nil {
 		_ = hubListener.Close()
 		return fmt.Errorf("validate hosts: %w", err)

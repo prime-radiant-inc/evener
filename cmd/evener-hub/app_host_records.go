@@ -59,6 +59,15 @@ func hostRecordFor(entry hostreg.Host) HostRecord {
 	return HostRecord{IncarnationID: entry.IncarnationID, PresenceEpoch: entry.PresenceEpoch}
 }
 
+// completeIdentity reports whether an entry carries the whole persisted
+// identity triple. Every live entry this hub mints does; the check keeps a
+// fixture or a hand-built entry from contributing a partial record — the
+// writer emits all three values or none, so the file never carries a record
+// its own load would refuse.
+func completeIdentity(entry hostreg.Host) bool {
+	return entry.Generation != 0 && entry.IncarnationID != "" && entry.PresenceEpoch != 0
+}
+
 // complete reports whether the record carries an identity: the zero value is
 // the absence default (a host the file carries no record for), and no writer of
 // these records emits a partial one.
@@ -111,6 +120,16 @@ func resolveHostIdentity(name string, records map[string]HostRecord, generations
 	return generation, incarnationID, presenceEpoch
 }
 
+// hostHighWaterMarks maps the file's [generations] records onto the registry's
+// high-water marks: the counters a boot seeds before anything mints.
+func hostHighWaterMarks(cfg Config) map[string]hostreg.HighWater {
+	marks := make(map[string]hostreg.HighWater, len(cfg.Generations))
+	for name, mark := range cfg.Generations {
+		marks[name] = hostreg.HighWater{Generation: mark.Generation, PresenceEpoch: mark.PresenceEpoch}
+	}
+	return marks
+}
+
 // hostFileRecordSet derives the machine records a hub.toml write carries: every
 // live entry's own triple, plus every retained high-water record whose name has
 // no live entry (a removal's record). It is the one derivation both the writer
@@ -125,7 +144,7 @@ func hostFileRecordSet(entries []hostreg.Host, highWater map[string]HostGenerati
 	live := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		live[entry.Name] = struct{}{}
-		if entry.IncarnationID == "" || entry.PresenceEpoch == 0 {
+		if !completeIdentity(entry) {
 			continue
 		}
 		records[entry.Name] = hostRecordFor(entry)

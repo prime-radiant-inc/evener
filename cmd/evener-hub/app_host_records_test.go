@@ -3,6 +3,7 @@ package hub
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +59,126 @@ func highWaterFor(t *testing.T, path, name string) HostGeneration {
 		t.Fatalf("hub.toml %s carries no generations entry for %q", path, name)
 	}
 	return record
+}
+
+// TestHostRegistryBootMintsAboveRetainedMarks pins roborev round 1's first
+// finding: the boot load must raise the registry counters from the file's
+// retained marks BEFORE any host without a persisted record is minted — a
+// legacy live host's initial generation has to land above every mark the file
+// carries (spec 08 §1: a re-add "mints strictly above every retained high-water
+// mark"), not below one another name retained.
+func TestHostRegistryBootMintsAboveRetainedMarks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	doc := "[[hosts]]\nname = \"legacy\"\nssh = \"legacy.example\"\n" +
+		"\n[generations.gone]\ngeneration = 9\nincarnation_id = \"inc-gone\"\npresence_epoch = 4\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	hosts, err := hostreg.NewSeeded(hostRegistryEntries(cfg), hostHighWaterMarks(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.NewSeeded: %v", err)
+	}
+	legacy, ok := hosts.Get("legacy")
+	if !ok {
+		t.Fatal("the legacy host is not registered")
+	}
+	if legacy.Generation <= 9 {
+		t.Fatalf("the boot minted generation %d for a host with no record, want above the retained mark 9", legacy.Generation)
+	}
+	// The boot write records exactly that generation, so the pair is durable.
+	m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(string, ...any) {})
+	_ = m
+	mark := highWaterFor(t, path, "legacy")
+	if mark.Generation != legacy.Generation {
+		t.Fatalf("recorded generation %d, want the minted %d", mark.Generation, legacy.Generation)
+	}
+}
+
+// TestHubTOMLRepairsAPartialRecordAtBoot pins roborev round 1's second finding:
+// a file carrying a live host's [host_records] entry but no [generations] entry
+// must be repaired by the boot write, not skipped — otherwise the generation
+// resolveHostIdentity falls back to is minted fresh on every boot and never
+// recorded.
+func TestHubTOMLRepairsAPartialRecordAtBoot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	doc := "[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n" +
+		"\n[host_records.alpha]\nincarnation_id = \"inc-alpha\"\npresence_epoch = 3\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	first, _ := hosts.Get("alpha")
+	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(string, ...any) {})
+	mark := highWaterFor(t, path, "alpha")
+	if mark.Generation != first.Generation || mark.IncarnationID != first.IncarnationID || mark.PresenceEpoch != first.PresenceEpoch {
+		t.Fatalf("the boot write did not repair generations[alpha]: %+v, want the live triple (%d, %s, %d)",
+			mark, first.Generation, first.IncarnationID, first.PresenceEpoch)
+	}
+	// A second boot reads the repaired triple back unchanged.
+	cfg2, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("second LoadConfig: %v", err)
+	}
+	hosts2, err := hostreg.New(hostRegistryEntries(cfg2))
+	if err != nil {
+		t.Fatalf("second hostreg.New: %v", err)
+	}
+	second, _ := hosts2.Get("alpha")
+	if second.Generation != first.Generation || second.IncarnationID != first.IncarnationID {
+		t.Fatalf("reloaded identity = %+v, want the repaired (%d, %s)", second, first.Generation, first.IncarnationID)
+	}
+}
+
+// TestHubTOMLRecordRepairLogNamesTheHost pins roborev round 1's third finding:
+// when the boot materialization cannot write, the log line names the host whose
+// identity is not yet recorded — not only the file it tried to write.
+func TestHubTOMLRecordRepairLogNamesTheHost(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses filesystem permission checks")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(path, []byte("[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n"), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	hosts, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	// Make the repair write fail while the file stays readable: the directory
+	// loses write permission, so the temp file the atomic write creates cannot
+	// exist and the boot write refuses — the path that must log the host.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	var logged []string
+	_ = newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, path, hosts, func(format string, args ...any) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	})
+	if len(logged) == 0 {
+		t.Fatal("the failed boot repair logged nothing")
+	}
+	if !strings.Contains(logged[0], `"alpha"`) {
+		t.Fatalf("the repair log does not name the host: %q", logged[0])
+	}
 }
 
 // TestHubTOMLHostRecordsMintAndSurviveReload pins the durability half of the

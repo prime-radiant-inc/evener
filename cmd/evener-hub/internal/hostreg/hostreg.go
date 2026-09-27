@@ -253,11 +253,23 @@ type Registry struct {
 // a generation above a retained high-water mark, a purge of the removed name's
 // history — happens here.
 func New(entries []Host) (*Registry, error) {
+	return NewSeeded(entries, nil)
+}
+
+// NewSeeded is New with the durable file's retained high-water marks: the
+// counters start above every mark before the first entry is inserted, so the
+// initial identity a hub.toml host with no persisted record is minted below can
+// never land at or below a mark the file still carries (spec 08 §1: "Re-add
+// mints strictly above every retained high-water mark for the name"). New
+// passes nil; the boot load, which has the file's [generations] records in
+// hand, passes them so the whole registry starts above what it read.
+func NewSeeded(entries []Host, marks map[string]HighWater) (*Registry, error) {
 	r := &Registry{
 		hosts:    make(map[string]Host, len(entries)),
 		edges:    make(map[string][]string, len(entries)),
 		presence: make(map[string]uint64, len(entries)),
 	}
+	r.SeedHighWater(marks)
 	for _, entry := range entries {
 		if err := r.seed(entry); err != nil {
 			return nil, err
