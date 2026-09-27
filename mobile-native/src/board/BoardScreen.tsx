@@ -484,7 +484,7 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 						accessibilityRole="button"
 						accessibilityLabel={chip.label}
 						onPress={chip.onPress}
-						// The chip draws 32pt tall; the row's padding makes up a 44pt target.
+						// The chip draws 32pt tall; hit slop into the row's 8pt padding makes a 44pt target.
 						hitSlop={{ top: 6, bottom: 6 }}
 						style={({ pressed }) => ({
 							minHeight: 32,
@@ -568,10 +568,14 @@ function SummaryLine({
 	const entries = (["needsYou", "finished", "working", "idle"] as const).filter((band) => summary[band] > 0);
 	return (
 		<View
+			testID="live-summary"
 			style={{
 				flexDirection: "row",
 				flexWrap: "wrap",
 				alignItems: "center",
+				// Wrapped rows sit apart by both counts' slop, so a tap near the
+				// wrap lands on the count it's over.
+				rowGap: 14,
 				paddingTop: 12,
 				paddingHorizontal: 16,
 			}}

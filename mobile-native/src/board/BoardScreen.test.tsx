@@ -358,6 +358,11 @@ it("gives every control a touch target at least 44pt tall", async () => {
 		})
 		.filter((target) => target.height < 44);
 	expect(short).toEqual([]);
+	// When the summary line wraps, its rows sit far enough apart that one
+	// count's slop never reaches into the next row's.
+	const summary = tree.root.find((node) => node.props.testID === "live-summary");
+	const slop = summary.findAll((node) => node.type === ("Pressable" as never))[0].props.hitSlop;
+	expect(flat(summary.props.style).rowGap).toBeGreaterThanOrEqual(slop.top + slop.bottom);
 	act(() => tree.unmount());
 });
 
