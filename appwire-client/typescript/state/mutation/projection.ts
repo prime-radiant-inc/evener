@@ -208,8 +208,9 @@ function sameTargetRecords<T extends MutationRecord>(
   targets: ReadonlySet<string>,
   records: T[],
 ): boolean {
+  const heldRecords = [...current.values()];
   for (const target of targets) {
-    const held = [...current.values()].filter((record) => record.targetRef === target);
+    const held = heldRecords.filter((record) => record.targetRef === target);
     const read = records.filter((record) => record.targetRef === target);
     if (held.length !== read.length || !held.every((record, index) => sameRecord(record, read[index]))) return false;
   }
