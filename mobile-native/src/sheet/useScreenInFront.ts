@@ -3,7 +3,7 @@
 // screen keeps following its session, and its actions stay allowed, while its
 // sheets are open.
 import { useIsFocused, useNavigationState } from "@react-navigation/native";
-import { inFront } from "./sheetRoutes";
+import { inFront, type StackState } from "./sheetRoutes";
 
 export function useScreenInFront(routeKey: string): boolean {
 	const focused = useIsFocused();
@@ -13,7 +13,7 @@ export function useScreenInFront(routeKey: string): boolean {
 
 /** The same answer at the moment of a call, for a guard inside a callback. */
 export function screenInFront(
-	navigation: { isFocused(): boolean; getState(): Parameters<typeof inFront>[0] },
+	navigation: { isFocused(): boolean; getState(): StackState },
 	routeKey: string,
 ): boolean {
 	return navigation.isFocused() || inFront(navigation.getState(), routeKey);
@@ -25,7 +25,7 @@ export function screenInFront(
  * sheet would pop the sheet and stay. Does nothing once the screen is no
  * longer in the stack at or below its index. */
 export function leaveScreen(
-	navigation: { getState(): Parameters<typeof inFront>[0]; pop(count: number): void },
+	navigation: { getState(): StackState; pop(count: number): void },
 	routeKey: string,
 ): void {
 	const state = navigation.getState();

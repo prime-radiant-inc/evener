@@ -42,7 +42,8 @@ export function isSheetRoute(name: string): boolean {
 	return Object.hasOwn(SHEET_ROUTES, name);
 }
 
-interface StackState {
+/** The part of a stack navigator's state these rules read. */
+export interface StackState {
 	index: number;
 	routes: readonly { key: string; name: string }[];
 }
