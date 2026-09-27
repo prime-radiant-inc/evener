@@ -109,6 +109,7 @@ import {
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   subscribeComposerSubmissionCommitted,
+  trackProjectionWork,
   updateRecoveryPendingTurn,
   useComposerSubmitting,
   useRecoveryEntries,
@@ -1361,7 +1362,10 @@ export function Composer({ ref, focused }: ComposerProps) {
     if (!hasAttachments && skillNames.length === 0) {
       const match = matchBuiltinInvocation(text, sessionBuiltins);
       if (match) {
-        void handleBuiltinSubmit(match);
+        // Tracked from the press: a built-in's run can enqueue durably
+        // through the threads store (/interrupt does), which registers
+        // nothing with the pending-turns projection until the write lands.
+        void trackProjectionWork(handleBuiltinSubmit(match));
         return;
       }
     }
@@ -1728,7 +1732,9 @@ export function Composer({ ref, focused }: ComposerProps) {
                             size="xs"
                             type="button"
                             data-testid="composer-stop"
-                            onClick={() => void handleInterruptClick()}
+                            // Tracked from the press like a typed /interrupt:
+                            // Stop enqueues durably through the threads store.
+                            onClick={() => void trackProjectionWork(handleInterruptClick())}
                             // busy + the interrupt capability are already what
                             // makes this render at all, so only an in-flight
                             // request of our own is left to gate on.

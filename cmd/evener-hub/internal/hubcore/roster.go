@@ -90,6 +90,12 @@ type LiveEntry struct {
 	// this entry, which the row's task line shows. nil means the daemon cannot
 	// read its task state; a present zero is an authoritative empty list.
 	Tasks *appwire.TaskAggregate
+	// Activity is the daemon's pulse meter sample for the root's whole tree,
+	// from the probe that produced this entry (S5). evener/activity/read serves
+	// it and navigation never does. rosterFingerprint leaves it out on purpose:
+	// its bars move every minute a session works, and hashing them would bump
+	// navigation revisions and broadcast an invalidation on every probe.
+	Activity *appwire.ThreadActivity
 	// LastTurnEndedAt is when the session's last turn ended, stamped by its
 	// daemon at the turn boundary (S4). It decides Finished versus Idle against
 	// the hub's seen marker, so rosterFingerprint hashes it: a turn that starts
@@ -128,6 +134,9 @@ type ProbeResult struct {
 	// Tasks mirrors LiveEntry.Tasks: the root's task-list progress from the
 	// same projection cut as Status.
 	Tasks *appwire.TaskAggregate
+	// Activity is the root tree's pulse meter sample (S5), nil from a daemon
+	// that predates it. See LiveEntry.Activity.
+	Activity *appwire.ThreadActivity
 	// LastTurnEndedAt is when the listed root's last turn ended (S4); zero from
 	// a daemon that predates it, or before any turn has ended.
 	LastTurnEndedAt time.Time
@@ -191,6 +200,7 @@ func CloneLiveEntry(in LiveEntry) LiveEntry {
 	out.Watches = cloneWatches(in.Watches)
 	out.ChildWatches = cloneChildWatches(in.ChildWatches)
 	out.Tasks = appwire.CloneTaskAggregate(in.Tasks)
+	out.Activity = appwire.CloneThreadActivity(in.Activity)
 	return out
 }
 
@@ -1361,6 +1371,7 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		Watches:               result.Watches,
 		ChildWatches:          result.ChildWatches,
 		Tasks:                 result.Tasks,
+		Activity:              result.Activity,
 		LastTurnEndedAt:       result.LastTurnEndedAt,
 	})
 }

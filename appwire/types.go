@@ -86,6 +86,7 @@ const (
 	MethodEvenerSessionPinUnpin          = "evener/session-pin/unpin"
 	MethodEvenerSessionSeenSet           = "evener/session/seen/set"
 	MethodEvenerSearch                   = "evener/search"
+	MethodEvenerActivityRead             = "evener/activity/read"
 	MethodEvenerHarnessesList            = "evener/harnesses/list"
 	MethodEvenerUpgrade                  = "evener/upgrade"
 	MethodEvenerUpdateCheck              = "evener/update/check"
@@ -625,6 +626,14 @@ type SearchResult struct {
 	State   string `json:"state"`
 	Age     string `json:"age"`
 	Ref     string `json:"ref"`
+	// AskPending and ApprovalPending carry the flags a navigation row does: a
+	// live session is waiting on an answer to an ask_user question, or on a
+	// person to allow or deny a sandbox escalation (M7). State keeps its real
+	// value ("active" while an escalation blocks mid-turn), so a pending
+	// approval shows only in ApprovalPending. A past (ended) result carries
+	// neither. Additive: an older hub omits both, decoding as false.
+	AskPending      bool `json:"askPending,omitempty"`
+	ApprovalPending bool `json:"approvalPending,omitempty"`
 }
 
 // SearchResponse groups matching live sessions separately from persisted
@@ -632,6 +641,39 @@ type SearchResult struct {
 type SearchResponse struct {
 	Live []SearchResult `json:"live"`
 	Past []SearchResult `json:"past"`
+}
+
+// ActivityReadParams selects the sessions evener/activity/read reports. Refs
+// names sessions by the refs their Live rows carry; empty reads every live
+// top-level session of the hub and of its attached hosts.
+type ActivityReadParams struct {
+	Refs []string `json:"refs,omitempty"`
+}
+
+// ActivityReadResponse is one read of the pulse meters. A session whose daemon
+// predates the meter, or whose host did not answer in time, is absent, and a
+// client keeps its fallback for it until the next read.
+type ActivityReadResponse struct {
+	Sessions []SessionActivity `json:"sessions"`
+}
+
+// SessionActivity is one live top-level session's activity (spec 13.1, 16.4).
+type SessionActivity struct {
+	// Ref is the session's navigation ref, the one its Live row carries.
+	Ref string `json:"ref"`
+	// Minutes holds seven one-minute counts over the session's whole tree,
+	// oldest first, the last ending when the hub last probed its daemon: the
+	// transcript items that finished and the tool output events in each.
+	Minutes []int `json:"minutes"`
+	// RunningSubagents counts the session's subagents, at every depth, whose
+	// own turn is running.
+	RunningSubagents int `json:"runningSubagents"`
+	// QuietForMS is how long the session's whole tree has gone without
+	// transcript motion, as of this read. It is present only while the session
+	// is working and none of its subagents runs: an agent waiting on subagents
+	// is never quiet or stuck (Jesse's ruling for S5), and a subagent inside
+	// one long model call emits nothing for minutes.
+	QuietForMS *int64 `json:"quietForMs,omitempty"`
 }
 
 type ServerInfo struct {
