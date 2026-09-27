@@ -93,8 +93,8 @@ func fuzzExactState(t *testing.T) {
 	}
 
 	now := time.Unix(20, 0)
-	timed := &Session{clock: agenttest.NewFakeClockAt(now), turnStartedAt: now.Add(time.Second)}
-	if timed.accumulateWorkLocked() != 0 {
+	timed := &Session{turnStartedAt: now.Add(time.Second)}
+	if timed.accumulateWorkLocked(now) != 0 {
 		t.Fatal("negative work was not clamped")
 	}
 	closing := &Session{closing: true}

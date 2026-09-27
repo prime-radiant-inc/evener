@@ -77,6 +77,7 @@ vi.mock("@react-navigation/native", async () => {
 		useFocusEffect: (effect: () => void | (() => void)) =>
 			useEffect(effect, []),
 		useIsFocused: () => true,
+		useNavigationState: () => false,
 	};
 });
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));

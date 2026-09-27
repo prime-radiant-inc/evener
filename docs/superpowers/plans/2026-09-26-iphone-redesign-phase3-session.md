@@ -11,6 +11,7 @@
   - the store's queue gate learns this client's unreflected send (the web's tier 6);
   - transcript rows gain their turn id, their origin and a note kind;
   - `mergeDraftText`, `ownPendingSend` and the edit-diff helpers move from the web into `@evener/appwire-client`, so both clients share one copy.
+- **Sheets are routes.** Each sheet here is a native-stack formSheet route built on phase 2's PR 6 (`<Sheet>`, `useSheet`, `SHEET_ROUTES`, `sheetHosts`). It reads its params, or a host `ConversationScreen` provides, and the screen stays live under it (ruling 37).
 - **Phase 2's primitives are reused, never copied:**
   - from phase 2 PR 1: `StateMark`, `PulseMeter`, `pulse.ts`, `attention.ts` and `seenMarkers`;
   - from PR 2: `createBoardController` and `connectionStatus`;
@@ -20,7 +21,7 @@
 - Expo SDK 57, React Native 0.86.3, React 19.2, TypeScript 6, zustand 5.
 - vitest 5 with react-test-renderer (`src/renderNative.testkit.tsx`).
 - `expo-symbols` (`SymbolView`, added by phase 2 PR 1) and `expo-web-browser` (added by PR 5 here).
-- `@react-navigation/native-stack` 7.18, for its iOS header menu (`unstable_headerRightItems`).
+- `@react-navigation/native-stack` 7.18, for its iOS header menu (`unstable_headerRightItems`) and its formSheet presentation, which gives the sheets their detents (ruling 37).
 - `react-native-gesture-handler` with `react-native-reanimated`, added by phase 2 PR 4 and used by PR 12 here.
 
 **Spec:** `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`. The relevant sections are:
@@ -58,7 +59,7 @@ Related plans:
     - sheet: title "Notes & links", placeholder "Make a note…", "No agent note yet", "No links yet", "No shared notes", and the footer "The agent adds links as it works. Swipe left on one to remove it.";
     - status lines: "Your note stays on this session. Saving it will wake the agent.", "Your note stays on this session. The agent is told when it changes.", "Saves in 10 seconds, or when you close this.", "Saved";
     - toasts: "Note saved" and "Note saved. The agent is reading it."
-  - Transcript: "You updated your note", "Steered in mid-turn", "Today 2:14 PM", "Show all 412 lines", "+18 −4", "Thought for 12s ›", "You answered: Drop them", "↓ 3 new".
+  - Transcript: "You updated your note", "Steered in mid-turn", "Today 2:14 PM", "Show all 412 lines", "+18 −4", "Thought for 12s ›", "You answered: Drop them", "↓ 3 new", and an error's "Retry", which sends "Something went wrong. Please try again." (ruling 26).
   - Session sheet: "10 plugins · chosen at start"; "Plugins are chosen when a session starts. To change them, start a new session or fork this one."; "Applies from the next turn" (model sheet).
   - Style:
     - Sentence case everywhere.
@@ -94,6 +95,7 @@ Related plans:
   - The transcript keeps 60pt of room at its end.
 - **Routes and storage:**
   - The route stays `"Conversation"` with `{ hubId, ref, title }`. Ruling 2 adds one optional param, `openedBy?: "next"`, which `location.ts` never persists.
+  - Five sheet routes join phase 2's `TasksSheet` (ruling 37): `QueueSheet`, `NotesSheet`, `SessionInfoSheet`, `ModelSheet` and `CommandsSheet`. Each is in `SHEET_ROUTES`, so a relaunch never reopens one.
   - Existing storage keys are unchanged, including the draft, question-draft, reader-position and mutation-outbox stores.
   - New kv-store keys: `evener.native.detail-level.${hubId}` and `evener.native.note-draft.${hubId}`. `ConnectionProvider.removeHub` clears both.
   - Reader anchors gain one optional field, `turnsSeen` (ruling 31). Anchors saved before it still restore.
@@ -109,6 +111,7 @@ Related plans:
     - `expo-symbols` as `{ SymbolView: "SymbolView" }`;
     - `@react-navigation/*`, `./ConnectionProvider`, `./NativePreferencesProvider`, and the Expo modules.
   - Never mock the module under test.
+  - `ConversationScreen` asks whether it is in front (phase 2's Task 18.3), so a test that renders it mocks `useNavigationState` beside `useIsFocused`: `() => false` unless the test puts a sheet over the session.
   - When a redesign changes copy an existing test asserts, update that test in the same task and say so in the commit (roadmap rule).
 - **Gates per task:**
   - Run the task's own tests, and `cd mobile-native && npm run check`.
@@ -141,7 +144,12 @@ Decisions this plan makes where the spec is silent, contradicts itself, or asks 
 5. **Haptics wait for phase 6**, beside the Hub > Alerts haptics setting, so every haptic lands behind one switch.
 6. **The Files chip, document chips and "Files & artifacts" wait for phase 4's Reader.** A chip that opens nothing breaks Calm. `file://` links in Notes & links aren't tappable until the Reader exists.
 7. **Subagents open today's `ActivitySheet` until phase 4.** The chip counts `conversation.delegates` by the tone `projectDelegateEntry` gives each one (S3's fallback: the loaded tree).
-8. **Detail level is per session, on this device** (`evener.native.detail-level.${hubId}`). The level table lives in one file, `src/session/detailLevels.ts`. Question 1 decides its final content; until Jesse answers, it carries the provisional table in Task 12.
+8. **Detail level is per session, on this device** (`evener.native.detail-level.${hubId}`). The level table lives in one file, `src/session/detailLevels.ts`, and Jesse settled its content on 2026-09-26: "'Intent' should show Chat and just the 'n actions' lines with the intents folded away."
+   - Chat is just the conversation. The shared Chat preset keeps one line per step (its vector matches Intent's since e868e2a20), so the phone projects the projector's no-intent Custom vector instead.
+   - Intent is the shared preset as it is (`toolIntent` on, `expandByDefault` off): one folded line per run of steps, "12 steps · 8m · …" (Task 23's `runSummaryText`, the web's `runLabel`, `toolRuns.ts:89-99`), whose steps show when you tap it.
+   - Tools, Activity and Full are the shared presets.
+   - The descriptions say what each shows: "Just the conversation", "Plus one folded line for each run of steps", "Plus every command it ran; tap one for its output", "Plus every command's output, open as it arrives", "Everything, including the agent's reasoning".
+   - System events follow Hub > Display at every level (the advanced toggle, `transcriptDisplayConfig.ts:61-67`, `transcriptProjector.ts:237-253`), as the spec's 8.2 now says.
 9. **The ⋯ menu is the native header menu** (`unstable_headerRightItems`, a UIMenu).
    - react-native-screens gives a subtitle to actions only, never to submenus (`RNSBarButtonItem.mm`). So the submenu reads "Detail level · Intent" on one line.
    - Inside it, an inline section headed "How much of the agent's work this session shows" lists each level with its description as the subtitle and a check on the current one.
@@ -176,7 +184,11 @@ Decisions this plan makes where the spec is silent, contradicts itself, or asks 
 23. **Delivered messages carry "Steered in mid-turn" only.** Steering items are marked; a queued message's delivery isn't. So "Queued" waits for a new server addition, S16.
 24. **Approval history waits for S16.** The transcript has no record of an escalation's decision. The resolved call's own step shows its outcome.
 25. **Message long-press menus use `ActionSheetIOS`**, the app's existing native action surface, until phase 2 PR 4's context-menu spike settles a library.
-26. **An error row offers Sign in or Resume when they apply.** Retry waits for Question 3.
+26. **An error row offers at most one action**, and Retry sends "Something went wrong. Please try again." (Jesse, 2026-09-26: "Retry on a failed turn sends. 'Something went wrong. Please try again.'"):
+    - Resume when the session is paused (`resumeRequired`);
+    - Sign in when the error names a sign-in failure;
+    - otherwise Retry, on the failure row of the session's latest turn only, and only while the composer's Send can act (`sendAction` isn't `"none"`). It sends that sentence as your message, the way Send does.
+    - The web's end cap retries by re-sending the failed turn's own input (`TurnFailureEndCap.tsx:459-490`); the phone sends Jesse's sentence instead. It offers Retry only on the latest turn because the sentence speaks about where the session is now: under an older failure it would read as being about the newest turn.
 27. **One toast primitive for the app**, `src/Toast.tsx`. Phase 2 PR 4's "Archived · Undo" imports it if this lands first.
 28. **Shared helpers move into the package**, each in the task that first needs it on the phone, and the web imports them from there:
     - `mergeDraftText` (web `Composer.tsx:177-180`);
@@ -199,30 +211,33 @@ Decisions this plan makes where the spec is silent, contradicts itself, or asks 
 34. **The Session sheet's Tasks section** shows the current task and "Tasks · 3 of 7", which opens today's `TasksSheet`.
 35. **Archive from the Session is one request**, `evener/archive/set` with `{ kind: "session", id: ref, archived: true }`, confirmed by its answer, with Undo. The Board's rows keep phase 2's journaled `NavigationActions` path. Building that path here would mean `usePinNavigation`, which reads the pin catalog on every session open for an action that is rare in the Session.
 36. **The context gauge has no compaction marker.** The thread reports `contextUsed` and `contextWindow` but no threshold (`appwire/types.go:704-707`). The marker waits for one.
+37. **Sheets are native sheets** (phase 2's ruling 28; Jesse: "Build the redesign's sheets as native navigation sheets, so pickers open at half height?" "yes"). Every sheet this plan builds is a native-stack formSheet route made with phase 2's PR 6 (`<Sheet>`, `useSheet`, `SHEET_ROUTES`, `sheetHosts`), where Tasks 8, 17, 20, 21 and 30 first described RN `Modal` page sheets. Each rests at medium and large:
+
+    | Sheet | Route and params | Opens at | Reads | Hands back | Task |
+    |---|---|---|---|---|---|
+    | Tasks | `TasksSheet` `{ hubId, ref, threadId, hasTasks }` | medium | its params and the connection | nothing | phase 2's 18.3 |
+    | Queue | `QueueSheet` `{ hubId, ref }` | medium | `queueHosts`: the queued ghosts and whether they can act | an action on one ghost | 8 |
+    | Notes & links | `NotesSheet` `{ hubId, ref, focusEditor? }` | large (spec 8.8) | `notesHosts`: the session's notes and links, and the screen's `NotesController` | the save's outcome, for the session's toast | 17 |
+    | Session | `SessionInfoSheet` `{ hubId, ref }` | large (spec 8.6) | `sessionInfoHosts`: the session, its controls and its labels | its actions | 20 |
+    | Model | `ModelSheet` `{ hubId, ref, setting }` | medium (a picker) | `modelHosts`: the session and its controls | the change, through the controls | 21 |
+    | Commands and skills | `CommandsSheet` `{ hubId, ref }` | medium (a picker) | `commandHosts`: what the session can run; the catalog through the connection | the chosen invocation | 30 |
+
+    - **Hosts.** Each registry lives in its sheet's module, keyed by `sheetKey(hubId, ref)`. `ConversationScreen` provides each one while mounted (`useProvideSheetHost`), memoized on what it carries, so an open sheet re-renders when the session changes. A sheet whose host is gone closes.
+    - **The session stays live under its sheets.** `ConversationScreen` asks whether it is in front (phase 2's Task 18.3), so a sheet over it keeps its thread subscribed, its controls alive and its actions allowed. A focus check this plan adds to `ConversationScreen` uses `useScreenInFront` or `screenInFront`, never `useIsFocused` or `navigation.isFocused()`.
+    - **A sheet closes before it leads elsewhere.** The Session sheet's Pin, Delete, Aside, Fork, Archive, Shut down and Edit goal, the Queue sheet's Edit, and a Commands choice finish their sheet first, then hand the action to the screen: `sheet.finish(() => { navigation.goBack(); void host.act(action); })`. A sheet may open another sheet over itself: the Session sheet opens the Model, Tasks and Notes & links sheets that way.
+    - **Toasts.** A sheet that stays open shows its toast in its own header (`accessory`): the Notes sheet's link removal, the Session sheet's rename and compact, and a Queue action that failed. An action that closes a sheet leaves its toast to the session.
+    - **Unsaved input.** The Session sheet's title edit is this plan's one sheet input that can be lost: swiping it away with a changed name asks "Discard the new name?". Notes & links saves as it closes, so it never asks.
+    - **One layout.** A sheet's header holds whatever is pinned, so the Model sheet's search field and its Effort control sit under its title, where spec 8.5 puts Effort at the bottom. A formSheet sizes one scroll view under one header, and has no pinned footer (phase 2's ruling 28).
+    - **What stays an RN `Modal`:** the full-screen views, which are the composer's expanded editor (Task 5), a message's Select text (Task 24), the log viewer (Task 26) and the image viewer (Task 29); and today's `ActivitySheet` until phase 4 retires it (ruling 7).
 
 ## Questions for Jesse
 
-1. **Detail levels.** The spec's level table says Chat is "Just the conversation" and Activity adds "system events, like compaction and model changes". The shared presets say otherwise:
-   - Chat and Intent have had the same content vector since e868e2a20 ("correct chat and intent verbosity").
-   - Activity opens tool details rather than adding system events.
-   - System events are an advanced toggle (Hub > Display) at every level (`transcriptDisplayConfig.ts:61-67`, `transcriptProjector.ts:237-253`).
+Jesse answered all three on 2026-09-26. Question 1 (detail levels) is now ruling 8, and question 3 (what Retry sends) is ruling 26. Question 2 stays open, because its answer names behavior the web doesn't have.
 
-   Should the phone follow the spec with its own mapping, should the shared presets change for both clients, or should the spec's descriptions change?
-
-   *Recommendation:* the phone follows the spec for Chat, projecting it without step lines. That is the projector's documented Custom behavior (the no-intent vector). For the other four it follows the hub's presets, with descriptions that say what each really shows:
-   - Chat: "Just the conversation"
-   - Intent: "Plus one line for each step the agent took"
-   - Tools: "Plus every command it ran; tap one for its output"
-   - Activity: "Plus every command's output, open as it arrives"
-   - Full: "Everything, including the agent's reasoning"
-
-   System events keep following Hub > Display. This is Task 12's provisional table, a one-file change either way.
 2. **"Tell the agent something else…" during an approval.** The agent is blocked mid-step, so a queued message would wait behind the very turn it is trying to redirect. What should that composer's Send do?
-
-   *Recommendation:* it denies the request and steers your text in, so the agent reads the denial and your message together at its next step. Its accessibility label says "Deny and send". Task 11 builds this provisionally.
-3. **What should Retry on a failed turn send?** The hub has no retry call.
-
-   *Recommendation:* a new message, "Try that again.", so the agent retries its last step with the history in view. Until you answer, error rows offer only Sign in and Resume (ruling 26).
+   - Jesse answered: "during an approval, 'tell the agent something else' does what it does on the web. it says that the user picked 'Do something else' and said '....'"
+   - The web has no such path for an approval. Its approval card offers only Allow and Deny (`cmd/evener-hub/frontend/src/panes/session/transcript/tools/sandboxEscalation.tsx:106-113`), and `evener/sandbox/escalation/resolve` carries nothing but `approve` (`appwire/types.go:1021-1026`); the TUI offers the same two (`cmd/evener-tui/hub_escalation.go:137`). The web's "Something else…" belongs to the question dock (`panes/session/composer/askDock/AskQuestionCard.tsx:182-195`), whose free-text answer goes out as `1. [Header] → free text: "…"` (`appwire-client/typescript/askAnswers.ts:74,95`).
+   - Until Jesse says what an approval's redirect sends, Task 11 keeps its provisional behavior: it denies the request and steers your text in, so the agent reads the denial and your message together at its next step, with the accessibility label "Deny and send".
 
 ## Review Focus
 
@@ -252,9 +267,9 @@ Decisions this plan makes where the spec is silent, contradicts itself, or asks 
 | PR | What | Tasks | Model | Starts when | Lane |
 |---|---|---|---|---|---|
 | 1 | The status tray, Stop, and one Send | 1-5 | Sonnet for 1-4, Opus for 5 | phase 2 PR 1 lands | A |
-| 2 | Queued messages and the outbox, inline | 6-8 | Sonnet for 6-7, Opus for 8 | PR 1 lands | A |
+| 2 | Queued messages and the outbox, inline | 6-8 | Sonnet for 6-7, Opus for 8 | PR 1 and phase 2's PR 6 (native sheets) land | A |
 | 3 | The ask dock | 9-11 | Sonnet for 9, Opus for 10-11 | PR 2 lands | A |
-| 4 | The nav bar, the ⋯ menu with detail levels, context chips, the connection bar | 12-15 | Sonnet for 12-13, Opus for 14-15 | phase 2 PRs 1 and 2 land | B |
+| 4 | The nav bar, the ⋯ menu with detail levels, context chips, the connection bar | 12-15 | Sonnet for 12-13, Opus for 14-15 | phase 2 PRs 1, 2 and 6 land | B |
 | 5 | Notes & links | 16-18 | Sonnet for 16 and 18, Opus for 17 | PR 4 lands | B |
 | 6 | The Session sheet and the model sheet | 19-21 | Sonnet for 19, Opus for 20-21 | PR 5 lands | B |
 | 7 | The transcript's reading surface: rows, time markers, messages and runs | 22-24 | Sonnet for 22-23, Opus for 24 | phase 2 PR 1 lands | C |
@@ -278,6 +293,7 @@ Decisions this plan makes where the spec is silent, contradicts itself, or asks 
   - Phase 2 PR 1 is a hard prerequisite for every UI task here: `src/board/attention.ts`, `boardMemory.ts`, `nativeBoardMemory.ts`, `pulse.ts`, `PulseMeter.tsx`, `StateMark.tsx`, and the `expo-symbols` dependency.
   - PR 4 and PR 11 also need phase 2 PR 2's `boardData.ts` and `connectionStatus.ts`.
   - PR 12 needs phase 2 PR 4's gesture libraries.
+  - Phase 2's PR 6 (native sheets, Task 18 in its part 3) needs nothing and lands first. PRs 2 and 4 wait for it; PRs 5, 6 and 10 follow them. PRs 1 and 7, already in progress, build no sheet and need no change for it. Whichever of them and PR 6 lands second merges `origin/main`, and a test that renders `ConversationScreen` then adds `useNavigationState` to its navigation mock.
 
 ---
 
@@ -1922,29 +1938,33 @@ git commit -m "feat(native): the ghosts above the composer, from the queue, the 
 
 **Files:**
 - Create: `mobile-native/src/session/GhostBubble.tsx` and `mobile-native/src/session/QueuedMessages.tsx`
-- Modify: `mobile-native/src/QueueSheet.tsx`: its rows become `GhostBubble`s with the same actions. It keeps "Steer all now" (today's "Use all as steering", `service.drainAsSteer`) when more than one message is queued and `conversationControls(conversation).drainQueue` allows it.
+- Modify: `mobile-native/src/QueueSheet.tsx` becomes the `QueueSheet` route (ruling 37). Its rows become `GhostBubble`s with the same actions, read from its host. It keeps "Steer all now" (today's "Use all as steering", `service.drainAsSteer`) when more than one message is queued and `conversationControls(conversation).drainQueue` allows it.
+- Modify: `mobile-native/App.tsx` (`QueueSheet` joins the sheet group), `mobile-native/src/sheet/sheetRoutes.ts` (`QueueSheet: sheetOptions(["medium", "large"], "medium")`) and `Routes` in `screens.tsx` (`QueueSheet: { hubId: string; ref: string }`).
 - Modify: `mobile-native/src/screens.tsx`. The `unconfirmedDelivery` card (`:1937-1974`) goes. So do the recovery modal (`:2705-2761`), the "Check delivery", "Review error" and "Recovery" buttons (`:2656-2690`), and the `N queued` button (`:2500-2515`). `ConnectionStatus` leaves the list header; PR 4 adds the calm connection bar.
 - Modify: `mobile-native/src/MutationRecoveryPanel.tsx`: delete the `MutationRecoveryPanel` component and `shouldOfferRecoveryEntry` once nothing renders them. Keep `useRecoveryPanel`, `projectNativeMutationRecovery`, `discardRecoveredMutation` and `recoveryFailureMessage`, which the ghosts use.
 - Test:
   - `mobile-native/src/session/QueuedMessages.test.tsx`
+  - `mobile-native/src/QueueSheet.test.tsx`
   - `mobile-native/src/ConversationScreen.recovery.test.tsx`: rewritten for the inline surface, with the same contract.
   - `mobile-native/src/MutationRecoveryPanel.test.tsx`: tests of the deleted component move to `QueuedMessages.test.tsx` behavior for behavior; tests of the kept functions stay.
 
 **Interfaces:**
-- Consumes: Tasks 6-7 and the screen's `service`, `store`, `document` and `recovery` (`useRecoveryPanel`, `screens.tsx:1021-1025`).
+- Consumes: Tasks 6-7; the screen's `service`, `store`, `document` and `recovery` (`useRecoveryPanel`, `screens.tsx:1021-1025`); phase 2's Task 18 (`useSheet`, `<Sheet>`, `sheetHosts`, `sheetKey`, `useSheetHost`, `useProvideSheetHost`); `useToast`, `<Toast>` and `ToastMessage` (Task 1).
 - Produces:
   - `<GhostBubble ghost={Ghost} disabled={boolean} canEdit={boolean} editHint={string | null} onAction={(action: GhostAction) => void} />`
   - `<QueuedMessages ghosts={readonly Ghost[]} disabled={boolean} canEdit={boolean} editHint={string | null} onAction={(ghost: Ghost, action: GhostAction) => void} onMore={() => void} />`
+  - `interface QueueHost { ghosts: readonly Ghost[]; disabled: boolean; canEdit: boolean; editHint: string | null; act(ghost: Ghost, action: GhostAction): Promise<ToastMessage | null>; steerAll?: () => Promise<ToastMessage | null> }` and `queueHosts = sheetHosts<QueueHost>()`, from `QueueSheet.tsx`;
+  - `QueueSheet`, the route component for `"QueueSheet"`.
 
-**Requirements (spec 8.5 and 14):**
-1. **Placement.** `QueuedMessages` renders in the composer's `above` slot. It shows `shownGhosts(ghosts(...)).shown`, then "N more queued ›" as a quiet row that opens the Queue sheet when `moreQueued > 0`. Nothing renders when the list is empty.
+**Requirements (spec 8.5 and 14; ruling 37):**
+1. **Placement.** `QueuedMessages` renders in the composer's `above` slot. It shows `shownGhosts(ghosts(...)).shown`, then "N more queued ›" as a quiet row when `moreQueued > 0`, which opens the Queue sheet: `navigation.navigate("QueueSheet", { hubId, ref })`. Nothing renders when the list is empty.
 2. **A bubble** is right-aligned like your messages, at most 85% wide, with an 18pt continuous radius and a 1pt dashed `edgeStrong` border on no fill.
    - The text: `typeRoles.yourMessage` in `inkMid`, at most three lines with tail truncation.
    - Beneath it, the caption: 13/18 in `inkLow`, or `dangerInk` for `refused`.
    - Then the `buttons` as text buttons in `accentInk` (Discard and Cancel in `inkHi`), each a 44pt target: "Steer now", "Send now", "Cancel", "Edit", "Check", "Discard".
    - Tapping the bubble opens its `menu` in an `ActionSheetIOS` with "Cancel" last. Nothing happens when the menu is empty.
    - The accessibility label reads the text and then the caption.
-3. **Actions.** Each one reads the live conversation at the press, never the render's. Every queue action first runs `ghostActionTarget(store.getState().conversation?.queue, entry)`, and does nothing when it returns null.
+3. **Actions.** Each one reads the live conversation at the press, never the render's. Every queue action first runs `ghostActionTarget(store.getState().conversation?.queue, entry)`, and does nothing when it returns null. The screen runs them in one function, `runGhostAction(ghost, action): Promise<ToastMessage | null>`, which returns the toast below instead of showing it, so the caller shows it where you are: `QueuedMessages` in the session's toast, the Queue sheet in its own.
    - **Steer now and Send now:**
      - Refuse with `queueActionRefusal(live, "promote")` (`conversationControls.ts:57-62`).
      - Then call `service.promoteQueuedAsSteer(target.index, target.id, instanceId)`, then `store.getState().rehydrate(service, activitySink)`.
@@ -1962,7 +1982,12 @@ git commit -m "feat(native): the ghosts above the composer, from the queue, the 
      - Otherwise the bubble shows `document.recoveredRestoreHint()` (`editHint`) as a second caption, and its Edit button is disabled. This is the #2247 contract `ConversationScreen.recovery.test.tsx` pins today.
 4. **Busy state.** While any ghost action runs, every ghost's buttons are disabled.
 5. **Errors.** `actionError` and `draft.error` (with its "Retry saving" / "Retry loading draft" action) move to the `above` slot, above the ghosts. A draft that can't be saved is a local failure only you can act on.
-6. **Queue sheet.** It lists every queued ghost with the same bubble and actions; its title is "Queued messages". Today's "Refresh queue" button and "Reconnect to change this queue." go: the sheet re-reads on its own after every action.
+6. **Queue sheet** (ruling 37: a sheet route at medium).
+   - The screen provides `queueHosts` under `sheetKey(hubId, ref)` while mounted (`useProvideSheetHost`, memoized): every queued ghost (not only the three above the composer), `disabled`, `canEdit`, `editHint`, `act` (`runGhostAction`), and `steerAll` when "Steer all now" applies.
+   - The route reads its host with `useSheetHost`, keeps its own `const toast = useToast()`, and renders `<Sheet title="Queued messages" done={{ onPress: () => sheet.finish() }} accessory={<Toast toast={toast.toast} dismiss={toast.dismiss} />}>` over one `ScrollView` of `GhostBubble`s, then "Steer all now". `toast.show` shows what `act` returns.
+   - Edit finishes the sheet first, then acts: `sheet.finish(() => { navigation.goBack(); void host.act(ghost, "edit"); })`, so the text lands in the composer, whose field takes the keyboard (`requestAnimationFrame(() => composerInput.current?.focus())`, as `editGoal` does today).
+   - When the queue empties, the sheet finishes.
+   - Today's "Refresh queue" button and "Reconnect to change this queue." go: the host follows the queue live.
 
 - [ ] **Step 1: Write the failing tests**
   - `QueuedMessages.test.tsx`, with a `GhostBubble` for each state:
@@ -1972,6 +1997,11 @@ git commit -m "feat(native): the ghosts above the composer, from the queue, the 
     - a disabled Edit shows the hint "Clear or send your current draft to restore this message.";
     - with `disabled`, no button fires;
     - nothing renders for an empty list.
+  - `QueueSheet.test.tsx`, with `@react-navigation/native`'s `useNavigation` and `usePreventRemove` mocked as phase 2's Task 18.2 mocks them, and a host provided in `queueHosts` under `sheetKey("hub-1", "local:s1")`:
+    - it lists every queued ghost the host carries, with "Steer all now" only when `steerAll` is given;
+    - Cancel calls `act(ghost, "cancel")`, and a toast `act` returns shows in the sheet;
+    - Edit calls `goBack()` before `act(ghost, "edit")`;
+    - a host with no queued ghosts, or no host, finishes the sheet.
   - `ConversationScreen.recovery.test.tsx`, rewritten on its existing harness. Phase 1 is a connected screen with an empty snapshot: no ghost and no text "Couldn't send this". Phase 2 seeds the same rejected row, and a ghost shows "recover this message" with "Couldn't send this · daemon refused". Then:
     - Edit is enabled and restores the text into an empty composer.
     - With an occupied composer, Edit is disabled and the converter's hint shows.
@@ -1981,9 +2011,10 @@ git commit -m "feat(native): the ghosts above the composer, from the queue, the 
     - An active session with a queued entry `queue_1` shows its ghost. Pressing "Steer now" sends `turn/promoteQueuedAsSteer` with `index: 0` and `expectedEntryId: "queue_1"`.
     - If a `thread/queueChanged` frame that removes `queue_1` arrives before the press, the press sends nothing (Review Focus 2).
   - A held case: an idle session whose queue has one entry shows "Held · you stopped this turn", and "Send now" sends `turn/promoteQueuedAsSteer` (Review Focus 3).
-- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/QueuedMessages.test.tsx src/ConversationScreen.recovery.test.tsx src/ConversationScreen.send.test.tsx src/MutationRecoveryPanel.test.tsx`
+  - Four queued messages show three ghosts and "1 more queued", which navigates to `"QueueSheet"` with `{ hubId: "hub-1", ref }`; the host the screen provides carries all four, and its `act` on the fourth sends `turn/cancelQueued` for that entry.
+- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/QueuedMessages.test.tsx src/QueueSheet.test.tsx src/ConversationScreen.recovery.test.tsx src/ConversationScreen.send.test.tsx src/MutationRecoveryPanel.test.tsx`
 - [ ] **Step 3: Implement** the bubbles, the list and the wiring, and delete what nothing renders any more.
-- [ ] **Step 4: Run them and watch them pass**, then run `npm run check`. Build Release in the simulator: queue two messages while a session works, Steer one now, Stop, and see the other held.
+- [ ] **Step 4: Run them and watch them pass**, then run `npm run check` and `make test-native-bundle` (App.tsx's imports change). Build Release in the simulator: queue two messages while a session works, Steer one now, Stop, and see the other held. Queue four, and open "1 more queued": the Queue sheet rises to half height, and cancelling one there updates the ghosts behind it.
 - [ ] **Step 5: Commit** (`feat(native): queued messages and the outbox as ghosts above the composer`). The commit body says the recovery test was rewritten for the inline surface with the same contract. Then open PR 2: "feat(native): queued messages and the outbox, inline (phase 3, PR 2)".
 
 ---
@@ -2400,7 +2431,7 @@ PR 4 gives the Session its header. Its parts:
 - Test: `mobile-native/src/session/detailLevels.test.ts`
 
 **Interfaces:**
-- Consumes: `ContentLevel`, `TranscriptDisplayConfigV1`, `makeTranscriptDisplayConfig` and `shippedConfig` from `@evener/appwire-client`.
+- Consumes: `ContentLevel`, `TranscriptDisplayConfigV1`, `makeTranscriptDisplayConfig` and `shippedConfig` from `@evener/appwire-client`; `SyncStringStorage` (`src/syncStringStorage.ts`, the kv-store's sync methods, #2536).
 - Produces:
   - From `detailLevels.ts`:
     - `interface DetailLevel { level: ContentLevel; label: string; description: string }`
@@ -2408,9 +2439,8 @@ PR 4 gives the Session its header. Its parts:
     - `configForLevel(chosen: ContentLevel | null, hubConfig: TranscriptDisplayConfigV1 | null): TranscriptDisplayConfigV1 | null`
     - `currentLevel(chosen: ContentLevel | null, hubConfig: TranscriptDisplayConfigV1 | null): ContentLevel | "custom" | null`
     - `detailMenuLabel(current: ContentLevel | "custom" | null): string` and `levelToast(level: ContentLevel): string`
-    - `interface DetailLevelStorage { getItemSync; setItemSync; removeItemSync }` (the kv-store's sync methods)
-    - `class DetailLevels`: constructor `(storage: DetailLevelStorage, hubId: string)`, with `get(ref: string): ContentLevel | null`, `set(ref: string, level: ContentLevel): void`, `subscribe(listener: () => void): () => void` and `getRevision(): number`
-    - `forgetDetailLevels(storage: DetailLevelStorage, hubId: string): void`
+    - `class DetailLevels`: constructor `(storage: SyncStringStorage, hubId: string)`, with `get(ref: string): ContentLevel | null`, `set(ref: string, level: ContentLevel): void`, `subscribe(listener: () => void): () => void` and `getRevision(): number`
+    - `forgetDetailLevels(storage: SyncStringStorage, hubId: string): void`
   - From `nativeDetailLevels.ts`: `detailLevels(hubId: string): DetailLevels` and `forgetDetailLevelsForHub(hubId: string): void`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -2419,18 +2449,18 @@ PR 4 gives the Session its header. Its parts:
 // mobile-native/src/session/detailLevels.test.ts
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
+import type { SyncStringStorage } from "../syncStringStorage";
 import {
 	configForLevel,
 	currentLevel,
 	DETAIL_LEVELS,
-	type DetailLevelStorage,
 	DetailLevels,
 	detailMenuLabel,
 	forgetDetailLevels,
 	levelToast,
 } from "./detailLevels";
 
-function memoryStorage(values = new Map<string, string>()): DetailLevelStorage & { values: Map<string, string> } {
+function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
 		values,
 		getItemSync: (key) => values.get(key) ?? null,
@@ -2440,11 +2470,11 @@ function memoryStorage(values = new Map<string, string>()): DetailLevelStorage &
 }
 const hub = makeTranscriptDisplayConfig({ kind: "preset", level: "intent" }, { systemEvents: true });
 
-describe("the levels (spec 8.2; Question 1's provisional table)", () => {
+describe("the levels (spec 8.2; ruling 8)", () => {
 	it("lists the hub's five levels in order, each saying what it shows", () => {
 		expect(DETAIL_LEVELS.map((level) => [level.label, level.description])).toEqual([
 			["Chat", "Just the conversation"],
-			["Intent", "Plus one line for each step the agent took"],
+			["Intent", "Plus one folded line for each run of steps"],
 			["Tools", "Plus every command it ran; tap one for its output"],
 			["Activity", "Plus every command's output, open as it arrives"],
 			["Full", "Everything, including the agent's reasoning"],
@@ -2453,7 +2483,7 @@ describe("the levels (spec 8.2; Question 1's provisional table)", () => {
 
 	it("confirms a change with the level and what it shows", () => {
 		expect(levelToast("full")).toBe("Full: everything, including the agent's reasoning");
-		expect(levelToast("intent")).toBe("Intent: plus one line for each step the agent took");
+		expect(levelToast("intent")).toBe("Intent: plus one folded line for each run of steps");
 	});
 
 	it("names the current level in the menu", () => {
@@ -2530,7 +2560,7 @@ describe("the level chosen for each session", () => {
 	});
 
 	it("keeps working in memory when storage throws", () => {
-		const broken: DetailLevelStorage = {
+		const broken: SyncStringStorage = {
 			getItemSync: () => {
 				throw new Error("disk");
 			},
@@ -2584,15 +2614,16 @@ Expected: FAIL: `Cannot find module './detailLevels'`.
 // replaces the hub config's content and keeps its advanced settings, so
 // Hub > Display still owns system events, timings and costs.
 //
-// DETAIL_LEVELS is Question 1's provisional table, and the one place its
-// answer changes: the hub's presets under their hub names, described by what
-// each shows on the phone, with Chat projected without step lines.
+// DETAIL_LEVELS is ruling 8's table, Jesse's answer: the hub's presets under
+// their hub names, described by what each shows on the phone, with Chat
+// projected without step lines.
 import {
 	type ContentLevel,
 	makeTranscriptDisplayConfig,
 	shippedConfig,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
+import type { SyncStringStorage } from "../syncStringStorage";
 
 export interface DetailLevel {
 	level: ContentLevel;
@@ -2602,7 +2633,7 @@ export interface DetailLevel {
 
 export const DETAIL_LEVELS: readonly DetailLevel[] = [
 	{ level: "chat", label: "Chat", description: "Just the conversation" },
-	{ level: "intent", label: "Intent", description: "Plus one line for each step the agent took" },
+	{ level: "intent", label: "Intent", description: "Plus one folded line for each run of steps" },
 	{ level: "tools", label: "Tools", description: "Plus every command it ran; tap one for its output" },
 	{ level: "activity", label: "Activity", description: "Plus every command's output, open as it arrives" },
 	{ level: "full", label: "Full", description: "Everything, including the agent's reasoning" },
@@ -2616,7 +2647,7 @@ export function detailLevel(level: ContentLevel): DetailLevel {
 
 // Chat shows the conversation and nothing else. The shared Chat preset keeps
 // one line per step (its vector matches Intent's), so the phone projects the
-// projector's own no-intent Custom vector instead (Question 1).
+// projector's own no-intent Custom vector instead (ruling 8).
 const JUST_THE_CONVERSATION = {
 	kind: "custom",
 	toolIntent: false,
@@ -2659,12 +2690,6 @@ export function levelToast(level: ContentLevel): string {
 	return `${label}: ${description.charAt(0).toLowerCase()}${description.slice(1)}`;
 }
 
-export interface DetailLevelStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
-}
-
 const storageKey = (hubId: string) => `evener.native.detail-level.${hubId}`;
 const LIMIT = 500;
 const LEVELS = new Set<string>(DETAIL_LEVELS.map((level) => level.level));
@@ -2693,7 +2718,7 @@ export class DetailLevels {
 	private listeners = new Set<() => void>();
 
 	constructor(
-		private readonly storage: DetailLevelStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
 		let raw: string | null = null;
@@ -2729,7 +2754,7 @@ export class DetailLevels {
 	getRevision = (): number => this.revision;
 }
 
-export function forgetDetailLevels(storage: DetailLevelStorage, hubId: string): void {
+export function forgetDetailLevels(storage: SyncStringStorage, hubId: string): void {
 	try {
 		storage.removeItemSync(storageKey(hubId));
 	} catch {
@@ -3091,7 +3116,7 @@ git commit -m "feat(native): what the Session's nav bar and context chips say"
 2. **The ⋯ menu.** `unstable_headerRightItems` returns `sessionMenu(...)`: one `type: "menu"` item with the `ellipsis.circle` SF Symbol and the label "Session actions". Its items, in order:
    - A submenu labelled `detailMenuLabel(current)`. Inside it, an inline submenu labelled "How much of the agent's work this session shows" holds one action per `DETAIL_LEVELS` entry: the label as `label`, the description as `description`, and `state: "on"` for the current one.
    - "Subagents" (when `hasSubagents`), which opens today's `ActivitySheet` (ruling 7).
-   - "Tasks" (when `connected`), which opens `TasksSheet`.
+   - "Tasks" (when `connected`), which opens the `TasksSheet` route with `{ hubId, ref, threadId, hasTasks }` (phase 2's Task 18.3).
    - "Session info", which opens the Session sheet.
    - "Ask aside…" with the description "A side question in its own session; this one keeps working" (when `canAside`, that is `capabilities.forkFromTurn`). It runs `service.forkAside()` and pushes the new session exactly as `applyCommand`'s `openAside` does (`screens.tsx:1656-1663`). A failure shows the toast "Couldn't start an aside."
    - "Pin to category…", which opens `PinAssignment` with today's params.
@@ -3149,9 +3174,9 @@ git commit -m "feat(native): what the Session's nav bar and context chips say"
    - Each chip carries its `accessibilityLabel`.
    - Taps:
      - Subagents: `ActivitySheet`;
-     - Tasks: `TasksSheet`;
+     - Tasks: the `TasksSheet` route;
      - Goal: the Session sheet;
-     - Queue: the Queue sheet.
+     - Queue: the `QueueSheet` route (Task 8).
 3. **Hiding on scroll.** The chips row (and PR 5's notes bar) hide when the list scrolls down more than 8pt, and come back on any upward scroll or at the top.
    - The block floats over the list's top edge on `page`, and the list reserves its height with `contentContainerStyle.paddingTop`. Hiding translates the block up with `Animated` over 200ms (none with Reduce Motion, `AccessibilityInfo.isReduceMotionEnabled`) and never changes the list's layout, so reading position and its restore (`screens.tsx:1420-1546`) never shift.
    - Direction comes from the list's existing `onScroll` (`:2207`). Add the check there; don't add a second listener.
@@ -3190,8 +3215,8 @@ PR 5 brings the web's shared notes to the phone (spec 8.8): the notes bar under 
   - `notesBarPreview(session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "capabilities">): NotesBarPreview | null`
   - `type NotePhase = "clean" | "editing" | "scheduled" | "saving" | "saved" | "failed"`
   - `noteStatusLine(phase: NotePhase, working: boolean): string`
-  - `interface NoteDraftStorage { getItemSync; setItemSync; removeItemSync }` and `forgetNoteDrafts(storage: NoteDraftStorage, hubId: string): void`
-  - `interface NotesControllerOptions { client: Pick<ConversationClientLike, "request">; hubId: string; ref: string; instanceId(): string | undefined; savedNote(): string; working(): boolean; storage: NoteDraftStorage; uuid(): string }`
+  - `forgetNoteDrafts(storage: SyncStringStorage, hubId: string): void`, over `SyncStringStorage` (`src/syncStringStorage.ts`, the kv-store's sync methods, #2536)
+  - `interface NotesControllerOptions { client: Pick<ConversationClientLike, "request">; hubId: string; ref: string; instanceId(): string | undefined; savedNote(): string; working(): boolean; storage: SyncStringStorage; uuid(): string }`
   - `interface SaveOutcome { saved: boolean; woke: boolean }`
   - `class NotesController`, with:
     - `getSnapshot(): { text: string; phase: NotePhase }` and `subscribe(listener: () => void): () => void`;
@@ -3206,9 +3231,9 @@ PR 5 brings the web's shared notes to the phone (spec 8.8): the notes bar under 
 import type { NotesHumanSetResponse, SessionURL, ThreadCapabilities } from "@evener/appwire-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { SyncStringStorage } from "../syncStringStorage";
 import {
 	NOTE_LIMIT,
-	type NoteDraftStorage,
 	NotesController,
 	notesBarPreview,
 	noteStatusLine,
@@ -3260,7 +3285,7 @@ describe("the editor's status line", () => {
 	});
 });
 
-function memoryStorage(values = new Map<string, string>()): NoteDraftStorage & { values: Map<string, string> } {
+function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
 		values,
 		getItemSync: (key) => values.get(key) ?? null,
@@ -3450,6 +3475,7 @@ Expected: FAIL: `Cannot find module './sessionNotes'`.
 // (Review Focus 5).
 import type { NotesHumanSetResponse, ThreadModel } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { SyncStringStorage } from "../syncStringStorage";
 
 /** The daemon clamps a note to 1,000 runes (agent/session_notes.go:29); the
  * editor stops there so nothing is clipped silently. */
@@ -3500,15 +3526,9 @@ export function noteStatusLine(phase: NotePhase, working: boolean): string {
 		: "Your note stays on this session. Saving it will wake the agent.";
 }
 
-export interface NoteDraftStorage {
-	getItemSync(key: string): string | null;
-	setItemSync(key: string, value: string): void;
-	removeItemSync(key: string): void;
-}
-
 const draftKey = (hubId: string) => `evener.native.note-draft.${hubId}`;
 
-function readDrafts(storage: NoteDraftStorage, hubId: string): Record<string, string> {
+function readDrafts(storage: SyncStringStorage, hubId: string): Record<string, string> {
 	try {
 		const value: unknown = JSON.parse(storage.getItemSync(draftKey(hubId)) ?? "{}");
 		if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
@@ -3520,7 +3540,7 @@ function readDrafts(storage: NoteDraftStorage, hubId: string): Record<string, st
 	}
 }
 
-function writeDrafts(storage: NoteDraftStorage, hubId: string, drafts: Record<string, string>): void {
+function writeDrafts(storage: SyncStringStorage, hubId: string, drafts: Record<string, string>): void {
 	try {
 		if (Object.keys(drafts).length > 0) storage.setItemSync(draftKey(hubId), JSON.stringify(drafts));
 		else storage.removeItemSync(draftKey(hubId));
@@ -3529,7 +3549,7 @@ function writeDrafts(storage: NoteDraftStorage, hubId: string, drafts: Record<st
 	}
 }
 
-export function forgetNoteDrafts(storage: NoteDraftStorage, hubId: string): void {
+export function forgetNoteDrafts(storage: SyncStringStorage, hubId: string): void {
 	try {
 		storage.removeItemSync(draftKey(hubId));
 	} catch {
@@ -3547,7 +3567,7 @@ export interface NotesControllerOptions {
 	savedNote(): string;
 	/** Whether a turn is running, read at each save. */
 	working(): boolean;
-	storage: NoteDraftStorage;
+	storage: SyncStringStorage;
 	uuid(): string;
 }
 
@@ -3723,28 +3743,31 @@ git commit -m "feat(native): the shared notes controller, which never loses a no
 
 **Files:**
 - Modify: `mobile-native/package.json`, `package-lock.json` and `Podfile.lock`, for `expo-web-browser`. Run `npx expo install expo-web-browser` with a real `node_modules`, then regenerate the lock with phase 2 Task 4's Step 6 commands. The diff must add the `ExpoWebBrowser` pod and nothing else.
-- Create: `mobile-native/src/session/NotesBar.tsx` and `mobile-native/src/session/NotesSheet.tsx`
+- Create: `mobile-native/src/session/NotesBar.tsx` and `mobile-native/src/session/NotesSheet.tsx` (the `NotesSheet` route and `notesHosts`)
 - Modify:
   - `mobile-native/src/session/SessionHeader.tsx`: the `notes` slot holds `NotesBar`.
   - `mobile-native/src/session/sessionMenu.ts`: "Notes & links" goes after "Tasks", when `capabilities.sharedNotes`.
-  - `mobile-native/src/screens.tsx`: one `NotesController` per binding, the sheet, and flushing on close and background.
+  - `mobile-native/src/screens.tsx`: one `NotesController` per binding, the host it provides for the sheet, and opening the sheet.
+  - `mobile-native/App.tsx` (`NotesSheet` joins the sheet group), `mobile-native/src/sheet/sheetRoutes.ts` (`NotesSheet: sheetOptions(["medium", "large"], "large")`) and `Routes` in `screens.tsx` (`NotesSheet: { hubId: string; ref: string; focusEditor?: boolean }`).
 - Test: `mobile-native/src/session/NotesBar.test.tsx`, `mobile-native/src/session/NotesSheet.test.tsx`, and a notes case in `mobile-native/src/ConversationScreen.send.test.tsx`
 
 **Interfaces:**
-- Consumes: Task 16.
+- Consumes: Task 16; phase 2's Task 18 (`useSheet`, `<Sheet>`, `sheetHosts`, `sheetKey`, `useSheetHost`, `useProvideSheetHost`); `useToast` and `<Toast>` (Task 1).
 - Produces:
   - `<NotesBar preview={NotesBarPreview} onPress={() => void} />`
-  - `<NotesSheet session={Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "status" | "resumeRequired" | "capabilities">} notes={NotesController} focusEditor={boolean} onClose={(outcome: SaveOutcome) => void} onToast={(message: ToastMessage) => void} />`
+  - `interface NotesHost { session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "status" | "resumeRequired" | "capabilities">; notes: NotesController; saved(outcome: SaveOutcome): void }` and `notesHosts = sheetHosts<NotesHost>()`, from `NotesSheet.tsx`. Phase 4's Task 15 adds `cwd` and `title` to the host, for file links.
+  - `NotesSheet`, the route component for `"NotesSheet"`.
 
-**Requirements (spec 8.8):**
+**Requirements (spec 8.8; ruling 37):**
 1. **Notes bar.**
    - One 32pt row under the chips, shown only when `notesBarPreview` is non-null. It hides with the chips on scroll.
    - The glyph (`person`, `sparkles` or `link`) at 13pt in `inkMid`; the text 15/20 `inkHi`, one line with tail truncation; then `links` 13/18 `inkMid` at the trailing edge.
-   - The whole bar opens the sheet. When it shows your note, the editor opens focused with the caret at the end.
-2. **Sheet.**
-   - An RN `Modal` with `presentationStyle="pageSheet"`: the large sheet, like the app's other sheets. Title "Notes & links", with "Done" on the trailing side.
-   - "Done" and a swipe down (`onRequestClose`) both call `notes.flush()` and then `onClose(outcome)`. The screen shows the toast "Note saved" or "Note saved. The agent is reading it." (`outcome.woke`) when `outcome.saved`.
+   - The whole bar opens the sheet: `navigation.navigate("NotesSheet", { hubId, ref, focusEditor: preview.glyph === "person" })`. When it shows your note, the editor opens focused with the caret at the end.
+2. **Sheet** (ruling 37: a sheet route, opening at large as spec 8.8 says).
+   - It reads `notesHosts` under `sheetKey(hubId, ref)` with `useSheetHost`, and renders `<Sheet title="Notes & links" done={{ onPress: () => sheet.finish() }} accessory={<Toast toast={toast.toast} dismiss={toast.dismiss} />}>` over one `ScrollView` with `automaticallyAdjustKeyboardInsets`, so the keyboard never covers the editor. `toast` is the sheet's own `useToast()`.
+   - "Done" and a swipe down both close it, and closing saves: `useSheet({ onClosed })` runs `notes.flush()` and hands its outcome to `host.saved(outcome)`. The screen shows the toast "Note saved" or "Note saved. The agent is reading it." (`outcome.woke`) when `outcome.saved`. The controller lives in the screen, so the save finishes after the sheet has gone.
    - An app going to the background with the sheet open also calls `flush()` (`AppState` change).
+   - Nothing in it is unsaved input to ask about: closing saves (ruling 37).
 3. **Your note.**
    - Writable when the session can take it, the web's `canWriteHumanNote` rule: `capabilities.sharedNotes`, not `resumeRequired`, and the status not ended, closed, notLoaded or restartRequired.
    - A multiline `TextInput` in the serif 17/25 (`prose`), `maxLength={NOTE_LIMIT}`, with the placeholder "Make a note…". It has a 1pt `edgeStrong` border and a 12pt radius; while focused, the border is 2pt `accent` (the focus ring).
@@ -3760,11 +3783,11 @@ git commit -m "feat(native): the shared notes controller, which never loses a no
    - A `file://` link isn't tappable until phase 4's Reader (ruling 6). Any other scheme isn't tappable either.
    - Touch and hold opens an `ActionSheetIOS`: "Open" (for web links), "Copy link", "Remove link" (destructive, writable sessions only), and "Cancel".
      - "Copy link" uses `expo-clipboard`.
-     - "Remove link" calls `notes.removeLink(id)`. Success shows the toast "Link removed. Only the agent can add links." Failure shows "Couldn't remove that link."
+     - "Remove link" calls `notes.removeLink(id)`. Success shows the toast "Link removed. Only the agent can add links." Failure shows "Couldn't remove that link." Both show in the sheet's header, which stays open.
    - The footer, while swipes don't exist yet, reads "The agent adds links as it works. Touch and hold one to remove it." PR 12 changes it to the spec's "Swipe left on one to remove it."
    - Empty: "No links yet".
 6. **Nothing saved at all.** A read-only session with no notes and no links shows only "No shared notes".
-7. **The screen's controller.**
+7. **The screen's controller, and the sheet's host.**
    - Create it with:
      - `client`;
      - `instanceId: () => store.getState().conversation?.instanceId`;
@@ -3773,23 +3796,26 @@ git commit -m "feat(native): the shared notes controller, which never loses a no
      - `Storage` from `expo-sqlite/kv-store`, and `uuid: randomUUID` from `expo-crypto`.
    - Call `notes.sync()` from a store subscription whenever `humanNote` changes.
    - While connected and focused, call `notes.flush()` when its phase is `failed`: a note kept from before sends on the next open.
+   - Provide `notesHosts` under `sheetKey(hubId, ref)` with `useProvideSheetHost`: the session's six fields, the controller, and `saved`, which shows the toast above. Memoize it on those fields, so an open sheet follows the hub's note and links.
+   - The ⋯ menu's "Notes & links" opens the sheet without `focusEditor`.
 
 - [ ] **Step 1: Write the failing tests**
   - `NotesBar.test.tsx`: each glyph and text; the trailing links count; pressing calls `onPress`.
-  - `NotesSheet.test.tsx`:
+  - `NotesSheet.test.tsx`, rendering the route with a host in `notesHosts` (a real `NotesController` over a fake client), `@react-navigation/native`'s `useNavigation` and `usePreventRemove` mocked as phase 2's Task 18.2 mocks them, and `expo-web-browser` mocked:
     - the editor has its placeholder, border and 1,000-character limit, and typing drives `edit`;
+    - `focusEditor` opens it focused;
     - the status line follows the phase;
     - an ended session shows the note read-only, and "No shared notes" when empty;
     - web and file glyphs, with the URL text containing zero-width spaces after slashes;
     - a web link opens `WebBrowser.openBrowserAsync` (mock `expo-web-browser`), and a file link does nothing;
-    - touch and hold offers "Remove link" only when writable;
-    - Done calls `flush` and then `onClose` with its outcome.
+    - touch and hold offers "Remove link" only when writable, and its toast shows in the sheet;
+    - Done calls `goBack()`, and the sheet unmounting flushes the note and hands `saved` the outcome.
   - `ConversationScreen.send.test.tsx`:
-    - a thread with `humanNote` and two `sessionUrls` shows the bar "Your note: …" with "2 links";
-    - opening the sheet and typing, then pressing Done, sends `notes/human/set` with the text, and "Note saved. The agent is reading it." appears for an idle session.
+    - a thread with `humanNote` and two `sessionUrls` shows the bar "Your note: …" with "2 links", and pressing it navigates to `"NotesSheet"` with `focusEditor: true`;
+    - rendering `NotesSheet` beside the screen, with the same params, reads the host the screen provides. Typing, pressing Done and unmounting the sheet (the route leaving) sends `notes/human/set` with the text, and "Note saved. The agent is reading it." appears on the screen for an idle session.
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/NotesBar.test.tsx src/session/NotesSheet.test.tsx src/ConversationScreen.send.test.tsx`
 - [ ] **Step 3: Implement**, including the dependency and the lock.
-- [ ] **Step 4: Run them and watch them pass**, then `npm run check` and `make test-native-bundle`. Build Release in the simulator and edit a note on a real session; check that the web shows it, and that a link opens in the in-app browser with Done returning to the sheet.
+- [ ] **Step 4: Run them and watch them pass**, then `npm run check` and `make test-native-bundle`. Build Release in the simulator and edit a note on a real session; check that the web shows it, that the sheet opens at full height and drags to half, that a swipe down saves, and that a link opens in the in-app browser with Done returning to the sheet.
 - [ ] **Step 5: Commit** (`feat(native): the notes bar and the Notes & links sheet`).
 
 ### Task 18: "You updated your note" in the transcript
@@ -4098,10 +4124,11 @@ git commit -m "feat(native): what the Session sheet knows, and the model chip's 
 ### Task 20: The Session sheet, and the composer's notice
 
 **Files:**
-- Create: `mobile-native/src/session/SessionInfoSheet.tsx` and `mobile-native/src/session/SessionNotice.tsx`
+- Create: `mobile-native/src/session/SessionInfoSheet.tsx` (the `SessionInfoSheet` route and `sessionInfoHosts`) and `mobile-native/src/session/SessionNotice.tsx`
 - Modify:
-  - `mobile-native/src/screens.tsx`. The `SessionSheet` mount (`:2107-2129`) becomes `SessionInfoSheet`, and the composer's place shows `SessionNotice` for a restart-needed or paused session.
+  - `mobile-native/src/screens.tsx`. The `SessionSheet` mount (`:2107-2129`) goes: the title, the ⋯ menu's "Session info" and the Goal chip open the `SessionInfoSheet` route, and the screen provides its host. The composer's place shows `SessionNotice` for a restart-needed or paused session.
   - `mobile-native/src/session/sessionMenu.ts`: "Delete saved session" leaves the menu for the sheet.
+  - `mobile-native/App.tsx` (`SessionInfoSheet` joins the sheet group), `mobile-native/src/sheet/sheetRoutes.ts` (`SessionInfoSheet: sheetOptions(["medium", "large"], "large")`) and `Routes` in `screens.tsx` (`SessionInfoSheet: { hubId: string; ref: string }`).
 - Delete: `mobile-native/src/SessionSheet.tsx`
 - Test: `mobile-native/src/session/SessionInfoSheet.test.tsx`, `mobile-native/src/session/SessionNotice.test.tsx`, and cases in `mobile-native/src/ConversationScreen.send.test.tsx`
 
@@ -4109,46 +4136,48 @@ git commit -m "feat(native): what the Session sheet knows, and the model chip's 
 - Consumes:
   - Task 19; Task 13's `sessionStateLine`; Task 16's `notesBarPreview` (for the Notes & links row);
   - `SessionControls` (`src/sessionControls.ts`);
-  - the screen's `editGoal` and `applyCommand(true)` (clear goal), which exist today (`:1760-1790`, `:1610`).
+  - the screen's `editGoal` and `applyCommand(true)` (clear goal), which exist today (`:1760-1790`, `:1610`);
+  - phase 2's Task 18 (`useSheet`, `<Sheet>`, `sheetHosts`, `sheetKey`, `useSheetHost`, `useProvideSheetHost`); `useToast`, `<Toast>` and `ToastMessage` (Task 1).
 - Produces:
-  - `<SessionInfoSheet>` with these props:
+  - the host the Session sheet reads (ruling 37), and `sessionInfoHosts = sheetHosts<SessionInfoHost>()`, from `SessionInfoSheet.tsx`:
 
     ```ts
-    interface SessionInfoSheetProps {
+    type SessionInfoAction = "aside" | "fork" | "compact" | "pin" | "archive" | "shutDown" | "delete";
+    interface SessionInfoHost {
     	session: MobileConversation;
     	controls: SessionControls;
     	hostLabel(hostId: string): string;
     	modelLabel: string;
     	ready: boolean;
-    	onClose(): void;
-    	onModel(setting: "model" | "vision"): void;
-    	onEditGoal(): void;
-    	onClearGoal(): void;
-    	onTasks(): void;
-    	onNotes(): void;
-    	onAction(action: "aside" | "fork" | "compact" | "pin" | "archive" | "shutDown" | "delete"): void;
+    	editGoal(): void;
+    	clearGoal(): void;
+    	/** Runs the action as the ⋯ menu does, and returns its toast. */
+    	act(action: SessionInfoAction): Promise<ToastMessage | null>;
+    	/** The session's own toast, for an action that closed the sheet. */
+    	toast(message: ToastMessage): void;
     }
     ```
 
+  - `SessionInfoSheet`, the route component for `"SessionInfoSheet"`;
   - `<SessionNotice kind={"restartNeeded" | "paused"} busy={boolean} onPress={() => void} />`
 
-**Requirements (spec 8.6; rulings 17, 19-21, 34):**
-1. **The sheet** is an RN `Modal` with `presentationStyle="pageSheet"`, a large sheet with "Done". Its grouped sections sit on `canvas`, with rows on `surface` and hairline separators. Section labels are 12pt semibold uppercase with 0.06em letter spacing, in `inkMid`.
-2. **Title.** The name in SF Pro semibold 20. Tapping it edits it inline when `capabilities.rename`, and Done on the keyboard calls `controls.rename(name)`; success shows the toast "Session renamed". Beneath it, the state line: the still mark and `sessionStateLine(...).text`.
+**Requirements (spec 8.6; rulings 17, 19-21, 34, 37):**
+1. **The sheet** is a sheet route that opens at large (spec 8.6; ruling 37). It reads `sessionInfoHosts` under `sheetKey(hubId, ref)`, and renders `<Sheet done={{ onPress: () => sheet.finish() }} accessory={<Toast toast={toast.toast} dismiss={toast.dismiss} />}>`, with no header title (the session's name leads the body), over one `ScrollView` with `automaticallyAdjustKeyboardInsets`. `toast` is its own `useToast()`. Its grouped sections sit on `canvas`, with rows on `surface` and hairline separators. Section labels are 12pt semibold uppercase with 0.06em letter spacing, in `inkMid`.
+2. **Title.** The name in SF Pro semibold 20. Tapping it edits it inline when `capabilities.rename`, and Done on the keyboard calls `controls.rename(name)`; success shows the toast "Session renamed" in the sheet. While the field holds a name other than the session's, the sheet is dirty: `useSheet({ dirty, discardTitle: "Discard the new name?" })`, so a swipe down asks first. Beneath it, the state line: the still mark and `sessionStateLine(...).text`.
 3. **Where.** Rows for host (`server.rack`), project (`folder`), directory (Menlo, wrapping at slashes) and branch (`arrow.triangle.branch`), each only when known (`whereFacts`). `hostLabel` comes from the screen: until PR 11, `local` reads as the connected hub's name and any other id reads as itself.
 4. **Model.**
-   - One row with `cpu` and `modelLabel`, opening the model sheet (`onModel("model")`).
-   - When `capabilities.changeVisionModel`, a "Vision model" row showing `visionModel`: "Off" for `"off"`, "Session model" for empty. It opens the model sheet in vision mode.
+   - One row with `cpu` and `modelLabel`, opening the model sheet over this one: `navigation.navigate("ModelSheet", { hubId, ref, setting: "model" })`.
+   - When `capabilities.changeVisionModel`, a "Vision model" row showing `visionModel`: "Off" for `"off"`, "Session model" for empty. It opens the model sheet in vision mode (`setting: "vision"`).
 5. **Plugins.** `pluginsLine`: the line, then the names in a quiet list, then the footer "Plugins are chosen when a session starts. To change them, start a new session or fork this one." Omitted when the inventory is unknown.
 6. **Usage.**
    - The `usageFacts` lines: tokens and their split, cost, work time, and failed tool calls in `dangerInk`.
    - The context gauge: a 4pt track in `edge` with `fraction` filled in `inkMid`, and `context.text` beside it, with tabular figures. Ruling 36: no threshold marker.
 7. **Goal.**
    - The objective in the serif, and its status ("Active", "Complete", "Blocked" in `attentionInk`).
-   - "Edit goal" calls `onEditGoal`, which is today's composer `/goal` flow. "Clear goal" calls `onClearGoal`.
-   - Without a goal but with `capabilities.goal`: "Set a goal", which is the same flow.
-8. **Tasks** (when `session.tasks?.total`): the current task's description, then "Tasks · 3 of 7", which calls `onTasks` (ruling 34).
-9. **Notes & links** (when `capabilities.sharedNotes`): one row reading "Your note · agent note · 3 links", naming only the parts present, or "None". It calls `onNotes`.
+   - "Edit goal" finishes the sheet, then calls `host.editGoal()`, which is today's composer `/goal` flow: the composer takes the keyboard once the sheet has gone. "Clear goal" calls `host.clearGoal()`, and the section then offers "Set a goal", the echo.
+   - Without a goal but with `capabilities.goal`: "Set a goal", which is the same flow as "Edit goal".
+8. **Tasks** (when `session.tasks?.total`): the current task's description, then "Tasks · 3 of 7", which opens the Tasks sheet over this one (ruling 34): `navigation.navigate("TasksSheet", { hubId, ref, threadId: session.threadId, hasTasks: true })`.
+9. **Notes & links** (when `capabilities.sharedNotes`): one row reading "Your note · agent note · 3 links", naming only the parts present, or "None". It opens the Notes & links sheet over this one: `navigation.navigate("NotesSheet", { hubId, ref })`.
 10. **Actions**, as a list of plain rows, each only when it can act:
     - "Aside": `forkFromTurn`.
     - "Fork from latest": `forkFromTurn`, and a `user` row with a `transcriptEntryIndex` exists. It calls today's `forkMessage` with the latest one.
@@ -4158,6 +4187,11 @@ git commit -m "feat(native): what the Session sheet knows, and the model chip's 
     - "Shut down": `shutdown` and not already shut down. Destructive; it confirms with the same alert as Task 14.
     - "Delete": only when shut down and `localSessionId(ref)`. Destructive; it opens `SessionDeletion`, which confirms.
 
+    How they run (ruling 37):
+    - "Compact context" calls `host.act("compact")`, and the sheet stays open and shows the toast it returns.
+    - "Shut down" asks first, over the sheet.
+    - The rest, and "Shut down" once you confirm, finish the sheet first: `sheet.finish(() => { navigation.goBack(); void host.act(action).then((message) => message && host.toast(message)); })`. So the aside, the Fork screen, `PinAssignment` or `SessionDeletion` opens with the sheet gone, and "Session archived" (with Undo) and "Session shut down" show on the session.
+
     `SessionControls`' `notice` strings ("Runtime stopped…") are never shown. The sheet uses toasts, and shows `state.error` as one line under the Actions.
 11. **The composer's notice** (ruling 20). When `status.type === "restartRequired"`, `SessionNotice` takes the composer's place:
     - Text: "This session runs an older Evener. Restart it to pick up the hub's update."
@@ -4166,71 +4200,79 @@ git commit -m "feat(native): what the Session sheet knows, and the model chip's 
     When `resumeRequired`, the notice reads "This session is paused." with "Resume" (`controls.resume()`).
 
     The notice is 15/20 `inkHi` on the page, with the button beneath. There is no tinted box.
+12. **The screen's host.** `ConversationScreen` provides `sessionInfoHosts` under `sheetKey(hubId, ref)` with `useProvideSheetHost`, memoized on the conversation, the controls and the labels. Its `act` runs each action the way the ⋯ menu does (Task 14) and returns the toast instead of showing it; its `toast` is the session's. The title, the ⋯ menu's "Session info" and the Goal chip open the sheet: `navigation.navigate("SessionInfoSheet", { hubId, ref })`.
 
 - [ ] **Step 1: Write the failing tests**
-  - `SessionInfoSheet.test.tsx`, over a fixture conversation:
+  - `SessionInfoSheet.test.tsx`, rendering the route over a fixture conversation with a host in `sessionInfoHosts`, and `@react-navigation/native` mocked as phase 2's Task 18.2 mocks it:
     - each section's text;
-    - rename only with `capabilities.rename`;
-    - the vision row only with `changeVisionModel`;
+    - rename only with `capabilities.rename`; a changed name holds the route (`usePreventRemove` receives true), and the guard asks "Discard the new name?";
+    - the vision row only with `changeVisionModel`; the model row navigates to `"ModelSheet"` with `setting: "model"`;
     - plugins omitted with no inventory;
     - each action row only under its condition;
-    - "Shut down" confirms through the recorded alert before calling `onAction("shutDown")`;
+    - "Shut down" confirms through the recorded alert, then calls `goBack()` before `act("shutDown")`;
+    - "Compact context" calls `act("compact")` and shows its toast in the sheet;
     - no rendered text contains "Runtime", "Refresh" or "Reconnect".
   - `SessionNotice.test.tsx`: both kinds' text and buttons; busy disables the button and shows "Restarting…".
   - `ConversationScreen.send.test.tsx`:
     - a `restartRequired` thread shows the notice and no Message field, and "Restart session" makes the fake client's `forceStop` and `resumeThread` run in order. The test kit's client gets both as recorders; see `ConversationClientLike`'s optional `forceStop` and `resumeThread`;
-    - tapping the title opens the sheet.
+    - tapping the title navigates to `"SessionInfoSheet"` with `{ hubId: "hub-1", ref }`, and the host the screen provides carries the conversation.
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/SessionInfoSheet.test.tsx src/session/SessionNotice.test.tsx src/ConversationScreen.send.test.tsx`
 - [ ] **Step 3: Implement**, then delete `SessionSheet.tsx`.
-- [ ] **Step 4: Run them and watch them pass**, then `npm run check`. Build Release in the simulator and open the sheet on a real working session.
+- [ ] **Step 4: Run them and watch them pass**, then `npm run check` and `make test-native-bundle`. Build Release in the simulator and open the sheet on a real working session: it opens at full height and drags to half, and its Model row opens the model sheet over it. Type a new name and swipe down: it asks "Discard the new name?". This is the first check in the simulator of the question before discarding (phase 2's Task 18.3).
 - [ ] **Step 5: Commit** (`feat(native): the Session sheet, and a notice for sessions that need a restart`).
 
 ### Task 21: The model sheet, with Effort
 
 **Files:**
-- Create: `mobile-native/src/session/ModelSheet.tsx`
+- Create: `mobile-native/src/session/ModelSheet.tsx` (the `ModelSheet` route and `modelHosts`)
 - Modify:
-  - `mobile-native/src/screens.tsx`: the `settings` slot becomes one chip, and `ComposerSettingsSheet` (`:2056-2069`) becomes `ModelSheet`. The screen calls `controls.loadModels()` once per binding when it opens connected, so the chip can name the model.
+  - `mobile-native/src/screens.tsx`: the `settings` slot becomes one chip, which opens the `ModelSheet` route; the `ComposerSettingsSheet` mount (`:2056-2069`) goes, and the screen provides `modelHosts`. The screen calls `controls.loadModels()` once per binding when it opens connected, so the chip can name the model.
   - `mobile-native/src/ModelPicker.tsx`: its rows gain context size and price; recent models first, then grouped by provider. Search and diagnostics stay.
+  - `mobile-native/App.tsx` (`ModelSheet` joins the sheet group), `mobile-native/src/sheet/sheetRoutes.ts` (`ModelSheet: sheetOptions(["medium", "large"], "medium")`) and `Routes` in `screens.tsx` (`ModelSheet: { hubId: string; ref: string; setting: "model" | "vision" }`).
 - Delete: `mobile-native/src/ComposerSettingsSheet.tsx` and `mobile-native/src/ComposerSettings.tsx`, once nothing imports them.
-- Test: `mobile-native/src/session/ModelSheet.test.tsx`, and `mobile-native/src/modelPickerEntries.test.ts` (its label moves to the new row shape)
+- Test: `mobile-native/src/session/ModelSheet.test.tsx`, `mobile-native/src/modelPickerEntries.test.ts` (its label moves to the new row shape), and a chip case in `mobile-native/src/ConversationScreen.send.test.tsx`
 
 **Interfaces:**
-- Consumes: Task 19's `modelChipLabel` and `effortName`; `SessionControls` (`loadModels`, `changeModel`, `changeVisionModel`, `setReasoningEffort`); `sessionEffortLevels` and `effortOptionLevels` from `@evener/appwire-client`.
-- Produces: `<ModelSheet setting={"model" | "vision"} session={MobileConversation} controls={SessionControls} ready={boolean} onClose={() => void} onToast={(message: ToastMessage) => void} />`, and the chip `<ModelChip label={string} onPress={() => void} />` (in `Composer.tsx`'s `settings` slot).
+- Consumes: Task 19's `modelChipLabel` and `effortName`; `SessionControls` (`loadModels`, `changeModel`, `changeVisionModel`, `setReasoningEffort`); `sessionEffortLevels` and `effortOptionLevels` from `@evener/appwire-client`; phase 2's Task 18 (`useSheet`, `<Sheet>`, `sheetHosts`, `sheetKey`, `useSheetHost`, `useProvideSheetHost`); `ToastMessage` (Task 1).
+- Produces:
+  - `interface ModelHost { session: MobileConversation; controls: SessionControls; ready: boolean; toast(message: ToastMessage): void }` and `modelHosts = sheetHosts<ModelHost>()`, from `ModelSheet.tsx`;
+  - `ModelSheet`, the route component for `"ModelSheet"`, whose `setting` param is `"model"` or `"vision"`;
+  - the chip `<ModelChip label={string} onPress={() => void} />` (in `Composer.tsx`'s `settings` slot).
 
-**Requirements (spec 8.5):**
-1. **The chip.** `modelChipLabel(conversation, controlsState.catalog?.data)`: 15/20 `inkMid`, one line with truncation, and a `chevron.down` at 11pt. It sits in a 44pt target, and opens the sheet in model mode.
-2. **The sheet** (a `pageSheet` modal, title "Model", Done):
-   - A search field.
+**Requirements (spec 8.5; ruling 37):**
+1. **The chip.** `modelChipLabel(conversation, controlsState.catalog?.data)`: 15/20 `inkMid`, one line with truncation, and a `chevron.down` at 11pt. It sits in a 44pt target, and opens the sheet in model mode: `navigation.navigate("ModelSheet", { hubId, ref, setting: "model" })`.
+2. **The sheet** (ruling 37: a sheet route opening at medium, a picker). It reads `modelHosts` under `sheetKey(hubId, ref)`, and renders `<Sheet title="Model" done={{ onPress: () => sheet.finish() }} accessory={pinned}>` over one `SectionList` of models. `pinned` holds the search field and, in model mode, the Effort control (requirement 3), so both stay in reach at half height.
+   - A search field, in the accessory.
    - "Recent" (`catalog.recent`), then one section per provider (`data` grouped by `provider`, the section title the provider name as typed).
    - Each row shows:
      - the display name (17/22);
      - beneath it, the context size ("200K context") and the price per million tokens ("$3 in · $15 out per M"), 13/18 `inkMid`, tabular;
      - capability glyphs from today's picker, where it draws them;
      - a check on the current model.
-   - Choosing a model calls `controls.changeModel(provider, model)`. Success closes the sheet with the toast "Model changed. Applies from the next turn."
+   - Choosing a model calls `controls.changeModel(provider, model)`. Success finishes the sheet and hands `host.toast` "Model changed. Applies from the next turn.", which the session shows. Opened from the Session sheet, the sheet under it shows the new model on its Model row, which is the echo there.
 3. **Effort.**
-   - At the bottom, a segmented control, "Effort", with the levels the model supports: `sessionEffortLevels(...)` in order, each labelled `effortName(level)`, with the current one selected (`accentBg` fill, `accentInk` text; spec 16.1).
+   - Pinned under the title, beneath the search field, a segmented control, "Effort", with the levels the model supports: `sessionEffortLevels(...)` in order, each labelled `effortName(level)`, with the current one selected (`accentBg` fill, `accentInk` text; spec 16.1). Spec 8.5 puts it at the bottom; a formSheet has no pinned footer, and the header keeps it in reach at both heights (ruling 37).
    - Choosing one calls `controls.setReasoningEffort(level)`.
    - A caption beneath reads "Applies from the next turn".
    - Hidden when the model has no levels.
 4. **Vision mode** (ruling 17): only vision-capable models, plus today's choices for "Session model" and "Off" as `ModelPicker` offers them for `setting="vision"`. There is no Effort control. It is opened from the Session sheet.
 5. **Errors.** `controls.getSnapshot().modelError` and `error` show as one line; loading shows the skeleton rows, never a spinner over content.
+6. **The screen's host.** `ConversationScreen` provides `modelHosts` under `sheetKey(hubId, ref)` with `useProvideSheetHost`: the conversation, its `controls`, `ready`, and the session's toast, memoized on those.
 
 - [ ] **Step 1: Write the failing tests**
-  - `ModelSheet.test.tsx`, with a `SessionControls`-shaped fake whose catalog has two providers and a recent entry:
+  - `ModelSheet.test.tsx`, rendering the route with a host in `modelHosts` whose `controls` is a `SessionControls`-shaped fake with a catalog of two providers and a recent entry, and `@react-navigation/native` mocked as phase 2's Task 18.2 mocks it:
     - the sections and their order;
     - each row's context and price text;
     - the check on the current model;
-    - choosing calls `changeModel` and then `onToast`;
-    - the Effort segments match the model's levels and call `setReasoningEffort`;
+    - choosing calls `changeModel`, then `goBack()`, then `host.toast` with "Model changed. Applies from the next turn.";
+    - the Effort segments render in the header, before the list, match the model's levels, and call `setReasoningEffort`;
     - Effort is hidden for a model with no levels;
     - vision mode lists only vision models, with no Effort.
   - Update `modelPickerEntries.test.ts` for the new label shape.
-- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/ModelSheet.test.tsx src/modelPickerEntries.test.ts`
+  - `ConversationScreen.send.test.tsx`: pressing the chip navigates to `"ModelSheet"` with `{ hubId: "hub-1", ref, setting: "model" }`, and the host the screen provides carries its controls.
+- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/ModelSheet.test.tsx src/modelPickerEntries.test.ts src/ConversationScreen.send.test.tsx`
 - [ ] **Step 3: Implement**, then delete the two retired files.
-- [ ] **Step 4: Run them and watch them pass**, then `npm run check`. Build Release in the simulator, change a real session's model and effort, and check the chip.
+- [ ] **Step 4: Run them and watch them pass**, then `npm run check` and `make test-native-bundle`. Build Release in the simulator, change a real session's model and effort, and check the chip. The sheet opens at half height with the search field and Effort pinned under its title.
 - [ ] **Step 5: Commit** (`feat(native): one model sheet with Effort, and a chip that names the model`). Then open PR 6: "feat(native): the Session sheet and the model sheet (phase 3, PR 6)".
 
 ---
@@ -5253,13 +5295,15 @@ PR 9 finishes spec 8.2's table, with what the data carries today:
   - `mobile-native/src/TimelineItem.tsx`: `notice`, `details`, `failure` and `attachments`.
   - `mobile-native/src/TranscriptImages.tsx`: 96pt thumbnails, and a pager that swipes between images.
 - Create: `mobile-native/src/session/errorAction.ts` (pure)
-- Test: `mobile-native/src/session/errorAction.test.ts` and `mobile-native/src/TimelineItem.test.tsx`
+- Test: `mobile-native/src/session/errorAction.test.ts`, `mobile-native/src/TimelineItem.test.tsx` and `mobile-native/src/ConversationScreen.send.test.tsx`
 
 **Interfaces:**
-- Produces: `errorAction(row: { title: string; detail: string }, session: Pick<ThreadModel, "resumeRequired">): "resume" | "signIn" | null`.
+- Consumes: `failureRowIdentity` (`src/projectedRows.ts:990-992`), which names a turn's failure row `failure:<turn id>`; Task 22's `turnId` on rows; `sendAction` (Task 3).
+- Produces: `RETRY_MESSAGE = "Something went wrong. Please try again."` (ruling 26) and `errorAction(row: { id: string; title: string; detail: string; turnId?: string }, session: Pick<ThreadModel, "resumeRequired" | "turns">, canSend: boolean): "resume" | "signIn" | "retry" | null`.
   - `"resume"` when the session needs resuming.
   - `"signIn"` when the title or detail names a sign-in failure: `/sign[- ]?in|log[- ]?in|\b401\b|unauthori[sz]ed|credentials? (?:expired|invalid)/i`.
-  - Otherwise `null`: no Retry until Question 3.
+  - `"retry"` when `canSend`, the row is a turn's own failure row (`row.turnId` is set and `row.id === failureRowIdentity(row.turnId)`), and that turn is the session's last one in `session.turns`.
+  - Otherwise `null`.
 
 **Requirements (spec 8.2; rulings 24, 26):**
 1. **System events.** A non-critical `notice` (lifecycle, informational, diagnostic) renders a `diamond` SF Symbol at 8pt `inkLow` in a 16pt gutter, then its text 13/18 `inkLow`, two lines at most; tapping opens the rest.
@@ -5267,23 +5311,32 @@ PR 9 finishes spec 8.2's table, with what the data carries today:
    - A `details` group reads "Session details · 3" and opens its entries in the same style.
 2. **Errors.**
    - A `failure` row (other than a quiet thought) and a critical notice render a 2pt `dangerInk` left rule, the title in SF Pro semibold 15/20 `inkHi`, and the detail 15/20 `inkMid` when non-empty. Plain words: show the hub's text as it is; add no plumbing of our own.
-   - Beneath, at most one action, in `accentInk`, from `errorAction`:
+   - Beneath, at most one action, in `accentInk`, from `errorAction(row, conversation, action !== "none")`, where `action` is the screen's `sendAction(...)`, the value the composer's Send uses:
      - "Resume" calls `controls.resume()`;
-     - "Sign in" opens `Providers` with `{ hubId }`, today's sign-in route, until phase 5's Hub sheet.
+     - "Sign in" opens `Providers` with `{ hubId }`, today's sign-in route, until phase 5's Hub sheet;
+     - "Retry" sends `RETRY_MESSAGE` as your message, exactly as the composer's Send does for `action` (Task 5's requirement 7: `store.getState().queue(service, input)` for `"queue"`, `store.getState().send(service, input)` for `"send"` and `"resume"`, inside `document.submit`). It leaves the draft alone.
 3. **Images.**
    - An `attachments` row outside a run shows its images as 96pt thumbnails in a horizontal row, with a 12pt radius, keeping today's authenticated `HubImage` loading and its "Image unavailable" fallback.
    - Tapping one opens a full-screen viewer: a horizontal paging `FlatList` (`pagingEnabled`) that swipes between the row's images, with "i of N" and "Done". The "Previous image" and "Next image" buttons go.
 
 - [ ] **Step 1: Write the failing tests**
-  - `errorAction.test.ts` as a table: paused → resume; "Sign-in expired", "401 Unauthorized" and "Invalid credentials expired" → signIn; "go test exited 1" → null; paused and signed out → resume.
+  - `errorAction.test.ts` as a table, over the failure row of `turn_2` in a session whose turns are `turn_1` and `turn_2`:
+    - paused → resume; paused and signed out → resume;
+    - "Sign-in expired", "401 Unauthorized" and "Invalid credentials expired" → signIn;
+    - "go test exited 1" → retry;
+    - the same row with `canSend` false → null;
+    - `turn_1`'s failure row, while `turn_2` is the last turn → null;
+    - a warning's failure row (its id is the item's, not `failure:<turn id>`) → null;
+    - and `RETRY_MESSAGE` is "Something went wrong. Please try again.".
   - `TimelineItem.test.tsx`:
     - a lifecycle notice has the diamond and its text;
     - a labelled steering notice opens its text;
     - a failure with an auth message shows "Sign in", which navigates;
     - a failure on a paused session shows "Resume";
-    - a plain failure has no button and no "Retry";
+    - the last turn's plain failure shows "Retry", and an earlier turn's shows no button;
     - an attachments row renders 96pt thumbnails, and pressing one opens the viewer with "1 of 2".
-- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/errorAction.test.ts src/TimelineItem.test.tsx`
+  - `ConversationScreen.send.test.tsx`: for a thread read as `idle` whose last turn carries an `error`, pressing "Retry" sends `turn/start` whose input text is "Something went wrong. Please try again.", and the field keeps its draft.
+- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/errorAction.test.ts src/TimelineItem.test.tsx src/ConversationScreen.send.test.tsx`
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run them and watch them pass**, then `npm run check`. Build Release in the simulator and read a real session with a compaction, a failed turn and a screenshot.
 - [ ] **Step 5: Commit** (`feat(native): system events, errors with one action, and images in the transcript`). Then open PR 9: "feat(native): the rest of the transcript (phase 3, PR 9)".
@@ -5294,21 +5347,23 @@ PR 9 finishes spec 8.2's table, with what the data carries today:
 ### Task 30: The Commands and skills sheet
 
 **Files:**
-- Create: `mobile-native/src/session/CommandsSheet.tsx`
+- Create: `mobile-native/src/session/CommandsSheet.tsx` (the `CommandsSheet` route and `commandHosts`)
 - Modify:
   - `mobile-native/src/session/Composer.tsx`: the + menu gains "Commands and skills".
-  - `mobile-native/src/screens.tsx`: a "/" typed as the draft's first character opens the sheet. The inline `CommandCompletion` (`:2433-2471`) goes.
+  - `mobile-native/src/screens.tsx`: a "/" typed as the draft's first character opens the sheet, and the screen provides its host. The inline `CommandCompletion` (`:2433-2471`) goes.
+  - `mobile-native/App.tsx` (`CommandsSheet` joins the sheet group), `mobile-native/src/sheet/sheetRoutes.ts` (`CommandsSheet: sheetOptions(["medium", "large"], "medium")`) and `Routes` in `screens.tsx` (`CommandsSheet: { hubId: string; ref: string }`).
 - Delete: `mobile-native/src/CommandCompletion.tsx`
-- Test: `mobile-native/src/session/CommandsSheet.test.tsx`
+- Test: `mobile-native/src/session/CommandsSheet.test.tsx`, and an opening case in `mobile-native/src/ConversationScreen.send.test.tsx`
 
 **Interfaces:**
-- Consumes: `createSessionCommandCatalog` and `SlashMenuItem` from `@evener/appwire-client` (as `CommandCompletion` uses them), `composerCommandAvailable` (`src/composerCommand.ts`), and `spliceSlashCommand` with its `SlashSpliceResult` from `@evener/appwire-client` (`slashCompletion.ts:343`, the splice today's inline completion uses at `screens.tsx:2452`).
+- Consumes: `createSessionCommandCatalog` and `SlashMenuItem` from `@evener/appwire-client` (as `CommandCompletion` uses them), `composerCommandAvailable` (`src/composerCommand.ts`), and `spliceSlashCommand` with its `SlashSpliceResult` from `@evener/appwire-client` (`slashCompletion.ts:343`, the splice today's inline completion uses at `screens.tsx:2452`); phase 2's Task 18 (`useSheet`, `<Sheet>`, `sheetHosts`, `sheetKey`, `useSheetHost`, `useProvideSheetHost`).
 - Produces:
-  - `<CommandsSheet client={CommandCatalogClient} sessionRef={string} session={ComposerCommandSession} onChoose={(invocation: string) => void} onClose={() => void} />`
+  - `interface CommandsHost { session: ComposerCommandSession; choose(invocation: string): void }` and `commandHosts = sheetHosts<CommandsHost>()`, from `CommandsSheet.tsx`;
+  - `CommandsSheet`, the route component for `"CommandsSheet"`. It reads the catalog through the connection's client (`useConnection()`, as a `CommandCatalogClient`) and `sessionRef` from its params;
   - `insertInvocation(draft: string, invocation: string): SlashSpliceResult`, exported from `CommandsSheet.tsx`. It is `spliceSlashCommand(draft, { start: 0, end: 0, query: "" }, invocation)`: the invocation at the start of the draft, one space after it unless the draft already starts with whitespace, and what you typed kept after it. The caret lands just after the invocation and its space.
 
-**Requirements (spec 8.5; ruling 15):**
-1. **The sheet** is a `pageSheet` modal titled "Commands and skills", with Done and a search field that filters both sections by name and line.
+**Requirements (spec 8.5; rulings 15 and 37):**
+1. **The sheet** (ruling 37: a sheet route opening at medium, a picker) is titled "Commands and skills", with Done. A search field pinned in its header's accessory filters both sections by name and line. The body is one `SectionList`. It reads `commandHosts` under `sheetKey(hubId, ref)`.
 2. **Commands** come first, in the spec's order, each only when `composerCommandAvailable` allows it for this session:
 
    | Row | Invocation | Its line |
@@ -5323,18 +5378,20 @@ PR 9 finishes spec 8.2's table, with what the data carries today:
 
    Invocations are bare, as the catalog's built-in items are; `insertInvocation` adds the space. The typed commands `composerCommand.ts` knows keep working when someone types them.
 3. **Skills and plugin commands** follow: the catalog's `plugin` and `skill` items, grouped under one header per plugin. The plugin name comes from the item's `key` (`plugin:<pluginName>:<name>`). Headers are in Menlo 12, as typed, never uppercased. Each row shows the item's label (17/22) and hint (13/18 `inkMid`). Loading shows skeleton rows; an error shows its one line.
-4. **Choosing** an item calls `onChoose(invocation)`. The screen sets the draft to `insertInvocation(draft, invocation).text`, so "hello" becomes "/goal hello" and an empty draft becomes "/compact ". The sheet closes, and the field focuses with the caret at the result's `caret`, ready for the command's argument.
-5. **Opening.** + → "Commands and skills", or typing "/" as the first character of an empty draft. In the second case the "/" itself isn't kept.
+4. **Choosing** an item finishes the sheet, then hands the invocation to the screen: `sheet.finish(() => { navigation.goBack(); host.choose(invocation); })`. The screen sets the draft to `insertInvocation(draft, invocation).text`, so "hello" becomes "/goal hello" and an empty draft becomes "/compact ". The field then focuses with the caret at the result's `caret`, ready for the command's argument (`requestAnimationFrame`, as `editGoal` focuses it today).
+5. **Opening.** + → "Commands and skills", or typing "/" as the first character of an empty draft, navigates to `"CommandsSheet"` with `{ hubId, ref }`. In the second case the "/" itself isn't kept.
+6. **The screen's host.** `ConversationScreen` provides `commandHosts` under `sheetKey(hubId, ref)` with `useProvideSheetHost`: the conversation as the `ComposerCommandSession`, and `choose`, memoized on the conversation.
 
 - [ ] **Step 1: Write the failing tests** (`CommandsSheet.test.tsx`, with a fake catalog client answering the calls `createSessionCommandCatalog` makes; read `commandCatalog.ts:85-120` for them):
   - the commands section lists only the available rows, in order, with their lines;
   - a skill groups under its plugin's Menlo header;
   - search filters both sections;
-  - choosing "Compact context" calls `onChoose("/compact")`;
+  - rendered as the route, with a host in `commandHosts` and `@react-navigation/native` mocked as phase 2's Task 18.2 mocks it, choosing "Compact context" calls `goBack()` and then `host.choose("/compact")`;
   - `insertInvocation("", "/compact")` is `{ text: "/compact ", caret: 9 }`, `insertInvocation("hello", "/goal")` is `{ text: "/goal hello", caret: 6 }`, and `insertInvocation(" hello", "/goal")` is `{ text: "/goal hello", caret: 5 }`.
-- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/CommandsSheet.test.tsx`
+  - `ConversationScreen.send.test.tsx`: typing "/" into an empty draft navigates to `"CommandsSheet"` and leaves the draft empty; `host.choose("/goal")` on a draft of "hello" makes it "/goal hello".
+- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/session/CommandsSheet.test.tsx src/ConversationScreen.send.test.tsx`
 - [ ] **Step 3: Implement**, then delete `CommandCompletion.tsx`.
-- [ ] **Step 4: Run them and watch them pass**, then `npm run check`.
+- [ ] **Step 4: Run them and watch them pass**, then `npm run check` and `make test-native-bundle`. In the simulator, type "/" in an empty draft: the sheet rises to half height; choose Goal, and the field has the keyboard with "/goal " in it.
 - [ ] **Step 5: Commit** (`feat(native): a Commands and skills sheet from + or a leading slash`).
 
 ### Task 31: Find in session
@@ -5821,13 +5878,13 @@ The demo fleet (phase 2 PR B, #2471, on main as `mobile-native/src/dev/demoFleet
   - tray and dock: Tasks 5, 10 and 11;
   - composer: Task 5.
 - **8.2 Transcript**, item by item:
-  - detail levels: Tasks 12 and 14 (Question 1);
+  - detail levels: Tasks 12 and 14 (ruling 8);
   - time markers: Tasks 23-24; your message: Task 24 ("Queued": ruling 23); agent message: Task 24;
   - activity runs: Tasks 23-24; step evidence: Tasks 25-26;
   - thinking: Task 28 and ruling 10; subagent: Task 28;
   - document chip: ruling 6; artifact card: waits for the shared-artifacts work, as the roadmap says;
   - question history: Task 28; approval history: ruling 24;
-  - system event: Task 29; your note: Task 18; error: Task 29 (Retry: Question 3); images: Task 29;
+  - system event: Task 29; your note: Task 18; error: Task 29 (Retry: ruling 26); images: Task 29;
   - scrolling: Task 27.
 - **8.3:**
   - tray: Tasks 4-5 (and ruling 10);
@@ -5850,7 +5907,7 @@ The demo fleet (phase 2 PR B, #2471, on main as `mobile-native/src/dev/demoFleet
 - **8.8:**
   - bar and sheet: Tasks 16-17; saving: Task 16 (ruling 32);
   - transcript: Task 18; links: Task 17 (file links: ruling 6).
-- **6:** Next's push or replace: Tasks 32-33 (ruling 2); title swipes: Task 34.
+- **6:** Next's push or replace: Tasks 32-33 (ruling 2); title swipes: Task 34; sheets with medium and large detents, a swipe down that closes, and a question before unsaved input is lost: phase 2's Task 18 and ruling 37 (the sizes: its table).
 - **7.3:** tapping opens at the right spot: Task 27 (ruling 31).
 - **13.1-13.2:** the subtitle's states: Task 13; the Needs you count: Tasks 32-33; seen while you look: Task 33.
 - **14:**

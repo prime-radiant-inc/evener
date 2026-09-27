@@ -14,7 +14,7 @@ import { ForkScreen } from "./src/ForkScreen";
 import { HubSettingsScreen } from "./src/HubSettingsScreen";
 import { KeybindingPreferencesScreen } from "./src/KeybindingPreferencesScreen";
 import { LaunchSettingsScreen } from "./src/LaunchSettingsScreen";
-import { locationForRoute, restoredStack } from "./src/location";
+import { locationForRoute, restoredStack, routeToSave } from "./src/location";
 import { NativePreferencesProvider } from "./src/NativePreferencesProvider";
 import { NewSessionScreen } from "./src/NewSessionScreen";
 import { locations } from "./src/nativeLocation";
@@ -38,6 +38,8 @@ import {
 	type Routes,
 	SessionsScreen,
 } from "./src/screens";
+import { SHEET_ROUTES } from "./src/sheet/sheetRoutes";
+import { TasksSheet } from "./src/TasksSheet";
 import { TranscriptPreferencesScreen } from "./src/TranscriptPreferencesScreen";
 import { ErrorMessage, useColors } from "./src/ui";
 
@@ -61,7 +63,7 @@ function Navigation() {
 	const [saveError, setSaveError] = useState<string | null>(null);
 	useEffect(() => {
 		if (!state || loading) return;
-		const route = state.routes[state.index];
+		const route = routeToSave(state);
 		if (!route) return;
 		try {
 			locations.save(locationForRoute(route, activeProfile?.id ?? null));
@@ -193,6 +195,17 @@ function Navigation() {
 							title: route.params.title || "Conversation",
 						})}
 					/>
+					<Stack.Group
+						screenOptions={{
+							contentStyle: { backgroundColor: colors.palette.canvas },
+						}}
+					>
+						<Stack.Screen
+							name="TasksSheet"
+							component={TasksSheet}
+							options={SHEET_ROUTES.TasksSheet}
+						/>
+					</Stack.Group>
 				</Stack.Navigator>
 			</NavigationContainer>
 		</View>

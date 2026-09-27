@@ -4,14 +4,17 @@
 
 This is part 3 of phase 2. Part 1 (`docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-board.md`, on main) carries the Goal, Architecture, Tech Stack, Spec, Global Constraints, Rulings 1-10 and Review Focus that bind every task here, and Tasks 1-8, 16 and 17. Part 2 (`docs/superpowers/plans/2026-09-26-iphone-redesign-phase2-board-part2.md`, on main since #2491) carries Tasks 9, 11, 14 and 15. This file designs the three tasks part 2 held through five review rounds, each of which found real bugs in them: Task 10 (projects and hosts, test runs, archived), Task 12 (swipes and the long-press menu) and Task 13 (select mode and a list that holds still). Task numbers continue part 1's; each task here is split into steps of work (10.1, 10.2, ...) that each carry their own test cycle and commit.
 
-**Goal:** The Board's Projects/Hosts, Test runs and Archived sections, swipe and long-press actions on every session row, select mode, and a list that never moves under your finger, each built on a mechanism the app already runs rather than a new one.
+It also carries Task 18, the native sheets that every later phase's sheets are built on (ruling 28). The Board's row menu (Task 12.6) is the first sheet in phase order, so the foundation lives here as PR 6. PR 6 needs nothing on main and lands first; phases 3 and 4 build their sheets on it.
+
+**Goal:** The Board's Projects/Hosts, Test runs and Archived sections, swipe and long-press actions on every session row, select mode, and a list that never moves under your finger, each built on a mechanism the app already runs rather than a new one. Before them, the redesign's sheets become native sheets that open at half height (Task 18).
 
 **Architecture:**
 - **Task 10.** The web rail's host grouping (`cmd/evener-hub/frontend/src/shell/rail/railNodes.ts`) moves into the shared package, so the web and the phone place rows by one rule: every row sits under the host its own `host_id` names, because the hub has no host-scoped project read. A pure `projectTree.ts` turns the three project catalogs into a flat list of Board items, and `projectBrowser.ts` gains the catalogs and the archived tier.
 - **Task 12.** Every row action reuses the path the Session or the Projects screen already takes for the same change: Stop through the durable mutation runtime, registered and fenced exactly as a Session screen registers itself; Archive through `NavigationActions` and the organization journal; Pin by opening `PinAssignment`; Shut down and Rename as the Session's direct requests.
 - **Task 13.** An explicit state machine over the list's touch and scroll events decides when the list is held. `HeldOrder` keeps order and membership while held and applies everything at once when the list settles.
+- **Task 18.** Each detented sheet is a root-stack route that native-stack presents as a `formSheet`, sized from one table (`SHEET_ROUTES`), with one chrome (`<Sheet>` and `useSheet`). A sheet reads plain params, or the host its screen provides (`sheetHosts`), and the screen under a sheet stays the screen in front (ruling 28).
 
-**Tech Stack:** Part 1's, plus `react-native-gesture-handler` (~2.32.0), `react-native-reanimated` (4.5.1) and `react-native-worklets` (0.10.1), the versions Expo SDK 57 pins (`expo/bundledNativeModules.json`), installed by part 2's Task 11. `@expo/ui` (~57.0.16) or `@react-native-menu/menu` arrive only if Task 12.6's spike keeps one.
+**Tech Stack:** Part 1's, plus `react-native-gesture-handler` (~2.32.0), `react-native-reanimated` (4.5.1) and `react-native-worklets` (0.10.1), the versions Expo SDK 57 pins (`expo/bundledNativeModules.json`), installed by part 2's Task 11. `@expo/ui` (~57.0.16) or `@react-native-menu/menu` arrive only if Task 12.6's spike keeps one. Task 18 uses what the app already installs: `@react-navigation/native-stack` 7.18.10's `presentation: "formSheet"` over `react-native-screens` 4.26.2, and `usePreventRemove` from `@react-navigation/native` 7.3.
 
 **Spec:** `docs/superpowers/specs/2026-09-25-mobile-app-redesign-design.md`: principle 2 (Calm), 7.1 (Projects/Hosts, Test runs, Archived, the toolbar's Select), 7.3 (row interactions), 14 (outbox), 16.1 (color), 16.5 (iconography) and 16.6 (motion). Roadmap: `docs/superpowers/plans/2026-09-25-iphone-redesign-roadmap.md`.
 
@@ -24,13 +27,13 @@ Part 1's Global Constraints bind every task. In addition:
   - Organize by's two choices: "Project, then host" (the default) and "Host, then project". The section title flips between "PROJECTS" and "HOSTS" (spec 7.1).
   - Section headers: "PROJECTS", "Test runs · 3", "ARCHIVED · 271" (spec 7.1's layout). Inside a project: the captions "Today" and "Recent", and the fold "Archived · 12". A host that isn't connected shows an amber "Offline"; a connected host shows no state.
   - Long-press actions, in spec 7.3's order: "Pin to category…", "Mark as read" or "Mark as unread", "Stop", "Shut down", "Archive" or "Unarchive", "Rename". Select mode's bar: "Done", "Archive", "Pin", "Mark as read".
-- **Routes:** no new route names or params. Pin opens `PinAssignment` with `{ hubId, ref, title }`, as the Session's menu does (`screens.tsx:1270-1277`).
+- **Routes:** two new sheet routes, each in `SHEET_ROUTES` (ruling 28): `TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean }` (Task 18.1) and `RowMenuSheet: { hubId: string; ref: string }` (Task 12.6). No other route names or params change. Pin opens `PinAssignment` with `{ hubId, ref, title }`, as the Session's menu does (`screens.tsx:1270-1277`).
 - **Storage:** one new kv-store key, `evener.native.board-organize.${hubId}`, cleared by `forgetBoard` and so by `ConnectionProvider.removeHub` (part 1 Task 3).
 - **Mutations** reach the hub only by the paths in "How the Board's actions reach the hub" below: never a raw `turn/interrupt` request, and never a second `NavigationActions` mounted on the Board (ruling 16).
 - **Color** (spec 16.1): swipe actions are ink, never a hue. Archive and Pin fill `inkMid`, Stop fills `inkHi`, More fills `inkLow`, and their labels and glyphs are `page`. The Needs you wash is `attentionBg`. Shut down's label in the menu is `dangerInk` (destructive).
 - **Motion** (spec 16.6): rows move with `LinearTransition.springify().duration(250).dampingRatio(1)`. A row that enters Needs you washes `attentionBg` from full to nothing over 1200ms. With Reduce Motion, rows change places without the spring and the wash stays (ruling 23).
 - **Gestures** (spec 7.3): a swipe that begins within 24pt of the screen's left edge never acts on a row.
-- **Tests** meet the hub at the request boundary: `wireV2` fixtures (`@evener/appwire-client/testing/navigation`), `FakeClient` (`@evener/appwire-client/testing/fakeClient`), and the real `NativeMutationRuntime` over `openSqliteSyncDouble()` (`src/sqliteSync.testkit.ts`). They mock `react-native-gesture-handler` and `react-native-reanimated` only through the testkit's `gestureHandlerModuleMock()` and `reanimatedModuleMock()` (added in Tasks 12.4 and 13.3).
+- **Tests** meet the hub at the request boundary: `wireV2` fixtures (`@evener/appwire-client/testing/navigation`), `FakeClient` (`@evener/appwire-client/testing/fakeClient`), and the real `NativeMutationRuntime` over `openSqliteSyncDouble()` (`src/sqliteSync.testkit.ts`). They mock `react-native-gesture-handler` and `react-native-reanimated` only through the testkit's `gestureHandlerModuleMock()` and `reanimatedModuleMock()` (added in Tasks 12.4 and 13.3). A screen test whose screen asks whether it's in front (`useScreenInFront`, Task 18.2) adds `useNavigationState` to its `@react-navigation/native` mock, beside `useIsFocused`.
 - **Local gates** (roadmap landing rules): each task's own tests, `cd mobile-native && npm run check`, and `make test-native-bundle` when imports, `metro.config.js` or `app.json` change. Task 10.1 also runs the web and package gates its steps name. CI runs the full matrix: never run the full `make test-native`, `make test-web` or `make lint` locally.
 - **Repo rules** (AGENTS.md): never run Biome in `mobile-native`; for the shared package and the web run it only from `cmd/evener-hub/frontend` (`npx biome check --write <paths>`). Never `npm ci` through a symlinked `node_modules`. Never `git add -A`. iPhone only: Android keeps type-checking, and every iOS-only call (`ActionSheetIOS`, `Alert.prompt`) keeps an `Alert.alert` fallback or does nothing off iOS.
 
@@ -77,7 +80,7 @@ Every Medium-or-higher finding RoboRev raised on Tasks 10, 12 and 13 across part
 | 5 | Host grouping duplicated a multi-source project's sessions and misreported their ended state | Rows sit under their own host (the shared `sessionGroupHostId`); a project's pages are read once and shared by its copies | Task 10.4 |
 | 5 (Low) | The Organize by storage shape wasn't stated | Its own key (ruling 13) | Task 10.3 |
 
-The design also closes gaps the review didn't reach: two `NavigationActions` on one screen settle each other's journal entries mid-flight (ruling 16); the organization journal can confirm only a local session's archive (ruling 20); a Stop must write its cancel before the dispatch gate opens, or a never-sent message goes out first (ruling 17); a touch cancelled as a drag begins must not release the list in between (Task 13.1); and removing the Projects link rows would leave a project's Pin to top and Archive project unreachable (ruling 15).
+The design also closes gaps the review didn't reach: two `NavigationActions` on one screen settle each other's journal entries mid-flight (ruling 16); the organization journal could confirm only a local session's archive, and now reads another host's row by its ref (ruling 20); a Stop must write its cancel before the dispatch gate opens, or a never-sent message goes out first (ruling 17); a touch cancelled as a drag begins must not release the list in between (Task 13.1); and removing the Projects link rows would leave a project's Pin to top and Archive project unreachable (ruling 15).
 
 ## Rulings
 
@@ -92,23 +95,35 @@ Part 1's rulings 1-10 stand; these continue the numbering.
 17. **Stop from the Board is the Session's Stop:** a durable `turn/interrupt` through `NativeMutationRuntime.submit`, whose `enqueueInterruptAndCancel` cancels the session's never-sent rows and bumps its stop epoch in the interrupt's own write. The Board registers the target as a Session screen does, reads the thread as the Session's projection read does (bounded, and without the subscription the Board doesn't hold), and checks `sessionControls(…).stop` as `requireControl` does. It enqueues the interrupt before it opens the dispatch gate, so the cancel lands before anything on that session can send, as when you tap Stop in a session. It keeps the registration until the interrupt has left `submitting`, the connection drops, or the Board goes away. An interrupt still waiting then is delivered like any durable Stop: by the session when it is next opened, or by phase 6's flush. A read that shows nothing to stop sends nothing.
 18. **Pin from a row opens `PinAssignment`** with `{ hubId, ref, title }`, exactly as the Session's menu does and phase 3 keeps. Select mode's Pin, which that screen can't do for several sessions, goes through the Board's organization journal after a category picker.
 19. **Shut down and Rename are the Session's direct requests,** gated by the row's own facts as the web's rail gates them (`RailRow.tsx:512-513`): Shut down while `live && !offline && state !== "restartRequired"`, after a confirmation; Rename while the hub marks the row `rename: true`.
-20. **Archive and Unarchive act on this hub's own top-level sessions** (`host_id === "local"`, a ref of the shape `localSessionId` accepts naming the row's `session_id`, and not a subagent, fork or cluster): the only ones the organization journal can confirm, since `readOrganizationNavigation` reads `local:<id>` alone (`organizationNavigation.ts:30-35`), and the rule `ProjectsScreen` applies (`ProjectsScreen.tsx:749-757`). Question 1 asks about other hosts.
-21. **The Board's actions that write to the hub show only while connected** (principle 2; phase 6's Task 16 plans the same rule). Stop needs a fresh read to fence its interrupt, and an organization change taken offline fails at once and leaves the journal unresolved. Mark as read and unread are this phone's own and stay. Offline, the leading swipe reveals nothing and the trailing swipe shows only More. Question 2 (phase 6's Question 3) asks whether to queue them instead.
-22. **The list holds still** while a finger is on it, while it scrolls or glides, while a scroll the app started animates, while a row's swipe actions are open, while the long-press menu is open, and while select mode is on (Question 3). Held, rows keep their places and membership and show fresh content; departures, arrivals and moves all apply together when it settles. A fold you tap applies on settle too, 100ms after your finger lifts.
+20. **Archive and Unarchive act on every top-level session, on this hub or another host** (Jesse, 2026-09-26: "phone should archive sessions on other hosts: yes."). Not a subagent, fork or cluster.
+    - This hub's session is archived by its bare `session_id` (its ref must be one `localSessionId` accepts naming that id, the rule `ProjectsScreen` applies, `ProjectsScreen.tsx:749-757`); another host's by its ref. That is the identity the web rail sends and the hub reads the decision back under (`archiveSessionIdentity`, `cmd/evener-hub/frontend/src/shell/rail/Rail.tsx:974-976`).
+    - The organization journal confirms either by reading that row's `location` by its ref. Until this part, `readOrganizationNavigation` read `local:<id>` alone (`organizationNavigation.ts:30-35`); Task 12.3 teaches it another host's ref, in about 20 lines and a test.
+21. **The Board's actions that write to the hub show only while connected** (principle 2; phase 6's Task 16 plans the same rule). Stop needs a fresh read to fence its interrupt, and an organization change taken offline fails at once and leaves the journal unresolved. Mark as read and unread are this phone's own and stay. Offline, the leading swipe reveals nothing and the trailing swipe shows only More. This is the interim: Jesse answered on 2026-09-26 that Board actions taken offline are held and sent when the connection returns ("board actions while offline: hold em"), with a held Stop naming its turn and dropped if that turn ended first (spec 7.5). Phase 6 builds that hold; until it lands, this ruling stands.
+22. **The list holds still** while a finger is on it, while it scrolls or glides, while a scroll the app started animates, while a row's swipe actions are open, while the long-press menu is open, and while select mode is on (Jesse agreed on 2026-09-26 that select mode holds it until Done or an action). Held, rows keep their places and membership and show fresh content; departures, arrivals and moves all apply together when it settles. A fold you tap applies on settle too, 100ms after your finger lifts.
 23. **Reduce Motion** (spec 16.6): rows change places without the spring. The amber wash stays: it is a fade, not motion, spec 16.6 lists what Reduce Motion changes and the wash isn't on the list, and with rows jumping it is the only cue for where a row landed. Reduce Motion is read live (`AccessibilityInfo`, `reduceMotionChanged`), not only at launch.
 24. **"Blue-gray" (spec 7.3's Archive action) is `inkMid`:** the palette has no blue-gray, and it allows four hues (spec 16.1). The swipe fills are in the Global Constraints.
 25. **The toast is phase 3's `src/Toast.tsx`** (phase 3 Task 1, "A shared toast", in `docs/superpowers/plans/2026-09-26-iphone-redesign-phase3-session.md` on main). It lands here first, as that task writes it, since phase 2 lands before phase 3; phase 3's Task 1 then finds it on main, as its ruling 27 anticipated.
 26. **Select mode ends when one of its actions completes,** which releases the list.
 27. **Copy link waits for a session deep link,** which the app doesn't have (part 2; phase 3 ruling 22).
+28. **The redesign's sheets are native sheets.** Jesse approved it on 2026-09-26 ("Build the redesign's sheets as native navigation sheets, so pickers open at half height?" "yes"). Spec 6 wants medium and large detents, a swipe down that closes, and a question before unsaved input is lost.
+    - **Why a route.** An RN `Modal` has no detent props; its iOS host sets only `modalPresentationStyle`. Detents exist only on native-stack's `presentation: "formSheet"` (`sheetAllowedDetents`, `sheetInitialDetentIndex` and `sheetGrabberVisible` in `@react-navigation/native-stack/src/types.tsx`), which react-native-screens turns into iOS 16 custom detents (`ios/RNSScreen.mm`, `updateFormSheetPresentationStyle`). So each detented sheet is a root-stack route presented as a formSheet, registered in App.tsx's sheet group with its size from one table, `SHEET_ROUTES` (Task 18.1). Nothing here changes native code, since native-stack and react-native-screens are already in the app.
+    - **Sizes.** Every sheet rests at medium and large (spec 6) and opens at the detent its spec section names. Pickers and lists open at medium. Sheets you type into open at large, because a keyboard over a half-height sheet leaves little to type in.
+    - **Asking before discarding.** `useSheet({ dirty })` holds the route with `usePreventRemove`. Native-stack then sets `preventNativeDismiss`, so iOS refuses the swipe down and reports it (`onNativeDismissCancelled`), and the sheet asks "Keep editing" or "Discard", as `src/LaunchSettingsScreen.tsx:99-110` does today. Cancel and Android's back reach the same question. A sheet that finishes on purpose (its Send or Add went through, or it leads somewhere else) leaves without asking.
+    - **What a sheet can read.** A sheet renders beside its screen, not inside it, so it can't take that screen's props, and route params stay plain data. Each sheet costs one of three things:
+      - params only, reading the hub through `useConnection()` and per-hub stores: Tasks (Task 18.3), and phase 4's stop request, comment, review and Files & artifacts;
+      - a host that takes its answer back (`sheetHosts`, Task 18.1): the row menu (Task 12.6), and phase 3's Model, Commands and Queue sheets and phase 4's outline and Comments;
+      - a host with the live session: phase 3's Session sheet and Notes & links.
+    - **A sheet is part of the screen under it.** A formSheet route takes focus, and today's session screen suspends its thread and drops its controls whenever it isn't focused (`screens.tsx`: the resume effect's cleanup runs `suspendProjected()` and `service.close()`, and `SessionControls` exists only while focused). So a screen asks whether it is in front: focused, or covered only by sheets (`inFront`, `useScreenInFront`). A card pushed over it still takes it out of the front, as focus does.
+    - **A sheet closes before it leads anywhere.** react-native-screens pushes every card onto the main navigation controller and presents sheets over it (`ios/RNSScreenStack.mm`, `updateContainer`), so a screen pushed while a sheet is up lands under the sheet. A sheet that opens a screen finishes first (`useSheet().finish(then)`). A sheet may open another sheet over itself.
+    - **A relaunch never reopens a sheet.** App.tsx saves the frontmost route that isn't a sheet (`routeToSave`), so a sheet open at a relaunch reopens the screen under it. Before this, a sheet route would fall through `locationForRoute` to `{ hubId }` and reopen the Board.
+    - **One layout.** react-native-screens sizes a sheet's scroll view to each detent only when it is the screen's first or second direct child, after a header view that isn't flattened (`ios/RNSScreenContentWrapper.mm`, `coerceChildScrollViewComponentSizeToSize`; with a third child it warns that the layout may be wrong). So `<Sheet>` renders exactly the header and one scroll view, and anything pinned (a search field, a segmented control, a sheet's own toast) sits in the header, under the title. There is no pinned footer. `<Sheet>` draws that header itself, with native-stack's header off, so pinned controls can live in it and a test can read it.
+    - **Toasts.** A sheet that stays open after an action shows its toast in its header (`accessory`). An action that ends the sheet closes it, and the screen below shows the toast.
+    - **What stays as it is.** RN `Modal` stays for full-screen views (the composer's expanded editor, the log and image viewers). Phase 5's Hub and New session stay `presentation: "modal"` routes, because each holds a nested stack, and their inner detail sheets stay RN Modals (phase 5's rulings 1, 9 and 27). Action sheets, alerts and native menus aren't sheets. Presenting a sheet route dismisses any other presented view controller, such as an open RN `Modal`, and leaves its `visible` state wrong, so a screen closes its RN Modals before it opens a sheet route. The session screen's focus effect already closes them when it blurs.
+    - **Verification.** Task 18.3's check runs through Metro on the development build already installed on the simulator. A native Release build follows once this host's pipe exhaustion is fixed.
 
 ## Questions for Jesse
 
-1. **Archive for sessions on other hosts.** The hub archives a remote session by its ref (the web does, `cmd/evener-hub/frontend/src/shell/rail/actions.ts:265-285`), but the phone's organization journal can only confirm a local session's archive (`organizationNavigation.ts:30-35`), so a lost reply for a remote one would leave the journal stuck. Should the phone archive remote-host sessions?
-   *Recommendation:* yes, in a small follow-up: `readOrganizationNavigation` reads the remote row's `location` by its ref (about 20 lines and a test). Until then remote rows have no Archive swipe or menu item (ruling 20).
-2. **Board actions taken offline.** This is phase 6's Question 3 (PR #2511); one answer covers both. Spec 7.5 says they "go to the outbox", but only the four turn kinds have a durable outbox. Organization changes use a one-slot journal that fails at once offline, and a Stop queued offline would stop whatever turn is running when it lands.
-   *Recommendation:* those actions don't show while offline (ruling 21, which this plan builds); a durable queue for them is its own later piece of work.
-3. **Should select mode hold the list?** Spec 7.3 holds it under a finger and while it scrolls. In select mode you choose rows by where they sit, and a session entering Needs you would move them between your taps.
-   *Recommendation:* hold it until Done or an action (ruling 22). Rows still show fresh marks and text while held.
+None open. Jesse answered this part's three on 2026-09-26: the phone archives sessions on other hosts (ruling 20, built in Task 12.3); Board actions taken offline are held and sent on reconnect, which phase 6 builds, so ruling 21 is the interim; and select mode holds the list until Done or an action (ruling 22).
 
 ## Review Focus
 
@@ -129,10 +144,14 @@ Part 1's table put Task 10 in PR 3 beside Task 9, and Tasks 11-13 in PR 4. Part 
 | 3a | Tasks 10.1-10.4 | Sonnet (the plan carries the code) | part 1's PR 2 lands | B | about 650 lines |
 | 3b | Tasks 10.5-10.6 | Sonnet for 10.5, Opus (medium) for 10.6 | PRs 3 and 3a land | B | about 470 lines |
 | 4a | Tasks 12.1-12.5 | Sonnet for 12.1-12.3, Opus (medium) for 12.4-12.5 | PRs 3b and 4 land | B | about 700 lines |
-| 4b | Tasks 12.6-12.7 | Opus (medium) | PR 4a lands | B | about 280 lines |
+| 4b | Tasks 12.6-12.7 | Opus (medium) | PRs 4a and 6 land | B | about 300 lines |
 | 4c | Tasks 13.1-13.4 | Sonnet for 13.1-13.2, Opus (medium) for 13.3-13.4 | PR 4b lands | B | about 650 lines |
+| 6 | Tasks 18.1-18.3: native sheets | Sonnet for 18.1-18.2 (the plan carries the code), Opus (medium) for 18.3 | now: it needs nothing on main | C | about 480 lines |
 
-- Part 1 still says Projects and Archived open today's screens "until PR 3" (its PR 2 introduction and Task 7 requirement 5) and lists projects, hosts, test runs and archived under PR 3, and row actions, select mode and list stability under PR 4, in its closing "PRs 3, 5 and 4" section. Since part 2 moved those tasks here, read that PR 3 as PRs 3a and 3b (PR 3b draws the sections and removes the link rows, Task 10.6 requirement 9) and that PR 4 as PRs 4a to 4c.
+- **PR 6 lands first.** It runs in its own lane, C, beside everything else, and every PR that builds or opens a sheet waits for it: PR 4b here, and phase 3's PRs 2, 4, 5, 6 and 10 (the phase 3 plan's table says so). Its numbers only continue this phase's; its place in the order is first.
+- PR 6 edits `ConversationScreen` in `screens.tsx` (the Tasks sheet, and asking whether the screen is in front), where phase 3's lanes A and C are working. The edits are small and spread out; whichever PR lands second merges `origin/main` and keeps both. A phase 3 PR that adds a focus check to `ConversationScreen` after PR 6 lands uses `useScreenInFront` or `screenInFront` (Task 18.2), never `useIsFocused` or `navigation.isFocused()`.
+
+- Part 1's PR 2 introduction, Task 7's requirement 5 and its closing "PRs 3 to 5" section point at part 2 and at these PRs: PR 3b draws Projects, Test runs and Archived and removes the link rows (Task 10.6 requirement 9), and PRs 4a to 4c carry row actions, select mode and list stability.
 - PR 3a touches none of Task 9's files (it adds pure modules and changes `projectBrowser.ts`, `boardMemory.ts` and the web rail), so it can run beside PR 3 when a lane is free.
 - PR 3a and part 2's PR 5 (lane A) both edit `boardMemory.ts`'s `forgetBoard` and its forget tests: Task 10.3 adds the Organize by key, part 2's Task 15 the recent-searches key. The second to land merges `origin/main` and keeps every key.
 - Part 2's Task 15 commit that wires search's project tap waits for PR 3b. Part 2 calls the thing it scrolls "Task 10's `ProjectsSection`"; in this design it is `revealProject(projectKey)` inside `BoardScreen` (Task 10.6), which unfolds and scrolls through `projectRevealTarget` (Task 10.4).
@@ -140,6 +159,942 @@ Part 1's table put Task 10 in PR 3 beside Task 9, and Tasks 11-13 in PR 4. Part 
 - Part 1's Task 17 screenshots include select mode (frame 7), so they ride on PR 4c, or on a later phase 2 PR if one lands after it.
 - If part 2's Task 9 mounted `usePinNavigation` on the Board for a category's Rename and Delete, Task 10.6 moves those calls onto `useBoardOrganization` (ruling 16).
 - Every PR lands under the roadmap's rules: CI green, RoboRev with nothing Medium or higher, /simplify, admin squash merge, Lows in a fast-follow, and decompose after five rounds.
+
+---
+
+## PR 6: native sheets
+
+PR 6 builds what every sheet in phases 2 to 4 is made of (ruling 28), and moves today's Tasks sheet onto it, so the check in the simulator has a real sheet to open. It needs nothing on main and lands first (the table above).
+
+### Task 18.1: The sheet rules
+
+**Files:**
+- Create: `mobile-native/src/sheet/sheetRoutes.ts`, `mobile-native/src/sheet/sheetLeave.ts` and `mobile-native/src/sheet/sheetHosts.ts`
+- Modify: `mobile-native/src/location.ts` (`routeToSave`) and `mobile-native/src/screens.tsx` (`Routes` gains `TasksSheet`)
+- Test: `mobile-native/src/sheet/sheetRoutes.test.ts`, `mobile-native/src/sheet/sheetLeave.test.ts`, `mobile-native/src/sheet/sheetHosts.test.ts` and `mobile-native/src/location.test.ts`
+
+**Interfaces:**
+- Produces, in `sheetRoutes.ts`:
+  - `type Detent = "medium" | "large"` and `sheetOptions(detents: readonly Detent[], initial: Detent): NativeStackNavigationOptions`;
+  - `SHEET_ROUTES`, each sheet route's options keyed by its route name. This task adds `TasksSheet`; each later sheet adds its own line;
+  - `isSheetRoute(name: string): boolean`;
+  - `inFront(state: { index: number; routes: readonly { key: string; name: string }[] }, key: string): boolean`.
+- Produces, in `sheetLeave.ts`: `type SheetLeave = "leave" | "ask"`, `sheetLeave(dirty: boolean, finishing: boolean): SheetLeave`, `interface SheetAlertButton { text: string; style: "cancel" | "destructive"; onPress?: () => void }`, `discardAlert(title: string, discard: () => void): { title: string; buttons: SheetAlertButton[] }` and `DISCARD_TITLE`.
+- Produces, in `sheetHosts.ts`:
+  - `interface SheetHosts<Host> { provide(key: string, owner: object, host: Host): void; release(key: string, owner: object): void; get(key: string): Host | undefined; subscribe(listener: () => void): () => void }` and `sheetHosts<Host>(): SheetHosts<Host>`;
+  - `sheetKey(...parts: readonly string[]): string`: a session's sheets use `sheetKey(hubId, ref)`, the Board's `sheetKey(hubId)`;
+  - `useProvideSheetHost<Host>(hosts: SheetHosts<Host>, key: string, host: Host): void`, for the screen;
+  - `useSheetHost<Host>(hosts: SheetHosts<Host>, key: string, sheet: { finish(): void }): Host | undefined`, for the sheet.
+- Produces, in `location.ts`: `routeToSave<Route extends { name: string }>(state: { index: number; routes: readonly Route[] }): Route | undefined`.
+- Produces, in `Routes` (`screens.tsx`): `TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean }`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```ts
+// mobile-native/src/sheet/sheetRoutes.test.ts
+import { describe, expect, it } from "vitest";
+import { inFront, isSheetRoute, SHEET_ROUTES, sheetOptions } from "./sheetRoutes";
+
+describe("a sheet's size (spec 6)", () => {
+	it("rests at medium and large and opens at medium, with the grabber", () => {
+		expect(sheetOptions(["medium", "large"], "medium")).toEqual({
+			presentation: "formSheet",
+			headerShown: false,
+			sheetAllowedDetents: [0.5, 1],
+			sheetInitialDetentIndex: 0,
+			sheetGrabberVisible: true,
+		});
+	});
+
+	it("opens at large when asked, whatever order the detents were named in", () => {
+		expect(sheetOptions(["large", "medium"], "large")).toMatchObject({
+			sheetAllowedDetents: [0.5, 1],
+			sheetInitialDetentIndex: 1,
+		});
+	});
+
+	it("shows no grabber when it rests at one size", () => {
+		expect(sheetOptions(["large"], "large")).toMatchObject({
+			sheetAllowedDetents: [1],
+			sheetInitialDetentIndex: 0,
+			sheetGrabberVisible: false,
+		});
+	});
+
+	it("refuses to open at a size it can't rest at", () => {
+		expect(() => sheetOptions(["large"], "medium")).toThrow("A sheet can't open at medium: it rests only at large.");
+		expect(() => sheetOptions([], "large")).toThrow("A sheet can't open at large: it rests only at no size.");
+	});
+
+	it("knows which routes are sheets", () => {
+		expect(isSheetRoute("TasksSheet")).toBe(true);
+		expect(isSheetRoute("Conversation")).toBe(false);
+		expect(isSheetRoute("toString")).toBe(false);
+		expect(SHEET_ROUTES.TasksSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
+	});
+});
+
+describe("the screen in front", () => {
+	const board = { key: "board", name: "Sessions" };
+	const session = { key: "session", name: "Conversation" };
+	const tasks = { key: "tasks", name: "TasksSheet" };
+	const reader = { key: "reader", name: "Reader" };
+
+	it("is the focused route", () => {
+		const state = { index: 1, routes: [board, session] };
+		expect(inFront(state, "session")).toBe(true);
+		expect(inFront(state, "board")).toBe(false);
+	});
+
+	it("stays in front under its own sheets", () => {
+		const state = { index: 2, routes: [board, session, tasks] };
+		expect(inFront(state, "session")).toBe(true);
+		expect(inFront(state, "tasks")).toBe(true);
+		expect(inFront(state, "board")).toBe(false);
+	});
+
+	it("leaves the front when a screen is pushed over it, even over a sheet", () => {
+		const state = { index: 3, routes: [board, session, tasks, reader] };
+		expect(inFront(state, "session")).toBe(false);
+		expect(inFront(state, "reader")).toBe(true);
+	});
+
+	it("is never in front once it's gone, or while it sits past the index", () => {
+		expect(inFront({ index: 1, routes: [board, session] }, "gone")).toBe(false);
+		expect(inFront({ index: 0, routes: [board, session] }, "session")).toBe(false);
+	});
+});
+```
+
+```ts
+// mobile-native/src/sheet/sheetLeave.test.ts
+import { expect, it, vi } from "vitest";
+import { DISCARD_TITLE, discardAlert, sheetLeave } from "./sheetLeave";
+
+it.each([
+	[false, false, "leave"],
+	[false, true, "leave"],
+	[true, false, "ask"],
+	[true, true, "leave"],
+] as const)("dirty %s, finishing %s: %s", (dirty, finishing, expected) => {
+	expect(sheetLeave(dirty, finishing)).toBe(expected);
+});
+
+it("asks to keep editing first, and only Discard throws the input away", () => {
+	const discard = vi.fn();
+	const alert = discardAlert("Discard this comment?", discard);
+	expect(alert.title).toBe("Discard this comment?");
+	expect(alert.buttons.map(({ text, style }) => [text, style])).toEqual([
+		["Keep editing", "cancel"],
+		["Discard", "destructive"],
+	]);
+	alert.buttons[0]?.onPress?.();
+	expect(discard).not.toHaveBeenCalled();
+	alert.buttons[1]?.onPress?.();
+	expect(discard).toHaveBeenCalledOnce();
+	expect(DISCARD_TITLE).toBe("Discard your changes?");
+});
+```
+
+```ts
+// mobile-native/src/sheet/sheetHosts.test.ts
+import { act } from "react-test-renderer";
+import { describe, expect, it, vi } from "vitest";
+import { renderHook } from "../renderNative.testkit";
+import { sheetHosts, sheetKey, useProvideSheetHost, useSheetHost } from "./sheetHosts";
+
+describe("sheet hosts", () => {
+	it("answers with the newest owner's host, and the older one once that owner leaves", () => {
+		const hosts = sheetHosts<string>();
+		const lower = {};
+		const upper = {};
+		hosts.provide("s", lower, "lower screen");
+		hosts.provide("s", upper, "upper screen");
+		expect(hosts.get("s")).toBe("upper screen");
+		hosts.provide("s", lower, "lower screen, updated");
+		expect(hosts.get("s")).toBe("upper screen");
+		hosts.release("s", upper);
+		expect(hosts.get("s")).toBe("lower screen, updated");
+		hosts.release("s", lower);
+		expect(hosts.get("s")).toBeUndefined();
+	});
+
+	it("keeps keys apart, and tells subscribers only about real changes", () => {
+		const hosts = sheetHosts<string>();
+		const listener = vi.fn();
+		const unsubscribe = hosts.subscribe(listener);
+		const owner = {};
+		hosts.provide("a", owner, "host a");
+		hosts.provide("a", owner, "host a");
+		hosts.release("b", owner);
+		expect(hosts.get("b")).toBeUndefined();
+		expect(listener).toHaveBeenCalledTimes(1);
+		unsubscribe();
+		hosts.release("a", owner);
+		expect(listener).toHaveBeenCalledTimes(1);
+	});
+
+	it("builds keys no two sets of parts share", () => {
+		expect(sheetKey("hub-1", "local:s1")).not.toBe(sheetKey("hub-1:local", "s1"));
+		expect(sheetKey("hub-1")).toBe(sheetKey("hub-1"));
+	});
+});
+
+describe("providing and finding a host", () => {
+	it("provides a screen's host, replaces it without a gap, and takes it away when the screen closes", () => {
+		const hosts = sheetHosts<{ text: string }>();
+		const seen: (string | undefined)[] = [];
+		hosts.subscribe(() => seen.push(hosts.get("s")?.text));
+		let host = { text: "first" };
+		const screen = renderHook(() => useProvideSheetHost(hosts, "s", host));
+		expect(hosts.get("s")).toBe(host);
+		host = { text: "second" };
+		screen.rerender();
+		screen.unmount();
+		expect(seen).toEqual(["first", "second", undefined]);
+	});
+
+	it("hands a sheet its screen's host, and closes the sheet once the screen is gone", () => {
+		const hosts = sheetHosts<string>();
+		const owner = {};
+		hosts.provide("s", owner, "live");
+		const sheet = { finish: vi.fn() };
+		const view = renderHook(() => useSheetHost(hosts, "s", sheet));
+		expect(view.result.current).toBe("live");
+		expect(sheet.finish).not.toHaveBeenCalled();
+		act(() => hosts.release("s", owner));
+		expect(view.result.current).toBeUndefined();
+		expect(sheet.finish).toHaveBeenCalledOnce();
+	});
+});
+```
+
+```ts
+// Added to mobile-native/src/location.test.ts: `routeToSave` joins the file's
+// "./location" import, and this case goes inside describe("last mobile location").
+	it("reopens the screen under a sheet, never the sheet", () => {
+		const session = {
+			key: "conversation",
+			name: "Conversation",
+			params: { hubId: "studio", ref: "local:s1", title: "Fix it" },
+		};
+		const tasks = {
+			key: "tasks",
+			name: "TasksSheet",
+			params: { hubId: "studio", ref: "local:s1", threadId: "s1", hasTasks: true },
+		};
+		const hubs = { key: "hubs", name: "Hubs" };
+		const saved = routeToSave({ index: 2, routes: [hubs, session, tasks] });
+		expect(saved).toBe(session);
+		expect(saved && locationForRoute(saved, "studio")).toEqual({
+			hubId: "studio",
+			conversation: { ref: "local:s1", title: "Fix it" },
+		});
+		expect(routeToSave({ index: 1, routes: [hubs, session] })).toBe(session);
+		expect(routeToSave({ index: 0, routes: [tasks] })).toBeUndefined();
+	});
+```
+
+- [ ] **Step 2: Run the tests and watch them fail**
+
+Run: `cd mobile-native && npx vitest run src/sheet src/location.test.ts`
+Expected: FAIL: `./sheetRoutes`, `./sheetLeave` and `./sheetHosts` don't exist, and `routeToSave` isn't exported.
+
+- [ ] **Step 3: Implement**
+
+In `Routes` (`screens.tsx`), after `Conversation`, add:
+
+```ts
+	TasksSheet: { hubId: string; ref: string; threadId: string; hasTasks: boolean };
+```
+
+```ts
+// mobile-native/src/sheet/sheetRoutes.ts
+// The redesign's sheets are native-stack formSheet routes (spec 6: medium and
+// large detents, and a swipe down closes them). This module is their one list
+// and their sizes, and the rule the app follows because a sheet is a route:
+// a screen covered only by sheets is still the screen in front.
+import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
+import type { Routes } from "../screens";
+
+/** The heights a sheet rests at: medium, about half the screen, and large,
+ * the full sheet. */
+export type Detent = "medium" | "large";
+
+/** Each detent as the fraction of the tallest sheet that native-stack's
+ * `sheetAllowedDetents` takes. iOS 16 and later turn fractions into custom
+ * detents (react-native-screens, RNSScreen.mm). */
+const FRACTION: Record<Detent, number> = { medium: 0.5, large: 1 };
+
+/** The native-stack options for a sheet that rests at `detents` and opens at
+ * `initial`. The sheet draws its own header (`Sheet.tsx`), so the native one
+ * is off, and a sheet that can change size shows the grabber. */
+export function sheetOptions(detents: readonly Detent[], initial: Detent): NativeStackNavigationOptions {
+	const ordered = (["medium", "large"] as const).filter((detent) => detents.includes(detent));
+	const index = ordered.indexOf(initial);
+	if (index === -1)
+		throw new Error(`A sheet can't open at ${initial}: it rests only at ${ordered.join(" and ") || "no size"}.`);
+	return {
+		presentation: "formSheet",
+		headerShown: false,
+		sheetAllowedDetents: ordered.map((detent) => FRACTION[detent]),
+		sheetInitialDetentIndex: index,
+		sheetGrabberVisible: ordered.length > 1,
+	};
+}
+
+/** Every route presented as a sheet, with its size. Each sheet's spec section
+ * names its size, and pickers open at medium. A sheet joins by adding its line
+ * here and its `Stack.Screen`, with these options, in App.tsx's sheet group. */
+export const SHEET_ROUTES = {
+	TasksSheet: sheetOptions(["medium", "large"], "medium"),
+} satisfies { [Name in keyof Routes]?: NativeStackNavigationOptions };
+
+export function isSheetRoute(name: string): boolean {
+	return Object.hasOwn(SHEET_ROUTES, name);
+}
+
+interface StackState {
+	index: number;
+	routes: readonly { key: string; name: string }[];
+}
+
+/** Whether the route is the screen in front: the focused route, or one that
+ * only sheets cover. A sheet is part of the screen under it, so that screen
+ * keeps following its data and keeps its actions allowed; a screen pushed over
+ * it still takes it out of the front, as focus does. */
+export function inFront(state: StackState, key: string): boolean {
+	const position = state.routes.findIndex((route) => route.key === key);
+	if (position === -1 || position > state.index) return false;
+	return state.routes.slice(position + 1, state.index + 1).every((route) => isSheetRoute(route.name));
+}
+```
+
+```ts
+// mobile-native/src/sheet/sheetLeave.ts
+// What a sheet does when something tries to close it (spec 6: sheets with
+// unsaved input ask before discarding). A swipe down, Cancel and Android's
+// back each reach the sheet's guard as a removal of its route.
+
+export type SheetLeave = "leave" | "ask";
+
+/** Unsaved input asks first, unless the sheet is finishing on purpose: its
+ * Send or Add went through, or it is leading somewhere else. */
+export function sheetLeave(dirty: boolean, finishing: boolean): SheetLeave {
+	return dirty && !finishing ? "ask" : "leave";
+}
+
+export interface SheetAlertButton {
+	text: string;
+	style: "cancel" | "destructive";
+	onPress?: () => void;
+}
+
+/** The question a sheet with unsaved input asks before it goes: stay, or
+ * throw the input away. Keeping is the safe answer, so it comes first. */
+export function discardAlert(title: string, discard: () => void): { title: string; buttons: SheetAlertButton[] } {
+	return {
+		title,
+		buttons: [
+			{ text: "Keep editing", style: "cancel" },
+			{ text: "Discard", style: "destructive", onPress: discard },
+		],
+	};
+}
+
+/** The question when a sheet names nothing more specific to lose. */
+export const DISCARD_TITLE = "Discard your changes?";
+```
+
+```ts
+// mobile-native/src/sheet/sheetHosts.ts
+// A sheet route renders beside the screen that opened it, not inside it, so it
+// can't take that screen's props or callbacks, and route params must stay
+// plain data. The screen provides a host instead: the object its sheet reads
+// and calls, under a key the sheet rebuilds from its own params. Each kind of
+// sheet has its own registry, so PRs that add sheets never share a type.
+import { useEffect, useRef, useSyncExternalStore } from "react";
+
+export interface SheetHosts<Host> {
+	/** Provide `host` under `key`, replacing what this owner provided before.
+	 * The newest owner answers, so a session opened twice answers from the
+	 * copy on top. */
+	provide(key: string, owner: object, host: Host): void;
+	/** Take this owner's host away: its screen closed. */
+	release(key: string, owner: object): void;
+	get(key: string): Host | undefined;
+	subscribe(listener: () => void): () => void;
+}
+
+export function sheetHosts<Host>(): SheetHosts<Host> {
+	const entries = new Map<string, { owner: object; host: Host }[]>();
+	const listeners = new Set<() => void>();
+	const changed = () => {
+		for (const listener of [...listeners]) listener();
+	};
+	return {
+		provide(key, owner, host) {
+			const list = entries.get(key) ?? [];
+			const mine = list.find((entry) => entry.owner === owner);
+			if (mine?.host === host) return;
+			if (mine) mine.host = host;
+			else list.push({ owner, host });
+			entries.set(key, list);
+			changed();
+		},
+		release(key, owner) {
+			const list = entries.get(key);
+			if (!list?.some((entry) => entry.owner === owner)) return;
+			const rest = list.filter((entry) => entry.owner !== owner);
+			if (rest.length > 0) entries.set(key, rest);
+			else entries.delete(key);
+			changed();
+		},
+		get(key) {
+			return entries.get(key)?.at(-1)?.host;
+		},
+		subscribe(listener) {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+	};
+}
+
+/** The key a sheet and its screen share: a session's is `sheetKey(hubId,
+ * ref)`, the Board's `sheetKey(hubId)`. */
+export function sheetKey(...parts: readonly string[]): string {
+	return JSON.stringify(parts);
+}
+
+/** A screen provides its sheets' host while it's mounted. Memoize `host`:
+ * each new object re-renders the open sheet, which is how the sheet sees the
+ * screen's live state. */
+export function useProvideSheetHost<Host>(hosts: SheetHosts<Host>, key: string, host: Host): void {
+	const owner = useRef({}).current;
+	useEffect(() => {
+		hosts.provide(key, owner, host);
+	}, [hosts, key, owner, host]);
+	useEffect(() => () => hosts.release(key, owner), [hosts, key, owner]);
+}
+
+/** A sheet's host, or undefined once its screen is gone. Then the sheet
+ * leaves (`finish`), since nothing is left for it to act on. */
+export function useSheetHost<Host>(
+	hosts: SheetHosts<Host>,
+	key: string,
+	sheet: { finish(): void },
+): Host | undefined {
+	const host = useSyncExternalStore(hosts.subscribe, () => hosts.get(key));
+	useEffect(() => {
+		if (host === undefined) sheet.finish();
+	}, [host, sheet]);
+	return host;
+}
+```
+
+```ts
+// mobile-native/src/location.ts: one import beside the others,
+import { isSheetRoute } from "./sheet/sheetRoutes";
+
+// and this function after the LocationRepository class.
+/** The route a relaunch reopens: the frontmost one that isn't a sheet. A
+ * sheet is a moment over its screen, never a place to come back to. */
+export function routeToSave<Route extends { name: string }>(state: {
+	index: number;
+	routes: readonly Route[];
+}): Route | undefined {
+	for (let index = state.index; index >= 0; index -= 1) {
+		const route = state.routes[index];
+		if (route && !isSheetRoute(route.name)) return route;
+	}
+	return undefined;
+}
+```
+
+- [ ] **Step 4: Run the tests and watch them pass**
+
+Run: `cd mobile-native && npx vitest run src/sheet src/location.test.ts && npm run check`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add mobile-native/src/sheet/sheetRoutes.ts mobile-native/src/sheet/sheetRoutes.test.ts mobile-native/src/sheet/sheetLeave.ts mobile-native/src/sheet/sheetLeave.test.ts mobile-native/src/sheet/sheetHosts.ts mobile-native/src/sheet/sheetHosts.test.ts mobile-native/src/location.ts mobile-native/src/location.test.ts mobile-native/src/screens.tsx
+git commit -m "feat(native): the rules native sheets follow: sizes, discarding, hosts, and never reopening one"
+```
+
+### Task 18.2: The sheet's chrome, and the screen in front
+
+**Files:**
+- Create: `mobile-native/src/sheet/Sheet.tsx` and `mobile-native/src/sheet/useScreenInFront.ts`
+- Test: `mobile-native/src/sheet/Sheet.test.tsx` and `mobile-native/src/sheet/useScreenInFront.test.ts`
+
+**Interfaces:**
+- Consumes: Task 18.1's `sheetLeave`, `discardAlert`, `DISCARD_TITLE` and `inFront`.
+- Produces, in `Sheet.tsx`:
+  - `interface SheetController { close(): void; finish(then?: () => void): void }` and `useSheet(options?: { dirty?: boolean; discardTitle?: string; onClosed?: () => void }): SheetController`. A sheet route calls it once, in its own body.
+  - `interface SheetButton { label?: string; disabled?: boolean; onPress(): void }`, and `<Sheet title? onCancel? done? accessory? >{body}</Sheet>`, where the body is one `ScrollView`, `FlatList` or `SectionList`.
+- Produces, in `useScreenInFront.ts`: `useScreenInFront(routeKey: string): boolean` for render, and `screenInFront(navigation: { isFocused(): boolean; getState(): { index: number; routes: readonly { key: string; name: string }[] } }, routeKey: string): boolean` for a guard inside a callback.
+
+**How a sheet route uses them** (Task 18.3's Tasks sheet is the first):
+- The route component calls `const sheet = useSheet({ dirty, discardTitle, onClosed })` and returns `<Sheet>` as its root, never wrapped in a view, because the layout needs the header and the body as the screen's two direct children (ruling 28).
+- Cancel is `onCancel={sheet.close}`, which asks first when dirty. A plain Done is `done={{ onPress: () => sheet.finish() }}`. A Send or Add does its work and then calls `sheet.finish()`, or keeps the sheet open with its error in the body.
+- A row that opens a screen calls `sheet.finish(() => { navigation.goBack(); navigation.navigate("Reader", params); })`, with the screen's own name and params. A sheet that returns to a session calls `sheet.finish(() => returnToSession(navigation, session))` (phase 4's Task 8), whose one pop removes the sheet with the screens above the session.
+- A sheet that needs its screen reads `useSheetHost(hosts, key, sheet)`, and renders nothing while it's undefined: `useSheetHost` finishes the sheet then.
+
+- [ ] **Step 1: Write the failing tests**
+
+```tsx
+// mobile-native/src/sheet/Sheet.test.tsx
+import { ScrollView, Text } from "react-native";
+import { act, type ReactTestRendererJSON } from "react-test-renderer";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { alertRequests, render, renderHook, renderedText } from "../renderNative.testkit";
+import { Sheet, useSheet } from "./Sheet";
+
+const navigation = vi.hoisted(() => ({ goBack: vi.fn(), dispatch: vi.fn() }));
+const guard = vi.hoisted(() => ({
+	prevented: false,
+	onPrevent: null as null | ((options: { data: { action: unknown } }) => void),
+}));
+
+vi.mock("react-native", async () => (await import("../renderNative.testkit")).nativeModuleMock());
+vi.mock("@react-navigation/native", () => ({
+	useNavigation: () => navigation,
+	usePreventRemove: (prevent: boolean, callback: (options: { data: { action: unknown } }) => void) => {
+		guard.prevented = prevent;
+		guard.onPrevent = callback;
+	},
+}));
+
+const swipeDown = { type: "POP", payload: { count: 1 } };
+
+beforeEach(() => {
+	navigation.goBack.mockClear();
+	navigation.dispatch.mockClear();
+	guard.onPrevent = null;
+	alertRequests.length = 0;
+});
+
+describe("closing a sheet (spec 6)", () => {
+	it("closes a sheet with nothing unsaved at once", () => {
+		const sheet = renderHook(() => useSheet());
+		expect(guard.prevented).toBe(false);
+		sheet.result.current.close();
+		expect(navigation.goBack).toHaveBeenCalledOnce();
+		expect(alertRequests).toEqual([]);
+	});
+
+	it("asks before discarding unsaved input, and only Discard lets the sheet go", () => {
+		renderHook(() => useSheet({ dirty: true, discardTitle: "Discard this comment?" }));
+		expect(guard.prevented).toBe(true);
+		act(() => guard.onPrevent?.({ data: { action: swipeDown } }));
+		expect(alertRequests).toHaveLength(1);
+		const [ask] = alertRequests;
+		expect(ask?.title).toBe("Discard this comment?");
+		expect(ask?.buttons?.map((button) => button.text)).toEqual(["Keep editing", "Discard"]);
+		ask?.buttons?.[0]?.onPress?.();
+		expect(navigation.dispatch).not.toHaveBeenCalled();
+		ask?.buttons?.[1]?.onPress?.();
+		expect(navigation.dispatch).toHaveBeenCalledWith(swipeDown);
+	});
+
+	it("leaves without asking when it finishes on purpose", () => {
+		const sheet = renderHook(() => useSheet({ dirty: true }));
+		sheet.result.current.finish();
+		expect(navigation.goBack).toHaveBeenCalledOnce();
+		const pop = { type: "GO_BACK" };
+		act(() => guard.onPrevent?.({ data: { action: pop } }));
+		expect(navigation.dispatch).toHaveBeenCalledWith(pop);
+		expect(alertRequests).toEqual([]);
+	});
+
+	it("lets `then` remove the sheet when it leads somewhere else", () => {
+		const sheet = renderHook(() => useSheet({ dirty: true }));
+		const then = vi.fn();
+		sheet.result.current.finish(then);
+		expect(then).toHaveBeenCalledOnce();
+		expect(navigation.goBack).not.toHaveBeenCalled();
+	});
+
+	it("tells its owner once, when it goes away", () => {
+		const onClosed = vi.fn();
+		const sheet = renderHook(() => useSheet({ onClosed }));
+		sheet.rerender();
+		expect(onClosed).not.toHaveBeenCalled();
+		sheet.unmount();
+		expect(onClosed).toHaveBeenCalledOnce();
+	});
+});
+
+describe("the sheet's chrome", () => {
+	const pressable = (tree: ReturnType<typeof render>, label: string) =>
+		tree.root.find((node) => String(node.type) === "Pressable" && node.props.accessibilityLabel === label);
+
+	it("draws the header and the body as the screen's only two children", () => {
+		const cancel = vi.fn();
+		const add = vi.fn();
+		const tree = render(
+			<Sheet
+				title="Comment"
+				onCancel={cancel}
+				done={{ label: "Add", disabled: true, onPress: add }}
+				accessory={<Text>Pinned under the title</Text>}
+			>
+				<ScrollView />
+			</Sheet>,
+		);
+		const children = tree.toJSON() as ReactTestRendererJSON[];
+		expect(children.map((child) => child.type)).toEqual(["View", "ScrollView"]);
+		expect(children[0]?.props.collapsable).toBe(false);
+		expect(renderedText(tree)).toContain("Comment");
+		expect(renderedText(tree)).toContain("Pinned under the title");
+		act(() => pressable(tree, "Cancel").props.onPress());
+		expect(cancel).toHaveBeenCalledOnce();
+		expect(pressable(tree, "Add").props.disabled).toBe(true);
+	});
+
+	it("reads Done unless the sheet names its own verb, and leaves out what it isn't given", () => {
+		const done = vi.fn();
+		const tree = render(
+			<Sheet title="Tasks" done={{ onPress: done }}>
+				<ScrollView />
+			</Sheet>,
+		);
+		act(() => pressable(tree, "Done").props.onPress());
+		expect(done).toHaveBeenCalledOnce();
+		expect(tree.root.findAll((node) => node.props.accessibilityLabel === "Cancel")).toEqual([]);
+	});
+});
+```
+
+```ts
+// mobile-native/src/sheet/useScreenInFront.test.ts
+import { expect, it, vi } from "vitest";
+import { renderHook } from "../renderNative.testkit";
+import { screenInFront, useScreenInFront } from "./useScreenInFront";
+
+const navigationState = vi.hoisted(() => ({
+	focused: false,
+	state: { index: 0, routes: [] as { key: string; name: string }[] },
+}));
+
+vi.mock("@react-navigation/native", () => ({
+	useIsFocused: () => navigationState.focused,
+	useNavigationState: <T>(select: (state: typeof navigationState.state) => T) => select(navigationState.state),
+}));
+
+const session = { key: "session", name: "Conversation" };
+const tasks = { key: "tasks", name: "TasksSheet" };
+const reader = { key: "reader", name: "Reader" };
+
+it("keeps a session in front while its own sheet covers it, and not once a screen is pushed", () => {
+	navigationState.focused = false;
+	navigationState.state = { index: 1, routes: [session, tasks] };
+	expect(renderHook(() => useScreenInFront("session")).result.current).toBe(true);
+	navigationState.state = { index: 1, routes: [session, reader] };
+	expect(renderHook(() => useScreenInFront("session")).result.current).toBe(false);
+	navigationState.focused = true;
+	expect(renderHook(() => useScreenInFront("session")).result.current).toBe(true);
+});
+
+it("answers the same at the moment of a call", () => {
+	const covered = { isFocused: () => false, getState: () => ({ index: 1, routes: [session, tasks] }) };
+	expect(screenInFront(covered, "session")).toBe(true);
+	const pushed = { isFocused: () => false, getState: () => ({ index: 1, routes: [session, reader] }) };
+	expect(screenInFront(pushed, "session")).toBe(false);
+	expect(screenInFront({ isFocused: () => true, getState: () => ({ index: 0, routes: [] }) }, "session")).toBe(true);
+});
+```
+
+- [ ] **Step 2: Run the tests and watch them fail**
+
+Run: `cd mobile-native && npx vitest run src/sheet/Sheet.test.tsx src/sheet/useScreenInFront.test.ts`
+Expected: FAIL: `./Sheet` and `./useScreenInFront` don't exist.
+
+- [ ] **Step 3: Implement**
+
+```tsx
+// mobile-native/src/sheet/Sheet.tsx
+// The chrome every redesign sheet shares (spec 6 and 16.2): a header with the
+// title, Cancel and Done over the sheet's body. The native stack presents it
+// as a formSheet route with the size in sheetRoutes.ts.
+//
+// Layout: react-native-screens sizes a sheet's scroll view to each detent only
+// when the scroll view is the screen's first or second direct child, after a
+// header view that isn't flattened away (RNSScreenContentWrapper.mm,
+// coerceChildScrollViewComponentSizeToSize). So a sheet route renders <Sheet>
+// as its root, and <Sheet> renders exactly two children: the header, and the
+// body, which is one ScrollView, FlatList or SectionList. Anything pinned, such
+// as a search field, a segmented control or a toast, goes in `accessory`,
+// inside the header.
+import { useNavigation, usePreventRemove } from "@react-navigation/native";
+import { type ReactElement, type ReactNode, useEffect, useMemo, useRef } from "react";
+import { Alert, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
+import { useColors } from "../ui";
+import { DISCARD_TITLE, discardAlert, sheetLeave } from "./sheetLeave";
+
+export interface SheetController {
+	/** Close as a person would: a sheet with unsaved input asks first. */
+	close(): void;
+	/** Leave on purpose, without asking: its Send or Add went through, or it
+	 * leads somewhere else. Without `then`, the sheet goes back. With `then`,
+	 * `then` removes the sheet itself: `navigation.goBack()` before a
+	 * `navigate`, or `returnToSession`'s pop. A screen pushed while a sheet is
+	 * still up lands under the sheet (react-native-screens pushes cards on the
+	 * main stack and presents sheets over it), so the sheet always goes first. */
+	finish(then?: () => void): void;
+}
+
+export interface SheetOptions {
+	/** Unsaved input: closing asks "Keep editing" or "Discard". */
+	dirty?: boolean;
+	/** The question that alert asks, such as "Discard this comment?". */
+	discardTitle?: string;
+	/** Runs once when the sheet goes away, however it closed. */
+	onClosed?: () => void;
+}
+
+export function useSheet({ dirty = false, discardTitle = DISCARD_TITLE, onClosed }: SheetOptions = {}): SheetController {
+	const navigation = useNavigation();
+	const finishing = useRef(false);
+	// A refused swipe down (native-stack's onNativeDismissCancelled), Cancel and
+	// Android's back all arrive here while `dirty` holds the route.
+	usePreventRemove(dirty, ({ data }) => {
+		const leave = () => navigation.dispatch(data.action);
+		if (sheetLeave(dirty, finishing.current) === "leave") {
+			leave();
+			return;
+		}
+		const alert = discardAlert(discardTitle, leave);
+		Alert.alert(alert.title, undefined, alert.buttons);
+	});
+	const closed = useRef(onClosed);
+	closed.current = onClosed;
+	useEffect(() => () => closed.current?.(), []);
+	return useMemo(
+		() => ({
+			close: () => navigation.goBack(),
+			finish: (then?: () => void) => {
+				finishing.current = true;
+				if (then) then();
+				else navigation.goBack();
+			},
+		}),
+		[navigation],
+	);
+}
+
+export interface SheetButton {
+	/** "Done" unless the sheet names its own verb, such as "Add" or "Send". */
+	label?: string;
+	disabled?: boolean;
+	onPress(): void;
+}
+
+export interface SheetProps {
+	title?: string;
+	/** A leading "Cancel". */
+	onCancel?: () => void;
+	/** The trailing button. */
+	done?: SheetButton;
+	/** Pinned under the title: a search field, a segmented control, a toast. */
+	accessory?: ReactNode;
+	/** The body: one ScrollView, FlatList or SectionList. */
+	children: ReactElement;
+}
+
+export function Sheet({ title, onCancel, done, accessory, children }: SheetProps) {
+	const { palette } = useColors();
+	const { fontScale } = useWindowDimensions();
+	const scale = Platform.OS === "ios" ? fontScale : 1;
+	return (
+		<>
+			<View collapsable={false} style={{ backgroundColor: palette.canvas }}>
+				<View style={{ minHeight: 56, flexDirection: "row", alignItems: "center", paddingHorizontal: 8 }}>
+					<View style={{ flex: 1, alignItems: "flex-start" }}>
+						{onCancel ? <HeaderButton label="Cancel" onPress={onCancel} /> : null}
+					</View>
+					{title ? (
+						<Text
+							accessibilityRole="header"
+							allowFontScaling={Platform.OS !== "ios"}
+							numberOfLines={1}
+							style={{
+								flexShrink: 1,
+								textAlign: "center",
+								color: palette.inkHi,
+								fontSize: 17 * scale,
+								lineHeight: 22 * scale,
+								fontWeight: "600",
+							}}
+						>
+							{title}
+						</Text>
+					) : null}
+					<View style={{ flex: 1, alignItems: "flex-end" }}>
+						{done ? (
+							<HeaderButton
+								label={done.label ?? "Done"}
+								strong
+								disabled={done.disabled}
+								onPress={done.onPress}
+							/>
+						) : null}
+					</View>
+				</View>
+				{accessory}
+			</View>
+			{children}
+		</>
+	);
+}
+
+function HeaderButton({
+	label,
+	strong = false,
+	disabled = false,
+	onPress,
+}: {
+	label: string;
+	strong?: boolean;
+	disabled?: boolean;
+	onPress(): void;
+}) {
+	const { palette } = useColors();
+	const { fontScale } = useWindowDimensions();
+	const scale = Platform.OS === "ios" ? fontScale : 1;
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={label}
+			accessibilityState={{ disabled }}
+			disabled={disabled}
+			hitSlop={8}
+			onPress={onPress}
+			style={({ pressed }) => ({
+				minHeight: 44,
+				minWidth: 44,
+				justifyContent: "center",
+				paddingHorizontal: 8,
+				opacity: disabled ? 0.4 : pressed ? 0.6 : 1,
+			})}
+		>
+			<Text
+				allowFontScaling={Platform.OS !== "ios"}
+				style={{
+					color: palette.accentInk,
+					fontSize: 17 * scale,
+					lineHeight: 24 * scale,
+					fontWeight: strong ? "600" : "400",
+				}}
+			>
+				{label}
+			</Text>
+		</Pressable>
+	);
+}
+```
+
+```ts
+// mobile-native/src/sheet/useScreenInFront.ts
+// Whether a screen is the one in front: focused, or covered only by sheets
+// (sheetRoutes.ts, inFront). A sheet is part of the screen under it, so that
+// screen keeps following its session, and its actions stay allowed, while its
+// sheets are open.
+import { useIsFocused, useNavigationState } from "@react-navigation/native";
+import { inFront } from "./sheetRoutes";
+
+export function useScreenInFront(routeKey: string): boolean {
+	const focused = useIsFocused();
+	const underSheets = useNavigationState((state) => inFront(state, routeKey));
+	return focused || underSheets;
+}
+
+/** The same answer at the moment of a call, for a guard inside a callback. */
+export function screenInFront(
+	navigation: { isFocused(): boolean; getState(): Parameters<typeof inFront>[0] },
+	routeKey: string,
+): boolean {
+	return navigation.isFocused() || inFront(navigation.getState(), routeKey);
+}
+```
+
+- [ ] **Step 4: Run the tests and watch them pass**
+
+Run: `cd mobile-native && npx vitest run src/sheet && npm run check`
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add mobile-native/src/sheet/Sheet.tsx mobile-native/src/sheet/Sheet.test.tsx mobile-native/src/sheet/useScreenInFront.ts mobile-native/src/sheet/useScreenInFront.test.ts
+git commit -m "feat(native): the sheet's chrome, its question before discarding, and the screen in front"
+```
+
+### Task 18.3: The first sheet: Tasks
+
+An Opus task: it moves today's Tasks sheet onto the route, and teaches the session screen that its own sheets leave it in front.
+
+**Files:**
+- Modify:
+  - `mobile-native/App.tsx`: the save effect (`:62-67`) saves `routeToSave(state)`, and a sheet group after the last screen holds `TasksSheet`.
+  - `mobile-native/src/TasksSheet.tsx`: the RN `Modal` becomes the `TasksSheet` route; today's body becomes `TaskList`.
+  - `mobile-native/src/screens.tsx`, `ConversationScreen`: Tasks opens the route, and the screen asks whether it is in front.
+- Test:
+  - `mobile-native/src/TasksSheet.test.tsx`;
+  - `mobile-native/src/ConversationScreen.sheets.test.tsx` (new, on `ConversationScreen.recovery.test.tsx`'s harness);
+  - `mobile-native/src/ConversationScreen.recovery.test.tsx` (its `@react-navigation/native` mock gains `useNavigationState: () => false`).
+
+**Interfaces:**
+- Consumes: Tasks 18.1-18.2; `useRetainedScreenConnection` (`src/retainedScreen.tsx`).
+- Produces:
+  - `TasksSheet`, the route component for `"TasksSheet"`;
+  - `<TaskList client={ConversationClientLike} sessionRef={string} threadId={string} hasTasks={boolean} connected={boolean} />`, today's body;
+  - App.tsx's sheet group, `<Stack.Group screenOptions={{ contentStyle: { backgroundColor: colors.palette.canvas } }}>`. Every later sheet route joins it with `options={SHEET_ROUTES.<its name>}`.
+
+**Requirements (ruling 28):**
+1. **App.tsx.**
+   - The save effect reads `const route = routeToSave(state)` in place of `state.routes[state.index]`, and returns when it is undefined.
+   - After the last `Stack.Screen`, the sheet group: its `screenOptions` set `contentStyle: { backgroundColor: colors.palette.canvas }` (spec 16.1: sheets sit on canvas), and it holds `<Stack.Screen name="TasksSheet" component={TasksSheet} options={SHEET_ROUTES.TasksSheet} />`.
+2. **The Tasks sheet as a route.**
+   - `TasksSheet({ route })` reads `{ hubId, ref, threadId, hasTasks }` from its params.
+   - Its client comes from `useRetainedScreenConnection(hubId)`: `renderClient` keeps the last client through a reconnect's gap, as today's `client ?? taskContext.client` did. `connected` is `state === "ready"` with `activeProfile?.id === hubId`.
+   - It calls `const sheet = useSheet()` and returns `<Sheet title="Tasks" done={{ onPress: () => sheet.finish() }}>` with `TaskList` as the body. With no client for this hub (the hub changed while it was open), it calls `sheet.finish()` and renders nothing.
+   - `TaskList` is today's body without its `Modal`, `SafeAreaProvider`, `SafeAreaView` and header row. Its root element is the `SectionList`, with today's `ListHeaderComponent` and padding, because the body must be the sheet's one scroll view. It adds `contentInsetAdjustmentBehavior="automatic"`, so its last row clears the home indicator.
+   - The hub's name under the title goes: a sheet's header carries only its title.
+   - The file keeps its two-space indentation.
+3. **The session opens it.**
+   - "Tasks" in the header menu (`openSessionDestination("tasks")`, `:1291`) and the `/tasks` command (`:1725-1737`) call `navigation.navigate("TasksSheet", { hubId: route.params.hubId, ref: route.params.ref, threadId: current.threadId, hasTasks: current.tasks != null })`. The command's toggle becomes a plain open.
+   - The `taskContext` state (`:939-946`) and the inline mount (`:2070-2085`) go.
+4. **The session stays in front under its sheets.**
+   - `const focused = useIsFocused()` (`:825`) becomes `const focused = useScreenInFront(route.key)`.
+   - Every `navigation.isFocused()` in `ConversationScreen` (`:928`, `:1137`, `:1175`, `:1183`, `:1225`, `:1631`, `:1764`, `:1799` and `:1828`) becomes `screenInFront(navigation, route.key)`.
+   - Two focus effects follow `focused` instead of real focus, as `useEffect`s on `focused` with the same bodies: the one that saves and restores the reading position (`:1556-1568`), and the one that cancels an image selection and a project lookup (`:1003-1011`). So opening a sheet neither saves nor re-applies the reading position, and a photo being attached survives it.
+   - The focus effect that closes the screen's RN Modals (`:972-984`) keeps real focus: a sheet route opening must close them (ruling 28).
+   - The line numbers are main's when this plan was written. Phase 3's lanes move this code, so find each by its text, and convert any focus check a lane added since.
+5. **Tests.**
+   - `TasksSheet.test.tsx`: the existing case renders `TaskList` with the same props less `hubName` and `close`, and keeps its assertions. A new case renders the route, with `@react-navigation/native`'s `useNavigation` and `usePreventRemove` mocked and `./ConnectionProvider` answering `screenConnection(client, "ready")`: the title reads "Tasks", and Done calls `goBack`.
+   - `ConversationScreen.sheets.test.tsx`, on `ConversationScreen.recovery.test.tsx`'s harness (the same `vi.mock` list). Its `@react-navigation/native` mock answers `useIsFocused` and `useNavigationState` from a stack the test sets:
+     - choosing "Tasks" in the header menu (read the items `navigation.setOptions` received) navigates to `"TasksSheet"` with `{ hubId: "hub-1", ref, threadId, hasTasks }`;
+     - with `useIsFocused` false and a `TasksSheet` route over the session, the screen still resumes its session: the client receives `thread/read` with `subscribe: true`;
+     - with a `"Reader"` route over it instead, the client receives no `thread/read`.
+   - `ConversationScreen.recovery.test.tsx`: the mock gains `useNavigationState: () => false`, and its cases pass unchanged.
+6. **The check in the simulator.** Nothing here changes native code, so the check runs through Metro on the development build already installed on the simulator. Start Metro with the README's command (`NODE_OPTIONS=--dns-result-order=ipv4first npm start -- --localhost --port 8087`), open the app, and use a hub with a working session that keeps tasks:
+   - ⋯, then Tasks: the sheet rises to half height with a grabber. Drag it to full height and back. At both heights its list scrolls to its last row.
+   - Swipe down: it closes, and the session behind it didn't reload (the transcript stays where it was, and the tray kept moving).
+   - Open Tasks, force-quit the app, and relaunch: the session reopens, not the sheet.
+   - VoiceOver reads "Tasks, heading" and "Done, button".
+   - Record the results in the PR description. A native Release build of the same checks follows once this host's pipe exhaustion is fixed; until then the description says it is pending. The question before discarding has no sheet with input to try here. Its first simulator check is phase 3's Session sheet (a name typed and swiped away).
+
+- [ ] **Step 1: Write the failing tests** above.
+- [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/TasksSheet.test.tsx src/ConversationScreen.sheets.test.tsx src/ConversationScreen.recovery.test.tsx`
+- [ ] **Step 3: Implement** to the requirements.
+- [ ] **Step 4: Run them and watch them pass**, then `npm run check` and `make test-native-bundle` (App.tsx's imports change).
+- [ ] **Step 5: Check it in the simulator**, as requirement 6 says.
+- [ ] **Step 6: Commit** (`feat(native): Tasks opens as a native sheet, and the session stays live under its sheets`), then open PR 6: "feat(native): native sheets (phase 2, PR 6)". The description names ruling 28, the simulator results, and the Release build still to come.
 
 ---
 
@@ -1105,7 +2060,7 @@ git commit -m "feat(native): project data reads any catalog and the archived tie
 **Interfaces:**
 - Produces:
   - `type OrganizeBy = "project-host" | "host-project"`
-  - `class OrganizeByPreference`: constructor `(storage: BoardStorage, hubId: string)`, `get(): OrganizeBy`, `set(value: OrganizeBy): void`
+  - `class OrganizeByPreference`: constructor `(storage: SyncStringStorage, hubId: string)` (`src/syncStringStorage.ts`, which `boardMemory.ts` and its test already import, #2536), `get(): OrganizeBy`, `set(value: OrganizeBy): void`
   - `organizeByPreference(hubId: string): OrganizeByPreference` (per-hub singleton, from `nativeBoardMemory.ts`)
   - `forgetBoard(storage, hubId)` also removes `evener.native.board-organize.${hubId}`.
 
@@ -1146,7 +2101,7 @@ describe("the Organize by choice", () => {
 	});
 
 	it("keeps working in memory when storage throws", () => {
-		const broken: BoardStorage = {
+		const broken: SyncStringStorage = {
 			getItemSync: () => {
 				throw new Error("disk");
 			},
@@ -1220,7 +2175,7 @@ export class OrganizeByPreference {
 	private value: OrganizeBy;
 
 	constructor(
-		private readonly storage: BoardStorage,
+		private readonly storage: SyncStringStorage,
 		private readonly hubId: string,
 	) {
 		// Unreadable storage, or a value this build doesn't know, reads as the default.
@@ -3065,10 +4020,12 @@ git commit -m "feat(native): Stop from the Board goes through the durable runtim
 
 **Files:**
 - Create: `mobile-native/src/board/rowActions.ts` and `mobile-native/src/board/swipeEdge.ts`
-- Test: `mobile-native/src/board/rowActions.test.ts` and `mobile-native/src/board/swipeEdge.test.ts`
+- Modify: `mobile-native/src/organizationNavigation.ts`: it confirms another host's session archive by that row's ref (ruling 20; the code is below)
+- Test: `mobile-native/src/board/rowActions.test.ts`, `mobile-native/src/board/swipeEdge.test.ts` and `mobile-native/src/organizationNavigation.test.ts`
 
 **Interfaces:**
 - Consumes: `ClassifiedRow` and `BoardState` (part 1 Task 2); `NavigationActions`; `organizationFree` (Task 10.5).
+- Changes: `readOrganizationNavigation` (`organizationNavigation.ts:18-123`) takes a session archive whose `id` is another host's ref, as well as this hub's bare session id, and reads that row's `location` by the ref.
 - Produces:
   - `type RowAction = "pin" | "markRead" | "markUnread" | "stop" | "shutDown" | "archive" | "unarchive" | "rename"`
   - `interface RowActionContext { connected: boolean; organizationReady: boolean; archived: boolean }`
@@ -3139,8 +4096,8 @@ describe("the long-press menu per state (spec 7.3)", () => {
 		["one seen since", row({ state: "idle" }), "idle", online, ["pin", "markUnread", "shutDown", "archive"]],
 		["one asking a question", row({ state: "awaiting", ask_pending: true }), "question", online, ["pin", "shutDown", "archive"]],
 		["one needing a restart", row({ state: "restartRequired" }), "restartNeeded", online, ["pin", "archive"]],
-		["one working on another host", row({ ...remote }), "working", online, ["pin", "stop", "shutDown"]],
-		["one on an offline host", row({ ...remote, offline: true, live: false }), "shutDown", online, ["pin"]],
+		["one working on another host", row({ ...remote }), "working", online, ["pin", "stop", "shutDown", "archive"]],
+		["one on an offline host", row({ ...remote, offline: true, live: false }), "shutDown", online, ["pin", "archive"]],
 		["a fork", row({ kind: "fork" }), "working", online, ["stop", "shutDown"]],
 		["one in an archived tier", row({ state: "ended", live: false }), "shutDown", { ...online, archived: true }, ["pin", "unarchive"]],
 		["one while a change is unresolved", row({ rename: true }), "working", { ...online, organizationReady: false }, ["pin", "stop", "shutDown", "rename"]],
@@ -3156,7 +4113,7 @@ describe("swipes (spec 7.3)", () => {
 	it.each([
 		["a working session of this hub", row(), "working", online, { leading: "archive", trailing: ["stop", "pin", "more"] }],
 		["a finished one", row({ state: "awaiting" }), "finished", online, { leading: "archive", trailing: ["pin", "more"] }],
-		["one working on another host", row({ ...remote }), "working", online, { leading: null, trailing: ["stop", "pin", "more"] }],
+		["one working on another host", row({ ...remote }), "working", online, { leading: "archive", trailing: ["stop", "pin", "more"] }],
 		["one in an archived tier", row({ state: "ended", live: false }), "shutDown", { ...online, archived: true }, { leading: "unarchive", trailing: ["pin", "more"] }],
 		["any row offline", row(), "working", { ...online, connected: false }, { leading: null, trailing: ["more"] }],
 	] as const)("%s", (_name, summary, state, context, expected) => {
@@ -3165,9 +4122,10 @@ describe("swipes (spec 7.3)", () => {
 });
 
 describe("archiving (rulings 16 and 20)", () => {
-	it("archives only this hub's own top-level sessions, which the journal can confirm", () => {
+	it("archives a top-level session of this hub by its id and one of another host by its ref", () => {
 		expect(archiveTarget(row())).toEqual({ kind: "session", id: SESSION_ID });
-		expect(archiveTarget(row({ ...remote }))).toBeNull();
+		expect(archiveTarget(row({ ...remote }))).toEqual({ kind: "session", id: "paradise-park:x" });
+		expect(archiveTarget(row({ ...remote, kind: "subagent" }))).toBeNull();
 		expect(archiveTarget(row({ ref: "cluster:abc" }))).toBeNull();
 		expect(archiveTarget(row({ ref: "local:not-a-session", session_id: "not-a-session" }))).toBeNull();
 		for (const kind of ["subagent", "fork", "cluster"]) expect(archiveTarget(row({ kind }))).toBeNull();
@@ -3280,10 +4238,71 @@ describe("the Session's direct requests (ruling 19)", () => {
 });
 ```
 
+`mobile-native/src/organizationNavigation.test.ts` changes (full code). After `const id = "034Kc9793pXlhHyCRXdeAk";`, add:
+
+```ts
+const remote = "paradise-park:x";
+```
+
+In `fixture()`, the `location` answer serves another host's row when asked for it:
+
+```ts
+			if (params.resource === "location")
+				body = {
+					session:
+						params.ref === remote
+							? { ref: remote, session_id: "x", host_id: "paradise-park" }
+							: { ref: `local:${id}`, session_id: id },
+					tier: archived ? "archived" : "recent",
+					project_key: "p",
+				};
+```
+
+The last test's rejected archive becomes one whose id names no session at all, since another host's ref is now checked:
+
+```ts
+it("rejects unrelated recovery, an archive id that names no session, and obsolete scope", async () => {
+	const f = fixture();
+	for (const operation of [
+		{ kind: "unpin", params: { sessionRef: `local:${id}` } },
+		{
+			kind: "archive",
+			params: { kind: "session", id: "not-a-session", archived: true },
+		},
+	] as const)
+```
+
+(the rest of that test is unchanged), and a new test follows it:
+
+```ts
+it("checks another host's session archive by reading that row's location by its ref (ruling 20)", async () => {
+	const f = fixture();
+	const archive = (sessionId: string): NavigationActionCheckpoint => ({
+		id: "session",
+		operation: {
+			kind: "archive",
+			params: { kind: "session", id: sessionId, archived: true },
+		},
+		receipt: null,
+	});
+	expect(
+		await readOrganizationNavigation(f.client, archive(remote), () => true),
+	).toMatchObject({ state: "archived", settled: false });
+	expect(
+		f.calls.some(
+			(c) => c.params.resource === "location" && c.params.ref === remote,
+		),
+	).toBe(true);
+	await expect(
+		readOrganizationNavigation(f.client, archive("elsewhere:y"), () => true),
+	).rejects.toThrow("This session's current organization could not be confirmed.");
+});
+```
+
 - [ ] **Step 2: Run them and watch them fail**
 
-Run: `cd mobile-native && npx vitest run src/board/rowActions.test.ts src/board/swipeEdge.test.ts`
-Expected: FAIL: the modules don't exist.
+Run: `cd mobile-native && npx vitest run src/board/rowActions.test.ts src/board/swipeEdge.test.ts src/organizationNavigation.test.ts`
+Expected: FAIL: the modules don't exist, and the new organization test finds another host's archive refused ("Only local session archive changes can be checked here.").
 
 - [ ] **Step 3: Implement**
 
@@ -3352,13 +4371,16 @@ export function isTopLevel(row: NavigationSessionSummary): boolean {
 	return !NESTED.has(row.kind);
 }
 
-/** The archive change for a row, or null when the organization journal can't
- * confirm one: only this hub's own top-level sessions (ruling 20), the rule
- * ProjectsScreen applies (ProjectsScreen.tsx:749-757), with the ref shape
- * readOrganizationNavigation checks (`localSessionId`). */
+/** The archive change for a row, or null for one the organization journal
+ * can't confirm (ruling 20): a subagent, fork or cluster, or a row of this hub
+ * whose ref doesn't name its own session. This hub's session goes by its bare
+ * id, the rule ProjectsScreen applies (ProjectsScreen.tsx:749-757), and another
+ * host's by its ref, as the web's rail sends it (archiveSessionIdentity);
+ * readOrganizationNavigation reads either back by that row's location. */
 export function archiveTarget(row: NavigationSessionSummary): Omit<ArchiveParams, "archived"> | null {
-	if (!isTopLevel(row) || row.host_id !== "local" || localSessionId(row.ref) !== row.session_id) return null;
-	return { kind: "session", id: row.session_id };
+	if (!isTopLevel(row)) return null;
+	if (row.host_id !== "local") return { kind: "session", id: row.ref };
+	return localSessionId(row.ref) === row.session_id ? { kind: "session", id: row.session_id } : null;
 }
 
 /** The long-press menu, in spec 7.3's order. Copy link waits for a session
@@ -3452,15 +4474,65 @@ export async function renameSession(client: ConversationClientLike, ref: string,
 }
 ```
 
+`mobile-native/src/organizationNavigation.ts` changes (full code). After the imports, add:
+
+```ts
+/** The ref a session archive's location is read under. This hub's session is
+ * archived by its bare id and another host's by its ref (ruling 20, the web
+ * rail's archiveSessionIdentity); anything else can't be checked. A ref's two
+ * parts follow the hub's own rule (appwire/refs.go). */
+function archivedSessionRef(id: string): string | null {
+	if (localSessionId(`local:${id}`)) return `local:${id}`;
+	return /^(?!local:)[A-Za-z0-9._~-]+:[A-Za-z0-9._~-]+$/.test(id) ? id : null;
+}
+```
+
+In `readOrganizationNavigation`, the check before the read becomes:
+
+```ts
+	const { params } = operation;
+	const sessionRef =
+		operation.kind === "archive" && params.kind === "session"
+			? archivedSessionRef(params.id)
+			: undefined;
+	if (sessionRef === null)
+		throw Error("This session's archive change can't be checked here.");
+```
+
+and the session branch reads the location by that ref:
+
+```ts
+	if (operation.kind === "archive" && sessionRef !== undefined) {
+		const ref = sessionRef;
+		const local = ref.startsWith("local:");
+		const response = await navigation.read({ resource: "location", ref });
+		const location = response.data as NavigationSessionLocation | null;
+		if (
+			!location ||
+			location.ref !== ref ||
+			location.session?.ref !== ref ||
+			// This hub's row names its session by id; another host's row is
+			// that host's, which its ref already names.
+			(local
+				? location.session.session_id !== params.id ||
+					location.session.host_id !== "local"
+				: location.session.host_id === "local") ||
+			!location.top_level ||
+			!["current", "recent", "archived"].includes(location.tier ?? "")
+		)
+```
+
+The rest of the function, from the `throw Error("This session's current organization could not be confirmed.")` on, is unchanged.
+
 - [ ] **Step 4: Run them and watch them pass, then type-check**
 
-Run: `cd mobile-native && npx vitest run src/board/rowActions.test.ts src/board/swipeEdge.test.ts && npm run check`
+Run: `cd mobile-native && npx vitest run src/board/rowActions.test.ts src/board/swipeEdge.test.ts src/organizationNavigation.test.ts && npm run check`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mobile-native/src/board/rowActions.ts mobile-native/src/board/rowActions.test.ts mobile-native/src/board/swipeEdge.ts mobile-native/src/board/swipeEdge.test.ts
+git add mobile-native/src/board/rowActions.ts mobile-native/src/board/rowActions.test.ts mobile-native/src/board/swipeEdge.ts mobile-native/src/board/swipeEdge.test.ts mobile-native/src/organizationNavigation.ts mobile-native/src/organizationNavigation.test.ts
 git commit -m "feat(native): what each Board row can do, and the path each change takes to the hub"
 ```
 
@@ -3777,15 +4849,15 @@ export function SwipeRow({ leading, trailing = [], onActiveChange, children }: S
 **Requirements (spec 7.3 and 14; rulings 16-21):**
 1. **Every session row** (Live's bands, pinned categories, Projects, Test runs, Archived) sits in a `SwipeRow`. Its context is `{ connected: state === "ready" && activeProfile?.id === hubId, organizationReady: organization.ready, archived }`, where `archived` is the `ProjectTreeItem` session's `archived` (false elsewhere).
 2. **Swipe actions** from `swipeActions(item, context)`: Archive or Unarchive (`archivebox`, fill `inkMid`), Stop (`stop.fill`, fill `inkHi`), Pin (`pin.fill`, fill `inkMid`). Leave out its `"more"` until Task 12.7 brings the menu More opens; until then the trailing side ends at Pin. The same actions reach VoiceOver through `swipeAccessibility`, spread on `BoardRow`.
-3. **Archive and Unarchive:** `archiveSession(organization.actions, archiveTarget(row), archived)`. Confirmed: the toast "Archived" (or "Unarchived") with the action "Undo", which runs the opposite change the same way. Not confirmed: call `organization.actions.reconcile()` once and show no failure text; the row then shows wherever the hub has it. While `archivingSessionId(organization.state)` is the row's `session_id`, every copy of the row renders `dimmed` (opacity 0.5, `accessibilityState.busy`).
+3. **Archive and Unarchive:** `archiveSession(organization.actions, archiveTarget(row), archived)`. Confirmed: the toast "Archived" (or "Unarchived") with the action "Undo", which runs the opposite change the same way. Not confirmed: call `organization.actions.reconcile()` once and show no failure text; the row then shows wherever the hub has it. While `archivingSessionId(organization.state)` is the row's archive id (`archiveTarget(row)?.id`: its `session_id` on this hub, its ref on another host), every copy of the row renders `dimmed` (opacity 0.5, `accessibilityState.busy`).
 4. **Stop:** `stops.stop(client, row.ref)` with one `BoardStops(getNativeMutationRuntime, hubId)` per hub (`releaseAll()` when the client changes, `dispose()` on unmount). "stopped": the toast "Stopped" (spec 8.3). "notWorking": the toast "Nothing to stop: its turn had already ended." "unavailable": the toast "Couldn't stop “<title>”. Open it to stop it there."
 5. **Pin:** `navigation.navigate("PinAssignment", { hubId, ref: row.ref, title: row.title })`.
 6. **The toast** sits 10pt above the bottom toolbar (phase 3's `Toast`, one at a time).
 7. **Offline** (ruling 21) comes from the context: the leading swipe reveals nothing and the trailing swipe reveals nothing (More arrives with Task 12.7).
 
 - [ ] **Step 1: Write the failing tests** (part 1's `BoardScreen.test.tsx` harness; add `vi.mock("react-native-gesture-handler/ReanimatedSwipeable", …gestureHandlerModuleMock())`, and an `expo-sqlite` mock whose `openDatabaseSync` returns `openSqliteSyncDouble().port`, as `ConversationScreen.recovery.test.tsx` does; local rows use real session ids, such as `organizationTestUtils.ts`'s `SESSION_ID`, since `archiveTarget` checks their shape):
-  - a working local row's swipeable has a leading Archive and trailing Stop and Pin; a finished one has no Stop; a row on paradise-park has no leading action;
-  - a full leading swipe on a local row sends `evener/archive/set` `{ kind: "session", id, archived: true }`; the row renders dimmed while the answer is pending; once confirmed, the toast reads "Archived" with "Undo", and Undo sends `archived: false`;
+  - a working local row's swipeable has a leading Archive and trailing Stop and Pin; a finished one has no Stop; a row on paradise-park has a leading Archive too (ruling 20);
+  - a full leading swipe on a local row sends `evener/archive/set` `{ kind: "session", id, archived: true }`, and on a paradise-park row `{ kind: "session", id: <its ref>, archived: true }`; the row renders dimmed while the answer is pending; once confirmed, the toast reads "Archived" with "Undo", and Undo sends `archived: false`;
   - Stop from the trailing swipe sends `thread/read` and then `turn/interrupt` through the real runtime, and the toast reads "Stopped";
   - Pin navigates to `PinAssignment` with `{ hubId, ref, title }`;
   - with the connection `"reconnecting"`, no row has a leading or trailing action;
@@ -3805,22 +4877,25 @@ Open PR 4a: "feat(native): swipe actions on Board rows (phase 2, PR 4a)". The de
 ### Task 12.6: The long-press menu, after a spike
 
 **Files:**
-- Create: `mobile-native/src/board/RowMenu.tsx` (`RowPreviewCard`, `RowMenuSheet`, and the long-press wrapper the spike keeps)
-- Modify (only for the library the spike keeps): `mobile-native/package.json`, `mobile-native/package-lock.json` and `mobile-native/Podfile.lock`
+- Create: `mobile-native/src/board/RowMenu.tsx` (`RowPreviewCard`, `rowMenuHosts`, the `RowMenuSheet` route, and the long-press wrapper the spike keeps)
+- Modify:
+  - `mobile-native/App.tsx` (`RowMenuSheet` joins the sheet group with `options={SHEET_ROUTES.RowMenuSheet}`), `mobile-native/src/screens.tsx` (`Routes` gains `RowMenuSheet: { hubId: string; ref: string }`) and `mobile-native/src/sheet/sheetRoutes.ts` (`RowMenuSheet: sheetOptions(["medium", "large"], "medium")`, a menu opening at half height);
+  - only for the library the spike keeps: `mobile-native/package.json`, `mobile-native/package-lock.json` and `mobile-native/Podfile.lock`.
 - Test: `mobile-native/src/board/RowMenu.test.tsx`
 
 **Interfaces:**
-- Consumes: `ClassifiedRow`, `whyLine`, `stateWord` (part 1 Task 2); `StateMark` (part 1 Task 4); `RowAction` and `ROW_ACTION_LABELS` (Task 12.3).
+- Consumes: `ClassifiedRow`, `whyLine`, `stateWord` (part 1 Task 2); `StateMark` (part 1 Task 4); `RowAction` and `ROW_ACTION_LABELS` (Task 12.3); `useSheet`, `<Sheet>`, `sheetHosts`, `sheetKey` and `useSheetHost` (Task 18).
 - Produces:
   - `ROW_ACTION_SYMBOLS: Record<RowAction, SFSymbol>`: `pin.fill`, `circle` (Mark as read), `circle.fill` (Mark as unread), `stop.fill`, `power`, `archivebox` (both), `pencil`
   - `<RowPreviewCard item hostLabel onPress />`
-  - `<RowMenuSheet item actions hostLabel visible onOpenSession onAction onClose />`
-  - `<RowMenu item actions hostLabel onOpenSession onAction onOpenChange>{row}</RowMenu>`: the long-press presentation; with the sheet it opens `RowMenuSheet`, with a native menu the native menu. The trailing swipe's More always opens `RowMenuSheet`, since a native context menu can't be opened from code.
+  - `interface RowMenuHost { item(ref: string): ClassifiedRow | undefined; actions(item: ClassifiedRow): RowAction[]; hostLabel(hostId: string): string; act(item: ClassifiedRow, action: RowAction): void; openSession(item: ClassifiedRow): void; closed(): void }` and `rowMenuHosts = sheetHosts<RowMenuHost>()`, keyed by `sheetKey(hubId)`. The Board provides it (Task 12.7): the sheet reads the row live and hands its answer back, because the Board's actions run through the Board's one `useBoardOrganization` and `BoardStops` (ruling 16), which a sheet can't mount a second time.
+  - `RowMenuSheet`, the route component for `"RowMenuSheet"` (ruling 28).
+  - `<RowMenu item actions hostLabel onOpenSession onAction onOpenChange onOpenSheet>{row}</RowMenu>`: the long-press presentation. With a native menu it is the spike's wrapper, whose open and close report through `onOpenChange`. With the sheet, a long press calls `onOpenSheet()`. The trailing swipe's More always opens `RowMenuSheet`, since a native context menu can't be opened from code.
 
 - [ ] **Step 1: Spike, in this order, and keep the first that passes all six checks.**
   1. `@expo/ui`'s SwiftUI `ContextMenu`: from `mobile-native`, with a real `node_modules` (`[ -L node_modules ]` prints nothing), `npx expo install @expo/ui` (SDK 57 pins ~57.0.16), then regenerate the lock with part 1 Task 4 Step 6's commands (the diff adds the `ExpoUI` pod and nothing else) and build Release. Wrap one Board row in `Host` + `ContextMenu`: `ContextMenu.Trigger` hosts the row through `RNHostView`, `ContextMenu.Preview` hosts `RowPreviewCard` through `RNHostView matchContents`, and `ContextMenu.Items` holds a `Button` per action (Shut down with `role="destructive"`).
   2. If it fails a check: revert that install and its lock change, then try `@react-native-menu/menu`'s `MenuView` with `shouldOpenOnLongPress` the same way (`npx expo install @react-native-menu/menu`, lock regenerated, Release build).
-  3. If that fails too: revert it, and keep `RowMenuSheet` (no dependency).
+  3. If that fails too: revert it, and keep the `RowMenuSheet` route (no dependency).
 
   The checks, each in the simulator:
   1. Long-pressing a row in the Board's list opens the menu with `RowPreviewCard` above the actions.
@@ -3833,12 +4908,20 @@ Open PR 4a: "feat(native): swipe actions on Board rows (phase 2, PR 4a)". The de
   Record the outcome and the failing check of each rejected option in the PR description. Only the kept library is installed; with the sheet, neither.
 - [ ] **Step 2: Write the failing tests** (render with `../renderNative.testkit`; mock `react-native` with `nativeModuleMock()` and `expo-symbols` as part 1's Task 4 does):
   - `RowPreviewCard` shows the title, the state word and reason (`whyLine`), and the project and host; its accessibility label is "Open <title>"; pressing it calls `onPress`.
-  - `RowMenuSheet` passes `visible` to its `Modal` (`presentationStyle: "pageSheet"`), lists `ROW_ACTION_LABELS` in the order of `actions`, calls `onAction` with the pressed action, calls `onOpenSession` from the card, renders "Shut down" in `dangerInk` and every other label in `inkHi`, and calls `onClose` from its "Close" button and from `onRequestClose`.
-  - `RowMenu`, with the sheet: a long press on the row (the wrapper's `onLongPress`, 500ms `delayLongPress`) opens the sheet and calls `onOpenChange(true)`; closing it calls `onOpenChange(false)`.
+  - The `RowMenuSheet` route, rendered with `{ hubId: "hub-1", ref }` params, a host provided in `rowMenuHosts` under `sheetKey("hub-1")`, and `@react-navigation/native`'s `useNavigation` and `usePreventRemove` mocked as Task 18.2's test mocks them:
+    - it shows "Close", the card, and `ROW_ACTION_LABELS` in the order of `host.actions(item)`, with "Shut down" in `dangerInk` and every other label in `inkHi`;
+    - pressing an action calls `goBack()` and then `host.act(item, action)`, in that order;
+    - pressing the card calls `goBack()` and then `host.openSession(item)`;
+    - "Close" calls `goBack()`, and unmounting calls `host.closed()` once;
+    - with no host (the Board is gone), or a ref the host no longer lists, it renders nothing and calls `goBack()`.
+  - `RowMenu`, with the sheet: a long press on the row (the wrapper's `onLongPress`, 500ms `delayLongPress`) calls `onOpenSheet()`.
 - [ ] **Step 3: Implement.**
   - `RowPreviewCard`: a pressable card on `surface` with a hairline `edge` border and 12pt radius: `StateMark` (still), the title (semibold 17/22, two lines), then the `WhyLine` (the word semibold in its hue, " · ", the reason in `inkHi`; for Finished, Idle and Shut down the state word alone in `inkMid`), then 13/18 `inkLow`: `folder` + the project, `server.rack` + `hostLabel(row.host_id)`. Task progress, subagent failures, model and effort, and the last message's excerpt join when S13, S3 and S1 reach the rows (spec 18).
-  - `RowMenuSheet`: `Modal` (`presentationStyle="pageSheet"`, `animationType="slide"`, `onRequestClose={onClose}`), a header row with "Close" (`accentInk`, trailing), the card, then one 52pt pressable per action: its `ROW_ACTION_SYMBOLS` glyph at 18pt in `inkMid` and its label at 17pt.
-  - `RowMenu`: with the sheet, a wrapper whose long press opens `RowMenuSheet`; with a native menu, the spike's wrapper, and its open and close report through `onOpenChange` (Task 13.3 holds the list while it's open).
+  - `RowMenuSheet`, a sheet route (ruling 28):
+    - `const sheet = useSheet({ onClosed: () => host?.closed() })`, then `const host = useSheetHost(rowMenuHosts, sheetKey(hubId), sheet)` and `const item = host?.item(ref)`. Without an item it finishes the sheet and renders nothing.
+    - `<Sheet done={{ label: "Close", onPress: () => sheet.finish() }}>` with no title (the card names the session), and one `ScrollView` (`contentInsetAdjustmentBehavior="automatic"`) holding the card, then one 44pt pressable per action: its `ROW_ACTION_SYMBOLS` glyph at 18pt in `inkMid` and its label at 17pt. 44pt rows (the spec's minimum touch target) keep a row's usual five actions inside the half-height sheet.
+    - An action or the card leaves first, then answers: `sheet.finish(() => { navigation.goBack(); host.act(item, action); })`, or `host.openSession(item)` for the card. The Board then pushes a screen or asks a question with the sheet already gone (ruling 28); an alert has its own window (`RCTAlertController`), so Shut down's confirmation shows as the sheet slides away.
+  - `RowMenu`: with the sheet, a wrapper whose long press calls `onOpenSheet()`; with a native menu, the spike's wrapper, whose open and close report through `onOpenChange`. Task 13.3 holds the list while either is open.
 - [ ] **Step 4: Run them and watch them pass**, then `npm run check`, and `make test-native-bundle` if a library was added.
 - [ ] **Step 5: Commit** (`feat(native): the Board row's long-press menu, with a preview card`).
 
@@ -3849,24 +4932,31 @@ Open PR 4a: "feat(native): swipe actions on Board rows (phase 2, PR 4a)". The de
 - Test: `mobile-native/src/board/BoardScreen.test.tsx`
 
 **Interfaces:**
-- Consumes: Task 12.6; Task 12.5's `rowContext` and `runRowAction`; `shutDownSession`, `renameSession` and `rowMenuActions` (Task 12.3); `seenMarkers` (part 1 Task 3).
+- Consumes: Task 12.6 (`RowMenu`, `RowMenuSheet`, `rowMenuHosts`); Task 12.5's `rowContext` and `runRowAction`; `shutDownSession`, `renameSession` and `rowMenuActions` (Task 12.3); `seenMarkers` (part 1 Task 3); `useProvideSheetHost` and `sheetKey` (Task 18.1).
 
-**Requirements (spec 7.3; rulings 18-21, 27):**
-1. **Every session row** sits in a `RowMenu` inside its `SwipeRow`, with `rowMenuActions(item, rowContext(item, archived))`.
-2. **More** (`ellipsis.circle`, fill `inkLow`) ends the trailing swipe, online or not, and opens `RowMenuSheet` for the row.
-3. **Menu actions:** Pin, Stop, Archive and Unarchive run as the swipes do (`runRowAction`); Mark as read `seenMarkers(hubId).markSeen(row)`; Mark as unread `seenMarkers(hubId).markUnread(row.ref)`; Shut down asks first with `Alert.alert("Shut down “<title>”?", "The agent stops. Send it a message to resume it.", [{ text: "Cancel", style: "cancel" }, { text: "Shut down", style: "destructive", onPress }])`, then `shutDownSession(client, row.ref)`: the toast "Session shut down", or "Couldn't shut down “<title>”: <the hub's message>"; Rename opens `Alert.prompt("Rename session", undefined, [{ text: "Cancel", style: "cancel" }, { text: "Rename", onPress: (name) => … }], "plain-text", row.title)`, then `renameSession(client, row.ref, name)`: the toast "Renamed", or "Couldn't rename “<title>”: <the hub's message>". Off iOS, Rename isn't offered. The preview card opens the session the way a tap does (part 1 Task 7: mark it seen, then navigate).
-4. **Offline** (ruling 21): the trailing swipe shows only More, and the menu keeps only Mark as read and Mark as unread.
+**Requirements (spec 7.3; rulings 18-21, 27-28):**
+1. **Every session row** sits in a `RowMenu` inside its `SwipeRow`, with `rowMenuActions(item, rowContext(item, archived))`. Its `onOpenSheet` opens `RowMenuSheet` for the row: `navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref })`.
+2. **More** (`ellipsis.circle`, fill `inkLow`) ends the trailing swipe, online or not, and opens `RowMenuSheet` for the row the same way.
+3. **The sheet's host.** While mounted, the Board provides `rowMenuHosts` under `sheetKey(hubId)` with `useProvideSheetHost`, memoized on the Board's items and connection:
+   - `item(ref)` is the row's current `ClassifiedRow` in the Board's items (a row that left the Board closes the menu);
+   - `actions(item)` is `rowMenuActions(item, rowContext(item, archived))`, so the menu follows the row's state while it's open;
+   - `hostLabel` is the Board's own;
+   - `act(item, action)` runs the menu actions below, and `openSession(item)` opens it the way a tap does;
+   - `closed()` is the menu's close, which Task 13.3 releases the list's hold by. Opening `RowMenuSheet` is its open.
+4. **Menu actions:** Pin, Stop, Archive and Unarchive run as the swipes do (`runRowAction`); Mark as read `seenMarkers(hubId).markSeen(row)`; Mark as unread `seenMarkers(hubId).markUnread(row.ref)`; Shut down asks first with `Alert.alert("Shut down “<title>”?", "The agent stops. Send it a message to resume it.", [{ text: "Cancel", style: "cancel" }, { text: "Shut down", style: "destructive", onPress }])`, then `shutDownSession(client, row.ref)`: the toast "Session shut down", or "Couldn't shut down “<title>”: <the hub's message>"; Rename opens `Alert.prompt("Rename session", undefined, [{ text: "Cancel", style: "cancel" }, { text: "Rename", onPress: (name) => … }], "plain-text", row.title)`, then `renameSession(client, row.ref, name)`: the toast "Renamed", or "Couldn't rename “<title>”: <the hub's message>". Off iOS, Rename isn't offered. The preview card opens the session the way a tap does (part 1 Task 7: mark it seen, then navigate).
+5. **Offline** (ruling 21): the trailing swipe shows only More, and the menu keeps only Mark as read and Mark as unread.
 
-- [ ] **Step 1: Write the failing tests** (Task 12.5's harness, with `Alert.prompt` added to the `react-native` mock):
-  - a working local row's trailing swipe ends with More, which opens the sheet listing Pin to category…, Stop, Shut down, Archive and (with `rename: true`) Rename;
-  - Shut down asks first; the destructive button sends `thread/shutdown { ref }` and the toast reads "Session shut down";
-  - Rename sends `evener/thread/name/set` with the prompt's text;
-  - Mark as read marks a finished row seen, and the row moves to Idle;
-  - with the connection `"reconnecting"`, the trailing swipe offers only More, and the menu offers only the read marks;
-  - pressing the menu's preview card opens the session.
+- [ ] **Step 1: Write the failing tests** (Task 12.5's harness, with `Alert.prompt` added to the `react-native` mock and `useNavigationState` to the navigation mock). The Board's screen test drives the host the Board provides, read from `rowMenuHosts.get(sheetKey("hub-1"))`, the way the sheet does:
+  - a working local row's trailing swipe ends with More, which navigates to `"RowMenuSheet"` with `{ hubId: "hub-1", ref }`, and the host's `actions` for that row are Pin to category…, Stop, Shut down, Archive and (with `rename: true`) Rename;
+  - `act(item, "shutDown")` asks first; the destructive button sends `thread/shutdown { ref }` and the toast reads "Session shut down";
+  - `act(item, "rename")` sends `evener/thread/name/set` with the prompt's text;
+  - `act(item, "markRead")` marks a finished row seen, and the row moves to Idle;
+  - with the connection `"reconnecting"`, the trailing swipe offers only More, and the host's `actions` are only the read marks;
+  - `openSession(item)` opens the session;
+  - a row that leaves the Board is gone from `item(ref)`.
 - [ ] **Step 2: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/board/BoardScreen.test.tsx`
 - [ ] **Step 3: Implement** to the requirements.
-- [ ] **Step 4: Run them and watch them pass**, then `npm run check`. Look in the simulator against a local `evener-hub`: long-press a row, open a session from its preview, shut one down, rename one, mark one read and unread, and stop the hub to see only More and the read marks.
+- [ ] **Step 4: Run them and watch them pass**, then `npm run check`. Look in the simulator against a local `evener-hub`: long-press a row, and open More, which rises as a half-height sheet with its grabber; open a session from its preview, shut one down, rename one, mark one read and unread, and stop the hub to see only More and the read marks.
 - [ ] **Step 5: Commit** (`feat(native): the long-press menu on Board rows`).
 
 Open PR 4b: "feat(native): the long-press menu on Board rows (phase 2, PR 4b)". The description names the menu spike's outcome and each rejected option's failing check, and that Copy link waits for a session deep link.
@@ -4674,7 +5764,7 @@ export function useReduceMotion(): boolean {
 - Test: `mobile-native/src/board/BoardScreen.test.tsx` and `mobile-native/src/board/BoardRow.test.tsx`
 
 **Interfaces:**
-- Consumes: Task 13.2; `SwipeRow`'s `onActiveChange` and `RowMenu`'s `onOpenChange` (Tasks 12.4, 12.6).
+- Consumes: Task 13.2; `SwipeRow`'s `onActiveChange`, `RowMenu`'s `onOpenChange`, and the row menu sheet's open and close (Tasks 12.4, 12.6, 12.7); `useScreenInFront` (Task 18.2).
 - Produces:
   - `ROW_MOVE`: `LinearTransition.springify().duration(250).dampingRatio(1)` (spec 16.6: rows move with a 250ms spring; critically damped, so nothing bounces)
   - `BoardRow` gains `wash?: number`
@@ -4684,9 +5774,9 @@ export function useReduceMotion(): boolean {
 1. **One keyed list.** Every item in the Board's list has a `key` unique in the list and stable across reads; Live's session rows are keyed by ref alone (`live:${ref}`), so a row that changes band moves instead of leaving and arriving, and they carry `needsYou` (true in the Needs you band, false in the other Live bands). If part 1's Task 7 rendered the Board with a `SectionList`, flatten it into one keyed item list first: layout transitions and `HeldOrder` both need one.
 2. **The list shows `useSettledList(loaded ? items : null).snapshot.display`** (the skeleton and empty states stay part 1's). `items` is memoized, so an unchanged Board doesn't re-apply.
 3. **The list** is `Animated.FlatList` from `react-native-reanimated`, with `keyExtractor={(item) => item.key}`, `itemLayoutAnimation={reduceMotion ? undefined : ROW_MOVE}` (`useReduceMotion()`), and `listScrollHandlers((event) => list.send(event))` spread on it (memoized).
-4. **Interactions hold it:** each `SwipeRow`'s `onActiveChange` calls `list.setInteraction("swipe:" + item.key, active)`; `RowMenu`'s and `RowMenuSheet`'s open state through `list.setInteraction("menu", open)`; select mode through `list.setInteraction("select", selecting)` (Task 13.4).
+4. **Interactions hold it:** each `SwipeRow`'s `onActiveChange` calls `list.setInteraction("swipe:" + item.key, active)`; a native menu's `onOpenChange`, and the row menu sheet (opening `RowMenuSheet`, then its host's `closed()`, Task 12.7), call `list.setInteraction("menu", open)`; select mode calls `list.setInteraction("select", selecting)` (Task 13.4).
 5. **App scrolls hold it:** every animated scroll the Board starts (a section chip, a count in the Live summary, `revealProject`, and phase 6's board jump when it lands) calls `list.send("appScrollStart")` just before `scrollToIndex` or `scrollToOffset`. With Reduce Motion they scroll without animation and send nothing.
-6. **Leaving releases it:** `list.send("reset")` in the focus effect's cleanup (the Board blurs) and when `AppState` changes to `"background"` or `"inactive"`.
+6. **Leaving releases it:** `list.send("reset")` when the Board leaves the front (`useScreenInFront(route.key)` turns false: a screen pushed over it, never its own row menu sheet, ruling 28) and when `AppState` changes to `"background"` or `"inactive"`.
 7. **The wash:** each session row gets `wash={snapshot.washed.has(item.key) ? snapshot.washToken : 0}`. When `wash` changes to a non-zero token, `BoardRow` shows an `Animated.View` behind its content (`StyleSheet.absoluteFill`, `pointerEvents="none"`, `backgroundColor: palette.attentionBg`) whose opacity is set to 1 and animated to 0 with `withTiming(0, { duration: WASH_MS })`. Reduce Motion keeps the wash (ruling 23).
 
 - [ ] **Step 1: Add the reanimated mock to the testkit**
@@ -4722,7 +5812,7 @@ export function reanimatedModuleMock() {
   - a change during a fling (`onScrollBeginDrag`, `onScrollEndDrag`, `onMomentumScrollBegin`) waits for `onMomentumScrollEnd`;
   - tapping the Live chip sends an app scroll: a change arriving before the list's `onMomentumScrollEnd` waits for it;
   - with a row's swipe open (its swipeable's `onSwipeableOpenStartDrag`), a change waits until `onSwipeableClose`;
-  - blurring the Board applies a held change at once;
+  - a screen pushed over the Board applies a held change at once, and the row menu's sheet over it doesn't (the navigation mock's `useNavigationState` answers each stack);
   - `itemLayoutAnimation` is set, and is undefined while `AccessibilityInfo.isReduceMotionEnabled()` resolves true;
   - `BoardRow.test.tsx`: `wash={2}` renders an `Animated.View` filled `attentionBg`; `wash={0}` renders none.
 - [ ] **Step 3: Run them and watch them fail.** Run: `cd mobile-native && npx vitest run src/board/BoardScreen.test.tsx src/board/BoardRow.test.tsx`
@@ -4803,7 +5893,7 @@ it("applies each action to the sessions it can act on, once each", () => {
 		],
 		online,
 	);
-	expect(refs(actions.archive)).toEqual([local("a"), local("b")]);
+	expect(refs(actions.archive)).toEqual([local("a"), local("b"), "paradise-park:c"]);
 	expect(refs(actions.pin)).toEqual([local("a"), local("b"), "paradise-park:c", local("e")]);
 	expect(refs(actions.markRead)).toEqual([local("a"), "paradise-park:c", local("d")]);
 });
@@ -4859,9 +5949,9 @@ export interface SelectionActions {
 }
 
 /** Each session once, however many sections it was chosen in. Archive takes
- * this hub's own top-level sessions not already archived (ruling 20) and Pin
- * top-level sessions, both only while connected with the journal free
- * (ruling 21); Mark as read takes the finished ones. */
+ * top-level sessions not already archived, on this hub or another host
+ * (ruling 20), and Pin top-level sessions, both only while connected with the
+ * journal free (ruling 21); Mark as read takes the finished ones. */
 export function selectionActions(
 	selected: readonly SelectedRow[],
 	context: { connected: boolean; organizationReady: boolean },
@@ -4903,6 +5993,7 @@ Open PR 4c: "feat(native): select mode, and a Board that holds still (phase 2, P
 
 ## Self-review against the spec
 
+- **6 (sheets):** medium and large detents, a swipe down that closes, and a question before unsaved input is lost: Task 18 (ruling 28). The Board's one sheet, the row menu, opens at medium: Task 12.6.
 - **7.1:**
   - Projects/Hosts with the Organize by toggle, pinned projects first, live counts, the host's Offline state: Tasks 10.1, 10.3, 10.4 and 10.6.
   - Inside a project, today, recent and a folded archived group: Task 10.4 (ruling 14).
@@ -4913,8 +6004,8 @@ Open PR 4c: "feat(native): select mode, and a Board that holds still (phase 2, P
   - Swipe right archives, full swipe, "Archived · Undo" for 8 seconds: Tasks 12.4 and 12.5.
   - The 24pt edge band: Tasks 12.3 and 12.4.
   - Swipe left: Stop only while working, Pin, More: Tasks 12.3, 12.5 and 12.7.
-  - Long-press menu with a preview card and no "Open" item: Tasks 12.6 and 12.7; its actions: Task 12.3; Copy link waits (ruling 27).
+  - Long-press menu with a preview card and no "Open" item: Tasks 12.6 and 12.7, with the row menu a half-height sheet (ruling 28); its actions: Task 12.3; Copy link waits (ruling 27).
   - The list never reorders under a finger or while scrolling; changes apply on settle; the 250ms spring; the amber wash: Tasks 13.1-13.3.
 - **7.4:** search's project hit lands through `projectRevealTarget` (Task 10.4) and `revealProject` (Task 10.6); part 2's Task 15 wires the tap.
-- **14:** an archived row dims until confirmed (Task 12.5); offline Board actions: ruling 21 and Question 2.
+- **14:** an archived row dims until confirmed (Task 12.5); offline Board actions: ruling 21, the interim until phase 6 holds them and sends them on reconnect (Jesse's answer).
 - **16.1, 16.5, 16.6:** the Global Constraints' swipe fills and symbols; `ROW_MOVE` and the wash (Task 13.3); Reduce Motion (ruling 23, Task 13.2).

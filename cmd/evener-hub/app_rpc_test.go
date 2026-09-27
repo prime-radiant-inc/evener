@@ -12713,6 +12713,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerSessionPinAssign,
 		appwire.MethodEvenerSessionPinUnpin,
 		appwire.MethodEvenerSearch,
+		appwire.MethodEvenerActivityRead,
 		appwire.MethodEvenerInstanceList,
 		appwire.MethodEvenerInstanceCreate,
 		appwire.MethodEvenerInstanceEdit,

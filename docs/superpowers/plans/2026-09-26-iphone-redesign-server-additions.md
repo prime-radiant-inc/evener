@@ -1372,8 +1372,8 @@ type NavigationTaskProgress struct {
 
 ## S3: Subagent tallies (PRs 18-19, full plan elsewhere)
 
-- **Plan.** Written in full, with its rulings, in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md` (PRs 18 and 19, rulings 19 to 23).
-- **Adds.** Per live top-level session: running, failed and done subagents over the whole tree, omitted descendants included (spec 9), counted from the daemon's delegate journal and carried on its rows as `subagents`. It drives the row's "2 subagents failed" and the Subagents chip's strip on 500-node trees.
+- **Plan.** Written in full, with its rulings, in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md` (PRs 18 and 19, rulings 19 to 24).
+- **Adds.** Per live top-level session: running, failed and done subagents over the whole tree, omitted descendants included (spec 9), counted from the daemon's delegate journal and carried on its rows as `subagents`. It drives the Subagents chip's strip and counts on 500-node trees. The Board row shows no subagent failures: it is red only when the coordinator itself failed (Jesse, 2026-09-26; the S4/S5/S3 plan's ruling 24).
 - **Fallback.** Tally the loaded children; "+N more".
 
 ---
@@ -1458,7 +1458,7 @@ type NavigationTaskProgress struct {
 - **Design.** `StopSubtreeAndDrive` cascades to the whole subtree, so it cannot back "Stop subagent" as Jesse ruled it: PR 30 needs a non-cascading counterpart that ends only the targeted delegate's own turn and leaves its subagents running. PR 30: a daemon method `evener/delegate/stop` with params `{ref (the root), delegateId, clientMutationId}`, retry-safe like `turn/interrupt` (`lockRetrySafeMutation`), authorized for any delegate in the root's tree, and added to the retirement and recovery admission switches (`server/appwire_retirement_admission.go:19-36`, `cmd/evener-hub/app_sources.go:328-363`). PR 31: hub routing by the root ref, a `ThreadCapabilities.StopSubagent` bit on the root thread, and the catalog. The phone maps a subagent row to its delegate ID through `EvenerDelegateInfo` (`appwire/types.go:1233-1240`).
 - **Fallback.** Steer the coordinator.
 - **Tests.** Agent: a human stop of a nested delegate ends only its own turn and records the durable event, while its own subagents keep running and it takes their results the next time it runs. Server: root target, an unknown delegate refused, a retry replays the receipt. Hub routing, catalog tests. No new notification: `evener/delegate/updated` already reports the result.
-- **Open questions.** A direct message to a subagent is not planned: the spec's subagent screen routes talk through the coordinator.
+- **A message to a running subagent.** Jesse gave a subagent's screen the normal composer on 2026-09-26 (spec 9; the phase 4 plan's ruling 30). The hub takes a message for a subagent once its run has ended, since its past read advertises `send` and a send resumes it; a running one is the read-only alias above. Routing a message to a running subagent is therefore the second half of this item, and its design isn't written yet. Until then a running subagent's screen holds "Ask coordinator to stop it" where its composer would be.
 
 ---
 

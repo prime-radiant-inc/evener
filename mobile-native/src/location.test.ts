@@ -3,6 +3,7 @@ import {
 	LocationRepository,
 	locationForRoute,
 	restoredStack,
+	routeToSave,
 } from "./location";
 
 function storage() {
@@ -446,5 +447,26 @@ describe("last mobile location", () => {
 			},
 		});
 		expect(() => repo.read(["studio"])).toThrow(failure);
+	});
+	it("reopens the screen under a sheet, never the sheet", () => {
+		const session = {
+			key: "conversation",
+			name: "Conversation",
+			params: { hubId: "studio", ref: "local:s1", title: "Fix it" },
+		};
+		const tasks = {
+			key: "tasks",
+			name: "TasksSheet",
+			params: { hubId: "studio", ref: "local:s1", threadId: "s1", hasTasks: true },
+		};
+		const hubs = { key: "hubs", name: "Hubs" };
+		const saved = routeToSave({ index: 2, routes: [hubs, session, tasks] });
+		expect(saved).toBe(session);
+		expect(saved && locationForRoute(saved, "studio")).toEqual({
+			hubId: "studio",
+			conversation: { ref: "local:s1", title: "Fix it" },
+		});
+		expect(routeToSave({ index: 1, routes: [hubs, session] })).toBe(session);
+		expect(routeToSave({ index: 0, routes: [tasks] })).toBeUndefined();
 	});
 });

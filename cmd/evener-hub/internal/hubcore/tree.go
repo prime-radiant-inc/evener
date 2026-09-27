@@ -472,7 +472,11 @@ type TreeNode struct {
 	// Tasks is this session's own task-list progress, carried from its live
 	// entry; nil for a session with no live entry, which includes every
 	// in-process child.
-	Tasks     *appwire.TaskAggregate
+	Tasks *appwire.TaskAggregate
+	// Subagents is a live root's whole-tree subagent tally (LiveEntry.Subagents,
+	// S3). Every builder sets it from one closure; subagent rows, ended sessions
+	// and a crashed daemon's rows have none.
+	Subagents appwire.SubagentTally
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	Age       string // pre-formatted "now", "2m", "3h", "5d"
@@ -869,6 +873,18 @@ func liveWorkspaceIdentity(entry LiveEntry) (string, appwire.Ref, bool) {
 	return currentID, ref, true
 }
 
+// LiveRowRef is the ref a live root's Live row carries (liveRefMap in
+// buildTreeAtWithProjects): the workspace ref its daemon advertises when that
+// ref is valid for the daemon's own source, else the session's local ref. A
+// client joining per-session data to Board rows by ref, as it does with
+// evener/activity/read, needs this exact spelling.
+func LiveRowRef(entry LiveEntry) string {
+	if _, ref, ok := liveWorkspaceIdentity(entry); ok {
+		return ref.String()
+	}
+	return hubapi.LocalRef(entry.SessionID).String()
+}
+
 // supersededSessionIDs identifies persisted instance IDs that a live daemon
 // has replaced under a stable workspace ref. Keeping those stale metadata rows
 // in the navigation tree would render the same logical session twice.
@@ -1056,6 +1072,17 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return appwire.CloneTaskAggregate(liveMap[id].Tasks)
 	}
 
+	// subagentsFor resolves a live root's subagent tally from the same live map,
+	// so its Live, project and NeedsYou rows agree (S3). A crash-retained entry
+	// answers none: its daemon runs nothing, the rule that already drops a
+	// crashed entry's listed children above.
+	subagentsFor := func(id string) appwire.SubagentTally {
+		if entry := liveMap[id]; !entry.Crashed {
+			return entry.Subagents
+		}
+		return appwire.SubagentTally{}
+	}
+
 	// dormantFor resolves "this session has never run" for a session ID, from
 	// the same metaMap every builder below already consults — one closure, for
 	// the same reason stateFor and askPendingFor are: a session listed in both
@@ -1219,11 +1246,13 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		askPending := askPendingFor(m.ID)
 		approvalPending := approvalPendingFor(m.ID)
 		approval := firstApprovalFor(m.ID)
+		subagentTally := subagentsFor(m.ID)
 		if parentDead {
 			state = "ended"
 			askPending = false
 			approvalPending = false
 			approval = appwire.SandboxEscalationRequested{}
+			subagentTally = appwire.SubagentTally{}
 		}
 		// A subagent's state already resolved through stateFor above: its own
 		// live entry's status when it has one, else the parent's carried state
@@ -1252,6 +1281,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			CompletedJobs:   appwire.CloneEvenerJobs(liveMap[m.ID].CompletedJobs),
 			Watches:         watchesFor(m.ID),
 			Tasks:           tasksFor(m.ID),
+			Subagents:       subagentTally,
 		}
 
 		childMetas := childrenByParent[m.ID]
@@ -1314,20 +1344,23 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		// Rollup: highest-attention state (for the dot fallback) plus the
 		// magnitude counts the header renders. Each top-level session and its
 		// children form one task tree: child activity keeps the project working,
-		// but cannot inflate the count beyond one for that task tree.
+		// but cannot inflate the count beyond one for that task tree. A
+		// descendant (any depth) can only ever raise the task tree's state to
+		// "active"; only the top-level session's own state can raise the
+		// rollup into an attention state (#2557). That state is read through
+		// hubapi.AttentionState, so a session blocked on an approval needs you
+		// rather than reading as working. Subagent failures still show in the
+		// session's own Subagents chip and list.
 		rollup := ""
 		rollupLive, rollupAttn := 0, 0
 		for _, s := range sessions {
-			taskState := s.State
+			taskState := hubapi.AttentionState(s.State, s.ApprovalPending)
 			var includeDescendants func(TreeNode)
 			includeDescendants = func(node TreeNode) {
-				if len(node.RunningJobs) > 0 && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
+				if (node.State == "active" || len(node.RunningJobs) > 0) && hubapi.RollupRank("active") > hubapi.RollupRank(taskState) {
 					taskState = "active"
 				}
 				for _, child := range node.Children {
-					if hubapi.RollupRank(child.State) > hubapi.RollupRank(taskState) {
-						taskState = child.State
-					}
 					includeDescendants(child)
 				}
 			}
@@ -1498,6 +1531,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),
 				Watches:         appwire.CloneEvenerWatches(le.Watches),
 				Tasks:           tasksFor(le.SessionID),
+				Subagents:       subagentsFor(le.SessionID),
 			}
 			liveNodes = append(liveNodes, node)
 			continue
@@ -1510,11 +1544,12 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		liveNodes = append(liveNodes, node)
 	}
 	sort.SliceStable(liveNodes, func(i, j int) bool {
-		ri, rj := hubapi.AttentionRank(liveNodes[i].State), hubapi.AttentionRank(liveNodes[j].State)
+		a, b := &liveNodes[i], &liveNodes[j]
+		ri, rj := hubapi.AttentionRank(hubapi.AttentionState(a.State, a.ApprovalPending)), hubapi.AttentionRank(hubapi.AttentionState(b.State, b.ApprovalPending))
 		if ri != rj {
 			return ri > rj
 		}
-		return treeNodeLess(liveNodes[i], liveNodes[j], metaMap, liveMap)
+		return treeNodeLess(*a, *b, metaMap, liveMap)
 	})
 
 	// Drop archived sessions from the Live tier: an explicit session
@@ -1601,6 +1636,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			CompletedJobs:   appwire.CloneEvenerJobs(le.CompletedJobs),
 			Watches:         appwire.CloneEvenerWatches(le.Watches),
 			Tasks:           tasksFor(le.SessionID),
+			Subagents:       subagentsFor(le.SessionID),
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))
@@ -1618,16 +1654,17 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		needsYou = append(needsYou, node)
 	}
 	// Three bands, oldest-first inside each band (Track A §2 ask-tiering):
-	// errored (broken beats blocked) > ask-pending (blocked beats your-move) >
-	// your-move (a generic amber settle). AttentionRank isn't used here — it
-	// would also separate plain awaiting from warning, which both belong in
-	// the your-move band unless ask-pending.
+	// errored (broken beats blocked) > blocked on a question or an approval
+	// (blocked beats your-move) > your-move (a generic amber settle).
+	// AttentionRank isn't used here: it would also separate plain awaiting
+	// from warning, which both belong in the your-move band unless blocked.
 	sort.SliceStable(needsYou, func(i, j int) bool {
-		bi, bj := hubapi.NeedsYouBand(needsYou[i].State, needsYou[i].AskPending), hubapi.NeedsYouBand(needsYou[j].State, needsYou[j].AskPending)
+		a, b := &needsYou[i], &needsYou[j]
+		bi, bj := hubapi.NeedsYouBand(a.State, a.AskPending, a.ApprovalPending), hubapi.NeedsYouBand(b.State, b.AskPending, b.ApprovalPending)
 		if bi != bj {
 			return bi > bj
 		}
-		return needsYou[i].UpdatedAt.Before(needsYou[j].UpdatedAt)
+		return a.UpdatedAt.Before(b.UpdatedAt)
 	})
 
 	// Live already excludes archived sessions (the filter right after the
