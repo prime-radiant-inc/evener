@@ -34,8 +34,9 @@ test("a test whose act rejects as it expects passes", async () => {
 });
 
 // React keeps the work an act queued before its callback rejected, and the
-// next act runs it. When that work throws, the error is this test's, and the
-// setup's unmount and console check still run for it.
+// next act runs it: here, the guard's own. When that work throws, the error is
+// this test's and fails it, which is the only thing that does, and the setup's
+// unmount still runs for it.
 test.fails("a test whose leftover React work throws fails with that error", async () => {
   function ThrowsOnRender(): never {
     throw new Error("thrown by work the rejected act left queued");
@@ -46,9 +47,8 @@ test.fails("a test whose leftover React work throws fails with that error", asyn
       throw new Error("rejected on purpose");
     }),
   ).rejects.toThrow("rejected on purpose");
-  console.warn("written by the test whose leftover work throws");
 });
 
-test("the test after that one also starts with an empty page and a clean console", () => {
+test("the test after that one also starts with an empty page", () => {
   expect(document.body.innerHTML).toBe("");
 });
