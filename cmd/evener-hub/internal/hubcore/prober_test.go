@@ -192,8 +192,8 @@ func fuzzScenarioStatusProber_DecodesPendingEscalation(t *testing.T) {
 	prober, entry := startProbeDaemon(t, probeDaemonConfig{
 		sessionID: "01A", state: appwire.ThreadStatusActive,
 		source: wireProbeEnvelopeSource{escalations: []appwire.SandboxEscalationRequested{
-			{EscalationID: "esc_1", Tool: "write_file", Kind: "file", DeniedPath: "/home/me/sites/docs/index.md"},
-			{EscalationID: "esc_2", Tool: "edit_file", Kind: "file", DeniedPath: "/etc/hosts"},
+			{EscalationID: "esc_1", Tool: "write_file", Kind: "file_tool", DeniedPath: "/home/me/sites/docs/index.md"},
+			{EscalationID: "esc_2", Tool: "edit_file", Kind: "file_tool", DeniedPath: "/etc/hosts"},
 		}},
 	})
 	got := prober.Probe(entry)
