@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +26,7 @@ import (
 
 // startDriver runs the standalone driver against a fake of the test's own and
 // returns its base URL. The driver stops when the test does.
-func startDriver(t *testing.T, hold time.Duration, rounds int, jobRelease string) string {
+func startDriver(t *testing.T, hold time.Duration, rounds int, jobRelease string, scriptPath string) string {
 	t.Helper()
 	srv, err := fakellm.NewOn("127.0.0.1:0")
 	if err != nil {
@@ -32,9 +34,19 @@ func startDriver(t *testing.T, hold time.Duration, rounds int, jobRelease string
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	var scripted *scriptMode
+	if scriptPath != "" {
+		loaded, err := loadScript(scriptPath)
+		if err != nil {
+			cancel()
+			srv.Close()
+			t.Fatalf("load script: %v", err)
+		}
+		scripted = loaded
+	}
 	go func() {
 		defer close(done)
-		if err := serve(ctx, srv, hold, rounds, jobRelease); err != nil {
+		if err := serve(ctx, srv, hold, rounds, jobRelease, scripted); err != nil {
 			t.Errorf("driver: %v", err)
 		}
 	}()
@@ -44,6 +56,94 @@ func startDriver(t *testing.T, hold time.Duration, rounds int, jobRelease string
 		<-done
 	})
 	return srv.BaseURL()
+}
+
+// TestScriptModeAnswersOnlyTheMarkedSession pins --script's contract: the
+// session whose request texts contain the marker gets the scripted answers,
+// in order, and every other session against the same fake keeps the default
+// read_file behaviour. The marker rides in the prompt because that is the
+// only per-session channel a spawn carries: identical spawn calls are the
+// fixture's ordinary case, so the marker is what distinguishes a scripted
+// client session from the fleet it manages.
+func TestScriptModeAnswersOnlyTheMarkedSession(t *testing.T) {
+	scriptFile := filepath.Join(t.TempDir(), "script.json")
+	script := `{
+		"marker": "PM-SCRIPTED",
+		"rounds": [
+			{"tool": "hub__hub_overview", "args": {}},
+			{"tool": "hub__start_session", "args": {"cwd": "/tmp/w", "prompt": "worker one", "name": "worker"}},
+			{"text": "worker started; ending my turn"}
+		]
+	}`
+	if err := os.WriteFile(scriptFile, []byte(script), 0o600); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	baseURL := startDriver(t, 0, 5, "", scriptFile)
+
+	pm := newSession(t, baseURL, "pm")
+	pm.messages = append(pm.messages, map[string]any{"role": "user", "content": "You are the PM. PM-SCRIPTED. Supervise."})
+	first := pm.round(context.Background())
+	if first.name != "hub__hub_overview" {
+		t.Fatalf("scripted round 1: want hub__hub_overview, got %q", first.name)
+	}
+	second := pm.round(context.Background())
+	if second.name != "hub__start_session" {
+		t.Fatalf("scripted round 2: want hub__start_session, got %q", second.name)
+	}
+	if second.args["prompt"] != "worker one" || second.args["name"] != "worker" {
+		t.Fatalf("scripted round 2: want the script's arguments, got %v", second.args)
+	}
+
+	// A scripted text round answers with content and no tool call, ending
+	// the turn; the session helper's round() insists on a tool call, so the
+	// final scripted round is read directly.
+	body, err := json.Marshal(map[string]any{
+		"model":    fakellm.ModelID,
+		"messages": pm.messages,
+		// The session loop always sends its tool list; without one, the fake
+		// answers the background session-namer's structured call instead.
+		"tools": []any{map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": "read_file", "parameters": map[string]any{"type": "object"}},
+		}},
+		"stream": false,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resp, err := http.Post(baseURL+"/chat/completions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("round 3: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				Content   string `json:"content"`
+				ToolCalls []any  `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode round 3: %v", err)
+	}
+	if len(decoded.Choices) != 1 || decoded.Choices[0].Message.Content != "worker started; ending my turn" || len(decoded.Choices[0].Message.ToolCalls) != 0 {
+		t.Fatalf("scripted round 3: want the script's text answer, got %+v", decoded)
+	}
+
+	// The unmarked session against the same fake keeps the default behaviour.
+	other := newSession(t, baseURL, "other")
+	call := other.round(context.Background())
+	if call.name != "read_file" {
+		t.Fatalf("unmarked session: want default read_file, got %q", call.name)
+	}
+
+	// Past the script the marked session also falls back to the default.
+	pm.newTurn("one more")
+	after := pm.round(context.Background())
+	if after.name != "read_file" {
+		t.Fatalf("post-script round: want default read_file, got %q", after.name)
+	}
 }
 
 // session drives the fake the way a real evener session does: the whole
@@ -218,7 +318,7 @@ func (s *session) compact() {
 func TestRoundsAreCountedPerSession(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	baseURL := startDriver(t, 0, 3, "")
+	baseURL := startDriver(t, 0, 3, "", "")
 
 	first := newSession(t, baseURL, "first")
 	second := newSession(t, baseURL, "second")
@@ -266,7 +366,7 @@ func TestConcurrentRoundLinesNameTheirSession(t *testing.T) {
 	defer cancel()
 	// --rounds 3 so each session's third round is an "ending the turn" line as
 	// well: that line has to name its session too.
-	baseURL := startDriver(t, 0, 3, "")
+	baseURL := startDriver(t, 0, 3, "", "")
 
 	// Both sessions run at once, on their own goroutines, so the driver is
 	// answering them from separate goroutines of its own and the log lines
@@ -334,7 +434,7 @@ func TestASessionsNameOutlivesItsTurns(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	baseURL := startDriver(t, 0, 2, "")
+	baseURL := startDriver(t, 0, 2, "", "")
 
 	s := newSession(t, baseURL, "long-lived")
 	first := s.round(ctx)
@@ -379,7 +479,7 @@ func TestBackgroundJobModeAppliesToEverySession(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	baseURL := startDriver(t, 0, 20, "release-the-job")
+	baseURL := startDriver(t, 0, 20, "release-the-job", "")
 
 	for _, name := range []string{"first", "second"} {
 		s := newSession(t, baseURL, name)
@@ -421,7 +521,7 @@ func TestBackgroundJobModeAppliesToEverySession(t *testing.T) {
 func TestTurnsAreCountedFromTheirOwnStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	baseURL := startDriver(t, 0, 3, "")
+	baseURL := startDriver(t, 0, 3, "", "")
 
 	s := newSession(t, baseURL, "stopped")
 	if got := s.round(ctx).name; got != "read_file" {
@@ -461,7 +561,7 @@ func TestACancelledRoundLeavesTheNextTurnItsOwnCount(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	const hold = 300 * time.Millisecond
-	baseURL := startDriver(t, hold, 3, "")
+	baseURL := startDriver(t, hold, 3, "", "")
 
 	s := newSession(t, baseURL, "stopped")
 	// Round 1's id is this session's name in the driver's log. It is read here,
@@ -530,7 +630,7 @@ func TestAnAbandonedRoundDoesNotEndTheTurnThatReplacedIt(t *testing.T) {
 	// Installed before the driver exists: its goroutines read the hold hook,
 	// and startDriver's cleanup joins them before this one puts it back.
 	holds := controlHolds(t)
-	baseURL := startDriver(t, 0, 3, "")
+	baseURL := startDriver(t, 0, 3, "", "")
 
 	s := newSession(t, baseURL, "abandoning")
 	for round := 1; round <= 2; round++ {
@@ -659,7 +759,7 @@ func waitForLog(t *testing.T, logged *syncBuffer, substr string) {
 func TestARoundCountSurvivesCompaction(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	baseURL := startDriver(t, 0, 5, "")
+	baseURL := startDriver(t, 0, 5, "", "")
 
 	s := newSession(t, baseURL, "compacted")
 	for round := 1; round <= 2; round++ {
@@ -686,7 +786,7 @@ func TestARoundCountSurvivesCompaction(t *testing.T) {
 func TestTheNotificationTurnEndsWithoutANewJob(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	baseURL := startDriver(t, 0, 20, "release-the-job")
+	baseURL := startDriver(t, 0, 20, "release-the-job", "")
 
 	s := newSession(t, baseURL, "waker")
 	if got := s.round(ctx).name; got != "shell" {
@@ -716,7 +816,7 @@ func TestTheNotificationTurnEndsWithoutANewJob(t *testing.T) {
 func TestToolCallIDsAreUnique(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	baseURL := startDriver(t, 0, 20, "")
+	baseURL := startDriver(t, 0, 20, "", "")
 
 	seen := map[string]string{}
 	for _, name := range []string{"first", "second"} {
@@ -771,7 +871,7 @@ func TestASessionsHoldDoesNotBlockAnother(t *testing.T) {
 	// A hold far longer than the deadline below: the second session's round
 	// can only be logged inside it if the two holds overlap.
 	const hold = 30 * time.Second
-	baseURL := startDriver(t, hold, 20, "")
+	baseURL := startDriver(t, hold, 20, "", "")
 
 	requestCtx, cancelRequests := context.WithCancel(ctx)
 	defer cancelRequests()
@@ -813,7 +913,7 @@ func TestSessionAffinityHeaderNamesRound1(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	baseURL := startDriver(t, 0, 2, "")
+	baseURL := startDriver(t, 0, 2, "", "")
 
 	// Session with affinity header
 	s := newSession(t, baseURL, "with-affinity")
@@ -849,7 +949,7 @@ func TestToolCallIDFallbackWhenNoAffinityHeader(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	baseURL := startDriver(t, 0, 2, "")
+	baseURL := startDriver(t, 0, 2, "", "")
 
 	// Session without affinity header (affinityHeaderID remains empty)
 	s := newSession(t, baseURL, "no-affinity")

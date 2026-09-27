@@ -53,6 +53,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -68,15 +70,65 @@ import (
 	"primeradiant.com/evener/test/e2e/fakellm"
 )
 
+// scriptRound is one scripted answer: exactly one of tool or text is set. A
+// tool round answers with that tool call; a text round answers with plain
+// text, which ends the session's turn.
+type scriptRound struct {
+	Tool string         `json:"tool"`
+	Args map[string]any `json:"args"`
+	Text string         `json:"text"`
+}
+
+// scriptMode answers the rounds of ONE scripted session from a JSON file,
+// identified by a marker in its request texts, while every other session
+// (and every round after the script) keeps the driver's default behaviour.
+// That is what lets a test drive a real evener session as a real client of
+// something — e.g. the hub MCP — with no branching driver: the session's
+// model rounds say "call this MCP tool", the daemon really executes them.
+type scriptMode struct {
+	Marker string        `json:"marker"`
+	Rounds []scriptRound `json:"rounds"`
+}
+
+// loadScript reads and validates a --script file. The marker must be
+// non-empty and every round must carry exactly one answer, so a typo fails
+// the fixture at startup rather than producing a turn that answers nothing.
+func loadScript(path string) (*scriptMode, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read script: %w", err)
+	}
+	var mode scriptMode
+	if err := json.Unmarshal(data, &mode); err != nil {
+		return nil, fmt.Errorf("parse script %s: %w", path, err)
+	}
+	if strings.TrimSpace(mode.Marker) == "" {
+		return nil, errors.New("script needs a non-empty marker")
+	}
+	if len(mode.Rounds) == 0 {
+		return nil, errors.New("script needs at least one round")
+	}
+	for i, round := range mode.Rounds {
+		switch {
+		case round.Tool != "" && round.Text != "":
+			return nil, fmt.Errorf("script round %d sets both tool and text", i+1)
+		case round.Tool == "" && round.Text == "":
+			return nil, fmt.Errorf("script round %d sets neither tool nor text", i+1)
+		}
+	}
+	return &mode, nil
+}
+
 func main() {
 	hold := flag.Duration("hold", 15*time.Second, "how long to hold each model round before answering")
 	rounds := flag.Int("rounds", 20, "tool-call rounds in each session's turn before ending it with communicate(end_turn=true)")
+	scriptPath := flag.String("script", "", "a JSON file of scripted answers ({marker, rounds:[{tool,args}|{text}]}), applied in order to the rounds of the one session whose request texts contain the marker; other sessions and later rounds keep the default behaviour")
 	jobRelease := flag.String("background-job-until", "", "answer each session's first round with a background shell job that waits for this file, then end the turn; creating the file wakes each idle session with a job-completion notification turn, which ends after one held round rather than launching another job. Give a name relative to the session's working directory -- the shell runs there, so a bare name needs no quoting and cannot be broken by a path with a space in it")
 	flag.Usage = func() {
 		// Flags first: Go's flag package stops parsing at the first non-flag
 		// argument, so "fakellm 127.0.0.1:0 --hold 30s" silently runs with the
 		// defaults. Say the working order here rather than the wrong one.
-		fmt.Fprintln(os.Stderr, "usage: fakellm [--hold 15s] [--rounds 20] <listen-addr>")
+		fmt.Fprintln(os.Stderr, "usage: fakellm [--hold 15s] [--rounds 20] [--script rounds.json] <listen-addr>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -90,13 +142,21 @@ func main() {
 	}
 	// run owns every defer; main only reports. log.Fatalf here would skip
 	// them (gocritic exitAfterDefer).
-	if err := run(flag.Arg(0), *hold, *rounds, *jobRelease); err != nil {
+	var scripted *scriptMode
+	if *scriptPath != "" {
+		var err error
+		scripted, err = loadScript(*scriptPath)
+		if err != nil {
+			log.Fatalf("fakellm: --script: %v", err)
+		}
+	}
+	if err := run(flag.Arg(0), *hold, *rounds, *jobRelease, scripted); err != nil {
 		log.Printf("fakellm: %v", err)
 		os.Exit(1)
 	}
 }
 
-func run(addr string, hold time.Duration, rounds int, jobRelease string) error {
+func run(addr string, hold time.Duration, rounds int, jobRelease string, scripted *scriptMode) error {
 	srv, err := fakellm.NewOn(addr)
 	if err != nil {
 		return err
@@ -109,7 +169,7 @@ func run(addr string, hold time.Duration, rounds int, jobRelease string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	return serve(ctx, srv, hold, rounds, jobRelease)
+	return serve(ctx, srv, hold, rounds, jobRelease, scripted)
 }
 
 // serve answers every round the fake receives until ctx is cancelled or the
@@ -122,7 +182,7 @@ func run(addr string, hold time.Duration, rounds int, jobRelease string) error {
 // current hold, and --hold is measured in tens of seconds. Buffering the
 // server's call channel would not help: the wait is the driver's, not the
 // channel's.
-func serve(ctx context.Context, srv *fakellm.Server, hold time.Duration, rounds int, jobRelease string) error {
+func serve(ctx context.Context, srv *fakellm.Server, hold time.Duration, rounds int, jobRelease string, scripted *scriptMode) error {
 	notesDir, err := os.MkdirTemp("", "fakellm-notes-")
 	if err != nil {
 		return fmt.Errorf("create notes dir: %w", err)
@@ -141,7 +201,7 @@ func serve(ctx context.Context, srv *fakellm.Server, hold time.Duration, rounds 
 			log.Printf("fakellm: %v", err)
 			return nil
 		}
-		answering.Go(func() { answer(ctx, live, call, hold, rounds, jobRelease, notesDir) })
+		answering.Go(func() { answer(ctx, live, call, hold, rounds, jobRelease, scripted, notesDir) })
 	}
 }
 
@@ -173,6 +233,7 @@ type sessionState struct {
 	keys         []string // ids this session is filed under, oldest first
 	turnRound    int      // rounds answered in the current turn, this one included
 	launchedJob  bool     // --background-job-until: one job per session, on its first turn
+	scriptUsed   int      // --script: script rounds this session has consumed
 }
 
 // sessions tracks the live sessions by the tool-call ids the fake has given
@@ -297,6 +358,21 @@ func (s *sessions) launchedJob(state *sessionState) {
 	state.launchedJob = true
 }
 
+// claimScriptRound reserves the scripted session's next script round, if it
+// still has one. Like every other state write it holds the lock: the answer
+// goroutine of an abandoned round could otherwise claim the same round
+// twice.
+func (s *sessions) claimScriptRound(state *sessionState, scripted *scriptMode) (scriptRound, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if state.scriptUsed >= len(scripted.Rounds) {
+		return scriptRound{}, false
+	}
+	round := scripted.Rounds[state.scriptUsed]
+	state.scriptUsed++
+	return round, true
+}
+
 // afterHold reports when a round's hold has expired. Every use of the fixture
 // runs the time.After it is set to here; it is a variable so a test can decide
 // the instant one round stops being held, which is the only way to put a round
@@ -315,9 +391,25 @@ var afterHold = time.After
 // it also catches the round whose hold expires anyway with the next turn
 // already under way (TestAnAbandonedRoundDoesNotEndTheTurnThatReplacedIt),
 // which Cancelled cannot. Cancelled only makes the drop prompt.
-func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.Duration, rounds int, jobRelease, notesDir string) {
+func answer(ctx context.Context, live *sessions, call *fakellm.Call, hold time.Duration, rounds int, jobRelease string, scripted *scriptMode, notesDir string) {
 	state, name, round, launchedJob := live.begin(call)
 	log.Printf("--- session %s round %d: holding %s ---\n%s", name, round, hold, strings.Join(call.Texts(), "\n"))
+
+	// The scripted session is answered from its file, in order, without the
+	// hold: its turn is driven, not paced. Script rounds are consumed once
+	// per session — a later turn keeps the default behaviour.
+	if scripted != nil && strings.Contains(strings.Join(call.Texts(), "\n"), scripted.Marker) {
+		if next, ok := live.claimScriptRound(state, scripted); ok {
+			if next.Text != "" {
+				log.Printf("session %s: scripted text answer, ending the turn", name)
+				call.RespondText(next.Text)
+				return
+			}
+			log.Printf("session %s: scripted tool call %s", name, next.Tool)
+			call.RespondToolCall(next.Tool, next.Args)
+			return
+		}
+	}
 
 	endTurn := func(message string) {
 		live.endedTurn(state, call)

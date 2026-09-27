@@ -10,7 +10,7 @@ import (
 // TestRunNewServerError covers the path where fakellm.NewOn fails.
 func TestRunNewServerError(t *testing.T) {
 	// An invalid address that cannot be bound.
-	err := run("not-a-valid-addr:bad", 0, 1, "")
+	err := run("not-a-valid-addr:bad", 0, 1, "", nil)
 	if err == nil {
 		t.Fatal("run with invalid address should return error")
 	}
