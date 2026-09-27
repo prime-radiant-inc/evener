@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/evener/agent/internal/bucketref"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -14,28 +15,31 @@ type selector struct {
 	sid       string
 }
 
-// parseSelector parses a session selector in the dialect read_transcript
-// accepts: local:<sid>, proj:<project-id>:<sid>, or a bare <sid>. The empty selector
-// and "current" are rejected: a standalone forensic tool has no current session,
-// so the caller must name one. The sid is a strict identifier; the project id
-// only has to be a traversal-safe directory name (see projectTokenOK) — bucket
-// identity is whatever a directory under evener/projects is named, and Locate
-// emits refs from actual names, so anything stricter would make a located
-// legacy-named bucket impossible to address again. A proj: ref cuts at the
-// LAST colon: session ids never contain one (pinned by
-// TestSessionIDGrammarCarriesNoColon), so the final colon is always the sid
-// boundary and a project id may itself contain colons.
+// parseSelector parses a session selector in the shared session-ref dialect
+// (see agent/internal/bucketref.SessionRefDialect), which read_transcript
+// accepts: local:<sid>, proj:<project-id>:<sid>, or a bare <sid>. The empty
+// selector and "current" are rejected: a standalone forensic tool has no
+// current session, so the caller must name one. The sid is a strict
+// identifier; the project id only has to be a traversal-safe directory name
+// (see projectTokenOK) — bucket identity is whatever a directory under
+// evener/projects is named, and Locate emits refs from actual names, so
+// anything stricter would make a located legacy-named bucket impossible to
+// address again. A proj: ref cuts at the LAST colon: session ids never contain
+// one (pinned by TestSessionIDGrammarCarriesNoColon), so the final colon is
+// always the sid boundary and a project id may itself contain colons. This is
+// the canonical full grammar; agent.decodeRef is a deliberately stricter,
+// model-facing subset of it.
 func parseSelector(s string) (selector, error) {
 	if s == "" || s == "current" {
 		return selector{}, fmt.Errorf("no session selector: pass a session id, local:<id>, or proj:<project-id>:<id> (a standalone forensic tool has no %q session)", "current")
 	}
-	if sid, ok := strings.CutPrefix(s, "local:"); ok {
+	if sid, ok := strings.CutPrefix(s, bucketref.LocalScheme); ok {
 		if err := identifier.ValidateSessionID(sid); err != nil {
 			return selector{}, fmt.Errorf("invalid session id in selector %q", s)
 		}
 		return selector{sid: sid}, nil
 	}
-	if rest, ok := strings.CutPrefix(s, "proj:"); ok {
+	if rest, ok := strings.CutPrefix(s, bucketref.ProjScheme); ok {
 		cut := strings.LastIndexByte(rest, ':')
 		if cut < 0 {
 			return selector{}, fmt.Errorf("malformed proj ref %q (want proj:<project-id>:<id>)", s)
