@@ -37,6 +37,7 @@ import type {
   Turn,
 } from "./types.gen";
 import { NOTIFICATION_NAMES } from "./types.gen";
+import { WarningCodeContextBudget } from "./warnings";
 
 // Each fixture is newline-delimited JSON: the first line is
 // {"hydrate": ThreadReadResponse, "ref": string}, every following line is a
@@ -7290,6 +7291,41 @@ test("warning mid-turn appends an item to the active turn with text=message and 
     status: "completed",
     warning: { source: "provider", title: "Provider warning", hint: "slow down" },
   });
+});
+
+test("the warning fold carries the wire code onto the item", () => {
+  let model = warningTurnModel();
+
+  model = applyNotification(
+    model,
+    {
+      method: "warning",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        message: "Output allocation reduced for inst/model: requested=100 admitted=50",
+        code: WarningCodeContextBudget,
+      },
+    },
+    1002,
+  );
+
+  expect(turnAt(model, 0).items[0]).toMatchObject({ type: "warning", warning: { code: WarningCodeContextBudget } });
+});
+
+test("a blank wire code folds to absent, like every other blank warning field", () => {
+  let model = warningTurnModel();
+
+  model = applyNotification(
+    model,
+    {
+      method: "warning",
+      params: { threadId: "thr_t", ref: "ref_t", message: "rate limit approaching", code: "   " },
+    },
+    1002,
+  );
+
+  expect(turnAt(model, 0).items[0]?.warning?.code).toBeUndefined();
 });
 
 test("a runtime non-string title/hint/source folds to undefined, never a value ItemModel.warning claims is a string", () => {

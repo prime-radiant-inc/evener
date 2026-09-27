@@ -134,6 +134,16 @@ func resolveBuckets(stateBase string) ([]bucket, string, error) {
 // filtering on identifier.ValidateProjectID would hide a legacy- or
 // foreign-named bucket that holds real sessions — a forensic sweep must see
 // what is on disk.
+//
+// Symlink policy: globBuckets follows symlinks deliberately. Its isDir helper
+// uses os.Stat (which follows), so a symlinked bucket dir under projects/ is
+// enumerated like any other. The doctor is a user-facing diagnostic tool and
+// must see symlinked state layouts an operator has wired up; the agent's
+// model-facing transcript read paths (agent/transcript_lookup.go's
+// enumerateBuckets) refuse symlinked resolution paths as a security boundary
+// (#2205). That divergence is by owner ruling, recorded in issue #2275
+// ("this is a user tool. allow symlinked buckets.") — do not "harmonize" the
+// two without the owner.
 func globBuckets(projects string) ([]bucket, error) {
 	matches, err := globProjectBuckets(filepath.Join(projects, "*"))
 	if err != nil {

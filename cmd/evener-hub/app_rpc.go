@@ -120,16 +120,17 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			continue
 		}
 		entry := appsource.LocalDaemonEntry{
-			Entry:             item.Entry,
-			SessionID:         item.SessionID,
-			Status:            item.Status,
-			PendingAsk:        item.PendingAsk,
-			PendingEscalation: item.PendingEscalation,
-			RunningJobs:       item.RunningJobs,
-			CompletedJobs:     item.CompletedJobs,
-			Watches:           item.Watches,
-			Capabilities:      item.Capabilities,
-			CapabilitiesKnown: item.CapabilitiesKnown,
+			Entry:              item.Entry,
+			SessionID:          item.SessionID,
+			Status:             item.Status,
+			PendingAsk:         item.PendingAsk,
+			PendingEscalation:  item.PendingEscalation,
+			PendingEscalations: item.PendingEscalations,
+			RunningJobs:        item.RunningJobs,
+			CompletedJobs:      item.CompletedJobs,
+			Watches:            item.Watches,
+			Capabilities:       item.Capabilities,
+			CapabilitiesKnown:  item.CapabilitiesKnown,
 		}
 		entries = append(entries, entry)
 		// In-process descendants are addressed as their own AppWire
@@ -152,6 +153,13 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
 				child.Status = childState
 			}
+			// A pending question or approval is the root's: a subagent
+			// never asks the user or escalates (the agent's escalationAllowed
+			// and ask_user gates are root-only), so the alias drops the copy
+			// it took of the root's, or its row shows the root's question.
+			child.PendingAsk = false
+			child.PendingEscalation = false
+			child.PendingEscalations = nil
 			child.ReadOnlyAlias = true
 			entries = append(entries, child)
 		}
@@ -1111,8 +1119,8 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// tick.
 	// The manager, the live host registry, and the selected hub.toml path all
 	// come from cfg — main.go threads the real sshconn.Manager, the one
-	// registry shared with the attach handler, and the config path whose
-	// sidecar persists UI-added hosts, so the surface is wired, not a
+	// registry shared with the attach handler, and the config path the
+	// surface rewrites in place, so the surface is wired, not a
 	// placeholder. It returns the manager so newWebServer can expose it
 	// (main.go binds its event recorder to the SSH manager's lifecycle).
 	hostManage := registerHostManageHandlers(server, sources, cfg, cfg.RemoteHostRegistry, navigation, hubLogf)

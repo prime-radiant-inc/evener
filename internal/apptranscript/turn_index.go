@@ -318,6 +318,12 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 	n := d.recordCount()
 	for i := range n {
 		record := d.recordAt(i)
+		if record.transparent() {
+			if len(groups) > 0 {
+				groups[len(groups)-1].end = i + 1
+			}
+			continue
+		}
 		role := groupRoleFor(record.TurnKind, record.GoalContinuation)
 		join := !record.StartsGroup && role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
 		if join {
@@ -348,6 +354,13 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 		groups = append(groups, group)
 	}
 	return groups
+}
+
+// transparent reports a record of a transcript-only entry. It keeps its place
+// in the record list (one record per entry line), but joins no group, closes
+// none, contributes no items and is never projected.
+func (r indexedTurn) transparent() bool {
+	return r.TurnKind.TranscriptOnly()
 }
 
 // KindTurn reconstructs the record's turn kind from persisted fields (the
@@ -542,7 +555,7 @@ func (c *TurnCache) loadTurnIndexInternal(ctx context.Context, path string, maxL
 		return turnIndexDisk{}, stats, fmt.Errorf("stat transcript: %w", err)
 	}
 	projectionID := projectionIdentity(project)
-	currentFileIdentity := fileIdentity(info)
+	currentFileIdentity := FileIdentity(info)
 	currentChangeIdentity := fileChangeIdentity(info)
 
 	var candidate *turnIndexDisk
@@ -866,6 +879,9 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 	var readBytes int64
 	visibleRecords := index.VisibleRecords
 	var appended []indexedTurn
+	// prevKind is the kind of the latest record that takes part in grouping:
+	// transparent records never change it.
+	prevKind := lastGroupedKind(*index)
 	headerRead := index.Header.Kind != ""
 	if headerRead {
 		if err := transcript.ValidateHeader(index.Header); err != nil {
@@ -912,100 +928,100 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 			}
 			entryIndex++
 			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind, TurnKind: entry.Turn.Kind}
-			record.GoalContinuation = entry.Turn.Kind == schema.TurnSteering && entry.Turn.GoalContinuation != nil
-			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
-			// Logical-group bookkeeping runs BEFORE projection: the entry is
-			// projected under its group's turn id (the opener's), exactly
-			// the way the range reader names it, so the index scan and the
-			// projection cannot disagree (kata: one name per entry).
-			record.TurnID = persistedTurnID(entry.Turn, entryIndex)
-			owner := ""
-			if entry.Turn.Kind == schema.TurnSteering && !record.GoalContinuation {
-				owner = entry.Turn.OwningTurnID
-			}
-			if owner != "" {
-				record.TurnID = owner
-				if openTurnID == "" {
+			// A transparent record (a transcript-only entry) keeps its place in
+			// the record list and takes part in nothing else.
+			if !record.transparent() {
+				record.GoalContinuation = entry.Turn.Kind == schema.TurnSteering && entry.Turn.GoalContinuation != nil
+				record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
+				// Logical-group bookkeeping runs BEFORE projection: the entry is
+				// projected under its group's turn id (the opener's), exactly
+				// the way the range reader names it, so the index scan and the
+				// projection cannot disagree (kata: one name per entry).
+				record.TurnID = persistedTurnID(entry.Turn, entryIndex)
+				owner := ""
+				if entry.Turn.Kind == schema.TurnSteering && !record.GoalContinuation {
+					owner = entry.Turn.OwningTurnID
+				}
+				if owner != "" {
+					record.TurnID = owner
+					if openTurnID == "" {
+						openTurnID, openCalls = openGroupState(*index)
+						commRawArgs, lastAssistantText, lastAssistantTurnID := replayCommRawArgs(file, *index, project, openTurnID)
+						openReg = &ToolCallRegistry{CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
+					}
+				}
+				grouper := TurnGrouper{Open: groupOpenAfter(prevKind), TurnID: openTurnID}
+				prevKind = record.TurnKind
+				_, record.StartsGroup = grouper.Place(&entry.Turn, entryIndex)
+				if record.StartsGroup {
+					openTurnID = record.TurnID
+					openCalls = map[string]bool{}
+					// Preserve CommRawArgs and LastAssistantText across group
+					// boundaries: the full read threads one registry for the whole
+					// transcript, so a communicate call seeded in one group must
+					// reach its paired result turn in a later group (e.g. across
+					// a standalone HOOK_COMPLETED turn that closes the assistant's
+					// group). Names reset from ToolSeed below; openCalls reset for
+					// the per-group merge.
+					var commRawArgs map[string]string
+					var lastAssistantText string
+					var lastAssistantTurnID string
+					if openReg != nil {
+						commRawArgs = openReg.CommRawArgs
+						lastAssistantText = openReg.LastAssistantText
+						lastAssistantTurnID = openReg.LastAssistantTurnID
+					} else {
+						commRawArgs = map[string]string{}
+					}
+					openReg = &ToolCallRegistry{CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
+					// Persist the registry state entering this group so
+					// bounded reads seed the registry from the index record
+					// instead of replaying the prefix. Clone the map: openReg
+					// shares it and the projection below mutates it in place.
+					if len(commRawArgs) > 0 {
+						record.CommRawArgs = maps.Clone(commRawArgs)
+					}
+					record.LastAssistantText = lastAssistantText
+					record.LastAssistantTurnID = lastAssistantTurnID
+				} else if openCalls == nil || openTurnID == "" {
+					// Continues a group whose opener lives in the previously
+					// indexed prefix: reconstruct its id, accumulated calls,
+					// and deferred communicate bytes (CommRawArgs) by
+					// re-projecting the group's records from the transcript.
 					openTurnID, openCalls = openGroupState(*index)
 					commRawArgs, lastAssistantText, lastAssistantTurnID := replayCommRawArgs(file, *index, project, openTurnID)
-					openReg = &ToolCallRegistry{CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
+					openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
 				}
-			}
-			prevKind := schema.TurnKind("")
-			if len(appended) > 0 {
-				prevKind = appended[len(appended)-1].TurnKind
-			} else if n := index.recordCount(); n > 0 {
-				prevKind = index.recordAt(n - 1).TurnKind
-			}
-			record.StartsGroup = recordStartsGroup(entry.Turn.Kind, prevKind, record.GoalContinuation, owner, openTurnID)
-			if record.StartsGroup {
-				openTurnID = record.TurnID
-				openCalls = map[string]bool{}
-				// Preserve CommRawArgs and LastAssistantText across group
-				// boundaries: the full read threads one registry for the whole
-				// transcript, so a communicate call seeded in one group must
-				// reach its paired result turn in a later group (e.g. across
-				// a standalone HOOK_COMPLETED turn that closes the assistant's
-				// group). Names reset from ToolSeed below; openCalls reset for
-				// the per-group merge.
-				var commRawArgs map[string]string
-				var lastAssistantText string
-				var lastAssistantTurnID string
-				if openReg != nil {
-					commRawArgs = openReg.CommRawArgs
-					lastAssistantText = openReg.LastAssistantText
-					lastAssistantTurnID = openReg.LastAssistantTurnID
-				} else {
-					commRawArgs = map[string]string{}
+				var projectedItems []appwire.ThreadItem
+				if project != nil {
+					openReg.Names = cloneToolNames(record.ToolSeed)
+					projectedItems = project(entry.Turn, openTurnID, entryIndex, openReg)
+					if uint64(len(projectedItems)) > uint64(^uint32(0)) {
+						return readBytes, fmt.Errorf("projected item count for entry %d exceeds uint32", entryIndex)
+					}
 				}
-				openReg = &ToolCallRegistry{CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
-				// Persist the registry state entering this group so
-				// bounded reads seed the registry from the index record
-				// instead of replaying the prefix. Clone the map: openReg
-				// shares it and the projection below mutates it in place.
-				if len(commRawArgs) > 0 {
-					record.CommRawArgs = maps.Clone(commRawArgs)
+				for _, change := range record.ToolChanges {
+					if change.Lookup {
+						continue
+					}
+					if _, recorded := resolverUndo[change.ID]; recorded {
+						continue
+					}
+					if resolverUndo == nil {
+						resolverUndo = make(map[string]resolverValue)
+					}
+					name, present := projectNames[change.ID]
+					resolverUndo[change.ID] = resolverValue{name: name, present: present}
 				}
-				record.LastAssistantText = lastAssistantText
-				record.LastAssistantTurnID = lastAssistantTurnID
-			} else if openCalls == nil || openTurnID == "" {
-				// Continues a group whose opener lives in the previously
-				// indexed prefix: reconstruct its id, accumulated calls,
-				// and deferred communicate bytes (CommRawArgs) by
-				// re-projecting the group's records from the transcript.
-				openTurnID, openCalls = openGroupState(*index)
-				commRawArgs, lastAssistantText, lastAssistantTurnID := replayCommRawArgs(file, *index, project, openTurnID)
-				openReg = &ToolCallRegistry{Names: cloneToolNames(record.ToolSeed), CommRawArgs: commRawArgs, LastAssistantText: lastAssistantText, LastAssistantTurnID: lastAssistantTurnID}
-			}
-			var projectedItems []appwire.ThreadItem
-			if project != nil {
-				openReg.Names = cloneToolNames(record.ToolSeed)
-				projectedItems = project(entry.Turn, openTurnID, entryIndex, openReg)
-				if uint64(len(projectedItems)) > uint64(^uint32(0)) {
-					return readBytes, fmt.Errorf("projected item count for entry %d exceeds uint32", entryIndex)
+				applyToolNameChanges(projectNames, record.ToolChanges)
+				record.ItemCount = uint32(len(projectedItems))
+				contribution, introduced := mergedContribution(projectedItems, openCalls)
+				record.GroupItems = uint32(contribution)
+				record.GroupCalls = introduced
+				record.Visible = record.ItemCount > 0
+				if record.Visible {
+					visibleRecords++
 				}
-			}
-			for _, change := range record.ToolChanges {
-				if change.Lookup {
-					continue
-				}
-				if _, recorded := resolverUndo[change.ID]; recorded {
-					continue
-				}
-				if resolverUndo == nil {
-					resolverUndo = make(map[string]resolverValue)
-				}
-				name, present := projectNames[change.ID]
-				resolverUndo[change.ID] = resolverValue{name: name, present: present}
-			}
-			applyToolNameChanges(projectNames, record.ToolChanges)
-			record.ItemCount = uint32(len(projectedItems))
-			contribution, introduced := mergedContribution(projectedItems, openCalls)
-			record.GroupItems = uint32(contribution)
-			record.GroupCalls = introduced
-			record.Visible = record.ItemCount > 0
-			if record.Visible {
-				visibleRecords++
 			}
 			record.VisibleIndex = visibleRecords
 			appended = append(appended, record)
@@ -1245,6 +1261,10 @@ func projectIndexedRangeObservedContext(ctx context.Context, path string, index 
 		// Walk the record list group by group without materializing all
 		// groups: find where this group's span ends, then decide whether to
 		// project it.
+		if index.recordAt(i).transparent() {
+			i++ // before the first group: belongs to none
+			continue
+		}
 		spanEnd := i + 1
 		for spanEnd < n && !index.recordAt(spanEnd).StartsGroup {
 			spanEnd++
@@ -1348,6 +1368,9 @@ func projectIndexedGroup(ctx context.Context, file *os.File, index turnIndexDisk
 			return nil, projected, err
 		}
 		record := index.recordAt(i)
+		if record.transparent() {
+			continue
+		}
 		raw := make([]byte, record.Length)
 		if _, err := file.ReadAt(raw, record.Offset); err != nil {
 			return nil, projected, fmt.Errorf("read transcript entry: %w", err)
@@ -1380,7 +1403,7 @@ func projectIndexedGroup(ctx context.Context, file *os.File, index turnIndexDisk
 		return nil, projected, err
 	}
 	turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-	stampGroupedTurnFromEntries(&turn, entries)
+	StampGroupedTurn(&turn, entries)
 	return &turn, projected, nil
 }
 
@@ -1748,7 +1771,10 @@ func turnIndexIntegrityStampObserved(index turnIndexDisk, stats *ReadStats) stri
 	return hex.EncodeToString(sum[:])
 }
 
-func fileIdentity(info os.FileInfo) string {
+// FileIdentity names the file behind info (device and inode, or the Windows
+// volume and file index), or "" when the platform reports neither. Two infos
+// with the same non-empty identity are the same file.
+func FileIdentity(info os.FileInfo) string {
 	if info == nil || info.Sys() == nil {
 		return ""
 	}
@@ -1895,6 +1921,9 @@ func openGroupState(index turnIndexDisk) (string, map[string]bool) {
 	turnID := ""
 	for i := n - 1; i >= 0; i-- {
 		record := index.recordAt(i)
+		if record.transparent() {
+			continue
+		}
 		for _, id := range record.GroupCalls {
 			calls[id] = true
 		}
@@ -2014,4 +2043,16 @@ func cloneToolNamesObserved(names map[string]string, stats *ReadStats) map[strin
 		stats.resolverEntriesCopied += int64(len(names))
 	}
 	return clone
+}
+
+// lastGroupedKind is the turn kind of the index's latest record that takes
+// part in grouping, skipping the transparent records of transcript-only
+// entries. "" when there is none.
+func lastGroupedKind(index turnIndexDisk) schema.TurnKind {
+	for i := index.recordCount() - 1; i >= 0; i-- {
+		if record := index.recordAt(i); !record.transparent() {
+			return record.TurnKind
+		}
+	}
+	return ""
 }

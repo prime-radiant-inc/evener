@@ -3,8 +3,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"io"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -85,30 +83,19 @@ func TestNewHubSourceRegistryEmptyRefDefaultsLocal(t *testing.T) {
 }
 
 func TestNewHubSourceRegistrySkipsHostsWithoutClient(t *testing.T) {
-	original := os.Stderr
-	readEnd, writeEnd, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	t.Cleanup(func() {
-		os.Stderr = original
-		_ = readEnd.Close()
+	var registry *appsource.Registry
+	diagnostic := captureHubStderr(t, func() {
+		registry = newHubSourceRegistry(hubcore.WebConfig{
+			RemoteHosts: []hostreg.Host{
+				{Name: "h1", SSH: "h1.example"},
+				{Name: "h2", SSH: "h2.example"},
+			},
+		})
 	})
-	os.Stderr = writeEnd
-	registry := newHubSourceRegistry(hubcore.WebConfig{
-		RemoteHosts: []hostreg.Host{
-			{Name: "h1", SSH: "h1.example"},
-			{Name: "h2", SSH: "h2.example"},
-		},
-	})
-	_ = writeEnd.Close()
-	os.Stderr = original
-	data, _ := io.ReadAll(readEnd)
 
 	if _, ok := registry.Source("h1"); ok {
 		t.Fatal("h1 registered without a remote host client")
 	}
-	diagnostic := string(data)
 	if !strings.Contains(diagnostic, "h1") || !strings.Contains(diagnostic, "h2") {
 		t.Fatalf("diagnostic = %q, want it to name both skipped hosts", diagnostic)
 	}

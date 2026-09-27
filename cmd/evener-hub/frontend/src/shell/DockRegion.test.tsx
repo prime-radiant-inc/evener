@@ -23,22 +23,11 @@ import { resetWorkspaceStoreForTests } from "./workspace";
 // never loads here, which also keeps these tests off dockview's ResizeObserver
 // (kata 1s47, reproduced live against the built bundle at 771b016ea).
 //
-// A hoisted vi.mock("./dockHostChunk", ...) here would swap the module in the
-// shared registry - under isolate:false that registry is shared by every file
-// in the worker, and whichever file (this one, or AppShell.test.tsx via
-// AppShell.tsx -> DockRegion.tsx -> dockHostChunk) happens to instantiate
-// DockRegion.tsx FIRST in the whole worker's lifetime permanently fixes its
-// closure over loadDockHost to whatever was in effect at that moment - a
-// vi.mock registered afterward cannot retroactively change an
-// already-instantiated module's own binding, so the leak direction flips
-// unpredictably depending on unrelated ordering (confirmed empirically:
-// swapping which file ran first flipped which one failed). vi.spyOn on the
-// namespace import below instead MUTATES the shared dockHostChunk module
-// object's own `loadDockHost` property in place - Vite's module-runner gives
-// named imports a live getter into that same object, so DockRegion.tsx's
-// calls see the spy's current implementation regardless of when it was
-// instantiated, and mockRestore() in afterEach cleanly hands the real
-// function back for whatever file runs next.
+// vi.spyOn on the namespace import replaces the loader in place: Vite's
+// module-runner gives named imports a live getter into the dockHostChunk
+// module object, so DockRegion.tsx's calls see the spy's current
+// implementation. That lets each test script its own loader, and beforeEach
+// points the spy back at the real one so no test's override reaches the next.
 const realLoadDockHost = dockHostChunk.loadDockHost;
 const loadDockHost = vi.spyOn(dockHostChunk, "loadDockHost");
 
@@ -88,6 +77,15 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
+  // notifications/index.ts keeps module state (its init guard, the
+  // "reconnect" detector's sawReady, the attention baseline) for every test
+  // in this file, and a test that connects a client straight to "ready" arms
+  // that detector. Reset and re-init before each test's own fresh connect so
+  // every test starts from the state a fresh module evaluation leaves:
+  // engine started, seeded from the idle connection and reset navigation
+  // store above, with nothing carried over from the previous test.
+  resetNotificationsForTests();
+  initNotifications();
   loadDockHost.mockReset();
   loadDockHost.mockImplementation(realLoadDockHost);
   // The chunk is one shared lazy() payload per page load, so each test needs
@@ -101,39 +99,6 @@ afterEach(() => {
   consoleErrorSpy.mockRestore();
   cleanup();
   window.history.pushState({}, "", "/");
-  // Whichever override the LAST test set (mockRejectedValue/mockResolvedValue/
-  // mockResolvedValueOnce...) would otherwise still be armed on this shared
-  // spy for the next file in the worker that calls the real loadDockHost -
-  // see this file's own comment on the vi.spyOn call above.
-  loadDockHost.mockReset();
-  loadDockHost.mockImplementation(realLoadDockHost);
-  // Rendering <AppShell/> above calls notifications/index.ts's
-  // initNotifications() at module scope (guarded by its own "only once"
-  // flag), wiring its reconnect detector to whichever FakeClient this file
-  // connected. Left unreset, that detector's stale "sawReady" flag makes a
-  // later file's own fresh ready-client connect read as a spurious
-  // reconnect - see App.test.tsx's identical reset and its own comment on
-  // stores/tree.test.ts's dependent assertion.
-  //
-  // AppShell.tsx's module-scope initNotifications() call only ever fires
-  // once per worker (its own "only once" guard), so leaving it reset would
-  // leave the engine permanently uninitialized for the rest of this
-  // isolate:false worker - so it is re-run immediately below, restoring the
-  // same state a fresh module evaluation would have left (kata p5w9's
-  // identical pattern in AppShell.test.tsx). initNotifications() seeds its
-  // `sawReady`/baseline snapshot from whatever connectionStore/navigationStore
-  // hold AT THIS MOMENT, so both are forced back to their neutral
-  // pre-render values FIRST (this file's own beforeEach does the same for
-  // the NEXT test in this file; nothing else does it for the NEXT FILE) -
-  // seeding from a still-"ready" connectionStore (as this test's own render
-  // left it moments ago) would wrongly arm the "reconnect" detector this
-  // reset exists to neutralize, exactly the failure mode App.test.tsx's own
-  // comment above describes. The navigation baseline is scripted on each
-  // client, so this reset does not need a global transport stub.
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  resetNavigationStoreForTests();
-  resetNotificationsForTests();
-  initNotifications();
   vi.unstubAllGlobals();
 });
 

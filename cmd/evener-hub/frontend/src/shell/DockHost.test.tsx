@@ -4,7 +4,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { StubResizeObserver } from "../resizeObserverTestUtils";
 import { installLocalStorage, MemoryStorage } from "../storageTestUtils";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
@@ -17,10 +17,7 @@ import { consumePaneFocus, resetWorkspaceStoreForTests, workspaceStore } from ".
 
 // Fixture pane components, simple enough to assert on directly - "doc" is
 // this file's non-singleton fixture, "settings" its singleton one (same
-// scheme workspace.test.ts uses). paneRegistry.ts is a shared module
-// singleton, not fresh per file - the afterAll below restores whatever was
-// registered for these ids before this file ran, so a later file sharing
-// the same module registry never inherits these fixtures.
+// scheme workspace.test.ts uses).
 function DocFixture({ params, focused }: PaneProps<{ ref: string }>) {
   return (
     <div>
@@ -40,19 +37,16 @@ function FocusFixture({ paneId, focused }: PaneProps<{ ref: string }>) {
   );
 }
 
-let restoreDocPane: (() => void) | undefined;
-let restoreSettingsPane: (() => void) | undefined;
-
 beforeAll(async () => {
   globalThis.ResizeObserver = StubResizeObserver;
   installLocalStorage(new MemoryStorage());
 
-  restoreDocPane = registerPaneForTests({
+  registerPaneForTests({
     id: "doc",
     title: (params: { ref: string }) => `Doc ${params.ref}`,
     component: lazy(() => Promise.resolve({ default: DocFixture })),
   });
-  restoreSettingsPane = registerPaneForTests({
+  registerPaneForTests({
     id: "settings",
     singleton: true,
     title: (params: { section?: string }) => `Settings${params.section ? `: ${params.section}` : ""}`,
@@ -88,15 +82,6 @@ beforeAll(async () => {
     () => {},
     () => screen.findByText("No session open"),
   );
-});
-
-// paneRegistry.ts is a shared module singleton (see registerPaneForTests's
-// own comment) - restore whatever "doc"/"settings" registered before this
-// file ran so a later file sharing the same module registry never inherits
-// these fixtures instead of the real panes.
-afterAll(() => {
-  restoreDocPane?.();
-  restoreSettingsPane?.();
 });
 
 // Renders DockHost once with `open`'s pane in it and awaits its landmark, so

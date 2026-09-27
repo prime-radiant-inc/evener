@@ -2,7 +2,6 @@ package hubcore
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,48 +12,32 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
 
-// captureSkipReport runs fn with os.Stderr redirected to a pipe and returns the
-// past-index lines written to it. Other hubcore machinery logs to the same
-// stream from background goroutines, so the result is filtered to this
-// reporter's prefix rather than returned raw. The pipe is drained while fn
-// runs: macOS shrinks a new pipe's buffer to 512 bytes under kernel memory
-// pressure, less than one skip report, and a writer with no reader would
-// block fn forever.
+// captureSkipReport runs fn with os.Stderr redirected to a temp file and
+// returns the past-index lines written to it. Other hubcore machinery logs to
+// the same stream from background goroutines, so the result is filtered to
+// this reporter's prefix rather than returned raw. It captures to a file, not
+// a pipe: a pipe's writer blocks when its buffer fills, and on a busy Mac that
+// buffer is 512 bytes (#2495).
 func captureSkipReport(t *testing.T, fn func()) string {
 	t.Helper()
-	original := os.Stderr
-	r, w, err := os.Pipe()
+	stderr, err := os.CreateTemp(t.TempDir(), "skip-report-stderr-")
 	if err != nil {
-		t.Fatalf("Pipe: %v", err)
+		t.Fatalf("CreateTemp: %v", err)
 	}
-	os.Stderr = w
-	type drained struct {
-		raw []byte
-		err error
-	}
-	done := make(chan drained, 1)
-	go func() {
-		raw, err := io.ReadAll(r)
-		done <- drained{raw, err}
-	}()
-	// An fn that fails the test (t.Fatalf) unwinds past the explicit restore
-	// and close below; these still put stderr back and end the reader.
+	original := os.Stderr
+	os.Stderr = stderr
+	// Deferred so a t.Fatalf inside fn still restores stderr.
 	defer func() {
 		os.Stderr = original
-		_ = w.Close()
+		_ = stderr.Close()
 	}()
 
 	fn()
 
-	os.Stderr = original
-	if err := w.Close(); err != nil {
-		t.Fatalf("close pipe writer: %v", err)
+	raw, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
 	}
-	result := <-done
-	if result.err != nil {
-		t.Fatalf("ReadAll: %v", result.err)
-	}
-	raw := result.raw
 
 	var report strings.Builder
 	for line := range strings.SplitSeq(string(raw), "\n") {

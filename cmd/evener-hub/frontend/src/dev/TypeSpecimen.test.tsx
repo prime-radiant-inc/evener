@@ -1,13 +1,11 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { beforeEach, expect, test } from "vitest";
 import TypeSpecimen from "./TypeSpecimen";
 
-// The specimen is static content and every test only reads it, so one
-// render serves the whole file.
-beforeAll(() => {
+// testSetup unmounts after every test, so each test renders its own specimen.
+beforeEach(() => {
   render(<TypeSpecimen />);
 });
-afterAll(cleanup);
 
 // The whole specimen is wrapped in ThemeFlip, which renders its children
 // once per theme, so every label on the page appears exactly twice.

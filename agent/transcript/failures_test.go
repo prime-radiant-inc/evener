@@ -121,3 +121,20 @@ func TestFailureCounterResolvesNamesFromBeforeTheDivergenceCut(t *testing.T) {
 		t.Fatalf("Count() = %d, want 1", got)
 	}
 }
+
+// TestExitCodeFromToolStateSkipsNonObjectState: state that is not a JSON object
+// cannot carry an exit code, so it reports nil without decoding it. Large
+// array states (task_list) otherwise cost a full failed decode on every
+// projection of their result.
+func TestExitCodeFromToolStateSkipsNonObjectState(t *testing.T) {
+	array := json.RawMessage(`  [{"id":1,"exit_code":3},{"id":2}]`)
+	if got := ExitCodeFromToolState(array); got != nil {
+		t.Fatalf("array state exit code = %d, want nil", *got)
+	}
+	if allocs := testing.AllocsPerRun(10, func() { ExitCodeFromToolState(array) }); allocs != 0 {
+		t.Fatalf("array state decoded (%v allocations), want it skipped", allocs)
+	}
+	if got := ExitCodeFromToolState(json.RawMessage(` {"exit_code":3}`)); got == nil || *got != 3 {
+		t.Fatalf("object state exit code = %v, want 3", got)
+	}
+}

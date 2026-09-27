@@ -255,7 +255,17 @@ type NavigationSessionSummary struct {
 	// ("active": the escalation blocks mid-turn); the flag says why the session
 	// is in NeedsYou, beside AskPending for a question.
 	ApprovalPending bool `json:"approval_pending,omitempty"`
-	Dormant         bool `json:"dormant,omitempty"`
+	// ApprovalTool and ApprovalTarget say what the oldest pending escalation
+	// asks for, so the row can say why it waits ("wants to write outside the
+	// workspace: ~/sites/docs"): the tool that was denied, which a client maps
+	// to a verb, and the escalation's full literal denied path. The path is
+	// shown for informed consent (appwire.SandboxEscalationRequested) and
+	// reaches human clients only, as thread/read's cards already do. Both are
+	// absent unless ApprovalPending is set; the tool is cut to the identity
+	// bound and the target to the label bound.
+	ApprovalTool   string `json:"approval_tool,omitempty"`
+	ApprovalTarget string `json:"approval_target,omitempty"`
+	Dormant        bool   `json:"dormant,omitempty"`
 	// Offline marks a row folded into the merged list from a source that is
 	// currently unreachable: its last-known rows stay visible, but they are not
 	// live and cannot serve host-targeted actions until the source reattaches.

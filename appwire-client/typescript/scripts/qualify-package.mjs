@@ -125,6 +125,8 @@ assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSe
 assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
 assert.equal(client.isTurnActive("active"), true);
 assert.equal(client.isTurnActive("idle"), false);
+assert.equal(client.isSessionResting("systemError"), true);
+assert.equal(client.isSessionResting("active"), false);
 assert.equal(client.canSteer("active", { steer: true }), true);
 assert.equal(client.canSteer("idle", { steer: true }), false);
 assert.equal(client.canSteer("active", { steer: false }), false);
@@ -280,6 +282,12 @@ const projectorTurn = { id: "turn1", status: "completed", items: [{ id: "item1",
 const projection = client.projectThread({ turns: [projectorTurn] }, displayConfig);
 assert.equal(projection.turns[0].entries[0].kind, "item");
 assert.equal(projection.turns[0].entries[0].id, "item1");
+// The informational-warning contract: the code a daemon stamps its
+// context-budget notices with, and the predicate consumers demote and
+// verbosity-gate those notices by.
+assert.equal(client.WarningCodeContextBudget, "context_budget");
+assert.equal(client.isInformationalWarning({ id: "warn1", turnId: "turn1", type: "warning", text: "Output allocation reduced", status: "completed", warning: { code: client.WarningCodeContextBudget } }), true);
+assert.equal(client.isInformationalWarning({ id: "warn2", turnId: "turn1", type: "warning", text: "provider degraded", status: "completed" }), false);
 assert.equal(typeof client.ACTION_SUMMARY_UNAVAILABLE, "string");
 assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.advanced.hookExits, "all");
 assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });

@@ -112,8 +112,9 @@ type WebConfig struct {
 	// host-management removal without channel teardown (tests).
 	RemoteHostSSHManager *sshconn.Manager
 	// RemoteHostConfigPath is the selected hub.toml path. The host-management
-	// surface persists its UI-added hosts in a sidecar beside this file; empty
-	// disables sidecar persistence (the surface stays memory-only).
+	// surface rewrites this file in place — machine-managed, with the banner of
+	// registry spec 08 §6 — so UI-added and UI-edited hosts live in it; empty
+	// disables host persistence (the surface stays memory-only).
 	RemoteHostConfigPath string
 	// RemoteHostClient returns an attached, initialized AppWire client for a
 	// remote host, attaching over SSH on first use (component 04). nil

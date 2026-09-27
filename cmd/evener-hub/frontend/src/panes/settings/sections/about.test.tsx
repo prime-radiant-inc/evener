@@ -24,8 +24,16 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-test("renders the design-credit line naming Beautiful UI, its author, and the MIT License", () => {
+// Renders About with no client connected and waits for the overview fetch it
+// starts on mount to settle (it rejects, and the identity line degrades), so
+// the credits tests end with no state update still in flight.
+async function renderDisconnectedAbout(): Promise<void> {
   render(<AboutSection />);
+  await screen.findByText("Version unavailable:", { exact: false });
+}
+
+test("renders the design-credit line naming Beautiful UI, its author, and the MIT License", async () => {
+  await renderDisconnectedAbout();
   expect(
     screen.getByText(
       "The visual design language is adapted from Beautiful UI (https://www.beautifului.dev) by Shane Levine, used under the MIT License.",
@@ -33,14 +41,14 @@ test("renders the design-credit line naming Beautiful UI, its author, and the MI
   ).toBeTruthy();
 });
 
-test("renders the typeface credit and the third-party-notices pointer", () => {
-  render(<AboutSection />);
+test("renders the typeface credit and the third-party-notices pointer", async () => {
+  await renderDisconnectedAbout();
   expect(screen.getByText("Inter and JetBrains Mono, used under the SIL Open Font License.")).toBeTruthy();
   expect(screen.getByText("Full third-party notices live in the repository.")).toBeTruthy();
 });
 
-test("the MIT license text is collapsed behind a disclosure and includes the copyright line", () => {
-  render(<AboutSection />);
+test("the MIT license text is collapsed behind a disclosure and includes the copyright line", async () => {
+  await renderDisconnectedAbout();
   expect(screen.queryByText("Copyright (c) 2026 Shane Levine", { exact: false })).toBeNull();
 
   fireEvent.click(screen.getByText("MIT License"));
@@ -77,9 +85,10 @@ test("shows the hub version (and commit) once connected and loaded", async () =>
   expect(screen.getByText("(abc1234)")).toBeTruthy();
 });
 
-test("omits version/commit gracefully, with no raw error text, when not connected", () => {
-  render(<AboutSection />);
+test("omits version/commit gracefully, with no raw error text, when not connected", async () => {
+  await renderDisconnectedAbout();
   expect(screen.getByText("evener hub")).toBeTruthy();
+  expect(screen.queryByText("no client connected", { exact: false })).toBeNull();
 });
 
 test("a fetch failure shows a friendly message, never the raw error", async () => {

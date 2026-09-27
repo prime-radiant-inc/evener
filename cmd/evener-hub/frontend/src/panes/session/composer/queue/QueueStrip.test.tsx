@@ -197,16 +197,16 @@ function renderStrip(props: ReturnType<typeof defaultProps>) {
 // SettleAfterRetryLookup arms a one-shot barrier on the RETRY FLOW'S OWN reads
 // instead of a global listOutbox count (issue #1723): the retry's
 // post-reconciliation getOutbox lookup (retryBlockedMutation's second read of a
-// still-blocked record - the retry's last storage touch before handleRetry's
-// own reads) arms the barrier, and the first TARGET-scoped listOutbox read
+// still-blocked record - the retry's last storage touch before its decision
+// read) arms the barrier, and the first TARGET-scoped listOutbox read
 // CREATED after that arm fires it - the refresh retryBlockedPendingTurn's own
-// mutateThenRefresh awaits, the retry window's only read before handleRetry's
+// mutateThenRefresh awaits, the retry window's only read before its
 // decision read since #1722 removed the redundant second refresh - so the
-// concurrent settle commits inside the retry window, ahead of handleRetry's own
+// concurrent settle commits inside the retry window, ahead of the retry's own
 // reads. What the test pins is that a
 // settle landing anywhere in that window is the benign no-op the flow owes -
 // no "still cannot be checked" error for a row the retry had already made moot.
-// It does not and cannot pin the settle BETWEEN handleRetry's refresh and its
+// It does not and cannot pin the settle BETWEEN the retry's refresh and its
 // decision read: fake-indexeddb's cross-connection commit visibility is
 // asynchronous relative to the flow's awaits, so that finer staging would make
 // the green side flaky (verified empirically on PR 1393 - a regressed
@@ -236,7 +236,7 @@ class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
     // proceeds: the click-time capture read ahead of every check (counted in
     // the getOutboxWithStopEpoch override below), and the final lookup after
     // its reconciliation. The second read is the boundary between the retry's
-    // machinery and handleRetry's own reads.
+    // machinery and the decision read.
     if (this.#onSettle && record?.state === "blockedUnknown") {
       this.#blockedLookups += 1;
       if (this.#blockedLookups === 2) {
@@ -283,7 +283,7 @@ class SettleAfterRetryLookup extends MutationOutboxIndexedDB {
 // RetryPersistenceReadCounter counts the retry flow's own TARGET-scoped
 // persistence reads (issue #1722). readMutationPersistence(ref) is the only
 // caller of a target-scoped listRecovery read (stores/threads.ts), and both a
-// projection refresh and handleRetry's decision read go through it; the retry's
+// projection refresh and the retry's decision read go through it; the retry's
 // own machinery touches only outbox rows. The window opens at the retry's
 // post-reconciliation lookup of the still blocked record - the same boundary
 // SettleAfterRetryLookup arms on above - so refreshes the click's side effects
@@ -358,20 +358,6 @@ afterEach(() => {
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
   vi.restoreAllMocks();
   vi.useRealTimers();
-  // Every test here calls ensureThread(ref) directly for setup - QueueStrip
-  // takes its ref as a prop and never calls ensureThread/releaseThread
-  // itself, so cleanup()'s unmount leaves that ref refcounted after the LAST
-  // test. Under isolate:false that is what a later file's own
-  // connectionStore.connect() re-triggers via rewireClient.
-  resetThreadsStoreForTests();
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
 });
 
 describe("visibility", () => {
@@ -687,8 +673,10 @@ describe("durable recovery rows", () => {
     await flushPendingTurnsProjectionForTests();
     // Block the same record again so the row returns: a lingering error state
     // from the window would now be visible on it.
-    await otherTab.markUnknown(original.clientMutationId, "blockedUnknown");
-    await refreshPendingTurnsProjection(ref);
+    await act(async () => {
+      await otherTab.markUnknown(original.clientMutationId, "blockedUnknown");
+      await refreshPendingTurnsProjection(ref);
+    });
     await flushPendingTurnsProjectionForTests();
     const row = (await screen.findByText("uncertain input")).closest("li");
     if (!row) throw new Error("missing blocked row after the settle window");
@@ -713,7 +701,7 @@ describe("durable recovery rows", () => {
     await flushPendingTurnsProjectionForTests();
     // Keep the record blocked through the retry's own reconciliation, the
     // fixture the genuinely-blocked case above uses: the retry then reports the
-    // row still cannot be checked and handleRetry reaches its decision read -
+    // row still cannot be checked and reaches its decision read -
     // the path the redundant refresh lived on.
     fake.on("thread/read", () =>
       readResponse(ref, {
@@ -724,7 +712,7 @@ describe("durable recovery rows", () => {
     await userEvent.setup().click(retry);
     await flushPendingTurnsProjectionForTests();
     // Two target-scoped reads: the refresh retryBlockedPendingTurn's own
-    // mutateThenRefresh awaits, then handleRetry's decision read. A third is the
+    // mutateThenRefresh awaits, then the retry's decision read. A third is the
     // redundant second refresh #1722 removed - it re-read the same durable rows
     // and fed neither the projection nor the decision.
     expect(storage.readRefs()).toEqual(["ref_a", "ref_a"]);
@@ -998,8 +986,10 @@ describe("canceled rows", () => {
     expect(getToasts()).toEqual([]);
     expect(await storage.listOutbox("ref_a")).toEqual(before);
     expect(fake.calls.filter(({ method }) => method === "turn/start")).toEqual([]);
-    resolveRead?.();
-    await refreshed;
+    await act(async () => {
+      resolveRead?.();
+      await refreshed;
+    });
   });
 });
 
@@ -1351,7 +1341,13 @@ describe("promote", () => {
     await waitFor(() => {
       expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(3);
     });
-    await refreshPendingTurnsProjection("ref_a");
+    // Each press unlocks its row once its handler has finished.
+    await waitFor(() => {
+      for (const row of rows) expect(isDisabled(within(row).getByRole("button", { name: /steer now/i }))).toBe(false);
+    });
+    await act(async () => {
+      await refreshPendingTurnsProjection("ref_a");
+    });
     // The display input is observable where it lands: the optimistic promote
     // record's preview - the ghost's body (spec §3.2), not a wire param.
     const entries = pendingTurnEntries("ref_a", "promote");
@@ -1383,8 +1379,12 @@ describe("press-time controls", () => {
     applied(fake, "turn/drainAsSteer");
     renderStrip(defaultProps());
     const drain = await screen.findByRole("button", { name: /steer queue now/i });
-    foldAwaiting(fake);
-    fireEvent.click(drain);
+    // One act holds the render back until both have landed: the press still
+    // meets the render that predates the awaiting frame.
+    act(() => {
+      foldAwaiting(fake);
+      fireEvent.click(drain);
+    });
     await waitFor(() => expect(getToasts().map((t) => t.text)).toContain(NO_ACTIVE_TURN));
     expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
   });
@@ -1396,8 +1396,12 @@ describe("press-time controls", () => {
     renderStrip(defaultProps());
     const row = (await screen.findAllByRole("listitem"))[0]!;
     const promote = within(row).getByRole("button", { name: /steer now/i });
-    foldAwaiting(fake);
-    fireEvent.click(promote);
+    // One act holds the render back until both have landed: the press still
+    // meets the render that predates the awaiting frame.
+    act(() => {
+      foldAwaiting(fake);
+      fireEvent.click(promote);
+    });
     await waitFor(() => expect(getToasts().map((t) => t.text)).toContain(NO_ACTIVE_TURN));
     expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(0);
   });

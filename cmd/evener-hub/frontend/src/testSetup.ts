@@ -1,5 +1,7 @@
+import { cleanup } from "@testing-library/react";
 import * as React from "react";
-import { afterAll, beforeAll } from "vitest";
+import { afterAll, afterEach, beforeAll } from "vitest";
+import { guardConsoleOutput } from "./testConsoleGuard";
 
 // Every test file must get its own VM context: stores, pane registrations and
 // module mocks are module-scoped. Vitest's vmThreads pool gives each file one
@@ -14,6 +16,26 @@ if (contextMarker.__evenerTestContextInUse) {
   );
 }
 contextMarker.__evenerTestContextInUse = true;
+
+// Guarded here at module scope, before the test file loads, so a file that
+// captures console.error at its own module scope captures the guarded method.
+// This file's hooks register first, so they run after the test file's own
+// afterEach and afterAll: output from its cleanup (unmounts) counts too.
+const consoleGuard = guardConsoleOutput(console);
+
+function failOnUnexpectedConsoleOutput() {
+  const unexpected = consoleGuard.takeUnexpectedOutput();
+  if (unexpected !== undefined) throw new Error(unexpected);
+}
+
+afterEach(failOnUnexpectedConsoleOutput);
+afterAll(failOnUnexpectedConsoleOutput);
+
+// Testing Library registers its automatic unmount only when vitest exposes a
+// global afterEach, which it does not here, so a test's rendered trees and
+// hooks would otherwise stay mounted into the next test. Registered after the
+// console check so it runs before it: output from the unmount counts.
+afterEach(cleanup);
 
 const reactEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 let previousActEnvironment: boolean | undefined;
