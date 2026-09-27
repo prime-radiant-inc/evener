@@ -377,9 +377,8 @@ func fixtures() []fixture {
 		}},
 		{name: "transcript only", header: header, lines: interleaveTranscriptOnly(append(append([]fixtureLine(nil), basic...), communicate...))},
 	}
-	sets = append(sets, newFormatFixtures(header, prelude)...)
 	// Last: its final entry sits in the validated tail of "everything".
-	sets = append(sets, fixture{name: "ordinals", header: header, lines: ordinals})
+	sets = append(sets, append(newFormatFixtures(header, prelude), fixture{name: "ordinals", header: header, lines: ordinals})...)
 	// Last four: each leaves a communicate call permanently unpaired, so
 	// nothing in "everything" follows them (see needsCommunicateHistory
 	// and TestAppendEntryByEntryMatchesTheReference); a reopen after

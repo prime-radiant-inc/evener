@@ -348,22 +348,30 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 // projection those other callers share.
 func flushProjection(reg *apptranscript.ToolCallRegistry, projection []referenceTurn) []referenceTurn {
 	out := append([]referenceTurn(nil), projection...)
-	// lastShown is the turn the transcript's tail item belongs to: the one
-	// whose Version (the latest entry that contributed to it) is highest, not
-	// the slot latest in display order. A shared turn ID two non-adjacent
-	// entries revisit (a gap-turn samples cycle back to) keeps its
-	// first-appearance slot, so a slice walk from the end would land on
-	// whatever turn happens to sit after that slot instead of the one the
-	// file's last entry actually touched — matching production's
-	// lastCandidate, which finds the last recorded ITEM, not the last slot.
+	// lastShown is the turn the transcript's tail item belongs to: the turn
+	// of the item with the highest Position, not the slot latest in display
+	// order and not the turn whose Version (the latest entry that
+	// contributed to it) is highest. A shared turn ID two non-adjacent
+	// entries revisit (a gap-turn samples cycle back to, or recovery's
+	// TurnReopen) keeps its first-appearance slot, so a slice walk from the
+	// end would land on whatever turn happens to sit after that slot instead
+	// of the one the file's last entry actually touched. And Version alone
+	// overshoots the other way: an entry that revisits a turn without adding
+	// an item (TURN_COMPLETION, TURN_REOPEN) still bumps that turn's Version,
+	// which can leave it higher than a turn with genuinely later items — so
+	// comparing Versions can pick a turn whose last item is not the file's
+	// last item at all. candidatesOf's own position sort is ground truth for
+	// "the file's last item": take its last entry's turn, matching
+	// production's lastCandidate, which finds the last recorded ITEM by
+	// table position, never by a turn-summary scalar.
 	lastShown := -1
-	var lastVersion uint64
-	for i, rt := range out {
-		if len(rt.turn.Items) == 0 {
-			continue
-		}
-		if lastShown < 0 || rt.turn.Version >= lastVersion {
-			lastShown, lastVersion = i, rt.turn.Version
+	if candidates := candidatesOf(out); len(candidates) > 0 {
+		lastID := candidates[len(candidates)-1].TurnID
+		for i, rt := range out {
+			if rt.turn.ID == lastID {
+				lastShown = i
+				break
+			}
 		}
 	}
 	if lastShown < 0 {

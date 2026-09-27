@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -49,18 +48,6 @@ func allTurnsItems(turns []appwire.Turn) []appwire.ThreadItem {
 		out = append(out, turn.Items...)
 	}
 	return out
-}
-
-// findAnyFlushedCommunicateItem finds the first item FlushUnpairedCommunicates
-// seeded (ID prefix "item_assistant_flushed_"), reporting false when none of
-// items carries one.
-func findAnyFlushedCommunicateItem(items []appwire.ThreadItem) (appwire.ThreadItem, bool) {
-	for _, item := range items {
-		if strings.HasPrefix(item.ID, "item_assistant_flushed_") {
-			return item, true
-		}
-	}
-	return appwire.ThreadItem{}, false
 }
 
 func writeEntries(t testing.TB, entries ...transcript.Entry) string {

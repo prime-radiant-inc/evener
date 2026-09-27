@@ -297,4 +297,3 @@ func buildReplayEntry(turnSel, partsSel byte, text, think, query, name, cmd stri
 		`","message":{"role":"` + role + `","content":[` + strings.Join(parts, ",") +
 		`]},"timestamp":"2026-06-01T10:00:00Z"}}`)
 }
-
