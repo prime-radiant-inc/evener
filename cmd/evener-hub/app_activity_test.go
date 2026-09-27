@@ -1,12 +1,16 @@
 package hub
 
 import (
+	"context"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -93,5 +97,117 @@ func TestActivityReadWithoutARosterIsAnEmptyList(t *testing.T) {
 	got, err := hubActivityRead(t.Context(), hubcore.WebConfig{}, nil, appwire.ActivityReadParams{}, activityReadNow)
 	if err != nil || got.Sessions == nil || len(got.Sessions) != 0 {
 		t.Fatalf("read = %+v (%v), want an empty, non-nil list", got, err)
+	}
+}
+
+// activityHost scripts a remote hub (newScriptedRemoteHub) that answers every
+// evener/activity/read with reply: a response, or an appwire.WireError it
+// sends back as an error.
+func activityHost(reply any) func(string, json.RawMessage) any {
+	return func(method string, _ json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodEvenerActivityRead:
+			return reply
+		default:
+			return appwire.EmptyResponse{}
+		}
+	}
+}
+
+// activityHostReads decodes the evener/activity/read requests a scripted host
+// received, in order.
+func activityHostReads(t *testing.T, calls []remoteHubCall) []appwire.ActivityReadParams {
+	t.Helper()
+	var reads []appwire.ActivityReadParams
+	for _, call := range calls {
+		if call.method != appwire.MethodEvenerActivityRead {
+			continue
+		}
+		var params appwire.ActivityReadParams
+		if err := json.Unmarshal(call.params, &params); err != nil {
+			t.Fatalf("decode activity read params %s: %v", call.params, err)
+		}
+		reads = append(reads, params)
+	}
+	return reads
+}
+
+func activityHostRegistry(name string, client *appwire.Client, attached bool) *appsource.Registry {
+	source := appsource.NewRemoteHubSource(name, nil, func(context.Context, string) (*appwire.Client, error) { return client, nil })
+	source.SetHostClientIfAttached(func(host string) (*appwire.Client, bool) { return client, attached && host == name })
+	registry := appsource.NewRegistry()
+	registry.Add(source)
+	return registry
+}
+
+// An attached host answers for its own sessions: its refs come back in the
+// controller's namespace, a row the controller cannot address (the host's own
+// host) is dropped, and a filter reaches the host in the host's namespace.
+func TestActivityReadFansOutToAttachedHosts(t *testing.T) {
+	quiet := int64(1_000)
+	client, calls := newScriptedRemoteHub(t, activityHost(appwire.ActivityReadResponse{Sessions: []appwire.SessionActivity{
+		{Ref: "local:r1", Minutes: activityReadMinutes, QuietForMS: &quiet},
+		{Ref: "nested-host:x", Minutes: activityReadMinutes},
+	}}))
+	cfg := hubcore.WebConfig{
+		Roster:                     hubcore.NewRosterWithEntries(liveActivityEntry(1, "01LOCAL", appwire.ThreadStatusAwaiting, silentFor(time.Minute))),
+		RemoteHosts:                []hostreg.Host{{Name: "h1"}},
+		RemoteHostClientIfAttached: func(host string) (*appwire.Client, bool) { return client, host == "h1" },
+	}
+	registry := activityHostRegistry("h1", client, true)
+
+	got, err := hubActivityRead(t.Context(), cfg, registry, appwire.ActivityReadParams{}, activityReadNow)
+	if err != nil {
+		t.Fatalf("activity read: %v", err)
+	}
+	want := []appwire.SessionActivity{
+		{Ref: "h1:r1", Minutes: activityReadMinutes, QuietForMS: &quiet},
+		{Ref: "local:01LOCAL", Minutes: activityReadMinutes},
+	}
+	if !reflect.DeepEqual(got.Sessions, want) {
+		t.Fatalf("sessions = %+v, want %+v", got.Sessions, want)
+	}
+
+	if _, err := hubActivityRead(t.Context(), cfg, registry, appwire.ActivityReadParams{Refs: []string{"h1:r1"}}, activityReadNow); err != nil {
+		t.Fatalf("filtered read: %v", err)
+	}
+	if reads := activityHostReads(t, calls()); len(reads) != 2 || reads[0].Refs != nil || !reflect.DeepEqual(reads[1].Refs, []string{"local:r1"}) {
+		t.Fatalf("host requests = %+v, want an unfiltered read, then local:r1", reads)
+	}
+	// A filter naming only local sessions never calls the host.
+	if _, err := hubActivityRead(t.Context(), cfg, registry, appwire.ActivityReadParams{Refs: []string{"local:01LOCAL"}}, activityReadNow); err != nil {
+		t.Fatalf("local-only read: %v", err)
+	}
+	if reads := activityHostReads(t, calls()); len(reads) != 2 {
+		t.Fatalf("host requests = %d, want still 2", len(reads))
+	}
+}
+
+// A host that fails contributes nothing, and a host that is not attached is
+// never called; the local sessions are still read.
+func TestActivityReadSkipsAFailingOrUnattachedHost(t *testing.T) {
+	failing, failedCalls := newScriptedRemoteHub(t, activityHost(appwire.InternalError("host failed")))
+	cfg := hubcore.WebConfig{
+		Roster:      hubcore.NewRosterWithEntries(liveActivityEntry(1, "01LOCAL", appwire.ThreadStatusAwaiting, silentFor(time.Minute))),
+		RemoteHosts: []hostreg.Host{{Name: "h1"}},
+		RemoteHostClientIfAttached: func(host string) (*appwire.Client, bool) {
+			return failing, host == "h1"
+		},
+	}
+	got, err := hubActivityRead(t.Context(), cfg, activityHostRegistry("h1", failing, true), appwire.ActivityReadParams{}, activityReadNow)
+	if err != nil || len(got.Sessions) != 1 || got.Sessions[0].Ref != "local:01LOCAL" {
+		t.Fatalf("read with a failing host = %+v (%v), want only the local session", got, err)
+	}
+	if reads := activityHostReads(t, failedCalls()); len(reads) != 1 {
+		t.Fatalf("failing host calls = %d, want 1", len(reads))
+	}
+
+	idle, idleCalls := newScriptedRemoteHub(t, activityHost(appwire.ActivityReadResponse{Sessions: []appwire.SessionActivity{{Ref: "local:r1", Minutes: activityReadMinutes}}}))
+	cfg.RemoteHostClientIfAttached = func(string) (*appwire.Client, bool) { return nil, false }
+	got, err = hubActivityRead(t.Context(), cfg, activityHostRegistry("h1", idle, false), appwire.ActivityReadParams{}, activityReadNow)
+	if reads := activityHostReads(t, idleCalls()); err != nil || len(got.Sessions) != 1 || len(reads) != 0 {
+		t.Fatalf("read with an unattached host = %+v (%v), %d host calls; want only the local session and no call", got, err, len(reads))
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -43,12 +45,23 @@ func hubActivityRead(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 		_, ok := wanted[ref]
 		return len(wanted) == 0 || ok
 	}
+	askedLocal := len(wanted) == 0
+	for ref := range wanted {
+		if strings.HasPrefix(ref, "local:") {
+			askedLocal = true
+		}
+	}
 	sessions := []appwire.SessionActivity{}
-	if cfg.Roster != nil {
+	if cfg.Roster != nil && askedLocal {
 		for _, entry := range cfg.Roster.List() {
 			if activity, ok := localSessionActivity(entry, now); ok && keep(activity.Ref) {
 				sessions = append(sessions, activity)
 			}
+		}
+	}
+	for _, activity := range remoteSessionActivity(ctx, cfg, sources, params.Refs) {
+		if keep(activity.Ref) {
+			sessions = append(sessions, activity)
 		}
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].Ref < sessions[j].Ref })
@@ -88,4 +101,59 @@ func runningSubagents(entry hubcore.LiveEntry) int {
 		}
 	}
 	return count
+}
+
+// remoteActivityReadBudget bounds one host's answer. A host answers from its
+// own roster in memory, so anything longer is a stalled channel: that host's
+// sessions are left out of this read, and a client keeps its fallback for them
+// until the next poll.
+const remoteActivityReadBudget = 3 * time.Second
+
+// remoteSessionActivityReader is the source capability the read fans out to:
+// an attached host hub answers for its own live sessions.
+type remoteSessionActivityReader interface {
+	ReadSessionActivity(ctx context.Context, params appwire.ActivityReadParams) (appwire.ActivityReadResponse, error)
+}
+
+// remoteSessionActivity asks every attached host the filter names (every host
+// when it names none), in parallel, each bounded by remoteActivityReadBudget.
+// A host that fails or times out contributes nothing; an unattached host is
+// skipped without a call, never dialed.
+func remoteSessionActivity(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, refs []string) []appwire.SessionActivity {
+	if sources == nil {
+		return nil
+	}
+	byHost := make(map[string][]string)
+	for _, raw := range refs {
+		if ref, err := hubapi.ParseRef(raw); err == nil {
+			byHost[ref.HostID] = append(byHost[ref.HostID], ref.String())
+		}
+	}
+	remoteHosts := remoteHostNames(cfg)
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		sessions []appwire.SessionActivity
+	)
+	for _, source := range sources.All() {
+		id := source.ID()
+		reader, ok := source.(remoteSessionActivityReader)
+		hostRefs, named := byHost[id]
+		if !ok || (len(refs) > 0 && !named) || !remoteSourceAttached(cfg, remoteHosts, id) {
+			continue
+		}
+		wg.Go(func() {
+			hostCtx, cancel := context.WithTimeout(ctx, remoteActivityReadBudget)
+			defer cancel()
+			response, err := reader.ReadSessionActivity(hostCtx, appwire.ActivityReadParams{Refs: hostRefs})
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			sessions = append(sessions, response.Sessions...)
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	return sessions
 }
