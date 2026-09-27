@@ -1284,6 +1284,45 @@ test.each([
   expectContentFreeRejection(key, snapshotWithTasks(tasks));
 });
 
+// A live root's whole-tree subagent tally (S3) is a nested value record the hub
+// carries only when the tree has a subagent. The codec keeps every count it
+// knows, drops a key inside the record that it does not know, and holds each
+// count to the hub schema's bound (navigation_schema.go
+// navigationSubagentTallyValid).
+const snapshotWithSubagents = (subagents: unknown): NavigationSnapshot => ({
+  ...liveSnapshot(),
+  entities: [{ key: entityKey(key, "1"), kind: "session", value: { ...sessionValue("local:session"), subagents } }],
+});
+
+test("codec keeps a session's subagent tally and drops keys inside it that it does not know", () => {
+  const subagents = { running: 2, failed: 1, done: 57 };
+  const rows = materializeSnapshot(
+    key,
+    decodedSnapshot(key, snapshotWithSubagents({ ...subagents, future_tally_key: futureValue })),
+  ).sessions as Array<Record<string, unknown>>;
+  expect(rows[0]?.subagents).toEqual(subagents);
+  const onTheBounds = { running: Number.MAX_SAFE_INTEGER, failed: 0, done: Number.MAX_SAFE_INTEGER };
+  expect(decodedSnapshot(key, snapshotWithSubagents(onTheBounds)).snapshot.entities[0]?.value).toEqual({
+    ...sessionValue("local:session"),
+    subagents: onTheBounds,
+  });
+});
+
+test.each([
+  ["null", null],
+  ["a number in place of the record", 3],
+  ["a list in place of the record", [{ running: 1, failed: 0, done: 0 }]],
+  ["a missing running count", { failed: 0, done: 0 }],
+  ["a missing failed count", { running: 2, done: 57 }],
+  ["a missing done count", { running: 2, failed: 1 }],
+  ["a negative count", { running: 2, failed: -1, done: 57 }],
+  ["a fractional count", { running: 1.5, failed: 0, done: 0 }],
+  ["a count beyond the safe range", { running: Number.MAX_SAFE_INTEGER + 1, failed: 0, done: 0 }],
+  ["a string count", { running: "2", failed: 0, done: 0 }],
+] as const)("codec refuses a subagent tally with %s", (_name, subagents) => {
+  expectContentFreeRejection(key, snapshotWithSubagents(subagents));
+});
+
 // cmd/evener-hub/navigation_value_records_test.go keeps this fixture naming
 // every wire field of every navigation value record. Decoding it must keep all
 // of them: a field the hub sends that the codec does not list would be dropped
