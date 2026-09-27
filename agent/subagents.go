@@ -447,15 +447,19 @@ func baseSubagentToolPolicy(agent *plugin.Agent, canDelegate bool) (allTools boo
 		// surface already keeps it (deny-list path), so a typed role's tools:
 		// list must not silently take it away.
 		allowed = appendUniqueStrings(allowed, "use_skill")
-		// job_watch supervises a session's OWN jobs, not a delegate's: any
-		// session that can run jobs can watch them at any depth, so it is not
-		// a capability a role opts into and a tools: list must not take it
-		// away. Every cross-session source authorizes itself — source="parent"
-		// requires delegate(watch_parent=true), and a concrete job id must be
-		// owned by the watching session — so a leaf gains no reach over its
-		// parent's jobs. Without it, a long foreground command promoted to a
-		// background job leaves the delegate no way to await it, and the
-		// one-shot drain kills it (#2645).
+		// The job-supervision tools are intrinsic too: job_watch, job_status,
+		// and job_stop all act on a session's OWN jobs, not a delegate's. Any
+		// session that can run jobs can watch, inspect, and stop them at any
+		// depth, so none is a capability a role opts into and a tools: list
+		// must not take them away. Every source authorizes itself — a watch's
+		// `parent` requires delegate(watch_parent=true), and a concrete job id
+		// must be owned by the reading or stopping session — so a leaf gains no
+		// reach over its parent's jobs. Without job_watch a long foreground
+		// command promoted to a background job is unawaitable, without job_stop
+		// the one-shot drain's stop remedy is uncallable, and the drain kills
+		// the job after its two escalation turns (#2645).
+		allowed = appendUniqueStrings(allowed, "job_status")
+		allowed = appendUniqueStrings(allowed, "job_stop")
 		allowed = appendUniqueStrings(allowed, "job_watch")
 		// Delegation tools in a typed role's list are allowance-gated: a role
 		// granted delegation keeps delegate; a leaf loses it on every spawn

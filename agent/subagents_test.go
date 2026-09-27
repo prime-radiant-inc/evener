@@ -137,7 +137,7 @@ func TestFrozenSubagentToolNamesIncludeRecoveryReader(t *testing.T) {
 	releasePreparedTreeSlot(prepared)
 	defer prepared.sub.sess.Close()
 	got := prepared.frozenToolNames
-	if !slices.Equal(got, []string{"read_file", "task_list", "compact_context", "use_skill", "job_watch", "read_transcript"}) {
+	if !slices.Equal(got, []string{"read_file", "task_list", "compact_context", "use_skill", "job_status", "job_stop", "job_watch", "read_transcript"}) {
 		t.Fatalf("frozen names = %v", got)
 	}
 }
@@ -1018,9 +1018,10 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 		if slices.Contains(allowed, "delegate") {
 			t.Errorf("canDelegate=true must NOT inject delegate into a typed agent's allow-list (got %v)", allowed)
 		}
-		// job_watch is intrinsic, not injected for delegation: every allow-list
-		// carries it so a leaf can await its own promoted background job (#2645).
-		for _, want := range []string{"read_file", "task_list", "job_watch"} {
+		// The job-supervision trio is intrinsic, not injected for delegation:
+		// every allow-list carries it so a leaf can await, inspect, and stop its
+		// own promoted background job (#2645).
+		for _, want := range []string{"read_file", "task_list", "job_status", "job_stop", "job_watch"} {
 			if !slices.Contains(allowed, want) {
 				t.Errorf("explicit-Tools agent must contain %q in allow-list (got %v)", want, allowed)
 			}
