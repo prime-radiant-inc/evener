@@ -104,15 +104,11 @@ function Board({
 	// Activity keeps polling while only a sheet covers the Board: the sheet
 	// is part of the screen under it.
 	const inFront = useScreenInFront(routeKey);
-	const { poll, revision: activityRevision } = useActivityPoll(client, connected && inFront);
-	// The poll's client survives a reconnect (hubConnection.ts), so it keeps
-	// its last read while offline - but msSinceRead keeps counting in real
-	// time regardless, so a long enough drop would read a healthy session as
-	// stuck and float it up: a false alarm about the connection, not the
-	// session. Reading through this while disconnected instead of poll
-	// directly drops every row to its pre-S5 fallback for as long as the
-	// connection is down.
-	const activityPoll = connected ? poll : undefined;
+	const {
+		activity: pollActivity,
+		msSinceRead: pollMsSinceRead,
+		revision: activityRevision,
+	} = useActivityPoll(client, connected, inFront);
 	const [board] = useState(createBoardController);
 	useEffect(() => () => board.dispose(), [board]);
 	const snapshot = useSyncExternalStore(board.subscribe, board.getSnapshot);
@@ -155,14 +151,15 @@ function Board({
 				snapshot.needsYou.rows,
 				(row) => markers.isSeen(row),
 				(row) => {
-					const activity = activityPoll?.activity(row.ref);
-					return activity ? quietState(activity, activityPoll?.msSinceRead() ?? 0)?.state === "stuck" : false;
+					const activity = pollActivity(row.ref);
+					return activity ? quietState(activity, pollMsSinceRead ?? 0)?.state === "stuck" : false;
 				},
 			),
 		// seenRevision re-runs isSeen after a mark or first run, and
-		// activityRevision (with connected) re-runs isStuck after each read
-		// and the moment the connection drops or returns.
-		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision, activityPoll, activityRevision],
+		// activityRevision re-runs isStuck after each read and the moment the
+		// connection drops or returns (useActivityPoll gates pollActivity and
+		// pollMsSinceRead on connected itself, so this needs no separate check).
+		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision, pollActivity, pollMsSinceRead, activityRevision],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
@@ -296,8 +293,8 @@ function Board({
 		now,
 		onOpen: openSession,
 		draftRefs,
-		activityOf: (ref) => activityPoll?.activity(ref),
-		msSinceRead: activityPoll?.msSinceRead() ?? null,
+		activityOf: pollActivity,
+		msSinceRead: pollMsSinceRead,
 	};
 	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean) => (
 		<BoardRows items={items} variant={variant} moving={moving} context={rowContext} />
@@ -313,7 +310,7 @@ function Board({
 	// The fleet meter sums the working sessions the poll has read so far, and
 	// stays still until it has read one.
 	const workingMinutes = bands.working
-		.map((item) => activityPoll?.activity(item.row.ref)?.minutes)
+		.map((item) => pollActivity(item.row.ref)?.minutes)
 		.filter((minutes): minutes is number[] => minutes !== undefined);
 	const fleetPerMinute = workingMinutes.length ? fleetMinutes(workingMinutes) : undefined;
 
@@ -538,18 +535,29 @@ const noSubscription = () => () => {};
 const noRevision = () => 0;
 
 /** S5's activity for every live session (activityPoll.ts), polled while
- * `active`. A poll is bound to the client it was made with, so each client
- * gets a fresh one, and there is none without a client. The revision changes
- * with each read that lands. */
-function useActivityPoll(client: ConversationClientLike | null, active: boolean) {
+ * connected and in front. A poll is bound to the client it was made with, so
+ * each client gets a fresh one, and there is none without a client. The
+ * revision changes with each read that lands.
+ *
+ * The underlying client survives a reconnect (hubConnection.ts), so a poll
+ * that stops on disconnect still holds its last read - reading it as current
+ * would let a long enough drop read a healthy session as "stuck" once
+ * msSinceRead alone crosses the threshold, a false alarm about the
+ * connection rather than the session (Jesse's ruling). Gating the RETURNED
+ * reading on `connected` too, and never handing back the poll itself, means
+ * no caller can read around this: every row and the fleet meter fall back to
+ * their pre-S5 appearance for as long as the connection is down. */
+function useActivityPoll(client: ConversationClientLike | null, connected: boolean, inFront: boolean) {
 	const poll = useMemo(() => (client ? new ActivityPoll(client) : null), [client]);
 	const revision = useSyncExternalStore(poll?.subscribe ?? noSubscription, poll?.getRevision ?? noRevision);
 	useEffect(() => {
-		if (!poll || !active) return;
+		if (!poll || !connected || !inFront) return;
 		poll.start();
 		return () => poll.stop();
-	}, [poll, active]);
-	return { poll, revision };
+	}, [poll, connected, inFront]);
+	const reading = connected ? poll : null;
+	const activity = useCallback((ref: string) => reading?.activity(ref), [reading]);
+	return { revision, activity, msSinceRead: reading?.msSinceRead() ?? null };
 }
 
 function useReadRetry(
