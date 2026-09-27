@@ -19,6 +19,7 @@ import (
 // and remain addressable through the doctor's own selector grammar, bare id
 // or explicit proj: ref.
 func TestDoctorEmittedRefsParseWithAgentRefGrammar(t *testing.T) {
+	t.Parallel()
 	stateHome := newStateHome(t)
 	// "a\b", kept in a variable so no string literal containing a path
 	// separator is handed to filepath.Join (gocritic filepathJoin).

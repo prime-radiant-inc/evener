@@ -12,6 +12,7 @@ import (
 // save A, save B, then retry A with A's original input replays A's recorded
 // stored value without mutating, so B (the latest save) still stands.
 func TestSetHumanNoteInterleavedRetryKeepsLatestNote(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	firstResponse, err := s.SetHumanNote("outer-a", "note A")
@@ -64,6 +65,7 @@ func TestSetHumanNoteInterleavedRetryKeepsLatestNote(t *testing.T) {
 // TestSetHumanNoteReusedIDWithDifferentInputConflicts verifies a reused outer
 // ID with different input is rejected without mutating the stored note.
 func TestSetHumanNoteReusedIDWithDifferentInputConflicts(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	if _, err := s.SetHumanNote("outer-1", "first"); err != nil {
@@ -140,6 +142,7 @@ func TestRemoveSessionURLReusedIDWithDifferentInputConflicts(t *testing.T) {
 // TestRemoveSessionURLUnknownIDRejects verifies an unknown entry id on a
 // fresh outer ID stays an InvalidParams error (not a journaled success).
 func TestRemoveSessionURLUnknownIDRejects(t *testing.T) {
+	t.Parallel()
 	s := newNotesToolSession(t)
 	defer s.Close()
 	if removed, err := s.RemoveSessionURL("outer-fresh", "nonexistent"); removed || err == nil {

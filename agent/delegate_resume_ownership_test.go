@@ -10,6 +10,7 @@ import (
 )
 
 func TestRetainedDelegateReservesSessionUntilOwnerReleases(t *testing.T) {
+	t.Parallel()
 	root, client, _ := newDelegateResourceBootstrapSession(t)
 	logger, err := llm.NewSessionAPILogger(root.stateDir)
 	if err != nil {

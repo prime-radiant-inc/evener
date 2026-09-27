@@ -33,6 +33,7 @@ func writeMutationSnapshotFile(t testing.TB, stateDir, sessionID, data string) {
 // report the same note and present flag — including the saved-empty note,
 // where present=true distinguishes an explicit clear from no authority.
 func TestReadPersistedHumanNoteMatchesStrictOnWellFormedSnapshots(t *testing.T) {
+	t.Parallel()
 	for _, note := range []string{"saved-sentinel", ""} {
 		t.Run(fmt.Sprintf("note=%q", note), func(t *testing.T) {
 			sessionID := identifier.MustNewSessionID()
@@ -64,6 +65,7 @@ func TestReadPersistedHumanNoteMatchesStrictOnWellFormedSnapshots(t *testing.T) 
 // case additionally pins that the read stops at the value it finds, leaving
 // everything after it unread.
 func TestReadPersistedHumanNoteReadsWhatStrictAuthorityRejects(t *testing.T) {
+	t.Parallel()
 	sessionID := identifier.MustNewSessionID()
 	valid := func() string { return strictSnapshotJSON(sessionID, "light-note") }
 	cases := map[string]string{
@@ -97,6 +99,7 @@ func TestReadPersistedHumanNoteReadsWhatStrictAuthorityRejects(t *testing.T) {
 // file and no field are quiet absences; something that cannot yield the field
 // is an error.
 func TestReadPersistedHumanNoteAbsentAndMalformed(t *testing.T) {
+	t.Parallel()
 	sessionID := identifier.MustNewSessionID()
 	t.Run("absent file", func(t *testing.T) {
 		note, present, err := ReadPersistedHumanNote(t.TempDir(), sessionID)
@@ -210,6 +213,7 @@ func BenchmarkReadPersistedHumanNoteAbsent(b *testing.B) {
 // same key, and the strict reader decodes it, so reporting absence there would
 // silently hide a note the authority shows (roborev's sixth round).
 func TestReadPersistedHumanNoteAcceptsAnEscapedKey(t *testing.T) {
+	t.Parallel()
 	sessionID := identifier.MustNewSessionID()
 	stateDir := t.TempDir()
 	data := strings.Replace(strictSnapshotJSON(sessionID, "escaped-key note"), `"human_note"`, `"\u0068uman_note"`, 1)
@@ -230,6 +234,7 @@ func TestReadPersistedHumanNoteAcceptsAnEscapedKey(t *testing.T) {
 // reads as absent while the fast path applies, and errors once the walk runs
 // (roborev's eleventh round).
 func TestReadPersistedHumanNoteKeepsFastPathForEscapedJournals(t *testing.T) {
+	t.Parallel()
 	sessionID := identifier.MustNewSessionID()
 	stateDir := t.TempDir()
 	const broken = `{"version":1,"accepted_turns":0,"journal":{"m1":"line1\nline2 \"quoted\" \u003ctag\u003e"`

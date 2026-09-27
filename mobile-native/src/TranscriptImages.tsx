@@ -9,7 +9,7 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import type { AttachmentRef } from "../../mobile/src/conversation/project";
+import type { AttachmentRef } from "./projectedRows";
 import { useConnection } from "./ConnectionProvider";
 import { HubProfiles } from "./connection";
 import { transcriptImageSource } from "./transcriptImageSource";

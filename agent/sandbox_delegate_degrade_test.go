@@ -27,6 +27,7 @@ func sbxNoBackendFacts(home string) sandbox.HostFacts {
 // becomes write-blocked OFF — the delegate keeps its capability and loses every
 // file-tool write root — instead of refusing the spawn.
 func TestReadOnlyDelegateSandbox_DegradesWhenHostCannotEnforce(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxNoBackendFacts(home)
 	parent := sbxDelegateSession(t, facts) // parent env is off
@@ -71,6 +72,7 @@ func TestReadOnlyDelegateSandbox_DegradesWhenHostCannotEnforce(t *testing.T) {
 // included. Degrading there would hand back a delegate whose file tools are all
 // broken, so the spawn keeps its loud refusal instead.
 func TestReadOnlyDelegateSandbox_NoDegradeWhereFileToolsCannotEnforce(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	windows := sandbox.HostFacts{OS: "windows", Home: home}
 	parent := sbxDelegateSession(t, windows)
@@ -93,6 +95,7 @@ func TestReadOnlyDelegateSandbox_NoDegradeWhereFileToolsCannotEnforce(t *testing
 // policy refuses openat2. Such a delegate would launch and then fail every file
 // operation, so it must keep the enforced request and refuse before launch.
 func TestReadOnlyDelegateSandbox_NoDegradeWhenSecureOpenIsUnavailable(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	parent := sbxDelegateSession(t, sbxNoBackendFacts(home))
 	parent.cfg.testOnly.fileToolEnforceable = func() bool { return false }
@@ -146,6 +149,7 @@ func TestExplicitReadOnlyDelegateSandboxStillFailsClosed(t *testing.T) {
 // tools. Its reads work and its own scratch dir is writable, so the delegate is
 // useful — it just cannot touch the parent's deliverable.
 func TestDegradedReadOnlyDelegateFileToolsRefuseWrites(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	parent := sbxDelegateSession(t, sbxNoBackendFacts(home))
 	sbxSetParentEnv(t, parent, lane)
@@ -248,6 +252,7 @@ func TestDegradedDelegateSpawnFailureDisposesItsScratch(t *testing.T) {
 // a disclosure that narrows the residual gap to writes while omitting host reads
 // or network access, without pinning model-facing prose.
 func TestDegradedReadOnlyBoundaryDisclosesUnsandboxedShellCapabilities(t *testing.T) {
+	t.Parallel()
 	boundary, ok := degradedReadOnlyBoundaryFor(sandbox.ModeOff, true)
 	if !ok {
 		t.Fatal("write-blocked off must report the degraded read-only boundary")
@@ -297,6 +302,7 @@ func TestCreateExplorerDelegateDegradesInsteadOfRefusing(t *testing.T) {
 // TestDegradedWorktreeIsolationDoesNotAddKernelConfinement proves a worktree lane
 // changes where the delegate works but cannot add the missing host sandbox.
 func TestDegradedWorktreeIsolationDoesNotAddKernelConfinement(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	parent := sbxDelegateSession(t, sbxNoBackendFacts(home))
 	sbxSetParentEnv(t, parent, lane)
@@ -327,6 +333,7 @@ func TestDegradedWorktreeIsolationDoesNotAddKernelConfinement(t *testing.T) {
 // the cached enforcement layer, or the later shell scratch never becomes writable
 // through that cache.
 func TestInheritedDegradedWorktreeProvisionsScratchBeforeFileToolUse(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	parent := sbxDelegateSession(t, sbxNoBackendFacts(home))
 	sbxSetParentEnv(t, parent, lane)
@@ -378,6 +385,7 @@ func TestInheritedDegradedWorktreeProvisionsScratchBeforeFileToolUse(t *testing.
 // child inherits. Reading that axis through the OS-sandbox predicate reported
 // false and silently dropped the floor.
 func TestDegradedParentPropagatesItsWriteBlock(t *testing.T) {
+	t.Parallel()
 	_, home := sbxLane(t)
 	parent := sbxDelegateSession(t, sbxNoBackendFacts(home))
 	policy, err := parent.readOnlyDelegateSandbox()
@@ -425,6 +433,7 @@ func TestDegradedParentPropagatesItsWriteBlock(t *testing.T) {
 // produce the same write-blocked box and must not trip the write-capable guard
 // that exists to stop a read-only delegate resuming with workspace writes.
 func TestRestoreDelegateSandboxFloorDegradesForReadOnlyCeiling(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	s := sbxDelegateSession(t, sbxNoBackendFacts(home))
 	sbxSetParentEnv(t, s, lane)

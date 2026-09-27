@@ -24,7 +24,7 @@ var errRunGitShellUnsupported = errors.New("execenv: RunGit cannot build a shell
 // fall back to ExecCommand with each arg shell-escaped, exactly as every git
 // call site behaved before this function existed — except where that escaping
 // buys nothing: ShellEscapeArgs renders POSIX words, cmd.exe treats a single
-// quote as ordinary text and still expands %VAR% (see internal/shellquote's
+// quote as ordinary text and still expands %VAR% (see execsupport/shellquote's
 // "POSIX shells only" section), so an environment whose Platform reports
 // Windows is refused rather than handed a command line whose metacharacters
 // survive. The executed paths preserve identical

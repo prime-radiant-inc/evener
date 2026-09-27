@@ -9,6 +9,7 @@ import (
 )
 
 func TestHumanNoteConcurrentSameValueNotifiesOnce(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	var wg sync.WaitGroup
 	for i := range 8 {

@@ -88,7 +88,7 @@ func TestCanceledSelectedItemProjectionDoesNotPublish(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	calls := 0
-	project := func(turn schema.Turn, id string, i int, names map[string]string) []appwire.ThreadItem {
+	project := func(turn schema.Turn, id string, i int, names *ToolCallRegistry) []appwire.ThreadItem {
 		calls++
 		items := boundedTestProjector(turn, id, i, names)
 		if calls == 2 {
@@ -119,7 +119,7 @@ func TestCanceledGroupedFullProjectionStopsScanning(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	calls := 0
-	project := func(turn schema.Turn, id string, i int, names map[string]string) []appwire.ThreadItem {
+	project := func(turn schema.Turn, id string, i int, names *ToolCallRegistry) []appwire.ThreadItem {
 		calls++
 		cancel()
 		return boundedTestProjector(turn, id, i, names)
@@ -139,7 +139,7 @@ func TestCanceledSelectedAppendPreservesIndexAndJournal(t *testing.T) {
 	armed := false
 	calls := 0
 	var cancel context.CancelFunc
-	project := func(turn schema.Turn, id string, i int, names map[string]string) []appwire.ThreadItem {
+	project := func(turn schema.Turn, id string, i int, names *ToolCallRegistry) []appwire.ThreadItem {
 		items := boundedTestProjector(turn, id, i, names)
 		if armed && i == 3 {
 			calls++

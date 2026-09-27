@@ -12,6 +12,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestAttentionResolutionPlansLocked_NilAggregate(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	plans := c.attentionResolutionPlansLocked(delegateLease{delegateID: "dlg_1"}, nil, nil)
 	if plans != nil {
@@ -20,6 +21,7 @@ func TestAttentionResolutionPlansLocked_NilAggregate(t *testing.T) {
 }
 
 func TestAttentionResolutionPlansLocked_PhaseStopping(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	agg := &delegatestore.Aggregate{Phase: delegatestore.PhaseStopping}
 	lease := delegateLease{delegateID: "dlg_1"}
@@ -30,6 +32,7 @@ func TestAttentionResolutionPlansLocked_PhaseStopping(t *testing.T) {
 }
 
 func TestAttentionResolutionPlansLocked_NotAttentionTrigger(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	agg := &delegatestore.Aggregate{Phase: delegatestore.PhaseRunning, Trigger: delegatestore.TriggerInitial}
 	lease := delegateLease{delegateID: "dlg_1"}
@@ -40,6 +43,7 @@ func TestAttentionResolutionPlansLocked_NotAttentionTrigger(t *testing.T) {
 }
 
 func TestAttentionResolutionPlansLocked_NoAttentionIDs(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	agg := &delegatestore.Aggregate{Phase: delegatestore.PhaseRunning, Trigger: delegatestore.TriggerAttention}
 	lease := delegateLease{delegateID: "dlg_1"}
@@ -51,6 +55,7 @@ func TestAttentionResolutionPlansLocked_NoAttentionIDs(t *testing.T) {
 }
 
 func TestAttentionResolutionPlansLocked_WithIDs(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	agg := &delegatestore.Aggregate{
 		Phase:   delegatestore.PhaseRunning,
@@ -81,6 +86,7 @@ func TestAttentionResolutionPlansLocked_WithIDs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFinalizationReadyLocked_NilClaim(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	if err := c.finalizationReadyLocked(nil); !errors.Is(err, errDelegateStaleLease) {
 		t.Fatalf("expected stale lease for nil claim, got %v", err)
@@ -88,6 +94,7 @@ func TestFinalizationReadyLocked_NilClaim(t *testing.T) {
 }
 
 func TestFinalizationReadyLocked_ClaimNotInMap(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{},
 	}
@@ -98,6 +105,7 @@ func TestFinalizationReadyLocked_ClaimNotInMap(t *testing.T) {
 }
 
 func TestFinalizationReadyLocked_NotReady(t *testing.T) {
+	t.Parallel()
 	ready := make(chan struct{})
 	claim := &delegateSettlementClaim{token: 1, lease: delegateLease{delegateID: "dlg_1"}, ready: ready}
 	c := &delegateTreeController{
@@ -109,6 +117,7 @@ func TestFinalizationReadyLocked_NotReady(t *testing.T) {
 }
 
 func TestFinalizationReadyLocked_NoLiveBinding(t *testing.T) {
+	t.Parallel()
 	ready := make(chan struct{})
 	close(ready)
 	claim := &delegateSettlementClaim{token: 1, lease: delegateLease{delegateID: "dlg_1"}, ready: ready}
@@ -121,6 +130,7 @@ func TestFinalizationReadyLocked_NoLiveBinding(t *testing.T) {
 }
 
 func TestFinalizationReadyLocked_LeaseMismatch(t *testing.T) {
+	t.Parallel()
 	ready := make(chan struct{})
 	close(ready)
 	claim := &delegateSettlementClaim{token: 1, lease: delegateLease{delegateID: "dlg_1", generation: 1}, ready: ready}
@@ -136,6 +146,7 @@ func TestFinalizationReadyLocked_LeaseMismatch(t *testing.T) {
 }
 
 func TestFinalizationReadyLocked_QuietClaimActive(t *testing.T) {
+	t.Parallel()
 	ready := make(chan struct{})
 	close(ready)
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
@@ -155,6 +166,7 @@ func TestFinalizationReadyLocked_QuietClaimActive(t *testing.T) {
 }
 
 func TestFinalizationReadyLocked_Ready(t *testing.T) {
+	t.Parallel()
 	ready := make(chan struct{})
 	close(ready)
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
@@ -175,6 +187,7 @@ func TestFinalizationReadyLocked_Ready(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestFinalizationReadyForLeaseLocked_QuietClaimActive(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	live := &delegateLiveState{quietClaim: &delegateQuietAttentionClaim{}}
 	if err := c.finalizationReadyForLeaseLocked(delegateLease{delegateID: "dlg_1"}, live); !errors.Is(err, errDelegateTargetBusy) {
@@ -183,6 +196,7 @@ func TestFinalizationReadyForLeaseLocked_QuietClaimActive(t *testing.T) {
 }
 
 func TestFinalizationReadyForLeaseLocked_NoClaim(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		settlementClaims: map[uint64]*delegateSettlementClaim{},
 	}
@@ -192,6 +206,7 @@ func TestFinalizationReadyForLeaseLocked_NoClaim(t *testing.T) {
 }
 
 func TestFinalizationReadyForLeaseLocked_WithClaim(t *testing.T) {
+	t.Parallel()
 	ready := make(chan struct{})
 	close(ready)
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}

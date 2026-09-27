@@ -17,6 +17,7 @@ import (
 // TestCovDeliverHookContext_Empty covers the empty-text guard in
 // deliverHookContext (session_queue.go lines 286-288).
 func TestCovDeliverHookContext_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	s.deliverHookContext("")
 	s.deliverHookContext("  ")
@@ -29,6 +30,7 @@ func TestCovDeliverHookContext_Empty(t *testing.T) {
 // TestCovDeliverHookUserMessage_Empty covers the empty-text guard in
 // deliverHookUserMessage (session_queue.go lines 296-298).
 func TestCovDeliverHookUserMessage_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{id: "session_1", events: make(chan events.SessionEvent, 4)}
 	s.deliverHookUserMessage("")
 	s.deliverHookUserMessage("  ")
@@ -52,6 +54,7 @@ func TestCovDeliverHookUserMessage_Empty(t *testing.T) {
 // TestCovFollowUp_Empty covers the empty-text and closed guards in FollowUp
 // (session_queue.go lines 303-313).
 func TestCovFollowUp_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	// Empty message — should not add.
 	if err := s.FollowUp(""); err != nil {
@@ -92,6 +95,7 @@ func TestCovFollowUp_Empty(t *testing.T) {
 // TestCovRouteSystemNotification_NilSession covers the nil-session guard
 // in routeSystemNotification (session_queue.go lines 129-131).
 func TestCovRouteSystemNotification_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	if s.routeSystemNotification("sess1", "hello") {
 		t.Fatal("nil session should return false")
@@ -101,6 +105,7 @@ func TestCovRouteSystemNotification_NilSession(t *testing.T) {
 // TestCovRouteSystemNotification_EmptyReceiver covers the empty receiver guard
 // (session_queue.go line 129).
 func TestCovRouteSystemNotification_EmptyReceiver(t *testing.T) {
+	t.Parallel()
 	s := &Session{id: "sess1"}
 	if s.routeSystemNotification("", "hello") {
 		t.Fatal("empty receiver should return false")
@@ -113,6 +118,7 @@ func TestCovRouteSystemNotification_EmptyReceiver(t *testing.T) {
 // TestCovSteerFromUserWithImages_Empty covers the empty message+images guard
 // (session_queue.go lines 181-183).
 func TestCovSteerFromUserWithImages_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{id: "sess1"}
 	// Both empty — should return without doing anything.
 	s.SteerFromUserWithImages("", nil)
@@ -125,6 +131,7 @@ func TestCovSteerFromUserWithImages_Empty(t *testing.T) {
 // TestCovEnqueueWithImages_ClosedContext covers the context-cancelled path
 // (session_queue.go line 359).
 func TestCovEnqueueWithImages_ClosedContext(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -137,6 +144,7 @@ func TestCovEnqueueWithImages_ClosedContext(t *testing.T) {
 // TestCovEnqueueWithImages_Empty covers the empty text+images guard
 // (session_queue.go line 360).
 func TestCovEnqueueWithImages_Empty(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	err := s.EnqueueWithImages(context.Background(), "", nil)
 	if err == nil {
@@ -147,6 +155,7 @@ func TestCovEnqueueWithImages_Empty(t *testing.T) {
 // TestCovContextMetrics_NilContextMgr covers ContextMetrics with nil contextMgr
 // (context_metrics.go lines 13-14).
 func TestCovContextMetrics_NilContextMgr(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	got := s.ContextMetrics()
 	if got.Used != 0 || got.Window != 0 || got.Remaining != 0 {
@@ -157,6 +166,7 @@ func TestCovContextMetrics_NilContextMgr(t *testing.T) {
 // TestCovSessionScratchDir_NoWrapper covers SessionScratchDir without wrapper
 // or provisioned scratch (execenv/local.go lines 203-213).
 func TestCovSessionScratchDir_NoWrapper(t *testing.T) {
+	t.Parallel()
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	got := env.SessionScratchDir()
 	if got != "" {
@@ -167,6 +177,7 @@ func TestCovSessionScratchDir_NoWrapper(t *testing.T) {
 // TestCovToolBatchPanicError_Error covers toolBatchPanicError with an error value
 // (session_tool_round.go lines 225-230).
 func TestCovToolBatchPanicError_Error(t *testing.T) {
+	t.Parallel()
 	err := context.DeadlineExceeded
 	got := toolBatchPanicError(err)
 	if !errors.Is(got, err) {
@@ -177,6 +188,7 @@ func TestCovToolBatchPanicError_Error(t *testing.T) {
 // TestCovToolBatchPanicError_NonError covers toolBatchPanicError with a non-error
 // value — it should re-panic.
 func TestCovToolBatchPanicError_NonError(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		r := recover()
 		if r == nil {
@@ -192,6 +204,7 @@ func TestCovToolBatchPanicError_NonError(t *testing.T) {
 // TestCovBuiltinAgents covers builtinAgents and cloneBuiltinAgents
 // (builtin_agents.go lines 24-56).
 func TestCovBuiltinAgents(t *testing.T) {
+	t.Parallel()
 	// This exercises the cached path (sync.Once already fired by prior tests
 	// or by this call).
 	agents, err := builtinAgents()
@@ -266,6 +279,7 @@ func TestCovBuiltinAgents(t *testing.T) {
 
 // TestCovNewQueueEntryID covers newQueueEntryID (session_queue.go lines 336-341).
 func TestCovNewQueueEntryID(t *testing.T) {
+	t.Parallel()
 	id1 := newQueueEntryID()
 	id2 := newQueueEntryID()
 	if id1 == id2 {
@@ -279,6 +293,7 @@ func TestCovNewQueueEntryID(t *testing.T) {
 // TestCovOwnerJobManagerFor_NilSession covers ownerJobManagerFor nil guards
 // (jobs_nested.go lines 13-16).
 func TestCovOwnerJobManagerFor_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	jm, rec := s.ownerJobManagerFor("job1")
 	if jm != nil || rec != nil {
@@ -289,6 +304,7 @@ func TestCovOwnerJobManagerFor_NilSession(t *testing.T) {
 // TestCovOwnerJobManagerFor_NilJobManager covers ownerJobManagerFor with nil jobManager
 // (jobs_nested.go lines 14-16).
 func TestCovOwnerJobManagerFor_NilJobManager(t *testing.T) {
+	t.Parallel()
 	s := &Session{}
 	jm, rec := s.ownerJobManagerFor("job1")
 	if jm != nil || rec != nil {
@@ -299,6 +315,7 @@ func TestCovOwnerJobManagerFor_NilJobManager(t *testing.T) {
 // TestCovNotControllableDescendantError_NilSession covers the nil-session path
 // (jobs_nested.go lines 389-403).
 func TestCovNotControllableDescendantError_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	if err := s.notControllableDescendantError("job1"); err != nil {
 		t.Fatalf("nil session should return nil, got %v", err)
@@ -308,6 +325,7 @@ func TestCovNotControllableDescendantError_NilSession(t *testing.T) {
 // TestCovSessionRunningJobIDs_NilSession covers sessionRunningJobIDs with nil session
 // (session_tools_jobs.go lines 1648-1662).
 func TestCovSessionRunningJobIDs_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	if got := sessionRunningJobIDs(s); got != nil {
 		t.Fatalf("nil session should return nil, got %v", got)
@@ -317,6 +335,7 @@ func TestCovSessionRunningJobIDs_NilSession(t *testing.T) {
 // TestCovDecodeDelegateArgs covers decodeDelegateArgs error paths
 // (session_tools_jobs.go line 345).
 func TestCovDecodeDelegateArgs(t *testing.T) {
+	t.Parallel()
 	// sandbox_net non-bool.
 	_, err := decodeDelegateArgs(map[string]any{"prompt": "p", "sandbox_net": "yes"})
 	if err == nil || !strings.Contains(err.Error(), "sandbox_net must be a JSON boolean") {
@@ -373,6 +392,7 @@ func TestCovDecodeDelegateArgs(t *testing.T) {
 
 // TestCovSessionJobManager_NilSession covers sessionJobManager with nil session
 func TestCovSessionJobManager_NilSession(t *testing.T) {
+	t.Parallel()
 	var s *Session
 	jm, err := sessionJobManager(s)
 	if err == nil || jm != nil {
@@ -383,6 +403,7 @@ func TestCovSessionJobManager_NilSession(t *testing.T) {
 // TestCovStableDelegateFinish_NilSession covers stableDelegateFinish with nil session
 // (subagents.go lines 1737-1745).
 func TestCovStableDelegateFinish_NilSession(t *testing.T) {
+	t.Parallel()
 	finish := stableDelegateFinish(nil, "result", nil)
 	if finish.outcome != delegatestore.OutcomeFailed || finish.disposition != delegatestore.DispositionTerminalError || finish.reason != "failed" {
 		t.Fatalf("unreported finish = outcome:%q disposition:%q reason:%q", finish.outcome, finish.disposition, finish.reason)
@@ -409,6 +430,7 @@ func TestCovStableDelegateFinish_NilSession(t *testing.T) {
 
 // TestCovStableDelegateFinish_WithError covers stableDelegateFinish with error
 func TestCovStableDelegateFinish_WithError(t *testing.T) {
+	t.Parallel()
 	finish := stableDelegateFinish(&Session{comm: communicateResult{called: true}}, "", context.DeadlineExceeded)
 	if finish.outcome != delegatestore.OutcomeFailed || finish.disposition != delegatestore.DispositionTerminalError || finish.reason != "failed" {
 		t.Fatalf("error finish = outcome:%q disposition:%q reason:%q", finish.outcome, finish.disposition, finish.reason)

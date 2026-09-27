@@ -57,6 +57,7 @@ type toolExecResult struct {
 }
 
 func TestFileToolsAllowOwnAllocatedScratch(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	s, _, scratch := allocatedSessionScratch(t, workspace)
 	target := filepath.Join(scratch, "probe.txt")
@@ -87,6 +88,7 @@ func TestFileToolsAllowOwnAllocatedScratch(t *testing.T) {
 }
 
 func TestFileToolsDenyUnallocatedAbsolutePaths(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	s, _, scratch := allocatedSessionScratch(t, workspace)
 	otherRoot := t.TempDir()
@@ -153,6 +155,7 @@ func TestFileToolsDenyUnallocatedAbsolutePaths(t *testing.T) {
 }
 
 func TestFileToolsDenySymlinkEscapeFromAllocatedScratch(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	s, _, scratch := allocatedSessionScratch(t, workspace)
 	outside := t.TempDir()
@@ -195,6 +198,7 @@ func TestFileToolsDenySymlinkEscapeFromAllocatedScratch(t *testing.T) {
 }
 
 func TestFileToolsPinAllocatedScratchAcrossRootSwap(t *testing.T) {
+	t.Parallel()
 	workspace := t.TempDir()
 	s, _, scratch := allocatedSessionScratch(t, workspace)
 	first := filepath.Join(scratch, "first.txt")

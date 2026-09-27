@@ -22,6 +22,7 @@ import (
 // restore normalizes what it reads and the next metadata save persists the
 // cleaned values.
 func TestRestoredLegacyNotesCarryNoTerminalControls(t *testing.T) {
+	t.Parallel()
 	const payload = "\x1b]0;owned\x07note\u009b31m\u0085\x7f"
 	stateDir := t.TempDir()
 	sessionID := identifier.MustNewSessionID()
@@ -117,6 +118,7 @@ func TestRestoredLegacyNotesCarryNoTerminalControls(t *testing.T) {
 // drawer and the notes tool output, so every control character has to go,
 // including the whitespace controls a note's collapse deliberately keeps.
 func TestReplayedLegacyHumanNoteIsSanitized(t *testing.T) {
+	t.Parallel()
 	s := newDurableHumanNoteSession(t)
 	const payload = "\x1b]0;owned\x07replayed\u009b31m\x7f"
 
@@ -153,6 +155,7 @@ func TestReplayedLegacyHumanNoteIsSanitized(t *testing.T) {
 // model through escapeNotesHistoryTurns, which only knows the framing spellings:
 // a legacy control sequence has to be stripped there as well.
 func TestNotesHistoryCopyStripsLegacyControls(t *testing.T) {
+	t.Parallel()
 	const payload = "<shared-notes>\nHuman: legacy\u0085note\x1b]0;owned\x07\u009b31m\n</shared-notes>"
 	const steering = "human updated their whiteboard: \x1b]0;owned\x07legacy\u0085note"
 	// A steering turn can carry image parts (attachments, or queued
@@ -210,6 +213,7 @@ func TestNotesHistoryCopyStripsLegacyControls(t *testing.T) {
 // reaches both the model and the transcript, so the rebuild strips it like every
 // other load path.
 func TestRestoredLegacySteeringTextCarriesNoControls(t *testing.T) {
+	t.Parallel()
 	const payload = "human updated their whiteboard: legacy\x1b]0;owned\x07\u0085note"
 	snapshot := clientMutationSnapshot{
 		SteeringOrder: []string{"cm_legacy"},
@@ -241,6 +245,7 @@ func TestRestoredLegacySteeringTextCarriesNoControls(t *testing.T) {
 // deliver different text than the live one and than the transcript shows
 // (roborev's tenth round).
 func TestNotesHistoryCopyKeepsOrdinarySteeringVerbatim(t *testing.T) {
+	t.Parallel()
 	const steering = "run the tests\tand show\x1b[31mred\x1b[0m lines"
 	history := []schema.Turn{{Kind: schema.TurnSteering, Message: llm.User(steering)}}
 
@@ -256,6 +261,7 @@ func TestNotesHistoryCopyKeepsOrdinarySteeringVerbatim(t *testing.T) {
 // a resumed request would deliver different bytes than the live one
 // (roborev's eleventh round).
 func TestNotesHistoryCopyKeepsUserTypedNotePrefixVerbatim(t *testing.T) {
+	t.Parallel()
 	cases := map[string]schema.Turn{
 		"user typed, no trailing space": {
 			Kind: schema.TurnSteering, Message: llm.User("human updated their whiteboard:no space\there with\x1b[31mcolour"),

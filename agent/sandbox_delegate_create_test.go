@@ -78,6 +78,7 @@ func prepareWithDelegateSandbox(t *testing.T, s *Session, lane string, pol *sand
 // an OFF parent that requests its own restricted box gets an environment enforced
 // at its lane.
 func TestPrepareSubagentRun_PerDelegateSandboxEnforced(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts) // parent env is off
@@ -114,6 +115,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxEnforced(t *testing.T) {
 // the delegate's own SessionScratchDir into the terminal packet metadata, the
 // same absolute path the sandboxed child actually has as $EVENER_SCRATCH_DIR.
 func TestPrepareSubagentRun_TerminalFinishCapturesScratchPath(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts)
@@ -141,6 +143,7 @@ func TestPrepareSubagentRun_TerminalFinishCapturesScratchPath(t *testing.T) {
 // extra writable root does NOT leak onto it — the delegate's box is a pure function
 // of ITS OWN policy.
 func TestPrepareSubagentRun_PerDelegateSandboxOverridesSandboxedParent(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts)
@@ -164,6 +167,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxOverridesSandboxedParent(t *testin
 // than its parent is refused with a legible invalid_request error, and the refusal
 // happens BEFORE minting any IDs (no delegate id is returned).
 func TestCreateDelegate_SandboxFloorRefusedEarly(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts)
@@ -330,6 +334,7 @@ func TestParentClose_RetainsPerDelegateSandboxScratch(t *testing.T) {
 // TestSandboxPromptLine: an unsandboxed env sources no environment sandbox line; a
 // sandboxed env sources the mode + network line.
 func TestSandboxPromptLine(t *testing.T) {
+	t.Parallel()
 	if line := sandboxPromptLine(newSession(t).currentEnv()); line != "" {
 		t.Errorf("an unsandboxed env must have no sandbox line, got %q", line)
 	}
@@ -354,6 +359,7 @@ func TestSandboxPromptLine(t *testing.T) {
 // parent box" — this test instead exercises the real EnableSandbox path so a
 // Wrapper (and its real, on-disk scratch dir) exists.
 func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, root)
@@ -380,6 +386,7 @@ func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
 }
 
 func TestSandboxPromptLineReadOnlyDelegateScratchGuidance(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	net := true
 	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
@@ -548,6 +555,7 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 // (mode + network) in the delegate result so the parent can verify the child's
 // actual confinement; an unsandboxed delegate omits the key.
 func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
@@ -617,6 +625,7 @@ func TestCreateDelegate_ResultEchoesSandboxBox(t *testing.T) {
 // EnableSandbox would sandbox (or re-box) the SHARED parent env mid-session. Assert
 // the child gets the requested box AND the parent env is untouched.
 func TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParent(t *testing.T) {
+	t.Parallel()
 	lane, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	c := llm.NewClient()
@@ -683,6 +692,7 @@ func TestPrepareSubagentRun_PerDelegateSandboxWithoutIsolationDoesNotMutateParen
 // under an unsandboxed parent is refused with a legible error (not silently
 // dropped), before any IDs are minted.
 func TestCreateDelegate_SandboxNetWithoutModeRefusedEarly(t *testing.T) {
+	t.Parallel()
 	_, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	s := sbxDelegateSession(t, facts) // parent env is off

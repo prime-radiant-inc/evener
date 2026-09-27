@@ -24,10 +24,12 @@ import (
 )
 
 func TestRetirementAcceptedStartBlocksBeforeRunnerWake(t *testing.T) {
+	t.Parallel()
 	testRetirementPendingStart(t, false)
 }
 
 func TestRetirementClaimedStartBlocksBeforeTurn(t *testing.T) {
+	t.Parallel()
 	testRetirementPendingStart(t, true)
 }
 
@@ -107,6 +109,7 @@ func retirementRefusalRoot(t *testing.T) (*Session, *RetirementController) {
 }
 
 func TestRetirementClaimFirstPreservesOriginalJournal(t *testing.T) {
+	t.Parallel()
 	input := []appwire.InputItem{{Type: "text", Text: "opaque-input"}}
 	cases := []struct {
 		name   string
@@ -175,6 +178,7 @@ func TestRetirementClaimFirstPreservesOriginalJournal(t *testing.T) {
 }
 
 func TestRetirementEffectRefusalReportsError(t *testing.T) {
+	t.Parallel()
 	root, _ := retirementRefusalRoot(t)
 	effects, ok := any(root).(interface {
 		SetReasoningEffort(string) error
@@ -197,6 +201,7 @@ func TestRetirementEffectRefusalReportsError(t *testing.T) {
 }
 
 func TestRetirementAdmissionDirectEffects(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		effect func(*Session) error
@@ -240,6 +245,7 @@ func TestRetirementAdmissionDirectEffects(t *testing.T) {
 }
 
 func TestRetirementAdmissionNotificationStaysPending(t *testing.T) {
+	t.Parallel()
 	root, _ := retirementRefusalRoot(t)
 	if root.enqueueSystemNotification("opaque-notice") {
 		t.Fatal("refused notification was acknowledged")
@@ -275,6 +281,7 @@ func (f *retirementBarrierFile) Write(data []byte) (int, error) {
 }
 
 func TestRetirementAdmissionFilesystemBarrier(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"start", "queue", "steer", "drain", "promote", "cancel", "interrupt", "pre-turn-claim"} {
 		t.Run(name, func(t *testing.T) {
 			root := newQueuePersistTestSession(t, t.TempDir())
@@ -425,6 +432,7 @@ func TestRetirementAdmissionFilesystemBarrier(t *testing.T) {
 }
 
 func TestRetirementStartReplayExecutesOnce(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	entered, resume := make(chan struct{}), make(chan struct{})
@@ -534,6 +542,7 @@ func TestRetirementStartReplayExecutesOnce(t *testing.T) {
 }
 
 func TestRetirementClaimFirstPrivateInputHandoffs(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"queue-claim", "steering-carrier-claim", "turn-owned-steer", "durable-caller-steer"} {
 		t.Run(name, func(t *testing.T) {
 			root, _ := retirementRefusalRoot(t)
@@ -591,6 +600,7 @@ func drainRetirementTestEvents(root *Session) []events.EventKind {
 }
 
 func TestRetirementAdmissionFollowUp(t *testing.T) {
+	t.Parallel()
 	root, _ := retirementRefusalRoot(t)
 	enqueue, ok := any(root).(interface{ FollowUp(string) error })
 	if !ok {
@@ -606,6 +616,7 @@ func TestRetirementAdmissionFollowUp(t *testing.T) {
 }
 
 func TestRetirementAcceptedFollowUpBlocks(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	if err := root.FollowUp("opaque-followup"); err != nil {
@@ -625,6 +636,7 @@ func TestRetirementAcceptedFollowUpBlocks(t *testing.T) {
 }
 
 func TestRetirementReasoningPersistenceError(t *testing.T) {
+	t.Parallel()
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
 	root.cfg.testOnly.metaFS = afero.NewReadOnlyFs(afero.NewOsFs())
@@ -643,6 +655,7 @@ func TestRetirementReasoningPersistenceError(t *testing.T) {
 // restarted the interval at whenever the probe happened to run, which under
 // load was after virtual time had already moved on.
 func TestRetirementIdleStartProbeKeepsInterval(t *testing.T) {
+	t.Parallel()
 	root, c, settled := newSettledRetirementRoot(t)
 	if _, processed, err := root.ProcessClientMutationStart(context.Background(), nil); err != nil || processed {
 		t.Fatalf("idle probe = processed %v, err %v; want nothing to run", processed, err)
@@ -657,6 +670,7 @@ func TestRetirementIdleStartProbeKeepsInterval(t *testing.T) {
 // interval either. Wakes are unconditional and coalesce, so one can arrive
 // after the work it was sent for has already run.
 func TestRetirementIdleQueuedInputWakeKeepsInterval(t *testing.T) {
+	t.Parallel()
 	root, c, settled := newSettledRetirementRoot(t)
 	if _, processed, err := root.ProcessPendingUserInput(context.Background(), nil); err != nil || processed {
 		t.Fatalf("idle wake = processed %v, err %v; want nothing to run", processed, err)
@@ -671,6 +685,7 @@ func TestRetirementIdleQueuedInputWakeKeepsInterval(t *testing.T) {
 // not restart the idle interval either. The steer is a real durable one that a
 // wake would carry but for the block, so each case fails if its own gate goes.
 func TestRetirementUncarriableSteeringWakeKeepsInterval(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		block func(t *testing.T, root *Session)

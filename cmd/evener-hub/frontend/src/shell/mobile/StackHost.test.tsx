@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, useState } from "react";
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/transcript";
 import { chromeStore, resetChromeStoreForTests } from "../chromeStore";
 import { type PaneProps, registerPaneForTests } from "../paneRegistry";
@@ -37,20 +37,13 @@ function SettingsFixture({ params }: PaneProps<{ section?: string }>) {
   return <div>settings pane: {params.section ?? "none"}</div>;
 }
 
-// paneRegistry.ts is a shared module singleton - the restorers below (called
-// in the afterAll further down) put back whatever "doc"/"settings" resolved
-// to before this file ran, so a later file sharing the same registry never
-// inherits these fixtures.
-let restoreDocPane: () => void;
-let restoreSettingsPane: () => void;
-
 beforeAll(async () => {
-  restoreDocPane = registerPaneForTests<{ ref: string }>({
+  registerPaneForTests<{ ref: string }>({
     id: "doc",
     title: (params) => `Doc ${params.ref}`,
     component: lazy(() => Promise.resolve({ default: DocFixture })),
   });
-  restoreSettingsPane = registerPaneForTests<{ section?: string }>({
+  registerPaneForTests<{ section?: string }>({
     id: "settings",
     singleton: true,
     title: (params) => `Settings${params.section ? `: ${params.section}` : ""}`,
@@ -70,21 +63,13 @@ beforeAll(async () => {
   // Then RENDER each of the three, because importing a module is only half a
   // React.lazy's cost: lazy keeps a payload of its own that stays
   // uninitialized until React first renders the component, so the first
-  // render still suspends, still commits its Suspense fallback, and then
-  // waits out react-dom's FALLBACK_THROTTLE_MS (300ms, react-dom 19.2)
-  // before it will commit the revealed content - a flicker guard that is
-  // pure wall clock and does not shrink on a fast machine. An
-  // already-resolved promise does not dodge it: the doc fixture above is
-  // lazy(() => Promise.resolve(...)) and suspends once all the same.
-  // Measured here: welcome 314ms, doc 305ms and session 307ms on their first
-  // render, each inside a findBy budget that defaults to 1000ms. Paying it
-  // in a hook whose ceiling is a tripwire, rather than inside an assertion
-  // window. Same fix as App.test.tsx (commit c1a8616ea) - but the comment
-  // alone was not the fix: this file's own findLandmark calls never actually
-  // carried App.test.tsx's own WARM_ROUTE_TRIPWIRE_MS override, so they still
-  // raced the 1000ms findBy default under host load (kata fvgs). warmPane
-  // below now threads PANE_WARMUP_TRIPWIRE_MS through to each landmark's own
-  // findBy/findByRole call, same as App.test.tsx's warmRoute.
+  // render still suspends. An already-resolved promise does not dodge it: the
+  // doc fixture above is lazy(() => Promise.resolve(...)) and suspends once
+  // all the same. A reveal that commits outside act waits out react-dom's
+  // FALLBACK_THROTTLE_MS (300ms, react-dom 19.2) on a real timer, so warmPane
+  // renders inside an awaited act, where the reveal commits as soon as the
+  // chunk resolves. Each landmark wait still gets PANE_WARMUP_TRIPWIRE_MS, the
+  // same tripwire as App.test.tsx's warmRoute.
   await warmPane(
     () => {}, // nothing focused: StackHost's own fallback opens welcome
     (timeout) => screen.findByText("No session open", undefined, { timeout }),
@@ -99,17 +84,10 @@ beforeAll(async () => {
   );
 });
 
-// A warm-up render has no responsiveness bar to hold, and react-dom's
-// Suspense-reveal throttle (see the comment above) publishes no completion
-// signal to await - so this is a tripwire for a hung render, not a
-// responsiveness budget. Same value and reasoning as App.test.tsx's own
+// A warm-up render has no responsiveness bar to hold, so this is a tripwire
+// for a hung render, not a responsiveness budget. Same value and reasoning as App.test.tsx's own
 // WARM_ROUTE_TRIPWIRE_MS.
 const PANE_WARMUP_TRIPWIRE_MS = 10_000;
-
-afterAll(() => {
-  restoreDocPane();
-  restoreSettingsPane();
-});
 
 // Renders StackHost once with `open`'s pane focused and awaits its landmark,
 // so both halves of that pane's lazy-loading cost are already paid by the
@@ -117,7 +95,9 @@ afterAll(() => {
 // alone is not enough.
 async function warmPane(open: () => void, findLandmark: (timeout: number) => Promise<unknown>): Promise<void> {
   open();
-  render(<StackHost />);
+  await act(async () => {
+    render(<StackHost />);
+  });
   await findLandmark(PANE_WARMUP_TRIPWIRE_MS);
   cleanup();
   resetWorkspaceStoreForTests();

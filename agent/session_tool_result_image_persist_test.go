@@ -89,7 +89,7 @@ func transcriptImageSHAs(t *testing.T, sess *Session) []string {
 		t.Fatal("session has no transcript; the fixture did not enable state persistence")
 	}
 	turns, err := apptranscript.ItemTurnsFromFile(path, 128<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
-		return apptranscript.ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, apptranscript.ToolResultOutputImages)
+		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, apptranscript.ToolResultOutputImages)
 	})
 	if err != nil {
 		t.Fatalf("ItemTurnsFromFile: %v", err)
@@ -114,6 +114,7 @@ func transcriptImageSHAs(t *testing.T, sess *Session) []string {
 // announcement to both halves of the claim: it comes after every call in the
 // round has ended, and the bytes it names really are in the transcript by then.
 func TestToolResultImagesAreAnnouncedWhenTheRoundIsWritten(t *testing.T) {
+	t.Parallel()
 	png := validPNGFixture(t)
 	sess, stop := imageToolSessionWithState(t, "screenshot", func() (any, error) {
 		return tool.ImageResult{Text: "captured", Data: png, MediaType: "image/png"}, nil
@@ -160,6 +161,7 @@ func TestToolResultImagesAreAnnouncedWhenTheRoundIsWritten(t *testing.T) {
 // and there is nothing to announce. The descriptor still rides TOOL_CALL_END —
 // that a tool returned an image is true either way.
 func TestNoToolResultImageAnnouncementWithoutATranscript(t *testing.T) {
+	t.Parallel()
 	png := validPNGFixture(t)
 	sess, stop := imageToolSession(t, "screenshot", func() (any, error) {
 		return tool.ImageResult{Text: "captured", Data: png, MediaType: "image/png"}, nil
@@ -184,6 +186,7 @@ func TestNoToolResultImageAnnouncementWithoutATranscript(t *testing.T) {
 // anything to announce, so the announcement is gated on the bytes rather than
 // on the write.
 func TestARoundWithoutImagesAnnouncesNothing(t *testing.T) {
+	t.Parallel()
 	sess, stop := imageToolSessionWithState(t, "shell", func() (any, error) {
 		return tool.TextResult{Output: "no image here", FullOutput: "no image here"}, nil
 	})
@@ -201,6 +204,7 @@ func TestARoundWithoutImagesAnnouncesNothing(t *testing.T) {
 // describe one as an image (a fetch whose bytes no <img> can render, kata
 // 2fxm); a round carrying only a document has nothing to announce either.
 func TestADocumentResultIsNotAnnouncedAsAnImage(t *testing.T) {
+	t.Parallel()
 	pdf := []byte("%PDF-1.4 fixture")
 	// A fixture name of its own, never a core tool's: registering over
 	// "read_file" leaves the real definition's schema in place, and a fixture

@@ -14,7 +14,7 @@ func DefReadFile() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"file_path":     map[string]any{"type": "string"},
+				"file_path":     map[string]any{"type": "string", "description": "Path of the file to read."},
 				"offset":        map[string]any{"type": "integer", "description": "For large files read in slices: 1-based start line (default 1)."},
 				"limit":         map[string]any{"type": "integer", "description": "For large files read in slices: line count to return, default 2000."},
 				"vision_prompt": map[string]any{"type": "string", "description": "Image/PDF reads only: describe what factual data you need extracted and why. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
@@ -32,8 +32,8 @@ func DefWriteFile() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"file_path": map[string]any{"type": "string"},
-				"content":   map[string]any{"type": "string"},
+				"file_path": map[string]any{"type": "string", "description": "Path of the file to write; parent directories are created."},
+				"content":   map[string]any{"type": "string", "description": "Complete new contents; replaces an existing file entirely."},
 			},
 			"required": []string{"file_path", "content"},
 		},
@@ -48,10 +48,10 @@ func DefListDir() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"path":   map[string]any{"type": "string"},
-				"depth":  map[string]any{"type": "integer"},
+				"path":   map[string]any{"type": "string", "description": "Directory to list; blank means the working root."},
+				"depth":  map[string]any{"type": "integer", "description": "Recursion depth; 1 lists only this directory (default)."},
 				"offset": map[string]any{"type": "integer", "description": "Index of the first entry to return (default 0). Use with limit to page a large directory."},
-				"limit":  map[string]any{"type": "integer", "description": "Maximum entries to return (default 500)."},
+				"limit":  map[string]any{"type": "integer", "description": "Maximum entries to return (default 1000; a page-size budget may return fewer)."},
 			},
 		},
 	}
@@ -65,10 +65,10 @@ func DefEditFile() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"file_path":   map[string]any{"type": "string"},
-				"old_string":  map[string]any{"type": "string"},
-				"new_string":  map[string]any{"type": "string"},
-				"replace_all": map[string]any{"type": "boolean"},
+				"file_path":   map[string]any{"type": "string", "description": "Path of the existing file to edit."},
+				"old_string":  map[string]any{"type": "string", "description": "Exact text to replace; must be unique unless replace_all is true."},
+				"new_string":  map[string]any{"type": "string", "description": "The replacement text."},
+				"replace_all": map[string]any{"type": "boolean", "description": "Replace every occurrence instead of requiring a unique match."},
 			},
 			"required": []string{"file_path", "old_string", "new_string"},
 		},
@@ -83,8 +83,8 @@ func DefShell() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"command":     map[string]any{"type": "string"},
-				"description": map[string]any{"type": "string"},
+				"command":     map[string]any{"type": "string", "description": "The shell command to run (POSIX: Bash with pipefail)."},
+				"description": map[string]any{"type": "string", "description": "Optional human-facing summary of the command, shown on job surfaces."},
 				"mode": map[string]any{
 					"type":        "string",
 					"enum":        []any{"foreground", "background", "detached"},
@@ -119,6 +119,12 @@ type DelegateSandboxSchema struct {
 }
 
 const delegateModelOverrideDescription = "Model override. Default: the delegate captures your CURRENT model at the moment it is spawned (so a delegate spawned after you switch models inherits the new one, and one spawned before keeps the model it started with). An explicit value here pins the delegate to that model instead, regardless of your current or future model."
+
+// shortTaskTitleDescription is the shared "<10 words" contract for a task
+// item's short title, used by both task surfaces: the delegate brief's
+// seeded task_list items (field `title`) and the task_list tool's add items
+// (field `description`).
+const shortTaskTitleDescription = "Short task title, under 10 words."
 
 // DelegateModelDescriptionAdditionBudget reports how many bytes may be
 // appended to the model parameter's fixed description without exceeding the
@@ -186,7 +192,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 						"type":                 "object",
 						"additionalProperties": false,
 						"properties": map[string]any{
-							"title":            map[string]any{"type": "string", "description": "Short task title, under 10 words."},
+							"title":            map[string]any{"type": "string", "description": shortTaskTitleDescription},
 							"prompt":           map[string]any{"type": "string", "description": "Full, self-contained instruction for this step."},
 							"reasoning_effort": map[string]any{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Reasoning effort while this task is in progress."},
 							"type":             map[string]any{"type": "string", "enum": []string{"research", "implement", "verify", "fix"}, "description": "Kind of work; defaults to implement."},
@@ -294,7 +300,7 @@ func DefDelegateSend() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"to":          map[string]any{"type": "string", "description": "A child delegate_id (`dlg_...`) owned by this session, or `caller` from within a delegate to steer its controlling caller."},
-				"message":     map[string]any{"type": "string"},
+				"message":     map[string]any{"type": "string", "description": "The message to deliver to the addressed delegate or caller."},
 				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; delivery to a running delegate or caller returns once delivered."},
 			},
 			"required": []string{"to", "message"},
@@ -313,8 +319,8 @@ func DefModelList() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor; omit for the first page."},
-				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128},
-				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096},
+				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128, "description": "Maximum models per page. Defaults to 128; larger is rejected."},
+				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096, "description": "Maximum serialized page size in bytes. Defaults to 4096."},
 			},
 		},
 	}
@@ -416,16 +422,18 @@ func DefJobList() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"status": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "string", "enum": statusEnum},
+					"type":        "array",
+					"items":       map[string]any{"type": "string", "enum": statusEnum},
+					"description": "Keep only rows in these statuses (any listed value matches).",
 				},
 				"type": map[string]any{
-					"type":  "array",
-					"items": map[string]any{"type": "string", "enum": typeEnum},
+					"type":        "array",
+					"items":       map[string]any{"type": "string", "enum": typeEnum},
+					"description": "Keep only rows of these types (any listed value matches).",
 				},
-				"include_nested":      map[string]any{"type": "boolean", "default": false},
+				"include_nested":      map[string]any{"type": "boolean", "default": false, "description": "Include nested rows owned by child sessions (spawned under this session's tree)."},
 				"include_descendants": map[string]any{"type": "boolean", "default": false, "description": "Walk the live descendant tree: include visible stable delegates and every live descendant's shell jobs, each annotated with owner_session_id and depth. A dead descendant contributes only retained durable state."},
-				"limit":               map[string]any{"type": "integer", "default": 50, "maximum": 100},
+				"limit":               map[string]any{"type": "integer", "default": 50, "maximum": 100, "description": "Maximum rows to return (default 50, at most 100)."},
 				"offset":              map[string]any{"type": "integer", "default": 0, "description": "Window start into the newest-first listing; use with limit to page (footer reports 'showing A-B of N jobs')."},
 			},
 			"required": []any{},
@@ -443,7 +451,7 @@ func DefJobStop() llm.ToolDefinition {
 			"properties": map[string]any{
 				"target":           map[string]any{"type": "string", "description": "A shell job_id (`job_...`) or stable delegate_id (`dlg_...`)."},
 				"max_wait_ms":      map[string]any{"type": "integer", "description": "0 (default): request the stop and return. >0: wait up to this many ms for shell termination or stable delegate subtree-stop settlement."},
-				"include_children": map[string]any{"type": "boolean", "default": false},
+				"include_children": map[string]any{"type": "boolean", "default": false, "description": "For a shell target, also stop its nested child jobs."},
 			},
 			"required": []string{"target"},
 		},
@@ -458,11 +466,14 @@ func DefGrep() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"pattern":          map[string]any{"type": "string"},
-				"path":             map[string]any{"type": "string"},
-				"glob_filter":      map[string]any{"type": "string"},
-				"case_insensitive": map[string]any{"type": "boolean"},
-				"max_results":      map[string]any{"type": "integer"},
+				"pattern":          map[string]any{"type": "string", "description": "Regex pattern to match in file contents."},
+				"path":             map[string]any{"type": "string", "description": "File or directory to search; blank searches from the working root."},
+				"glob_filter":      map[string]any{"type": "string", "description": "Glob filter for searched files, e.g. *.go; dotfiles and gitignored paths are always excluded."},
+				"case_insensitive": map[string]any{"type": "boolean", "description": "Match the pattern case-insensitively."},
+				"max_results": map[string]any{
+					"type":        "integer",
+					"description": "Maximum number of results to return: lines, file paths, or count entries by output mode. Defaults to 100.",
+				},
 				"context_lines": map[string]any{
 					"type":        "integer",
 					"description": "Lines of context to include before and after each match, 0-10 (default 0).",
@@ -486,8 +497,8 @@ func DefGlob() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"pattern":         map[string]any{"type": "string"},
-				"path":            map[string]any{"type": "string"},
+				"pattern":         map[string]any{"type": "string", "description": "Glob pattern for file paths, e.g. **/*.go or *.{ts,tsx}."},
+				"path":            map[string]any{"type": "string", "description": "Base directory to match in; blank means the working root."},
 				"include_ignored": map[string]any{"type": "boolean", "description": "Include dotfiles/dirs and gitignored paths in results (excluded by default)."},
 			},
 			"required": []string{"pattern"},
@@ -679,8 +690,8 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 								"enum":        []string{"research", "implement", "verify", "fix"},
 								"description": "Task type. Use 'fix' for targeted remediation after a specific failure or review finding.",
 							},
-							"description": map[string]any{"type": "string"},
-							"prompt":      map[string]any{"type": "string"},
+							"description": map[string]any{"type": "string", "description": shortTaskTitleDescription},
+							"prompt":      map[string]any{"type": "string", "description": "Full, self-contained instruction for the task."},
 							"depends_on": map[string]any{
 								"type":        "array",
 								"items":       map[string]any{"type": "integer"},
@@ -698,8 +709,8 @@ func DefTaskList(effortLevels []string) llm.ToolDefinition {
 						"type":                 "object",
 						"additionalProperties": false,
 						"properties": map[string]any{
-							"id":     map[string]any{"type": "integer"},
-							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}},
+							"id":     map[string]any{"type": "integer", "description": "ID of the existing task to change."},
+							"status": map[string]any{"type": "string", "enum": []string{"open", "in_progress", "done", "cancelled"}, "description": "New status; omit to leave unchanged. Marking done auto-starts the next task."},
 							"notes":  map[string]any{"type": "string", "description": "Document what you tried and why it failed or succeeded. Appended to the task's notes log."},
 							"depends_on": map[string]any{
 								"type":        "array",
@@ -1007,8 +1018,8 @@ func DefAskUser() llm.ToolDefinition {
 								"items": map[string]any{
 									"type": "object",
 									"properties": map[string]any{
-										"label":       map[string]any{"type": "string"},
-										"detail":      map[string]any{"type": "string"},
+										"label":       map[string]any{"type": "string", "description": "Unique option label within the question."},
+										"detail":      map[string]any{"type": "string", "description": "Explanatory text shown with the option."},
 										"recommended": map[string]any{"type": "boolean", "description": "At most one per question; marks the model's suggestion, shown first."},
 									},
 									"required": []string{"label", "detail"},
@@ -1044,8 +1055,9 @@ func DefUpdateGoal() llm.ToolDefinition {
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"status": map[string]any{
-					"type": "string",
-					"enum": []string{"complete", "blocked"},
+					"type":        "string",
+					"enum":        []string{"complete", "blocked"},
+					"description": "complete: genuinely achieved and verified; blocked: truly stuck.",
 				},
 			},
 			"required": []string{"status"},

@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // hostTargetBuild caches the cross-compiled host binary once per target per

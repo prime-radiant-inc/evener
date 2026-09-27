@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/argrepair"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -62,6 +63,7 @@ func TestProject_InformationalWarningKeepsNeutralTitle(t *testing.T) {
 		Source:  "evener",
 		Title:   "Context budget",
 		Hint:    "The model's output allocation was reduced to fit its context window. No action needed.",
+		Code:    events.WarningCodeContextBudget,
 	}})
 	if len(out) != 1 || out[0].Method != appwire.NotifyWarning {
 		t.Fatalf("notifications=%+v", out)
@@ -72,6 +74,9 @@ func TestProject_InformationalWarningKeepsNeutralTitle(t *testing.T) {
 	}
 	if params["title"] != "Context budget" {
 		t.Fatalf("title=%v, want the emitter-supplied neutral title", params["title"])
+	}
+	if params["code"] != events.WarningCodeContextBudget {
+		t.Fatalf("code=%v, want the emitter-supplied informational code forwarded verbatim", params["code"])
 	}
 	if strings.Contains(fmt.Sprint(params["hint"]), "session log") {
 		t.Fatalf("hint=%v, want the emitter-supplied hint, not the generic session-log guidance", params["hint"])
@@ -950,6 +955,122 @@ func TestAppEventProjectorMapsAwaitingSessionEnd(t *testing.T) {
 		return
 	}
 	t.Fatalf("awaiting SessionEnd missing turn/completed: %+v", sessionEnd)
+}
+
+// TestAppEventProjectorMapsFailedSessionEnd: a failed turn ends its input with
+// EventSessionEnd{Reason: "turn_failed", State: systemError} (the agent's
+// endInputAtTurnFailure). The session is open and takes the next message, so
+// the projector announces systemError and never thread/closed.
+func TestAppEventProjectorMapsFailedSessionEnd(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
+		Reason: "turn_failed",
+		State:  appwire.ThreadStatusSystemError,
+	}})
+
+	if hasAppNotification(sessionEnd, appwire.NotifyThreadClosed) {
+		t.Fatalf("a failed turn's SessionEnd emitted thread/closed: %+v", sessionEnd)
+	}
+	if status := notificationThreadStatus(t, sessionEnd, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("failed SessionEnd status = %+v, want systemError", status)
+	}
+}
+
+// TestAppEventProjectorMapsFailedSessionEndWithPendingWork: a failed turn with
+// a message still queued ends its input with the effective state active
+// (agent WireState), since the queued message starts the next turn. That is no
+// close: the projector announces active and never thread/closed.
+func TestAppEventProjectorMapsFailedSessionEndWithPendingWork(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
+		Reason: "turn_failed",
+		State:  appwire.ThreadStatusActive,
+	}})
+
+	if hasAppNotification(sessionEnd, appwire.NotifyThreadClosed) {
+		t.Fatalf("a failed turn with pending work emitted thread/closed: %+v", sessionEnd)
+	}
+	if status := notificationThreadStatus(t, sessionEnd, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("failed SessionEnd with pending work status = %+v, want active", status)
+	}
+}
+
+// TestAppEventProjectorSessionEndClosesOnlyOnAClose pins the SessionEnd
+// state table: only an end with no state, or closed, announces thread/closed
+// (the rule server/bridge.go's sessionEventClosesSession applies to the stored
+// status). Every state the agent's WireState publishes for an open session
+// maps to itself, and an unrecognized one reads idle, never closed.
+func TestAppEventProjectorSessionEndClosesOnlyOnAClose(t *testing.T) {
+	cases := []struct {
+		state      string
+		wantStatus string
+		wantClosed bool
+	}{
+		{"", appwire.ThreadStatusClosed, true},
+		{appwire.ThreadStatusClosed, appwire.ThreadStatusClosed, true},
+		{appwire.ThreadStatusIdle, appwire.ThreadStatusIdle, false},
+		{appwire.ThreadStatusAwaiting, appwire.ThreadStatusAwaiting, false},
+		{appwire.ThreadStatusActive, appwire.ThreadStatusActive, false},
+		{appwire.ThreadStatusSystemError, appwire.ThreadStatusSystemError, false},
+		{"someFutureState", appwire.ThreadStatusIdle, false},
+	}
+	for _, c := range cases {
+		t.Run("state="+c.state, func(t *testing.T) {
+			projector := NewAppEventProjector("th_1", "local:th_1")
+			projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+			sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
+				Reason: "test",
+				State:  c.state,
+			}})
+			if got := hasAppNotification(sessionEnd, appwire.NotifyThreadClosed); got != c.wantClosed {
+				t.Fatalf("thread/closed emitted = %v, want %v: %+v", got, c.wantClosed, sessionEnd)
+			}
+			if status := notificationThreadStatus(t, sessionEnd, appwire.NotifyThreadStatusChanged); status.Type != c.wantStatus {
+				t.Fatalf("status = %+v, want %q", status, c.wantStatus)
+			}
+		})
+	}
+}
+
+// TestAppEventProjectorRestoredSessionStartCarriesFailedState: a daemon
+// restored onto a transcript that ends in a failed turn stamps systemError on
+// its SessionStart (agent RestingWireState), and the thread starts Failed.
+func TestAppEventProjectorRestoredSessionStartCarriesFailedState(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	started := projector.Project(events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "th_1",
+		Data:      events.SessionStartData{Profile: "openai", Model: "gpt-5", Restored: true, State: appwire.ThreadStatusSystemError},
+	})
+
+	if thread := notificationThread(t, started, appwire.NotifyThreadStarted); thread.Status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("restored SessionStart thread status = %+v, want systemError", thread.Status)
+	}
+	if status := notificationThreadStatus(t, started, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("restored SessionStart status notification = %+v, want systemError", status)
+	}
+}
+
+// TestAppEventProjectorRestoredSessionStartCarriesActiveState: a daemon
+// restored with claimable queued input stamps its effective state, active, on
+// its SessionStart (agent WireState), so the thread starts active and agrees
+// with the state serve publishes synchronously (#251).
+func TestAppEventProjectorRestoredSessionStartCarriesActiveState(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	started := projector.Project(events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "th_1",
+		Data:      events.SessionStartData{Profile: "openai", Model: "gpt-5", Restored: true, State: appwire.ThreadStatusActive},
+	})
+
+	if thread := notificationThread(t, started, appwire.NotifyThreadStarted); thread.Status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("restored SessionStart thread status = %+v, want active", thread.Status)
+	}
+	if status := notificationThreadStatus(t, started, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("restored SessionStart status notification = %+v, want active", status)
+	}
 }
 
 // TestAppEventProjectorMarksInterruptedTurnCanceled covers kata 0ax1:
@@ -2861,13 +2982,15 @@ func TestAppEventProjectorToolCallEndCarriesIntentDescription(t *testing.T) {
 		t.Fatalf("completed tool item should carry the intent-derived Description, got %q", item.Description)
 	}
 
-	// Description is derived from the arguments' intent field when the
-	// started event carries no explicit Description, matching
-	// ToolIntentFromArguments.
+	// The START event sets Description from the valid args' intent field (as the
+	// real live path does for valid JSON with an intent field). The END now carries
+	// the START's Description forward instead of re-deriving from argsJSON without
+	// the size/validation gate (F3 round 5).
 	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "grep",
 		CallID:        "call_2",
 		ArgumentsJSON: `{"query":"retry","intent":"trace the retry callers"}`,
+		Description:   "trace the retry callers",
 	}})
 	out = projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
 		ToolName: "grep",
@@ -3368,5 +3491,70 @@ func TestAppEventProjectorKeepsEnvironmentInOwnTurn(t *testing.T) {
 	}
 	if environmentItem.TurnID != "turn_environment_fixture" || environmentItem.TurnID == userItem.TurnID {
 		t.Fatalf("environment turn=%q user turn=%q; environment must be separate", environmentItem.TurnID, userItem.TurnID)
+	}
+}
+
+// TestAppEventProjectorToolCallEndRespectsStartDescriptionGate (F3 round 5,
+// updated F4 round 6): when the START event suppressed intent (Description="")
+// because the arguments failed the validation+size gate (oversized —
+// RawArgumentsRejected), the END item must NOT re-derive intent from those
+// same bytes. The fallback derivation (F4) applies the same gate, so bytes
+// the START path rejected stay suppressed at END.
+func TestAppEventProjectorToolCallEndRespectsStartDescriptionGate(t *testing.T) {
+	projector := NewAppEventProjector("th_gate", "local:th_gate")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_gate", Data: events.UserInputData{Text: "hello"}})
+
+	// START: Description is empty (the live path suppressed intent because
+	// the arguments were oversized — RawArgumentsRejected). The ArgumentsJSON
+	// carries the oversized raw bytes, which contain an "intent" field but
+	// exceed MaxToolArgumentBytes so the gate rejects them.
+	oversizedJSON := `{"intent":"should not appear at END","padding":"` + strings.Repeat("a", argrepair.MaxToolArgumentBytes) + `"}`
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_gate", Data: events.ToolCallStartData{
+		ToolName:      "shell",
+		CallID:        "call_gated",
+		ArgumentsJSON: oversizedJSON,
+		Description:   "", // START suppressed intent
+	}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_gate", Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_gated",
+		Error:    "tool arguments too large",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Description != "" {
+		t.Fatalf("END item must not re-derive intent when the gate rejects the bytes (Description=%q)", item.Description)
+	}
+}
+
+// TestAppEventProjectorToolCallEndDerivesDescriptionOnUnseenStart (F4 round 6):
+// when START was never seen (no entry in toolDescriptionByKey), the END
+// handler falls back to GATED derivation from argsJSON — the same
+// validation+size gate the START path uses. Bytes that pass the gate
+// produce a Description; bytes that fail it stay empty.
+func TestAppEventProjectorToolCallEndDerivesDescriptionOnUnseenStart(t *testing.T) {
+	projector := NewAppEventProjector("th_unseen", "local:th_unseen")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_unseen", Data: events.UserInputData{Text: "hello"}})
+
+	// No START event — END arrives with args that pass the gate.
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_unseen", Data: events.ToolCallEndData{
+		ToolName:      "shell",
+		CallID:        "call_unseen",
+		ArgumentsJSON: `{"command":"go test","intent":"run the suite"}`,
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Description != "run the suite" {
+		t.Fatalf("END with no prior START should derive Description from gated argsJSON, got %q", item.Description)
+	}
+
+	// No START, args that FAIL the gate (oversized) → Description suppressed.
+	oversizedJSON := `{"intent":"should not appear","padding":"` + strings.Repeat("a", argrepair.MaxToolArgumentBytes) + `"}`
+	out2 := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_unseen", Data: events.ToolCallEndData{
+		ToolName:      "shell",
+		CallID:        "call_unseen_oversized",
+		ArgumentsJSON: oversizedJSON,
+	}})
+	item2 := notificationThreadItem(t, out2, appwire.NotifyItemCompleted)
+	if item2.Description != "" {
+		t.Fatalf("END with no prior START and oversized args should suppress Description, got %q", item2.Description)
 	}
 }

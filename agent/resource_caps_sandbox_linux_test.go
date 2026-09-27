@@ -16,6 +16,7 @@ import (
 )
 
 func TestLinuxEnforcedSandboxKeepsTrustedResourcesOutsideModelShellMask(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	worktree := filepath.Join(home, "wt")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {

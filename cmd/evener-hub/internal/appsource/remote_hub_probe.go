@@ -10,11 +10,11 @@ import (
 )
 
 // HostCapabilities is what one probe learns about a remote host. AppWire
-// supplies the launch layer, models, plugins, auth, and instances. The
-// component-04 preflight supplies ProtocolVersion, HubVersion, OS, Arch, and
-// the peer's advertised Features, because the remote hub rejects a second
-// initialize on the already-initialized SSH channel and no other wire call
-// reports them.
+// supplies the launch layer, the per-root resolved launch config, models,
+// plugins, auth, and instances. The component-04 preflight supplies
+// ProtocolVersion, HubVersion, OS, Arch, and the peer's advertised Features,
+// because the remote hub rejects a second initialize on the already-initialized
+// SSH channel and no other wire call reports them.
 type HostCapabilities struct {
 	ProtocolVersion string
 	HubVersion      string
@@ -22,11 +22,17 @@ type HostCapabilities struct {
 	Features        appwire.FeatureSet
 	OS, Arch        string // component-04 preflight, not AppWire
 	LaunchGlobal    appwire.LaunchConfigLayer
-	Models          appwire.ModelListResponse
-	Plugins         appwire.PluginListResponse
-	Auth            appwire.AuthListResponse
-	Instances       appwire.InstanceListResponse
-	Roots           []string // from host config entry
+	// LaunchResolved maps each configured root (Roots[i]) to its
+	// evener/launch/resolve result: the effective launch config a session
+	// started in that root would run with. A root whose resolution yields no
+	// effective layer — one removed on the host, which the hub refuses with
+	// InvalidParams — has no entry.
+	LaunchResolved map[string]appwire.LaunchConfigResolved
+	Models         appwire.ModelListResponse
+	Plugins        appwire.PluginListResponse
+	Auth           appwire.AuthListResponse
+	Instances      appwire.InstanceListResponse
+	Roots          []string // from host config entry
 }
 
 // CapabilitySource reports what a source knows about its host. It is separate
@@ -86,9 +92,10 @@ type remoteHubProbe struct {
 // never the wire calls, so a slow or unresponsive hub cannot block another
 // caller on network I/O and each caller's context governs its own probe.
 //
-// The five AppWire reads are the hub-scope surfaces the controller needs a
-// snapshot of; every one runs on the exact client the cache is keyed against,
-// so a component-04 reconnect that hands back a new client re-probes.
+// The AppWire reads — the five hub-scope surfaces the controller needs a
+// snapshot of plus one launch resolution per configured root — all run on the
+// exact client the cache is keyed against, so a component-04 reconnect that
+// hands back a new client re-probes.
 func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilities, error) {
 	if err := ctx.Err(); err != nil {
 		return HostCapabilities{}, s.mapCallError(err)
@@ -138,6 +145,26 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeMethodNotFound {
 			return HostCapabilities{}, err
 		}
+	}
+	// The per-root effective config: one evener/launch/resolve per configured
+	// root, keyed by the root path. A root that no longer resolves on the host
+	// (the hub answers InvalidParams for a cwd that does not exist) has no
+	// effective layer to report, so its entry stays empty instead of failing
+	// the whole snapshot; every other failure still aborts like the reads
+	// above.
+	if len(s.roots) > 0 {
+		caps.LaunchResolved = make(map[string]appwire.LaunchConfigResolved, len(s.roots))
+	}
+	for _, root := range s.roots {
+		var resolved appwire.LaunchConfigResolved
+		if err := s.callOn(ctx, client, appwire.MethodEvenerLaunchResolve, appwire.LaunchConfigResolveParams{CWD: root}, &resolved); err != nil {
+			var wire appwire.WireError
+			if errors.As(err, &wire) && wire.Code == appwire.CodeInvalidParams {
+				continue
+			}
+			return HostCapabilities{}, err
+		}
+		caps.LaunchResolved[root] = resolved
 	}
 
 	// No facts seam means no preflight was wired; the preflight-owned fields
@@ -207,6 +234,10 @@ func (s *RemoteHubSource) cachedCapabilities(client *appwire.Client) (HostCapabi
 func (c HostCapabilities) clone() HostCapabilities {
 	out := c
 	out.LaunchGlobal = cloneLaunchConfigLayer(c.LaunchGlobal)
+	out.LaunchResolved = maps.Clone(c.LaunchResolved)
+	for root, resolved := range out.LaunchResolved {
+		out.LaunchResolved[root] = cloneLaunchConfigResolved(resolved)
+	}
 	out.Models = cloneModelListResponse(c.Models)
 	out.Plugins = appwire.PluginListResponse{Plugins: slices.Clone(c.Plugins.Plugins)}
 	out.Auth = appwire.AuthListResponse{Providers: cloneAuthStatusResponses(c.Auth.Providers)}
@@ -252,6 +283,22 @@ func cloneLaunchConfigLayer(l appwire.LaunchConfigLayer) appwire.LaunchConfigLay
 		out.MCPs[i].Args = slices.Clone(out.MCPs[i].Args)
 	}
 	out.Env = maps.Clone(l.Env)
+	return out
+}
+
+// cloneLaunchConfigResolved duplicates every mutable part of one per-root
+// resolve result so a caller editing a cached result in place cannot reach the
+// stored probe.
+func cloneLaunchConfigResolved(r appwire.LaunchConfigResolved) appwire.LaunchConfigResolved {
+	out := r
+	out.Effective = cloneLaunchConfigLayer(r.Effective)
+	out.Layers = maps.Clone(r.Layers)
+	for name, layer := range out.Layers {
+		out.Layers[name] = cloneLaunchConfigLayer(layer)
+	}
+	out.Provenance = maps.Clone(r.Provenance)
+	out.Repo = ptrClone(r.Repo)
+	out.Diagnostics = slices.Clone(r.Diagnostics)
 	return out
 }
 

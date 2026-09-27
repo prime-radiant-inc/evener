@@ -38,6 +38,18 @@ func FuzzAnthropicProtocolBuildBody(f *testing.F) {
 	f.Add("claude-opus-4-6", "", "", []byte(`{}`), []byte(`{"oneOf":[{"type":"string"}]}`), byte(3), byte(255))
 	f.Add("model[1m]", "sys", "u", []byte(`not json`), []byte(`null`), byte(11), byte(2))
 	f.Add("", "s", "u", []byte(``), []byte(`{"anyOf":[1,2]}`), byte(20), byte(64))
+	f.Add("claude-test", "sys", "u", []byte(`{}`), []byte(`{}`), byte(35), byte(1))
+	// max_tokens reconcile floor: a provider-option max_tokens=0 overlaid after the
+	// effort-derived thinking budget must be caught. sel=98 routes provider options
+	// to {anthropic:{max_tokens:0}} and sets effort=high; capSel=2 selects the budget
+	// thinking shape so the body carries a positive budget_tokens the reconcile
+	// must floor above. (FU3 round 13: re-derived seed for the post-refactor target.)
+	f.Add("mt0", "s", "u", []byte(`{}`), []byte(`{}`), byte(98), byte(2))
+	// thinking-toolchoice-forced: a forced tool_choice (required→any) with a
+	// high-effort budget shape whose fitted budget (1047) sits just below
+	// max_tokens (1048) so the budget guard does not pre-empt the invariant.
+	// sel=131: sel%5=1 (required→any), sel&2=2 (high), (sel>>5)%4=0 (no overlay).
+	f.Add("tc", "s", "u", []byte(`{}`), []byte(`{}`), byte(131), byte(2))
 
 	f.Fuzz(func(t *testing.T, model, system, user string, toolArgs, toolParams []byte, sel, capSel byte) {
 		req := buildFuzzRequest(model, system, user, toolArgs, toolParams, sel)
@@ -80,6 +92,17 @@ func FuzzAnthropicProtocolBuildBody(f *testing.F) {
 				mt, _ := body["max_tokens"].(int)
 				if mt <= budget {
 					t.Fatalf("max_tokens %d does not exceed thinking budget %d: body=%#v", mt, budget, body)
+				}
+			}
+			// Thinking must not coexist with a forced tool_choice ("any"/"tool"),
+			// which Anthropic rejects. normalizeThinkingToolChoice downgrades
+			// forcing to "auto"; a mutation that removes it is caught here.
+			typ, _ := thinking["type"].(string)
+			if typ != "" && typ != "disabled" {
+				if tc, ok := body["tool_choice"].(map[string]any); ok {
+					if tcType, _ := tc["type"].(string); tcType == "any" || tcType == "tool" {
+						t.Fatalf("forced tool_choice %q with thinking enabled: body=%#v", tcType, body)
+					}
 				}
 			}
 		}

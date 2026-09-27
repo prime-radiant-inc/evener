@@ -41,6 +41,9 @@ func TestClosedStoreLoadOperationsReturnErrStoreClosed(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
+	if err := s.AppendBatch(nil); err != nil {
+		t.Errorf("AppendBatch(nil) after close = %v, want nil no-op", err)
+	}
 	if err := s.AppendBatch([]Event{{Kind: EventJobStarted, JobID: "job_B"}}); !errors.Is(err, ErrStoreClosed) {
 		t.Errorf("AppendBatch after close = %v, want ErrStoreClosed", err)
 	}
@@ -385,6 +388,178 @@ func TestStoreAppendRollbackFailure(t *testing.T) {
 			}
 		})
 	}
+
+	// A failed sync means the event write may or may not be durable. If the
+	// compensating truncate also fails, the store must not attempt another
+	// append with the unchanged in-memory sequence. The clean reopen below is
+	// deliberately independent of the poisoned store: it proves the bytes that
+	// did land are handled by the existing journal recovery policy.
+	for _, tc := range []struct {
+		name    string
+		event   Event
+		partial bool
+	}{
+		{name: "complete-write-sync-truncate", event: Event{Kind: EventJobStarted, JobID: "job_complete"}},
+		{name: "partial-write-truncate", event: Event{Kind: EventJobStarted, JobID: "job_partial"}, partial: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			originalErr := errors.New(tc.name + " original failure")
+			rollbackErr := errors.New(tc.name + " truncate failure")
+			base := afero.NewMemMapFs()
+			fullLine := mustEventLine(t, tc.event, 1)
+			wantBytes := fullLine
+			var s *Store
+			if tc.partial {
+				partialLen := len(fullLine) / 2
+				wantBytes = fullLine[:partialLen]
+				s = rollbackFaultStore(t, base, rollbackFaultFile{
+					writeErr:      originalErr,
+					writePrefix:   partialLen,
+					writeFailures: 1,
+					truncateErr:   rollbackErr,
+					truncateFails: 1,
+				})
+			} else {
+				originalErr = fault.ErrInjected
+				var err error
+				s, err = openFs(fault.FS(base, planFaultAt(3, 4)), "/jobs.jsonl")
+				if err != nil {
+					t.Fatalf("open fault store: %v", err)
+				}
+			}
+
+			err := s.Append(tc.event)
+			if err == nil || !errors.Is(err, originalErr) || !strings.Contains(err.Error(), "rollback failed") {
+				t.Fatalf("uncertain append error = %v, want original failure and rollback failure", err)
+			}
+			assertRollbackUncertainty(t, s, base, wantBytes, tc.event, originalErr, !tc.partial)
+		})
+	}
+}
+
+func assertRollbackUncertainty(t *testing.T, s *Store, base afero.Fs, wantBytes []byte, event Event, originalErr error, wantComplete bool) {
+	t.Helper()
+	if s.seq != 0 {
+		t.Fatalf("seq after uncertain append = %d, want 0", s.seq)
+	}
+	gotBytes, err := afero.ReadFile(base, "/jobs.jsonl")
+	if err != nil {
+		t.Fatalf("read uncertain journal: %v", err)
+	}
+	if !bytes.Equal(gotBytes, wantBytes) {
+		t.Fatalf("uncertain journal bytes = %q, want %q", gotBytes, wantBytes)
+	}
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_second"}); err == nil || !errors.Is(err, originalErr) {
+		t.Fatalf("second append error = %v, want sticky original failure", err)
+	}
+	if err := s.AppendBatch(nil); err == nil || !errors.Is(err, originalErr) {
+		t.Fatalf("empty batch on uncertain store = %v, want sticky original failure", err)
+	}
+	gotBytesAfter, err := afero.ReadFile(base, "/jobs.jsonl")
+	if err != nil {
+		t.Fatalf("read journal after refused append: %v", err)
+	}
+	if !bytes.Equal(gotBytesAfter, wantBytes) {
+		t.Fatalf("journal changed after refused append: got %q, want %q", gotBytesAfter, wantBytes)
+	}
+	if s.seq != 0 {
+		t.Fatalf("seq after refused append = %d, want 0", s.seq)
+	}
+	if _, err := s.LoadEvents(); err == nil || !errors.Is(err, originalErr) {
+		t.Fatalf("LoadEvents on uncertain store = %v, want sticky original failure", err)
+	}
+	if err := s.CheckRetirementReady(); err == nil || !errors.Is(err, originalErr) {
+		t.Fatalf("CheckRetirementReady on uncertain store = %v, want sticky original failure", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close poisoned store: %v", err)
+	}
+
+	reopened, err := openFs(base, "/jobs.jsonl")
+	if err != nil {
+		t.Fatalf("independent reopen: %v", err)
+	}
+	defer reopened.Close()
+	events, err := reopened.LoadEvents()
+	if err != nil {
+		t.Fatalf("independent replay: %v", err)
+	}
+	if wantComplete {
+		if len(events) != 1 || events[0].Seq != 1 || events[0].JobID != event.JobID {
+			t.Fatalf("complete uncertain replay = %+v, want one seq-1 event", events)
+		}
+	} else if len(events) != 0 {
+		t.Fatalf("partial uncertain replay = %+v, want torn tail discarded", events)
+	}
+}
+
+func mustEventLine(t *testing.T, event Event, seq int64) []byte {
+	t.Helper()
+	event.Seq = seq
+	b, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal expected event: %v", err)
+	}
+	return append(b, '\n')
+}
+
+type rollbackFaultFS struct {
+	afero.Fs
+	file rollbackFaultFile
+}
+
+func (fs *rollbackFaultFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	f, err := fs.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	file := fs.file
+	file.File = f
+	return &file, nil
+}
+
+type rollbackFaultFile struct {
+	afero.File
+	writeErr      error
+	writePrefix   int
+	writeFailures int
+	truncateErr   error
+	truncateFails int
+}
+
+func (f *rollbackFaultFile) Write(p []byte) (int, error) {
+	if f.writeErr != nil && f.writeFailures > 0 {
+		f.writeFailures--
+		if f.writePrefix > 0 {
+			n := min(f.writePrefix, len(p))
+			written, writeErr := f.File.Write(p[:n])
+			if writeErr != nil {
+				return written, writeErr
+			}
+			f.writePrefix = 0
+			return written, f.writeErr
+		}
+		return 0, f.writeErr
+	}
+	return f.File.Write(p)
+}
+
+func (f *rollbackFaultFile) Truncate(size int64) error {
+	if f.truncateFails > 0 {
+		f.truncateFails--
+		return f.truncateErr
+	}
+	return f.File.Truncate(size)
+}
+
+func rollbackFaultStore(t *testing.T, base afero.Fs, file rollbackFaultFile) *Store {
+	t.Helper()
+	fs := &rollbackFaultFS{Fs: base, file: file}
+	s, err := openFs(fs, "/jobs.jsonl")
+	if err != nil {
+		t.Fatalf("open fault store: %v", err)
+	}
+	return s
 }
 
 // TestStoreAppendBatchSurfacesFilesystemFaults pins the seek/write/sync error

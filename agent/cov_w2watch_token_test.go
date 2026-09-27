@@ -7,6 +7,7 @@ import "testing"
 // child token with no subagent manager -> nil; child token whose subagent exists
 // -> that child's manager; child token with no matching subagent -> nil.
 func TestW2Watch_jobManagerForToken(t *testing.T) {
+	t.Parallel()
 	jm := newTestJM(t)
 
 	// No subagent manager: a child-scoped token cannot resolve.

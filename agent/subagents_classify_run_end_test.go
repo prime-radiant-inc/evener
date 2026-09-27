@@ -26,6 +26,7 @@ import (
 //     (with the exhaustion payload exposed for the a.err overwrite); else
 //     Failed iff err non-nil; else Completed.
 func TestClassifyRunEnd(t *testing.T) {
+	t.Parallel()
 	turnsExhausted := &budgetExhaustionError{Budget: exhaustedBudgetTurns, Limit: 23, Resumable: false}
 	toolRoundsExhausted := &budgetExhaustionError{Budget: exhaustedBudgetToolRounds, Limit: 17, Resumable: true}
 	wrappedCanceled := fmt.Errorf("provider stream: %w", context.Canceled)
@@ -107,6 +108,7 @@ func TestClassifyRunEnd(t *testing.T) {
 // the behavior-preserving property directly rather than only the pinned
 // table above.
 func TestClassifyRunEndProjectionsMatchLegacySites(t *testing.T) {
+	t.Parallel()
 	baseErrs := []error{
 		nil,
 		context.Canceled,

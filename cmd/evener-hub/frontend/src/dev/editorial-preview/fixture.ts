@@ -299,5 +299,6 @@ export function createEditorialClient(): EditorialClient {
     ...(path === "/fixture/editorial" ? {} : { error: "Only /fixture/editorial exists in this preview" }),
   }));
   client.on("evener/plugin/preview", () => ({ plugins: [] }));
+  client.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
   return client;
 }

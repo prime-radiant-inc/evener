@@ -22,11 +22,12 @@ import (
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/transcript"
-	"primeradiant.com/evener/internal/shellquote"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
 func TestRouteNoToolCalls(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		kind          EntryKind
@@ -2193,6 +2194,7 @@ func TestDelegateResourceSupervision_BlockingSubagentStopContinuesOnlyOnceWithPe
 }
 
 func TestDelegateResourceSupervision_FinalRoundFailedSalvageAddsResumeHint(t *testing.T) {
+	t.Parallel()
 	child := newTestSession(t)
 	child.totalRounds = 1
 	if err := child.persistSalvagedTurn("partial final draft", "gpt-5.2", "openai"); err != nil {
@@ -2206,6 +2208,7 @@ func TestDelegateResourceSupervision_FinalRoundFailedSalvageAddsResumeHint(t *te
 }
 
 func TestDelegateResourceSupervision_SuccessExhaustionCancellationStopAndStaleSalvageAddNoHint(t *testing.T) {
+	t.Parallel()
 	final := newTestSession(t)
 	final.totalRounds = 1
 	if err := final.persistSalvagedTurn("partial final draft", "gpt-5.2", "openai"); err != nil {
@@ -2536,6 +2539,7 @@ func TestDelegateResourceSupervision_QuietWatchdogRearmsOnEqualTimestampSteer(t 
 }
 
 func TestDelegateLiveState_RearmQuietCadencePredicate(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		live         delegateLiveState

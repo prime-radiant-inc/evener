@@ -1,6 +1,6 @@
 import type { HostRow } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { resetChromeStoreForTests } from "../../shell/chromeStore";
@@ -54,7 +54,7 @@ function stubMatchMedia(matches: boolean) {
 }
 
 function hostRow(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
-  return { origin: "sidecar", attached: true, midAttach: false, removed: false, ...overrides };
+  return { origin: "hub.toml", attached: true, midAttach: false, removed: false, ...overrides };
 }
 
 // A connected hub whose host registry lists beta and whose beta partition
@@ -66,6 +66,16 @@ function connectFakeClient(): FakeClient {
   fake.on("evener/host/request", () => ({ instances: [], availableProviders: [] }));
   connectionStore.getState().connect(fake);
   return fake;
+}
+
+// Renders Settings on ?host=beta and waits for both of its mount reads to land:
+// the picker's host registry and beta's own provider listing.
+async function renderSettledOnBeta(): Promise<ReturnType<typeof render>> {
+  window.history.pushState({}, "", "/settings/credentials?host=beta");
+  const view = render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
+  expect(await screen.findByText("No provider instances on beta.")).toBeTruthy();
+  await waitFor(() => expect(hostsStore.getState().load.phase).toBe("ready"));
+  return view;
 }
 
 beforeEach(() => {
@@ -133,8 +143,7 @@ test("the selection survives a section switch, and the route keeps carrying it",
 // the host the user navigated away from.
 test("a popstate that names another host moves the selection", async () => {
   connectFakeClient();
-  window.history.pushState({}, "", "/settings/credentials?host=beta");
-  render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
+  await renderSettledOnBeta();
   expect(settingsHostStore.getState().host).toBe("beta");
 
   act(() => {
@@ -169,8 +178,7 @@ test("Back to a settings URL that names no host returns the selection to this hu
 // never produces the hostless URL that would reset the selection.
 test("an app navigation to a settings URL carries the host the route already names", async () => {
   connectFakeClient();
-  window.history.pushState({}, "", "/settings/credentials?host=beta");
-  render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
+  await renderSettledOnBeta();
 
   act(() => navigate("/settings/theme"));
 
@@ -185,13 +193,13 @@ test("an app navigation to a settings URL carries the host the route already nam
 // could issue a remote read for it) before the mount sync corrected it.
 test("an app navigation off the settings route drops the remote selection", async () => {
   connectFakeClient();
-  window.history.pushState({}, "", "/settings/credentials?host=beta");
-  render(<Settings params={{ section: "credentials" }} paneId="settings-1" focused={true} />);
+  await renderSettledOnBeta();
   expect(settingsHostStore.getState().host).toBe("beta");
 
   act(() => navigate("/"));
 
   expect(settingsHostStore.getState().host).toBe(LOCAL_HOST);
+  expect(await screen.findByRole("button", { name: "Connect provider" })).toBeTruthy();
 });
 
 // The same drop, reached the other way: a URL change the app did not build (a
@@ -244,6 +252,7 @@ test("reopening a hostless settings URL never shows the previous remote host", a
 
   expect(settingsHostStore.getState().host).toBe(LOCAL_HOST);
   expect(screen.queryByRole("heading", { name: "Providers on beta" })).toBeNull();
+  expect(await screen.findByRole("button", { name: "Connect provider" })).toBeTruthy();
   // No stale remote read: the previous selection never reached a render.
   expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(readsWithBeta);
 });

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/hubapi"
 )
@@ -410,6 +411,73 @@ func TestNavigationSessionValueValidatesOmittedWatches(t *testing.T) {
 	session.OmittedArmedWatches = -1
 	if navigationSessionValueValid(session) {
 		t.Fatal("a negative armed omitted count must be rejected")
+	}
+}
+
+// The approval's tool is an identity and its target a label on the wire,
+// bounded as the codec's sessionValue bounds them: the tool within the identity
+// byte bound and the target within the label rune bound.
+func TestNavigationSessionValueValidatesApprovalDetail(t *testing.T) {
+	withApproval := func(tool, target string) hubapi.NavigationSessionSummary {
+		session := navigationSchemaSession("local:schema-session", "schema-session")
+		session.ApprovalPending = true
+		session.ApprovalTool = tool
+		session.ApprovalTarget = target
+		return session
+	}
+	for name, session := range map[string]hubapi.NavigationSessionSummary{
+		"a tool and its path":          withApproval("write_file", "/home/me/sites/docs/index.md"),
+		"a target at the rune bound":   withApproval("write_file", strings.Repeat("😀", maxNavigationLabelRunes)),
+		"a tool at the identity bound": withApproval(strings.Repeat("t", maxNavigationIdentityBytes), "/srv/docs"),
+		"no approval detail":           withApproval("", ""),
+	} {
+		if !navigationSessionValueValid(session) {
+			t.Errorf("%s rejected: tool %d bytes, target %d runes", name, len(session.ApprovalTool), utf8.RuneCountInString(session.ApprovalTarget))
+		}
+	}
+	for name, session := range map[string]hubapi.NavigationSessionSummary{
+		"an over-long target":      withApproval("write_file", strings.Repeat("t", maxNavigationLabelRunes+1)),
+		"an over-long tool":        withApproval(strings.Repeat("t", maxNavigationIdentityBytes+1), "/srv/docs"),
+		"a tool that is not UTF-8": withApproval("write\xff", "/srv/docs"),
+	} {
+		if navigationSessionValueValid(session) {
+			t.Errorf("%s accepted: tool %d bytes, target %d runes", name, len(session.ApprovalTool), utf8.RuneCountInString(session.ApprovalTarget))
+		}
+	}
+}
+
+// Task progress is counts and a label on the wire, bounded as the codec's
+// tasksValue bounds them: safe non-negative counts, no more tasks done and
+// cancelled than exist, and a current task within the label bound.
+func TestNavigationSessionValueValidatesTaskProgress(t *testing.T) {
+	withTasks := func(tasks hubapi.NavigationTaskProgress) hubapi.NavigationSessionSummary {
+		session := navigationSchemaSession("local:schema-session", "schema-session")
+		session.Tasks = &tasks
+		return session
+	}
+	for name, tasks := range map[string]hubapi.NavigationTaskProgress{
+		"a list in progress":          {Total: 7, Done: 2, Cancelled: 1, CurrentID: 4, Current: "Fix the settle/drain race"},
+		"a finished list":             {Total: 7, Done: 6, Cancelled: 1},
+		"a current task at the bound": {Total: 1, CurrentID: 1, Current: strings.Repeat("😀", maxNavigationLabelRunes)},
+		"counts at the safe bound":    {Total: int(maxNavigationSafeInteger), Done: int(maxNavigationSafeInteger), CurrentID: int(maxNavigationSafeInteger)},
+	} {
+		if !navigationSessionValueValid(withTasks(tasks)) {
+			t.Errorf("%s rejected: %+v", name, tasks)
+		}
+	}
+	for name, tasks := range map[string]hubapi.NavigationTaskProgress{
+		"a negative total":              {Total: -1},
+		"a negative done count":         {Total: 1, Done: -1},
+		"a negative cancelled count":    {Total: 1, Cancelled: -1},
+		"a negative current id":         {Total: 1, CurrentID: -1},
+		"more done than exist":          {Total: 2, Done: 3},
+		"more settled than exist":       {Total: 2, Done: 1, Cancelled: 2},
+		"a total beyond the safe range": {Total: int(maxNavigationSafeInteger) + 1},
+		"an over-long current task":     {Total: 1, CurrentID: 1, Current: strings.Repeat("t", maxNavigationLabelRunes+1)},
+	} {
+		if navigationSessionValueValid(withTasks(tasks)) {
+			t.Errorf("%s accepted: %+v", name, tasks)
+		}
 	}
 }
 

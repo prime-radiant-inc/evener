@@ -166,6 +166,7 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 	tests := []struct {
 		name         string
 		expiry       time.Time
+		refreshToken string
 		wantSignedIn bool
 		wantRefresh  bool
 		wantLogin    bool
@@ -173,13 +174,32 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 		{
 			name:         "refreshable",
 			expiry:       now.Add(2 * time.Minute),
+			refreshToken: "stored-refresh-token",
 			wantSignedIn: true,
 			wantRefresh:  true,
 		},
 		{
-			name:      "expired",
-			expiry:    now.Add(-time.Minute),
-			wantLogin: true,
+			// Expired, but the stored record still carries its refresh token:
+			// routine and expected, ResolveRuntimeCredentials refreshes it on
+			// the next use, so this reports the same refreshable state as the
+			// not-yet-expired case above rather than needsLogin (issue #2468).
+			name:         "expired with refresh token still on file",
+			expiry:       now.Add(-time.Minute),
+			refreshToken: "stored-refresh-token",
+			wantSignedIn: true,
+			wantRefresh:  true,
+		},
+		{
+			// A whitespace-only refresh token passes
+			// authopenai.AuthRecord.Validate (which refuses only the exact
+			// empty string), so - unlike a record with no refresh token at
+			// all - this one does reach Status: it just has nothing
+			// ResolveRuntimeCredentials can use, so an expired access token
+			// genuinely needs a fresh login (issue #2483).
+			name:         "expired with unusable (blank) refresh token",
+			expiry:       now.Add(-time.Minute),
+			refreshToken: "   ",
+			wantLogin:    true,
 		},
 	}
 
@@ -197,7 +217,7 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 				TokenType:    "Bearer",
 				Scope:        "openid profile email",
 				AccessToken:  "stored-access-token",
-				RefreshToken: "stored-refresh-token",
+				RefreshToken: tc.refreshToken,
 				Expiry:       tc.expiry,
 				Email:        "stored@example.com",
 			}); err != nil {
@@ -823,10 +843,12 @@ func TestAuth_Codex_Status_ExpiredOAuthStaysTheSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	// Expired OAuth stays the source the registry resolves (the record exists),
-	// with NeedsLogin carrying the "sign in again" signal.
-	if got.ActiveSource != authopenai.AuthSourceOAuth || !got.NeedsLogin {
-		t.Fatalf("status=%+v, want oauth active + NeedsLogin (expired record must not fall back to file)", got)
+	// Expired OAuth stays the source the registry resolves (the record
+	// exists, so it does not fall back to the shadowed file key). The stored
+	// record still carries its refresh token, so this is the routine
+	// refreshable state, not a login prompt (issue #2468).
+	if got.ActiveSource != authopenai.AuthSourceOAuth || got.NeedsLogin || !got.NeedsRefresh {
+		t.Fatalf("status=%+v, want oauth active + refreshable, not needsLogin (expired record must not fall back to file)", got)
 	}
 	if !got.HasStoredFile {
 		t.Errorf("status=%+v, want HasStoredFile true (file shadowed beneath expired oauth)", got)

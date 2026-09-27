@@ -27,6 +27,7 @@ func (a *erroringAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stre
 }
 
 func TestW2Tail_nameSession_Guards(t *testing.T) {
+	t.Parallel()
 	profile := NewOpenAIProfile("gpt-5.2")
 
 	if _, err := nameSession(context.Background(), nil, profile, sessionNameSourcePrompt, "text", "", noNamerSleep); err == nil {
@@ -38,6 +39,7 @@ func TestW2Tail_nameSession_Guards(t *testing.T) {
 }
 
 func TestW2Tail_nameSession_LLMErrorWrapped(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&erroringAdapter{name: "openai"})
 	_, err := nameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "do a thing", "", noNamerSleep)
@@ -50,6 +52,7 @@ func TestW2Tail_nameSession_LLMErrorWrapped(t *testing.T) {
 }
 
 func TestW2Tail_nameSession_EmptyNameAfterSanitize(t *testing.T) {
+	t.Parallel()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{
 		name: "openai",

@@ -162,6 +162,7 @@ func TestScriptedWorktreeGitRefusesUnmodeledMergeVerdicts(t *testing.T) {
 }
 
 func TestScriptedWorktreeSessionPreservesLockAndRestoreInvariants(t *testing.T) {
+	t.Parallel()
 	h := newScriptedWorktreeSession(t)
 
 	first, err := h.exec(map[string]any{"operation": "create", "name": "alpha"})

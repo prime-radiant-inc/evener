@@ -19,6 +19,30 @@ const (
 	buildSourceFlag  = "-build-source"
 )
 
+// evenerMainPackage is the main package of the artifact -deploy-binary accepts:
+// the evener runtime the host runs. buildinfo.Path is the import path of a Go
+// executable's main package — for this repository's ./cmd/evener exactly this
+// value — and it is the field that separates the runtime from every other Go
+// program: another module's command, and also this repository's other commands
+// (cmd/evener-hub, cmd/evener-dev), whose main packages differ. Main.Path cannot
+// do that job: it names the module, which every command built from this
+// repository shares.
+const evenerMainPackage = "primeradiant.com/evener/cmd/evener"
+
+// verifyDeployArtifactIdentity refuses a Go executable whose main package is not
+// the evener runtime, naming the flag. It is judged from the buildinfo the caller
+// has already read, on both reads of the artifact — where the flag is validated
+// at startup and again on the seam before the push — so a non-evener program can
+// never reach a host and replace its evener; the post-push version comparison
+// then only has to judge the one thing buildinfo cannot: whether a genuine evener
+// artifact was built from this controller's tree.
+func verifyDeployArtifactIdentity(path string, info *buildinfo.BuildInfo) error {
+	if info.Path == evenerMainPackage {
+		return nil
+	}
+	return fmt.Errorf("%s %q is not evener: its main package is %q, want %q; supply a pre-built evener for the host's target", deployBinaryFlag, path, info.Path, evenerMainPackage)
+}
+
 // hubDeployHelp is the remedy the sshconn terminal version refusal appends when
 // no deploy path is configured. It names the hub's own flags; sshconn's default
 // ("set Options.BuildSource") names an internal field the operator cannot act on.
@@ -86,10 +110,12 @@ func (o *hubOptions) validateDeployFlags() error {
 // validateDeployBinary checks an operator-supplied artifact where the flag is
 // read and returns the canonical absolute path to store. It must be a stat-able
 // file the hub can read, carrying the Go buildinfo the seam later reads for its
-// target — so a missing path, a directory, an unreadable file, or a
-// stripped/non-Go file is refused now, naming the flag, instead of at the first
-// attach. Canonicalizing the path the way the build source is (verifyBuildSource)
-// keeps the artifact validation approved the same file a later deploy reads.
+// target, and that buildinfo's main package must be the evener runtime — so a
+// missing path, a directory, an unreadable file, a stripped/non-Go file, or a Go
+// program that is not evener is refused now, naming the flag, instead of at the
+// first attach. Canonicalizing the path the way the build source is
+// (verifyBuildSource) keeps the artifact validation approved the same file a
+// later deploy reads.
 func validateDeployBinary(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -112,18 +138,23 @@ func validateDeployBinary(path string) (string, error) {
 	if info.Mode().Perm()&0o111 == 0 {
 		return "", fmt.Errorf("%s %q is not executable (mode %v), want a pre-built evener executable", deployBinaryFlag, path, info.Mode().Perm())
 	}
-	if _, err := buildinfo.ReadFile(abs); err != nil {
+	buildInfo, err := buildinfo.ReadFile(abs)
+	if err != nil {
 		return "", fmt.Errorf("%s %q is not a readable Go executable: %w", deployBinaryFlag, path, err)
+	}
+	if err := verifyDeployArtifactIdentity(path, buildInfo); err != nil {
+		return "", err
 	}
 	return abs, nil
 }
 
 // deployBinaryBuild is the Options.BuildBinary seam for an operator-supplied
 // artifact. There is nothing to compile, so the artifact is verified to target
-// goos/goarch and copied to out. The target is read from the artifact's own
-// buildinfo, never trusted from the operator, so a wrong-platform artifact is
-// refused before the push rather than installed and caught only by the
-// post-push identity check. A stripped or non-Go file is a refusal, not a panic.
+// goos/goarch and to be evener, then copied to out. Both facts are read from the
+// artifact's own buildinfo, never trusted from the operator, so a wrong-platform
+// artifact — or a Go program that is not evener at all — is refused before the
+// push rather than installed and caught only by the post-push identity check. A
+// stripped or non-Go file is a refusal, not a panic.
 func deployBinaryBuild(path string) func(ctx context.Context, goos, goarch, out string) error {
 	return func(ctx context.Context, goos, goarch, out string) error {
 		return copyDeployBinary(ctx, path, goos, goarch, out)
@@ -131,8 +162,9 @@ func deployBinaryBuild(path string) func(ctx context.Context, goos, goarch, out 
 }
 
 // copyDeployBinary verifies and stages one operator-supplied artifact. Nothing
-// is written to out until the artifact has been read and its target confirmed,
-// so a refused artifact leaves no partial file for the push to install.
+// is written to out until the artifact has been read and its identity and target
+// confirmed, so a refused artifact leaves no partial file for the push to
+// install.
 func copyDeployBinary(ctx context.Context, path, goos, goarch, out string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -140,6 +172,12 @@ func copyDeployBinary(ctx context.Context, path, goos, goarch, out string) error
 	info, err := buildinfo.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("%s %q is not a readable Go executable: %w", deployBinaryFlag, path, err)
+	}
+	if err := verifyDeployArtifactIdentity(path, info); err != nil {
+		// Terminal, not the retryable ErrDeploy: the artifact is the operator's, so
+		// a non-evener file at that path is a permanent mistake that retrying only
+		// re-reads — the same classification the wrong-target refusal beside it uses.
+		return fmt.Errorf("%w: %w", sshconn.ErrDeployArtifactUnusable, err)
 	}
 	gotOS, gotArch := buildSetting(info, "GOOS"), buildSetting(info, "GOARCH")
 	if gotOS != goos || gotArch != goarch {

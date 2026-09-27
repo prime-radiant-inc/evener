@@ -17,6 +17,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestDelegateCapacityKind(t *testing.T) {
+	t.Parallel()
 	if delegateTurnCapacity != 0 {
 		t.Fatalf("delegateTurnCapacity = %d, want 0", delegateTurnCapacity)
 	}
@@ -30,6 +31,7 @@ func TestDelegateCapacityKind(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateCommittedStartFailureError(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("underlying error")
 	err := &delegateCommittedStartFailureError{
 		disposition: delegateCommittedStartFailureStopWon,
@@ -44,6 +46,7 @@ func TestDelegateCommittedStartFailureError(t *testing.T) {
 }
 
 func TestDelegateCommittedStartFailureErrorAppendFailed(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("append failed")
 	err := &delegateCommittedStartFailureError{
 		disposition: delegateCommittedStartFailureAppendFailed,
@@ -59,6 +62,7 @@ func TestDelegateCommittedStartFailureErrorAppendFailed(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCommittedStartFailureDisposition(t *testing.T) {
+	t.Parallel()
 	t.Run("with failure error", func(t *testing.T) {
 		err := &delegateCommittedStartFailureError{
 			disposition: delegateCommittedStartFailureStopWon,
@@ -86,6 +90,7 @@ func TestCommittedStartFailureDisposition(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNormalizeDelegateStartFailure(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	t.Run("all fields empty", func(t *testing.T) {
@@ -147,6 +152,7 @@ func TestNormalizeDelegateStartFailure(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTerminalFinishBatch(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 3}
 	now := time.Date(2025, 6, 15, 10, 30, 0, 0, time.UTC)
 	packet := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"test"`)}
@@ -197,6 +203,7 @@ func TestTerminalFinishBatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateControllerRunStartedEvent(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2025, 6, 15, 10, 30, 0, 0, time.UTC)
 	event := delegateControllerRunStartedEvent("dlg_1", 5, delegatestore.TriggerAttention, now)
 	if event.Kind != delegatestore.EventDelegateRunStarted {
@@ -224,6 +231,7 @@ func TestDelegateControllerRunStartedEvent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCloneDelegateStartDescriptor(t *testing.T) {
+	t.Parallel()
 	t.Run("basic", func(t *testing.T) {
 		desc := delegatestore.Descriptor{
 			Task:       "do something",
@@ -324,6 +332,7 @@ func TestCloneDelegateStartDescriptor(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReserveAndReleaseCapacityLocked(t *testing.T) {
+	t.Parallel()
 	t.Run("turn capacity unlimited", func(t *testing.T) {
 		c := &delegateTreeController{}
 		if !c.reserveCapacityLocked(delegateTurnCapacity) {
@@ -400,6 +409,7 @@ func TestReserveAndReleaseCapacityLocked(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReservedAttentionIDNilController(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	if c.reservedAttentionID(nil) != "" {
 		t.Fatalf("expected empty for nil controller")
@@ -407,6 +417,7 @@ func TestReservedAttentionIDNilController(t *testing.T) {
 }
 
 func TestReservedAttentionIDNilRuntime(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	if c.reservedAttentionID(nil) != "" {
 		t.Fatalf("expected empty for nil runtime")
@@ -418,6 +429,7 @@ func TestReservedAttentionIDNilRuntime(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateStartReservationStruct(t *testing.T) {
+	t.Parallel()
 	r := &delegateStartReservation{
 		delegateID:     "dlg_1",
 		transcriptPath: "/path/transcript.jsonl",
@@ -433,6 +445,7 @@ func TestDelegateStartReservationStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateStartRecordStruct(t *testing.T) {
+	t.Parallel()
 	r := &delegateStartRecord{
 		delegateID:   "dlg_1",
 		generation:   2,
@@ -454,6 +467,7 @@ func TestDelegateStartRecordStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateStartCommitStruct(t *testing.T) {
+	t.Parallel()
 	lease := delegateLease{delegateID: "dlg_1", generation: 3}
 	c := delegateStartCommit{
 		lease:          lease,
@@ -471,6 +485,7 @@ func TestDelegateStartCommitStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateFinishStruct(t *testing.T) {
+	t.Parallel()
 	f := delegateFinish{
 		outcome:          delegatestore.OutcomeCompleted,
 		disposition:      delegatestore.DispositionReported,
@@ -492,6 +507,7 @@ func TestDelegateFinishStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateInputClaimStruct(t *testing.T) {
+	t.Parallel()
 	claim := delegateInputClaim{
 		lease: delegateLease{delegateID: "dlg_1", generation: 1},
 		token: 42,
@@ -506,6 +522,7 @@ func TestDelegateInputClaimStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateCommittedStartFailureDispositionConstants(t *testing.T) {
+	t.Parallel()
 	if delegateCommittedStartFailureStopWon != 1 {
 		t.Fatalf("delegateCommittedStartFailureStopWon = %d, want 1", delegateCommittedStartFailureStopWon)
 	}
@@ -519,6 +536,7 @@ func TestDelegateCommittedStartFailureDispositionConstants(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNormalizeDelegateStartFailureLongMessage(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	longMessage := strings.Repeat("x", 600)
 	f := normalizeDelegateStartFailure(delegateFinish{reason: longMessage}, "fallback", longMessage, now)
@@ -538,6 +556,7 @@ func TestNormalizeDelegateStartFailureLongMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInputPersistFailureBatch(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{now: func() time.Time { return time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC) }}
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	terminal, finish := c.inputPersistFailureBatch(lease, errors.New("disk full"))
@@ -572,6 +591,7 @@ func TestInputPersistFailureBatch(t *testing.T) {
 }
 
 func TestInputPersistFailureBatchNilErr(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{now: time.Now}
 	lease := delegateLease{delegateID: "dlg_2", generation: 2}
 	terminal, _ := c.inputPersistFailureBatch(lease, nil)
@@ -585,6 +605,7 @@ func TestInputPersistFailureBatchNilErr(t *testing.T) {
 }
 
 func TestInputPersistFailureBatchLongMessage(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{now: time.Now}
 	lease := delegateLease{delegateID: "dlg_3", generation: 3}
 	longErr := errors.New(strings.Repeat("x", 600))
@@ -604,6 +625,7 @@ func TestInputPersistFailureBatchLongMessage(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStartInputFailureBatch(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{now: time.Now}
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	terminal, finish := c.startInputFailureBatch(lease, delegateFinish{})
@@ -623,6 +645,7 @@ func TestStartInputFailureBatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCommittedStartFailureBatch(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{now: time.Now}
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
 	terminal, finish := c.committedStartFailureBatch(lease, delegateFinish{})
@@ -642,6 +665,7 @@ func TestCommittedStartFailureBatch(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHasAttentionStartReservationLockedEmpty(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{reservations: map[uint64]*delegateStartRecord{}}
 	if c.hasAttentionStartReservationLocked("dlg_1") {
 		t.Fatalf("expected false with no reservations")
@@ -649,6 +673,7 @@ func TestHasAttentionStartReservationLockedEmpty(t *testing.T) {
 }
 
 func TestHasAttentionStartReservationLockedWithMatch(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reservations: map[uint64]*delegateStartRecord{
 			1: {delegateID: "dlg_1", trigger: delegatestore.TriggerAttention},
@@ -660,6 +685,7 @@ func TestHasAttentionStartReservationLockedWithMatch(t *testing.T) {
 }
 
 func TestHasAttentionStartReservationLockedWrongTrigger(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reservations: map[uint64]*delegateStartRecord{
 			1: {delegateID: "dlg_1", trigger: delegatestore.TriggerOwnerInput},
@@ -671,6 +697,7 @@ func TestHasAttentionStartReservationLockedWrongTrigger(t *testing.T) {
 }
 
 func TestHasAttentionStartReservationLockedWrongID(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reservations: map[uint64]*delegateStartRecord{
 			1: {delegateID: "dlg_other", trigger: delegatestore.TriggerAttention},
@@ -686,6 +713,7 @@ func TestHasAttentionStartReservationLockedWrongID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReservationRecordLockedNilReservation(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	_, err := c.reservationRecordLocked(nil)
 	if !errors.Is(err, errDelegateTargetBusy) {
@@ -694,6 +722,7 @@ func TestReservationRecordLockedNilReservation(t *testing.T) {
 }
 
 func TestReservationRecordLockedNotFound(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		reservations: map[uint64]*delegateStartRecord{},
 	}
@@ -705,6 +734,7 @@ func TestReservationRecordLockedNotFound(t *testing.T) {
 }
 
 func TestReservationRecordLockedFound(t *testing.T) {
+	t.Parallel()
 	reservation := &delegateStartReservation{delegateID: "dlg_1"}
 	record := &delegateStartRecord{
 		receipt:    reservation,

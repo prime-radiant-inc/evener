@@ -128,6 +128,7 @@ func TestSkillActivation_SteeringSelectionReconciledAfterAdmissionSaveFailure(t 
 // (obligation, carrier), and a restore must not drive a second admission for
 // the same invocation.
 func TestSkillActivation_AdmittedSelectionIsNotReReconciled(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	writeSkillMD(t, root, "opaque", "---\nname: opaque\ndescription: fixture\n---\nBODY_no_re_reconcile")
 	stateDir := t.TempDir()
@@ -171,6 +172,7 @@ func TestSkillActivation_AdmittedSelectionIsNotReReconciled(t *testing.T) {
 // restore that reconciled it would deliver a selection the operator was told
 // had failed and may have already corrected.
 func TestSkillActivation_FailedPreparationIsNotReDeliveredAtRestore(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	stateDir := t.TempDir()
 	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())

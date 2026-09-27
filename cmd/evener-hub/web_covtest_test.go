@@ -452,8 +452,8 @@ func TestCovDocRawTotalSizeStatOK(t *testing.T) {
 // rejection in the top-level session resolver.
 func TestCovTopLevelFavoriteSessionIDClusterPrefix(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	if _, ok := web.resolveTopLevelSessionRef(context.TODO(), "cluster:foo"); ok {
-		t.Fatal("cluster: prefix should return false")
+	if session, err := web.resolveTopLevelSessionRef(context.TODO(), "cluster:foo"); err == nil || session.sessionID != "" {
+		t.Fatalf("cluster: prefix should be refused, got %+v %v", session, err)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 // directly. A delegate of a one-shot run dies with the same process, so it
 // needs the same answer.
 func TestTurnEndsProcessReachesChildSessions(t *testing.T) {
+	t.Parallel()
 	parent := SessionConfig{TurnEndsProcess: true}
 	child := configFromSnapshot(parent.toSnapshot().Clone())
 	if !child.TurnEndsProcess {
@@ -30,6 +31,7 @@ func TestTurnEndsProcessReachesChildSessions(t *testing.T) {
 // persisted value rather than inheriting it — otherwise a run-created session
 // resumed under serve would treat background jobs as dying with the turn.
 func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name      string
 		persisted bool
@@ -72,6 +74,7 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 // it. A descriptor frozen during a one-shot run and restarted under serve must
 // not carry true into the daemon, nor false the other way.
 func TestFrozenDescriptorTakesTurnEndsProcessFromTheLiveParent(t *testing.T) {
+	t.Parallel()
 	for _, tt := range []struct {
 		name   string
 		frozen bool
@@ -95,6 +98,7 @@ func TestFrozenDescriptorTakesTurnEndsProcessFromTheLiveParent(t *testing.T) {
 }
 
 func TestFrozenDescriptorTakesLifetimeContextFromLiveParent(t *testing.T) {
+	t.Parallel()
 	owner, cancelOwner := context.WithCancel(context.Background())
 	got := subagentConfigFromFrozenDescriptor(
 		SessionConfig{NoProjectPrompts: true}.toSnapshot(),

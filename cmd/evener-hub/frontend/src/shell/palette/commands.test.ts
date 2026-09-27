@@ -36,27 +36,11 @@ import { RECENT_COMMANDS_KEY } from "./recentCommands";
 // /project calls the rail's imperative reveal seam (PIN-A); T5 produces the
 // real body, so this stream tests against a stub of the SEAM only.
 //
-// A hoisted vi.mock("../rail/railController", () => ({ revealSessionInRail:
-// vi.fn() })) used to sit here, replacing the WHOLE module (dropping
-// setRailRevealHandler entirely) in the shared module registry - under
-// isolate:false that registry is shared by every file in the worker, so this
-// would poison every other file that imports railController.ts (Rail.test.tsx,
-// RailHost.test.tsx, railController.test.ts) for the rest of the worker's
-// life, not just while this file's own tests run. vi.spyOn mutates only the
-// one property this file cares about, on the SAME shared module object every
-// other file also reads from, and mockRestore() in afterAll hands the real
-// revealSessionInRail back for whatever file runs next.
-//
 // Re-spied in beforeEach below, not just once here: this file's own afterEach
-// (like several sibling rail test files) calls vi.restoreAllMocks(), which is
-// a GLOBAL operation - it un-does this spy (handing the real
-// revealSessionInRail back onto the shared module object) the moment ANY
-// test anywhere in the worker restores mocks, not just this file's own. A
-// one-time spy at module scope would silently stop taking effect after that.
+// calls vi.restoreAllMocks(), which strips the spy and hands the real
+// revealSessionInRail back, so a one-time spy at module scope would stop
+// taking effect after the first test.
 let revealSessionInRail = vi.spyOn(railController, "revealSessionInRail").mockImplementation(() => {});
-afterAll(() => {
-  revealSessionInRail.mockRestore();
-});
 
 // Minimal test-only "session" pane registration so /aside's openPane hop has
 // a real registry entry - mirrors SessionActionsMenu.test.tsx's setup.
@@ -272,27 +256,14 @@ beforeEach(() => {
   // Keep viewport tests isolated from direct matchMedia assignments.
   // @ts-expect-error jsdom baseline has no matchMedia.
   delete window.matchMedia;
-  // vi.restoreAllMocks() in this file's own afterEach (or any other test
-  // file's, sharing this worker) strips the spy - see this file's own
-  // comment on the vi.spyOn call above.
+  // vi.restoreAllMocks() in this file's own afterEach strips the spy - see
+  // this file's own comment on the vi.spyOn call above.
   revealSessionInRail = vi.spyOn(railController, "revealSessionInRail").mockImplementation(() => {});
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  // Direct assignments are not spies, so restoreAllMocks cannot remove the
-  // mobile viewport fake from the final test in this shared worker.
-  // @ts-expect-error jsdom baseline has no matchMedia.
-  delete window.matchMedia;
-  // Every test here writes real durable outbox records into this file's own
-  // globalThis.indexedDB instance - the beforeEach above only replaces it
-  // BEFORE each test, so whatever the LAST test wrote stays installed as the
-  // global indexedDB after this file finishes. Under isolate:false that
-  // leftover, populated database is what a later file's own default
-  // getMutationRuntime() (no setMutationStorageForTests override) discovers
-  // and re-pins.
-  globalThis.indexedDB = new IDBFactory();
 });
 
 // --- scope gating (search.js:581-588) ---

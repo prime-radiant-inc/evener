@@ -8,6 +8,7 @@ import (
 
 // TestWatchesTargeting_SendMatch covers the cfg.send.To == id branch (lines 422-424).
 func TestWatchesTargeting_SendMatch(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{
 		watches: map[watchKey]*watchConfig{
 			{Target: "job_1"}: {
@@ -23,6 +24,7 @@ func TestWatchesTargeting_SendMatch(t *testing.T) {
 
 // TestWatchesTargeting_PendingMatch covers the cfg.pending match branch (lines 425-428).
 func TestWatchesTargeting_PendingMatch(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{
 		watches: map[watchKey]*watchConfig{
 			{Target: "job_1"}: {
@@ -40,6 +42,7 @@ func TestWatchesTargeting_PendingMatch(t *testing.T) {
 
 // TestWatchesTargeting_TerminalFlushMatch covers the terminalFlush match branch (lines 431-435).
 func TestWatchesTargeting_TerminalFlushMatch(t *testing.T) {
+	t.Parallel()
 	cfg := &watchConfig{
 		pending: map[jobstore.WatchSendKey]*jobstore.WatchSendState{
 			{ResolvedSendTo: "dlg_target"}: {},
@@ -56,6 +59,7 @@ func TestWatchesTargeting_TerminalFlushMatch(t *testing.T) {
 
 // TestWatchesTargeting_NoMatch covers the false return (line 438).
 func TestWatchesTargeting_NoMatch(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{
 		watches: map[watchKey]*watchConfig{
 			{Target: "job_1"}: {
@@ -74,6 +78,7 @@ func TestWatchesTargeting_NoMatch(t *testing.T) {
 
 // TestWatchesTargeting_SendNil covers the nil-send skip within the watches loop.
 func TestWatchesTargeting_SendNil(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{
 		watches: map[watchKey]*watchConfig{
 			{Target: "job_1"}: {
@@ -91,6 +96,7 @@ func TestWatchesTargeting_SendNil(t *testing.T) {
 // TestSubtreeWatchesTargeting_NilJobManager covers the nil jobManager path
 // with subagents.
 func TestSubtreeWatchesTargeting_NilJobManagerWithSubagents(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		subagents: &subagentManager{
 			subs: map[string]*subagent{},
@@ -103,6 +109,7 @@ func TestSubtreeWatchesTargeting_NilJobManagerWithSubagents(t *testing.T) {
 
 // TestSubtreeWatchesTargeting_NilSubagents covers the nil subagents path.
 func TestSubtreeWatchesTargeting_NilSubagents(t *testing.T) {
+	t.Parallel()
 	s := &Session{
 		subagents: &subagentManager{subs: map[string]*subagent{}},
 	}
@@ -113,6 +120,7 @@ func TestSubtreeWatchesTargeting_NilSubagents(t *testing.T) {
 
 // TestSubtreeWatchesTargeting_JobManagerMatch covers the jobManager match path (line 404-405).
 func TestSubtreeWatchesTargeting_JobManagerMatch(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{
 		watches: map[watchKey]*watchConfig{
 			{Target: "job_1"}: {
@@ -135,6 +143,7 @@ func TestSubtreeWatchesTargeting_JobManagerMatch(t *testing.T) {
 // stableWatchReceiverTarget sentinel, never the delegate id, so only
 // receiver-identity matching catches it.
 func TestWatchesTargeting_ReceiverMatch(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{
 		watches: map[watchKey]*watchConfig{
 			{Target: "job_1"}: {
@@ -154,6 +163,7 @@ func TestWatchesTargeting_ReceiverMatch(t *testing.T) {
 // requiring BOTH receiverSessionID and receiverDelegateID: a delegate-id match
 // alone, with the wrong session, must not count as targeting.
 func TestWatchesTargeting_ReceiverSessionMismatch(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{
 		watches: map[watchKey]*watchConfig{
 			{Target: "job_1"}: {
@@ -172,6 +182,7 @@ func TestWatchesTargeting_ReceiverSessionMismatch(t *testing.T) {
 // TestWatchesTargeting_TerminalFlushReceiverMatch covers the receiver-identity
 // check in the terminalFlush loop.
 func TestWatchesTargeting_TerminalFlushReceiverMatch(t *testing.T) {
+	t.Parallel()
 	cfg := &watchConfig{
 		receiverSessionID:  "child-session",
 		receiverDelegateID: "dlg_target",
@@ -190,6 +201,7 @@ func TestWatchesTargeting_TerminalFlushReceiverMatch(t *testing.T) {
 // receiver-routed watch armed in a subagent's own job manager must still be
 // found from the ancestor's subtree scan.
 func TestSubtreeWatchesTargeting_ReceiverMatchInSubagent(t *testing.T) {
+	t.Parallel()
 	childJM := &jobManager{
 		watches: map[watchKey]*watchConfig{
 			{Target: "job_1"}: {
@@ -230,6 +242,7 @@ func TestSubtreeWatchesTargeting_ReceiverMatchInSubagent(t *testing.T) {
 // class, the doc comment on watchesTargeting needs re-reviewing, not just
 // this assertion.
 func TestWatchesTargeting_DescendantReceiverClassDoesNotMatch(t *testing.T) {
+	t.Parallel()
 	jm := &jobManager{
 		watches: map[watchKey]*watchConfig{
 			{Target: "job_1"}: {

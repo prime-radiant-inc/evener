@@ -47,7 +47,9 @@ type Record struct {
 }
 
 // Record appends one turn through opts.Door and reports whether it was
-// recorded. The error contract is the door's own (see Append, AppendDurable
+// recorded. A placement with nothing to place (a completion with no running
+// execution) records nothing and returns no error through every door, as a
+// nil writer does; check Recorded. The error contract is the door's own (see Append, AppendDurable
 // and AppendSynced): a nil writer, and a closed one through the buffered or
 // durable door, record nothing and return no error; the synced door returns
 // ErrWriterClosed for a closed writer, and a *RetainedUnsyncedError for a

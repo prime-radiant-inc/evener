@@ -36,7 +36,7 @@ import type {
   TurnStartResponse,
   TurnSteerResponse,
 } from "@evener/appwire-client";
-import * as projectModule from "../conversation/project";
+import * as projectModule from "../../../mobile-native/src/projectedRows";
 import type { createActivityService } from "./activity";
 import * as activityModule from "./activity";
 import {

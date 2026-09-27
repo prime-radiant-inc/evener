@@ -12,6 +12,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestColdDelegateAttentionRefStruct(t *testing.T) {
+	t.Parallel()
 	r := coldDelegateAttentionRef{delegateID: "dlg_1", transcriptRef: "local:abc"}
 	if r.delegateID != "dlg_1" || r.transcriptRef != "local:abc" {
 		t.Fatalf("struct wrong: %+v", r)
@@ -23,6 +24,7 @@ func TestColdDelegateAttentionRefStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateAttentionProjectionEligibleNilAggregate(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{"dlg_1": nil}
 	if delegateAttentionProjectionEligible(state, "dlg_1") {
 		t.Fatalf("expected false for nil aggregate")
@@ -30,6 +32,7 @@ func TestDelegateAttentionProjectionEligibleNilAggregate(t *testing.T) {
 }
 
 func TestDelegateAttentionProjectionEligibleNotResumable(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{Resumable: false},
 	}
@@ -39,6 +42,7 @@ func TestDelegateAttentionProjectionEligibleNotResumable(t *testing.T) {
 }
 
 func TestDelegateAttentionProjectionEligiblePendingStop(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{Resumable: true, PendingStopSeq: 5},
 	}
@@ -48,6 +52,7 @@ func TestDelegateAttentionProjectionEligiblePendingStop(t *testing.T) {
 }
 
 func TestDelegateAttentionProjectionEligiblePhaseClosed(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{Resumable: true, Phase: delegatestore.PhaseClosed},
 	}
@@ -57,6 +62,7 @@ func TestDelegateAttentionProjectionEligiblePhaseClosed(t *testing.T) {
 }
 
 func TestDelegateAttentionProjectionEligiblePhaseStopping(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{Resumable: true, Phase: delegatestore.PhaseStopping},
 	}
@@ -66,6 +72,7 @@ func TestDelegateAttentionProjectionEligiblePhaseStopping(t *testing.T) {
 }
 
 func TestDelegateAttentionProjectionEligibleEligible(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{Resumable: true, Phase: delegatestore.PhaseIdle},
 	}
@@ -75,6 +82,7 @@ func TestDelegateAttentionProjectionEligibleEligible(t *testing.T) {
 }
 
 func TestDelegateAttentionProjectionEligibleAncestorNotResumable(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{
 			Resumable:  true,
@@ -89,6 +97,7 @@ func TestDelegateAttentionProjectionEligibleAncestorNotResumable(t *testing.T) {
 }
 
 func TestDelegateAttentionProjectionEligibleAncestorNil(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{
 			Resumable:  true,
@@ -102,6 +111,7 @@ func TestDelegateAttentionProjectionEligibleAncestorNil(t *testing.T) {
 }
 
 func TestDelegateAttentionProjectionEligibleAncestorEligible(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{
 			Resumable:  true,
@@ -116,6 +126,7 @@ func TestDelegateAttentionProjectionEligibleAncestorEligible(t *testing.T) {
 }
 
 func TestDelegateAttentionProjectionEligibleCycle(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{
 			Resumable:  true,
@@ -134,6 +145,7 @@ func TestDelegateAttentionProjectionEligibleCycle(t *testing.T) {
 }
 
 func TestDelegateAttentionProjectionEligibleEmptyParent(t *testing.T) {
+	t.Parallel()
 	state := delegatestore.State{
 		"dlg_1": &delegatestore.Aggregate{
 			Resumable:  true,
@@ -151,6 +163,7 @@ func TestDelegateAttentionProjectionEligibleEmptyParent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNoteDelegateAttentionLockedEmptyDelegateID(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	if c.noteDelegateAttentionLocked("", "att_1") {
 		t.Fatalf("expected false for empty delegate ID")
@@ -158,6 +171,7 @@ func TestNoteDelegateAttentionLockedEmptyDelegateID(t *testing.T) {
 }
 
 func TestNoteDelegateAttentionLockedEmptyAttentionID(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{"dlg_1": {}},
 	}
@@ -167,6 +181,7 @@ func TestNoteDelegateAttentionLockedEmptyAttentionID(t *testing.T) {
 }
 
 func TestNoteDelegateAttentionLockedNilAggregate(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{},
 	}
@@ -176,6 +191,7 @@ func TestNoteDelegateAttentionLockedNilAggregate(t *testing.T) {
 }
 
 func TestNoteDelegateAttentionLockedNew(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable:          map[string]*delegatestore.Aggregate{"dlg_1": {}},
 		attentionWakeIDs: map[string]map[string]struct{}{},
@@ -189,6 +205,7 @@ func TestNoteDelegateAttentionLockedNew(t *testing.T) {
 }
 
 func TestNoteDelegateAttentionLockedDuplicate(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{"dlg_1": {}},
 		attentionWakeIDs: map[string]map[string]struct{}{
@@ -205,6 +222,7 @@ func TestNoteDelegateAttentionLockedDuplicate(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestForgetDelegateAttentionLocked(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{
 			"dlg_1": {"att_1": {}, "att_2": {}},
@@ -220,6 +238,7 @@ func TestForgetDelegateAttentionLocked(t *testing.T) {
 }
 
 func TestForgetDelegateAttentionLockedLastID(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{
 			"dlg_1": {"att_1": {}},
@@ -232,6 +251,7 @@ func TestForgetDelegateAttentionLockedLastID(t *testing.T) {
 }
 
 func TestForgetDelegateAttentionLockedNonExistent(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{},
 	}
@@ -243,6 +263,7 @@ func TestForgetDelegateAttentionLockedNonExistent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReplaceDelegateAttentionLockedEmpty(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{
 			"dlg_1": {"att_1": {}},
@@ -255,6 +276,7 @@ func TestReplaceDelegateAttentionLockedEmpty(t *testing.T) {
 }
 
 func TestReplaceDelegateAttentionLockedWithIDs(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{},
 	}
@@ -265,6 +287,7 @@ func TestReplaceDelegateAttentionLockedWithIDs(t *testing.T) {
 }
 
 func TestReplaceDelegateAttentionLockedEmptyStringsFiltered(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{},
 	}
@@ -275,6 +298,7 @@ func TestReplaceDelegateAttentionLockedEmptyStringsFiltered(t *testing.T) {
 }
 
 func TestReplaceDelegateAttentionLockedAllEmptyStrings(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{},
 	}
@@ -285,6 +309,7 @@ func TestReplaceDelegateAttentionLockedAllEmptyStrings(t *testing.T) {
 }
 
 func TestReplaceDelegateAttentionLockedEmptyDelegateID(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{
 			"dlg_1": {"att_1": {}},
@@ -303,6 +328,7 @@ func TestReplaceDelegateAttentionLockedEmptyDelegateID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHasPendingDelegateAttentionNil(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	if c.hasPendingDelegateAttention() {
 		t.Fatalf("expected false for nil controller")
@@ -310,6 +336,7 @@ func TestHasPendingDelegateAttentionNil(t *testing.T) {
 }
 
 func TestHasPendingDelegateAttentionEmpty(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{},
 		durable:          map[string]*delegatestore.Aggregate{},
@@ -320,6 +347,7 @@ func TestHasPendingDelegateAttentionEmpty(t *testing.T) {
 }
 
 func TestHasPendingDelegateAttentionWithPending(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{
 			"dlg_1": {"att_1": {}},
@@ -334,6 +362,7 @@ func TestHasPendingDelegateAttentionWithPending(t *testing.T) {
 }
 
 func TestHasPendingDelegateAttentionNotResumable(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{
 			"dlg_1": {"att_1": {}},
@@ -348,6 +377,7 @@ func TestHasPendingDelegateAttentionNotResumable(t *testing.T) {
 }
 
 func TestHasPendingDelegateAttentionClosedPhase(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{
 			"dlg_1": {"att_1": {}},
@@ -362,6 +392,7 @@ func TestHasPendingDelegateAttentionClosedPhase(t *testing.T) {
 }
 
 func TestHasPendingDelegateAttentionEmptyIDs(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{
 			"dlg_1": {},
@@ -380,6 +411,7 @@ func TestHasPendingDelegateAttentionEmptyIDs(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestHasRunnableDelegateAttentionNil(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	if c.hasRunnableDelegateAttention() {
 		t.Fatalf("expected false for nil controller")
@@ -387,6 +419,7 @@ func TestHasRunnableDelegateAttentionNil(t *testing.T) {
 }
 
 func TestHasRunnableDelegateAttentionEmpty(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{},
 		durable:          map[string]*delegatestore.Aggregate{},
@@ -401,11 +434,13 @@ func TestHasRunnableDelegateAttentionEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRetryDelegateAttentionLaterNil(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	c.retryDelegateAttentionLater() // should be a no-op
 }
 
 func TestRetryDelegateAttentionLaterNilRoot(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	c.retryDelegateAttentionLater() // should be a no-op
 }
@@ -415,6 +450,7 @@ func TestRetryDelegateAttentionLaterNilRoot(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNextIdleDelegateAttentionNil(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	_, _, ok := c.nextIdleDelegateAttention()
 	if ok {
@@ -423,6 +459,7 @@ func TestNextIdleDelegateAttentionNil(t *testing.T) {
 }
 
 func TestNextIdleDelegateAttentionEmpty(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		attentionWakeIDs: map[string]map[string]struct{}{},
 		durable:          map[string]*delegatestore.Aggregate{},
@@ -438,6 +475,7 @@ func TestNextIdleDelegateAttentionEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPermanentlyFencedDelegateAttentionNil(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	if c.permanentlyFencedDelegateAttention() != nil {
 		t.Fatalf("expected nil for nil controller")
@@ -449,6 +487,7 @@ func TestPermanentlyFencedDelegateAttentionNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNoteDelegateAttentionNil(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	if c.noteDelegateAttention("dlg_1", "att_1") {
 		t.Fatalf("expected false for nil controller")
@@ -460,6 +499,7 @@ func TestNoteDelegateAttentionNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateFencedAttentionEscalationStruct(t *testing.T) {
+	t.Parallel()
 	e := delegateFencedAttentionEscalation{
 		delegateID:    "dlg_1",
 		transcriptRef: "local:abc",
@@ -478,6 +518,7 @@ func TestDelegateFencedAttentionEscalationStruct(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReconcileDelegateAttentionFromTranscriptsNil(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	err := c.reconcileDelegateAttentionFromTranscripts()
 	if err == nil || err.Error() != "delegate attention controller is nil" {
@@ -490,6 +531,7 @@ func TestReconcileDelegateAttentionFromTranscriptsNil(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTryOpenDelegateAttentionNilController(t *testing.T) {
+	t.Parallel()
 	var c *delegateTreeController
 	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
@@ -498,6 +540,7 @@ func TestTryOpenDelegateAttentionNilController(t *testing.T) {
 }
 
 func TestTryOpenDelegateAttentionEmptyDelegateID(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	_, _, _, _, err := c.tryOpenDelegateAttention("", "att_1")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
@@ -506,6 +549,7 @@ func TestTryOpenDelegateAttentionEmptyDelegateID(t *testing.T) {
 }
 
 func TestTryOpenDelegateAttentionEmptyAttentionID(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{}
 	_, _, _, _, err := c.tryOpenDelegateAttention("dlg_1", "")
 	if err == nil || !errors.Is(err, errDelegateNotControllable) {
@@ -514,6 +558,7 @@ func TestTryOpenDelegateAttentionEmptyAttentionID(t *testing.T) {
 }
 
 func TestTryOpenDelegateAttentionNilAggregate(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable:          map[string]*delegatestore.Aggregate{},
 		attentionWakeIDs: map[string]map[string]struct{}{},
@@ -525,6 +570,7 @@ func TestTryOpenDelegateAttentionNilAggregate(t *testing.T) {
 }
 
 func TestTryOpenDelegateAttentionAlreadyExists(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {NeedsAttention: true},
@@ -553,6 +599,7 @@ func TestTryOpenDelegateAttentionAlreadyExists(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateAttentionOpenEventLockedNilAggregate(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{},
 	}
@@ -563,6 +610,7 @@ func TestDelegateAttentionOpenEventLockedNilAggregate(t *testing.T) {
 }
 
 func TestDelegateAttentionOpenEventLockedNeedsAttention(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {NeedsAttention: true},
@@ -578,6 +626,7 @@ func TestDelegateAttentionOpenEventLockedNeedsAttention(t *testing.T) {
 }
 
 func TestDelegateAttentionOpenEventLockedNotResumable(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {NeedsAttention: false, Resumable: false},
@@ -593,6 +642,7 @@ func TestDelegateAttentionOpenEventLockedNotResumable(t *testing.T) {
 }
 
 func TestDelegateAttentionOpenEventLockedPendingStop(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {NeedsAttention: false, Resumable: true, PendingStopSeq: 5},
@@ -608,6 +658,7 @@ func TestDelegateAttentionOpenEventLockedPendingStop(t *testing.T) {
 }
 
 func TestDelegateAttentionOpenEventLockedPhaseClosed(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {NeedsAttention: false, Resumable: true, Phase: delegatestore.PhaseClosed},
@@ -623,6 +674,7 @@ func TestDelegateAttentionOpenEventLockedPhaseClosed(t *testing.T) {
 }
 
 func TestDelegateAttentionOpenEventLockedPhaseStopping(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {NeedsAttention: false, Resumable: true, Phase: delegatestore.PhaseStopping},
@@ -638,6 +690,7 @@ func TestDelegateAttentionOpenEventLockedPhaseStopping(t *testing.T) {
 }
 
 func TestDelegateAttentionOpenEventLockedEligible(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {
@@ -664,6 +717,7 @@ func TestDelegateAttentionOpenEventLockedEligible(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDelegateAttentionWakeEligibleLockedClosing(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		closing: true,
 		durable: map[string]*delegatestore.Aggregate{
@@ -676,6 +730,7 @@ func TestDelegateAttentionWakeEligibleLockedClosing(t *testing.T) {
 }
 
 func TestDelegateAttentionWakeEligibleLockedNilAggregate(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{},
 	}
@@ -685,6 +740,7 @@ func TestDelegateAttentionWakeEligibleLockedNilAggregate(t *testing.T) {
 }
 
 func TestDelegateAttentionWakeEligibleLockedNotIdle(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Phase: delegatestore.PhaseRunning, Resumable: true},
@@ -696,6 +752,7 @@ func TestDelegateAttentionWakeEligibleLockedNotIdle(t *testing.T) {
 }
 
 func TestDelegateAttentionWakeEligibleLockedNotResumable(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Phase: delegatestore.PhaseIdle, Resumable: false},
@@ -707,6 +764,7 @@ func TestDelegateAttentionWakeEligibleLockedNotResumable(t *testing.T) {
 }
 
 func TestDelegateAttentionWakeEligibleLockedPendingStop(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Phase: delegatestore.PhaseIdle, Resumable: true, PendingStopSeq: 3},
@@ -718,6 +776,7 @@ func TestDelegateAttentionWakeEligibleLockedPendingStop(t *testing.T) {
 }
 
 func TestDelegateAttentionWakeEligibleLockedWithBinding(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Phase: delegatestore.PhaseIdle, Resumable: true},
@@ -732,6 +791,7 @@ func TestDelegateAttentionWakeEligibleLockedWithBinding(t *testing.T) {
 }
 
 func TestDelegateAttentionWakeEligibleLockedWithRecovery(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Phase: delegatestore.PhaseIdle, Resumable: true},
@@ -746,6 +806,7 @@ func TestDelegateAttentionWakeEligibleLockedWithRecovery(t *testing.T) {
 }
 
 func TestDelegateAttentionWakeEligibleLockedEligible(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Phase: delegatestore.PhaseIdle, Resumable: true},
@@ -757,6 +818,7 @@ func TestDelegateAttentionWakeEligibleLockedEligible(t *testing.T) {
 }
 
 func TestDelegateAttentionWakeEligibleLockedWithAttentionReservation(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Phase: delegatestore.PhaseIdle, Resumable: true},
@@ -771,6 +833,7 @@ func TestDelegateAttentionWakeEligibleLockedWithAttentionReservation(t *testing.
 }
 
 func TestDelegateAttentionWakeEligibleLockedWithNonAttentionReservation(t *testing.T) {
+	t.Parallel()
 	c := &delegateTreeController{
 		durable: map[string]*delegatestore.Aggregate{
 			"dlg_1": {Phase: delegatestore.PhaseIdle, Resumable: true},

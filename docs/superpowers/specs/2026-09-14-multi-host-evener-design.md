@@ -35,10 +35,10 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   source (a controller that is attached to this hub as a host) is served **only
   from local state**, and any attempt to route or fan that request out to
   another remote source is refused with a typed error. Together with the
-  `["local"]` remap **the implementing PR adds** to strip a remote's own nested
-  hosts on the list path (component 05, §"Ref translation detail"; the shipped
-  `remapRemoteSourceIDs` returns `nil` for an empty incoming filter, so this
-  half is the implementing PR's requirement, not a present fact), this caps
+  `["local"]` remap that strips a remote's own nested hosts on the list path
+  (component 05, §"Ref translation detail"; shipped — `remapRemoteSourceIDs`
+  returns `["local"]` for an empty incoming filter,
+  `remote_hub_refs.go:56-67`), this caps
   fan-out at depth 1 and terminates any A→B→A chain regardless of what the
   config can see — the
   caller-identity guard that a later host-list RPC would make config-aware. The
@@ -64,6 +64,32 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   follow-up. The
   local-only rule is enforced at the typed fan-out seam (component 05, §"Ref
   translation detail"), not by an advisory check in a handler.
+- **Host-count cap: withdrawn (Jesse, 2026-09-26).** The 64-source cap
+  (`ErrTooManyHosts`) is **not** implemented — not at config load and not in the
+  registry add paths. Bounded fan-out is a risk accepted for v1: the cap was the
+  mitigation for an over-limit `[[hosts]]` config (component 06 caps the
+  manifest's `sources` at 64 including `local`, so more than 63 hosts can fail
+  navigation for the whole hub), and the operator's own config is now the only
+  bound. Do not implement the cap without a new decision. (Component 03 §Scope
+  carries the same record.)
+- **Restart identity pin: verify-then-signal accepted; the ad hoc restart path
+  is kept (Jesse, 2026-09-26).** The
+  guarded verify-then-signal posture stands, supervisor-preferred (restart by
+  systemd unit or launchd label where one is identified and safely restartable)
+  with the guarded ad hoc path for a supervisorless hub **or where the
+  identified launchd label fails the bare-safe gate** (the label is never
+  interpolated into the remote shell): a target whose identity cannot be
+  verified is refused `ErrRestart` rather than signaled. A fall-through that
+  races launchd's respawn cannot double-serve — the address bind and `hub.lock`
+  are single-winner and the losing hub exits (`hostlock`). The residual check-then-act window
+  is acknowledged, **not** closed, and no host-side restart-identity pin helper
+  is planned — a `pidfd` is unreachable through the component's only host
+  interface, `ssh <dest> <command>` (the crash-fencing `evener-fence` lease
+  wrapper is a fencing helper, not a restart-identity pin). Shipped and restored
+  by #2450 reversing #2410: `restartHub` runs the guarded ad hoc path for the
+  supervisorless branch (`restartBare` → `waitHealthy` → `clearPendingRestart`);
+  the at-signal re-read is not implemented and the unverified-target refusal
+  stands. (The [04] tracked-follow-up entry carries the same record.)
 - **Remote side**: a full `evener hub` per host.
 - **Transport**: AppWire JSON-RPC over an SSH channel on stdin/stdout. No HTTP
   port exposed beyond the host's loopback.
@@ -74,6 +100,10 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
 - **Deployment**: push a matching binary over SSH and/or run the installer. The
   controller is the version authority: on attach it auto-matches the host to its
   own build, restarting the host hub; running sessions keep their old binary.
+  Auto-match converges only where a deploy path is configured: a host that
+  answered the controller's `launch-check` speaks its protocol, so a
+  protocol-compatible host on another build is attached with the difference
+  reported rather than refused (component 04, §5).
 - **Configuration**: host-owned storage. The Hub UI administers remote config by
   proxying the host's own RPCs, plus an explicit "copy credentials to this host"
   action. The controller stores only connection entries.
@@ -110,7 +140,11 @@ These are Jesse's calls, recorded so the specs do not relitigate them.
   **retained** for every other harness value and is consulted only when `Source`
   is empty; retiring it outright would make a non-empty harness like `"claude"`
   with an empty `Source` fall through to the local spawner in silence.
-  Harness-as-host targeting is therefore refused, not endorsed.
+  Harness-as-host targeting is therefore refused, not endorsed: `hubThreadStart`
+  refuses a harness naming a registered non-local source (`refuseHarnessNamingHost`,
+  `app_threadlifecycle.go:378`) while keeping the fallback for every other
+  harness value, and the recipient hub refuses a remote-originated spawn that
+  would resolve to another source (`guardRemoteSpawnSource`).
 - Daemon spawn, run-dir roster discovery, force-stop safety
   (pidfd/`proc_info`, UID, argv, log ownership), and per-host indexing all stay
   as they are and stay host-local.
@@ -177,6 +211,11 @@ Ordered by dependency; each is independently reviewable and landable.
   and fan-out to a second remote source is refused, so an A→B→A chain cannot
   recurse even though the config still cannot detect it (component 05,
   §Open questions item 3).
+- **Unbounded host count (accepted for v1)**: the 64-source cap was withdrawn by
+  decision (§2 "Host-count cap: withdrawn"), so nothing rejects a `[[hosts]]`
+  list larger than the navigation manifest's 64-source limit. Such a config
+  fails navigation for the whole hub until it shrinks, and fan-out cost scales
+  with the operator's own host list.
 - **Ref translation**: `host:<thread>` ↔ remote `local:<thread>`, including
   sub-thread aliases.
 - **Version-match restart** drops live browser/controller connections; decide
@@ -212,29 +251,36 @@ Multi-master or election; automatic host discovery; remote *tool execution*
 
 This spec series is the design record; these are the code deltas its reviews
 surfaced and that still need implementing. Each line names the component and the
-exact scope. None is a present fact.
+exact scope. Entries are marked `landed` as they ship; an unmarked entry is the
+original requirement as written, so re-check it against `main` before
+implementing — several have landed without their entry being re-marked.
 
 - **[01] stream transport** — `appwire/stream_transport.go`: bound `Close`'s
   admitted-write drain with a `streamCloseDrainTimeout` constant, and make the
   accepted-stream contract explicit (`Close` must interrupt a blocked read **and**
   write); a non-conforming stream must not hang shutdown.
-- **[02/05] hub edge bridge marker** — `cmd/evener-hub/attach.go` (send
-  `X-Evener-Bridge: 1`), `cmd/evener-hub/web.go` +
-  `cmd/evener-hub/internal/hubedge/auth_token.go` (read it beside the bearer
-  token, classify the connection role, stamp `origin` into request context), and
-  bind the role to a **server-verifiable** signal (a distinct bridge credential,
-  or the `ssh`-spawned transport's channel identity) so the marker is not merely
+- **[02/05] hub edge bridge marker** — landed except for the last clause:
+  `cmd/evener-hub/attach.go` sends `X-Evener-Bridge: 1` and
+  `cmd/evener-hub/host_routing_origin.go` + `cmd/evener-hub/web.go` read it
+  beside the bearer token, classify the connection role, and stamp `origin` into
+  the request context. What remains is to bind the role to a
+  **server-verifiable** signal (a distinct bridge credential, or the
+  `ssh`-spawned transport's channel identity) so the marker is not merely
   cooperative.
-- **[03] host registry** — enforce the 64-source cap (`ErrTooManyHosts`) in
-  `New`/`Add`/`AddWithUpstreams`, not only in `LoadConfig`.
+- **[03] host registry — withdrawn (Jesse, 2026-09-26).** This entry required
+  the 64-source cap (`ErrTooManyHosts`) to be enforced in
+  `New`/`Add`/`AddWithUpstreams`, not only in `LoadConfig`. That requirement is
+  **withdrawn, not deferred**: do not implement the cap and do not add the
+  sentinel; bounded fan-out is a risk accepted for v1 (§2 "Host-count cap:
+  withdrawn"; component 03 §Scope).
 - **[03] host config** — `validateHostConfigs` (and the pre-probe path) must
   reject a non-loopback `addr` before any health check or restart; an explicit
   `--config` that is missing/unparseable exits nonzero instead of falling back
   to `DefaultConfig()`.
-- **[03] wiring** — `hubcore.WebConfig` gains `RemoteHostClientIfAttached`,
+- **[03] wiring (landed)** — `hubcore.WebConfig` gains `RemoteHostClientIfAttached`,
   `RemoteHostFacts`, and `RemoteHostHandshake`, populated from the `sshconn`
   manager and installed on each `RemoteHubSource`.
-- **[04] attached-only accessors** — `sshconn.Manager` gains
+- **[04] attached-only accessors (landed, `e166493920`)** — `sshconn.Manager` gains
   `ClientIfAttached`, `HandshakeIfAttached`, and `PreflightIfAttached`: read the
   installed channel under the manager-wide mutex, never dial.
 - **[04] run-target resolution** — resolve one canonical **absolute** `run_path`
@@ -262,7 +308,7 @@ exact scope. None is a present fact.
   `Delegate.ChildRef`/`.Child` (recursive) / `.Turns[].OwnerRef`/`.TranscriptRef`),
   plus `Thread.Evener.Diagnostics` and the `evener/job/*` /
   `evener/delegate/updated` transcript refs.
-- **[05] loop guard** — `app_rpc.go` records the connection role and threads
+- **[05] loop guard (landed)** — `app_rpc.go` records the connection role and threads
   `origin` into the request context; every fan-out path
   (`hubThreadListWithSourceTimeout`, `app_threadlist.go`) refuses a
   remote-originated request to any source other than `local` (depth 1).
@@ -277,7 +323,8 @@ exact scope. None is a present fact.
   `ProjectID`/`ProjectPath`; `identifier.Project` and the navigation projection
   carry the owning source; `refreshRemoteThreadSnapshot`/`remoteThreadFetch`
   resolve through the attached-only lookup.
-- **[06] archive/favorite/delete** — `ArchiveParams`/`FavoriteSetParams`/
+- **[06] archive/favorite/delete (landed, except the frontend menu-hiding
+  clause: the shipped guard refuses the action instead)** — `ArchiveParams`/`FavoriteSetParams`/
   `ProjectDeleteParams` gain `Source`; `app_archive.go`/`app_favorite.go` **accept
   and key a non-local source** by `(source, id)` (they route archive/favorite by
   source and must **not** reject it); only project deletion
@@ -290,10 +337,11 @@ exact scope. None is a present fact.
   handler (`registerMiscHandlers`) calling `sshManager.Ensure` with typed-error
   pass-through; give every offline/never-attached host an enabled Connect/Attach
   affordance.
-- **[06] harness targeting** — `hubThreadStart` (`app_threadlifecycle.go`)
-  refuses `InvalidParams` for a harness value naming a configured/registered
-  non-local source, while retaining the `launchSourceID` fallback for all other
-  harness values and consulting it only when `Source` is empty.
+- **[06] harness targeting (landed, `1e4018fa5d`)** — `hubThreadStart`
+  (`app_threadlifecycle.go`'s `refuseHarnessNamingHost`) refuses `InvalidParams`
+  for a harness value naming a configured/registered non-local source, while
+  retaining the `launchSourceID` fallback for all other harness values and
+  consulting it only when `Source` is empty.
 - **[06b] frontend discovery routing** — the spawn form's host-dependent
   discovery calls route through `evener/host/request` with the selected host.
 - **[07a] proxy allow-list** — extend the exact `evener/host/request` method set
@@ -399,35 +447,45 @@ exact scope. None is a present fact.
   `--addr` (e.g. in `Description=`/`Environment=`) or merely contains
   `evener`/`hub` is not a match. Several matches refuse with `ErrRestart` (no
   signal, no relaunch); when none matches it is the supervisorless branch, whose
-  only launch is the cold-bootstrap **start** (a supervisorless *restart*
-  refuses the same way — component 04, §"Stop/restart mechanics" check 5);
+  restart runs the guarded verify-then-signal ad hoc path (restored 2026-09-26,
+  §2 Decisions), and the cold-bootstrap **start** is the only no-supervisor
+  launch that does not first signal an identified listener (component 04,
+  §"Stop/restart mechanics" check 5);
   **a candidate hub definition whose effective address cannot be
   resolved refuses with `ErrRestart` and starts nothing** rather than risking a
   duplicate, unless trusted explicit supervisor metadata recorded in the host
   entry supplies the match. An inferred substring match may not.
-- **[04] guarded compare-and-kill / atomic-identity pin (round 16; corrected
-  round 17)** — `sshconn/version.go` restart must re-read the pid, recovered
-  argv (with `--config`/`--addr` agreeing with the entry's configured
-  `config_path`/`addr` after normalization), effective user, and listening
-  socket in the **same** remote command that issues the signal, refusing
-  `ErrRestart` (no signal, no relaunch) on any mismatch or on a field it cannot
-  re-read; the shipped `restartBare` (`kill <pid>`) is the unguarded form and is
-  not acceptable. Because the guarded form is still check-then-act — and
-  re-reading the start time at signal time is no better, since the PID can still
-  be reused between that read and the signal — the window is closed only by
-  signaling through an **atomic process handle** (a `pidfd` for the identified
-  process) or a host-side helper holding an equivalent identity pin across the
-  signal; when neither is available the restart refuses `ErrRestart` and emits
-  no signal. (Corrected round 22: **no** atomic handle is reachable today on any
-  platform, not only Darwin — a `pidfd` must be opened and signaled by a process
-  on the host, this component's only host interface is `ssh <dest> <command>`,
-  and no host-side helper is specified, installed, or invoked. Supervisorless
-  restart therefore refuses `ErrRestart` with no signal on Linux exactly as on
-  Darwin; see the round-19/22 item below.) Mirrors component-04 acceptance
+- **[04] guarded compare-and-kill / restart identity pin (round 16; corrected
+  round 17; decided 2026-09-26)** — `sshconn/version.go` restart re-reads the
+  pid, recovered argv (with `--config`/`--addr` agreeing with the entry's
+  configured `config_path`/`addr` after normalization), effective user, and
+  listening socket before signaling, refusing `ErrRestart` (no signal, no
+  relaunch) on any mismatch or on a field it cannot re-read. The restart prefers the supervisor path wherever a
+  supervisor is identified and safely restartable (`systemctl [--user] restart`;
+  launchd `kickstart -k`, which pins by label rather than PID), and takes the ad
+  hoc verify-then-signal path where no supervisor is identified, or where the
+  identified launchd label fails the bare-safe gate. **Decided
+  by Jesse, 2026-09-26:** verify-then-signal is the accepted answer, and the
+  atomic `pidfd` handle the round-17 correction demanded is **withdrawn** as a
+  requirement — no atomic form is reachable through this component's only host
+  interface (`ssh <dest> <command>`), and no host-side restart-identity pin
+  helper is specified, installed, or invoked (the crash-fencing `evener-fence`
+  lease wrapper is a fencing helper, not a restart-identity pin). The residual check-then-act window in the ad hoc path
+  remains: the re-read narrows it and does not close it. The refusal rule
+  stands, never a fallback to a bare unguarded `kill`: an identity field that
+  cannot be re-read refuses `ErrRestart` with no signal, while a supervisor label
+  outside the bare-safe set is never interpolated into the remote shell and
+  falls through to the guarded ad hoc restart (design §2). Shipped and restored
+  (2026-09-26, #2450 reversing #2410): `restartHub` runs the guarded ad hoc path
+  for the supervisorless branch (`restartBare` → `waitHealthy` →
+  `clearPendingRestart`), which validates at identification time; the at-signal
+  re-read is not implemented, and the residual window is the accepted one
+  (implementation status, component 04 check 5). Mirrors component-04 acceptance
   criterion 20.
-- **[05/06] remote-originated `thread/start` resolution (round 17)** — at the
-  **receiving** hub, `hubThreadStart` (`app_threadlifecycle.go`) and the
-  request-context `origin` plumbing (`cmd/evener-hub/app_rpc.go`) must refuse
+- **[05/06] remote-originated `thread/start` resolution (round 17; landed,
+  `1e4018fa5d`)** — at the **receiving** hub, `hubThreadStart`
+  (`app_threadlifecycle.go`) and the request-context `origin` plumbing
+  (`cmd/evener-hub/app_rpc.go`) must refuse
   `InvalidParams` for a remote-originated (`origin` non-empty) `thread/start`
   whose effective source — a set `ThreadStartParams.Source`, or the legacy
   `launchSourceID(params.Harness)` fallback — is any non-local source, resolving
@@ -484,25 +542,23 @@ exact scope. None is a present fact.
   wildcard, superseding component 04's restart-identity normalization (check 4)
   and acceptance criterion 13. Scope: `cmd/evener-hub/internal/hostreg`
   validation plus `sshconn/version.go` and `sshconn/preflight.go`.
-- **[04] supervised-only restart / atomic-signal helper (round 19; widened round
-  22)** — the restart's atomic-identity pin (round 17) is a `pidfd`, which must
-  be opened and signaled by a process **on the host**. This component's only
-  host interface is `ssh <dest> <command>` shell execution, and the series
-  specifies, installs, and invokes no host-side helper that could hold the pin,
-  so the guarantee is **not implementable through the described interfaces on
-  any platform** — a supervisorless hub, Linux included, has no way to pin the
-  identified process across the signal and must refuse `ErrRestart` with no
-  signal (never the bare unguarded `kill`, and never a promise of a pidfd path
-  it cannot execute). A restart-capable deployment must therefore be
-  **supervised** (systemd unit `systemctl [--user] restart`; launchd
-  `kickstart -k` pins by label, not PID), or wait for a host-side atomic-signal
-  helper that is specified, provisioned by the installer, and invoked over the
-  channel. The **start** of a stopped hub (last-known-state bootstrap, no PID to
-  signal) is unaffected and keeps its detached launch. Scope:
-  `sshconn/version.go` (`restartBare` / the restart path), the
-  installer/`deploy.go` provisioning, and component-04 §"Stop/restart
-  mechanics" + acceptance criterion 20. Mirrors component-04 acceptance
-  criterion 20.
+- **[04] supervisorless restart via verify-then-signal (round 19; widened round
+  22; reversed and restored 2026-09-26)** — round 19 read the round-17 atomic-identity pin
+  as unimplementable (a `pidfd` must be opened and signaled by a process on the
+  host, and this component's only host interface is `ssh <dest> <command>`),
+  concluding that a supervisorless hub must refuse `ErrRestart` with no signal
+  and that a restart-capable deployment must be supervised. **That conclusion is
+  reversed by the 2026-09-26 decision above and the capability is restored:**
+  `restartHub` (`sshconn/version.go`) now runs the guarded ad hoc path for the
+  supervisorless branch (`restartBare` → `waitHealthy` → `clearPendingRestart`),
+  shipped by #2450 reversing #2410; the at-signal re-read (component 04 check 5)
+  remains pending and the unverified-target refusal stands. Supervisor
+  preference and the accepted residual
+  window stand as stated in the [04] item above. The **start** of a stopped hub
+  (last-known-state bootstrap, no PID to signal) is unaffected and
+  keeps its detached launch. Scope: `sshconn/version.go` (`restartBare` / the
+  restart path) and component-04 §"Stop/restart mechanics" + acceptance
+  criterion 20. Mirrors component-04 acceptance criterion 20.
 - **[04] dedicated executable probe for a missing `run_path` (round 19)** — the
   verified missing-executable result (round 18) must be recognized from a
   dedicated probe with a stable exit-code sentinel (`test -x <run_path>`: `0`
@@ -533,12 +589,14 @@ exact scope. None is a present fact.
 - **[04] fail-closed supervisor ambiguity (round 21)** — the cold-bootstrap
   unit-definition match must preserve the shipped `pickSupervisor` refusal:
   **more than one match is `ErrRestart` with no kill and no relaunch**
-  ("an ambiguous listing is fatal, not a fallback", `sshconn/version.go`,
-  `multi-host-pr04b-deploy-restart`, pending merge), never a fall-through to
-  the ad hoc launch, and the same refusal applies when an identified launchd
-  label fails the bare-safe gate instead of the old ad hoc fallback. The ad hoc
-  launch is reached only when **no** candidate definition matches, and only on
-  the cold-bootstrap **start** — a supervisorless *restart* refuses. Scope:
+  ("an ambiguous listing is fatal, not a fallback", `sshconn/version.go`), never
+  a fall-through to
+  the ad hoc launch, while an identified launchd label that fails the bare-safe
+  gate is never interpolated into the remote shell and falls through to the
+  guarded ad hoc restart (design §2, restored 2026-09-26). When
+  **no** candidate definition matches, a supervisorless *restart* runs the
+  guarded verify-then-signal ad hoc path (design §2), and the ad hoc *launch*
+  is the cold-bootstrap **start**. Scope:
   `sshconn/version.go` (`pickSupervisor`, `detectSupervisor`,
   `detectSupervisorsFrom`, the restart path's label gate), `sshconn/version_test.go`.
   Mirrors component-04 §"Stop/restart mechanics", its supervisor test case, and
@@ -564,8 +622,8 @@ exact scope. None is a present fact.
   (`translateOut`, `translateNotification`); the `EnrichThreadFileBackedImages`
   gate in `cmd/evener-hub/app_rpc.go`. Mirrors component-05 §"Image URLs are
   host-scoped and must be rewritten through the controller".
-- **[05] remote item-candidate paging (round 21; implemented on the in-flight
-  05a branch — keep it in scope)** — the spec now *requires*
+- **[05] remote item-candidate paging (round 21; landed with 05a,
+  `4f64b223ba`)** — the spec now *requires*
   `ItemReadCandidateSource` (`ItemCandidatesFromRead`) and
   `ItemCandidateSource` (`ReadItemCandidates`/`ListItemCandidates`) on
   `RemoteHubSource` (controller-minted cursor identity + `RebaseCursor`
@@ -619,15 +677,16 @@ exact scope. None is a present fact.
   seam). Mirrors component-05 §"Every other remote call is non-dialing, not just
   the snapshot and the non-explicit list" and component-06 acceptance
   criterion 13.
-- **[04] run target must be `evener` (round 22)** — `installableEvenerBasename`
-  (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`) accepts
-  `evener-dev`, which is the development/test tooling binary
-  (`cmd/evener-dev/bin`) with no `hub` subcommand and no `launch-check`; a host
-  configured with an `evener-dev` run target installs and then fails preflight,
-  health, and restart. Narrow the acceptance to `evener` and refuse an
-  `evener-dev` (or otherwise unshipped) run-target basename **terminally** —
-  the distinct `errRunTargetUnservable` sentinel `isTerminal` recognises, not
-  the retryable `ErrDeploy` — before any install, push, or write. Terminal is
+- **[04] run target must be `evener` (round 22; landed, `84eb525e70`)** —
+  `installableEvenerBasename` (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`)
+  accepted `evener-dev`, the development/test tooling binary
+  (`cmd/evener-dev/bin`) with no `hub` subcommand and no `launch-check`, so a
+  host configured with an `evener-dev` run target installed and then failed
+  preflight, health, and restart. The required narrowing is in: the acceptance
+  is `evener`-only, and an `evener-dev` (or otherwise unshipped) run-target
+  basename is refused **terminally** — the distinct `errRunTargetUnservable`
+  sentinel `isTerminal` recognises, not the retryable `ErrDeploy` — before any
+  install, push, or write. Terminal is
   the right shape because the refusal names an operator configuration defect a
   host cannot recover from: retrying the same misconfigured path can never
   install a hub-servable binary, so a supervisor would re-refuse it forever and

@@ -13,6 +13,24 @@ func host(name string) Host {
 	return Host{Name: name, SSH: name + ".local"}
 }
 
+// TestValidateEntryRefusesRelativeKeyPath pins the absolute-path rule: the
+// value goes to ssh verbatim, so a relative or ~-prefixed path would resolve
+// against whatever working directory the hub launched with.
+func TestValidateEntryRefusesRelativeKeyPath(t *testing.T) {
+	if err := ValidateEntry(Host{Name: "m4", SSH: "m4.local", KeyPath: "keys/id_m4"}); !errors.Is(err, ErrInvalidKeyPath) {
+		t.Fatalf("ValidateEntry(relative key_path) = %v, want ErrInvalidKeyPath", err)
+	}
+	if err := ValidateEntry(Host{Name: "m4", SSH: "m4.local", KeyPath: "~/keys/id_m4"}); !errors.Is(err, ErrInvalidKeyPath) {
+		t.Fatalf("ValidateEntry(~ key_path) = %v, want ErrInvalidKeyPath", err)
+	}
+	if err := ValidateEntry(Host{Name: "m4", SSH: "m4.local", KeyPath: "/keys/id_m4"}); err != nil {
+		t.Fatalf("ValidateEntry(absolute key_path) = %v, want nil", err)
+	}
+	if err := ValidateEntry(Host{Name: "m4", SSH: "m4.local"}); err != nil {
+		t.Fatalf("ValidateEntry(no key_path) = %v, want nil", err)
+	}
+}
+
 func TestNewRejectsDuplicate(t *testing.T) {
 	_, err := New([]Host{host("m4"), host("m4")})
 	if !errors.Is(err, ErrDuplicateHost) {

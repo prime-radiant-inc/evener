@@ -13,7 +13,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WireError } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import type { MobileConversation } from "./projectedRows";
 import type { QueueConversationService } from "../../mobile/src/services/conversation";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 

@@ -24,6 +24,7 @@ import (
 // cleanup and a test that passed fails with "unlinkat …: directory not empty".
 // Nothing can join the sidecar, so such a test must not fork at all (#1527).
 func TestSessionTestsWithAPerTestConfigHomeSkipTheLaunchSnapshot(t *testing.T) {
+	t.Parallel()
 	findings, err := configHomeForkAuditFindings(".")
 	if err != nil {
 		t.Fatal(err)

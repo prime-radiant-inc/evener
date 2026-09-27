@@ -19,6 +19,7 @@ import (
 )
 
 func TestSession_OpenAIResponsesContinuationOffUsesFullHistory(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	decision := llm.DecideResponsesContinuation(

@@ -2989,7 +2989,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         hydrationEpoch,
       );
       const hydration = hydrateAndSubscribe(hydrationClient, ref, Date.now(), pending)
-        .then((result) => publishAndReconcileThreadHydration(ref, pending, result))
+        .then(async (result) => {
+          const model = await publishAndReconcileThreadHydration(ref, pending, result);
+          // A message queued while this read was in flight found the ref not
+          // yet dispatchable, so its enqueue discovery left it waiting.
+          // Reconciliation has now opened the gate; deliver it here rather
+          // than on the outbox's next periodic scan.
+          const runtime = getMutationRuntime();
+          if (model && runtime) scheduleMutationDispatch(runtime, [ref]);
+          return model;
+        })
         .finally(() => {
           if (pendingThreadHydrations.get(ref) === pending) pendingThreadHydrations.delete(ref);
         });

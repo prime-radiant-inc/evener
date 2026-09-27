@@ -16,6 +16,7 @@ import (
 // addressing surface stays keyed to the delegate id.
 
 func TestDelegateName_LabelCarriesToCreateResultAndListings(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 
 	createOut, err := stableDelegateCreateTool(context.Background(), root, map[string]any{
@@ -84,6 +85,7 @@ func TestDelegateName_LabelCarriesToCreateResultAndListings(t *testing.T) {
 }
 
 func TestDelegateName_AbsentLabelRendersAsAbsent(t *testing.T) {
+	t.Parallel()
 	root, _, _ := newDelegateResourceBootstrapSession(t)
 
 	createOut, err := stableDelegateCreateTool(context.Background(), root, map[string]any{

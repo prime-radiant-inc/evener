@@ -26,6 +26,24 @@ const unreadable: NativePreferencesSnapshot["transcriptMobile"] = {
 	draftUnreadable: true,
 };
 
+const readableDraft: NonNullable<
+	NativePreferencesSnapshot["transcriptMobile"]["draft"]
+> = {
+	revision: 4,
+	config: {
+		version: 1,
+		content: { kind: "preset", level: "chat" },
+		advanced: {
+			roundTimings: false,
+			tokenCounts: false,
+			estimatedCost: false,
+			systemEvents: false,
+			promptEvents: false,
+			hookExits: "none",
+		},
+	},
+};
+
 function editor(
 	state: NativePreferencesSnapshot["transcriptMobile"],
 	discard: () => void,
@@ -58,9 +76,29 @@ it("offers a discard action for an unreadable transcript draft record", async ()
 	expect(discard).toHaveBeenCalledTimes(1);
 });
 
-it("does not offer the unreadable-record discard when the record is readable or absent", () => {
+it("does not offer the unreadable-record discard when the record is absent", () => {
 	const tree = editor(
 		{ ...unreadable, draftUnreadable: false, storageUnavailable: false, error: null },
+		() => {},
+	);
+	expect(
+		tree.root
+			.findAllByProps({ accessibilityRole: "button" })
+			.some(
+				(node) => node.props.accessibilityLabel === "Discard unreadable draft",
+			),
+	).toBe(false);
+});
+
+it("does not offer the unreadable-record discard when a readable draft is present", () => {
+	const tree = editor(
+		{
+			...unreadable,
+			draft: readableDraft,
+			draftUnreadable: false,
+			storageUnavailable: false,
+			error: null,
+		},
 		() => {},
 	);
 	expect(

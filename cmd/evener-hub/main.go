@@ -97,10 +97,14 @@ func runNavigationPublisher(ctx context.Context, navigation *NavigationService, 
 }
 
 type hubOptions struct {
-	configPath   string
-	addr         string
-	evenerBinary string
-	appwireTrace string
+	configPath string
+	// configExplicit records whether the operator named the path with --config.
+	// A named path must load; the implicit default path (DefaultConfigPath) may
+	// be absent and yield DefaultConfig().
+	configExplicit bool
+	addr           string
+	evenerBinary   string
+	appwireTrace   string
 	// deployBinary and buildSource describe how a missed host gets the
 	// controller's build pushed to it. They are empty for a local-only
 	// controller, which needs no deploy path at all.
@@ -109,7 +113,10 @@ type hubOptions struct {
 }
 
 type mainDeps struct {
-	loadConfig      func(string) (Config, error)
+	// loadConfig loads the path the flag layer resolved; the bool is true when
+	// the operator named it with --config, which makes a missing file a startup
+	// refusal instead of a silent DefaultConfig() fallback.
+	loadConfig      func(string, bool) (Config, error)
 	ensureDirs      func() error
 	acquireLock     func(string) (func(), error)
 	newToken        func() (string, error)
@@ -136,7 +143,7 @@ type mainDeps struct {
 
 func defaultMainDeps() mainDeps {
 	return mainDeps{
-		loadConfig:        LoadConfig,
+		loadConfig:        loadConfigForCommandLine,
 		ensureDirs:        cmdutil.EnsureUserConfigDirs,
 		acquireLock:       hostlock.AcquireLock,
 		newToken:          newHubToken,
@@ -193,7 +200,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return err
 	}
 
-	cfg, err := deps.loadConfig(opts.configPath)
+	cfg, err := deps.loadConfig(opts.configPath, opts.configExplicit)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] config: %v\n", err)
 		return err
@@ -545,7 +552,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteHosts:               hostEntries,
 		// The one live registry the SSH manager dials through, shared with the
 		// attach handler and the host-management surface, and the selected
-		// hub.toml path the UI's host sidecar persists beside.
+		// hub.toml path the host surface rewrites in place (machine-managed).
 		RemoteHostRegistry:   hostRegistry,
 		RemoteHostSSHManager: sshManager,
 		RemoteHostConfigPath: opts.configPath,
@@ -767,6 +774,7 @@ func hostRegistryEntries(cfg Config) []hostreg.Host {
 			ConfigPath: h.ConfigPath,
 			Addr:       h.Addr,
 			Roots:      h.Roots,
+			KeyPath:    h.KeyPath,
 		})
 	}
 	return entries
@@ -823,6 +831,16 @@ func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	err := fs.Parse(args)
 	if err == nil && fs.NArg() != 0 {
 		err = fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if err == nil {
+		// Only a path the operator named is a promise to load a file; the
+		// default path is allowed to be absent. fs.Visit reports the flags that
+		// were actually set, so the two are distinguishable after parsing.
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "config" {
+				opts.configExplicit = true
+			}
+		})
 	}
 	// Validate the deploy flags where they are read: a bad path fails startup
 	// naming the flag rather than surfacing at the first attach as a deploy

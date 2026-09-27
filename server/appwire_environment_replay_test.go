@@ -98,7 +98,7 @@ func TestEnvironmentChangesPreserveLiveTranscriptItemIdentity(t *testing.T) {
 	}
 	window, _, err := apptranscript.NewTurnCache().LatestItemWindowFromFile(sess.TranscriptPath(), appTranscriptMaxLineBytes,
 		apptranscript.ItemWindowOptions{ThreadRef: "local:" + sess.ID(), Limit: 40},
-		func(turn schema.Turn, turnID string, turnIndex int, names map[string]string) []appwire.ThreadItem {
+		func(turn schema.Turn, turnID string, turnIndex int, names *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
 			return apptranscript.ProjectTurn(turnID, turnIndex, turn, names, nil, apptranscript.ToolResultOutputImages)
 		})
 	if err != nil {

@@ -67,6 +67,11 @@ type LocalDaemonEntry struct {
 	// unprobed fallback folds it out of Clear, matching the daemon's own
 	// clear gate (clearBlockedReasonLocked's unresolved-approval-work branch).
 	PendingEscalation bool
+	// PendingEscalations mirrors hubcore.LiveEntry.PendingEscalations: the
+	// blocked escalation cards in raise order. threadFromEntry carries them into
+	// appwire.EvenerThread.PendingEscalations, so a controller hub listing this
+	// hub's sessions sees the approval that thread/read already shows.
+	PendingEscalations []appwire.SandboxEscalationRequested
 	// RunningJobs carries the roster's non-terminal, non-agent work into the
 	// typed thread diagnostics consumed by hub and TUI status views.
 	RunningJobs []appwire.EvenerJobInfo
@@ -1136,10 +1141,11 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		Path:          filepath.Base(entry.WorkingDir),
 		Source:        s.sourceID,
 		Evener: appwire.EvenerThread{
-			Ref:          ref,
-			InstanceID:   instanceID,
-			Capabilities: listRowCapabilities(item, status),
-			AskPending:   item.PendingAsk,
+			Ref:                ref,
+			InstanceID:         instanceID,
+			Capabilities:       listRowCapabilities(item, status),
+			AskPending:         item.PendingAsk,
+			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}
