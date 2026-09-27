@@ -960,8 +960,8 @@ func fuzzScenarioBuildTree_RollupCapsNestedSubagentToActive(t *testing.T) {
 	}}
 
 	project := projectByName(t, BuildTreeAt(metas, live, nil, now), "evener")
-	if project.RollupState == "errored" {
-		t.Errorf("rollup state = %q, want the errored grandchild to NOT turn the project red", project.RollupState)
+	if project.RollupState != "idle" {
+		t.Errorf("rollup state = %q, want idle (the errored grandchild must NOT turn the project red)", project.RollupState)
 	}
 	if project.RollupAttn != 0 {
 		t.Errorf("rollup attn = %d, want 0 (a nested delegate's errored state must not raise it)", project.RollupAttn)
@@ -1047,7 +1047,7 @@ func fuzzScenarioBuildTree_RollupIgnoresChildAwaiting(t *testing.T) {
 	if project.RollupAttn != 0 {
 		t.Errorf("rollup attn = %d, want 0 (a child's awaiting state must not raise it)", project.RollupAttn)
 	}
-	if project.RollupState == "awaiting" {
+	if project.RollupState != "idle" {
 		t.Errorf("rollup state = %q, want the coordinator's own idle state, not the child's awaiting", project.RollupState)
 	}
 }
