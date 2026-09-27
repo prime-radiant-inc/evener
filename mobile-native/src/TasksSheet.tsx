@@ -21,6 +21,7 @@ import {
   groupTasks,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { isReady } from "./connectionDisplay";
 import { MarkdownResponse } from "./MarkdownResponse";
 import { useRetainedScreenConnection } from "./retainedScreen";
 import type { Routes } from "./screens";
@@ -62,7 +63,7 @@ export function TasksSheet({
           sessionRef={ref}
           threadId={threadId}
           hasTasks={hasTasks}
-          connected={state === "ready" && activeProfile?.id === hubId}
+          connected={isReady(state)}
         />
       ) : (
         <ScrollView />
