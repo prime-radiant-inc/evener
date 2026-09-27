@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,6 +94,66 @@ func TestLocalJobRetainedReadsRefusePostLocateLeafSwap(t *testing.T) {
 	}
 }
 
+func TestLocalJobRetainedReadsRefusePostLocateIntermediateSymlinkSwap(t *testing.T) {
+	for _, reader := range []string{"metadata", "window"} {
+		t.Run(reader, func(t *testing.T) {
+			bucket := localJobProjectBucket(t, t.TempDir(), localJobCurrentProject)
+			owner := identifier.MustNewSessionID()
+			jobID := identifier.MustNewJobID(owner)
+			seedLocalJob(t, bucket, owner, jobID, "/dev/null", "ORIGINAL\n", false)
+
+			target, err := locateLocalJobRetainedTarget(bucket, jobID)
+			if err != nil {
+				t.Fatalf("locate retained target: %v", err)
+			}
+			attackerJobs := filepath.Join(t.TempDir(), "jobs")
+			if err := os.MkdirAll(attackerJobs, 0o700); err != nil {
+				t.Fatalf("create attacker jobs dir: %v", err)
+			}
+			writeAttackerOutputFixture(t, filepath.Join(attackerJobs, filepath.Base(target.OutputPath)), "FAKE INTERMEDIATE CONTENT\n")
+
+			jobsDir := filepath.Dir(target.OutputPath)
+			if err := os.Rename(jobsDir, jobsDir+".honest"); err != nil {
+				t.Fatalf("move honest jobs dir: %v", err)
+			}
+			if err := os.Symlink(attackerJobs, jobsDir); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+
+			type result struct {
+				content []byte
+				err     error
+			}
+			done := make(chan result, 1)
+			go func() {
+				if reader == "metadata" {
+					got, err := readLocalJobRetainedMetadata(target)
+					done <- result{content: got.Content, err: err}
+					return
+				}
+				got, err := (localJobSearchSource{target: target}).ReadWindow(0, 1024)
+				done <- result{content: got.Content, err: err}
+			}()
+
+			select {
+			case got := <-done:
+				if got.err == nil {
+					t.Fatalf("post-locate intermediate symlink swap was read: %q", got.content)
+				}
+				if strings.Contains(string(got.content), "FAKE INTERMEDIATE") {
+					t.Fatalf("read fake intermediate content: %q (error %v)", got.content, got.err)
+				}
+				if !strings.Contains(got.err.Error(), "output_unavailable") {
+					t.Fatalf("error = %v, want output_unavailable refusal", got.err)
+				}
+			// TRIPWIRE: secure non-blocking descriptor walks return immediately; three seconds is far above the expected time.
+			case <-time.After(3 * time.Second):
+				t.Fatal("retained read blocked after post-locate intermediate symlink swap")
+			}
+		})
+	}
+}
+
 func writeAttackerOutputFixture(t *testing.T, path, content string) {
 	t.Helper()
 	output, err := jobstore.OpenOutputNoSync(path, 1024)
@@ -172,6 +233,58 @@ func TestOpenJobOutputFileRefusesNonRegularLeaf(t *testing.T) {
 				t.Fatal("openJobOutputFile blocked on a FIFO")
 			}
 		})
+	}
+}
+
+func TestOpenJobOutputFileRefusesSymlinkedIntermediateDir(t *testing.T) {
+	stateHome := t.TempDir()
+	bucket := filepath.Join(stateHome, "evener", "projects", "deadbeef")
+	realSessions := filepath.Join(t.TempDir(), "sessions")
+	path := filepath.Join(bucket, "sessions", "owner", "jobs", "output.log")
+	attackerPath := filepath.Join(realSessions, "owner", "jobs", "output.log")
+	if err := os.MkdirAll(filepath.Dir(attackerPath), 0o700); err != nil {
+		t.Fatalf("create attacker tree: %v", err)
+	}
+	if err := os.WriteFile(attackerPath, []byte("must not read\n"), 0o600); err != nil {
+		t.Fatalf("write attacker output: %v", err)
+	}
+	if err := os.MkdirAll(bucket, 0o700); err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	if err := os.Symlink(realSessions, filepath.Join(bucket, "sessions")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	f, err := openJobOutputFile(path)
+	if f != nil {
+		_ = f.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("openJobOutputFile error = %v, want intermediate symlink refusal", err)
+	}
+}
+
+func TestOpenJobOutputFileOpensLegacyNamedBucket(t *testing.T) {
+	stateHome := t.TempDir()
+	path := filepath.Join(stateHome, "evener", "projects", "deadbeef", "sessions", "owner", "jobs", "output.log")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("create legacy bucket tree: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("legacy bucket output\n"), 0o600); err != nil {
+		t.Fatalf("write output: %v", err)
+	}
+
+	f, err := openJobOutputFile(path)
+	if err != nil {
+		t.Fatalf("openJobOutputFile: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	got, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != "legacy bucket output\n" {
+		t.Fatalf("content = %q, want legacy bucket output", got)
 	}
 }
 

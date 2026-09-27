@@ -32,6 +32,18 @@ var openLocalJobProjectDirectory = func(path string) (localJobProjectDirectory, 
 
 var lstatJobOutputFile = os.Lstat
 
+func jobOutputOpenRoot(path string) string {
+	for candidate := filepath.Dir(filepath.Clean(path)); ; candidate = filepath.Dir(candidate) {
+		if stateHome := stateHomeFor(candidate); stateHome != "" {
+			return filepath.Join(stateHome, "evener")
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return ""
+		}
+	}
+}
+
 var openJobOutputFile = func(path string) (*os.File, error) {
 	before, err := lstatJobOutputFile(path)
 	if err != nil {
@@ -40,7 +52,12 @@ var openJobOutputFile = func(path string) (*os.File, error) {
 	if !before.Mode().IsRegular() {
 		return nil, fmt.Errorf("job output %q is not a regular file", path)
 	}
-	f, err := execenv.OpenRegularNoFollow(path)
+	var f *os.File
+	if root := jobOutputOpenRoot(path); root != "" {
+		f, err = execenv.OpenRegularBeneathRoot(path, root)
+	} else {
+		f, err = execenv.OpenRegularNoFollow(path)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -310,15 +327,16 @@ func locateLocalJobRetainedTarget(currentStateDir, jobID string) (localJobRetain
 		return localJobRetainedTarget{}, fmt.Errorf("read local job %q: output is not a regular file", jobID)
 	}
 	// Downstream output reads narrow the leaf window with their own
-	// Lstat→OpenRegularNoFollow→SameFile check, then pass that descriptor to
-	// jobstore. The frozen path-only read seams cannot carry outInfo to that
-	// wrapper, so a regular-to-regular replacement after this locator Lstat but
-	// before the wrapper Lstat is accepted as the wrapper's baseline. That
-	// residual is explicit and accepted because changing those seam signatures
-	// would break the fixed injection boundary; replacements during the wrapper's
-	// own Lstat/open interval are refused. An intermediate directory can likewise
-	// still be swapped after symlinkErrorDeep's pre-walk and before the wrapper
-	// Lstat; the pre-walk of every component remains its mitigation.
+	// Lstat→anchored descriptor walk→SameFile check, then pass that descriptor
+	// to jobstore. The descriptor walk pins each component beneath
+	// stateHome/evener, so an intermediate directory replaced by a symlink after
+	// this locator's pre-walk is refused at open time. The frozen path-only read
+	// seams cannot carry outInfo to that wrapper, so a regular-to-regular leaf
+	// replacement, or a fully consistent directory-tree rename, after this
+	// locator Lstat but before the wrapper Lstat is accepted as the wrapper's
+	// baseline. That residual is explicit and accepted because changing those
+	// seam signatures would break the fixed injection boundary; replacements
+	// during the wrapper's own Lstat/open interval are refused.
 	return localJobRetainedTarget{
 		JobID:      jobID,
 		Record:     location.Record,
