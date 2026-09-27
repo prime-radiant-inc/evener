@@ -141,20 +141,23 @@ function newestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 // Spec 7.1's order: failed leads, then a question or approval, then a
 // warning or restart-needed, regardless of age; age breaks ties within a
 // band. The hub sorts its needs_you section into the same bands
-// (hubapi.NeedsYouBand).
-function needsYouRank(state: BoardState): number {
-	switch (state) {
-		case "failed":
-			return 0;
-		case "question":
-		case "approval":
-			return 1;
-		default:
-			return 2;
-	}
+// (hubapi.NeedsYouBand: failed first, then any row with a pending question or
+// approval whatever its own state, then everything else). boardState's mark
+// precedence returns "warning"/"restartNeeded" for a row before ever
+// consulting ask_pending/approval_pending, so a warning or restart-needed row
+// that also carries one of those flags must still read it here directly - the
+// mark stays "warning"/"restartNeeded", but the row is blocked on you either
+// way. The approval mark is also checked directly, since a hub older than
+// S2a carries no raw approval_pending and the mark's own fallback
+// (approvalRefs, inferred from needs_you section membership) is the only
+// signal such a row has.
+function needsYouRank(item: ClassifiedRow): number {
+	if (item.state === "failed") return 0;
+	if (item.row.ask_pending || item.row.approval_pending || item.state === "approval") return 1;
+	return 2;
 }
 function needsYouOrder(a: ClassifiedRow, b: ClassifiedRow): number {
-	return needsYouRank(a.state) - needsYouRank(b.state) || oldestFirst(a, b);
+	return needsYouRank(a) - needsYouRank(b) || oldestFirst(a, b);
 }
 
 /** Splits Live into the spec's four bands. Rows from the needs_you section
