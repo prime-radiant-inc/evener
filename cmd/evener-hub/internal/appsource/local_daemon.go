@@ -94,6 +94,11 @@ type LocalDaemonEntry struct {
 	// and the fallback takes over.
 	Capabilities      appwire.ThreadCapabilities
 	CapabilitiesKnown bool
+	// LastTurnEndedAt mirrors hubcore.LiveEntry.LastTurnEndedAt in Unix
+	// milliseconds: when the root's last turn ended (S4). threadFromEntry
+	// carries it into appwire.EvenerThread.LastTurnEndedAt so a controller
+	// reading this hub can tell Finished from Idle. A read-only alias has none.
+	LastTurnEndedAt int64
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -1146,6 +1151,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 			Capabilities:       listRowCapabilities(item, status),
 			AskPending:         item.PendingAsk,
 			PendingEscalations: append([]appwire.SandboxEscalationRequested(nil), item.PendingEscalations...),
+			LastTurnEndedAt:    item.LastTurnEndedAt,
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}

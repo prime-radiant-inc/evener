@@ -879,6 +879,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 	}
 	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
 	entry.Watches = diagnosticsWatches(thread.Evener.Diagnostics)
+	entry.LastTurnEndedAt = hubcore.UnixMilliTime(thread.Evener.LastTurnEndedAt)
 	return meta, entry, true
 }
 

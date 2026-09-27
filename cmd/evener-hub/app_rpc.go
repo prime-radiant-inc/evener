@@ -131,6 +131,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			Watches:            item.Watches,
 			Capabilities:       item.Capabilities,
 			CapabilitiesKnown:  item.CapabilitiesKnown,
+			LastTurnEndedAt:    hubcore.UnixMilliseconds(item.LastTurnEndedAt),
 		}
 		entries = append(entries, entry)
 		// In-process descendants are addressed as their own AppWire
@@ -160,6 +161,7 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			child.PendingAsk = false
 			child.PendingEscalation = false
 			child.PendingEscalations = nil
+			child.LastTurnEndedAt = 0 // the root's turn is not the child's
 			child.ReadOnlyAlias = true
 			entries = append(entries, child)
 		}
