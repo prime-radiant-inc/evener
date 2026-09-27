@@ -141,6 +141,25 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bands.idle.map((item) => item.row.ref)).toEqual(["seen-new", "seen-old"]);
 	});
 
+	it("orders Finished and Idle by when the turn ended, falling back to updated_at, and leaves Needs you alone", () => {
+		const live = [
+			// Renamed lately, but its turn ended long ago.
+			row("done-renamed", { state: "awaiting", updated_at: at(59), turn_ended_at: at(10), unseen: true }),
+			row("done-ended", { state: "awaiting", updated_at: at(20), turn_ended_at: at(30), unseen: true }),
+			row("done-older-hub", { state: "awaiting", updated_at: at(20) }),
+			row("seen-renamed", { state: "idle", updated_at: at(58), turn_ended_at: at(1) }),
+			row("seen-ended", { state: "idle", updated_at: at(2), turn_ended_at: at(40) }),
+			row("seen-garbled", { state: "idle", updated_at: at(5), turn_ended_at: "not a time" }),
+			row("f-ended-late", { state: "errored", updated_at: at(5), turn_ended_at: at(50) }),
+			row("f-ended-early", { state: "errored", updated_at: at(6), turn_ended_at: at(1) }),
+		];
+		const seen = (r: NavigationSessionSummary) => r.ref.startsWith("seen");
+		const bands = liveBands(live, [], seen);
+		expect(bands.finished.map((item) => item.row.ref)).toEqual(["done-ended", "done-older-hub", "done-renamed"]);
+		expect(bands.idle.map((item) => item.row.ref)).toEqual(["seen-ended", "seen-garbled", "seen-renamed"]);
+		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["f-ended-late", "f-ended-early"]);
+	});
+
 	it("sorts a row with a missing or unreadable updated_at as the oldest", () => {
 		const live = [
 			row("done-dated", { state: "awaiting", updated_at: at(10) }),
