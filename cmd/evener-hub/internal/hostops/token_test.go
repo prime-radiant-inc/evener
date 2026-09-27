@@ -760,3 +760,100 @@ func TestTokenBindingsRefuseDrift(t *testing.T) {
 		t.Fatalf("ConsumeToken after binding checks: %v", err)
 	}
 }
+
+// TestTokenRunningStateAndFactsAgeRefuseDrift pins §6 step 3's remaining
+// rejections, the ones the running-state and freshness bindings exist for: a
+// re-probed revision or health flag that differs from the token-bound one, a
+// re-probed process start time that no longer matches (or is gone) when the
+// token bound one, and facts whose token-bound age has reached the token-bound
+// bound.
+func TestTokenRunningStateAndFactsAgeRefuseDrift(t *testing.T) {
+	store, _, clock := openClockStore(t)
+	probeStart := tokenEpoch.Add(-time.Hour)
+	req := mintDefaults("m4", tokenEpoch)
+	req.TTL = 30 * time.Minute
+	req.FreshnessBound = 30 * time.Minute
+	req.ProcessStartTime = &probeStart
+	minted := mustMint(t, store, req)
+
+	matching := TokenRunningState{Version: minted.RunningVersion, Healthy: minted.RunningHealthy, ProcessStartTime: &probeStart}
+	if err := CheckTokenRunningState(minted, matching); err != nil {
+		t.Fatalf("CheckTokenRunningState on the minted state: %v", err)
+	}
+	if err := CheckTokenFactsAge(minted, clock.now()); err != nil {
+		t.Fatalf("CheckTokenFactsAge on fresh facts: %v", err)
+	}
+
+	cases := map[string]struct {
+		check   func() error
+		binding StaleBinding
+	}{
+		"running revision differs": {
+			check: func() error {
+				changed := matching
+				changed.Version = "v0.0.1"
+				return CheckTokenRunningState(minted, changed)
+			},
+			binding: StaleBindingRunningVersion,
+		},
+		"health flag differs": {
+			check: func() error {
+				changed := matching
+				changed.Healthy = !minted.RunningHealthy
+				return CheckTokenRunningState(minted, changed)
+			},
+			binding: StaleBindingRunningHealth,
+		},
+		"process start time differs": {
+			check: func() error {
+				other := probeStart.Add(time.Minute)
+				changed := matching
+				changed.ProcessStartTime = &other
+				return CheckTokenRunningState(minted, changed)
+			},
+			binding: StaleBindingRunningVersion,
+		},
+		"process start time lost": {
+			check: func() error {
+				changed := matching
+				changed.ProcessStartTime = nil
+				return CheckTokenRunningState(minted, changed)
+			},
+			binding: StaleBindingRunningVersion,
+		},
+		"facts reached their bound": {
+			// The bound is measured from the token's own capture, never from a
+			// re-read knob: exactly at the bound is already stale.
+			check:   func() error { return CheckTokenFactsAge(minted, tokenEpoch.Add(30*time.Minute)) },
+			binding: StaleBindingFactsAge,
+		},
+		"facts past their bound": {
+			check:   func() error { return CheckTokenFactsAge(minted, tokenEpoch.Add(time.Hour)) },
+			binding: StaleBindingFactsAge,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var stale *StaleEntryError
+			if err := tc.check(); !errors.As(err, &stale) {
+				t.Fatalf("check = %v, want a StaleEntryError", err)
+			} else if stale.Binding != tc.binding {
+				t.Fatalf("refusal names %q, want %q", stale.Binding, tc.binding)
+			}
+		})
+	}
+
+	// A token minted from a probe that carried no process start time compares
+	// none, and a run of checks consumes nothing.
+	noStart := mintDefaults("m5", tokenEpoch)
+	noStart.ProcessStartTime = nil
+	plain := mustMint(t, store, noStart)
+	if err := CheckTokenRunningState(plain, TokenRunningState{
+		Version: plain.RunningVersion, Healthy: plain.RunningHealthy, ProcessStartTime: &probeStart,
+	}); err != nil {
+		t.Fatalf("a token that bound no process start time compared one: %v", err)
+	}
+	if _, err := store.ConsumeToken("m4", minted.Value); err != nil {
+		t.Fatalf("ConsumeToken after the running-state checks: %v", err)
+	}
+}

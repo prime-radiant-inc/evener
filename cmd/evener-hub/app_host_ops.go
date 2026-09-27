@@ -304,16 +304,56 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 			fmt.Sprintf("probing host %q's running state failed: %v", name, err), attached, "")
 	}
 
-	// §6 step 2's under-gate re-checks, as far as this slice can run them
-	// without the gate: the entry the plan was built from must still be the
-	// registry's registration, and no operation may have finished meanwhile. A
-	// detach, mutation or completed operation landing between the refresh and
-	// here is a re-plan refusal, never a plan against the superseded entry.
-	if !m.planEntryCurrent(name, entry) {
+	return m.mintPlannedToken(name, planMintInputs{
+		entry:          entry,
+		facts:          facts,
+		target:         target,
+		probe:          probe,
+		sequenceBefore: sequenceBefore,
+		attached:       attached,
+	})
+}
+
+// planMintInputs is everything the fenced final block needs: the resolution and
+// probe the plan was built from, and the state the re-checks compare against.
+type planMintInputs struct {
+	entry          hostreg.Host
+	facts          hubcore.HostPlanFacts
+	target         string
+	probe          hubcore.HostRuntimeProbe
+	sequenceBefore uint64
+	attached       bool
+}
+
+// mintPlannedToken runs §6 step 2's under-gate re-checks and the mint, holding
+// the manager's mutation mutex across all of them.
+//
+// That mutex is not §5's per-host gate — the gate (try-acquire, typed busy
+// classes, shared with deploy/restart/teardown) is the slice that ships the
+// running probe, and this handler takes no stand-in for it. What the mutex does
+// close is the one interleaving this slice can close without that gate: the host
+// management mutations that move this very entry. A removal or update in flight
+// refuses the plan — the name is transiently held, which is the conflict the
+// other host mutations report too — and one that starts while this block runs
+// waits for it, so the removal's revocation can never land between a plan's
+// checks and its mint and leave a token for a name whose registration is gone
+// (or, if the removal rolls back, one that outlived its plan).
+//
+// Lock order is the spec's: the mutation mutex is outermost among the durable
+// writes, the store mutex innermost — MintToken's write sits inside this hold —
+// and nothing here takes the host gate.
+func (m *hubHostManager) mintPlannedToken(name string, in planMintInputs) (appwire.HostPlanResult, error) {
+	m.cfg.mu.Lock()
+	defer m.cfg.mu.Unlock()
+
+	switch {
+	case m.isMutating(name):
+		return appwire.HostPlanResult{}, hostMutationConflict(name)
+	case !m.cfg.hosts.SameRegistration(name, in.entry):
 		return appwire.HostPlanResult{}, appwire.StaleEntry(appwire.StaleEntryBindingGeneration,
 			fmt.Sprintf("host %q's registration moved while this plan was being built; plan again", name))
 	}
-	if finished, ok := m.terminalOperationSince(name, sequenceBefore); ok {
+	if finished, ok := m.terminalOperationSince(name, in.sequenceBefore); ok {
 		return appwire.HostPlanResult{}, appwire.StaleEntry(appwire.StaleEntryBindingConcurrentTerminalOp,
 			fmt.Sprintf("host %q completed operation %q while this plan was being built; plan again", name, finished))
 	}
@@ -336,23 +376,23 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	now := time.Now().UTC()
 	token, err := m.cfg.ops.MintToken(hostops.MintRequest{
 		Host:               name,
-		Generation:         entry.Generation,
-		IncarnationID:      entry.IncarnationID,
-		EntryHash:          hostEntryFingerprint(entry),
+		Generation:         in.entry.Generation,
+		IncarnationID:      in.entry.IncarnationID,
+		EntryHash:          hostEntryFingerprint(in.entry),
 		HubTOMLFingerprint: fingerprint,
-		FactsRevision:      facts.Revision(),
-		FactsCapturedAt:    facts.CapturedAt,
-		TargetPath:         target,
+		FactsRevision:      in.facts.Revision(),
+		FactsCapturedAt:    in.facts.CapturedAt,
+		TargetPath:         in.target,
 		ControllerRevision: buildinfo.Version(),
-		RunningVersion:     probe.Version,
-		RunningHealthy:     probe.RunningHealthy,
-		ProcessStartTime:   probe.ProcessStartTime,
+		RunningVersion:     in.probe.Version,
+		RunningHealthy:     in.probe.RunningHealthy,
+		ProcessStartTime:   in.probe.ProcessStartTime,
 	})
 	if errors.Is(err, hostops.ErrFactsStale) {
 		// §3: stale facts at mint read as a refresh failure, and re-planning
 		// refreshes them — never an already-expired token.
 		return planNoToken(appwire.HostPlanReasonRefreshFailed,
-			fmt.Sprintf("host %q's refreshed facts went stale before the token was minted: %v", name, err), attached, "")
+			fmt.Sprintf("host %q's refreshed facts went stale before the token was minted: %v", name, err), in.attached, "")
 	}
 	if err != nil {
 		return appwire.HostPlanResult{}, appwire.InternalError(fmt.Sprintf("minting the confirmation token for host %q failed: %v", name, err))
@@ -363,7 +403,7 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 		Generation:         token.Generation,
 		TargetPath:         token.TargetPath,
 		ControllerRevision: token.ControllerRevision,
-		RestartFollows:     planRestartFollows(probe, token.ControllerRevision),
+		RestartFollows:     planRestartFollows(in.probe, token.ControllerRevision),
 		FactsRevision:      token.FactsRevision,
 		HubTOMLFingerprint: token.HubTOMLFingerprint,
 		FactsCapturedAt:    token.FactsCapturedAt.Format(time.RFC3339),
@@ -420,16 +460,6 @@ func planRestartFollows(probe hubcore.HostRuntimeProbe, controllerRevision strin
 		return true
 	}
 	return probe.Version != controllerRevision
-}
-
-// planEntryCurrent reports whether entry is still the registry's registration
-// for its name: content and generation both, the predicate hostreg states and
-// the attach identity rechecks use. Callers hold no lock across the plan, so
-// this is a fresh read, not a fence.
-func (m *hubHostManager) planEntryCurrent(name string, entry hostreg.Host) bool {
-	m.cfg.mu.Lock()
-	defer m.cfg.mu.Unlock()
-	return m.cfg.hosts.SameRegistration(name, entry)
 }
 
 // terminalOperationSince reports the first operation on host whose terminal

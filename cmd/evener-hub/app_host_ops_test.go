@@ -707,3 +707,37 @@ func wantStaleEntry(t *testing.T, err error) appwire.StaleEntryErrorData {
 	}
 	return data
 }
+
+// TestHostPlanRefusesAMutationInFlight pins the fence this slice puts around the
+// final re-checks and the mint: while a removal or edit holds the name, a plan
+// refuses with the same transient conflict the other host mutations report, and
+// mints nothing — so a removal can never have its revocation land between a
+// plan's checks and its mint.
+func TestHostPlanRefusesAMutationInFlight(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{planTestHost()})), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	m, store, _ := planTestManager(t, configPath, []hostreg.Host{planTestHost()}, planSeams{})
+	// The mark is what Remove sets for its teardown window; setting it directly
+	// is the deterministic way to hold that window still for this assertion.
+	m.cfg.mu.Lock()
+	m.markMutating("m4")
+	m.cfg.mu.Unlock()
+
+	err := errOf(m.Plan(context.Background(), appwire.HostPlanParams{Name: "m4"}))
+	assertWireCode(t, err, appwire.CodeConflict)
+	if _, ok := store.OutstandingToken("m4"); ok {
+		t.Fatal("a plan refused by an in-flight mutation stored a token")
+	}
+
+	// Once the mutation finishes the name is plannable again, so the fence is a
+	// transient hold rather than a permanent refusal.
+	m.cfg.mu.Lock()
+	m.unmarkMutating("m4")
+	m.cfg.mu.Unlock()
+	result, err := m.Plan(context.Background(), appwire.HostPlanParams{Name: "m4"})
+	if err != nil || result.HostPlanPlanned == nil {
+		t.Fatalf("Plan after the mutation finished = %+v/%v, want the planned arm", result, err)
+	}
+}

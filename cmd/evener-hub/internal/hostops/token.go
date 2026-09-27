@@ -61,6 +61,18 @@ const (
 	// StaleBindingHubTOMLFingerprint is the host's own hub.toml entry
 	// fingerprint drifting from the token-bound one.
 	StaleBindingHubTOMLFingerprint StaleBinding = "hub.toml-fingerprint"
+	// StaleBindingRunningVersion is the re-probed running revision differing from
+	// the token-bound one — and, with it, a probed process start time that no
+	// longer matches the token-bound one: §11 pins no separate value for the
+	// process's start time, and both name the identity of the live process.
+	StaleBindingRunningVersion StaleBinding = "running-version"
+	// StaleBindingRunningHealth is the re-probed health flag differing from the
+	// token-bound one.
+	StaleBindingRunningHealth StaleBinding = "running-health"
+	// StaleBindingFactsAge is the token's facts having aged to its bound: §6 step
+	// 3's re-plan refusal, which compares the age against the token-bound bound
+	// and never against a re-read owner knob.
+	StaleBindingFactsAge StaleBinding = "facts-age"
 )
 
 // StaleEntryError reports a token whose binding no longer matches the values a
@@ -504,6 +516,61 @@ func CheckTokenBindings(token Token, expect TokenExpectation) error {
 	}
 	if expect.TargetPath != "" && token.TargetPath != expect.TargetPath {
 		return &StaleEntryError{Binding: StaleBindingTarget}
+	}
+	return nil
+}
+
+// TokenRunningState is the running state a caller re-probed: the revision the
+// host reports, its health flag, and the process start time when the probe
+// carried one. It is the caller's fresh half of §6 step 3's running-state
+// comparison, shaped like the plan's own probe.
+type TokenRunningState struct {
+	Version          string
+	Healthy          bool
+	ProcessStartTime *time.Time
+}
+
+// CheckTokenRunningState compares a token's running-state bindings against the
+// state a caller re-probed. §6 step 3 rejects a probe that "differs from the
+// token-bound running revision or running-health flag", and rejects a re-probed
+// `processStartTime` that differs from the token-bound one "when the token bound
+// one": a token minted from a probe that carried none compares no start time,
+// while a probe that now carries none against a token that bound one is a
+// difference — the token names a live process the probe can no longer identify.
+//
+// The token binds these values so a deploy cannot consume it after the running
+// state it was confirmed against changed; the comparison belongs to the caller
+// that re-probed, under its own gate (§6 step 3), and never consumes anything.
+func CheckTokenRunningState(token Token, probe TokenRunningState) error {
+	if token.RunningVersion != probe.Version {
+		return &StaleEntryError{Binding: StaleBindingRunningVersion}
+	}
+	if token.RunningHealthy != probe.Healthy {
+		return &StaleEntryError{Binding: StaleBindingRunningHealth}
+	}
+	if token.ProcessStartTime != nil {
+		if probe.ProcessStartTime == nil || !probe.ProcessStartTime.Equal(*token.ProcessStartTime) {
+			return &StaleEntryError{Binding: StaleBindingRunningVersion}
+		}
+	}
+	return nil
+}
+
+// CheckTokenFactsAge reports §6 step 3's freshness rejection: the token's
+// preflight facts whose age has reached the token-bound bound are a re-plan
+// refusal ("facts older than the bound at deploy time are a stale-entry re-plan
+// refusal"). The bound compared is the minted one — deploy "compares the
+// token-bound facts age against the token-bound bound value, never a re-read
+// owner knob" (§3) — and the facts *revision* is deliberately not recomputed:
+// it is the mint-time reference for the facts the token was minted from.
+//
+// now is the caller's effective clock. Every facts-age check runs against
+// `max(now, mark)` while a rollback is active (§3), so the deploy slice passes
+// the same instant it used for the token's deadline comparisons.
+func CheckTokenFactsAge(token Token, now time.Time) error {
+	age := now.Sub(token.FactsCapturedAt)
+	if age >= time.Duration(token.FreshnessBoundSec)*time.Second {
+		return &StaleEntryError{Binding: StaleBindingFactsAge}
 	}
 	return nil
 }
