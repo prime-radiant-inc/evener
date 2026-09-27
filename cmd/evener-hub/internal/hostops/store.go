@@ -565,16 +565,7 @@ func loadFS(fs afero.Fs, path string) (snapshot, error) {
 	if err != nil {
 		return snapshot{}, fmt.Errorf("hostops: read store %s: %w", path, err)
 	}
-	// The whole file must be UTF-8: the decoder replaces invalid bytes with
-	// U+FFFD, so a file carrying them would be read as a value the writer never
-	// wrote, and the next write would change the bytes it did not understand.
-	if !utf8.Valid(raw) {
-		return snapshot{}, fmt.Errorf("%w: %s is not valid UTF-8", ErrStoreCorrupt, path)
-	}
-	if err := rejectLoneSurrogateEscapes(raw); err != nil {
-		return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
-	}
-	if err := validateStoreKeys(raw); err != nil {
+	if err := checkStoreBytes(raw); err != nil {
 		return snapshot{}, fmt.Errorf("%w: %s: %w", ErrStoreCorrupt, path, err)
 	}
 	var file storeFile
@@ -646,6 +637,12 @@ func saveFS(fs afero.Fs, path string, state snapshot, faults storeFaults) (renam
 	data, err := json.Marshal(state)
 	if err != nil {
 		return false, fmt.Errorf("hostops: marshal store: %w", err)
+	}
+	// The bytes about to be committed are held to the loader's own rules, so a
+	// write can never land a file this store's next boot refuses: every rule the
+	// load runs lives in checkStoreBytes and runs here too.
+	if err := checkStoreBytes(data); err != nil {
+		return false, fmt.Errorf("hostops: refuse to write a store this store cannot load: %w", err)
 	}
 	dir := filepath.Dir(path)
 	sync := syncDirFS
@@ -856,6 +853,22 @@ func keysOf(names ...string) map[string]struct{} {
 	return set
 }
 
+// checkStoreBytes applies the store file's byte-level rules: the bytes must be
+// UTF-8, carry no unpaired surrogate escape, and name no key twice (with only the
+// canonical names in the objects this store decodes). It is one rule set on
+// purpose, run by loadFS over the bytes a file holds and by saveFS over the bytes a
+// write is about to commit — so a value the store accepts can never be one its own
+// next load refuses.
+func checkStoreBytes(raw []byte) error {
+	if !utf8.Valid(raw) {
+		return errors.New("the store file is not valid UTF-8")
+	}
+	if err := rejectLoneSurrogateEscapes(raw); err != nil {
+		return err
+	}
+	return validateStoreKeys(raw)
+}
+
 // rejectLoneSurrogateEscapes refuses a JSON document carrying a \u escape for an
 // unpaired UTF-16 surrogate. The decoder replaces such an escape with U+FFFD, so
 // the value the file denotes would come back changed on the next write — and the
@@ -880,12 +893,12 @@ func rejectLoneSurrogateEscapes(raw []byte) error {
 		}
 		switch {
 		case code >= 0xD800 && code <= 0xDBFF:
-			low, ok := lowSurrogateAfter(raw, i+5)
-			if !ok {
+			if _, ok := lowSurrogateAfter(raw, i+5); !ok {
 				return fmt.Errorf("the document carries an unpaired surrogate escape \\u%04X", code)
 			}
-			_ = low
-			i += 11
+			// Step over the pair only: the loop's own increment then lands on the
+			// byte that follows it, which may start the next escape.
+			i += 10
 		case code >= 0xDC00 && code <= 0xDFFF:
 			return fmt.Errorf("the document carries an unpaired surrogate escape \\u%04X", code)
 		}

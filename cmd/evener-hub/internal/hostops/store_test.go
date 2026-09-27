@@ -266,6 +266,10 @@ func TestOpenRefusesACorruptStore(t *testing.T) {
 			strings.Replace(record, `"host":"h1"`, `"host":"a\ud800b"`, 1) + `]}`,
 		"lone low surrogate": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
 			strings.Replace(record, `"host":"h1"`, `"host":"a\udc00b"`, 1) + `]}`,
+		// A lone surrogate escape right after a valid pair: the scanner must step
+		// over the pair only, or it never looks at the escape that follows it.
+		"lone surrogate after a pair": `{"version":1,"sequence":0,"allocatorHighWaterMark":1,"records":[` +
+			strings.Replace(record, `"host":"h1"`, `"host":"a\ud83d\ude00\udc00b"`, 1) + `]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1393,4 +1397,27 @@ func TestOpenAcceptsAValidSurrogatePairAndRefusesALoneOne(t *testing.T) {
 	if _, err := Open(literalPath); err != nil {
 		t.Fatalf("Open on a store carrying an escaped backslash before ud800: %v", err)
 	}
+}
+
+// TestTransitionRefusesALoneSurrogateInARawField pins the write path against the
+// loader's own byte rules: a raw field carrying a \u escape for an unpaired
+// surrogate would be written verbatim and the next load would refuse the file the
+// store just committed, so the write refuses first — and the store still loads
+// afterwards.
+func TestTransitionRefusesALoneSurrogateInARawField(t *testing.T) {
+	store, path := openTestStore(t)
+	record := createTestRecord(t, store, "h1")
+	createTestRecord(t, store, "h2")
+	before := mustReadFile(t, path)
+
+	escape := json.RawMessage(`{"bootId":"\ud800","opSeq":3}`)
+	if _, err := store.Transition(record.ID, StateRunning, func(r *Record) {
+		r.FencingEpoch = escape
+	}); err == nil {
+		t.Fatalf("a write carrying a lone surrogate escape in a raw field succeeded")
+	}
+	if got := string(mustReadFile(t, path)); got != string(before) {
+		t.Fatalf("a refused write rewrote the store file")
+	}
+	reopenFresh(t, path)
 }
