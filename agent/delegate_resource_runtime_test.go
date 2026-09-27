@@ -1820,7 +1820,7 @@ func TestDelegateResourceRuntime_StructuredResultExplicitNullIsPresent(t *testin
 	var captured any
 	deps := &toolDeps{
 		emit:               func(events.EventKind, events.EventData) {},
-		deliverCommunicate: func(events.CommunicateData) bool { return true },
+		deliverCommunicate: func(events.CommunicateData) error { return nil },
 		abort:              func(context.Context) error { return nil },
 		drainSteering:      func() []steeringMessage { return nil },
 		prependSteering:    func([]steeringMessage) {},
