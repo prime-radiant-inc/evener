@@ -89,11 +89,25 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // resolution: a live commit's advance() for one of them can land in
   // between, and it must still out-rank this snapshot for that target.
   const targets = accepted.apply();
-  pendingTurnsStore.setState((state) => ({
+  const state = pendingTurnsStore.getState();
+  const projected = {
     outbox: replaceTargetRecords(state.outbox, targets, snapshot.outbox),
     optimistic: replaceTargetRecords(state.optimistic, targets, snapshot.optimistic),
     recovery: replaceTargetRecords(state.recovery, targets, snapshot.recovery),
-  }));
+  };
+  // Only a refresh that changed something publishes: the outbox rescans
+  // storage every two seconds while its client is ready, so most refreshes find
+  // what the store already holds, and a publish re-renders every component
+  // that reads the projection. A map replaceTargetRecords found unchanged comes
+  // back as itself, so the maps that did not change keep their identity when
+  // another one did.
+  if (
+    projected.outbox !== state.outbox ||
+    projected.optimistic !== state.optimistic ||
+    projected.recovery !== state.recovery
+  ) {
+    pendingTurnsStore.setState(projected);
+  }
   return true;
 }
 
