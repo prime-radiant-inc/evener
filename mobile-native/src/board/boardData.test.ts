@@ -819,6 +819,39 @@ it("polls the plugins every 5 minutes while the Board is in view", () =>
 		expect(requestsFor(hub, "auth")).toHaveLength(1);
 	}));
 
+it("a poll that returns the same lists notifies nobody", () =>
+	withFakeTimers(async () => {
+		const hub = boundary();
+		const board = createBoardController();
+		board.setClient(hub.client);
+		answerAuth(hub, []);
+		answerPlugins(hub, [brokenPlugin("superpowers")]);
+		await flush();
+		const before = board.getSnapshot();
+		let notified = 0;
+		const stop = board.subscribe(() => {
+			notified += 1;
+		});
+		await vi.advanceTimersByTimeAsync(FIVE_MINUTES);
+		answerPlugins(hub, [brokenPlugin("superpowers")]);
+		await flush();
+		expect(notified).toBe(0);
+		expect(board.getSnapshot()).toBe(before);
+		stop();
+	}));
+
+it("keeps a read that was out when the Board paused", () =>
+	withFakeTimers(async () => {
+		const hub = boundary();
+		const board = createBoardController();
+		board.setClient(hub.client);
+		board.pause();
+		answerPlugins(hub, [brokenPlugin("superpowers")]);
+		await flush();
+		expect(board.getSnapshot().plugins).toEqual([brokenPlugin("superpowers")]);
+		expect(requestsFor(hub, "plugins")).toHaveLength(1);
+	}));
+
 it("reads no sign-ins or plugins while paused, and reads both again on resume", () =>
 	withFakeTimers(async () => {
 		const hub = boundary();

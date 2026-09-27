@@ -373,13 +373,18 @@ export function createBoardController(): BoardController {
 			() => {},
 		);
 	};
+	/** The list a read returned, or the current one when nothing in it
+	 * changed: the snapshot keeps its identity, so a poll that finds the
+	 * same lists re-renders nothing. */
+	const unlessSame = <T,>(current: T[], next: T[]) =>
+		JSON.stringify(current) === JSON.stringify(next) ? current : next;
 	const readAuth = (bound: Readers) =>
 		readNoticeList(
 			bound,
 			"auth",
 			() => bound.client.request("evener/auth/list", {}),
 			(result) => {
-				auth = result.providers;
+				auth = unlessSame(auth, result.providers);
 			},
 		);
 	const readPlugins = (bound: Readers) =>
@@ -388,7 +393,7 @@ export function createBoardController(): BoardController {
 			"plugins",
 			() => bound.client.request("evener/plugin/list", {}),
 			(result) => {
-				plugins = result.plugins;
+				plugins = unlessSame(plugins, result.plugins);
 			},
 		);
 	const stopPluginPoll = (bound: Readers) => {
