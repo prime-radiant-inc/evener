@@ -26,7 +26,7 @@
       "kind": "custom",
       "refersTo": "board-row",
       "description": "Illustrative documentation preview translated from a Needs You row (signal variant) on the Board.",
-      "html": "<div class=\"ds-board-row\"><span class=\"ds-mark ds-mark--failed\" aria-hidden=\"true\">&#10005;</span><div class=\"ds-board-row-body\"><div class=\"ds-board-row-title-line\"><span class=\"ds-board-row-title\">Fix Endless Provider Retry Loop</span><span class=\"ds-board-row-age\">2m</span></div><p class=\"ds-why-line\"><strong class=\"ds-why-word\">Failed</strong> · codex-jesse-fsck.com sign-in expired (401)</p></div></div>",
+      "html": "<div class=\"ds-board-row\"><span class=\"ds-mark ds-mark--failed\" aria-hidden=\"true\">&#10005;</span><div class=\"ds-board-row-body\"><div class=\"ds-board-row-title-line\"><span class=\"ds-board-row-title\">Fix Endless Provider Retry Loop</span><span class=\"ds-board-row-age\">2m</span></div><p class=\"ds-why-line\"><strong class=\"ds-why-word\">Failed</strong> · open the session to see what went wrong</p></div></div>",
       "css": ".ds-board-row{display:flex;align-items:flex-start;column-gap:10px;padding:11px 16px 12px;min-height:64px;background:#FAF9F6}.ds-mark{width:28px;flex:none;text-align:center;font:700 16px system-ui;line-height:22px;color:#E3474C}.ds-board-row-body{flex:1;min-width:0}.ds-board-row-title-line{display:flex;align-items:baseline;column-gap:8px}.ds-board-row-title{flex:1;font:600 17px/22px system-ui;color:#252521}.ds-board-row-age{font:400 13px system-ui;color:#6D6D64;font-variant-numeric:tabular-nums}.ds-why-line{margin:2px 0 0;font:400 15px/20px system-ui;color:#252521}.ds-why-word{color:#C51D23}"
     },
     {

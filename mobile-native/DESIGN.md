@@ -116,13 +116,13 @@ Dimensions below describe React Native logical units (points on iOS). The `px` v
 ### Hierarchy
 - **Title** (SF Pro semibold, 17px, 22px line-height): Row title, one line (two for Needs you).
 - **Why line** (SF Pro, 15px, 20px line-height): The state word and reason for Needs you, or the current activity for Working. Finished rows carry no why line yet: the spec's last-message excerpt (Source Serif 15/21) waits for a server addition (S1).
-- **Last line** (SF Pro, 13px, 18px line-height, ink-low): Task progress, a subagent failure, or the project and host when they differ from the fleet's usual ones.
+- **Last line** (SF Pro, 13px, 18px line-height, ink-low): The project (with a folder glyph) and the host (with a server glyph), each only when it differs from the fleet's usual one. Task progress and subagent failures join this line once the hub sends them (S13 and S3); until then the row has no last line when its project and host are the usual ones.
 - **Age** (SF Pro, 13px, tabular figures, ink-low): Trailing on line 1: "2m", "1h", "3d".
 - **Band header** (SF Pro semibold, 13px, uppercase, +0.4pt tracking, ink-mid): "NEEDS YOU · 4", "FINISHED · 4", "WORKING · 9".
 
 ## Layout
 
-The Board is one native scrolling list. Each row reserves a 28-unit leading mark column and a 10-unit gap to its content, inset 16 logical units on each side. Hairline separators sit inset 54 units, clear of the mark, to the title (16 padding + 28 mark + 10 gap). Signal rows (Needs you, unseen Finished, and Working, in the Live section) run about 64 to 88 units depending on how many lines they carry; quiet rows (Idle's, today) hold to 48 units. Every tappable target keeps a native minimum of 44 units.
+The Board is one native scrolling list. Each row reserves a 28-unit leading mark column and a 10-unit gap to its content, inset 16 logical units on each side. Hairline separators sit inset 54 units, clear of the mark, to the title (16 padding + 28 mark + 10 gap). Signal rows (Needs you, unseen Finished, and Working, in the Live section) run about 64 to 88 units depending on how many lines they carry; quiet rows (Idle's, today) hold to 48 units. Every tappable target keeps a native minimum of 44 units; the section chips (32 units) and the summary line's counts (30 units) draw smaller and reach 44 with hit slop.
 
 ## Elevation & Depth
 
@@ -171,7 +171,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 - **Behavior:** One per pinned category (with a pin glyph, its name and count), one for Projects, and one for Archived; each opens its own screen. This is a placeholder for the inline treatment a later PR brings.
 
 ### The bottom toolbar and its connection status
-- **Shape:** A 50-unit glass bar with a top hairline.
+- **Shape:** A 50-unit bar on the page color with a top hairline.
 - **Behavior:** The center shows the connection status only when it is not live: "Reconnecting…" once the connection has been down 2 seconds, "Offline · updated 3m ago" once it has been down 30 seconds, or "Update needed" at once, and never "Reconnecting…", when the hub speaks an incompatible protocol version. A live connection shows nothing there. Trailing is New session, a 44-unit `square.and.pencil` glyph in accent-ink, disabled (not hidden) while disconnected.
 
 ### The notice row
