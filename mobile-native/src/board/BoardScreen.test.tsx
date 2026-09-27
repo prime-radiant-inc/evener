@@ -94,7 +94,11 @@ function setFocused(focused: boolean) {
 		for (const listener of harness.focusListeners) listener(focused);
 	});
 }
+// Every Board a test mounts, so one that fails before its own unmount
+// can't leave a Board behind that reads the next test's connection.
+const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
+	for (const tree of mounted.splice(0)) if (tree.toJSON() !== null) act(() => tree.unmount());
 	vi.useRealTimers();
 });
 
@@ -244,6 +248,7 @@ async function settle() {
 }
 async function mount(nav: Navigation) {
 	const tree = render(screen(nav));
+	mounted.push(tree);
 	await settle();
 	return tree;
 }
