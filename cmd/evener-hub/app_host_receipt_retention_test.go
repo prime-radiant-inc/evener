@@ -385,3 +385,245 @@ func TestHostReceiptTombstonedNameBackstopExemption(t *testing.T) {
 		t.Fatalf("the newer marker did not survive the post-purge bound: %v", records.prunedReceipts)
 	}
 }
+
+// TestHostKeylessAuditCompaction pins spec §11's audit bound: repeated keyless
+// adds converge to the newest N audit records per name under the audit TTL.
+func TestHostKeylessAuditCompaction(t *testing.T) {
+	f := newUpdateFixture(t)
+	f.m.cfg.policy.auditMaxCount = 2
+	// Repeated keyless adds of one name require a remove between them (a live
+	// duplicate is refused): the audit record survives each re-add's purge and
+	// compacts under its own bound.
+	for i := range 4 {
+		if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "audit", Address: fmt.Sprintf("audit-%d.example", i)}}); err != nil {
+			t.Fatalf("keyless add %d: %v", i, err)
+		}
+		if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "audit")); err != nil {
+			t.Fatalf("remove %d: %v", i, err)
+		}
+	}
+	audits := 0
+	for key, receipt := range f.m.cfg.store.receiptsSnapshot() {
+		scope, _ := parseHostReceiptScopedKey(key)
+		if scope.Name == "audit" && receipt.Audit {
+			audits++
+		}
+	}
+	if audits != 2 {
+		t.Fatalf("stored keyless audit records = %d, want the bound 2", audits)
+	}
+}
+
+// TestHostReceiptPurgeNotResurrectedByPreservation pins the review finding: a
+// receipt the tombstone purge dropped must leave hub.toml with the tombstone —
+// the reserved-key preservation rule must not re-emit the file's older copy,
+// or a restart would serve the purged key as the recorded outcome instead of
+// the `stale-entry` (pruned-generation) refusal on the surviving marker.
+func TestHostReceiptPurgeNotResurrectedByPreservation(t *testing.T) {
+	f := newUpdateFixture(t)
+	removeKey := newTestMutationID()
+	params := removeRequest(t, f.m, "side")
+	params.MutationID = removeKey
+	if _, err := f.m.Remove(context.Background(), params); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	f.m.cfg.now = func() time.Time { return time.Now().UTC().Add(DefaultHostTombstoneRetention + time.Hour) }
+	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later", Address: "later.example"}}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	cfg, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	for key := range cfg.MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.Name == "side" {
+			t.Fatalf("hub.toml still carries the purged receipt %q", key)
+		}
+	}
+	markerSeen := false
+	for key := range cfg.PrunedReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == removeKey {
+			markerSeen = true
+		}
+	}
+	if !markerSeen {
+		t.Fatal("the purge's marker is not in hub.toml")
+	}
+	// A restart keeps the refusal: the purged key reads stale-entry, never the
+	// resurrected recorded outcome.
+	boot := bootHostManager(t, f.configPath)
+	generation, incarnation := testMutationIdentity(t, boot, "later")
+	if _, err := boot.Remove(context.Background(), appwire.HostRemoveParams{
+		Name: "side", MutationID: removeKey, ExpectedGeneration: generation, ExpectedIncarnationID: incarnation,
+	}); err == nil {
+		t.Fatal("a purged-key replay committed after restart")
+	} else {
+		info, _, _ := deployWireInfo(t, err)
+		if info != appwire.ErrorStaleEntry {
+			t.Fatalf("after restart the purged key refused %q, want %q", info, appwire.ErrorStaleEntry)
+		}
+	}
+}
+
+// TestHostReceiptEvictionMarkersBounded pins the review finding's fix: a
+// capacity eviction's purge persists markers for the evicted name, and marker
+// compaction must run in the SAME atomic write, so one persist can never write
+// more markers than the bound (§6: "every `hub.toml` mutation and every boot
+// compacts markers past either bound in the same atomic write").
+func TestHostReceiptEvictionMarkersBounded(t *testing.T) {
+	f := newUpdateFixture(t)
+	f.m.cfg.policy.tombstoneMaxCount = 1
+	f.m.cfg.policy.prunedMaxCount = 2
+	base := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	f.m.cfg.now = func() time.Time { return base }
+	// Churn one name through several keyless add/remove cycles so it carries
+	// audit receipts the eviction purge will drop all at once.
+	for i := range 5 {
+		if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "churn", Address: fmt.Sprintf("churn-%d.example", i)}}); err != nil {
+			t.Fatalf("add %d: %v", i, err)
+		}
+		if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "churn")); err != nil {
+			t.Fatalf("remove %d: %v", i, err)
+		}
+	}
+	if _, ok := f.m.cfg.store.tombstoneSnapshot()["churn"]; !ok {
+		t.Fatal("the churn tombstone is missing before the eviction")
+	}
+	// The next removal exceeds the count cap and evicts churn — its purge
+	// drops the name's receipts and persists their markers.
+	f.m.cfg.now = func() time.Time { return base.Add(time.Hour) }
+	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
+		t.Fatalf("Remove(side): %v", err)
+	}
+	if _, still := f.m.cfg.store.tombstoneSnapshot()["churn"]; still {
+		t.Fatal("the eviction did not drop the oldest tombstone")
+	}
+	cfg, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	total := 0
+	for key := range cfg.PrunedReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.Name == "churn" {
+			total++
+		}
+	}
+	if total > 2 {
+		t.Fatalf("hub.toml carries %d markers for the evicted name, want the bound 2 in the same write", total)
+	}
+	if total == 0 {
+		t.Fatal("the eviction persisted no markers at all; the test no longer exercises the purge")
+	}
+}
+
+// TestHostReceiptKeyedReAddNotPurgedByItsOwnWrite pins the review finding: a
+// keyed re-add over a tombstone stages its own receipt into the very write
+// whose re-add purge drops the name's superseded receipts. The staged receipt
+// must be protected — otherwise the file loses it (and gains a false pruned
+// marker) while the store keeps it, and a lost-response replay after a restart
+// refuses `stale-entry` instead of returning the recorded committed row.
+func TestHostReceiptKeyedReAddNotPurgedByItsOwnWrite(t *testing.T) {
+	f := newUpdateFixture(t)
+	removeKey := newTestMutationID()
+	removeParams := removeRequest(t, f.m, "side")
+	removeParams.MutationID = removeKey
+	if _, err := f.m.Remove(context.Background(), removeParams); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	addKey := newTestMutationID()
+	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{
+		Entry:      appwire.HostEntry{Name: "side", Address: "fresh.example"},
+		MutationID: addKey,
+	}); err != nil {
+		t.Fatalf("keyed re-add: %v", err)
+	}
+	// The durable file carries the re-add's receipt and no marker for its key.
+	cfg, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	for key := range cfg.PrunedReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == addKey {
+			t.Fatalf("the re-add's own write persisted a pruned marker for its receipt: %q", key)
+		}
+	}
+	found := false
+	for key, receipt := range cfg.MutationReceipts {
+		if scope, ok := parseHostReceiptScopedKey(key); ok && scope.MutationID == addKey {
+			found = true
+			_ = receipt
+		}
+	}
+	if !found {
+		t.Fatal("hub.toml lost the keyed re-add's just-committed receipt")
+	}
+	// A restart then a lost-response replay returns the recorded committed row.
+	boot := bootHostManager(t, f.configPath)
+	resp, err := boot.Add(context.Background(), appwire.HostAddParams{
+		Entry:      appwire.HostEntry{Name: "side", Address: "fresh.example"},
+		MutationID: addKey,
+	})
+	if err != nil {
+		t.Fatalf("replay after restart: %v", err)
+	}
+	if resp.Name != "side" || resp.Removed || resp.Address != "fresh.example" {
+		t.Fatalf("replay row = %+v, want the recorded committed row", resp)
+	}
+}
+
+// TestHostTombstonePruneRaisesPresenceCounter pins the review finding: the
+// expiry prune persists an ADVANCED presence epoch in the name's high-water
+// entry, so the registry's counter must be raised to that value in the same
+// step — otherwise a same-process re-add mints a value equal to the retained
+// mark (the restart path seeds the counter and mints strictly above), and the
+// durable identity outcome depends on whether the process restarted.
+func TestHostTombstonePruneRaisesPresenceCounter(t *testing.T) {
+	f := newUpdateFixture(t)
+	removedAt := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	f.m.cfg.now = func() time.Time { return removedAt }
+	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	f.m.cfg.now = func() time.Time { return removedAt.Add(DefaultHostTombstoneRetention + time.Hour) }
+	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "later", Address: "later.example"}}); err != nil {
+		t.Fatalf("Add(later): %v", err)
+	}
+	cfg, err := LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	mark, ok := cfg.Generations["side"]
+	if !ok {
+		t.Fatal("the prune did not persist the name's high-water entry")
+	}
+	// Same-process re-add: strictly above the retained mark.
+	if _, err := f.m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "side2.example"}}); err != nil {
+		t.Fatalf("re-add: %v", err)
+	}
+	sameProcess, _ := f.m.cfg.hosts.Get("side")
+	if sameProcess.PresenceEpoch <= mark.PresenceEpoch {
+		t.Fatalf("same-process re-add presence epoch = %d, want strictly above the pruned mark %d", sameProcess.PresenceEpoch, mark.PresenceEpoch)
+	}
+	// A restart's re-add produces the same strict ordering.
+	f.m.cfg.now = func() time.Time { return removedAt.Add(2 * DefaultHostTombstoneRetention) }
+	if _, err := f.m.Remove(context.Background(), removeRequestFor("side", sameProcess.Generation, sameProcess.IncarnationID)); err != nil {
+		t.Fatalf("second Remove: %v", err)
+	}
+	boot := bootHostManager(t, f.configPath)
+	cfg, err = LoadConfig(f.configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	mark, ok = cfg.Generations["side"]
+	if !ok {
+		t.Fatal("the second removal lost the high-water entry")
+	}
+	boot.cfg.now = func() time.Time { return removedAt.Add(3 * DefaultHostTombstoneRetention) }
+	if _, err := boot.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "side3.example"}}); err != nil {
+		t.Fatalf("re-add after restart: %v", err)
+	}
+	restarted, _ := boot.cfg.hosts.Get("side")
+	if restarted.PresenceEpoch <= mark.PresenceEpoch {
+		t.Fatalf("restart re-add presence epoch = %d, want strictly above the mark %d", restarted.PresenceEpoch, mark.PresenceEpoch)
+	}
+}
