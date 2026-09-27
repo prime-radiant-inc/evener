@@ -3,15 +3,13 @@ import type { ReactTestRenderer } from "react-test-renderer";
 import { act } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { render } from "../renderNative.testkit";
-import type { ProjectTreeItem } from "./projectTree";
-import { ProjectTreeRow } from "./ProjectTreeRow";
+import { type ProjectRowItem, ProjectTreeRow } from "./ProjectTreeRow";
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
 
-type RowItem = Exclude<ProjectTreeItem, { kind: "session" }>;
 const project = (over: Partial<NavigationProjectSummary> = {}): NavigationProjectSummary => ({
 	key: "evener",
 	name: "evener",
@@ -22,7 +20,7 @@ const project = (over: Partial<NavigationProjectSummary> = {}): NavigationProjec
 const laptop = { id: "local", label: "Laptop", online: true };
 const park = { id: "paradise-park", label: "paradise-park", online: false };
 
-function draw(item: RowItem, onPress = () => {}) {
+function draw(item: ProjectRowItem, onPress = () => {}) {
 	return render(<ProjectTreeRow item={item} onPress={onPress} />);
 }
 const texts = (tree: ReactTestRenderer) =>
@@ -54,7 +52,7 @@ describe("host rows", () => {
 
 describe("project rows", () => {
 	it("puts a pin before a pinned project's name", () => {
-		const item: RowItem = {
+		const item: ProjectRowItem = {
 			kind: "project",
 			key: "p",
 			fold: "project:evener",
@@ -69,7 +67,7 @@ describe("project rows", () => {
 	});
 
 	it("draws no pin for an unpinned project, and names an unnamed one by its directory", () => {
-		const item: RowItem = {
+		const item: ProjectRowItem = {
 			kind: "project",
 			key: "p",
 			fold: "project:x",
@@ -85,14 +83,14 @@ describe("project rows", () => {
 
 	it("opens its menu on a long press", () => {
 		const onLongPress = vi.fn();
-		const item: RowItem = { kind: "project", key: "p", fold: "f", depth: 0, project: project(), liveCount: null, folded: true };
+		const item: ProjectRowItem = { kind: "project", key: "p", fold: "f", depth: 0, project: project(), liveCount: null, folded: true };
 		const tree = render(<ProjectTreeRow item={item} onPress={() => {}} onLongPress={onLongPress} />);
 		act(() => pressables(tree)[0].props.onLongPress());
 		expect(onLongPress).toHaveBeenCalledTimes(1);
 	});
 
 	it("dims while a change to the project is on its way", () => {
-		const item: RowItem = { kind: "project", key: "p", fold: "f", depth: 0, project: project(), liveCount: null, folded: true };
+		const item: ProjectRowItem = { kind: "project", key: "p", fold: "f", depth: 0, project: project(), liveCount: null, folded: true };
 		const opacity = (changing: boolean) => {
 			const tree = render(<ProjectTreeRow item={item} onPress={() => {}} changing={changing} />);
 			return pressables(tree)[0].props.style({ pressed: false }).opacity;
@@ -158,7 +156,7 @@ describe("the rows inside a project", () => {
 });
 
 it("reports whether each folding row is open", () => {
-	const folding: RowItem[] = [
+	const folding: ProjectRowItem[] = [
 		{ kind: "host", key: "h", fold: "h", depth: 0, host: laptop, liveCount: null, folded: true },
 		{ kind: "project", key: "p", fold: "p", depth: 0, project: project(), liveCount: null, folded: false },
 		{ kind: "branch", key: "b", fold: "b", depth: 1, host: laptop, folded: true },

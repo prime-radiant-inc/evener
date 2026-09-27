@@ -32,6 +32,7 @@ import { navigationTree } from "./navigationTree";
 import {
 	controllerOwnedProject,
 	type OrganizationObservation,
+	projectName,
 	readOrganizationNavigation,
 } from "./organizationNavigation";
 import type { Routes } from "./screens";
@@ -657,7 +658,7 @@ export function ProjectsScreen({
 									favorite: row.favorite ?? false,
 								}
 					}
-					title={(row) => row.name || row.working_dir || "Untitled project"}
+					title={projectName}
 					detail={(row) =>
 						`${row.favorite ? "Pinned · " : ""}${row.session_count} sessions${row.working_dir ? ` · ${row.working_dir}` : ""}`
 					}

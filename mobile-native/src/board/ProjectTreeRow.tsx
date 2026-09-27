@@ -2,10 +2,10 @@
 // a host, a project, a host branch inside a project, a tier's caption, the
 // Archived group, a "more" row, or a placeholder, and the section's header.
 // Sessions draw as quiet BoardRows instead.
-import type { NavigationProjectSummary } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import type { ReactElement, ReactNode } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
+import { projectName } from "../organizationNavigation";
 import { useColors, useTextScale } from "../ui";
 import { plural } from "./attention";
 import type { OrganizeBy } from "./boardMemory";
@@ -24,9 +24,8 @@ export interface ProjectTreeRowProps {
 	changing?: boolean;
 }
 
-/** A project's name as the Board shows it. */
-export const projectName = (project: NavigationProjectSummary) =>
-	project.name || project.working_dir || "Untitled project";
+/** A project's name as the Board shows it, shared with the other screens. */
+export { projectName };
 
 /** Where a row's content starts: the 16pt margin, then 16pt per level. */
 export const projectIndent = (depth: number) => 16 + 16 * depth;
@@ -144,8 +143,7 @@ export function ProjectTreeRow({ item, onPress, onLongPress, changing = false }:
 			);
 		case "more":
 		case "moreProjects": {
-			const more =
-				item.kind === "more" ? `${item.remaining} more` : `${item.remaining} more ${item.remaining === 1 ? "project" : "projects"}`;
+			const more = item.kind === "more" ? `${item.remaining} more` : plural(item.remaining, "more project");
 			return (
 				<Pressable
 					accessibilityRole="button"

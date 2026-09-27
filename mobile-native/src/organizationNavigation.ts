@@ -101,7 +101,7 @@ export async function readOrganizationNavigation(
 			throw Error(
 				"The project's working directory changed. Its organization could not be confirmed.",
 			);
-		title = project.name || project.working_dir || "Untitled project";
+		title = projectName(project);
 		if (operation.kind === "favorite") {
 			state = project.favorite ? "pinned" : "unpinned";
 			matches = !!project.favorite === operation.params.favorited;
@@ -133,4 +133,10 @@ export async function readOrganizationNavigation(
 // a controller-only project, which is what the summary reports here.
 export function controllerOwnedProject(sources?: readonly string[]): boolean {
 	return (sources ?? []).every((source) => source === "local");
+}
+
+/** A project's name as the phone shows it: its name, else its working
+ * directory. */
+export function projectName(project: NavigationProjectSummary): string {
+	return project.name || project.working_dir || "Untitled project";
 }
