@@ -10,6 +10,7 @@ import {
 	liveSummary,
 	stateWord,
 	summaryText,
+	taskLine,
 	usualPlace,
 	whyLine,
 	workingActivity,
@@ -240,6 +241,46 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 	});
 });
 
+describe("the task line (spec 7.2, S13)", () => {
+	it("names the task now in progress by the hub's own position for it", () => {
+		const unfinished = row("s", {
+			tasks: { total: 7, done: 3, current_id: 4, current: "Fix the settle/drain race" },
+		});
+		expect(taskLine(unfinished)).toBe("Task 4 of 7 · Fix the settle/drain race");
+	});
+
+	it("trusts current_id over done/cancelled when a later task already settled out of order", () => {
+		// 3 tasks are settled (done or cancelled), but the one still in progress
+		// is task 2, not task 4: dependency-driven completion can settle a
+		// later task before an earlier one. done + cancelled + 1 would say 4.
+		const outOfOrder = row("s", {
+			tasks: { total: 7, done: 2, cancelled: 1, current_id: 2, current: "Fix the settle/drain race" },
+		});
+		expect(taskLine(outOfOrder)).toBe("Task 2 of 7 · Fix the settle/drain race");
+	});
+
+	it("falls back to counting done and cancelled tasks when the hub omits current_id", () => {
+		const withCancellation = row("s", {
+			tasks: { total: 4, done: 2, cancelled: 1, current: "Cap retries per host" },
+		});
+		expect(taskLine(withCancellation)).toBe("Task 4 of 4 · Cap retries per host");
+	});
+
+	it("has no line once every task is done or cancelled (current absent)", () => {
+		const finished = row("s", { tasks: { total: 3, done: 2, cancelled: 1 } });
+		expect(taskLine(finished)).toBeNull();
+	});
+
+	it("has no line before any task starts (current absent, nothing done yet)", () => {
+		const notStarted = row("s", { tasks: { total: 5, done: 0 } });
+		expect(taskLine(notStarted)).toBeNull();
+	});
+
+	it("has no line for a session with no task list", () => {
+		expect(taskLine(row("s"))).toBeNull();
+	});
+});
+
 describe("the last line prints project and host only when unusual", () => {
 	const fleet = [
 		row("a", { project: "evener", host_id: "local" }),
@@ -259,5 +300,25 @@ describe("the last line prints project and host only when unusual", () => {
 			project: "docs",
 			host: "paradise-park",
 		});
+	});
+
+	it("carries task progress alongside an unusual project and host", () => {
+		const usual = usualPlace(fleet);
+		const withTask = row("d", {
+			project: "docs",
+			host_id: "paradise-park",
+			tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
+		});
+		expect(lastLine(withTask, usual, label)).toEqual({
+			task: "Task 4 of 7 · Fix the settle/drain race",
+			project: "docs",
+			host: "paradise-park",
+		});
+	});
+
+	it("has no last line when the task list is finished and the project and host are usual", () => {
+		const usual = usualPlace(fleet);
+		const finished = row("a", { tasks: { total: 2, done: 2 } });
+		expect(lastLine(finished, usual, label)).toBeNull();
 	});
 });
