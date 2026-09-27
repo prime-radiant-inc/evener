@@ -1380,7 +1380,7 @@ The web checks for and applies the hub's own updates through `cmd/evener-hub/fro
 **Requirements (ruling 22):**
 1. **The web's behavior, moved.** The controller does exactly what the web store does today (`stores/hubUpdate.ts:117-215`):
    - `setChannel` retires any check in flight and clears the result, its error, the apply error and `restartTimedOut`;
-   - `runCheck` clears the previous result first, sends `evener/update/check` with `{ channel: channel ?? "" }`, and only the newest check writes its answer or its error (`friendlyErrorMessage`);
+   - `runCheck` first clears the previous result, its error and a stale `restartTimedOut`, then sends `evener/update/check` with `{ channel: channel ?? "" }`, and only the newest check writes its answer or its error (`friendlyErrorMessage`);
    - `apply` does nothing while applying or restarting. It refuses without a check ("Check for updates first"), for a check from another channel ("That result is stale; run a fresh check first"), and when nothing is waiting ("Already up to date"), sending nothing. Otherwise it sends `evener/update/apply` with `{ channel: channel ?? "" }` and `{ timeoutMs: APPLY_TIMEOUT_MS }`;
    - an answer of `restarting: false` is "Already up to date";
    - a `WireError`, a `ConnectionClosedError`, or an error whose message says "cannot call" means the hub refused or never got the request, and stays an error. Any other failure means the answer was lost, and waits for the restart as a success does.
