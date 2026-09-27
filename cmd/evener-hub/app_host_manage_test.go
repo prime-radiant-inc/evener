@@ -342,10 +342,24 @@ func TestHostManageRemoveThenReAdd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List = %v", err)
 	}
-	for _, r := range list.Hosts {
+	// Registry spec 08 §15 (S11) changes this assertion's contract: a removed
+	// host is retained as a TOMBSTONE row — `removed: true` plus its
+	// retained-row count, rendered from the removed entry's effective config —
+	// so its last-known sessions survive as stale in the tree. The old
+	// "not listed at all" expectation predates tombstones; the row's absence
+	// from the registry, source set, and store is asserted above and is
+	// unchanged.
+	var tombstone *appwire.HostRow
+	for i, r := range list.Hosts {
 		if r.Name == "side" {
-			t.Fatalf("removed host still listed: %+v", r)
+			tombstone = &list.Hosts[i]
 		}
+	}
+	if tombstone == nil {
+		t.Fatal("removed host has no tombstone row in list")
+	}
+	if !tombstone.Removed || tombstone.Attached || tombstone.RetainedRows == nil {
+		t.Fatalf("tombstone row = %+v, want removed, detached, with a retained-row count", *tombstone)
 	}
 	// Re-add works with a different address: no resurrection of the old row.
 	row, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "side", Address: "s2.example"}})
@@ -354,6 +368,16 @@ func TestHostManageRemoveThenReAdd(t *testing.T) {
 	}
 	if row.Address != "s2.example" || row.Removed || row.Origin != hostOriginHubTOML {
 		t.Fatalf("re-add row = %+v, want a fresh hub.toml row", row)
+	}
+	// The re-add purged the tombstone: no removed row for the name survives.
+	relisted, err := m.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List after re-add = %v", err)
+	}
+	for _, r := range relisted.Hosts {
+		if r.Name == "side" && r.Removed {
+			t.Fatalf("re-add left a tombstone row: %+v", r)
+		}
 	}
 }
 
@@ -1404,8 +1428,17 @@ func TestHubTOMLMigrationNormalizesEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List after remove: %v", err)
 	}
-	if len(list.Hosts) != 0 {
-		t.Fatalf("list after the removal-and-reload = %+v, want no hosts", list.Hosts)
+	// Registry spec 08 §15 (S11): the removed migrated host survives as a
+	// tombstone row (`removed: true`) — no LIVE host may render, which is what
+	// the resurrection check needs, and the retired sidecar's entries stay
+	// gone from the registry.
+	for _, row := range list.Hosts {
+		if !row.Removed {
+			t.Fatalf("list after the removal-and-reload = %+v, want no live hosts", list.Hosts)
+		}
+	}
+	if _, live := m3.cfg.hosts.Get("side"); live {
+		t.Fatal("the removed migrated host was resurrected on reload")
 	}
 }
 
@@ -2161,8 +2194,25 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 		names = append(names, row.Name)
 	}
 	slices.Sort(names)
-	if !slices.Equal(names, []string{"keep", "other"}) {
-		t.Fatalf("reloaded hosts = %v, want keep + other only: a mid-window save resurrected or lost an entry", names)
+	// Registry spec 08 §15 (S11): the removed host stays as a tombstone ROW,
+	// so the reload lists it with `removed: true` while the durable [[hosts]]
+	// set (asserted just above) holds only the two live names. A resurrected
+	// live row would fail the Removed check below.
+	byName := make(map[string]appwire.HostRow, len(list.Hosts))
+	for _, row := range list.Hosts {
+		if _, duplicate := byName[row.Name]; duplicate {
+			t.Fatalf("reloaded hosts list %q twice: %+v", row.Name, list.Hosts)
+		}
+		byName[row.Name] = row
+	}
+	for _, name := range []string{"keep", "other"} {
+		row, ok := byName[name]
+		if !ok || row.Removed {
+			t.Fatalf("reloaded host %q = %+v, want a live row: a mid-window save resurrected or lost an entry", name, row)
+		}
+	}
+	if row, ok := byName["side"]; !ok || !row.Removed {
+		t.Fatalf("reloaded host side = %+v, want the tombstone row spec 08 §15 requires", row)
 	}
 
 	// The fence lifted with the removal: the name is addable again.

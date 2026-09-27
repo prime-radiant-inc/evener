@@ -192,6 +192,23 @@ type WebConfig struct {
 	// against (deploy pipeline 08b §10): below it the hub reports unhealthy
 	// without running the write probe. Zero takes DefaultHostMinFreeSpaceBytes.
 	HostMinFreeSpaceBytes int64
+	// The host-record retention knobs (registry spec 08 §6/§11/§15): the
+	// tombstone retention period, the per-tombstone and global tombstone
+	// bounds, and the superseded-receipt, pruned-marker, and keyless-audit
+	// bounds. Each non-positive value takes the hub package's documented
+	// default, so a zero WebConfig (tests, embedders) uses the shipped
+	// defaults.
+	HostTombstoneRetention        time.Duration
+	HostTombstoneMaxRows          int
+	HostTombstoneMaxRowBytes      int64
+	HostTombstoneMaxCount         int
+	HostTombstoneMaxBytes         int64
+	HostSupersededReceiptMaxCount int
+	HostSupersededReceiptTTL      time.Duration
+	HostPrunedReceiptMaxCount     int
+	HostPrunedReceiptTTL          time.Duration
+	HostKeylessAuditMaxCount      int
+	HostKeylessAuditTTL           time.Duration
 	// HubBootID identifies this controller process incarnation for the durable
 	// probe epochs evener/host/plan persists (deploy pipeline 08b §6 step 2,
 	// crash-fencing spec §4). Empty disables probe-epoch persistence, and a plan

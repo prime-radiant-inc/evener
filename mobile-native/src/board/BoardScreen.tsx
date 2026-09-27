@@ -1,7 +1,11 @@
-import { humanizeState, type NavigationSessionSummary } from "@evener/appwire-client";
+import {
+	humanizeState,
+	type NavigationPinSectionDescriptor,
+	type NavigationSessionSummary,
+} from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { type SFSymbol, SymbolView } from "expo-symbols";
+import { SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
 	ActionSheetIOS,
@@ -27,20 +31,25 @@ import { drafts } from "../nativeDrafts";
 import { RosterSearch } from "../rosterSearch";
 import type { Routes } from "../screens";
 import { Action, Copy, styles, useColors, useTextScale } from "../ui";
+import { usePinNavigation } from "../usePinNavigation";
 import {
 	type Band,
 	type ClassifiedRow,
 	type LiveSummary,
 	liveBands,
 	liveSummary,
+	plural,
+	rowClassifier,
+	sectionLabel,
 	summaryText,
 	usualPlace,
 } from "./attention";
 import type { SeenMarkers } from "./boardMemory";
-import { BoardRow, TITLE_INSET } from "./BoardRow";
+import { bandHeaderText, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { foldedSections, seenMarkers } from "./nativeBoardMemory";
+import { PinnedSection, useCategoryFolds } from "./PinnedSections";
 import { PulseMeter } from "./PulseMeter";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
@@ -55,10 +64,6 @@ const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 	finished: "FINISHED",
 	working: "WORKING",
 };
-
-const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
-/** A section's VoiceOver label, shared by its chip and its row. */
-const sectionLabel = (name: string, count: number, noun: string) => `${name}, ${plural(count, noun)}`;
 
 /** Home (spec 7.1): every live session ordered by who needs you, then the
  * user's pinned categories, projects and archive. */
@@ -123,6 +128,13 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		return (hostId: string) => labels.get(hostId) ?? hostId;
 	}, [sources]);
 
+	const classify = useMemo(
+		() => rowClassifier(snapshot.needsYou.rows, (row) => markers.isSeen(row)),
+		[snapshot.needsYou.rows, markers],
+	);
+	const folds = useCategoryFolds(hubId);
+	const categoryMenu = useCategoryMenu(hubId, () => board.getSnapshot().pins.rows);
+
 	const [idleFolded, setIdleFolded] = useState(() => foldedSections(hubId).isFolded("idle", true));
 	const foldIdle = (folded: boolean) => {
 		foldedSections(hubId).setFolded("idle", folded);
@@ -142,6 +154,15 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const openSession = (row: NavigationSessionSummary) => {
 		markers.markSeen(row);
 		navigation.navigate("Conversation", { hubId, ref: row.ref, title: row.title });
+	};
+	// A search result opens like its Board row when the Board lists it, so
+	// it's marked seen with the row's own hub timestamp. A session the Board
+	// doesn't list has no Finished state to clear.
+	const openResult = (result: { ref: string; title: string }) => {
+		const listed = (row: NavigationSessionSummary) => row.ref === result.ref;
+		const row = snapshot.live.rows.find(listed) ?? snapshot.needsYou.rows.find(listed);
+		if (row) openSession(row);
+		else navigation.navigate("Conversation", { hubId, ref: result.ref, title: result.title });
 	};
 
 	// Where each section starts in the scroller, for the chips and the
@@ -178,7 +199,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	const manifest = snapshot.manifest;
 	const liveTotal = bands.needsYou.length + bands.finished.length + bands.working.length + bands.idle.length;
-	// Every category keeps its row; only the chips hide empty ones.
+	// Every category keeps its section; only the chips hide empty ones.
 	const pins = snapshot.pins.rows;
 	const projects = manifest?.catalogs.projects.count ?? 0;
 	const archived = manifest?.catalogs.archived_projects.count ?? 0;
@@ -200,7 +221,11 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			count: pin.count,
 			pinned: true,
 			label: sectionLabel(pin.name, pin.count, "session"),
-			onPress: () => scrollTo(`pin:${pin.id}`),
+			// A chip that landed on a folded header would show nothing.
+			onPress: () => {
+				folds.setFolded(pin.id, false);
+				scrollTo(`pin:${pin.id}`);
+			},
 		});
 	if (projects > 0)
 		chips.push({
@@ -219,23 +244,10 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			onPress: () => scrollTo("archived"),
 		});
 
-	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean) =>
-		items.map((item, index) => (
-			<View key={item.row.ref}>
-				{index > 0 ? <Hairline inset={TITLE_INSET} /> : null}
-				<BoardRow
-					item={item}
-					variant={variant}
-					moving={moving}
-					connected={connected}
-					usual={usual}
-					hostLabel={hostLabel}
-					hasDraft={draftRefs.has(item.row.ref)}
-					now={now}
-					onOpen={openSession}
-				/>
-			</View>
-		));
+	const rowContext: RowContext = { connected, usual, hostLabel, now, onOpen: openSession, draftRefs };
+	const rows = (items: ClassifiedRow[], variant: "signal" | "quiet", moving: boolean) => (
+		<BoardRows items={items} variant={variant} moving={moving} context={rowContext} />
+	);
 	const band = (key: Exclude<Band, "idle">, moving: boolean) =>
 		bands[key].length ? (
 			<View key={key} onLayout={measure(key)}>
@@ -271,7 +283,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		<View style={{ flex: 1, backgroundColor: palette.page }}>
 			{searchOpen ? <SearchField search={search} connected={connected} /> : null}
 			{search.active ? (
-				<SearchResults search={search} connected={connected} hubId={hubId} navigation={navigation} />
+				<SearchResults search={search} connected={connected} onOpen={openResult} />
 			) : (
 				<>
 					{chips.length ? <Chips chips={chips} /> : null}
@@ -300,16 +312,18 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 							{live}
 						</View>
 						{pins.map((pin) => (
-							<View key={pin.id} onLayout={measure(`pin:${pin.id}`)}>
-								<SectionRow
-									glyph="pin.fill"
-									text={`${pin.name} · ${pin.count}`}
-									label={sectionLabel(pin.name, pin.count, "session")}
-									onPress={() =>
-										navigation.navigate("PinnedSection", { hubId, sectionId: pin.id, title: pin.name })
-									}
-								/>
-							</View>
+							<PinnedSection
+								key={pin.id}
+								section={pin}
+								page={snapshot.pinSections[pin.id]}
+								classify={classify}
+								context={rowContext}
+								folded={folds.isFolded(pin.id)}
+								onToggle={() => folds.setFolded(pin.id, !folds.isFolded(pin.id))}
+								onMenu={categoryMenu.menuFor(pin)}
+								changing={categoryMenu.changing(pin.id)}
+								onLayout={measure(`pin:${pin.id}`)}
+							/>
 						))}
 						{projects > 0 ? (
 							<View onLayout={measure("projects")}>
@@ -335,6 +349,82 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			<BoardToolbar state={state} fatal={fatal} newSessionDisabled={!connected} onNewSession={newSession} />
 		</View>
 	);
+}
+
+/** Rename and Delete for the pinned categories (spec 7.1), through one
+ * organization journal for the whole Board. ⋯ shows only while a change can
+ * go out: connected, the journal confirmed against the hub, and no change
+ * pending or unresolved. The journal's own error text is never shown; a
+ * change on its way dims its category. */
+function useCategoryMenu(hubId: string, catalog: () => readonly NavigationPinSectionDescriptor[]) {
+	const pin = usePinNavigation(hubId);
+	const free = (action: { pending: boolean; uncertain: boolean; storageUnavailable: boolean } | null) =>
+		!!action && !action.pending && !action.uncertain && !action.storageUnavailable;
+	const canChange = pin.ready && pin.confirmed && !!pin.actions && free(pin.action);
+	// Checked again at every press: the connection or the journal may have
+	// moved while the sheet or an alert was up.
+	const canChangeNow = () => pin.isCurrent() && !!pin.actions && free(pin.actions.getSnapshot());
+	const listed = (sectionId: string) => catalog().some((section) => section.id === sectionId);
+	const rename = (section: NavigationPinSectionDescriptor) =>
+		Alert.prompt(
+			"Rename category",
+			undefined,
+			[
+				{ text: "Cancel", style: "cancel" },
+				{
+					text: "Rename",
+					onPress: (value?: string) => {
+						const name = (value ?? "").trim();
+						if (!name || name === section.name) return;
+						if (Array.from(name).length > 80) {
+							Alert.alert("Category names can be up to 80 characters.");
+							return;
+						}
+						if (!canChangeNow() || !listed(section.id)) return;
+						void pin.actions?.renamePinSection({ sectionId: section.id, name });
+					},
+				},
+			],
+			"plain-text",
+			section.name,
+		);
+	const remove = (section: NavigationPinSectionDescriptor) =>
+		Alert.alert(`Delete “${section.name}”?`, "Its sessions stay; they're only unpinned.", [
+			{ text: "Cancel", style: "cancel" },
+			{
+				text: "Delete",
+				style: "destructive",
+				onPress: () => {
+					if (!canChangeNow() || !listed(section.id)) return;
+					void pin.actions?.deletePinSection({ sectionId: section.id });
+				},
+			},
+		]);
+	const open = (section: NavigationPinSectionDescriptor) => {
+		if (!canChangeNow()) return;
+		if (Platform.OS === "ios") {
+			ActionSheetIOS.showActionSheetWithOptions(
+				{ title: section.name, options: ["Rename", "Delete", "Cancel"], destructiveButtonIndex: 1, cancelButtonIndex: 2 },
+				(index) => {
+					if (index === 0) rename(section);
+					else if (index === 1) remove(section);
+				},
+			);
+			return;
+		}
+		// Alert.prompt is iOS-only, so Rename stays off other platforms.
+		Alert.alert(section.name, undefined, [
+			{ text: "Delete", style: "destructive", onPress: () => remove(section) },
+			{ text: "Cancel", style: "cancel" },
+		]);
+	};
+	const operation = pin.action?.pending ? pin.action.recovery?.operation : undefined;
+	return {
+		menuFor: (section: NavigationPinSectionDescriptor) => (canChange ? () => open(section) : null),
+		changing: (sectionId: string) =>
+			(operation?.kind === "renamePinSection" || operation?.kind === "deletePinSection") &&
+			operation.params.sectionId === sectionId,
+	};
 }
 
 /** The drafts saved on this device for a hub's sessions, or none when the
@@ -371,16 +461,17 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 }
 
 /** While any of the Board's reads has failed on a ready connection (Live,
- * Needs you, the pin catalog or the manifest; first read or later), rebind
- * the client after a backoff that grows with each failed attempt. Nothing
- * else would retry it while the Board stays in view: an idle fleet sends no
- * invalidations, and the controller retries failed reads only when it
- * resumes, on a focus change. The retry waits while another read is still
- * out, so a rebind never cancels a healthy read. Rebinding is the reconnect
- * path: the loaded rows stay on screen until the fresh reads land, and the
- * screen's load-more pages Live back out. A read that lands, or a new
- * connection, starts the count over; with no client (disconnected or out of
- * view) the hook holds its count and schedules nothing. */
+ * Needs you, the pin catalog, a category or the manifest; first read or
+ * later), rebind the client after a backoff that grows with each failed
+ * attempt. Nothing else would retry it while the Board stays in view: an
+ * idle fleet sends no invalidations, and the controller retries failed
+ * reads only when it resumes, on a focus change. The retry waits while
+ * another read is still out, so a rebind never cancels a healthy read.
+ * Rebinding is the reconnect path: the loaded rows stay on screen until the
+ * fresh reads land, and the screen's load-more pages Live back out. A read
+ * that lands, or a new connection, starts the count over; with no client
+ * (disconnected or out of view) the hook holds its count and schedules
+ * nothing. */
 function useReadRetry(
 	board: BoardController,
 	client: ConversationClientLike | null,
@@ -509,11 +600,6 @@ function HubButton({
 			<SymbolView name="chevron.down" size={13 * scale} tintColor={palette.inkHi} />
 		</Pressable>
 	);
-}
-
-function Hairline({ inset = 0 }: { inset?: number }) {
-	const { palette } = useColors();
-	return <View style={{ height: 0.5, marginLeft: inset, backgroundColor: palette.edge }} />;
 }
 
 interface ChipProps {
@@ -692,10 +778,7 @@ function BandHeader({ text }: { text: string }) {
 				paddingTop: 22,
 				paddingBottom: 6,
 				paddingHorizontal: 16,
-				fontSize: 13 * scale,
-				fontWeight: "600",
-				letterSpacing: 0.4,
-				color: palette.inkMid,
+				...bandHeaderText(palette, scale),
 			}}
 		>
 			{text}
@@ -725,16 +808,14 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 			<Text testID="band-header" allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 15 * scale, color: palette.inkMid }}>
 				{`Idle · ${count}`}
 			</Text>
-			<View style={{ transform: [{ rotate: folded ? "0deg" : "90deg" }] }}>
-				<SymbolView name="chevron.right" size={13 * scale} tintColor={palette.inkLow} />
-			</View>
+			<FoldChevron folded={folded} />
 		</Pressable>
 	);
 }
 
-/** A section after Live that opens its own screen until PR 3 brings it
- * inline. */
-function SectionRow({ glyph, text, label, onPress }: { glyph?: SFSymbol; text: string; label: string; onPress: () => void }) {
+/** Projects or Archived, after the pinned categories: a row that opens its
+ * own screen until PR 3b brings it inline. */
+function SectionRow({ text, label, onPress }: { text: string; label: string; onPress: () => void }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
 	return (
@@ -753,7 +834,6 @@ function SectionRow({ glyph, text, label, onPress }: { glyph?: SFSymbol; text: s
 				backgroundColor: pressed ? palette.pressed : palette.page,
 			})}
 		>
-			{glyph ? <SymbolView name={glyph} size={13 * scale} tintColor={palette.inkLow} /> : null}
 			<Text allowFontScaling={Platform.OS !== "ios"} style={{ flex: 1, fontSize: 17 * scale, color: palette.inkHi }}>
 				{text}
 			</Text>
@@ -924,13 +1004,11 @@ function SearchField({ search, connected }: { search: BoardSearch; connected: bo
 function SearchResults({
 	search,
 	connected,
-	hubId,
-	navigation,
+	onOpen,
 }: {
 	search: BoardSearch;
 	connected: boolean;
-	hubId: string;
-	navigation: Navigation;
+	onOpen: (result: { ref: string; title: string }) => void;
 }) {
 	const colors = useColors();
 	const { fontScale } = useWindowDimensions();
@@ -979,7 +1057,7 @@ function SearchResults({
 						accessibilityLabel={`Open ${item.title || "Untitled session"}`}
 						accessibilityHint={[...(signals.length ? signals : [stateLabel]), item.project].filter(Boolean).join(". ")}
 						disabled={!connected}
-						onPress={() => navigation.navigate("Conversation", { hubId, ref: item.ref, title: item.title })}
+						onPress={() => onOpen(item)}
 						style={{
 							marginHorizontal: 16,
 							paddingVertical: 13,
