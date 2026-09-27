@@ -43,6 +43,39 @@ func TestMaterializeFixtureGitCommitsFilesAndLeavesUntrackedOut(t *testing.T) {
 	}
 }
 
+// TestMaterializeFixtureIgnoresTheUsersGitSetup: the user's global git setup
+// belongs to their own work. A fixture still commits every file, and the
+// agent's own commits still work, when that setup signs every commit, installs
+// hooks through core.hooksPath or init.templateDir, and ignores files the
+// fixture holds. Not parallel: it sets GIT_CONFIG_GLOBAL.
+func TestMaterializeFixtureIgnoresTheUsersGitSetup(t *testing.T) {
+	home := t.TempDir()
+	for _, hook := range []string{filepath.Join(home, "hooks", "pre-commit"), filepath.Join(home, "template", "hooks", "pre-commit")} {
+		mustWrite(t, hook, "#!/bin/sh\necho \"a user hook ran\" >&2\nexit 1\n")
+		if err := os.Chmod(hook, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite(t, filepath.Join(home, "ignore"), "*.txt\n")
+	global := filepath.Join(home, "gitconfig")
+	mustWrite(t, global, "[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n"+
+		"[core]\n\thooksPath = "+filepath.Join(home, "hooks")+"\n\texcludesFile = "+filepath.Join(home, "ignore")+"\n"+
+		"[init]\n\ttemplateDir = "+filepath.Join(home, "template")+"\n")
+	t.Setenv("GIT_CONFIG_GLOBAL", global)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+	work := filepath.Join(t.TempDir(), "work")
+	if err := materializeFixture(work, fixtureSpec{Files: map[string]string{"notes.txt": "kept\n"}, Git: true}); err != nil {
+		t.Fatalf("materializeFixture: %v", err)
+	}
+	if got := fixtureGit(t, work, "ls-files"); got != "notes.txt" {
+		t.Errorf("tracked files = %q, want notes.txt", got)
+	}
+	mustWrite(t, filepath.Join(work, "more.txt"), "the agent's change\n")
+	fixtureGit(t, work, "add", "more.txt")
+	fixtureGit(t, work, "commit", "-q", "-m", "the agent's commit")
+}
+
 func TestMaterializeFixtureRejectsUntrackedPathEscape(t *testing.T) {
 	t.Parallel()
 	err := materializeFixture(filepath.Join(t.TempDir(), "work"), fixtureSpec{

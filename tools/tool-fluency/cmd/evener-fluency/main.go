@@ -1134,16 +1134,18 @@ func writeFixtureFiles(workDir string, files map[string]string) error {
 
 // commitFixture makes workDir a repository on main with one commit holding
 // everything written so far. The identity lives in the repository, so the
-// agent's own commits work on a machine with no global identity. The
-// repository never signs and uses its own hooks directory, so the user's
-// global signing and hooks, which belong to their own work, stay out of it.
+// agent's own commits work on a machine with no global identity. The user's
+// global git setup belongs to their own work and stays out: the repository
+// starts from no template, so no template hooks land in it; it never signs;
+// it uses its own empty hooks directory; and it reads no global ignore file.
 func commitFixture(workDir string) error {
 	for _, args := range [][]string{
-		{"init", "-q", "-b", "main"},
+		{"init", "-q", "-b", "main", "--template="},
 		{"config", "user.name", "Evener Fixture"},
 		{"config", "user.email", "fixture@evener.test"},
 		{"config", "commit.gpgsign", "false"},
 		{"config", "core.hooksPath", ".git/hooks"},
+		{"config", "core.excludesFile", os.DevNull},
 		{"add", "-A"},
 		{"commit", "-q", "--allow-empty", "-m", "init"},
 	} {
