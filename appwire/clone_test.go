@@ -217,3 +217,19 @@ func TestCloneEvenerDiagnosticsOwnsWatches(t *testing.T) {
 		t.Fatal("CloneEvenerWatches(nil) must stay nil")
 	}
 }
+
+func TestCloneThreadOwnsActivity(t *testing.T) {
+	original := Thread{Evener: EvenerThread{Activity: &ThreadActivity{Minutes: []int{0, 1, 2, 3, 4, 5, 6}, LastActivityAt: 7}}}
+	clone := CloneThread(original)
+	if !reflect.DeepEqual(clone, original) {
+		t.Fatal("clone changed values while copying")
+	}
+	clone.Evener.Activity.Minutes[6] = 99
+	clone.Evener.Activity.LastActivityAt = 8
+	if original.Evener.Activity.Minutes[6] != 6 || original.Evener.Activity.LastActivityAt != 7 {
+		t.Fatalf("activity was changed through its clone: %+v", original.Evener.Activity)
+	}
+	if CloneThreadActivity(nil) != nil {
+		t.Fatal("a nil sample cloned to a non-nil one")
+	}
+}

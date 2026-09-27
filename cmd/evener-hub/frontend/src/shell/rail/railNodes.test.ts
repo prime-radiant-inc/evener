@@ -387,6 +387,30 @@ describe("resource projection semantics", () => {
     expect(displayState(session({ kind: "subagent", state: "awaiting" }))).toBe("idle");
     expect(displayState(session({ kind: "subagent", state: "awaiting", ask_pending: true }))).toBe("awaiting");
   });
+  // An approval blocks its turn mid-tool, so the row's wire state stays
+  // "active"; approval_pending is the only thing saying a person is needed.
+  test("an approval presents as needing you on any state but a failure", () => {
+    expect(displayState(session({ state: "active", approval_pending: true }))).toBe("awaiting");
+    expect(displayState(session({ state: "idle", approval_pending: true }))).toBe("awaiting");
+    expect(displayState(session({ state: "errored", approval_pending: true }))).toBe("errored");
+  });
+  test("a descendant waiting on an approval counts as needing you, not as working", () => {
+    const root = session({
+      state: "active",
+      children: [
+        session({ ref: "approval", kind: "fork", state: "active", approval_pending: true }),
+        session({ ref: "worker", kind: "subagent", state: "active" }),
+      ],
+    });
+    expect(needsYouDescendantCount(root)).toBe(1);
+    expect(workingDescendantCount(root)).toBe(1);
+  });
+  test("a project's session waiting on an approval sorts ahead of its working sibling", () => {
+    const working = session({ row_id: "working", ref: "working", state: "active" });
+    const approval = session({ row_id: "approval", ref: "approval", state: "active", approval_pending: true });
+    const [node] = projectNodes([project({ sessions: [working, approval] })], closed);
+    expect(node?.children.map((child) => child.id)).toEqual(["approval", "working"]);
+  });
   test("projects current/recent rows and deterministic bounded overflow pages", () => {
     const rows = [
       session({ row_id: "current", ref: "current", tier: "current" }),

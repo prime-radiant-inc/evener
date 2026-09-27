@@ -88,14 +88,17 @@ type threadEnvelope struct {
 	// VisionModel is the session's vision side-channel setting ("", "off", or
 	// a model ref), sampled under its own facet beside reasoning's trio.
 	VisionModel string
-	// Name and Preview are the only two things appThread reads out of
-	// schema.SessionMeta. Storing the two strings rather than the whole struct is
+	// Name, Preview and LastTurnEndedAt are the facetMeta fields appThread reads
+	// out of schema.SessionMeta. Storing them rather than the whole struct is
 	// deliberate: SessionMeta has roughly a dozen other fields (turn counts,
 	// pinned notes, worktree paths) that change constantly and silently, and
 	// storing them would create a dozen values this envelope claims to keep
-	// current and does not.
-	Name    string
-	Preview string
+	// current and does not. LastTurnEndedAt (Unix ms, 0 before any turn has
+	// ended) is current by construction: only a turn ending moves it, and
+	// TURN_ENDED re-samples every facet, facetMeta included.
+	Name            string
+	Preview         string
+	LastTurnEndedAt int64
 }
 
 // ThreadEnvelopeSource supplies the live session values the thread envelope
@@ -395,6 +398,9 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		if facets&facetMeta != 0 {
 			next.Name = strings.TrimSpace(meta.Name)
 			next.Preview = strings.TrimSpace(schema.SessionDisplayName(meta))
+			if !meta.LastTurnEndedAt.IsZero() {
+				next.LastTurnEndedAt = meta.LastTurnEndedAt.UnixMilli()
+			}
 		}
 		if facets&facetGoal != 0 {
 			if meta.Goal != nil {
@@ -518,5 +524,6 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notes
 	if facets&facetMeta != 0 {
 		e.Name = next.Name
 		e.Preview = next.Preview
+		e.LastTurnEndedAt = next.LastTurnEndedAt
 	}
 }

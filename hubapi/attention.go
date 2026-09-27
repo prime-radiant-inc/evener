@@ -8,6 +8,20 @@
 // lives now.
 package hubapi
 
+// AttentionState is the state a session's attention is judged by: its
+// normalized state, except that a pending approval (a sandbox escalation, M7)
+// reads as "awaiting". The escalation blocks mid-turn, so the session keeps
+// reporting "active" while it waits on a person the way a question does. A
+// failure still outranks it: "errored" stays "errored". Rank and level a
+// session through this, never through its reported state alone, which stays
+// unchanged on every row.
+func AttentionState(state string, approvalPending bool) string {
+	if approvalPending && state != "errored" {
+		return "awaiting"
+	}
+	return state
+}
+
 // AttentionRank maps a normalized state to a sort key for live-session
 // ordering. Higher rank sorts first (most attention-needing first).
 func AttentionRank(state string) int {
@@ -82,17 +96,21 @@ func StateWord(state string, askPending bool) string {
 }
 
 // NeedsYouBand ranks a needs-you row into one of three ordering bands:
-// errored (2, "broken beats blocked"), ask-pending (1, "blocked beats
-// your-move"), or your-move (0, a generic settle). Callers sort NeedsYou
-// rows by this band descending, then by recency within a band. Meaningful
-// only for the needs-you tier (errored/awaiting/warning states); callers
-// outside that tier should not invoke it. askPending is ignored when state
-// is "errored" (errored always wins regardless).
-func NeedsYouBand(state string, askPending bool) int {
+// errored (2, "broken beats blocked"), blocked on a person's answer (1: a
+// question or an approval, "blocked beats your-move"), or your-move (0, a
+// generic settle). Callers sort NeedsYou rows by this band descending, then
+// by recency within a band. Meaningful only for the needs-you tier
+// (errored/awaiting/warning states, plus sessions a pending approval
+// promotes); callers outside that tier should not invoke it. An approval
+// blocks mid-turn, so its session still reports "active" and only
+// approvalPending can place it; pass false where the caller has no approval
+// information. Both flags are ignored when state is "errored" (errored
+// always wins regardless).
+func NeedsYouBand(state string, askPending, approvalPending bool) int {
 	switch {
 	case state == "errored":
 		return 2
-	case askPending:
+	case askPending || approvalPending:
 		return 1
 	default:
 		return 0

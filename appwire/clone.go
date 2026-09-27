@@ -98,6 +98,7 @@ func cloneEvenerThread(e EvenerThread) EvenerThread {
 	e.SessionURLs = append([]SessionURL(nil), e.SessionURLs...)
 	e.Usage = clonePointer(e.Usage)
 	e.FailedToolCalls = clonePointer(e.FailedToolCalls)
+	e.Activity = CloneThreadActivity(e.Activity)
 	e.Subagents = clonePointer(e.Subagents)
 	// Capabilities is all bools (value type) — no copy needed.
 	return e
@@ -111,6 +112,16 @@ func clonePointer[T any](value *T) *T {
 		return nil
 	}
 	clone := *value
+	return &clone
+}
+
+// CloneThreadActivity deep-copies a pulse meter sample; nil stays nil.
+func CloneThreadActivity(value *ThreadActivity) *ThreadActivity {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.Minutes = append([]int(nil), value.Minutes...)
 	return &clone
 }
 

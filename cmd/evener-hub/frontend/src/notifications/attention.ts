@@ -1,4 +1,4 @@
-import type { NavigationSessionSummary } from "@evener/appwire-client";
+import { approvalWaiting, type NavigationSessionSummary } from "@evener/appwire-client";
 import type { NotificationsLoudScopePref } from "../stores/prefs";
 
 export type AttentionLevel = "working" | "needs_you" | "error" | "idle";
@@ -23,15 +23,26 @@ export interface AttentionEntry {
   title: string;
   level: "needs_you" | "error";
   askPending: boolean;
+  approvalPending: boolean;
 }
 
 export function snapshotFromNavigation(rows: readonly NavigationSessionSummary[] | null): Map<string, AttentionEntry> {
   const snapshot = new Map<string, AttentionEntry>();
   if (!rows) return snapshot;
   for (const row of rows) {
-    const level = levelFromState(row.state);
+    const approvalPending = row.approval_pending === true;
+    // An approval blocks its turn mid-tool, so the row still reports
+    // "active"; like the hub's promotedAttentionLevel, a pending approval
+    // makes any row short of a failure need you.
+    const level = approvalWaiting(row.state, approvalPending) ? "needs_you" : levelFromState(row.state);
     if (level !== "needs_you" && level !== "error") continue;
-    snapshot.set(row.ref, { ref: row.ref, title: row.title, level, askPending: row.ask_pending === true });
+    snapshot.set(row.ref, {
+      ref: row.ref,
+      title: row.title,
+      level,
+      askPending: row.ask_pending === true,
+      approvalPending,
+    });
   }
   return snapshot;
 }
@@ -54,7 +65,7 @@ export function detectFires(
   const fires: AttentionEntry[] = [];
   for (const [ref, entry] of next) {
     if (prev.has(ref)) continue;
-    if (loudScope === "all" || entry.askPending || entry.level === "error") fires.push(entry);
+    if (loudScope === "all" || entry.askPending || entry.approvalPending || entry.level === "error") fires.push(entry);
   }
   return fires;
 }

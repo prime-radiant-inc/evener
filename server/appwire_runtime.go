@@ -307,6 +307,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 		// being forgotten. The caller re-seeds with RefreshThreadEnvelope once
 		// the replacement session is the live one.
 		s.appEnvelope = threadEnvelope{}
+		s.appActivity.restart()
 		s.status.SessionID = prepared.threadID
 		s.mu.Unlock()
 
@@ -464,6 +465,9 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			s.appDeferredTerminalNotifications = nil
 		}
 		projected := s.appProjector.Project(event)
+		for _, item := range projected {
+			s.appActivity.observe(item.Method)
+		}
 		projectedTurnID := s.appProjector.ActiveTurnID()
 		if isAppTurnCarrier(event) && projectedTurnID != "" && s.appPendingStableTurnID == "" {
 			// A carrier can arrive after processing cleanup and a queued
@@ -750,6 +754,10 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			s.appDescendants[threadID] = projection
 		}
 		projected := projection.projector.Project(event)
+		// A descendant's motion is its root's too: the meter shows the whole tree.
+		for _, item := range projected {
+			s.appActivity.observe(item.Method)
+		}
 		projection.activeTurnID = projection.projector.ActiveTurnID()
 		start, _ := event.Data.(events.SessionStartData)
 		pending := make([]pendingAppNotification, 0, len(projected))
@@ -1308,6 +1316,9 @@ func (s *Server) handleAppThreadList(_ context.Context, params appwire.ThreadLis
 	}
 	s.mu.RLock()
 	data := []appwire.Thread{s.appThreadWithDiagnosticsLocked(diagnostics)}
+	// Only the list carries the meter: a thread/read snapshot would hand a
+	// subscriber a value no notification ever updates.
+	data[0].Evener.Activity = s.appActivity.snapshot()
 	ids := make([]string, 0, len(s.appDescendants))
 	for id := range s.appDescendants {
 		ids = append(ids, id)
@@ -2509,6 +2520,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
 	visionModel := envelope.VisionModel
+	lastTurnEndedAt := envelope.LastTurnEndedAt
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
 	if threadPreview == "" {
@@ -2554,6 +2566,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			ReasoningEffortLevels: reasoningEffortLevels,
 			SupportsReasoning:     supportsReasoning,
 			VisionModel:           visionModel,
+			LastTurnEndedAt:       lastTurnEndedAt,
 		},
 	}
 }

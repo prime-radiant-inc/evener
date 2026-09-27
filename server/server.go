@@ -364,6 +364,9 @@ type Server struct {
 	// appEnvelopeSource is the seam the bridge samples session state through at
 	// the moments it changes. It is NEVER consulted by a read.
 	appEnvelopeSource ThreadEnvelopeSource
+	// appActivity is the root tree's pulse meter (S5). The projection commits
+	// feed it and the thread list reads it, all under mu; see activityMeter.
+	appActivity       activityMeter
 	appReservedTurnID string
 	// appProcessingReservedTurnID tracks a generic projector reservation that
 	// was superseded by a durable turn identity before its carrier arrived.
