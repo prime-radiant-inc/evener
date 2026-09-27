@@ -1,10 +1,9 @@
 // AppwireClient owns the websocket connection to the hub's /rpc endpoint: the
 // initialize/initialized handshake, typed request/response correlation,
 // notification fan-out, an application-level heartbeat, and automatic
-// reconnect with backoff. It mirrors the message-handling, heartbeat, and
-// reconnect semantics of the legacy cmd/evener-hub/assets/appwire.js
-// (sendHeartbeat / ensureHeartbeat), but — unlike that fixed-250ms retry —
-// backs off exponentially up to a cap.
+// reconnect with backoff. It mirrors the message-handling and reconnect
+// semantics of the legacy cmd/evener-hub/assets/appwire.js, but backs off
+// exponentially up to a cap instead of that file's fixed 250ms retry.
 
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { isPlainObject } from "./plainObject";
