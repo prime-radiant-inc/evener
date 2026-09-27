@@ -737,23 +737,44 @@ it("schedules no retry while the Board is out of view", async () => {
 	act(() => tree.unmount());
 });
 
-it("neither says a first read failed nor retries while Live loads and only the pin catalog failed", async () => {
+it("retries a failed pin catalog read once Live's read is done, without saying a first read failed", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
+	let holdLive = true;
+	let pinsFail = true;
 	const fake = hub(
 		fleet,
-		(read) => read.section === "live",
-		(read) => read.resource === "pin_catalog",
+		(read) => holdLive && read.section === "live",
+		(read) => pinsFail && read.resource === "pin_catalog",
 	);
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(texts(tree)).not.toContain(FIRST_READ_FAILED);
 	expect(skeletonRows(tree)).toHaveLength(3);
+	// Live's read is still out, and a retry now would cancel it.
 	await advance(60_000);
 	expect(liveReads(fake)).toEqual([0]);
+	holdLive = false;
 	fake.release();
 	await settle();
 	expect(hasRow(tree, "Build docs")).toBe(true);
+	expect(chipLabels(tree)).not.toContain("Mine, 3 sessions");
+	pinsFail = false;
+	await advance(1000);
+	expect(chipLabels(tree)).toContain("Mine, 3 sessions");
+	act(() => tree.unmount());
+});
+
+it("retries a failed Needs you read while the Board is in view, so first run completes", async () => {
+	const id = hubId();
+	let needsYouFails = true;
+	const fake = hub(fleet, undefined, (read) => needsYouFails && read.section === "needs_you");
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(seenMarkers(id).adopted).toBe(false);
+	needsYouFails = false;
+	await advance(1000);
+	expect(seenMarkers(id).adopted).toBe(true);
 	act(() => tree.unmount());
 });
 

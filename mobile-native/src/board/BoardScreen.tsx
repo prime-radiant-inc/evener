@@ -107,7 +107,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const firstReadFailed = connected && !snapshot.loaded && snapshot.live.error !== null;
 	// The retry rests while the Board is out of view: the controller is
 	// paused then, and a paused read is cancelled, not answered.
-	useLiveReadRetry(board, connected && focused ? client : null, snapshot);
+	useReadRetry(board, connected && focused ? client : null, snapshot);
 
 	const bands = useMemo(
 		() => liveBands(snapshot.live.rows, snapshot.needsYou.rows, (row) => markers.isSeen(row)),
@@ -370,28 +370,31 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 	}, [board, markers, snapshot, focused]);
 }
 
-/** While a Live read has failed on a ready connection, first page or later,
- * rebind the client after a backoff that grows with each failed attempt.
- * Nothing else would retry it while the Board stays in view: an idle fleet
- * sends no invalidations, and the controller retries failed reads only when
- * it resumes, on a focus change. Rebinding is the reconnect path: the
- * loaded rows stay on screen until the fresh reads land, and the screen's
- * load-more pages Live back out. A read that lands, or a new connection,
- * starts the count over; with no client (disconnected or out of view) the
- * hook holds its count and schedules nothing. */
-function useLiveReadRetry(
+/** While any of the Board's reads has failed on a ready connection (Live,
+ * Needs you, the pin catalog or the manifest; first read or later), rebind
+ * the client after a backoff that grows with each failed attempt. Nothing
+ * else would retry it while the Board stays in view: an idle fleet sends no
+ * invalidations, and the controller retries failed reads only when it
+ * resumes, on a focus change. The retry waits while another read is still
+ * out, so a rebind never cancels a healthy read. Rebinding is the reconnect
+ * path: the loaded rows stay on screen until the fresh reads land, and the
+ * screen's load-more pages Live back out. A read that lands, or a new
+ * connection, starts the count over; with no client (disconnected or out of
+ * view) the hook holds its count and schedules nothing. */
+function useReadRetry(
 	board: BoardController,
 	client: ConversationClientLike | null,
-	snapshot: Pick<BoardSnapshot, "live" | "loaded" | "retained">,
+	snapshot: Pick<BoardSnapshot, "live" | "needsYou" | "pins" | "loaded" | "retained" | "error">,
 ) {
 	const [retries, setRetries] = useState({ client, count: 0 });
 	const count = retries.client === client ? retries.count : 0;
-	const failed = snapshot.live.error !== null;
-	// Only a fresh read that settled counts as success: the Board has loaded
+	const reading = snapshot.live.loading || snapshot.needsYou.loading || snapshot.pins.loading;
+	const failed = snapshot.error !== null && !reading;
+	// Only fresh reads that settled count as success: the Board has loaded
 	// and shows nothing retained, with no error and no read in flight. A read
 	// a pause cancelled leaves no error and no loading flag, but it never
 	// lands, so its page stays unloaded or retained.
-	const succeeded = snapshot.loaded && !snapshot.retained && !failed && !snapshot.live.loading;
+	const succeeded = snapshot.loaded && !snapshot.retained && snapshot.error === null && !reading;
 	useEffect(() => {
 		if (client && succeeded && count > 0) setRetries({ client, count: 0 });
 	}, [client, count, succeeded]);

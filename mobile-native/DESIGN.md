@@ -185,7 +185,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 ### Skeleton, empty and failed-first-read states
 - **Skeleton:** Three still placeholder rows, 64 units tall with a 10-unit rounded fill, on the very first load only.
 - **Empty:** "Nothing's running. Start a session to put an agent to work.", with a primary New session action, shown when Live has no rows.
-- **Failed first read:** "Couldn't load this hub's sessions. Trying again shortly.", shown when the very first read fails. The Board keeps retrying with a growing backoff on its own; there is no Retry button.
+- **Failed first read:** "Couldn't load this hub's sessions. Trying again shortly.", shown when the very first read of Live fails. Any failed read (Live, Needs you, the pin catalog or the manifest) is retried on its own with a growing backoff while the Board is in view, and when it comes back into view; there is no Retry button.
 
 ### Message actions
 - **Style:** A three-dot 44-unit action beside eligible user messages.
