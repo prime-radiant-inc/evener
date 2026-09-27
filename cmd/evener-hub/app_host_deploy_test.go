@@ -1037,3 +1037,68 @@ func TestEnsureTriggeredDeployRefusesWithoutAStore(t *testing.T) {
 		t.Fatal("EnsureDeploy without an operation store succeeded")
 	}
 }
+
+// TestHostDeployPostRefreshRefusesAVersionMismatch pins that the
+// post-operation revision check reads the consumed token's own bindings: a refresh probe
+// that reports a verifiable revision other than the deployed one is a recorded
+// failure naming the revision that was wanted, never a clean success.
+func TestHostDeployPostRefreshRefusesAVersionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	entry := deployTestHost()
+	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	before := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	after := before.Add(time.Minute)
+	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		probe: probeScript(t,
+			hubcore.HostRuntimeProbe{Version: "v0.9.0", RunningHealthy: true, ProcessStartTime: &before},
+			hubcore.HostRuntimeProbe{Version: "v9.9.9", RunningHealthy: true, ProcessStartTime: &after},
+		),
+	})
+	token := mintDeployToken(t, store, m, entry, "v0.9.0", true, "v1.2.3")
+	response, err := m.Deploy(context.Background(), appwire.HostDeployParams{
+		Name: entry.Name, Token: token.Value, OperationID: "op-1",
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	record := waitOperationState(t, store, response.ID, hostops.StateFailed)
+	if record.Result == nil || !strings.Contains(record.Result.Message, `want the deploy build "v1.2.3"`) {
+		t.Fatalf("failure message %q does not name the deployed revision the token bound", record.Result.Message)
+	}
+}
+
+// TestHostDeploySkipsTheRestartWhenTheHostIsCurrent pins that the worker's
+// restart decision comes from the consumed token's bindings: a host already
+// healthy on the controller's revision is not restarted, and the refresh's
+// process-start-time requirement does not apply to it.
+func TestHostDeploySkipsTheRestartWhenTheHostIsCurrent(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	entry := deployTestHost()
+	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{entry})), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	same := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	counters := &deployCounters{}
+	m, store, _ := deployTestHub(t, configPath, []hostreg.Host{entry}, deploySeams{
+		counters: counters,
+		probe: probeScript(t,
+			hubcore.HostRuntimeProbe{Version: "v1.2.3", RunningHealthy: true, ProcessStartTime: &same},
+			hubcore.HostRuntimeProbe{Version: "v1.2.3", RunningHealthy: true, ProcessStartTime: &same},
+		),
+	})
+	token := mintDeployToken(t, store, m, entry, "v1.2.3", true, "v1.2.3")
+	response, err := m.Deploy(context.Background(), appwire.HostDeployParams{
+		Name: entry.Name, Token: token.Value, OperationID: "op-1",
+	})
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	waitOperationState(t, store, response.ID, hostops.StateComplete)
+	if got := counters.restarts.Load(); got != 0 {
+		t.Fatalf("restart calls = %d, want 0 for a host already on the controller's revision", got)
+	}
+}

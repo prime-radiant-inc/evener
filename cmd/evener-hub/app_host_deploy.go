@@ -346,9 +346,15 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 	// freshly minted epoch. Either way the record exists before the RPC
 	// answers, and the worker that follows owns the gate release.
 	var created hostops.Record
+	// consumed is the token row the atomic write consumed: its bindings (the
+	// target, the entry fingerprint, the controller revision, the running state)
+	// are the worker's references for the operation's whole life, so the worker
+	// must carry them from this write rather than re-reading a row the write
+	// just deleted.
+	var consumed hostops.Token
 	switch req.kind {
 	case hostops.KindDeploy:
-		created, _, err = ops.ConsumeTokenAndCreateOperation(hostops.OperationCreateRequest{
+		created, consumed, err = ops.ConsumeTokenAndCreateOperation(hostops.OperationCreateRequest{
 			ClientOperationID: req.clientOperationID,
 			Host:              entry.Name,
 			Kind:              hostops.KindDeploy,
@@ -392,9 +398,7 @@ func (m *hubHostManager) startOperation(ctx context.Context, req operationReques
 		release:     release,
 	}
 	if req.kind == hostops.KindDeploy {
-		if token, ok := ops.OutstandingToken(entry.Name); ok {
-			work.token = token
-		}
+		work.token = consumed
 		if epoch.BootID != "" {
 			work.epoch = appwire.FencingEpoch{BootID: epoch.BootID, OpSeq: epoch.OpSeq}
 		}
