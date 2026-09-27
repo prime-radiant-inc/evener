@@ -24,17 +24,18 @@ contextMarker.__evenerTestContextInUse = true;
 // afterEach and afterAll: output from its cleanup (unmounts) counts too.
 const consoleGuard = guardConsoleOutput(console);
 
-// What the act-scope guard below found for the test that just ran. The check
-// after it reports these instead of the guard throwing them: vitest runs a
-// file's afterEach hooks in one loop, so a throw from one hook skips the rest,
-// and the unmount and the check must still run for that test.
-const actScopeFailures: unknown[] = [];
+// What the act-scope guard and the unmount below found for the test that just
+// ran. The check after them reports these instead of either hook throwing
+// them: vitest runs a file's afterEach hooks in one loop, so a throw from one
+// hook skips the rest, and the unmount and the check must still run for that
+// test.
+const teardownFailures: unknown[] = [];
 
 // Registered first, so it runs last of all: it fails the test on what it left
 // behind, which is an act() scope it left open, errors from work that ran in
 // that scope, and console output.
 function failOnTestLeftovers() {
-  const failures = actScopeFailures.splice(0);
+  const failures = teardownFailures.splice(0);
   const unexpectedOutput = consoleGuard.takeUnexpectedOutput();
   if (unexpectedOutput !== undefined) failures.push(new Error(unexpectedOutput));
   if (failures.length === 1) throw failures[0];
@@ -49,7 +50,21 @@ afterAll(failOnTestLeftovers);
 // global afterEach, which it does not here, so a test's rendered trees and
 // hooks would otherwise stay mounted into the next test. Registered after the
 // leftovers check so it runs before it: output from the unmount counts.
-afterEach(cleanup);
+//
+// cleanup() unmounts each tree inside act() and stops at the first whose
+// unmount throws (an effect cleanup that throws), before it removes that
+// tree's container or unmounts the trees after it. A tree already unmounted
+// does nothing when unmounted again, so each run gets past the tree that threw
+// the last time, and the leftovers check reports what each one threw.
+function unmountEveryTree(): void {
+  try {
+    cleanup();
+  } catch (error) {
+    teardownFailures.push(error);
+    unmountEveryTree();
+  }
+}
+afterEach(unmountEveryTree);
 
 const reactEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 let previousActEnvironment: boolean | undefined;
@@ -102,13 +117,13 @@ if (!("actQueue" in reactInternals)) {
   throw new Error("React no longer exposes actQueue; update or remove the act-scope guard in testSetup.ts.");
 }
 const actInternals = reactInternals as { actQueue: unknown };
-const actScopeGuard = reactActScopeGuardPorts(actInternals, React.act, (error) => actScopeFailures.push(error));
+const actScopeGuard = reactActScopeGuardPorts(actInternals, React.act, (error) => teardownFailures.push(error));
 let stuckActScopeReported = false;
 afterEach(async () => {
   if (stuckActScopeReported && actScopeGuard.actScopeOpen()) return;
   stuckActScopeReported = false;
   const leak = await waitOutLeakedActScope(actScopeGuard, 20_000);
   if (leak === undefined) return;
-  actScopeFailures.push(new Error(leak));
+  teardownFailures.push(new Error(leak));
   stuckActScopeReported = actScopeGuard.actScopeOpen();
 });
