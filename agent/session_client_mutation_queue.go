@@ -1588,14 +1588,15 @@ func (s *Session) recoverClientMutationFailures(publishEnvironment bool) error {
 		}
 		err := s.recordClientMutationFailure(id, pending, *record.Failure, publishEnvironment)
 		switch {
-		case own:
+		case own && err == nil:
 			s.completeExecution(schema.TurnFailed)
 			if wasOpen {
 				// This turn also crashed open once before (closeCrashedExecutions
-				// left the marker at restore) and is completed above,
-				// regardless of err: closeAbandonedExecutions must not find
-				// the marker still here and complete it a second time,
-				// interrupted, over the failed completion just written.
+				// left the marker at restore) and is completed above, now that
+				// the record it completes over has actually landed:
+				// closeAbandonedExecutions must not find the marker still here
+				// and complete it a second time, interrupted, over the failed
+				// completion just written.
 				s.takeOpenPendingExecution(pending.TurnID)
 			}
 		case wasOpen && err == nil:

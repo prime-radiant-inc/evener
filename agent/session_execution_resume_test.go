@@ -1,10 +1,8 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
@@ -76,11 +74,12 @@ func TestResumeClosesAnExecutionACrashLeftOpen(t *testing.T) {
 	}
 	restored.Close()
 	again := restoreExecutionSession(t, stateDir, id)
-	if got := completionsOf(transcriptTurnsOf(t, again), "t_crashed"); len(got) != 1 {
+	turnsAfterSecondRestore := transcriptTurnsOf(t, again)
+	if got := completionsOf(turnsAfterSecondRestore, "t_crashed"); len(got) != 1 {
 		t.Fatalf("a second restore wrote more completions: %v", got)
 	}
-	for _, turn := range transcriptTurnsOf(t, again) {
-		if turn.Kind == schema.TurnCompletion && turn.TurnID != "t_crashed" && len(completionsOf(turns, turn.TurnID)) != 1 {
+	for _, turn := range turnsAfterSecondRestore {
+		if turn.Kind == schema.TurnCompletion && turn.TurnID != "t_crashed" && len(completionsOf(turnsAfterSecondRestore, turn.TurnID)) != 1 {
 			t.Fatalf("turn %q gained a completion on restore", turn.TurnID)
 		}
 	}
@@ -127,9 +126,12 @@ func TestResumeLeavesOpenTheTurnsPendingWorkWillRunAgain(t *testing.T) {
 }
 
 // A crash can land after a failed client start's entries are recorded and
-// before its execution's completion is. Recovery at restore then has nothing
-// to append, but the execution it owns is still open: it completes it, failed,
-// rather than leaving it for a later restart to call interrupted.
+// before its execution's completion is (the own-branch record's own snapshot
+// commit is what the crash cuts off; the record itself gates the completion
+// now, so the process dies with no completion in the file, exactly as it
+// really would). Recovery at restore then has nothing to append, but the
+// execution it owns is still open: it completes it, failed, rather than
+// leaving it for a later restart to call interrupted.
 func TestRecoveredFailedStartCompletesItsOpenExecution(t *testing.T) {
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
@@ -158,22 +160,8 @@ func TestRecoveredFailedStartCompletesItsOpenExecution(t *testing.T) {
 		t.Fatalf("acceptUserInput = %v, want the simulated crash", err)
 	}
 	sess.Close()
-	// The process died before the completion entry: cut it off the file.
-	path := transcriptPath(dir, id)
-	_, entries, _, err := readTranscript(path, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if last := entries[len(entries)-1].Turn; last.Kind != schema.TurnCompletion || last.TurnID != started.Turn.ID {
-		t.Fatalf("setup: the transcript ends with %s in %q", last.Kind, last.TurnID)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cut := bytes.LastIndexByte(bytes.TrimSuffix(data, []byte{'\n'}), '\n')
-	if err := os.WriteFile(path, data[:cut+1], 0o600); err != nil {
-		t.Fatal(err)
+	if last := transcriptTurnsOf(t, sess); last[len(last)-1].Kind != schema.TurnFailure || last[len(last)-1].TurnID != started.Turn.ID {
+		t.Fatalf("setup: the transcript ends with %s in %q, want its own uncompleted FAILURE entry", last[len(last)-1].Kind, last[len(last)-1].TurnID)
 	}
 
 	restored := restoreQueuePersistTestSessionWith(t, dir, id, RestoreSessionConfig{})
@@ -262,13 +250,16 @@ func TestRecoverClientMutationFailuresKeepsTheMarkerWhenTheRecordFails(t *testin
 }
 
 // A crash can land after a failed client start's USER_INPUT entry is recorded
-// and before its TURN_FAILURE entry is. Recovery at restart then owns the
-// execution itself (own == true: items.Failure is still false) and completes
-// it failed -- but closeCrashedExecutions already left the crash-left-open
-// marker behind for it (open, and pending client work at that point). The
-// "own" branch must consume that marker too, or closeAbandonedExecutions,
-// which runs right after, adds a second, contradictory completion to a turn
-// recovery already completed failed.
+// and before its TURN_FAILURE entry is: recordClientMutationFailure's error
+// gates the own branch's completion, so the process dies with the file ending
+// at the USER_INPUT entry, no completion, exactly as it really would.
+// Recovery at restart then owns the execution itself (own == true:
+// items.Failure is still false) and completes it failed -- but
+// closeCrashedExecutions already left the crash-left-open marker behind for
+// it (open, and pending client work at that point). The "own" branch must
+// consume that marker too, or closeAbandonedExecutions, which runs right
+// after, adds a second, contradictory completion to a turn recovery already
+// completed failed.
 func TestRecoveredFailedStartAfterUserEntryGetsExactlyOneCompletion(t *testing.T) {
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
@@ -297,32 +288,68 @@ func TestRecoveredFailedStartAfterUserEntryGetsExactlyOneCompletion(t *testing.T
 		t.Fatalf("acceptUserInput = %v, want the simulated crash", err)
 	}
 	sess.Close()
-	path := transcriptPath(dir, id)
-	_, entries, _, err := readTranscript(path, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The fault fires before the FAILURE entry, but the live "own" branch
-	// completes the execution anyway (it does not gate on recordClientMutationFailure's
-	// error): the file already carries a completion despite never getting a
-	// FAILURE entry. Cut it off to simulate a real crash right there --
-	// leaving only the USER_INPUT entry, exactly what "before the failure
-	// entry" means.
-	if last := entries[len(entries)-1].Turn; last.Kind != schema.TurnCompletion || last.TurnID != started.Turn.ID {
-		t.Fatalf("setup: the transcript ends with %s in %q, want its own completion before the cut", last.Kind, last.TurnID)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cut := bytes.LastIndexByte(bytes.TrimSuffix(data, []byte{'\n'}), '\n')
-	if err := os.WriteFile(path, data[:cut+1], 0o600); err != nil {
-		t.Fatal(err)
+	if last := transcriptTurnsOf(t, sess); last[len(last)-1].Kind != schema.TurnUserInput || last[len(last)-1].TurnID != started.Turn.ID {
+		t.Fatalf("setup: the transcript ends with %s in %q, want its own uncompleted USER_INPUT entry", last[len(last)-1].Kind, last[len(last)-1].TurnID)
 	}
 
 	restored := restoreQueuePersistTestSessionWith(t, dir, id, RestoreSessionConfig{})
 	defer restored.Close()
 	if got := completionsOf(transcriptTurnsOf(t, restored), started.Turn.ID); len(got) != 1 || got[0] != schema.TurnFailed {
 		t.Fatalf("completions of the recovered turn = %v, want exactly one failed", got)
+	}
+}
+
+// The "own" branch of recoverClientMutationFailures must not complete the
+// execution when recordClientMutationFailure itself fails before it records
+// the FAILURE entry: a first recovery attempt that dies between the USER_INPUT
+// entry and the FAILURE entry must leave the execution open, so a second
+// recovery attempt -- the next restore, reading the same still-pending
+// journal state -- is the only one that ever records a completion. Gating
+// completeExecution on the recording actually having succeeded is what makes
+// that true; completing unconditionally records a completion the first attempt
+// never earned, and the second attempt then adds a second, contradictory one.
+func TestRecoverClientMutationFailuresOwnBranchCompletesOnlyOnce(t *testing.T) {
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	id := sess.ID()
+	clientMutationID := "start-fails-before-failure-entry"
+	started, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: clientMutationID,
+		Input:            []appwire.InputItem{{Type: "text", Text: "recovery itself dies before its own FAILURE entry"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := sess.claimClientMutationStart(); err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	if err := sess.beginClientMutationFailure(clientMutationID, errors.New("deterministic failure")); err != nil {
+		t.Fatal(err)
+	}
+
+	recordFailure := errors.New("recovery dies before its own FAILURE entry")
+	sess.clientMutationFailureRecoveryFault = func(point string) error {
+		if point == "before_failure" {
+			return recordFailure
+		}
+		return nil
+	}
+	if err := sess.recoverClientMutationFailures(false); !errors.Is(err, recordFailure) {
+		t.Fatalf("first recovery attempt = %v, want the injected record failure", err)
+	}
+	if got := completionsOf(transcriptTurnsOf(t, sess), started.Turn.ID); len(got) != 0 {
+		t.Fatalf("completions after the failed recovery attempt = %v, want none: nothing yet earned a completion", got)
+	}
+
+	// The process dies right there: close as a crash would leave it, with
+	// nothing more written. The next restore reads the same on-disk state --
+	// still pending, still missing its FAILURE entry -- through the real
+	// resume path, which runs recoverClientMutationFailures itself with no
+	// fault armed, so this time recording succeeds.
+	sess.Close()
+	restored := restoreQueuePersistTestSessionWith(t, dir, id, RestoreSessionConfig{})
+	defer restored.Close()
+	if got := completionsOf(transcriptTurnsOf(t, restored), started.Turn.ID); len(got) != 1 || got[0] != schema.TurnFailed {
+		t.Fatalf("completions after the restore = %v, want exactly one failed", got)
 	}
 }
