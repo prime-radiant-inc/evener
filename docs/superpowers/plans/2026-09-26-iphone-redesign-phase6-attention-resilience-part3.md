@@ -23,7 +23,7 @@ A target nobody holds is settled whatever its records hold, as `handleReady` rea
 **Files:**
 - Create: `mobile-native/src/outbox/outboxFlush.ts`, `mobile-native/src/outbox/nativeOutboxFlush.ts` and `mobile-native/src/outbox/outboxFlush.test.ts`
 - Modify: `mobile-native/src/nativeMutationRuntime.ts` (`targetClient`, beside `registerTarget`)
-- Modify: `mobile-native/App.tsx` (bind the flush to the connection) and the session screen's durable-host effect (`screens.tsx:1050-1074`: flush after its host lets go)
+- Modify: `mobile-native/App.tsx` (bind the flush to the connection) and the session screen's durable-host effect (`screens.tsx:1048-1072`: flush after its host lets go)
 
 **Interfaces:**
 - Consumes: `NativeMutationRuntime.settleTarget(hubId, targetRef, client)` (phase 4 Task 2), `registerTarget`, `start`, `subscribeStorage`, `storage.listTargetRefs` and `storage.listOutbox`.
@@ -730,8 +730,8 @@ export const outboxFlush = new OutboxFlush(getNativeMutationRuntime);
 ```
 
 - [ ] **Step 4: Wire it**
-  - In `App.tsx`'s `Navigation`, bind the flush to the connection. `Navigation` already names its navigation state `state` (`App.tsx:60`), so take the connection's under another name: `const { client, state: connectionState } = useConnection();` beside the existing destructuring, then `useEffect(() => { outboxFlush.bind(activeProfile?.id ?? null, connectionState === "ready" ? client : null); }, [activeProfile?.id, connectionState, client]);`.
-  - In the session screen's durable-host effect cleanup (`screens.tsx:1070-1073`), after `host.dispose()`, call `void outboxFlush.flush()`: letting go of a target writes nothing to storage, so without it a message still waiting when you leave a session would wait for the next connection.
+  - In `App.tsx`'s `Navigation`, bind the flush to the connection. `Navigation` already names its navigation state `state` (`App.tsx:62`), so take the connection's under another name: `const { client, state: connectionState } = useConnection();` beside the existing destructuring, then `useEffect(() => { outboxFlush.bind(activeProfile?.id ?? null, connectionState === "ready" ? client : null); }, [activeProfile?.id, connectionState, client]);`.
+  - In the session screen's durable-host effect cleanup (`screens.tsx:1068-1071`), after `host.dispose()`, call `void outboxFlush.flush()`: letting go of a target writes nothing to storage, so without it a message still waiting when you leave a session would wait for the next connection.
   - Screen tests that import `screens.tsx` mock `./outbox/nativeOutboxFlush` to `{ outboxFlush: { flush: async () => {}, bind: () => {} } }`, the way they mock other native singletons.
 
 - [ ] **Step 5: Run the tests and watch them pass**
