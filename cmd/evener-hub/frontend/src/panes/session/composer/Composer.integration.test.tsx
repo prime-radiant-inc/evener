@@ -18,7 +18,7 @@ import { ClientProvider } from "../../../shell/clientContext";
 import { installLocalStorage, MemoryStorage } from "../../../storageTestUtils";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
-import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   resetThreadsStoreForTests,
   setMutationStorageForTests,
@@ -968,20 +968,26 @@ test("text changed while a strip-triggered drain is in flight survives the drain
   );
 
   await user.type(textarea() as HTMLDivElement, "ab");
-  await user.click(drainButton()); // fires the request; handleDrain awaits the still-pending promise
+  // The drain's durable write is held, so the edit below lands while the
+  // drain is still in flight, before handleDrain can reach its success.
+  const commit = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
+  await user.click(drainButton());
+  await commit.reached;
 
   // The user keeps typing while the drain is in flight - a real, synchronous
   // DOM change event landing between the drain click and its settlement.
   replaceEditorText(textarea() as HTMLDivElement, "ab plus more");
   expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
 
+  // The commit lands: onDrainSuccess (handleDrain's own continuation) runs,
+  // which is where a wrong clear would happen, and the dispatcher sends the
+  // request this fake holds.
+  commit.release();
+  await flushPendingTurnsProjectionForTests();
   resolveDrain?.();
-  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
-
-  // Give onDrainSuccess (handleDrain's own .then continuation) a chance to
-  // run and settle - if it were going to wrongly clear, it would have by
-  // the time this passes.
-  await new Promise((resolve) => setTimeout(resolve, 10));
+  // Settles the receipt the answered drain writes, and the refresh after it.
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true);
 
   expect((textarea() as HTMLDivElement).textContent).toBe("ab plus more"); // NOT cleared - text changed since the drain was triggered
   expect(readComposerDraft("ref_a")).toEqual({ text: "ab plus more", skillNames: [] });
