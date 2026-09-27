@@ -92,8 +92,8 @@ func ParseServerMapUntrusted(servers map[string]json.RawMessage, source string) 
 func parseServerMap(servers map[string]json.RawMessage, source string, expand func(string) (string, error)) ([]ServerConfig, error) {
 	var configs []ServerConfig
 	for name, raw := range servers {
-		if strings.TrimSpace(name) == "" {
-			return nil, fmt.Errorf("MCP server name must not be empty in %s", source)
+		if err := validateServerName(name); err != nil {
+			return nil, fmt.Errorf("invalid MCP server name %q in %s: %w", name, source, err)
 		}
 		var sj mcpServerJSON
 		if err := json.Unmarshal(raw, &sj); err != nil {
@@ -107,6 +107,51 @@ func parseServerMap(servers map[string]json.RawMessage, source string, expand fu
 		configs = append(configs, cfg)
 	}
 	return configs, nil
+}
+
+// validateServerName enforces the rule a configured MCP server name must
+// follow to survive the daemon's namespacing: every tool the server exposes
+// is registered as servername__toolname, sanitizeToolName (agent/internal/mcp)
+// maps hyphens to underscores and keeps everything else, and
+// llm.ValidateToolName accepts only [a-zA-Z][a-zA-Z0-9_]* up to 64
+// characters. A name that still breaks that rule after sanitization fails
+// registration for EVERY tool the server exposes — the whole server silently
+// loses its tools (agent/internal/mcp demotes it to "failed") — so it is
+// rejected here, at load, where the error can name the file and the name to
+// fix. A name must also not end with a hyphen: sanitizeToolName maps hyphens
+// to underscores, so "hub-" and "hub_" produce identical tool names for
+// every tool — the registry cannot tell the two servers apart.
+//
+// Length is deliberately not a load-time rule: registration enforces the
+// 64-character namespacing budget by demoting just that server, survivably
+// (agent's TestIntg_InitMCP_RegisterToolsError pins the session surviving
+// a too-long name), and refusing here would turn that degradation into a
+// fatal session-init error.
+func validateServerName(name string) error {
+	if name == "" {
+		return errors.New("must not be empty")
+	}
+	if b := name[0]; !isASCIILetter(b) {
+		return errors.New("must start with an ASCII letter")
+	}
+	for i := 1; i < len(name); i++ {
+		b := name[i]
+		if isASCIILetter(b) || (b >= '0' && b <= '9') || b == '_' || b == '-' {
+			continue
+		}
+		return fmt.Errorf("contains %q; allowed after the first letter: letters, digits, underscores, and hyphens", string(b))
+	}
+	if strings.HasSuffix(name, "-") {
+		return errors.New("must not end with a hyphen")
+	}
+	return nil
+}
+
+// isASCIILetter reports whether b is an ASCII letter — the only character a
+// server name may start with (a leading digit or hyphen is not a legal
+// tool-name start even after sanitization).
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 func serverJSONToConfig(name string, sj mcpServerJSON, expand func(string) (string, error)) (ServerConfig, error) {
@@ -230,6 +275,9 @@ func ParseInline(spec string) (ServerConfig, error) {
 	}
 	if rest == "" {
 		return ServerConfig{}, fmt.Errorf("MCP inline spec has empty command: %q", spec)
+	}
+	if err := validateServerName(name); err != nil {
+		return ServerConfig{}, fmt.Errorf("invalid MCP server name %q in inline spec %q: %w", name, spec, err)
 	}
 
 	parts := strings.Fields(rest)

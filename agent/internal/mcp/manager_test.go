@@ -524,3 +524,54 @@ func TestMergeEnv(t *testing.T) {
 		t.Errorf("expected exactly 1 PATH entry, got %d", pathCount)
 	}
 }
+
+// TestMCPManager_NilArgs_CallCarriesEmptyArguments pins the call path: the
+// MCP spec makes tools/call's arguments optional, and the go-sdk omits the
+// field exactly when the args map is nil (CallToolParams.Arguments is `any`
+// with omitempty). A zero-arg call must normalize to an empty map — which
+// marshals as "arguments": {} — so the member is always present on the wire;
+// servers are free to reject a tools/call without it.
+func TestMCPManager_NilArgs_CallCarriesEmptyArguments(t *testing.T) {
+	ctx := context.Background()
+
+	var gotArgs json.RawMessage
+	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "s", Version: "v1"}, nil)
+	server.AddTool(&mcpsdk.Tool{
+		Name:        "noop",
+		Description: "Takes no arguments",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		gotArgs = req.Params.Arguments
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "ok"}},
+		}, nil
+	})
+	st, ct := mcpsdk.NewInMemoryTransports()
+	if _, err := server.Connect(ctx, st, nil); err != nil {
+		t.Fatal(err)
+	}
+	mgr, outcomes := NewManager(ctx, []mcpconfig.ServerConfig{{Name: "s", Type: "stdio"}},
+		[]func(context.Context) (mcpsdk.Transport, error){staticDial(ct)})
+	if len(outcomes) != 0 {
+		t.Fatalf("NewManager: %+v", outcomes)
+	}
+	defer mgr.Close()
+
+	reg := tool.NewRegistry()
+	if outcomes := mgr.RegisterTools(reg); len(outcomes) != 0 {
+		t.Fatalf("RegisterTools: %+v", outcomes)
+	}
+	rt := reg.Get("s__noop")
+	if rt == nil {
+		t.Fatal("s__noop not registered")
+	}
+
+	// A nil args map is what a zero-arg tool call looks like from the tool
+	// framework; the wire must still carry "arguments": {}.
+	if _, err := rt.Exec(ctx, &agenttest.FakeEnv{WorkDir: t.TempDir()}, nil); err != nil {
+		t.Fatalf("Exec with nil args: %v", err)
+	}
+	if string(gotArgs) != "{}" {
+		t.Fatalf("server received arguments %q; want \"{}\" — a nil args map must be normalized to an empty object, not omitted from tools/call", gotArgs)
+	}
+}

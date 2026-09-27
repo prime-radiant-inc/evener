@@ -382,6 +382,15 @@ func (m *Manager) RegisterTools(reg *tool.Registry) []ServerOutcome {
 			if err := reg.Register(tool.RegisteredTool{
 				Definition: td,
 				Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+					// The MCP spec makes tools/call's arguments optional, and the
+					// go-sdk omits the member exactly when this map is nil
+					// (CallToolParams.Arguments is `any` with omitempty) — a
+					// zero-arg call would otherwise reach the server with the
+					// member missing. Normalize to an empty map: it marshals as
+					// "arguments": {}, which every server accepts.
+					if args == nil {
+						args = map[string]any{}
+					}
 					call := func(sess *mcpsdk.ClientSession) (*mcpsdk.CallToolResult, error) {
 						return sess.CallTool(ctx, &mcpsdk.CallToolParams{
 							Name:      origName,
@@ -728,19 +737,29 @@ func mcpSchemaToParams(schema any) map[string]any {
 	if schema == nil {
 		return emptySchema()
 	}
-	// The MCP SDK returns InputSchema as a map[string]any from JSON unmarshaling.
-	if m, ok := schema.(map[string]any); ok {
-		return m
-	}
-	// Fallback: re-marshal and unmarshal.
-	b, err := json.Marshal(schema)
-	if err != nil {
-		return emptySchema()
-	}
 	var m map[string]any
-	if err := json.Unmarshal(b, &m); err != nil {
-		return emptySchema()
+	if sm, ok := schema.(map[string]any); ok {
+		// The MCP SDK returns InputSchema as a map[string]any from JSON unmarshaling.
+		m = sm
+	} else {
+		// Fallback: re-marshal and unmarshal.
+		b, err := json.Marshal(schema)
+		if err != nil {
+			return emptySchema()
+		}
+		if err := json.Unmarshal(b, &m); err != nil {
+			return emptySchema()
+		}
 	}
+	// Strip the JSON-schema keys the TS SDK's zodToJsonSchema stamps on every
+	// tool schema: "$schema": draft-07 and "additionalProperties": false. Gemini
+	// rejects a request outright over either key ("Unknown name \"$schema\""),
+	// no provider performs the validation they describe, and this is the one
+	// seam every provider request path shares — so both go, whatever their
+	// value. The Gemini request path scrubs them again downstream (harmless
+	// double-scrub).
+	delete(m, "$schema")
+	delete(m, "additionalProperties")
 	return m
 }
 

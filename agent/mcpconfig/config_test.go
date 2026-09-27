@@ -1,7 +1,9 @@
 package mcpconfig
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -262,6 +264,17 @@ func TestParseMCPInline(t *testing.T) {
 	}{
 		{"github:gh-mcp --token abc", "github", "gh-mcp", []string{"--token", "abc"}, false},
 		{"simple:myserver", "simple", "myserver", nil, false},
+		// A hyphenated name is legal: the daemon maps hyphens to underscores
+		// when namespacing tools. Leading digits and trailing hyphens are not.
+		{"my-hub:hubserver", "my-hub", "hubserver", nil, false},
+		// A long name loads fine: registration enforces the 64-character
+		// namespacing budget by demoting just that server, survivably
+		// (agent's TestIntg_InitMCP_RegisterToolsError pins the session
+		// surviving it), so a load-time length rule would turn degradation
+		// into a fatal session-init error.
+		{strings.Repeat("a", 60) + ":cmd", strings.Repeat("a", 60), "cmd", nil, false},
+		{"2hub:cmd", "", "", nil, true},
+		{"hub-:cmd", "", "", nil, true},
 		{"", "", "", nil, true},
 		{"nocolon", "", "", nil, true},
 		{":nocmd", "", "", nil, true},
@@ -292,6 +305,141 @@ func TestParseMCPInline(t *testing.T) {
 		if cfg.Type != "stdio" {
 			t.Errorf("ParseInline(%q).Type = %q, want stdio", tt.spec, cfg.Type)
 		}
+	}
+}
+
+// TestLoadMCPConfigFile_InvalidServerName pins the load-time server-name rule:
+// a name that cannot survive the daemon's namespacing (every tool registers as
+// servername__toolname, and providers accept only [a-zA-Z][a-zA-Z0-9_]* up to
+// 64 characters) silently disables the WHOLE server at registration, so config
+// load must reject it with an error naming the file, the offending name, and
+// the rule.
+func TestLoadMCPConfigFile_InvalidServerName(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want string // the rule fragment the error must state
+	}{
+		{"leading digit", "2hub", "must start with an ASCII letter"},
+		{"leading hyphen", "-hub", "must start with an ASCII letter"},
+		{"trailing hyphen", "hub-", "must not end with a hyphen"},
+		{"invalid character", "hub.srv", "letters, digits, underscores, and hyphens"},
+		{"non-ASCII character", "hüb", "letters, digits, underscores, and hyphens"},
+		{"empty", "", "must not be empty"},
+		{"whitespace only", " ", "must start with an ASCII letter"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "mcp.json")
+			body := fmt.Sprintf(`{"mcpServers": {%q: {"command": "x"}}}`, tt.key)
+			if err := os.WriteFile(path, []byte(body), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			configs, err := LoadFile(path)
+			if err == nil {
+				t.Fatalf("LoadFile accepted server name %q", tt.key)
+			}
+			if len(configs) != 0 {
+				t.Errorf("rejected name leaked %d configs: %v", len(configs), configs)
+			}
+			if !strings.Contains(err.Error(), path) {
+				t.Errorf("err %q does not name the file %q", err, path)
+			}
+			if tt.key != "" && !strings.Contains(err.Error(), tt.key) {
+				t.Errorf("err %q does not name the offending server name %q", err, tt.key)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("err %q does not state the rule (want %q)", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseServerMap_ValidServerNames pins that the rule rejects only what it
+// must: hyphens are legal (sanitizeToolName maps them to underscores), and a
+// 32-character name sits exactly at the cap.
+func TestParseServerMap_ValidServerNames(t *testing.T) {
+	names := []string{
+		"hub",
+		"my-hub",                // hyphenated: legal, sanitization maps it
+		"hub_2",                 // underscore and digit
+		"Hub",                   // uppercase letters are letters
+		"a",                     // single character
+		strings.Repeat("h", 32), // exactly at the cap
+	}
+	servers := map[string]json.RawMessage{}
+	for _, n := range names {
+		servers[n] = json.RawMessage(`{"command":"x"}`)
+	}
+
+	configs, err := ParseServerMap(servers, "test source")
+	if err != nil {
+		t.Fatalf("ParseServerMap rejected a valid name set: %v", err)
+	}
+	if len(configs) != len(names) {
+		t.Fatalf("expected %d configs, got %d", len(names), len(configs))
+	}
+	byName := map[string]ServerConfig{}
+	for _, c := range configs {
+		byName[c.Name] = c
+	}
+	for _, n := range names {
+		c, ok := byName[n]
+		if !ok {
+			t.Errorf("server %q missing from result", n)
+			continue
+		}
+		if c.Command != "x" {
+			t.Errorf("server %q: Command = %q, want x", n, c.Command)
+		}
+	}
+}
+
+// The rejection must name the source string, so non-file callers (a plugin's
+// inline mcpServers) get an actionable error too.
+func TestParseServerMap_InvalidServerNameNamesSource(t *testing.T) {
+	servers := map[string]json.RawMessage{"2hub": json.RawMessage(`{"command":"x"}`)}
+	_, err := ParseServerMap(servers, "plugin manifest")
+	if err == nil {
+		t.Fatal(`ParseServerMap accepted server name "2hub"`)
+	}
+	for _, want := range []string{"2hub", "plugin manifest", "must start with an ASCII letter"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err %q does not mention %q", err, want)
+		}
+	}
+}
+
+// A bad server name in the project layer flows like every other project-layer
+// load failure: the layer is skipped with a warning naming the file, not a
+// fatal error.
+func TestDiscoverWarn_ProjectBadServerName(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	projDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projDir, ".evener"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projPath := filepath.Join(projDir, ".evener", "mcp.json")
+	if err := os.WriteFile(projPath, []byte(`{"mcpServers":{"2hub":{"command":"x"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := &agenttest.FakeEnv{WorkDir: projDir, GitRoot: projDir}
+
+	configs, warnings, err := Discover(env, nil, nil)
+	if err != nil {
+		t.Fatalf("a bad project-layer server name must skip the layer, not fail Discover: %v", err)
+	}
+	if len(configs) != 0 {
+		t.Errorf("expected the project layer to be skipped, got %v", configs)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(warnings), warnings)
+	}
+	if !strings.Contains(warnings[0], projPath) || !strings.Contains(warnings[0], "2hub") {
+		t.Errorf("warning %q must name the file and the offending server name", warnings[0])
 	}
 }
 
