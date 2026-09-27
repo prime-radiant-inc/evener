@@ -1162,7 +1162,7 @@ func RenderAudit(r AuditResult) string {
 	} else {
 		fmt.Fprintf(&b, "%-8s %-50s %8s\n", "severity", "pattern", "sessions")
 		for _, s := range r.Summary {
-			fmt.Fprintf(&b, "%-8s %-50s %8d\n", s.Severity, truncate(s.Title, 50), s.Sessions)
+			fmt.Fprintf(&b, "%-8s %-50s %8d\n", s.Severity, Truncate(s.Title, 50), s.Sessions)
 		}
 	}
 	if len(r.Manual) > 0 {

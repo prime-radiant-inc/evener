@@ -270,10 +270,10 @@ func RenderSessions(res SessionsResult) string {
 			// UTC so the table's two time columns are directly comparable
 			// rather than silently mixing zones.
 			fmt.Fprintf(&b, "%-24s %-24s %-20s %-20s %-30s %6d %10d %-6t %-24s %5d %5d %-24s\n",
-				truncate(r.SessionID, 24), truncate(bucket, 24),
+				Truncate(r.SessionID, 24), Truncate(bucket, 24),
 				r.StartedAt.UTC().Format(time.RFC3339), r.LastActivity.UTC().Format(time.RFC3339),
-				truncate(strings.Join(r.Models, ","), 30), r.TurnCount, r.TranscriptBytes, r.IsSubagent,
-				dash(truncate(r.ParentSessionID, 24)), r.DelegateCount, r.ObserverCount, r.Outcome)
+				Truncate(strings.Join(r.Models, ","), 30), r.TurnCount, r.TranscriptBytes, r.IsSubagent,
+				dash(Truncate(r.ParentSessionID, 24)), r.DelegateCount, r.ObserverCount, r.Outcome)
 		}
 		fmt.Fprintf(&b, "sessions=%d\n", len(res.Sessions))
 	}

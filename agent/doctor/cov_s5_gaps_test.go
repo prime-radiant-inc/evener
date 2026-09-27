@@ -263,13 +263,13 @@ func TestTree_DelegateChildTranscriptMissing(t *testing.T) {
 }
 
 func TestTruncateAndAtoi(t *testing.T) {
-	if got := truncate("short", 80); got != "short" {
+	if got := Truncate("short", 80); got != "short" {
 		t.Errorf("short string unchanged, got %q", got)
 	}
 	long := strings.Repeat("x", 100)
-	got := truncate(long, 10)
+	got := Truncate(long, 10)
 	if len([]rune(got)) != 11 || !strings.HasSuffix(got, "…") {
-		t.Errorf("truncate should cut to 10 + ellipsis, got %q", got)
+		t.Errorf("Truncate should cut to 10 + ellipsis, got %q", got)
 	}
 	if atoi("12x3") != 0 {
 		t.Error("atoi with a non-digit should return 0")

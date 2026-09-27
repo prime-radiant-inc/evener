@@ -903,8 +903,8 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 				errorClass = "-"
 			}
 			rowArgs := []any{
-				truncate(c.AttemptID, 26), truncate(c.AttemptGroupID, 26), c.AttemptIndex, truncate(c.ProviderInstance, 18),
-				truncate(c.Model, 18), c.Outcome, status, truncate(errorClass, 24), c.Empty, truncate(settlement, 24), finalAttemptCount,
+				Truncate(c.AttemptID, 26), Truncate(c.AttemptGroupID, 26), c.AttemptIndex, Truncate(c.ProviderInstance, 18),
+				Truncate(c.Model, 18), c.Outcome, status, Truncate(errorClass, 24), c.Empty, Truncate(settlement, 24), finalAttemptCount,
 				c.ForensicIncomplete, c.LatencyMs, optionalIntString(c.InputTokens), optionalIntString(c.OutputTokens),
 				optionalIntString(c.UncachedInput), optionalIntString(c.TextLength), optionalIntString(c.ToolCalls),
 			}
@@ -936,7 +936,7 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 			finalAttemptID = "-"
 		}
 		fmt.Fprintf(&b, "%-26s %-26s %-19d %-25s %-19t %s\n",
-			truncate(settlement.AttemptGroupID, 26), truncate(finalAttemptID, 26), settlement.FinalAttemptCount,
+			Truncate(settlement.AttemptGroupID, 26), Truncate(finalAttemptID, 26), settlement.FinalAttemptCount,
 			settlement.Outcome, settlement.ForensicIncomplete, settlement.SettledAt.Format(time.RFC3339Nano))
 	}
 	return b.String()
