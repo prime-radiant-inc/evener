@@ -263,14 +263,20 @@ export function usualPlace(rows: readonly NavigationSessionSummary[]): Usual {
 	};
 }
 
-/** The task in progress, numbered after every task already done or cancelled
- * ("Task 4 of 7 · Fix the settle/drain race", spec 7.2). Null while no task is
- * in progress, finished lists included: the hub omits `current` then
- * (NavigationTaskProgress's doc comment). */
+/** The task in progress, by its own position in the list ("Task 4 of 7 · Fix
+ * the settle/drain race", spec 7.2). Null while no task is in progress,
+ * finished lists included: the hub omits `current` then (NavigationTaskProgress's
+ * doc comment). current_id is the task's stable list position (a session's
+ * tasks are only ever appended, never reordered or removed, so id order is
+ * list order) and is the number to show: counting done-or-cancelled tasks
+ * instead would overstate the position whenever a later task settles before
+ * this one, which dependency-driven completion allows. That count is only a
+ * fallback for a payload that, contrary to the contract, carries `current`
+ * without `current_id`. */
 export function taskLine(row: NavigationSessionSummary): string | null {
 	const tasks = row.tasks;
 	if (!tasks?.current) return null;
-	const position = tasks.done + (tasks.cancelled ?? 0) + 1;
+	const position = tasks.current_id ?? tasks.done + (tasks.cancelled ?? 0) + 1;
 	return `Task ${position} of ${tasks.total} · ${tasks.current}`;
 }
 
