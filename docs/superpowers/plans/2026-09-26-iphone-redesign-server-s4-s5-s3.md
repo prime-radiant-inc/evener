@@ -4021,11 +4021,11 @@ git commit -m "feat(agent): a root session tallies its whole delegate tree by st
 ### Task 18.2: The root row carries the tally
 
 **Files:**
-- Modify: `appwire/types.go` (`EvenerThread.Subagents`, at the end of `EvenerThread`, `:822`)
+- Modify: `appwire/types.go` (`EvenerThread.Subagents`, at the end of `EvenerThread`, `:838`)
 - Modify: `appwire/clone.go` (one line in `cloneEvenerThread`, reusing the existing `clonePointer` helper; `:102`)
 - Modify: `appwire/clone_test.go`
-- Modify: `server/server.go` (`Server`: `appSubagentTallyFunc` after `appDescendantLiveWatchesFunc`, `:393-400`)
-- Modify: `server/appwire_runtime.go` (`SetSubagentTallyFunc` after `SetDescendantLiveWatchesFunc`, `:383-387`; `attachSubagentTally` after `attachLiveWatches`, `:2712-2731`; one call in `handleAppThreadList`, `:1293-1325`)
+- Modify: `server/server.go` (`Server`: `appSubagentTallyFunc` after `appDescendantLiveWatchesFunc`, `:404-406`)
+- Modify: `server/appwire_runtime.go` (`SetSubagentTallyFunc` after `SetDescendantLiveWatchesFunc`, `:390-399`; `attachSubagentTally` after `attachLiveWatches`, `:2758-2774`; one call in `handleAppThreadList`, `:1312-1348`)
 - Create: `server/appwire_subagent_tally_test.go`
 - Modify: `cmd/evener/serve.go` (`serveServer`: `SetSubagentTallyFunc` after `SetDescendantLiveWatchesFunc`, `:146`; one line in `bridgeSession` after the live-watches seam, `:1308-1310`)
 - Modify: `cmd/evener/serve_state_test.go` (`clearIdentityServer` `:767-778` records the installed tally)
