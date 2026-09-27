@@ -137,6 +137,10 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 
 ## Components
 
+### The hub button
+- **Shape:** One glass capsule in the header's leading slot: the hub's name at 17px in ink-hi and a `chevron.down` glyph. It's a custom header view, because a native bar item given both a title and an image draws only the image.
+- **Behavior:** Opens an action sheet titled with the hub's name: Hub settings (disabled while the hub is out of reach) and Switch hub. Phase 5's Hub sheet replaces it.
+
 ### Section chips
 - **Shape:** A horizontal row, sticky under the header; fully rounded capsules with a hairline border. The row fades at its trailing edge, so a cut-off chip reads as "there's more."
 - **Typography:** Name semibold 14px; count 14px medium, tabular, in ink-low.
@@ -168,7 +172,7 @@ Board rows and section rows stay open on the page; no enclosing card. Section ch
 
 ### Section rows
 - **Shape:** Open 48-unit rows with a top hairline and a trailing chevron.
-- **Behavior:** One per pinned category (with a pin glyph, its name and count), one for Projects, and one for Archived; each opens its own screen. This is a placeholder for the inline treatment a later PR brings.
+- **Behavior:** One per pinned category (with a pin glyph, its name and count), even an empty one, since a category is a place; then Projects and Archived when they hold anything. Each opens its own screen. This is a placeholder for the inline treatment a later PR brings.
 
 ### The bottom toolbar and its connection status
 - **Shape:** A 50-unit bar on the page color with a top hairline.

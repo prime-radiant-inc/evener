@@ -325,17 +325,20 @@ it("renders the fleet's bands in order with their counts, and Idle starts folded
 	act(() => tree.unmount());
 });
 
-it("shows chips and section rows for the sections that have sessions, and opens today's screens", async () => {
+it("shows chips for the sections that have sessions, a row for every pinned category, and opens today's screens", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
 	connect(id, hub(fleet).client, "ready");
 	const nav = navigation();
 	const tree = await mount(nav);
 	expect(chipLabels(tree)).toEqual(["Live, 5 sessions, 2 need you", "Mine, 3 sessions", "Projects, 4 projects"]);
-	expect(texts(tree)).not.toContain("Empty");
-	expect(texts(tree)).not.toContain("Archived");
+	expect(texts(tree)).not.toContain("Archived · 0");
 	pressLabel(tree, "Mine, 3 sessions");
 	expect(nav.navigate).toHaveBeenLastCalledWith("PinnedSection", { hubId: id, sectionId: "pins-1", title: "Mine" });
+	// An empty category has no chip, but it keeps its row (spec 7.1: a
+	// category is a place, and an empty one says how to pin to it).
+	pressLabel(tree, "Empty, 0 sessions");
+	expect(nav.navigate).toHaveBeenLastCalledWith("PinnedSection", { hubId: id, sectionId: "pins-2", title: "Empty" });
 	pressLabel(tree, "Projects, 4 projects");
 	expect(nav.navigate).toHaveBeenLastCalledWith("Projects", { hubId: id, archived: false });
 	act(() => tree.unmount());

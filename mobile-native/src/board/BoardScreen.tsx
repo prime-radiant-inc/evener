@@ -172,7 +172,8 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 
 	const manifest = snapshot.manifest;
 	const liveTotal = bands.needsYou.length + bands.finished.length + bands.working.length + bands.idle.length;
-	const pins = snapshot.pins.rows.filter((pin) => pin.count > 0);
+	// Every category keeps its row; only the chips hide empty ones.
+	const pins = snapshot.pins.rows;
 	const projects = manifest?.catalogs.projects.count ?? 0;
 	const archived = manifest?.catalogs.archived_projects.count ?? 0;
 	const chips: ChipProps[] = [];
@@ -186,7 +187,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			label: `Live, ${plural(liveChipCount, "session")}${bands.needsYou.length ? `, ${summaryText("needsYou", bands.needsYou.length)}` : ""}`,
 			onPress: () => scrollTo("live"),
 		});
-	for (const pin of pins)
+	for (const pin of pins.filter((category) => category.count > 0))
 		chips.push({
 			key: `pin:${pin.id}`,
 			name: pin.name,
