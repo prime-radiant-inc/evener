@@ -496,7 +496,21 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	if gateErr != nil {
 		return nil, nil
 	}
-	defer releaseGate()
+	// The gate is held only for the claim; the run below releases it, exactly as
+	// `teardown-retry` does. It has to: the pinned teardown routes a remove or
+	// binding-changing update through the manager's own paths, which take the
+	// same non-reentrant per-host gate — holding the reservation across the run
+	// would hang this goroutine (and boot with it) instead of repairing the
+	// marker. Re-acquiring it before the finalizing write keeps the write inside
+	// the same discipline the mutations apply.
+	gateHeld := true
+	releaseOnce := func() {
+		if gateHeld {
+			gateHeld = false
+			releaseGate()
+		}
+	}
+	defer releaseOnce()
 	m.cfg.mu.Lock()
 	if m.isMutating(name) {
 		// The commit that staged this marker is still in flight in this process
@@ -549,7 +563,12 @@ func (m *hubHostManager) finalizeOrphanMarkerIfAny(ctx context.Context, name str
 	remnantID := marker.Provisional.RemnantID
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), m.cfg.policy.teardownTimeout)
 	defer cancel()
+	releaseOnce()
 	result, runErr := m.runPinnedTeardown(runCtx, remnantID, remnant)
+	if reacquire, gateErr := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderManager, Activity: "finalize-marker"}); gateErr == nil {
+		gateHeld = true
+		releaseGate = reacquire
+	}
 
 	m.cfg.mu.Lock()
 	defer m.cfg.mu.Unlock()

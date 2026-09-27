@@ -117,8 +117,15 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 	}
 	defer releaseOnce()
 
+	// A live attempt owns the remnant: refuse before claiming anything, so two
+	// retries never run the same cleanup and a recover never overwrites a live
+	// retry's resolution.
+	if attemptID, live := m.liveAttemptInThisBoot(remnantID); live {
+		return appwire.HostTeardownRetryResult{}, attemptBusyRefusal(name, remnantID, attemptID)
+	}
 	// Claim under the mutation lock: one atomic hub.toml write that fences any
-	// prior timed-out attempt and writes this attempt's durable record.
+	// prior timed-out (or previous-boot) attempt and writes this attempt's
+	// durable record.
 	priorAttemptID, priorAttempt, priorOpen := m.cfg.store.openAttemptFor(remnantID)
 	attemptID := mintAttemptID()
 	now := m.nowTime()
@@ -188,20 +195,23 @@ func (m *hubHostManager) TeardownRetry(ctx context.Context, params appwire.HostT
 		if result.Seam != "" {
 			seam = result.Seam
 		}
-		// Timed out (or refused): mark the attempt timed-out-but-open in the same
-		// write the response is built from, so the fence outlives the response
-		// while the gate does not.
+		// The attempt record is closed or marked by what actually happened: a
+		// deadline leaves it open and timed-out (the fence a later retry takes
+		// over), while a non-deadline refusal is not a timeout and must not be
+		// durably recorded as one — it fences the attempt closed and returns the
+		// refusal the caller must see.
+		entries := m.cfg.store.snapshot()
+		if runErr != nil && !isTeardownDeadline(runErr) {
+			closed := fencedAttemptRecord(attempt, m.nowTime())
+			if err := m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: closed}}); err != nil {
+				return appwire.HostTeardownRetryResult{}, err
+			}
+			return appwire.HostTeardownRetryResult{}, runErr
+		}
 		timedOut := attempt
 		timedOut.TimedOutAt = m.nowTime().UTC().Format(time.RFC3339)
-		entries := m.cfg.store.snapshot()
 		if err := m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: timedOut}}); err != nil {
 			return appwire.HostTeardownRetryResult{}, err
-		}
-		if runErr != nil && !isTeardownDeadline(runErr) {
-			// A non-deadline refusal (an unresolvable pinned target, a moved
-			// incarnation) is not a timeout: it is the refusal the caller must
-			// see, and the attempt is left open only for a deadline.
-			return appwire.HostTeardownRetryResult{}, runErr
 		}
 		return m.retryArm(appwire.HostTeardownOutcomeFailed, remnant, seam), nil
 	}
@@ -276,6 +286,12 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 		return appwire.HostTeardownRecoverResult{}, err
 	}
 
+	// A live attempt owns the remnant: a recover must not clear past a running
+	// retry (nor overwrite its resolution), so it refuses busy exactly as a
+	// concurrent retry does.
+	if liveID, live := m.liveAttemptInThisBoot(remnantID); live {
+		return appwire.HostTeardownRecoverResult{}, attemptBusyRefusal(name, remnantID, liveID)
+	}
 	priorAttemptID, priorAttempt, priorOpen := m.cfg.store.openAttemptFor(remnantID)
 	attemptID := mintAttemptID()
 	now := m.nowTime()
@@ -362,6 +378,39 @@ func (m *hubHostManager) TeardownRecover(ctx context.Context, params appwire.Hos
 		return appwire.HostTeardownRecoverResult{}, err
 	}
 	return recoveredClearedResult(stored), nil
+}
+
+// liveAttemptInThisBoot reports whether an open attempt for the remnant is
+// still live in THIS controller incarnation. Its holder released the host gate
+// for the run, so the gate cannot answer that question — the attempt's own
+// fencing epoch can: an open attempt whose epoch names this boot and which has
+// not timed out is a run in progress, and fencing it would let two retries
+// execute the same cleanup (or let a recover rewrite a live retry's
+// resolution). Only a timed-out attempt or one from a previous boot is ours to
+// take over.
+func (m *hubHostManager) liveAttemptInThisBoot(remnantID string) (string, bool) {
+	attemptID, attempt, ok := m.cfg.store.openAttemptFor(remnantID)
+	if !ok || attempt.timedOut() {
+		return "", false
+	}
+	if strings.TrimSpace(m.cfg.bootID) == "" {
+		// No boot identity to compare (tests, embedders): an open attempt is
+		// treated as live rather than clobbered, which is the fail-closed
+		// direction.
+		return attemptID, true
+	}
+	return attemptID, attempt.FencingEpochBoot == m.cfg.bootID
+}
+
+// attemptBusyRefusal is the typed busy refusal a retry or recover emits while a
+// live attempt holds the remnant: "a live attempt still holding the gate
+// refuses even that retry with the typed busy error — the gate holder owns the
+// attempt".
+func attemptBusyRefusal(name, remnantID, attemptID string) error {
+	return hostBusyWireError(hostops.Busy(name, hostops.Holder{
+		Kind:     hostops.HolderManager,
+		Activity: "teardown attempt " + attemptID,
+	}))
 }
 
 // fencedAttemptRecord marks a claim's attempt record fenced-closed after a

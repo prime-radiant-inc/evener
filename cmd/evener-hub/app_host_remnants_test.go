@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 )
 
 // failingTeardownManager is a seam whose RemoveHost/UpdateHost always refuses —
@@ -1031,5 +1032,287 @@ presence_epoch = 4
 	}
 	if _, open := m.cfg.store.markedRemnantFor("side"); open {
 		t.Fatal("the fence still stands after the retry")
+	}
+}
+
+// TestHostAttachRefusesTheRemnantFenceThroughTheRealServer pins roborev's High
+// finding on the attach seam: `registerHostAttachHandler` takes hubcore.WebConfig
+// BY VALUE and reads HostRemnantFence off that copy, so the fence has to be
+// installed on the copy the handler captures — before its registration. The only
+// way to observe that is over the wire, through the real server construction
+// path, which is what this test drives: the hub boots over a hub.toml carrying
+// an open remnant, and evener/host/attach refuses with the typed `remnant-open`
+// naming the blocking id instead of dialing over an unfinished teardown.
+func TestHostAttachRefusesTheRemnantFenceThroughTheRealServer(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	remnantID := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	raw := hostTOMLBanner + `[[hosts]]
+name = "m4"
+ssh = "m4.example"
+
+[teardown_remnants."` + remnantID + `"]
+host = "m4"
+kind = "update"
+seam = "update-host"
+generation = 1
+incarnation_id = "inc-1"
+mutation_key = "mut-1/m4/update/1/inc-1"
+committed_at = "2026-09-26T00:00:00Z"
+
+[teardown_remnants."` + remnantID + `".pending_teardown]
+name = "m4"
+kind = "update"
+generation = 1
+incarnation_id = "inc-1"
+supervisor = true
+channel = true
+
+[teardown_remnants."` + remnantID + `".cleanup_handle]
+kind = "local-boundary"
+generation = 1
+incarnation_id = "inc-1"
+presence_epoch = 1
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cfg, _, _ := hostManageWiringConfig(t, configPath, []hostreg.Host{{Name: "m4", SSH: "m4.example"}}, &dialRecordingRunner{})
+	hub, _ := newHubRPCTestServerWithWeb(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	err := client.Request(context.Background(), appwire.MethodEvenerHostAttach, appwire.HostAttachParams{Host: "m4"}, nil)
+	if err == nil {
+		t.Fatal("evener/host/attach dialed a remnant-fenced host, want the typed remnant-open refusal")
+	}
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("attach refusal = %v, want the typed envelope", err)
+	}
+	// The wire client hands the payload back as decoded JSON, so the test reads
+	// it through the typed shape the same way a consumer does.
+	rawData, err := json.Marshal(wireErr.Data)
+	if err != nil {
+		t.Fatalf("marshal refusal data: %v", err)
+	}
+	var data appwire.RemnantOpenErrorData
+	if err := json.Unmarshal(rawData, &data); err != nil {
+		t.Fatalf("unmarshal refusal data %s: %v", rawData, err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorRemnantOpen {
+		t.Fatalf("attach refusal data = %s, want remnant-open", rawData)
+	}
+	if data.RemnantID != remnantID {
+		t.Fatalf("attach refusal names %q, want the blocking remnant %q", data.RemnantID, remnantID)
+	}
+}
+
+// TestHostMarkerFinalizationReleasesTheGateForThePinnedTeardown pins roborev's
+// other High finding: the orphan-marker finalizer used to hold the per-host gate
+// across `runPinnedTeardown`, which in production is the manager's own
+// non-reentrant per-host lock — so finalizing a `remove` marker for a host whose
+// live registry still carries the pinned incarnation hung the caller (and boot
+// with it). It must release the reservation for the run and re-acquire it for
+// the finalizing write, exactly as `teardown-retry` does. With a manager wired,
+// the old shape deadlocks here; the new one finalizes.
+func TestHostMarkerFinalizationReleasesTheGateForThePinnedTeardown(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	reg, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(reg, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{}, configPath, reg, nil)
+
+	host, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("fixture lost the host")
+	}
+	// A surviving staged marker for a REMOVAL whose live registry still holds
+	// the pinned incarnation: the finalizer's pinned teardown is therefore a
+	// real `RemoveHost` — the call that takes the same gate.
+	receipt := newHostMutationReceipt("lost-mutation", hostMutationRemove, host, m.nowTime())
+	receipt.RemnantID = mintRemnantID()
+	key := hostMutationReceiptKey("lost-mutation", "side", hostMutationRemove, hostMutationIdentity{
+		Generation:    host.Generation,
+		IncarnationID: host.IncarnationID,
+	})
+	marker := HostStagedReceipt{
+		Key:             key,
+		StagedAt:        m.nowTime().UTC().Format(time.RFC3339),
+		Phase:           hostStagedPhaseRuntimeSwapped,
+		TeardownStarted: true,
+		SwapStarted:     true,
+		Provisional:     receipt,
+		PendingTeardown: pendingTeardownFor(host, hostTeardownKindRemove),
+	}
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{marker: &pendingHostMarker{Name: "side", Marker: marker}}); err != nil {
+		t.Fatalf("stage marker: %v", err)
+	}
+
+	// Finalize it synchronously: the old shape deadlocks on the manager's gate
+	// (the test would hang), the fixed shape completes.
+	finalized, err := m.finalizeOrphanMarkerIfAny(context.Background(), "side", true)
+	if err != nil {
+		t.Fatalf("finalizeOrphanMarkerIfAny = %v", err)
+	}
+	if finalized == nil {
+		t.Fatal("the marker was not finalized")
+	}
+	if finalized.Outcome != hostReceiptOutcomeCommitted || !finalized.BootRecovered {
+		t.Fatalf("finalized receipt = %+v, want a boot-recovered committed receipt", finalized)
+	}
+	if _, ok := m.cfg.store.stagedSnapshot()["side"]; ok {
+		t.Fatal("the marker survived its finalization")
+	}
+	// The pinned removal ran: the live registry no longer carries the host.
+	if _, ok := m.cfg.hosts.Get("side"); ok {
+		t.Fatal("the pinned removal did not run")
+	}
+}
+
+// TestHostTeardownRetryRefusesWhileAnAttemptIsLive pins roborev's Medium
+// finding: the gate is released during a retry's run, so the gate cannot answer
+// "is an attempt running?" — the attempt's own fencing epoch must. A second
+// retry (and a recover) refuses with the typed busy while this boot's attempt is
+// open and has not timed out, instead of fencing a live run and executing the
+// same teardown twice.
+func TestHostTeardownRetryRefusesWhileAnAttemptIsLive(t *testing.T) {
+	m, _, _ := newRemnantFixture(t)
+	host, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("fixture lost the host")
+	}
+	m.cfg.bootID = "boot-1"
+	remnantID := mintRemnantID()
+	remnant := newTeardownRemnant(hostRemnantKindRemove, "remove-host", host, "", m.nowTime())
+	remnant.Generation = host.Generation + 100
+	remnant.IncarnationID = "pinned-incarnation"
+	remnant.CleanupHandle.Generation = remnant.Generation
+	remnant.CleanupHandle.IncarnationID = remnant.IncarnationID
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{remnant: &pendingHostRemnant{RemnantID: remnantID, Remnant: remnant}}); err != nil {
+		t.Fatalf("stage remnant: %v", err)
+	}
+	// A live attempt of THIS boot, not timed out: the state a running retry
+	// leaves while its gate is released.
+	attemptID := mintAttemptID()
+	live := HostTeardownAttempt{
+		RemnantID:         remnantID,
+		State:             hostAttemptStateOpen,
+		StartedAt:         m.nowTime().UTC().Format(time.RFC3339),
+		FencingEpochBoot:  "boot-1",
+		FencingEpochOpSeq: 1,
+	}
+	if err := m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: live}}); err != nil {
+		t.Fatalf("stage attempt: %v", err)
+	}
+
+	if _, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID}); err == nil {
+		t.Fatal("a second retry ran against a live attempt, want the typed busy refusal")
+	} else {
+		assertWireCode(t, err, appwire.CodeConflict)
+	}
+	if _, err := m.TeardownRecover(context.Background(), appwire.HostTeardownRecoverParams{
+		RemnantID:   remnantID,
+		Attestation: appwire.HostTeardownAttestation{Operator: "op", Statement: hostRecoveryStatement, ObservedAt: "2026-09-27T12:00:00Z"},
+	}); err == nil {
+		t.Fatal("a recover cleared past a live attempt, want the typed busy refusal")
+	} else {
+		assertWireCode(t, err, appwire.CodeConflict)
+	}
+	// The live attempt is untouched: still open, still this boot's, not fenced.
+	stored, ok := m.cfg.store.attemptsSnapshot()[attemptID]
+	if !ok || !stored.open() || stored.FencedAt != "" || stored.TimedOutAt != "" {
+		t.Fatalf("attempt after the refusals = %+v, want the untouched live record", stored)
+	}
+	// A timed-out attempt of this boot IS takeover-able: the fence is for a
+	// wedged run, not a live one.
+	timedOut := stored
+	timedOut.TimedOutAt = m.nowTime().UTC().Format(time.RFC3339)
+	if err := m.persistHosts(entries, entries, hostPersistChange{attempt: &pendingHostAttempt{AttemptID: attemptID, Attempt: timedOut}}); err != nil {
+		t.Fatalf("mark timed out: %v", err)
+	}
+	retry, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
+	if err != nil {
+		t.Fatalf("retry after the timeout = %v", err)
+	}
+	if retry.HostTeardownRetryCompleteRemoved == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete arm", retry)
+	}
+	prior, ok := m.cfg.store.attemptsSnapshot()[attemptID]
+	if !ok || prior.State != hostAttemptStateFencedClosed {
+		t.Fatalf("prior attempt = %+v, want fenced-closed after the takeover", prior)
+	}
+}
+
+// TestHostTeardownRetryRefusalIsNotRecordedAsATimeout pins roborev's Low
+// finding: a non-deadline refusal (the pinned handle does not resolve) must not
+// be durably recorded as a timeout, because consumers keyed on `timed_out_at`
+// would then see a wedged run that never happened.
+func TestHostTeardownRetryRefusalIsNotRecordedAsATimeout(t *testing.T) {
+	m, _, _ := newRemnantFixture(t)
+	host, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("fixture lost the host")
+	}
+	m.cfg.bootID = "boot-1"
+	remnantID := mintRemnantID()
+	remnant := newTeardownRemnant(hostRemnantKindRemove, "remove-host", host, "", m.nowTime())
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{remnant: &pendingHostRemnant{RemnantID: remnantID, Remnant: remnant}}); err != nil {
+		t.Fatalf("stage remnant: %v", err)
+	}
+	// A handle this build cannot resolve through: the remote-lease arm carries no
+	// implementation here (the crash-fencing slices own it), so resolving it is
+	// the typed `teardown-unknown-key` refusal — the canonical non-deadline
+	// failure a retry must surface without recording a timeout.
+	remnant.CleanupHandle.Kind = "remote-lease"
+	remnant.CleanupHandle.RemoteGuardFile = "guard.json"
+	if err := m.persistHosts(entries, entries, hostPersistChange{remnant: &pendingHostRemnant{RemnantID: remnantID, Remnant: remnant}}); err != nil {
+		t.Fatalf("restage remnant: %v", err)
+	}
+
+	if _, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID}); err == nil {
+		t.Fatal("retry over an unresolvable pinned handle succeeded, want the typed refusal")
+	} else {
+		var wireErr appwire.WireError
+		if !errors.As(err, &wireErr) {
+			t.Fatalf("refusal = %v, want the typed envelope", err)
+		}
+		rawData, marshalErr := json.Marshal(wireErr.Data)
+		if marshalErr != nil {
+			t.Fatalf("marshal refusal data: %v", marshalErr)
+		}
+		var data appwire.TeardownUnknownKeyErrorData
+		if unmarshalErr := json.Unmarshal(rawData, &data); unmarshalErr != nil {
+			t.Fatalf("unmarshal refusal data %s: %v", rawData, unmarshalErr)
+		}
+		if data.EvenerErrorInfo != appwire.ErrorTeardownUnknownKey {
+			t.Fatalf("refusal data = %s, want teardown-unknown-key", rawData)
+		}
+	}
+	for _, attempt := range m.cfg.store.attemptsSnapshot() {
+		if attempt.TimedOutAt != "" {
+			t.Fatalf("attempt = %+v: a non-deadline refusal was recorded as a timeout", attempt)
+		}
+		if attempt.open() {
+			t.Fatalf("attempt = %+v: the refused attempt was left open", attempt)
+		}
 	}
 }
