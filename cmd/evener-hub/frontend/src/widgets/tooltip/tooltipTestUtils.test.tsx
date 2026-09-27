@@ -1,10 +1,9 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { Tooltip } from "./index";
 import { hoverForTooltip } from "./tooltipTestUtils";
 
 afterEach(() => {
-  cleanup();
   vi.useRealTimers();
 });
 
