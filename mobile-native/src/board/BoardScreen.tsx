@@ -1,9 +1,11 @@
 import { humanizeState, type NavigationSessionSummary } from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
-import type { NativeStackHeaderItemMenu, NativeStackScreenProps } from "@react-navigation/native-stack";
+import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
+	ActionSheetIOS,
+	Alert,
 	FlatList,
 	Keyboard,
 	type LayoutChangeEvent,
@@ -400,27 +402,17 @@ function useLiveReadRetry(
 function useHeader(navigation: Navigation, hubId: string, hubName: string, connected: boolean, toggleSearch: () => void) {
 	const { fontScale } = useWindowDimensions();
 	useEffect(() => {
-		const switchHub = () => navigation.navigate("Hubs");
-		const hubMenu: NativeStackHeaderItemMenu["menu"] = {
-			items: [
-				{
-					type: "action",
-					label: "Hub settings",
-					disabled: !connected,
-					onPress: () => navigation.navigate("HubSettings", { hubId }),
-				},
-				{ type: "action", label: "Switch hub", onPress: switchHub },
-			],
-		};
+		const hubButton = (
+			<HubButton
+				hubName={hubName}
+				connected={connected}
+				onSettings={() => navigation.navigate("HubSettings", { hubId })}
+				onSwitch={() => navigation.navigate("Hubs")}
+			/>
+		);
 		navigation.setOptions({
 			title: "",
-			// A bar item given both a label and an icon draws only the icon, so
-			// the hub's name and its chevron are two items, each opening the
-			// same menu.
-			unstable_headerLeftItems: () => [
-				{ type: "menu", label: hubName, accessibilityLabel: `${hubName}, hub menu`, menu: hubMenu },
-				{ type: "menu", label: "Hub menu", icon: { type: "sfSymbol", name: "chevron.down" }, menu: hubMenu },
-			],
+			unstable_headerLeftItems: () => [{ type: "custom", element: hubButton }],
 			unstable_headerRightItems: () => [
 				{
 					type: "button",
@@ -430,11 +422,7 @@ function useHeader(navigation: Navigation, hubId: string, hubName: string, conne
 					onPress: toggleSearch,
 				},
 			],
-			headerLeft: () => (
-				<Action label={`${hubName}, switch hub`} onPress={switchHub}>
-					{hubName}
-				</Action>
-			),
+			headerLeft: () => hubButton,
 			headerRight: () => (
 				<Action label="Search sessions" onPress={toggleSearch}>
 					{fontScale > 1.4 ? "Find" : "Search"}
@@ -442,6 +430,65 @@ function useHeader(navigation: Navigation, hubId: string, hubName: string, conne
 			),
 		});
 	}, [navigation, hubId, hubName, connected, toggleSearch, fontScale]);
+}
+
+/** The hub button (spec 7.1): the hub's name and a chevron as one control,
+ * opening the hub menu (ruling 9) until phase 5's Hub sheet. A native bar
+ * item given both a label and an icon draws only the icon, so this is a
+ * custom header view, and the menu is an action sheet. */
+function HubButton({
+	hubName,
+	connected,
+	onSettings,
+	onSwitch,
+}: {
+	hubName: string;
+	connected: boolean;
+	onSettings: () => void;
+	onSwitch: () => void;
+}) {
+	const { palette } = useColors();
+	const scale = useTextScale();
+	const open = () => {
+		if (Platform.OS === "ios") {
+			ActionSheetIOS.showActionSheetWithOptions(
+				{
+					title: hubName,
+					options: ["Hub settings", "Switch hub", "Cancel"],
+					cancelButtonIndex: 2,
+					// Hub settings needs the hub; Switch hub doesn't.
+					disabledButtonIndices: connected ? [] : [0],
+				},
+				(index) => {
+					if (index === 0) onSettings();
+					else if (index === 1) onSwitch();
+				},
+			);
+			return;
+		}
+		Alert.alert(hubName, undefined, [
+			...(connected ? [{ text: "Hub settings", onPress: onSettings }] : []),
+			{ text: "Switch hub", onPress: onSwitch },
+			{ text: "Cancel", style: "cancel" },
+		]);
+	};
+	return (
+		<Pressable
+			accessibilityRole="button"
+			accessibilityLabel={`${hubName}, hub menu`}
+			onPress={open}
+			style={{ minHeight: 44, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", columnGap: 6 }}
+		>
+			<Text
+				allowFontScaling={Platform.OS !== "ios"}
+				numberOfLines={1}
+				style={{ flexShrink: 1, fontSize: 17 * scale, color: palette.inkHi }}
+			>
+				{hubName}
+			</Text>
+			<SymbolView name="chevron.down" size={13 * scale} tintColor={palette.inkHi} />
+		</Pressable>
+	);
 }
 
 function useTextScale() {

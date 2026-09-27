@@ -25,10 +25,12 @@ const harness = vi.hoisted(() => ({
 	drafts: new Map<string, Set<string>>(),
 	focused: true,
 	focusListeners: new Set<(focused: boolean) => void>(),
+	actionSheet: vi.fn(),
 }));
 
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
+	ActionSheetIOS: { showActionSheetWithOptions: (...args: unknown[]) => harness.actionSheet(...args) },
 	Keyboard: { dismiss: () => {} },
 }));
 vi.mock("expo-symbols", () => ({ SymbolView: "SymbolView" }));
@@ -435,18 +437,25 @@ it("offers no Reconnect or Refresh anywhere", async () => {
 		vi.advanceTimersByTime(60_000);
 	});
 	const options = headerOptions(nav);
-	const headerLabels = [
-		...options.unstable_headerLeftItems({}),
-		...options.unstable_headerRightItems({}),
-	].flatMap((item: { label?: string; menu?: { items: Array<{ label: string }> } }) => [
-		item.label,
-		...(item.menu?.items.map((entry) => entry.label) ?? []),
-	]);
+	const headerItems = [...options.unstable_headerLeftItems({}), ...options.unstable_headerRightItems({})];
+	const headerLabels = headerItems
+		.flatMap((item: { label?: string; menu?: { items: Array<{ label: string }> } }) => [
+			item.label,
+			...(item.menu?.items.map((entry) => entry.label) ?? []),
+		])
+		.filter((label): label is string => typeof label === "string");
+	// The hub button is a custom view: read what it draws and the menu it opens.
+	const hubButton = render(headerItems[0].element);
+	act(() => hubButton.root.findByType("Pressable" as never).props.onPress());
+	const hubMenu: string[] = harness.actionSheet.mock.calls.at(-1)?.[0].options ?? [];
+	expect(hubMenu.length).toBeGreaterThan(0);
 	const labels = tree.root
 		.findAll((node) => typeof node.props.accessibilityLabel === "string")
 		.map((node) => node.props.accessibilityLabel as string);
-	for (const text of [...texts(tree), ...labels, ...headerLabels]) expect(text).not.toMatch(/^(Reconnect|Refresh|Retry)\b/);
+	for (const text of [...texts(tree), ...labels, ...headerLabels, ...texts(hubButton), ...hubMenu])
+		expect(text).not.toMatch(/^(Reconnect|Refresh|Retry)\b/);
 	expect(renderedText(tree)).not.toMatch(/Reconnect\b|Refresh|pull/i);
+	act(() => hubButton.unmount());
 	act(() => tree.unmount());
 });
 
@@ -538,19 +547,32 @@ it("puts the hub's name and menu on the left and search on the right", async () 
 	const tree = await mount(nav);
 	const options = headerOptions(nav);
 	expect(options.title).toBe("");
-	// A bar item given both a label and an icon draws only the icon, so the
-	// hub's name and its chevron are two items, each opening the same menu.
-	const [name, chevron] = options.unstable_headerLeftItems({});
-	expect(name).toMatchObject({ type: "menu", label: "Work hub" });
-	expect(name.icon).toBeUndefined();
-	expect(chevron).toMatchObject({ type: "menu", icon: { type: "sfSymbol", name: "chevron.down" } });
-	for (const hubMenu of [name, chevron]) {
-		expect(hubMenu.menu.items.map((item: { label: string }) => item.label)).toEqual(["Hub settings", "Switch hub"]);
-		act(() => hubMenu.menu.items[0].onPress());
-		expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
-		act(() => hubMenu.menu.items[1].onPress());
-		expect(nav.navigate).toHaveBeenLastCalledWith("Hubs");
-	}
+	// One control, as spec 7.1 draws it: the hub's name and a chevron in a
+	// single header item that opens the hub menu.
+	const hubItems = options.unstable_headerLeftItems({});
+	expect(hubItems).toHaveLength(1);
+	expect(hubItems[0].type).toBe("custom");
+	const hubButton = render(hubItems[0].element);
+	expect(texts(hubButton)).toEqual(["Work hub"]);
+	expect(hubButton.root.findAllByType("SymbolView" as never).map((node) => node.props.name)).toEqual(["chevron.down"]);
+	const press = hubButton.root.findByType("Pressable" as never);
+	expect(press.props.accessibilityLabel).toBe("Work hub, hub menu");
+	act(() => press.props.onPress());
+	const [sheet, choose] = harness.actionSheet.mock.calls.at(-1) ?? [];
+	expect(sheet).toMatchObject({ options: ["Hub settings", "Switch hub", "Cancel"], cancelButtonIndex: 2 });
+	expect(sheet.disabledButtonIndices).toEqual([]);
+	act(() => choose(0));
+	expect(nav.navigate).toHaveBeenLastCalledWith("HubSettings", { hubId: id });
+	act(() => choose(1));
+	expect(nav.navigate).toHaveBeenLastCalledWith("Hubs");
+	act(() => hubButton.unmount());
+	// Hub settings needs the hub; Switch hub doesn't.
+	connect(id, null, "connecting");
+	rerender(tree, nav);
+	const offline = render(headerOptions(nav).unstable_headerLeftItems({})[0].element);
+	act(() => offline.root.findByType("Pressable" as never).props.onPress());
+	expect(harness.actionSheet.mock.calls.at(-1)?.[0].disabledButtonIndices).toEqual([0]);
+	act(() => offline.unmount());
 	const [search] = options.unstable_headerRightItems({});
 	expect(search).toMatchObject({ type: "button", icon: { type: "sfSymbol", name: "magnifyingglass" } });
 	expect(tree.root.findAll((node) => node.type === ("TextInput" as never))).toHaveLength(0);
