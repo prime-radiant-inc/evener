@@ -43,7 +43,7 @@ import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } fro
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import {
   flushPendingTurnsProjectionForTests,
-  outlastEmptyFlushRoundForTests,
+  startFlushPastEmptyRoundForTests,
 } from "./queue/testing/flushPendingTurnsProjection";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
@@ -3759,16 +3759,12 @@ test.each<[string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]>
   await press(user);
   await held.reached;
 
-  let flushResolved = false;
-  const flushing = flushPendingTurnsProjectionForTests().then(() => {
-    flushResolved = true;
-  });
+  const flush = await startFlushPastEmptyRoundForTests();
   // If the write is tracked, the flush cannot return here.
-  await outlastEmptyFlushRoundForTests();
-  expect(flushResolved).toBe(false);
+  expect(flush.isDone()).toBe(false);
 
   held.release();
-  await flushing;
+  await flush.done;
   expect((await parkedOutboxFor(ref)).map((record) => record.method)).toEqual(["turn/interrupt"]);
 });
 

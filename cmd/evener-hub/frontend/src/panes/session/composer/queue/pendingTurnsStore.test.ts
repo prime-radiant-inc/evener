@@ -26,7 +26,7 @@ import {
 } from "./pendingTurnsStore";
 import {
   flushPendingTurnsProjectionForTests,
-  outlastEmptyFlushRoundForTests,
+  startFlushPastEmptyRoundForTests,
 } from "./testing/flushPendingTurnsProjection";
 
 function thread(overrides: Partial<Thread> = {}): Thread {
@@ -437,19 +437,14 @@ test("a flush cannot settle while a submit is still in flight", async () => {
     () => submitting,
   );
 
-  let flushResolved = false;
-  const flushing = flushPendingTurnsProjectionForTests().then(() => {
-    flushResolved = true;
-  });
-
+  const flush = await startFlushPastEmptyRoundForTests();
   // If the submit is tracked, the flush cannot return here.
-  await outlastEmptyFlushRoundForTests();
-  expect(flushResolved).toBe(false);
+  expect(flush.isDone()).toBe(false);
 
   releaseSubmit();
   await submitted;
-  await flushing;
-  expect(flushResolved).toBe(true);
+  await flush.done;
+  expect(flush.isDone()).toBe(true);
 });
 
 // Durable work that starts outside this file is tracked by the storage itself:
@@ -482,18 +477,14 @@ test.each<
   const writing = write(storage, record.clientMutationId);
   await held.reached;
 
-  let flushResolved = false;
-  const flushing = flushPendingTurnsProjectionForTests().then(() => {
-    flushResolved = true;
-  });
+  const flush = await startFlushPastEmptyRoundForTests();
   // If the storage registers the write, the flush cannot return here.
-  await outlastEmptyFlushRoundForTests();
-  expect(flushResolved).toBe(false);
+  expect(flush.isDone()).toBe(false);
 
   held.release();
   await writing;
-  await flushing;
-  expect(flushResolved).toBe(true);
+  await flush.done;
+  expect(flush.isDone()).toBe(true);
   storage.close();
 });
 
