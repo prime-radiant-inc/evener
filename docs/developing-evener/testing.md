@@ -837,15 +837,30 @@ faked clock when they find a `jest` global, and `userEvent.setup({
 advanceTimers: vi.advanceTimersByTime })`, so typing delays advance it too.
 Fake only the timer functions (`toFake: ["setTimeout", "clearTimeout",
 "setInterval", "clearInterval"]`); src/panes/spawn/Spawn.test.tsx is the
-worked example.
+worked example. To read a Tooltip from a test that otherwise runs on real
+timers, use `hoverForTooltip` (src/widgets/tooltip/tooltipTestUtils.ts): it
+crosses the show delay on a fake clock scoped to the hover, so it needs none
+of that wiring, and it must be called on real timers.
 
 `await user.click(...)` returns once the event is dispatched, not once the
-handler's async work finishes. An effect that sits behind an `await`, such as
-`threadsStore.forceStop`, which writes its cancellation durably before the
-RPC, has to be waited for with `waitFor` or a `findBy*` on the result, never
-asserted right after the click. The failure is worse than a flake in one
-test: the store calls `requireClient()` when the RPC finally goes out, which
-by then can be the next test's fake client, so the next test sees an extra
+handler's async work finishes. An effect that sits behind an `await` has to
+be awaited, never asserted right after the click. Work that goes through
+durable mutation storage (a send, steer, queue, drain, Stop, queue edit, note
+save or clear, and `threadsStore.forceStop`, which writes its cancellation
+durably before the RPC) is awaited with `flushPendingTurnsProjectionForTests()`
+(src/panes/session/composer/queue/testing/flushPendingTurnsProjection.ts),
+and the test asserts directly afterwards. Every storage transaction registers
+with the projection work tracker, so the flush returns once the whole chain
+has settled, and the dispatched request has gone out by then. A `waitFor`
+on the request races that chain against a 1000ms ceiling, which a loaded
+host can outlast, and it stops as soon as the request appears, with the
+receipt's settle and the refresh after it still to come. A test that holds
+tracked work open on purpose (a held read or commit) cannot flush until it
+releases it; it awaits the request at the fake's handler instead.
+Other async effects are waited for with `waitFor` or a `findBy*` on the
+result. Leaving any of this unawaited is worse than a flake in one test:
+the store calls `requireClient()` when the RPC finally goes out, which by
+then can be the next test's fake client, so the next test sees an extra
 call. For the same reason a suite resets every global store it renders
 against, such as `resetToastStoreForTests()`, in `beforeEach`; otherwise a
 toast from the previous test can satisfy this test's assertion.

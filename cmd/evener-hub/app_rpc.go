@@ -131,37 +131,42 @@ func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDae
 			Watches:            item.Watches,
 			Capabilities:       item.Capabilities,
 			CapabilitiesKnown:  item.CapabilitiesKnown,
+			Subagents:          item.Subagents,
+			LastTurnEndedAt:    hubcore.UnixMilliseconds(item.LastTurnEndedAt),
+			Tasks:              item.Tasks,
 		}
 		entries = append(entries, entry)
-		// In-process descendants are addressed as their own AppWire
-		// threads, but are served by their owner's daemon endpoint.
+		// In-process descendants are addressed as their own AppWire threads,
+		// served by their owner's daemon endpoint, but each alias is built
+		// from only the fields it owns rather than a copy of the root with
+		// the root-only ones cleared: a pending question, an approval, jobs,
+		// the subagent tally, the turn end and the task list are all the
+		// root's alone (a subagent never asks the user or escalates, and its
+		// own diagnostics carry its own jobs where they belong), so an alias
+		// row never has them to begin with, and a future root-only field
+		// needs no clearing line added here (#2589).
 		for _, childID := range item.RunningSubagentIDs {
-			child := entry
-			child.OwnerSessionID = entry.SessionID
-			child.SessionID = childID
-			// The alias carries the child's OWN watches, sampled by
-			// the prober into ChildWatches. Inheriting the root
-			// entry's Watches would put the root's rows on the
-			// child row (and, for a read-only alias, they were
-			// suppressed anyway), losing the child's own.
-			child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
-			// The child's own projected status when the daemon carries
-			// it — inheriting the parent's status would render a
-			// settled delegate as working (or vice versa). "" (old
-			// daemon) keeps the inherited status, the pre-states
-			// behavior.
+			status := entry.Status
+			// The child's own projected status when the daemon carries it —
+			// inheriting the parent's status would render a settled delegate
+			// as working (or vice versa). "" (old daemon) keeps the
+			// inherited status, the pre-states behavior.
 			if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
-				child.Status = childState
+				status = childState
 			}
-			// A pending question or approval is the root's: a subagent
-			// never asks the user or escalates (the agent's escalationAllowed
-			// and ask_user gates are root-only), so the alias drops the copy
-			// it took of the root's, or its row shows the root's question.
-			child.PendingAsk = false
-			child.PendingEscalation = false
-			child.PendingEscalations = nil
-			child.ReadOnlyAlias = true
-			entries = append(entries, child)
+			entries = append(entries, appsource.LocalDaemonEntry{
+				Entry:          entry.Entry,
+				SessionID:      childID,
+				OwnerSessionID: entry.SessionID,
+				Status:         status,
+				// The alias carries the child's OWN watches, sampled by the
+				// prober into ChildWatches: the root's Watches would put the
+				// root's rows on the child row, losing the child's own.
+				Watches:           appwire.CloneEvenerWatches(item.ChildWatches[childID]),
+				Capabilities:      entry.Capabilities,
+				CapabilitiesKnown: entry.CapabilitiesKnown,
+				ReadOnlyAlias:     true,
+			})
 		}
 	}
 	return entries
@@ -1182,6 +1187,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
+	registerSessionSeenHandler(server, cfg, navigation)
 	registerMiscHandlers(server, cfg, sources)
 	// Component 06's Connect action: the browser-reachable explicit attach
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method

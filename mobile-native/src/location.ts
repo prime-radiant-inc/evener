@@ -1,5 +1,6 @@
 import { decodeForkTarget, type ForkTarget } from "./forkCheckpointRepository";
 import { localSessionId } from "./sessionDeletionResult";
+import { isSheetRoute } from "./sheet/sheetRoutes";
 import type { SyncStringStorage } from "./syncStringStorage";
 
 export interface SavedLocation {
@@ -178,6 +179,16 @@ export class LocationRepository {
 		if (location) this.storage.setItemSync(key, JSON.stringify(location));
 		else this.storage.removeItemSync(key);
 	}
+}
+/** The route a relaunch reopens: the frontmost one that isn't a sheet. A
+ * sheet is a moment over its screen, never a place to come back to. */
+export function routeToSave<Route extends { name: string }>(state: {
+	index: number;
+	routes: readonly Route[];
+}): Route | undefined {
+	return state.routes
+		.slice(0, state.index + 1)
+		.findLast((route) => !isSheetRoute(route.name));
 }
 export function locationForRoute(
 	route: { name: string; params?: unknown },

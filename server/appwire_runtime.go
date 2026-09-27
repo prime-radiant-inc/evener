@@ -1028,9 +1028,9 @@ func (s *Server) stampAskPendingOnStatusChange(method string, params any) any {
 // snapshot is built from, so a notification and the snapshot cannot disagree.
 //
 // There is no unmeasured state to skip, which is what makes this simpler than
-// the failure count above: the envelope's flag is a plain bool refreshed from
-// the session whenever the ask facet is sampled, and appThread hands the same
-// value to every snapshot unconditionally. Wire absence therefore means an old
+// the failure count above: the flag is whether the envelope holds a pending
+// question, refreshed whenever the ask facet is sampled, and appThread derives
+// every snapshot's flag the same way. Wire absence therefore means an old
 // daemon, which is exactly what the client's absent-means-no-update rule is
 // for. The bridge samples the facet BEFORE the projection commit that emits
 // this notification (bridge.go), so the value stamped here is the one this
@@ -1038,7 +1038,7 @@ func (s *Server) stampAskPendingOnStatusChange(method string, params any) any {
 func (s *Server) envelopeAskPending() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.appEnvelope.AskPending
+	return s.appEnvelope.PendingQuestion != nil
 }
 
 // stampCapabilitiesOnStatusChange rides the action set that goes with the
@@ -2072,7 +2072,7 @@ func (s *Server) clearBlockedReasonLocked() string {
 	if s.appEnvelope.Queue.Depth > 0 || len(s.appEnvelope.PendingMutations) > 0 {
 		return "thread has unresolved queued work"
 	}
-	if s.appEnvelope.AskPending || len(s.appEnvelope.PendingEscalations) > 0 {
+	if s.appEnvelope.PendingQuestion != nil || len(s.appEnvelope.PendingEscalations) > 0 {
 		return "thread has unresolved approval work"
 	}
 	return ""
@@ -2383,13 +2383,15 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	usage := envelope.Usage
 	activeTurnStartedAt := envelope.ActiveTurnStartedAt
 	failedToolCalls := envelope.FailedToolCalls
-	askPending := envelope.AskPending
+	askPending := envelope.PendingQuestion != nil
+	pendingQuestion := envelope.PendingQuestion
 	pendingEscalations := envelope.PendingEscalations
 	reasoningEffort := envelope.ReasoningEffort
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
 	visionModel := envelope.VisionModel
 	lastTurnEndedAt := envelope.LastTurnEndedAt
+	lastMessage := envelope.LastMessage
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
 	if threadPreview == "" {
@@ -2430,12 +2432,14 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			ActiveTurnStartedAt:   activeTurnStartedAt,
 			FailedToolCalls:       failedToolCalls,
 			AskPending:            askPending,
+			PendingQuestion:       pendingQuestion,
 			PendingEscalations:    pendingEscalations,
 			ReasoningEffort:       reasoningEffort,
 			ReasoningEffortLevels: reasoningEffortLevels,
 			SupportsReasoning:     supportsReasoning,
 			VisionModel:           visionModel,
 			LastTurnEndedAt:       lastTurnEndedAt,
+			LastMessage:           lastMessage,
 		},
 	}
 }

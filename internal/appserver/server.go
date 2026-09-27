@@ -1510,7 +1510,12 @@ func concurrentDispatchMethod(method string) bool {
 		// out of order: hubUpdateMu plus the cross-process install lock
 		// fail a concurrent apply fast, and the restart waits on its own
 		// response flush rather than connection order.
-		appwire.MethodEvenerUpdateApply:
+		appwire.MethodEvenerUpdateApply,
+		// evener/activity/read waits up to its per-host budget on each
+		// attached host, and a phone polls it every ten seconds on the
+		// connection its sends ride. It writes nothing, and each answer
+		// replaces the last, so order does not matter to the poller.
+		appwire.MethodEvenerActivityRead:
 		return true
 	}
 	return false

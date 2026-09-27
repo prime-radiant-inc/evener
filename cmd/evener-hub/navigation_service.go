@@ -1351,10 +1351,17 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 	if err != nil {
 		return navigationSourceSnapshot{}, err
 	}
+	// The seen store is nil-safe: an unconfigured hub reads as no store, and
+	// no row is unseen.
+	seen, err := s.web.cfg.SessionSeen.Snapshot()
+	if err != nil {
+		return navigationSourceSnapshot{}, err
+	}
 	favoriteView := hubcore.ClassifyFavoriteDecisions(favorites, authority).Presentation
 	pinView := classifySessionPins(assignments, authority)
 	assignments = canonicalPinAssignments(assignments, pinView)
 	inputs := navigationBuildInputsFromTreeSnapshot(generation, 0, tree, s.web.apiTreeSources(), hubAttentionSummaryFromCore(attention), snapshot.live, favoriteView, projectFavoritePresentation(favoriteView), sections, assignments)
+	inputs.SessionSeen = seen
 	// Retained rows and saved metadata remain positive read evidence during
 	// an incomplete ownership scan. They cannot authorize local daemon writes.
 	if snapshot.ownershipErr != nil {

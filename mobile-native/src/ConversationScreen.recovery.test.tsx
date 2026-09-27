@@ -35,6 +35,15 @@ const harness = vi.hoisted(() => ({
 	connection: {} as Record<string, unknown>,
 }));
 
+// The root stack the screen sits in, read by useScreenInFront and
+// screenInFront (screens.tsx). Kept at the screen's own route on top, so the
+// screen is in front the way a freshly opened conversation really is - this
+// suite isn't exercising sheet coverage or a pushed screen, unlike
+// ConversationScreen.sheets.test.tsx.
+const navigationState = vi.hoisted(() => ({
+	state: { index: 0, routes: [] as { key: string; name: string }[] },
+}));
+
 // One sqlite double per database name, keyed the way the singletons open them,
 // so the test can read the same rows the screen's own recovery hook reads.
 const sqlite = vi.hoisted(() => ({ ports: new Map<string, unknown>() }));
@@ -76,7 +85,8 @@ vi.mock("@react-navigation/native", async () => {
 	return {
 		useFocusEffect: (effect: () => void | (() => void)) =>
 			useEffect(effect, []),
-		useIsFocused: () => true,
+		useNavigationState: <T,>(select: (state: typeof navigationState.state) => T) =>
+			select(navigationState.state),
 	};
 });
 vi.mock("expo-clipboard", () => ({
@@ -108,12 +118,7 @@ vi.mock("expo-file-system", () => ({
 		constructor(public uri: string) {}
 	},
 }));
-vi.mock("expo-image-manipulator", () => ({
-	ImageManipulator: {
-		manipulateAsync: vi.fn(async () => ({ uri: "manipulated" })),
-	},
-	SaveFormat: { JPEG: "jpeg" },
-}));
+vi.mock("expo-image-manipulator", () => ({}));
 vi.mock("expo-image-picker", () => ({
 	launchImageLibraryAsync: vi.fn(async () => ({ canceled: true, assets: [] })),
 	UIImagePickerPreferredAssetRepresentationMode: { Current: "current" },
@@ -151,6 +156,7 @@ function conversationRoute(ref: string): ConversationScreenProps["route"] {
 
 const navigation = {
 	isFocused: () => true,
+	getState: () => navigationState.state,
 	navigate: vi.fn(),
 	push: vi.fn(),
 	goBack: vi.fn(),
@@ -204,6 +210,7 @@ it("renders the Recovery entry and mounts the recovery panel end to end, row-con
 	// The screen's own recovery hook acquires this singleton once connected;
 	// reading it here is the same runtime the screen reads.
 	const runtime = getNativeMutationRuntime();
+	navigationState.state = { index: 0, routes: [conversationRoute(ref)] };
 
 	const tree = render(
 		<ConversationScreen

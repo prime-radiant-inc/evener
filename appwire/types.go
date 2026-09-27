@@ -88,6 +88,7 @@ const (
 	MethodEvenerPinSectionDelete         = "evener/pin-section/delete"
 	MethodEvenerSessionPinAssign         = "evener/session-pin/assign"
 	MethodEvenerSessionPinUnpin          = "evener/session-pin/unpin"
+	MethodEvenerSessionSeenSet           = "evener/session/seen/set"
 	MethodEvenerSearch                   = "evener/search"
 	MethodEvenerActivityRead             = "evener/activity/read"
 	MethodEvenerHarnessesList            = "evener/harnesses/list"
@@ -179,6 +180,34 @@ const (
 	// entry's advancement of the registry generation retires the host's
 	// channel. Every live host is editable here. See HostUpdateParams.
 	MethodEvenerHostUpdate = "evener/host/update"
+	// MethodEvenerHostPlan plans one deploy against a named host and mints the
+	// single-use confirmation token evener/host/deploy consumes (deploy pipeline
+	// 08b §10). It is a mutation — it persists the token — so it admits like the
+	// settings mutations and refuses a remote origin. Its result is the
+	// HostPlanResult union: the plan plus token, or the no-token arm naming why
+	// nothing was minted. See HostPlanParams.
+	MethodEvenerHostPlan = "evener/host/plan"
+	// MethodEvenerHostDeploy consumes a plan's confirmation token and starts
+	// the deploy operation it names (deploy pipeline 08b §6, §10): dedup-first
+	// on the client operation ID, the confirmed token's single use, and a
+	// durable operation record whose worker runs outside the RPC. It is a
+	// mutation and admits like the settings mutations; it refuses a remote
+	// origin. See HostDeployParams.
+	MethodEvenerHostDeploy = "evener/host/deploy"
+	// MethodEvenerHostRestart starts a restart operation for one named host
+	// (deploy pipeline 08b §6, §10): no token — restart has no install step —
+	// but the same durable record, dedup and gate model as deploy, with the
+	// request naming the intended (generation, incarnation id) pair. See
+	// HostRestartParams.
+	MethodEvenerHostRestart = "evener/host/restart"
+	// MethodEvenerHostRunning serves one hub's own running build and health to
+	// the controller probing it (deploy pipeline 08b §6 step 2, §10). It is
+	// served locally by every hub and admitted only over an attached controller
+	// session peered by the handshake; its params carry the caller's fencing
+	// epoch (required on the wire, never a default) and its response is the
+	// local build revision, the authoritative health flag, and the local process
+	// start time when known. See HostRunningParams.
+	MethodEvenerHostRunning = "evener/host/running"
 	// MethodEvenerHostPushCredentials copies the controller's local
 	// provider-instance keys to one named remote host (component 07c). The unit
 	// of the push is the local credentials-store entry; each key is sent
@@ -578,6 +607,32 @@ type SessionPinUnpinResponse struct {
 	Navigation NavigationMutation        `json:"navigation"`
 }
 
+// SessionSeenSetParams marks sessions seen or unread on the hub (S4), so the
+// Board's Finished and Idle agree on every device.
+type SessionSeenSetParams struct {
+	Sessions []SessionSeenMark `json:"sessions"`
+}
+
+// SessionSeenMark is one session's mark, addressed by the ref its row carries.
+// It sets exactly one of SeenThrough and Unread. SeenThrough is the row's own
+// turn_ended_at in Unix milliseconds, the turn the client showed, never a
+// client clock; the hub keeps the newest it has been sent. Unread is "Mark as
+// unread", which lasts until the next SeenThrough mark.
+type SessionSeenMark struct {
+	Ref         string `json:"ref"`
+	SeenThrough int64  `json:"seenThrough,omitempty"`
+	Unread      bool   `json:"unread,omitempty"`
+}
+
+// SessionSeenSetResponse acknowledges the marks. Changed reports whether any
+// mark moved a stored marker; Navigation carries the committed invalidation
+// targets, empty when nothing changed.
+type SessionSeenSetResponse struct {
+	OK         bool               `json:"ok"`
+	Changed    bool               `json:"changed"`
+	Navigation NavigationMutation `json:"navigation"`
+}
+
 // SearchParams selects matching live and past sessions for the hub command
 // palette. An empty query returns the most recent past sessions and all live
 // sessions, matching the palette's initial result set.
@@ -836,6 +891,12 @@ type EvenerThread struct {
 	// absent on old daemons and source-backed threads that omit the field,
 	// decoding as false.
 	AskPending bool `json:"askPending,omitempty"`
+	// PendingQuestion is the first question of the session's pending ask and
+	// how many the ask holds (S1b). The daemon reads both from one sample of
+	// the pending set, so it is present exactly when AskPending is true; it is
+	// absent from an older daemon. Snapshot-only: thread/status/changed
+	// carries AskPending, and nothing carries the question's text.
+	PendingQuestion *PendingQuestion `json:"pendingQuestion,omitempty"`
 	// PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
 	// cards for any sandbox-exemption escalations currently blocked on this session,
 	// so a client entering / reconnecting to / not-having-seen-live this session
@@ -868,6 +929,12 @@ type EvenerThread struct {
 	// Finished session from an Idle one. Snapshot-only: no notification
 	// carries it.
 	LastTurnEndedAt int64 `json:"lastTurnEndedAt,omitempty"`
+	// LastMessage is the opening of the session's last agent message (S1d):
+	// one line of at most MaxMessageExcerptRunes, the agent's own words only,
+	// never its reasoning or a tool's output. Absent until the session has
+	// written a message, and from an older daemon. Snapshot-only: no
+	// notification carries it.
+	LastMessage string `json:"lastMessage,omitempty"`
 	// Subagents tallies a live root session's whole delegate tree (S3), read
 	// from the root's delegate controller when the row is listed. It rides
 	// thread/list root rows only, when the tree has at least one subagent, and
@@ -896,6 +963,19 @@ type SubagentTally struct {
 	Running int `json:"running"`
 	Failed  int `json:"failed"`
 	Done    int `json:"done"`
+}
+
+// PendingQuestion is the first question of a session's pending ask (S1b): what
+// its Needs you row says ("Question · keep or drop the implied options?") and
+// the option labels a long-press preview lists. The daemon cuts Question and
+// each label to one line (Excerpt, at MaxQuestionTextRunes and
+// MaxQuestionOptionRunes) and sends at most MaxQuestionOptions labels. Count
+// is how many questions the pending ask holds, so a client can say "Question
+// 1 of 2".
+type PendingQuestion struct {
+	Question string   `json:"question"`
+	Options  []string `json:"options,omitempty"`
+	Count    int      `json:"count"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
@@ -4327,8 +4407,14 @@ type HostEntry struct {
 // slice already matches instead of reshaping it a second time. The handler
 // validates exactly like hub.toml loading, writes the machine-managed hub.toml,
 // and refuses a name the live set already holds.
+//
+// MutationID, when set, is the client's idempotency key (registry spec 08 §1,
+// §4): opaque, non-empty, at most 128 bytes. A keyless add skips dedup and is
+// non-retryable as a continuation (§5); a keyed replay returns the recorded
+// receipt instead of adding a second time.
 type HostAddParams struct {
-	Entry HostEntry `json:"entry"`
+	Entry      HostEntry `json:"entry"`
+	MutationID string    `json:"mutationId,omitempty"`
 }
 
 // HostUpdateParams is the evener/host/update payload (component 08 slice 2): the
@@ -4336,9 +4422,20 @@ type HostAddParams struct {
 // is the immutable target — it identifies which host to edit, and nothing in the
 // request can rename one. Every live host is editable; unknown names are
 // InvalidParams.
+//
+// MutationID, ExpectedGeneration, and ExpectedIncarnationID are the guarded
+// mutation's idempotency key and (generation, incarnation id) guard (registry
+// spec 08 §4, §11): all three are required together, and a request missing any
+// is a validation refusal before the dedup lookup. The pair is checked against
+// the target's current pair under the mutation lock; a mismatch on either is
+// the typed `stale-entry` refusal committing nothing. A keyed replay returns
+// the recorded receipt without re-applying.
 type HostUpdateParams struct {
-	Name  string    `json:"name"`
-	Entry HostEntry `json:"entry"`
+	Name                  string    `json:"name"`
+	Entry                 HostEntry `json:"entry"`
+	MutationID            string    `json:"mutationId"`
+	ExpectedGeneration    uint64    `json:"expectedGeneration"`
+	ExpectedIncarnationID string    `json:"expectedIncarnationId"`
 }
 
 // HostUpdateResponse is evener/host/update's result: the updated row, which the
@@ -4359,24 +4456,42 @@ type HostUpdateResponse struct {
 // any were recorded.
 // Optional entry fields and facts stay absent — never null — when unknown.
 type HostRow struct {
-	Name          string   `json:"name"`
-	Address       string   `json:"address,omitempty"`
-	User          string   `json:"user,omitempty"`
-	KeyPath       string   `json:"keyPath,omitempty"`
-	EvenerPath    string   `json:"evenerPath,omitempty"`
-	ConfigPath    string   `json:"configPath,omitempty"`
-	Addr          string   `json:"addr,omitempty"`
-	Roots         []string `json:"roots,omitempty"`
-	Origin        string   `json:"origin"`
-	Attached      bool     `json:"attached"`
-	ServerName    string   `json:"serverName,omitempty"`
-	ServerVersion string   `json:"serverVersion,omitempty"`
-	HubVersion    string   `json:"hubVersion,omitempty"`
-	OS            string   `json:"os,omitempty"`
-	Arch          string   `json:"arch,omitempty"`
-	LastAttachErr string   `json:"lastAttachError,omitempty"`
-	MidAttach     bool     `json:"midAttach"`
-	Removed       bool     `json:"removed"`
+	Name       string   `json:"name"`
+	Address    string   `json:"address,omitempty"`
+	User       string   `json:"user,omitempty"`
+	KeyPath    string   `json:"keyPath,omitempty"`
+	EvenerPath string   `json:"evenerPath,omitempty"`
+	ConfigPath string   `json:"configPath,omitempty"`
+	Addr       string   `json:"addr,omitempty"`
+	Roots      []string `json:"roots,omitempty"`
+	Origin     string   `json:"origin"`
+	// Generation and IncarnationID are the live entry's current
+	// (generation, incarnation id) pair — the guarded-mutation identity
+	// `update`/`remove` require back as expectedGeneration /
+	// expectedIncarnationId (registry spec 08 §1, §11). The UI echoes both
+	// values from the list/status row it holds. Tombstone rows carry the
+	// removed entry's pair (S11).
+	Generation    uint64 `json:"generation"`
+	IncarnationID string `json:"incarnationId"`
+	Attached      bool   `json:"attached"`
+	ServerName    string `json:"serverName,omitempty"`
+	ServerVersion string `json:"serverVersion,omitempty"`
+	HubVersion    string `json:"hubVersion,omitempty"`
+	OS            string `json:"os,omitempty"`
+	Arch          string `json:"arch,omitempty"`
+	LastAttachErr string `json:"lastAttachError,omitempty"`
+	MidAttach     bool   `json:"midAttach"`
+	Removed       bool   `json:"removed"`
+	// RetainedRows and RowsTruncated are the tombstone row's retained-projection
+	// fields (registry spec 08 §11, §15): RetainedRows is present on tombstone
+	// rows only — the count of rows the tombstone's bounded projection kept —
+	// and RowsTruncated is present as true exactly on tombstone rows whose
+	// projection was truncated at the persistence bound (absent everywhere
+	// else, per the absent-when-unknown rule). A nil RetainedRows renders as an
+	// absent key, so a live row never claims a retained count and a tombstone
+	// with a zero-row projection still renders `retainedRows: 0`.
+	RetainedRows  *int `json:"retainedRows,omitempty"`
+	RowsTruncated bool `json:"rowsTruncated,omitempty"`
 }
 
 // HostListResponse is evener/host/list's result (component 08 slice 1): every
@@ -4404,8 +4519,17 @@ type HostStatusResponse struct {
 // the component-03 source ID of one live host, any of which is removable here;
 // unknown names are InvalidParams. Removing an
 // attached host stops its supervisor and drops its channel.
+//
+// MutationID, ExpectedGeneration, and ExpectedIncarnationID carry the same
+// guarded-mutation contract as HostUpdateParams (registry spec 08 §4, §11):
+// all three required together, presence validated before the dedup lookup, the
+// pair checked under the mutation lock with the typed `stale-entry` refusal on
+// a mismatch, and a keyed replay returning the recorded receipt.
 type HostRemoveParams struct {
-	Name string `json:"name"`
+	Name                  string `json:"name"`
+	MutationID            string `json:"mutationId"`
+	ExpectedGeneration    uint64 `json:"expectedGeneration"`
+	ExpectedIncarnationID string `json:"expectedIncarnationId"`
 }
 
 // HostRemoveResponse is evener/host/remove's result (component 08 slice 1):
@@ -4413,6 +4537,269 @@ type HostRemoveParams struct {
 // until re-added.
 type HostRemoveResponse struct {
 	Host HostRow `json:"host"`
+}
+
+// HostPlanParams is the evener/host/plan payload (deploy pipeline 08b §10): the
+// component-03 source ID of the host to plan against. plan is a mutation — it
+// mints the token deploy consumes — so it admits like the settings mutations
+// and refuses a remote origin. Unknown names are InvalidParams.
+type HostPlanParams struct {
+	Name string `json:"name"`
+}
+
+// HostPlan is what the human confirms before a deploy (deploy pipeline 08b
+// §10): the host, the registry generation the plan was built from, the resolved
+// deploy target, the controller's own revision, whether a restart follows the
+// push, the digest and capture time of the refreshed preflight facts, the
+// host's own hub.toml entry fingerprint, and the probed running state.
+// Timestamps are RFC3339; `factsAgeSec` is how old the facts were when the plan
+// was built, in whole seconds. `runningProcessStartTime` is absent — never null
+// — when the probe carried none.
+type HostPlan struct {
+	Host                    string `json:"host"`
+	Generation              uint64 `json:"generation"`
+	TargetPath              string `json:"targetPath"`
+	ControllerRevision      string `json:"controllerRevision"`
+	RestartFollows          bool   `json:"restartFollows"`
+	FactsRevision           string `json:"factsRevision"`
+	HubTOMLFingerprint      string `json:"hubTomlFingerprint"`
+	FactsCapturedAt         string `json:"factsCapturedAt"`
+	FactsAgeSec             int64  `json:"factsAgeSec"`
+	RunningVersion          string `json:"runningVersion"`
+	RunningHealthy          bool   `json:"runningHealthy"`
+	RunningProcessStartTime string `json:"runningProcessStartTime,omitempty"`
+}
+
+// HostPlanStaleFacts is the no-token arm's explanation (deploy pipeline 08b
+// §10): the human-readable message, whether the host was attached when the plan
+// refused, and the machine-readable reason a client branches on.
+type HostPlanStaleFacts struct {
+	Message  string `json:"message"`
+	Attached bool   `json:"attached"`
+	Reason   string `json:"reason"`
+}
+
+// HostPlanPlanned is evener/host/plan's planned arm (deploy pipeline 08b §10):
+// the plan the human confirms plus the single-use token deploy consumes.
+type HostPlanPlanned struct {
+	Outcome string   `json:"outcome"`
+	Plan    HostPlan `json:"plan"`
+	Token   string   `json:"token"`
+}
+
+// HostPlanNoToken is evener/host/plan's no-token arm (deploy pipeline 08b §10):
+// nothing was minted. `terminal` is true exactly on the arms a retry cannot
+// clear on its own (controller-dirty, target-unwritable, target-missing-prereq,
+// target-unit-findings) and false on the retryable ones (unattached,
+// refresh-failed, probe-failed, handler-absent, remnant-open). `remnantId` is
+// present — never null — exactly on the remnant-open arm.
+type HostPlanNoToken struct {
+	Outcome    string             `json:"outcome"`
+	StaleFacts HostPlanStaleFacts `json:"staleFacts"`
+	Terminal   bool               `json:"terminal"`
+	RemnantID  string             `json:"remnantId,omitempty"`
+}
+
+// HostPlanResult is evener/host/plan's result union (deploy pipeline 08b §10):
+// exactly one arm is set. The embedded pointers make the union marshal as the
+// arm it carries — so `plan` and `token` are absent, never null, on the
+// no-token arm — while the catalog still carries one named Go struct per arm
+// (Methods' ResultArms).
+type HostPlanResult struct {
+	*HostPlanPlanned
+	*HostPlanNoToken
+}
+
+// MarshalJSON renders the one arm the union carries. The explicit marshaller is
+// what makes the wire honest: both arms carry an `outcome` field, and
+// encoding/json drops a field two same-depth embedded structs both declare — so
+// without this the discriminator would silently vanish from the bytes a client
+// branches on. Exactly one arm must be set; nothing is a programming error no
+// response may hide.
+func (u HostPlanResult) MarshalJSON() ([]byte, error) {
+	switch {
+	case u.HostPlanPlanned != nil && u.HostPlanNoToken != nil:
+		return nil, errors.New("appwire: evener/host/plan result carries both arms")
+	case u.HostPlanPlanned != nil:
+		return json.Marshal(u.HostPlanPlanned)
+	case u.HostPlanNoToken != nil:
+		return json.Marshal(u.HostPlanNoToken)
+	}
+	return nil, errors.New("appwire: evener/host/plan result carries no arm")
+}
+
+// UnmarshalJSON reads the arm the discriminator names, and refuses anything
+// else: a result whose `outcome` is neither value is not a plan this protocol
+// defines, so a client fails loudly instead of reading a zero-valued arm.
+func (u *HostPlanResult) UnmarshalJSON(raw []byte) error {
+	var probe struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return err
+	}
+	switch probe.Outcome {
+	case HostPlanOutcomePlanned:
+		arm := HostPlanPlanned{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostPlanPlanned, u.HostPlanNoToken = &arm, nil
+	case HostPlanOutcomeNoToken:
+		arm := HostPlanNoToken{}
+		if err := json.Unmarshal(raw, &arm); err != nil {
+			return err
+		}
+		u.HostPlanNoToken, u.HostPlanPlanned = &arm, nil
+	default:
+		return fmt.Errorf("appwire: evener/host/plan result carries outcome %q, want %q or %q",
+			probe.Outcome, HostPlanOutcomePlanned, HostPlanOutcomeNoToken)
+	}
+	return nil
+}
+
+// The two outcome values evener/host/plan's arms carry (deploy pipeline 08b
+// §10).
+const (
+	HostPlanOutcomePlanned = "planned"
+	HostPlanOutcomeNoToken = "no-token"
+)
+
+// The no-token reasons evener/host/plan's no-token arm carries (deploy pipeline
+// 08b §10), exactly as the spec spells them.
+const (
+	HostPlanReasonUnattached          = "unattached"
+	HostPlanReasonRefreshFailed       = "refresh-failed"
+	HostPlanReasonProbeFailed         = "probe-failed"
+	HostPlanReasonHandlerAbsent       = "handler-absent"
+	HostPlanReasonRemnantOpen         = "remnant-open"
+	HostPlanReasonControllerDirty     = "controller-dirty"
+	HostPlanReasonTargetUnwritable    = "target-unwritable"
+	HostPlanReasonTargetMissingPrereq = "target-missing-prereq"
+	HostPlanReasonTargetUnitFindings  = "target-unit-findings"
+)
+
+// FencingEpoch is the fencing-epoch wire shape (deploy pipeline 08b §10,
+// crash-fencing §9): the controller boot id plus the per-host monotonic op
+// sequence. `evener/host/running` requires it — absent or malformed is a typed
+// `probe-failed` refusal, never an unfenced write — and the fencing spec's
+// remote-fencing boundary carries the same pair.
+type FencingEpoch struct {
+	BootID string `json:"bootId"`
+	OpSeq  uint64 `json:"opSeq"`
+}
+
+// HostDeployParams is the evener/host/deploy payload (deploy pipeline 08b
+// §10): the host name, the single-use confirmation token the plan minted, and
+// the client's own operation ID — opaque, non-empty, at most 128 bytes, no
+// required structure — that makes the call idempotent.
+type HostDeployParams struct {
+	Name        string `json:"name"`
+	Token       string `json:"token"`
+	OperationID string `json:"operationId"`
+}
+
+// HostDeployResponse is evener/host/deploy's result (deploy pipeline 08b
+// §10): the controller-assigned record id, the caller's operation ID echoed
+// back, and the record's state — `pending` on the fresh create that consumed
+// the token, the existing record's actual state on a dedup hit.
+type HostDeployResponse struct {
+	ID                string         `json:"id"`
+	ClientOperationID string         `json:"clientOperationId"`
+	State             OperationState `json:"state"`
+}
+
+// HostRestartParams is the evener/host/restart payload (deploy pipeline 08b
+// §10): the host name, the client operation ID, and the intended
+// (generation, incarnation id) pair. A lost-response retry repeats the old
+// pair and replays the retained record; a reuse of the same operation ID for a
+// new incarnation names the new pair and opens fresh; a pair older than the
+// registry's current one refuses `stale-entry` (§4).
+type HostRestartParams struct {
+	Name          string `json:"name"`
+	OperationID   string `json:"operationId"`
+	Generation    uint64 `json:"generation"`
+	IncarnationID string `json:"incarnationId"`
+}
+
+// HostRestartResponse is evener/host/restart's result (deploy pipeline 08b
+// §10): the fresh create reports `pending`, a dedup hit the existing record's
+// state.
+type HostRestartResponse struct {
+	ID                string         `json:"id"`
+	ClientOperationID string         `json:"clientOperationId"`
+	State             OperationState `json:"state"`
+}
+
+// OperationState is one durable operation record's lifecycle state (deploy
+// pipeline 08b §4, §10). The set is closed; the wire carries the exact string.
+type OperationState string
+
+const (
+	OperationStatePending          OperationState = "pending"
+	OperationStateRunning          OperationState = "running"
+	OperationStateComplete         OperationState = "complete"
+	OperationStateFailed           OperationState = "failed"
+	OperationStateInterrupted      OperationState = "interrupted"
+	OperationStateOrphanUnverified OperationState = "orphan-unverified"
+)
+
+// OperationProgressEntry is one timestamped progress line on an operation
+// record (deploy pipeline 08b §10): RFC3339 UTC plus the line's message,
+// bounded per record.
+type OperationProgressEntry struct {
+	TS      string `json:"ts"`
+	Message string `json:"message"`
+}
+
+// OperationResult is a record's terminal result (deploy pipeline 08b §10).
+type OperationResult struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+}
+
+// OperationRecord is the controller-side durable record of one deploy/restart
+// (deploy pipeline 08b §4, §10). `incarnationId` is the pinned incarnation the
+// record ran against; `result` is present exactly on terminal records;
+// `hostRemoved` marks a record whose pinned incarnation a removal tombstoned.
+// The fencing-epoch and orphan-boundary details a later slice's wire carries
+// (the crash-fencing spec's shapes) stay off this shape until that slice
+// registers its filters.
+type OperationRecord struct {
+	ID                string                   `json:"id"`
+	ClientOperationID string                   `json:"clientOperationId"`
+	Host              string                   `json:"host"`
+	Generation        uint64                   `json:"generation"`
+	IncarnationID     string                   `json:"incarnationId"`
+	Kind              string                   `json:"kind"`
+	State             OperationState           `json:"state"`
+	Progress          []OperationProgressEntry `json:"progress,omitempty"`
+	Result            *OperationResult         `json:"result,omitempty"`
+	CreatedAt         string                   `json:"createdAt"`
+	UpdatedAt         string                   `json:"updatedAt"`
+	HostRemoved       bool                     `json:"hostRemoved"`
+}
+
+// HostRunningParams is the evener/host/running payload (deploy pipeline 08b
+// §10): the calling worker's persisted fencing epoch, which the caller minted
+// and persisted before the probe. The field is required on the wire — the
+// generated client carries it, so no well-formed call omits it — and an epoch
+// absent or malformed is refused with typed `probe-failed` ("no epoch
+// presented"), never served as an unfenced write.
+type HostRunningParams struct {
+	FencingEpoch FencingEpoch `json:"fencingEpoch"`
+}
+
+// HostRunningResponse is evener/host/running's result (deploy pipeline 08b
+// §10): the serving hub's own build revision (from the same source as the
+// controllerBuild plan input), its authoritative health flag, and its process
+// start time — present exactly when the serving hub knows it, absent otherwise
+// per the absent-when-unknown rule. An unverifiable revision ("dev" or a dirty
+// "<sha>-dirty") never proves currency by revision equality.
+type HostRunningResponse struct {
+	BuildRevision    string `json:"buildRevision"`
+	Healthy          bool   `json:"healthy"`
+	ProcessStartTime string `json:"processStartTime,omitempty"`
 }
 
 // HostNotificationParams is the evener/host/notification payload (component

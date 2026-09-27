@@ -230,6 +230,15 @@ describe("demo fleet catalogs and projects", () => {
 		expect(projects.find((project) => project.key === "home")).toMatchObject({ session_count: 0 });
 	});
 
+	it("names every host a project's sessions sit on, and none for a project on this hub alone", () => {
+		const catalog = read(fleet, params({ resource: "catalog", catalog: "projects", limit: 100 }));
+		const projects = catalog.projects as { key: string; sources?: string[] }[];
+		expect(projects.find((project) => project.key === "evener")?.sources).toEqual(["local", "paradise-park"]);
+		const deslop = projects.find((project) => project.key === "deslop");
+		expect(deslop).toBeDefined();
+		expect(deslop).not.toHaveProperty("sources");
+	});
+
 	it("puts the 271-session archived total on evener's archived_projects row", () => {
 		const catalog = read(fleet, params({ resource: "catalog", catalog: "archived_projects", limit: 100 }));
 		expect(catalog.projects).toEqual([expect.objectContaining({ key: "evener", session_count: 271 })]);
@@ -292,6 +301,29 @@ describe("demo fleet search, auth and plugins", () => {
 		// s-wasm: ago 12 minutes: updated_at is STARTUP - 12m. Five minutes after
 		// creation that's 17m old; frozen at creation it would still read 12m.
 		expect(fleet.answerSearch({ query: "wasm" }).live[0]?.age).toBe("17m");
+	});
+
+	// #2583: a live result carries the same askPending/approvalPending a
+	// navigation row does, so a session blocked on a question or an approval
+	// doesn't read as an ordinary working session in search.
+	it("carries askPending and approvalPending on live hits, the same as a navigation row", () => {
+		const fleet = createDemoFleet({ now: STARTUP });
+		// s-audit: state "question" - awaiting an answer, not an escalation.
+		const askHit = fleet.answerSearch({ query: "audit" }).live[0];
+		expect(askHit).toMatchObject({ id: "s-audit", askPending: true });
+		expect(askHit?.approvalPending).toBeUndefined();
+
+		// s-mirror: state "approval" - blocked on a sandbox escalation, not a
+		// question.
+		const approvalHit = fleet.answerSearch({ query: "mirror" }).live[0];
+		expect(approvalHit).toMatchObject({ id: "s-mirror", approvalPending: true });
+		expect(approvalHit?.askPending).toBeUndefined();
+
+		// s-wasm: ordinary working session - neither flag applies, and the wire's
+		// additive contract omits them rather than sending false.
+		const idleHit = fleet.answerSearch({ query: "wasm" }).live[0];
+		expect(idleHit?.askPending).toBeUndefined();
+		expect(idleHit?.approvalPending).toBeUndefined();
 	});
 
 	it("reports one provider needing sign-in, in a combination the hub actually produces", () => {

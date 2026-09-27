@@ -235,6 +235,15 @@ type NavigationTaskProgress struct {
 	Current   string `json:"current,omitempty"`
 }
 
+// NavigationSubagentTally is a live root's whole-tree subagent tally (S3):
+// every subagent at every depth, running, failed (its latest run ended failed
+// or exhausted) or done.
+type NavigationSubagentTally struct {
+	Running int `json:"running"`
+	Failed  int `json:"failed"`
+	Done    int `json:"done"`
+}
+
 // NavigationSessionSummary is the bounded recursive navigation row shape.
 type NavigationSessionSummary struct {
 	Ref          string `json:"ref"`
@@ -274,10 +283,24 @@ type NavigationSessionSummary struct {
 	//
 	// It sits BESIDE Dormant rather than reusing it: Dormant means the session
 	// has never run, and an offline row that ran must not read as "Not started".
-	Offline            bool       `json:"offline,omitempty"`
-	UpdatedAt          *time.Time `json:"updated_at,omitempty"`
-	MoreSubagents      int        `json:"more_subagents,omitempty"`
-	OmittedDescendants int        `json:"omitted_descendants,omitempty"`
+	Offline       bool       `json:"offline,omitempty"`
+	UpdatedAt     *time.Time `json:"updated_at,omitempty"`
+	MoreSubagents int        `json:"more_subagents,omitempty"`
+	// Subagents is a live root's whole-tree subagent tally, counted by its
+	// daemon (S3). Present only on a live root row whose tree has a subagent;
+	// it counts subagents the row's children never show (nested, or past the
+	// children cap).
+	Subagents          *NavigationSubagentTally `json:"subagents,omitempty"`
+	OmittedDescendants int                      `json:"omitted_descendants,omitempty"`
+	// TurnEndedAt is when a live session's last turn ended, stamped by its
+	// daemon (S4). It is present only on a live row whose daemon reported one.
+	// A client that marks the row seen echoes it back as seenThrough.
+	TurnEndedAt *time.Time `json:"turn_ended_at,omitempty"`
+	// Unseen marks a live row whose last turn ended after the hub's
+	// seen-through marker for it, or that was marked unread (S4): Finished on
+	// the Board, and Idle when absent. It is only ever set on a row that
+	// carries TurnEndedAt.
+	Unseen bool `json:"unseen,omitempty"`
 	// OmittedWatches counts live-watch rows this session's summary does not
 	// carry: rows beyond the projector's per-session cap, rows it could not
 	// represent, and rows the byte-budget fitter shed. It mirrors
@@ -297,8 +320,8 @@ type NavigationSessionSummary struct {
 	Watches NavigationArray[NavigationWatchSummary] `json:"watches,omitempty"`
 	// Tasks is the task line's facts ("Task 4 of 7 · Fix the settle/drain
 	// race"). Absent for a session with no task list or an empty one, and for
-	// every session this hub has no live daemon entry for: ended sessions,
-	// in-process children, and rows from other hosts.
+	// every session with no live daemon entry: ended sessions and in-process
+	// children. A live session on another host carries its host's (S13b).
 	Tasks    *NavigationTaskProgress                   `json:"tasks,omitempty"`
 	Children NavigationArray[NavigationSessionSummary] `json:"children"`
 }

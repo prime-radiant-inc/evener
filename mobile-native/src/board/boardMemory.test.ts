@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
-import { FoldedSections, forgetBoard, SeenMarkers } from "./boardMemory";
+import { FoldedSections, forgetBoard, OrganizeByPreference, SeenMarkers } from "./boardMemory";
 
 function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
@@ -170,20 +170,73 @@ describe("folded sections", () => {
 	});
 });
 
+describe("the Organize by choice", () => {
+	it("starts at Project, then host and round-trips per hub", () => {
+		const storage = memoryStorage();
+		const first = new OrganizeByPreference(storage, "hub-a");
+		expect(first.get()).toBe("project-host");
+		first.set("host-project");
+		expect(new OrganizeByPreference(storage, "hub-a").get()).toBe("host-project");
+		expect(new OrganizeByPreference(storage, "hub-b").get()).toBe("project-host");
+		expect(storage.values.get("evener.native.board-organize.hub-a")).toBe('"host-project"');
+	});
+
+	it("reads a value it doesn't know, or one that isn't JSON, as the default", () => {
+		for (const stored of ['"sideways"', "host-project", "{not json"]) {
+			const storage = memoryStorage(new Map([["evener.native.board-organize.hub-a", stored]]));
+			expect(new OrganizeByPreference(storage, "hub-a").get()).toBe("project-host");
+		}
+	});
+
+	it("never touches the folded sections, and they never touch it", () => {
+		const storage = memoryStorage();
+		const folded = new FoldedSections(storage, "hub-a");
+		folded.setFolded("idle", false);
+		new OrganizeByPreference(storage, "hub-a").set("host-project");
+		folded.setFolded("projects", true);
+		expect(JSON.parse(storage.values.get("evener.native.board-sections.hub-a") as string)).toEqual({
+			idle: false,
+			projects: true,
+		});
+		expect(new OrganizeByPreference(storage, "hub-a").get()).toBe("host-project");
+	});
+
+	it("keeps working in memory when storage throws", () => {
+		const broken: SyncStringStorage = {
+			getItemSync: () => {
+				throw new Error("disk");
+			},
+			setItemSync: () => {
+				throw new Error("disk");
+			},
+			removeItemSync: () => {},
+		};
+		const choice = new OrganizeByPreference(broken, "hub-a");
+		expect(choice.get()).toBe("project-host");
+		choice.set("host-project");
+		expect(choice.get()).toBe("host-project");
+	});
+});
+
 describe("forgetBoard", () => {
-	it("removes both of a hub's keys and nothing else, without throwing", () => {
+	it("removes every key of a hub's own and nothing else, without throwing", () => {
 		const storage = memoryStorage(
 			new Map([
 				["evener.native.seen.hub-a", "{}"],
 				["evener.native.board-sections.hub-a", "{}"],
+				["evener.native.board-organize.hub-a", '"host-project"'],
 				["evener.native.seen.hub-b", "{}"],
+				["evener.native.board-organize.hub-b", '"host-project"'],
 			]),
 		);
 		expect(() => forgetBoard(storage, "hub-a")).not.toThrow();
-		expect([...storage.values.keys()]).toEqual(["evener.native.seen.hub-b"]);
+		expect([...storage.values.keys()].sort()).toEqual([
+			"evener.native.board-organize.hub-b",
+			"evener.native.seen.hub-b",
+		]);
 	});
 
-	it("still removes the folded key when the seen key's removal fails, then throws", () => {
+	it("still removes the other keys when the seen key's removal fails, then throws", () => {
 		const removed: string[] = [];
 		const storage: SyncStringStorage = {
 			getItemSync: () => null,
@@ -194,6 +247,6 @@ describe("forgetBoard", () => {
 			},
 		};
 		expect(() => forgetBoard(storage, "hub-a")).toThrow();
-		expect(removed).toEqual(["evener.native.board-sections.hub-a"]);
+		expect(removed).toEqual(["evener.native.board-sections.hub-a", "evener.native.board-organize.hub-a"]);
 	});
 });

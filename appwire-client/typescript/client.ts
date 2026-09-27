@@ -1,10 +1,9 @@
 // AppwireClient owns the websocket connection to the hub's /rpc endpoint: the
 // initialize/initialized handshake, typed request/response correlation,
 // notification fan-out, an application-level heartbeat, and automatic
-// reconnect with backoff. It mirrors the message-handling, heartbeat, and
-// reconnect semantics of the legacy cmd/evener-hub/assets/appwire.js
-// (sendHeartbeat / ensureHeartbeat), but — unlike that fixed-250ms retry —
-// backs off exponentially up to a cap.
+// reconnect with backoff. It mirrors the message-handling and reconnect
+// semantics of the legacy cmd/evener-hub/assets/appwire.js, but backs off
+// exponentially up to a cap instead of that file's fixed 250ms retry.
 
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { isPlainObject } from "./plainObject";
@@ -73,7 +72,8 @@ export type TerminalReason = "protocol" | null;
 // Same values as legacy appwire.js. Browsers can't send WebSocket ping
 // frames from JS, so a silently-dropped connection leaves readyState OPEN
 // forever with no notifications flowing; the heartbeat sends a cheap app-level
-// `ping` on an interval and force-closes the socket if it goes unanswered.
+// `ping` once nothing has arrived for HEARTBEAT_INTERVAL_MS and force-closes
+// the socket if it goes unanswered.
 export const HEARTBEAT_INTERVAL_MS = 20_000;
 export const HEARTBEAT_TIMEOUT_MS = 10_000;
 
@@ -91,10 +91,7 @@ const READY_EXEMPT_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["init
 
 // Methods whose response is owned by the operation the request starts, not by
 // an ordinary transport deadline: a pending call carries its own (longer)
-// budget, and its presence must not suppress silent-drop detection for that
-// lifetime. The request timeout and the heartbeat's ordinary-request scan both
-// consult this one set so a method cannot gain one exemption without the
-// other.
+// budget.
 const COMPLETION_OWNED_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["thread/resume"]);
 
 function defaultSocketFactory(url: string): WebSocketLike {
@@ -120,7 +117,6 @@ interface WireMessage {
 }
 
 interface PendingRequest {
-  method: MethodName;
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -224,10 +220,10 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
 export class AppwireClient {
   private readonly url: string;
   private readonly socketFactory: (url: string) => WebSocketLike;
-  // Heartbeat/reconnect scheduling here is interval-based (setInterval /
-  // setTimeout), not timestamp-based, so `now` is unused; kept for callers
-  // that want a controllable clock for other purposes (e.g. future
-  // timestamp-stamped telemetry) without changing this constructor's shape.
+  // Heartbeat/reconnect scheduling here is timer-based (setTimeout), not
+  // timestamp-based, so `now` is unused; kept for callers that want a
+  // controllable clock for other purposes (e.g. future timestamp-stamped
+  // telemetry) without changing this constructor's shape.
   private readonly now: () => number;
   private readonly clientInfo: { name: string; version: string };
 
@@ -250,11 +246,13 @@ export class AppwireClient {
   private connectPromise: Promise<InitializeResponse> | null = null;
   private latestInitialize: InitializeResponse | null = null;
 
-  // Heartbeat: one interval timer, armed on entering "ready" and disarmed on
-  // leaving it (drop or close()). Its ping rides the same request()/pending
+  // Heartbeat: one timer that fires once the connection has been quiet (no
+  // frame received) for HEARTBEAT_INTERVAL_MS. Armed on entering "ready",
+  // restarted by every frame handleMessage receives, and disarmed on leaving
+  // "ready" (drop or close()). Its ping rides the same request()/pending
   // machinery as any other call, so the ping's own timeout self-cleans; no
   // separate "pong wait" timer is needed.
-  private heartbeatIntervalTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Reconnect: one backoff timer at a time, armed by scheduleReconnect() and
   // disarmed the moment it fires (or by close()). reconnectAttempts counts
@@ -452,7 +450,7 @@ export class AppwireClient {
         }
         reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
-      this.pending.set(id, { method, resolve: resolve as (result: unknown) => void, reject, timer });
+      this.pending.set(id, { resolve: resolve as (result: unknown) => void, reject, timer });
       try {
         socket.send(JSON.stringify({ id, method, params }));
       } catch (err) {
@@ -558,7 +556,7 @@ export class AppwireClient {
   // setState() call. The two isClosed() checks below are load-bearing, not
   // defensive: without the first, the caller (performHandshake, on the very
   // first connect) would still dial a socket that close() can never clean up
-  // again; without the second, "ready" would still arm a heartbeat interval
+  // again; without the second, "ready" would still arm a heartbeat timer
   // on a client that just closed.
   private async dialAndHandshake(): Promise<InitializeResponse> {
     if (this.isClosed()) {
@@ -700,13 +698,16 @@ export class AppwireClient {
 
   private armHeartbeat(): void {
     this.disarmHeartbeat();
-    this.heartbeatIntervalTimer = setInterval(() => this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer = setTimeout(() => {
+      this.heartbeatTimer = null;
+      this.sendHeartbeat();
+    }, HEARTBEAT_INTERVAL_MS);
   }
 
   private disarmHeartbeat(): void {
-    if (this.heartbeatIntervalTimer == null) return;
-    clearInterval(this.heartbeatIntervalTimer);
-    this.heartbeatIntervalTimer = null;
+    if (this.heartbeatTimer == null) return;
+    clearTimeout(this.heartbeatTimer);
+    this.heartbeatTimer = null;
   }
 
   private disarmReconnect(): void {
@@ -715,24 +716,21 @@ export class AppwireClient {
     this.reconnectTimer = null;
   }
 
-  private hasPendingOrdinaryRequest(): boolean {
-    for (const slot of this.pending.values()) {
-      // The hub answers ping outside its serial queue. A pending Resume must
-      // not suppress silent-drop detection for its completion-owned lifetime.
-      if (slot.method !== "ping" && !COMPLETION_OWNED_METHODS.has(slot.method)) return true;
-    }
-    return false;
-  }
-
   // sendHeartbeat sends one app-level ping with an explicit HEARTBEAT_TIMEOUT_MS
   // deadline (reusing request()'s own timeout machinery rather than a second,
   // separately-tracked timer). An open-but-unresponsive socket never recovers
   // on its own, so any failure to answer in time retires it immediately and
   // starts the same reconnect lifecycle as a server-initiated drop. close()
   // remains best-effort cleanup: a half-open transport may never emit onclose.
+  //
+  // It pings even while requests are pending: a pending request proves
+  // nothing about a socket that has gone silent, and the hub answers ping
+  // outside its request queue, so a slow request cannot hold the pong back.
+  // Request timeouts are not a liveness signal either: they measure a
+  // handler's latency, and a silent drop is already caught within
+  // HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS of the last frame received.
   private sendHeartbeat(): void {
     if (this.connectionState !== "ready") return;
-    if (this.hasPendingOrdinaryRequest()) return;
     const socket = this.socket;
     if (!socket) return;
     this.request("ping", {}, { timeoutMs: HEARTBEAT_TIMEOUT_MS }).catch(() => {
@@ -805,6 +803,11 @@ export class AppwireClient {
   }
 
   private handleMessage(data: unknown): void {
+    // Any frame proves the hub is still reachable, whatever it carries, so it
+    // restarts the heartbeat's quiet countdown. It comes first because the
+    // branches below return early for non-text and unparseable frames and for
+    // every response, including a late reply nothing is waiting for.
+    if (this.connectionState === "ready") this.armHeartbeat();
     if (typeof data !== "string") return;
     let msg: WireMessage;
     try {

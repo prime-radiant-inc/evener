@@ -343,6 +343,11 @@ export async function createDemoHub(
 										text: (mutation.input ?? [])
 											.map((item) => item.text ?? "")
 											.join("\n"),
+										// The real projector stamps this too
+										// (appwire_projection.go, EventUserInput), so a client
+										// recognizes its own send reflected back rather than
+										// treating it as a message from elsewhere.
+										clientMutationId: mutation.clientMutationId,
 									},
 									{
 										id: `demo-assistant-${turnNumber}`,

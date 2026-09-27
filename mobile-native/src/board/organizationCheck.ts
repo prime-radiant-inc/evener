@@ -1,0 +1,44 @@
+// How the Board confirms an organization change against the hub, whichever
+// screen journaled it. The organization journal holds one change per hub
+// (navigationActionRepository.ts), so the Board's one NavigationActions has to
+// settle archive and favorite changes (the Projects screen's read) and pin
+// changes (the pin screens' read) alike (ruling 16).
+import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
+import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
+import type { NavigationActionCheckpoint } from "../navigationActionRepository";
+import type { NavigationPages } from "../navigationPages";
+import { readOrganizationNavigation } from "../organizationNavigation";
+import { refreshPinNavigation } from "../pinNavigation";
+
+/** Reads the hub's navigation for a journaled change. Resolves true when the
+ * hub shows it, false when the hub shows otherwise (the Board then shows what
+ * the hub has), and rejects for a change checked elsewhere (a session
+ * deletion, on its own screen) or a read that fails. */
+export async function checkOrganizationChange(
+	client: ConversationClientLike,
+	pinPages: NavigationPages<NavigationPinSectionDescriptor>,
+	checkpoint: NavigationActionCheckpoint,
+	current: () => boolean,
+	confirmReceipt: boolean,
+): Promise<boolean> {
+	switch (checkpoint.operation.kind) {
+		case "archive":
+		case "favorite":
+			return (await readOrganizationNavigation(client, checkpoint, current, confirmReceipt)).settled;
+		case "assignPin":
+		case "unpin":
+		case "renamePinSection":
+		case "deletePinSection":
+			await refreshPinNavigation(client, pinPages, { checkpoint, current, confirmReceipt });
+			return true;
+		default:
+			throw Error("This change is checked on the screen that made it.");
+	}
+}
+
+/** Whether the journal can take a change now. */
+export function organizationFree(
+	state: { pending: boolean; uncertain: boolean; storageUnavailable: boolean } | null,
+): boolean {
+	return !!state && !state.pending && !state.uncertain && !state.storageUnavailable;
+}

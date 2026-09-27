@@ -32,7 +32,7 @@
 
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -59,6 +59,7 @@ function Composer(props: React.ComponentProps<typeof ComposerView>) {
 }
 
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetStoplessComposerSightingsForTests, stoplessComposerSightings } from "./stoplessComposer";
 
 beforeAll(() => {
@@ -544,7 +545,8 @@ test("a Steer clicked between turn/completed and turn/started sends turn/steer, 
   });
 
   await userEvent.click(screen.getByTestId("composer-steer"));
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
   expect(fake.calls.find((c) => c.method === "turn/steer")?.params).toMatchObject({
     ref: REF,
     input: [{ type: "text", text: "go left" }],

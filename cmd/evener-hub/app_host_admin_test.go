@@ -449,6 +449,21 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/host/status": false,
 		"evener/host/remove": false,
 		"evener/host/update": false,
+		// The deploy pipeline's planning read (08b) is controller-LOCAL for the
+		// same reason, and stronger: it mints and persists a confirmation token
+		// against this controller's own host, so a peer hub forwarding it would
+		// plan another hub's deploy.
+		"evener/host/plan": false,
+		// deploy and restart are controller-local mutations of the same surface
+		// (08b §6): the token and the operation record live on this controller,
+		// so a peer hub must not drive them by forwarding the request.
+		"evener/host/deploy":  false,
+		"evener/host/restart": false,
+		// evener/host/running is the direction-scoped peer probe (08b §10), not a
+		// forwarded resource: it is served only on the attached session its
+		// controller opened through the bridge, and the probe is never forwarded
+		// onward to a third hub. A proxy forward is denied deliberately.
+		"evener/host/running": false,
 		// The credential push is controller-LOCAL: it reads this controller's
 		// own store and dispatches to a host itself, like evener/host/request.
 		// It is never a proxied call, so a peer hub cannot make this hub push
@@ -503,6 +518,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/session-pin/unpin":                false,
 		"evener/session/delete":                   false,
 		"evener/session/image":                    false,
+		"evener/session/seen/set":                 false, // controller-owned: every source's seen marks live in the controller's own store
 		"evener/settings/agentsDoc/get":           true,
 		"evener/settings/agentsDoc/set":           true,
 		"evener/settings/keybindings/get":         false,

@@ -10,11 +10,14 @@ package hostreg
 import (
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/google/uuid"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -47,6 +50,16 @@ var (
 	ErrInvalidKeyPath = errors.New("invalid key_path")
 	// ErrUnknownHost marks an operation naming a host the registry does not hold.
 	ErrUnknownHost = errors.New("unknown host")
+	// ErrStaleStamp marks an update whose entry carries a matching pending stamp
+	// whose generation no longer advances past the live entry's: the durable
+	// write the caller made recorded that generation, and applying a different
+	// one would leave the file and the live entry disagreeing.
+	ErrStaleStamp = errors.New("stamped generation does not advance")
+	// ErrCounterExhausted marks a mutation whose identity cannot be minted
+	// because the counter the next value comes from is already at its maximum:
+	// the value would wrap to zero, which no reader treats as an identity, so
+	// the mutation is refused before anything changes.
+	ErrCounterExhausted = errors.New("counter exhausted")
 )
 
 // Host is one validated remote-host entry. It mirrors the hub's HostConfig
@@ -73,11 +86,30 @@ type Host struct {
 	// re-added entry — even with byte-identical content — is a different
 	// entry from the one an earlier Get handed out. It carries the 08 spec
 	// series' generation semantics for attach identity: callers construct
-	// Hosts with it zero, Add (AddWithUpstreams) overwrites whatever they
-	// set, and an attach that captured an entry pins itself to the
-	// generation as much as to the content — content equality alone cannot
-	// tell a removed entry from its re-added twin (see Equal).
+	// Hosts with it zero, Add (AddWithUpstreams) mints the next generation
+	// unless the entry carries a complete identity Stamp minted for it — the
+	// durable-first add path's reservation — and an attach that captured an
+	// entry pins itself to the generation as much as to the content: content
+	// equality alone cannot tell a removed entry from its re-added twin (see
+	// Equal).
 	Generation uint64
+	// IncarnationID is the opaque server-generated identity minted beside the
+	// generation on every add/re-add and never reused (registry spec 08 §1):
+	// "minted fresh on every add/re-add in the same atomic hub.toml write that
+	// mints the generation, persisted per live entry alongside it (never
+	// derived from the generation, never reused across incarnations even when
+	// generation numbers collide)" (§4). An update advances the generation but
+	// is neither an add nor a re-add, so it keeps the incarnation id it
+	// replaces. The pair (Generation, IncarnationID) is the guarded-mutation
+	// and dedup identity every later slice pins.
+	IncarnationID string
+	// PresenceEpoch is the per-host presence counter spec 08 §1 defines:
+	// "advanced on every add, remove, re-add, and expiry purge", persisted in
+	// the name's hub.toml machine record and per tombstone, and mirrored into
+	// the operation store's boundary record. It is monotonic per name and never
+	// lowered: a removal advances it so a re-add can never reuse the removed
+	// incarnation's epoch.
+	PresenceEpoch uint64
 }
 
 // ValidateName reports whether name is an acceptable host name: non-empty, not
@@ -201,6 +233,20 @@ type Registry struct {
 	// remove/re-add of any name still always advances past the removed
 	// entry's generation.
 	gen uint64
+	// presence is the per-name presence counter (spec 08 §1): advanced by every
+	// add and remove — insertion and re-insertion included — and never lowered.
+	// A name's count survives its removal, which is what keeps a re-add from
+	// reusing the removed incarnation's presence epoch. Unlike gen it is per
+	// name by definition: the epoch is per-host state the file persists per
+	// name, and the map's size is bounded by the names the process has seen.
+	presence map[string]uint64
+	// pending holds the identity Stamp minted for a name whose mutation has not
+	// been applied yet, one per name: Add and Update consume it only when the
+	// entry carries exactly it (consumeStampLocked), which is what proves the
+	// identity came from this registry's Stamp rather than from a caller. The
+	// map is bounded by the names a mutation was stamped for, and each entry is
+	// replaced by the name's next stamp or consumed by its insert/edit.
+	pending map[string]Identity
 }
 
 // New validates every entry and builds a registry. Entries are added in order,
@@ -208,17 +254,203 @@ type Registry struct {
 // edges; a config-loaded host gets them from SetUpstreams once component 05 has
 // learned them (AddWithUpstreams inserts, so it cannot be used for a host New
 // already registered).
+//
+// New is the boot load's entry point, so each entry carries the identity the
+// durable file persisted and New keeps it: a restored generation is held and
+// the registry counter moves above it (spec 08 §15: "The boot load restores
+// persisted generations before the store serves any request"), a restored
+// incarnation id is held unchanged, and a restored presence epoch is the
+// name's counter. What the file did not persist is minted at load as spec §15
+// prescribes — "boot mints a fresh incarnation id for every hub.toml host name
+// with no persisted incarnation" — with the name's first presence value of 1;
+// a hub.toml host that predates the machine records therefore loads complete
+// and the caller's boot write records the pair, so the pair survives the next
+// reload unchanged. A host with no persisted record is never mistaken for a
+// re-registration: no generation is minted above any mark (it keeps the
+// initial assignment), the name stays live, and nothing a re-add's mint does —
+// a generation above a retained high-water mark, a purge of the removed name's
+// history — happens here.
 func New(entries []Host) (*Registry, error) {
+	return NewSeeded(entries, nil)
+}
+
+// NewSeeded is New with the durable file's retained high-water marks: the
+// counters start above every mark before the first entry is inserted, so the
+// initial identity a hub.toml host with no persisted record is minted below can
+// never land at or below a mark the file still carries (spec 08 §1: "Re-add
+// mints strictly above every retained high-water mark for the name"). New
+// passes nil; the boot load, which has the file's [generations] records in
+// hand, passes them so the whole registry starts above what it read.
+func NewSeeded(entries []Host, marks map[string]HighWater) (*Registry, error) {
 	r := &Registry{
-		hosts: make(map[string]Host, len(entries)),
-		edges: make(map[string][]string, len(entries)),
+		hosts:    make(map[string]Host, len(entries)),
+		edges:    make(map[string][]string, len(entries)),
+		presence: make(map[string]uint64, len(entries)),
 	}
+	r.SeedHighWater(marks)
 	for _, entry := range entries {
-		if err := r.Add(entry); err != nil {
+		if err := r.seed(entry); err != nil {
 			return nil, err
 		}
 	}
 	return r, nil
+}
+
+// seed inserts one boot-loaded entry, preserving the identity the durable file
+// persisted and minting only what it did not carry. New is its only caller.
+func (r *Registry) seed(entry Host) error {
+	entry = Normalize(entry)
+	if err := validateEntry(entry); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.hosts[entry.Name]; ok {
+		return fmt.Errorf("%w: %q", ErrDuplicateHost, entry.Name)
+	}
+	return r.seedLocked(entry)
+}
+
+// seedLocked gives entry the identity a boot-loaded entry carries: the
+// persisted generation when it has one (with the registry counter moved above
+// it), a freshly minted incarnation id when the file carried none, and the
+// name's first presence value when the file carried none. Callers hold r.mu.
+func (r *Registry) seedLocked(entry Host) error {
+	if entry.Generation == 0 {
+		generation, err := r.nextGenerationLocked()
+		if err != nil {
+			return err
+		}
+		entry.Generation = generation
+	}
+	if entry.Generation > r.gen {
+		r.gen = entry.Generation
+	}
+	if entry.IncarnationID == "" {
+		incarnation, err := mintIncarnationID()
+		if err != nil {
+			return err
+		}
+		entry.IncarnationID = incarnation
+	}
+	if entry.PresenceEpoch == 0 {
+		// A boot-loaded host with no persisted pair is a new incarnation, and
+		// its first presence value advances past whatever the file's mark for
+		// the name retained (the marks seed the counter before this runs), so
+		// the name never records a value the file already recorded — not even
+		// the removed incarnation's epoch.
+		presence, err := r.nextPresenceLocked(entry.Name)
+		if err != nil {
+			return err
+		}
+		entry.PresenceEpoch = presence
+	}
+	if entry.PresenceEpoch > r.presence[entry.Name] {
+		r.presence[entry.Name] = entry.PresenceEpoch
+	}
+	r.hosts[entry.Name] = entry
+	return nil
+}
+
+// Identity is one minted (generation, incarnation id, presence epoch) triple:
+// the identity Stamp reserves and the durable-first mutation path records
+// before the live change lands.
+type Identity struct {
+	Generation    uint64
+	IncarnationID string
+	PresenceEpoch uint64
+}
+
+// Stamp mints the identity this name's next mutation will carry, without
+// applying the mutation: a free name gets an insert identity (the registry's
+// next generation, a freshly minted incarnation id, and the name's presence
+// epoch advanced by one), and a live name gets a replace identity (the next
+// generation, with the live incarnation id and presence epoch preserved —
+// spec 08 §4: an update advances the generation, and nothing else).
+//
+// The mint is separable because the durable-first mutation paths write hub.toml
+// before they change anything live, and spec 08 §15 requires the write that
+// first records the host to also record its identity — "minted fresh on every
+// add/re-add in the same atomic hub.toml write that mints the generation". So
+// the caller stamps, persists the stamped triple, and then applies the change
+// through Add/Update, which keep a complete identity the entry carries instead
+// of minting a second one.
+//
+// Stamping advances the counters, so the stamped values are the counter's own
+// next values and no other mint can produce them. A stamp whose mutation never
+// lands leaves a gap — and a gap is exactly what "monotone and never reused"
+// means: the next mutation takes the value after it.
+func (r *Registry) Stamp(entry Host) (Identity, error) {
+	entry = Normalize(entry)
+	if err := validateEntry(entry); err != nil {
+		return Identity{}, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	generation, err := r.nextGenerationLocked()
+	if err != nil {
+		return Identity{}, err
+	}
+	identity := Identity{Generation: generation}
+	if live, ok := r.hosts[entry.Name]; ok {
+		// A replace keeps the live identity's incarnation and presence epoch;
+		// the name's next generation is the one thing an edit advances.
+		identity.IncarnationID = live.IncarnationID
+		identity.PresenceEpoch = live.PresenceEpoch
+	} else {
+		presence, err := r.nextPresenceLocked(entry.Name)
+		if err != nil {
+			return Identity{}, err
+		}
+		identity.PresenceEpoch = presence
+		incarnation, err := mintIncarnationID()
+		if err != nil {
+			return Identity{}, err
+		}
+		identity.IncarnationID = incarnation
+	}
+	r.gen = identity.Generation
+	if identity.PresenceEpoch > r.presence[entry.Name] {
+		r.presence[entry.Name] = identity.PresenceEpoch
+	}
+	if r.pending == nil {
+		r.pending = map[string]Identity{}
+	}
+	r.pending[entry.Name] = identity
+	return identity, nil
+}
+
+// peekStampLocked returns the identity a pending Stamp minted for entry's name,
+// when entry carries exactly that identity, without consuming it. It is the
+// provenance check the durable-first insert and edit paths rely on: the only way
+// a caller can hold an identity that matches a pending stamp is to have received
+// it from Stamp, so Add and Update mint rather than trust a caller-supplied
+// generation, incarnation id or presence epoch — a hand-built entry that merely
+// carries three non-zero values proves nothing. A stamp whose mutation never
+// landed stays pending and a later mutation of the same name may consume it,
+// which is correct: that identity was minted and never persisted. Callers hold
+// r.mu.
+func (r *Registry) peekStampLocked(entry Host) (Identity, bool) {
+	pending, ok := r.pending[entry.Name]
+	if !ok {
+		return Identity{}, false
+	}
+	if entry.Generation != pending.Generation ||
+		entry.IncarnationID != pending.IncarnationID ||
+		entry.PresenceEpoch != pending.PresenceEpoch {
+		return Identity{}, false
+	}
+	return pending, true
+}
+
+// consumeStampLocked is peekStampLocked plus the consumption the insert path
+// needs: it clears the pending stamp it returns. Callers hold r.mu.
+func (r *Registry) consumeStampLocked(entry Host) (Identity, bool) {
+	identity, ok := r.peekStampLocked(entry)
+	if ok {
+		delete(r.pending, entry.Name)
+	}
+	return identity, ok
 }
 
 // Add validates entry and inserts it. It is AddWithUpstreams with no upstreams;
@@ -251,22 +483,41 @@ func (r *Registry) AddWithUpstreams(entry Host, upstreamNames []string) error {
 	if err := r.checkCycleLocked(entry.Name, upstreamNames); err != nil {
 		return err
 	}
-	// The generation is assigned under the lock, from the registry-wide
-	// counter: a re-add of the same name — byte-identical or not, interleaved
-	// with other hosts' churn or not — always carries a generation the
-	// removed entry never had.
-	r.stampAndStoreLocked(entry)
+	// The identity is assigned under the lock: from the registry-wide counter
+	// when the caller stamped none, so a re-add of the same name — byte-
+	// identical or not, interleaved with other hosts' churn or not — always
+	// carries a generation the removed entry never had.
+	if err := r.insertLocked(entry); err != nil {
+		return err
+	}
 	r.edges[entry.Name] = append([]string(nil), upstreamNames...)
 	return nil
 }
 
-// stampAndStoreLocked gives entry its fresh registry identity and stores it.
-// Callers hold r.mu, so advancing the registry-wide generation and exposing the
+// insertLocked gives entry its identity and stores it: the identity a pending
+// Stamp minted for it, when the entry carries exactly that identity (see
+// consumeStampLocked), or a fresh mint — the next registry generation, a
+// freshly minted incarnation id, and the name's presence epoch advanced by one
+// — otherwise. Callers hold r.mu, so advancing the counters and exposing the
 // entry remain one atomic operation.
-func (r *Registry) stampAndStoreLocked(entry Host) {
-	entry.Generation = r.gen + 1
-	r.gen = entry.Generation
+func (r *Registry) insertLocked(entry Host) error {
+	identity, stamped := r.consumeStampLocked(entry)
+	if !stamped {
+		minted, err := r.mintIdentityLocked(entry.Name)
+		if err != nil {
+			return err
+		}
+		identity = minted
+	}
+	entry.Generation, entry.IncarnationID, entry.PresenceEpoch = identity.Generation, identity.IncarnationID, identity.PresenceEpoch
+	if entry.Generation > r.gen {
+		r.gen = entry.Generation
+	}
+	if entry.PresenceEpoch > r.presence[entry.Name] {
+		r.presence[entry.Name] = entry.PresenceEpoch
+	}
 	r.hosts[entry.Name] = entry
+	return nil
 }
 
 // Update replaces the entry registered under entry.Name in place and stamps it
@@ -298,9 +549,180 @@ func (r *Registry) Update(entry Host) error {
 	}
 	// The generation is assigned under the lock from the registry-wide counter,
 	// exactly as AddWithUpstreams does, so an update is as much a new identity
-	// as a remove/re-add: no generation a capture can hold is ever reused.
-	r.stampAndStoreLocked(entry)
+	// as a remove/re-add: no generation a capture can hold is ever reused. The
+	// incarnation id is the live entry's — an update is neither an add nor a
+	// re-add, so it never rotates a never-reused id — and the presence epoch is
+	// preserved for the same reason.
+	live := r.hosts[entry.Name]
+	// The generation is the one thing an edit advances, and only a stamp from
+	// this registry may name it. The stamp is inspected before it is consumed,
+	// because consuming one this call cannot apply would leave the caller's
+	// durable write (which recorded the stamped generation) and the live entry
+	// disagreeing: a stamped generation that no longer advances is refused, and
+	// everything else — zero, a copy of the live entry's value, a hand-built
+	// number — mints, so an update always advances the generation and never
+	// adopts a caller's.
+	identity, stamped := r.peekStampLocked(entry)
+	switch {
+	case stamped && identity.Generation > live.Generation:
+		entry.Generation = identity.Generation
+		delete(r.pending, entry.Name)
+	case stamped:
+		return fmt.Errorf("%w: the generation %d stamped for %q does not advance past the live %d; re-read the host and stamp again",
+			ErrStaleStamp, identity.Generation, entry.Name, live.Generation)
+	default:
+		generation, err := r.nextGenerationLocked()
+		if err != nil {
+			return err
+		}
+		entry.Generation = generation
+	}
+	if entry.Generation > r.gen {
+		r.gen = entry.Generation
+	}
+	// The incarnation id and presence epoch are the live entry's, never the
+	// caller's: an update is neither an add nor a re-add, so it rotates nothing
+	// but the generation.
+	entry.IncarnationID = live.IncarnationID
+	entry.PresenceEpoch = live.PresenceEpoch
+	// The name's counter only rises: seeding (SeedHighWater) can have raised it
+	// above the live entry's own value, and lowering it here would let a later
+	// re-add mint at or below a mark the file already carries.
+	if entry.PresenceEpoch > r.presence[entry.Name] {
+		r.presence[entry.Name] = entry.PresenceEpoch
+	}
+	r.hosts[entry.Name] = entry
 	return nil
+}
+
+// mintIdentityLocked mints a fresh insert identity for name: the registry's
+// next generation and the name's presence epoch advanced by one, with a freshly
+// minted incarnation id. Callers hold r.mu.
+func (r *Registry) mintIdentityLocked(name string) (Identity, error) {
+	// The counters come first: a registry with no room left refuses the identity
+	// outright, and a refusal must not leave a minted id behind.
+	generation, err := r.nextGenerationLocked()
+	if err != nil {
+		return Identity{}, err
+	}
+	presence, err := r.nextPresenceLocked(name)
+	if err != nil {
+		return Identity{}, err
+	}
+	incarnation, err := mintIncarnationID()
+	if err != nil {
+		return Identity{}, err
+	}
+	return Identity{
+		Generation:    generation,
+		IncarnationID: incarnation,
+		PresenceEpoch: presence,
+	}, nil
+}
+
+// nextGenerationLocked is the one place the registry's next generation comes
+// from: the counter's next value. A counter at its maximum has no next value —
+// the addition would wrap to zero, which is not an identity ("no persisted
+// value" to every reader of the field, and not monotone) — so the mint is
+// refused instead. Callers hold r.mu.
+func (r *Registry) nextGenerationLocked() (uint64, error) {
+	if r.gen == math.MaxUint64 {
+		return 0, fmt.Errorf("%w: the generation counter is at its maximum; no generation above it can be minted", ErrCounterExhausted)
+	}
+	return r.gen + 1, nil
+}
+
+// HighWater is one name's retained high-water record: the presence epoch the
+// name's last presence event reached and the greatest generation it carried. A
+// boot that reads the durable file seeds the registry with these before any
+// mutation, so a name whose live entry is gone still mints above what the file
+// recorded — spec 08 §1: "Re-add mints strictly above every retained high-water
+// mark for the name" — and a removed name's presence epoch is never restarted
+// at a value the file already carried.
+type HighWater struct {
+	Generation    uint64
+	PresenceEpoch uint64
+}
+
+// SeedHighWater raises the registry's counters to the retained marks a boot
+// read from the durable file: the registry-wide generation counter moves above
+// every mark, and each name's presence counter rises to its mark. Counters
+// only ever rise here — a mark below a counter the registry already reached
+// changes nothing — so seeding is safe to run beside live entries the boot
+// already restored, and it is idempotent.
+//
+// A live entry is carried up with its name's marks: its presence epoch to the
+// seeded counter and its generation to the mark itself — the value a seeded
+// boot gives a live name whose file carries a mark and no live pair
+// (resolveHostIdentity). That matters when the registry was built before the
+// marks were known (New, then a later seed): the entry was minted below the
+// mark, and the write that materializes it derives the file's mark from the
+// entry, so recording the lower value would lower the durable mark and let a
+// later re-add mint at or below a generation the name already carried. The
+// entry's incarnation id is never touched — seeding registers no new
+// incarnation.
+func (r *Registry) SeedHighWater(marks map[string]HighWater) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.presence == nil {
+		r.presence = map[string]uint64{}
+	}
+	for name, mark := range marks {
+		if mark.Generation > r.gen {
+			r.gen = mark.Generation
+		}
+		if mark.PresenceEpoch > r.presence[name] {
+			r.presence[name] = mark.PresenceEpoch
+		}
+		// A live entry carries the name's counters: seeding can arrive after the
+		// entry was minted (a registry built by New and seeded later), and an
+		// entry left below them would let the next write lower the file's
+		// retained marks when it records the entry's own pair. The presence
+		// epoch is carried to the seeded counter; the generation is carried to
+		// the name's mark itself — the value a seeded boot gives a live name
+		// whose file carries a mark and no live pair (resolveHostIdentity) — so
+		// materialization never writes a generation below the retained mark, and
+		// the next mint still rises above the registry-wide counter.
+		if live, ok := r.hosts[name]; ok {
+			if live.PresenceEpoch < r.presence[name] {
+				live.PresenceEpoch = r.presence[name]
+			}
+			if live.Generation < mark.Generation {
+				live.Generation = mark.Generation
+			}
+			r.hosts[name] = live
+		}
+	}
+}
+
+// NextPresenceEpoch returns the presence epoch name's next presence event
+// carries: one above the name's highest recorded value, exactly the rule the
+// registry's own add and remove paths apply. It is exported for the
+// durable-first removal, which must record the advance in hub.toml before the
+// registry's own Remove runs — the removal's write lands before any live state
+// changes. A counter at its maximum has no next value, and the returned
+// error says so rather than wrapping to zero.
+func (r *Registry) NextPresenceEpoch(name string) (uint64, error) {
+	name = strings.TrimSpace(name)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.nextPresenceLocked(name)
+}
+
+// nextPresenceLocked is the one place the advance's arithmetic lives: one above
+// the name's highest recorded value, counting both the counter and (defensively)
+// a live entry whose epoch somehow runs ahead of it. A counter at its maximum
+// has no next value — the addition would wrap to zero, a presence value the
+// name already used — so the advance is refused instead. Callers hold r.mu.
+func (r *Registry) nextPresenceLocked(name string) (uint64, error) {
+	next := r.presence[name]
+	if live, ok := r.hosts[name]; ok && live.PresenceEpoch > next {
+		next = live.PresenceEpoch
+	}
+	if next == math.MaxUint64 {
+		return 0, fmt.Errorf("%w: host %q's presence counter is at its maximum; no presence epoch above it can be minted", ErrCounterExhausted, name)
+	}
+	return next + 1, nil
 }
 
 // SetUpstreams attaches or replaces the upstream edges of an already registered
@@ -408,22 +830,28 @@ func (r *Registry) Get(name string) (Host, bool) {
 	return cloneHost(host), true
 }
 
-// SameRegistration reports whether two captures describe the same insert: equal
-// configured content and the same generation. It is the one predicate an
+// SameRegistration reports whether two captures describe the same insert:
+// equal configured content and the same (generation, incarnation id) pair —
+// the identity spec 08 §1 mints together on every add/re-add. It is the one
+// predicate an
 // identity recheck states, wrapped here by Registry.SameRegistration and
 // applied by sshconn's channels to pair a live channel with an entry. Content
 // equality alone cannot tell a removed entry from its byte-identical re-add
-// (Equal excludes Generation, and a re-add takes a fresh generation from the
-// registry-wide counter); generation equality alone cannot refuse a hand-built
-// capture whose generation is current but whose content is stale, even though
-// the registry never mutates an inserted entry. Both are needed.
+// (Equal excludes Generation and IncarnationID, and a re-add takes a fresh
+// generation from the registry-wide counter); the generation alone cannot
+// refuse a hand-built capture whose generation is current but whose content is
+// stale, even though the registry never mutates an inserted entry; and two
+// captures that agree on content and generation but name different
+// incarnations are different inserts, because the pair is what the registry
+// mints together. All three are needed.
 func SameRegistration(a, b Host) bool {
-	return a.Equal(b) && a.Generation == b.Generation
+	return a.Equal(b) && a.Generation == b.Generation && a.IncarnationID == b.IncarnationID
 }
 
 // SameRegistration reports whether name is currently registered as the same
 // insert captured describes: present, carrying the same configured content,
-// and stamped with the same generation. It is the identity recheck for
+// and stamped with the same (generation, incarnation id) pair. It is the
+// identity recheck for
 // callers that captured an entry and are about to act on it — attach paths
 // before publishing a channel, host rows before folding retained state: a
 // name whose entry was removed, or removed and re-added even byte-identically
@@ -438,7 +866,14 @@ func (r *Registry) SameRegistration(name string, captured Host) bool {
 	return ok && SameRegistration(current, captured)
 }
 
-// Remove deletes the host registered under name along with its upstream edges.
+// Remove deletes the host registered under name along with its upstream edges,
+// and advances the name's presence counter (spec 08 §1: the counter advances on
+// every remove, so a re-add can never reuse the removed incarnation's presence
+// epoch). The durable-first removal records the advanced triple before it tears
+// the live entry down — the removal's hub.toml write lands before any live
+// state changes — so it computes the same value with NextPresenceEpoch, which
+// is the one place the advance's arithmetic lives.
+//
 // A removed host stays removed: Get and All no longer report it, and a later
 // Add of the same name starts clean rather than inheriting the old edges (a
 // stale edges entry under the re-added name would false-positive the cycle
@@ -462,9 +897,90 @@ func (r *Registry) Remove(name string) error {
 	if _, ok := r.hosts[name]; !ok {
 		return fmt.Errorf("%w: %q", ErrUnknownHost, name)
 	}
+	// The advance is computed before anything is deleted: a counter with no
+	// room left refuses the removal with nothing changed, and a value computed
+	// while the entry is still live is the one the durable-first removal recorded
+	// with NextPresenceEpoch before this ran.
+	presence, err := r.nextPresenceLocked(name)
+	if err != nil {
+		return err
+	}
 	delete(r.hosts, name)
 	delete(r.edges, name)
+	// A pending stamp describes the live entry this call removes (or an insert
+	// that never landed); either way it must not survive to be consumed by a
+	// later insert, which would re-adopt the removed incarnation's id and epoch.
+	delete(r.pending, name)
+	r.presence[name] = presence
 	return nil
+}
+
+// RebaseBootCollision replaces the live entry under name with a fresh
+// incarnation minted strictly above every retained high-water mark, and
+// returns the entry as stored (spec 08 §15's boot collision: "when a retained
+// tombstone collides at boot with a newly live entry for the same name — a
+// hand edit or a re-add put the name back — the live host is treated as a new
+// incarnation: its restored generation is set strictly above the tombstone's
+// high-water mark before any historical receipts/remnants apply, so old
+// `host-removed` records stay at or below the mark and live records stay
+// unmarked — never a promotion of a pre-collision record into the current
+// generation"). The entry's configured content is preserved — the name is the
+// same host, only its identity is rebased — and the counters move above the
+// mint so no later path can reuse or fall below it. The caller persists the
+// returned triple in the boot's atomic write.
+//
+// A name the registry does not hold is ErrUnknownHost; a counter with no room
+// left refuses (ErrCounterExhausted) with the entry unchanged.
+func (r *Registry) RebaseBootCollision(name string) (Host, error) {
+	name = strings.TrimSpace(name)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, ok := r.hosts[name]
+	if !ok {
+		return Host{}, fmt.Errorf("%w: %q", ErrUnknownHost, name)
+	}
+	generation, err := r.nextGenerationLocked()
+	if err != nil {
+		return Host{}, err
+	}
+	presence, err := r.nextPresenceLocked(name)
+	if err != nil {
+		return Host{}, err
+	}
+	incarnation, err := mintIncarnationID()
+	if err != nil {
+		return Host{}, err
+	}
+	entry.Generation = generation
+	entry.IncarnationID = incarnation
+	entry.PresenceEpoch = presence
+	if generation > r.gen {
+		r.gen = generation
+	}
+	if presence > r.presence[name] {
+		r.presence[name] = presence
+	}
+	r.hosts[name] = entry
+	// A pending stamp describes the pre-collision identity; it must not be
+	// consumed by a later insert, which would re-adopt a generation at or
+	// below the collision bump.
+	delete(r.pending, name)
+	return cloneHost(entry), nil
+}
+
+// mintIncarnationID mints one incarnation id: spec 08 §1's "opaque
+// server-generated string minted beside the generation on every add/re-add,
+// never derived from it and never reused: at most 128 bytes, and the generator
+// pins its output to 36 bytes (canonical UUID text)". The pin is what keeps the
+// deploy-pipeline spec §8 cursor bound (8 KiB) true by construction. A failure
+// is a csprng failure — no safe identity can be minted — so it is returned, not
+// papered over with a predictable value.
+func mintIncarnationID() (string, error) {
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return "", fmt.Errorf("mint incarnation id: %w", err)
+	}
+	return id.String(), nil
 }
 
 // Names returns every registered host's name sorted by name: the name set

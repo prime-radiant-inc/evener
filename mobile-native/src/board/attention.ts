@@ -2,8 +2,9 @@
 // navigation rows the hub already sends. Where the spec wants a fact the rows
 // don't carry yet, the fallback from spec 18 lives here, and each server
 // addition replaces its fallback in this file: S1 (why text), S2 (approval
-// flag), S3 (subagent failures), S5 (activity), S13 (tasks). S4 replaces the
-// seen marker, which lives in boardMemory.ts.
+// flag), S3 (subagent counts), S5 (activity). S4 replaces the
+// seen marker, which lives in boardMemory.ts. Subagent failures never appear
+// on a Board row; they show only in the session's Subagents chip and list.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 
 export type BoardState =
@@ -89,6 +90,17 @@ export function boardState(
 	return "finished";
 }
 
+/** Classifies any of the Board's rows, Live's or a category's: the needs_you
+ * section marks approvals (approvalRefs), and isSeen splits Finished from
+ * Idle. */
+export function rowClassifier(
+	needsYouSection: readonly NavigationSessionSummary[],
+	isSeen: (row: NavigationSessionSummary) => boolean,
+): (row: NavigationSessionSummary) => ClassifiedRow {
+	const approvals = approvalRefs(needsYouSection);
+	return (row) => ({ row, state: boardState(row, approvals.has(row.ref), isSeen(row)) });
+}
+
 const BANDS: Record<BoardState, Band | null> = {
 	failed: "needsYou",
 	question: "needsYou",
@@ -126,9 +138,26 @@ function oldestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 function newestFirst(a: ClassifiedRow, b: ClassifiedRow): number {
 	return time(b.row) - time(a.row) || byRef(a, b);
 }
+// Spec 7.1's order: failed leads, then a question or approval, then a
+// warning or restart-needed, regardless of age; age breaks ties within a
+// band. The hub sorts its needs_you section into the same bands
+// (hubapi.NeedsYouBand: failed first, then any row with a pending question or
+// approval whatever its own state, then everything else). boardState's mark
+// precedence returns "warning"/"restartNeeded" for a row before ever
+// consulting ask_pending/approval_pending, so a warning or restart-needed row
+// that also carries one of those flags must still read it here directly - the
+// mark stays "warning"/"restartNeeded", but the row is blocked on you either
+// way. The approval mark is also checked directly, since a hub older than
+// S2a carries no raw approval_pending and the mark's own fallback
+// (approvalRefs, inferred from needs_you section membership) is the only
+// signal such a row has.
+function needsYouRank(item: ClassifiedRow): number {
+	if (item.state === "failed") return 0;
+	if (item.row.ask_pending || item.row.approval_pending || item.state === "approval") return 1;
+	return 2;
+}
 function needsYouOrder(a: ClassifiedRow, b: ClassifiedRow): number {
-	const rank = (item: ClassifiedRow) => (item.state === "failed" ? 0 : 1);
-	return rank(a) - rank(b) || oldestFirst(a, b);
+	return needsYouRank(a) - needsYouRank(b) || oldestFirst(a, b);
 }
 
 /** Splits Live into the spec's four bands. Rows from the needs_you section
@@ -140,15 +169,15 @@ export function liveBands(
 	needsYouSection: readonly NavigationSessionSummary[],
 	isSeen: (row: NavigationSessionSummary) => boolean,
 ): LiveBands {
-	const approvals = approvalRefs(needsYouSection);
+	const classify = rowClassifier(needsYouSection, isSeen);
 	const rows = new Map<string, NavigationSessionSummary>();
 	for (const row of live) rows.set(row.ref, row);
 	for (const row of needsYouSection) if (!rows.has(row.ref)) rows.set(row.ref, row);
 	const bands: LiveBands = { needsYou: [], finished: [], working: [], idle: [] };
 	for (const row of rows.values()) {
-		const state = boardState(row, approvals.has(row.ref), isSeen(row));
-		const band = bandOf(state);
-		if (band) bands[band].push({ row, state });
+		const item = classify(row);
+		const band = bandOf(item.state);
+		if (band) bands[band].push(item);
 	}
 	bands.needsYou.sort(needsYouOrder);
 	bands.finished.sort(newestFirst);
@@ -174,6 +203,10 @@ export function liveSummary(bands: LiveBands): LiveSummary | null {
 	};
 	return Object.values(counts).filter((count) => count > 0).length >= 2 ? counts : null;
 }
+
+export const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+/** A section's VoiceOver label, shared by its chip and its header. */
+export const sectionLabel = (name: string, count: number, noun: string) => `${name}, ${plural(count, noun)}`;
 
 export function summaryText(band: Band, count: number): string {
 	if (band === "needsYou") return `${count} ${count === 1 ? "needs you" : "need you"}`;
@@ -247,20 +280,43 @@ export function usualPlace(rows: readonly NavigationSessionSummary[]): Usual {
 	};
 }
 
+/** The task in progress, by its own position in the list ("Task 4 of 7 · Fix
+ * the settle/drain race", spec 7.2). Null while no task is in progress,
+ * finished lists included: the hub omits `current` then (NavigationTaskProgress's
+ * doc comment). current_id is the task's stable list position (a session's
+ * tasks are only ever appended, never reordered or removed, so id order is
+ * list order) and is the number to show: counting done-or-cancelled tasks
+ * instead would overstate the position whenever a later task settles before
+ * this one, which dependency-driven completion allows. That count is only a
+ * fallback for a payload that, contrary to the contract, carries `current`
+ * without `current_id`. */
+export function taskLine(row: NavigationSessionSummary): string | null {
+	const tasks = row.tasks;
+	if (!tasks?.current) return null;
+	const position = tasks.current_id ?? tasks.done + (tasks.cancelled ?? 0) + 1;
+	return `Task ${position} of ${tasks.total} · ${tasks.current}`;
+}
+
 export interface LastLine {
+	task?: string;
 	project?: string;
 	host?: string;
 }
 
-/** The row's last line on the fallbacks: task progress waits for S13 and
- * subagent failures for S3, so today it is the unusual project and host. */
+/** The row's last line (spec 7.2): the task in progress first, then the
+ * project and host, each only when it differs from the fleet's usual one.
+ * Subagent failures never appear here; they show only in the session's
+ * Subagents chip and list. The model name (the "Show model on Board rows"
+ * setting) isn't implemented yet. */
 export function lastLine(
 	row: NavigationSessionSummary,
 	usual: Usual,
 	hostLabel: (hostId: string) => string,
 ): LastLine | null {
 	const line: LastLine = {};
+	const task = taskLine(row);
+	if (task) line.task = task;
 	if (row.project && row.project !== usual.project) line.project = row.project;
 	if (row.host_id !== usual.host) line.host = hostLabel(row.host_id);
-	return line.project || line.host ? line : null;
+	return line.task || line.project || line.host ? line : null;
 }

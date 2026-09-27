@@ -848,17 +848,19 @@ Phase 2's `BoardToolbar` keeps the clock that turns `connectionStatus` into "Rec
 - `SheetStatus`: the line itself;
 - `Connecting`: what a page that has never loaded says in place of today's walls.
 
+Phase 3's Task 15 plans the same extraction, under the same name, `useConnectionStatusText`, and wires `BoardToolbar` to it: whichever of the two phases lands first builds the hook and that wiring, so there is one hook, not two. If it's already there by the time this task runs, its "add the hook" step is a no-op; this task's real job is the sheet's two pieces below and pointing them, and `HubHome` (Task 3), at the existing hook.
+
 **Files:**
-- Modify: `mobile-native/src/board/connectionStatus.ts` (add `useConnectionStatusLine`)
-- Modify: `mobile-native/src/board/BoardToolbar.tsx` (call the hook; delete its own clock)
+- Modify: `mobile-native/src/board/connectionStatus.ts` (add `useConnectionStatusText`, unless phase 3's Task 15 already has)
+- Modify: `mobile-native/src/board/BoardToolbar.tsx` (call the hook; delete its own clock; unless phase 3's Task 15 already did this)
 - Modify: `mobile-native/src/connectionRecovery.ts` (export `INCOMPATIBLE_VERSIONS`)
 - Create: `mobile-native/src/sheet/SheetStatus.tsx`
-- Test: `mobile-native/src/board/connectionStatusLine.test.tsx` and `mobile-native/src/sheet/SheetStatus.test.tsx`
+- Test: `mobile-native/src/board/connectionStatusText.test.tsx` and `mobile-native/src/sheet/SheetStatus.test.tsx`
 
 **Interfaces:**
 - Consumes: `connectionStatus(state, fatal, downSince, lastLiveAt, now)` (phase 2, Task 7) and `useConnection()` (`state`, `fatal`).
 - Produces:
-  - `useConnectionStatusLine(): string | null`;
+  - `useConnectionStatusText(): string | null`;
   - `SheetStatus()`;
   - `Connecting({ hubName: string })`;
   - `INCOMPATIBLE_VERSIONS` in `src/connectionRecovery.ts`: spec 14's sentence. It lives in that module because the module imports no React Native, so Task 27 can use it in `connectionFailure` without pulling the UI into `connection.test.ts`, which runs with no `react-native` mock. If phase 2 already exported a constant for the sentence (grep `need compatible versions` in `src`), use it when its module imports no React Native; otherwise move it into `connectionRecovery.ts`. Never declare a second one.
@@ -866,11 +868,11 @@ Phase 2's `BoardToolbar` keeps the clock that turns `connectionStatus` into "Rec
 - [ ] **Step 1: Write the failing tests**
 
 ```tsx
-// mobile-native/src/board/connectionStatusLine.test.tsx
+// mobile-native/src/board/connectionStatusText.test.tsx
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { renderHook } from "../renderNative.testkit";
-import { useConnectionStatusLine } from "./connectionStatus";
+import { useConnectionStatusText } from "./connectionStatus";
 
 const connection = { state: "ready", fatal: false };
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => connection }));
@@ -886,13 +888,13 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 it("says nothing while live and runs no clock", () => {
-	const hook = renderHook(useConnectionStatusLine);
+	const hook = renderHook(useConnectionStatusText);
 	expect(hook.result.current).toBeNull();
 	expect(vi.getTimerCount()).toBe(0);
 });
 
 it("says Reconnecting after 2 seconds down and Offline after 30", () => {
-	const hook = renderHook(useConnectionStatusLine);
+	const hook = renderHook(useConnectionStatusText);
 	connection.state = "reconnecting";
 	hook.rerender();
 	act(() => {
@@ -910,7 +912,7 @@ it("says Reconnecting after 2 seconds down and Offline after 30", () => {
 });
 
 it("goes quiet and stops its clock when the connection is back", () => {
-	const hook = renderHook(useConnectionStatusLine);
+	const hook = renderHook(useConnectionStatusText);
 	connection.state = "closed";
 	hook.rerender();
 	act(() => {
@@ -923,7 +925,7 @@ it("goes quiet and stops its clock when the connection is back", () => {
 });
 
 it("says Update needed at once for a close no retry can fix", () => {
-	const hook = renderHook(useConnectionStatusLine);
+	const hook = renderHook(useConnectionStatusText);
 	connection.state = "closed";
 	connection.fatal = true;
 	hook.rerender();
@@ -939,7 +941,7 @@ import { render, renderedText } from "../renderNative.testkit";
 import { Connecting, SheetStatus } from "./SheetStatus";
 
 const status = { line: null as string | null, fatal: false };
-vi.mock("../board/connectionStatus", () => ({ useConnectionStatusLine: () => status.line }));
+vi.mock("../board/connectionStatus", () => ({ useConnectionStatusText: () => status.line }));
 vi.mock("../ConnectionProvider", () => ({ useConnection: () => ({ fatal: status.fatal }) }));
 vi.mock("react-native", async () => ({
 	...(await import("../renderNative.testkit")).nativeModuleMock(),
@@ -964,12 +966,12 @@ it("says a never-loaded page is connecting, or why it can't", () => {
 
 - [ ] **Step 2: Run the tests and watch them fail**
 
-Run: `cd mobile-native && npx vitest run src/board/connectionStatusLine.test.tsx src/sheet/SheetStatus.test.tsx`
-Expected: FAIL: `useConnectionStatusLine` isn't exported, and `./SheetStatus` doesn't exist.
+Run: `cd mobile-native && npx vitest run src/board/connectionStatusText.test.tsx src/sheet/SheetStatus.test.tsx`
+Expected: FAIL: `useConnectionStatusText` isn't exported, and `./SheetStatus` doesn't exist.
 
 - [ ] **Step 3: Implement**
 
-Add the hook to `src/board/connectionStatus.ts`. It's the clock `BoardToolbar` runs today. If `BoardToolbar`'s clock differs from this code, move its version instead and keep these tests: the tests are the contract.
+Add the hook to `src/board/connectionStatus.ts`, unless phase 3's Task 15 already added `useConnectionStatusText` there and wired `BoardToolbar` to it, in which case skip straight to the sheet pieces below. Otherwise it's the clock `BoardToolbar` runs today: if `BoardToolbar`'s clock differs from this code, move its version instead and keep these tests: the tests are the contract.
 
 ```ts
 // added to mobile-native/src/board/connectionStatus.ts
@@ -982,7 +984,7 @@ import { useConnection } from "../ConnectionProvider";
  * 30-second marks and then once a minute; a live connection runs no clock.
  * The Board's toolbar and every sheet read this one hook, so they never
  * disagree about the connection. */
-export function useConnectionStatusLine(): string | null {
+export function useConnectionStatusText(): string | null {
 	const { state, fatal } = useConnection();
 	const live = state === "ready";
 	const downSince = useRef<number | null>(null);
@@ -1016,7 +1018,7 @@ export function useConnectionStatusLine(): string | null {
 }
 ```
 
-In `BoardToolbar.tsx`, replace its own clock with `const status = useConnectionStatusLine();` and delete the timers it no longer needs. `BoardToolbar`'s existing tests must pass unchanged.
+In `BoardToolbar.tsx`, replace its own clock with `const status = useConnectionStatusText();` and delete the timers it no longer needs. `BoardToolbar`'s existing tests must pass unchanged.
 
 Add the sentence to `src/connectionRecovery.ts`, after its import. `connectionFailure` keeps its own message until Task 27, because today's tests assert it.
 
@@ -1034,14 +1036,14 @@ export const INCOMPATIBLE_VERSIONS =
 // A sheet's word on the connection (spec 14): one line, no button. The app
 // reconnects on its own (hubConnection.ts), so nothing here asks you to.
 import { Text } from "react-native";
-import { useConnectionStatusLine } from "../board/connectionStatus";
+import { useConnectionStatusText } from "../board/connectionStatus";
 import { useConnection } from "../ConnectionProvider";
 import { INCOMPATIBLE_VERSIONS } from "../connectionRecovery";
 import { useColors } from "../ui";
 
 /** The connection's line at the top of a sheet page; nothing while live. */
 export function SheetStatus() {
-	const line = useConnectionStatusLine();
+	const line = useConnectionStatusText();
 	const { palette } = useColors();
 	if (!line) return null;
 	return (
@@ -1067,13 +1069,13 @@ export function Connecting({ hubName }: { hubName: string }) {
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
-Run: `cd mobile-native && npx vitest run src/board/connectionStatusLine.test.tsx src/sheet/SheetStatus.test.tsx src/board/BoardToolbar.test.tsx src/connection.test.ts && npm run check`
+Run: `cd mobile-native && npx vitest run src/board/connectionStatusText.test.tsx src/sheet/SheetStatus.test.tsx src/board/BoardToolbar.test.tsx src/connection.test.ts && npm run check`
 Expected: PASS. If phase 2 named the toolbar's test differently, run that file instead. `connection.test.ts` loads `connectionRecovery.ts` with no `react-native` mock, so it fails if that module ever imports a screen.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add mobile-native/src/board/connectionStatus.ts mobile-native/src/board/connectionStatusLine.test.tsx mobile-native/src/board/BoardToolbar.tsx mobile-native/src/connectionRecovery.ts mobile-native/src/sheet/SheetStatus.tsx mobile-native/src/sheet/SheetStatus.test.tsx
+git add mobile-native/src/board/connectionStatus.ts mobile-native/src/board/connectionStatusText.test.tsx mobile-native/src/board/BoardToolbar.tsx mobile-native/src/connectionRecovery.ts mobile-native/src/sheet/SheetStatus.tsx mobile-native/src/sheet/SheetStatus.test.tsx
 git commit -m "feat(native): one connection line for the Board and the sheets"
 ```
 
@@ -1136,7 +1138,7 @@ it.each([
 `HubHome.test.tsx` renders `HubHome` inside `HubSheetProvider` with a fake `navigation` whose `getParent()` returns a recorder of `dispatch`, `navigate` and `goBack` calls.
 - Mocks:
   - `react-native` and `expo-symbols` as in Task 1;
-  - `../board/connectionStatus`, with `useConnectionStatusLine` returning a variable the test sets;
+  - `../board/connectionStatus`, with `useConnectionStatusText` returning a variable the test sets;
   - `@react-navigation/native`, with `StackActions.replace: (name, params) => ({ type: "REPLACE", payload: { name, params } })` and `useFocusEffect: (effect) => effect()`.
 - Cases:
   - It shows "Connected" and the rows Providers, Plugins, Display, Hubs and "Hub settings".
@@ -1294,7 +1296,7 @@ export function HubSheet({ navigation }: NativeStackScreenProps<Routes, "Hub">) 
 import { StackActions } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Text } from "react-native";
-import { useConnectionStatusLine } from "../board/connectionStatus";
+import { useConnectionStatusText } from "../board/connectionStatus";
 import { Group, GroupedPage, GroupLabel, Row } from "../sheet/Grouped";
 import { useColors } from "../ui";
 import { hubStatusLine } from "./hubHeader";
@@ -1305,7 +1307,7 @@ type InterimScreen = "Providers" | "Plugins" | "TranscriptPreferences" | "HubSet
 export function HubHome({ navigation }: NativeStackScreenProps<HubRoutes, "HubHome">) {
 	const { hubId } = useHubSheet();
 	const { palette } = useColors();
-	const line = hubStatusLine(useConnectionStatusLine(), null);
+	const line = hubStatusLine(useConnectionStatusText(), null);
 	const root = navigation.getParent();
 	const leaveFor = (screen: InterimScreen) => root?.dispatch(StackActions.replace(screen, { hubId }));
 	return (

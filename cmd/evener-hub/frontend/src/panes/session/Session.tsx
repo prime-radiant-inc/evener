@@ -44,6 +44,7 @@ import { Composer } from "./composer/Composer";
 import { useBlockedMutationEntries, usePendingTurnEntries } from "./composer/queue/pendingTurnsStore";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
+import { useMarkSessionSeenOnOpen } from "./markSeen";
 import { PendingChips } from "./pending/PendingChips";
 import styles from "./session.module.css";
 import { navigationSummaryFor, resolveThreadName } from "./threadTitle";
@@ -266,6 +267,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
       if (started) threadsStore.getState().releaseThread(ref);
     };
   }, [ref]);
+
+  // S4: opening the pane marks its session seen on the hub, so the session's
+  // blue dot clears on the phone too.
+  useMarkSessionSeenOnOpen(ref);
 
   // Older-turn paging reports its own failures IN the transcript, not as a
   // toast: it is automatic (nobody pressed anything, so a toast would be a

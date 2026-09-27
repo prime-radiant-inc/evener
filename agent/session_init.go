@@ -1135,6 +1135,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		createdAt:                meta.CreatedAt,
 		workMillis:               meta.WorkMillis,
 		lastTurnEndedAt:          meta.LastTurnEndedAt,
+		lastMessage:              meta.LastMessage,
 		fork: forkInfo{
 			parentID:   meta.ParentSessionID,
 			divergence: meta.DivergenceTurn,
