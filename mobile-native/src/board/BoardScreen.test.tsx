@@ -371,6 +371,34 @@ it("gives every control a touch target at least 44pt tall", async () => {
 	act(() => tree.unmount());
 });
 
+it("starts a fresh Board when you switch hubs, and stops the old hub's", async () => {
+	const first = hubId();
+	const second = hubId();
+	adoptedAnHourAgo(first);
+	adoptedAnHourAgo(second);
+	const hubA = hub(fleet);
+	const hubB = hub({ ...fleet, live: [[working, idleOne]], needsYou: [] });
+	connect(first, hubA.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	pressLabel(tree, "Idle, 2 sessions");
+	expect(hasRow(tree, "Old chore")).toBe(true);
+	connect(second, hubB.client, "ready");
+	rerender(tree, nav);
+	await settle();
+	expect(hasRow(tree, "Fix retry loop")).toBe(false);
+	expect(hasRow(tree, "Build docs")).toBe(true);
+	// Hub B keeps its own fold state: Idle starts folded there.
+	expect(bandHeaders(tree)).toContain("Idle · 1");
+	expect(hasRow(tree, "Old chore")).toBe(false);
+	// Hub A's Board is gone: its invalidations read nothing.
+	const readsOnA = hubA.requests.length;
+	hubA.invalidate(1, [{ kind: "section", section: "live", revision: 2 }]);
+	await settle();
+	expect(hubA.requests).toHaveLength(readsOnA);
+	act(() => tree.unmount());
+});
+
 it("opens a session after marking it seen", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);
