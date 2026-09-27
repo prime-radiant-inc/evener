@@ -22,7 +22,7 @@
 - **Timing** (spec 13.3, 14, 16.6): a banner stays 8 seconds and never goes away while a finger is on it; alerts within 5 seconds combine; a banner drops with a 300ms spring, and with Reduce Motion it fades in instead.
 - **Haptics** (spec 13.3): a warning for a failure, a light impact for anything else, none for finished results, and nothing when Hub > In-app alerts turns haptics off.
 - **Calm** (spec principle 2):
-  - A control appears only when it can act: Check only while connected, and the Board's hub-writing actions only while connected (phase 2 part 3's ruling 21 builds that).
+  - A control appears only when it can act: Check only while connected. The Board's hub-writing actions are held while offline (ruling 18, part 2's PR H); until then phase 2 part 3 hides them (its ruling 21).
   - No screen carries a Reconnect button or asks you to refresh, and no text a person can read says "Reconnect", "Refresh" or "Pull down to retry" (Task 2's audit enforces it).
   - Nothing moves unless its data moved: a banner moves only when it drops in or is swiped away.
 - **Color:** only from `useColors().palette`. A banner's edge is `attentionEdge`, and a finished result's is `accentEdge`. Only the state word takes a hue.
@@ -39,7 +39,7 @@
 
 ## Rulings
 
-Decisions this plan makes where the spec is silent or its data doesn't exist yet. Questions 1 to 3 below ask Jesse about the three that change what a person sees.
+Decisions this plan makes where the spec is silent or its data doesn't exist yet. Questions 1 and 2 below ask Jesse about the two that change what a person sees; ruling 18 records his answer to a third.
 
 1. **Alerts come from the navigation rows the Board already reads,** diffed per session: the complete `needs_you` section and Live's first page, classified by phase 2's `boardState`, re-read on `evener/navigation/invalidated`. A finished alert needs the session's working row on Live's first page, which holds the sessions most likely to finish. Nothing here listens to `evener/attention/changed`, which never fires for sessions on other hosts (#2529). A remote session reaches navigation through the hub's remote-thread cache, whose publish invalidates navigation (`cmd/evener-hub/main.go:635`) on its 30-second refresh or a poke (`refreshHubRemoteThreads`, `main_background.go:113`), so a remote session alerts as soon as its Board row changes, and #2529 needs no fallback here.
 2. **The first read on a new client is a baseline and alerts nothing.** A new client means the app came back to the foreground, the hub changed, or a closed connection was replaced. A drop the same client recovers from is diffed, so a flap on the train still tells you what changed meanwhile (Question 1).
@@ -58,17 +58,16 @@ Decisions this plan makes where the spec is silent or its data doesn't exist yet
 15. **"Couldn't confirm this was sent" offers Check only while connected, and Discard always,** since Check needs the hub and Discard doesn't. This covers a lost send, the unconfirmed draft and a record the phone couldn't place.
 16. **A message a Stop held before it left the phone comes back as held,** with "Send now" and "Cancel", like the queue a Stop parks (spec 8.5). Send now moves it to the end of its session's line, behind the Stop that held it, so that Stop can never stop it. The roadmap's phase 6 row, as phase 3 words it, calls these Retry and Discard; the ghost uses spec 8.5's words for a held message.
 17. **The flush.** On each ready connection, and whenever a record lands for a session nobody has open, the app settles and sends every target of the active hub that no session screen holds, as the web's `handleReady` does, then lets each go once nothing on it can be sent. On a ready connection it also settles a target a session screen holds when something on it waits, because a screen under the Reader or a subagent doesn't read while covered; the screen keeps its target.
-18. **The Board's actions that write to the hub wait for the connection** (Question 3). Phase 2 part 3 builds this (its rulings 16 and 21), and this plan adds nothing to it. Mark as read and unread are this phone's own and stay.
+18. **Board actions taken offline are held, and sent when the connection returns.** Jesse, 2026-09-26: "board actions while offline: hold em" (this plan's former Question 3, and phase 2 part 3's Question 2). Spec 7.5 says they "go to the outbox". Archive and unarchive, pin, rename, shut down, the project actions and Stop wait in a durable hold on the phone and go out in order on the next ready connection. A held Stop or Shut down names the turn the person saw and is dropped, never applied, if a newer turn is running, so it can't stop work nobody saw. Part 2's PR H designs and builds the hold on phase 2 part 3's journal, `BoardStops` and row actions; until it lands, part 3's ruling 21 (those actions hidden while offline) is the interim. Mark as read and unread are this phone's own and never wait.
 
 ## Questions for Jesse
 
 1. **Should a banner tell you about changes that happened while the phone was disconnected?** My recommendation, and what ruling 2 builds: yes after a drop the connection recovers from while you're using the app (a flap on the train), and no after you return from the background, where the Board, Back's count and Next already show what needs you.
 2. **Banners while a sheet is up:** hold them until the sheet closes (my recommendation, and what ruling 7 builds), or show them over the sheet as the prototype does? Over a sheet, the banner would cover the sheet's own Cancel and Done, and a React Native modal presents above the app's overlay, so showing it there needs a full-window overlay.
-3. **Board actions taken offline.** Spec 7.5 says they "go to the outbox". The phone's outbox carries only the four turn kinds (`nativeMutationRuntime.ts:69-77`), and organization changes run through a one-slot journal that fails at once offline (`navigationActions.ts`), so an offline archive dims and silently comes back. A durable queue for Archive, Pin, Rename and Shut down is its own piece of work, about the size of this phase's outbox PRs, and a Stop queued offline would stop whatever turn runs when it lands. My recommendation, and what phase 2 part 3 builds (its ruling 21): those actions don't show while offline, and a later PR adds the queue if you want it. Build the queue now instead? This is also phase 2 part 3's Question 2: one answer covers both, and until it comes both plans build the recommendation.
 
 ## Built on earlier phases
 
-Phases 2 to 5 are planned beside this one, so some names below are what those plans say they produce. Tasks 3-11, 17 and 18 are in part 2. Before a task that uses one, read the landed code. If it landed under another name or shape, use the landed one and say so in the PR.
+Phases 2 to 5 are planned beside this one, so some names below are what those plans say they produce. Tasks 3-11 and 17-20 are in part 2. Before a task that uses one, read the landed code. If it landed under another name or shape, use the landed one and say so in the PR.
 
 | This plan uses | From | Used by |
 |---|---|---|
@@ -103,8 +102,9 @@ Phases 2 to 5 are planned beside this one, so some names below are what those pl
 | E: your own undelivered messages | 12-13 | Sonnet (12), Opus (13) | the phase starts | outbox |
 | F: Send while offline | 14-15 | Opus (14), Sonnet (15) | PRs A and E land | connection |
 | G: the demo and the screenshots (part 2) | 17-18 | Opus (17), then by hand | PRs D and F land | alerts |
+| H: Board actions held offline (part 2) | 19-20 | Opus | phase 2 part 3's PRs are on main | board |
 
-- Three lanes start together: alerts (PR B), connection (PR A) and outbox (PR E). The outbox lane joins the connection lane at PR F, and that lane joins the alerts lane at PR G.
+- Three lanes start together: alerts (PR B), connection (PR A) and outbox (PR E). The outbox lane joins the connection lane at PR F, and that lane joins the alerts lane at PR G. PR H, the Board's hold, runs on its own once phase 2 part 3 is on main.
 - Files two lanes share: `App.tsx` (PR C mounts the alerts, PR F binds the flush) and phase 3's session screen (PRs D, E and F). The second PR to land in either merges `origin/main` before its review.
 - Every PR lands under the roadmap's rules: CI green, RoboRev with nothing Medium or higher, /simplify, admin squash merge, Lows in a fast-follow, and decompose after five rounds.
 - PR G, the phase's last, carries Release-simulator screenshots of the alert and offline frames against the demo fleet (part 2's Task 18).
@@ -582,9 +582,9 @@ Open PR A: "feat(native): one connection clock, and no text asks you to reconnec
 
 ---
 
-## PRs B, C, D and G: in part 2
+## PRs B, C, D, G and H: in part 2
 
-The alerts and the phase's screenshots, PRs B, C, D and G (Tasks 3-11, 17 and 18), are in part 2, `docs/superpowers/plans/2026-09-26-iphone-redesign-phase6-attention-resilience-part2.md`, which lands in its own PR. After five review rounds on this PR the alert center (Task 3) still had findings open, so it and everything built on it moved out; part 2 opens with those findings. This part's Goal, Architecture, Global Constraints, Rulings, Questions and Review Focus bind part 2's tasks, and the task numbers continue there.
+The alerts, the phase's screenshots and the Board's hold, PRs B, C, D, G and H (Tasks 3-11 and 17-20), are in part 2, `docs/superpowers/plans/2026-09-26-iphone-redesign-phase6-attention-resilience-part2.md`, which lands in its own PR. After five review rounds on this PR the alert center (Task 3) still had findings open, so it and everything built on it moved out; part 2 opens with those findings. This part's Goal, Architecture, Global Constraints, Rulings, Questions and Review Focus bind part 2's tasks, and the task numbers continue there.
 
 ---
 
@@ -1154,13 +1154,13 @@ A target nobody holds is settled whatever its records hold, as `handleReady` rea
 
 **Files:**
 - Create: `mobile-native/src/outbox/outboxFlush.ts`, `mobile-native/src/outbox/nativeOutboxFlush.ts` and `mobile-native/src/outbox/outboxFlush.test.ts`
-- Modify: `mobile-native/src/nativeMutationRuntime.ts` (`hasTarget`, beside `registerTarget`)
+- Modify: `mobile-native/src/nativeMutationRuntime.ts` (`targetClient`, beside `registerTarget`)
 - Modify: `mobile-native/App.tsx` (bind the flush to the connection) and the session screen's durable-host effect (`screens.tsx:1035-1059`: flush after its host lets go)
 
 **Interfaces:**
 - Consumes: `NativeMutationRuntime.settleTarget(hubId, targetRef, client)` (phase 4 Task 2), `registerTarget`, `start`, `subscribeStorage`, `storage.listTargetRefs` and `storage.listOutbox`.
 - Produces:
-  - `NativeMutationRuntime.hasTarget(hubId: string, targetRef: string): boolean`
+  - `NativeMutationRuntime.targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined`: the client that holds the target, or undefined
   - `parseTargetKey(key: string): { hubId: string; ref: string } | null`
   - `class OutboxFlush`: constructor `(runtime: () => FlushRuntime)`; `bind(hubId: string | null, client: AppwireClientLike | null)`, `flush(): Promise<void>`, `dispose()`
   - `outboxFlush`, the app's one instance, from `nativeOutboxFlush.ts`
@@ -1242,7 +1242,7 @@ it("sends a message kept while offline once the connection returns, even after a
 	await vi.waitFor(() => expect(methods(client)).toEqual(["thread/read", "turn/start"]));
 	expect(client.calls[0]?.params).toEqual({ ref: "ref-1", includeTurns: true, itemsView: "fragment", itemLimit: 40 });
 	expect((client.calls[1]?.params as { clientMutationId: string }).clientMutationId).toBe("mutation-1");
-	await vi.waitFor(() => expect(outbox.hasTarget("hub-1", "ref-1")).toBe(false));
+	await vi.waitFor(() => expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined());
 	flush.dispose();
 	await outbox.stop();
 });
@@ -1278,7 +1278,7 @@ it("settles for a session screen that isn't reading, and leaves the target the s
 
 	await vi.waitFor(() => expect(methods(client)).toEqual(["thread/read", "turn/start"]));
 	flush.dispose();
-	expect(outbox.hasTarget("hub-1", "ref-1")).toBe(true);
+	expect(outbox.targetClient("hub-1", "ref-1")).toBe(client);
 	unregister();
 	await outbox.stop();
 });
@@ -1329,7 +1329,7 @@ it("keeps a message it can't settle, and lets its session go", async () => {
 	flush.bind("hub-1", client);
 	await flush.flush();
 
-	await vi.waitFor(() => expect(outbox.hasTarget("hub-1", "ref-1")).toBe(false));
+	await vi.waitFor(() => expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined());
 	expect(methods(client)).not.toContain("turn/start");
 	expect((await outbox.storage.getOutbox("mutation-1"))?.state).toBe("submitting");
 	flush.dispose();
@@ -1350,7 +1350,7 @@ it("lets go of a target it can't settle, and still sends the others", async () =
 
 	await vi.waitFor(() => expect(methods(client)).toContain("turn/start"));
 	expect((client.calls.find((call) => call.method === "turn/start")?.params as { ref: string }).ref).toBe("ref-2");
-	expect(outbox.hasTarget("hub-1", "ref-1")).toBe(false);
+	expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined();
 	flush.dispose();
 	await outbox.stop();
 });
@@ -1381,6 +1381,43 @@ it("looks again for a record that landed while a settle it then lost was in flig
 	await outbox.stop();
 });
 
+it("never uses a read an older connection started, nor lets it touch the new one's", async () => {
+	const outbox = runtime();
+	await outbox.submit(message());
+	const held = (client: FakeClient) => {
+		const read: { answer?: (response: ThreadReadResponse) => void } = {};
+		client.on(
+			"thread/read",
+			() =>
+				new Promise<ThreadReadResponse>((resolve) => {
+					read.answer = resolve;
+				}),
+		);
+		client.on("turn/start", applied);
+		return read;
+	};
+	const old = new FakeClient("ready");
+	const oldRead = held(old);
+	const fresh = new FakeClient("ready");
+	const freshRead = held(fresh);
+	const flush = new OutboxFlush(() => outbox);
+	flush.bind("hub-1", old);
+	await vi.waitFor(() => expect(oldRead.answer).toBeDefined());
+	flush.bind("hub-1", fresh);
+	await vi.waitFor(() => expect(freshRead.answer).toBeDefined());
+
+	// The old read answers late, while the new connection's own read is out.
+	// The runtime calls it stale, and the old settle leaves the new claim be.
+	oldRead.answer?.(read("ref-1"));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	freshRead.answer?.(read("ref-1"));
+
+	await vi.waitFor(() => expect(methods(fresh)).toEqual(["thread/read", "turn/start"]));
+	expect(methods(old)).toEqual(["thread/read"]);
+	flush.dispose();
+	await outbox.stop();
+});
+
 it("sends only the active hub's messages, and nothing while the connection isn't ready", async () => {
 	const outbox = runtime();
 	await outbox.submit(message({ hubId: "hub-2" }));
@@ -1405,11 +1442,11 @@ it("lets every session go when the connection drops", async () => {
 	client.on("thread/read", () => new Promise<never>(() => {}));
 	const flush = new OutboxFlush(() => outbox);
 	flush.bind("hub-1", client);
-	await vi.waitFor(() => expect(outbox.hasTarget("hub-1", "ref-1")).toBe(true));
+	await vi.waitFor(() => expect(outbox.targetClient("hub-1", "ref-1")).toBe(client));
 
 	flush.bind("hub-1", null);
 
-	expect(outbox.hasTarget("hub-1", "ref-1")).toBe(false);
+	expect(outbox.targetClient("hub-1", "ref-1")).toBeUndefined();
 	flush.dispose();
 	await outbox.stop();
 });
@@ -1421,7 +1458,7 @@ it("reads the hub and ref out of a composite target key", () => {
 });
 ```
 
-The first test fails without the flush's `runtime.start()`: a fresh runtime dispatches nothing until started (`#getClient`, `nativeMutationRuntime.ts:140-149`). The second fails without the `hasTarget` check, the third without settling a covered screen's target, the fourth when that settling ignores whether anything waits, the fifth without the storage watch, the seventh when one target's failure stops the rest, and the eighth when a record that landed during a settle that then failed is left behind.
+The first test fails without the flush's `runtime.start()`: a fresh runtime dispatches nothing until started (`#getClient`, `nativeMutationRuntime.ts:140-149`). The second fails if the flush registers over a screen's target, the third without settling a covered screen's target, the fourth when that settling ignores whether anything waits, the fifth without the storage watch, the seventh when one target's failure stops the rest, the eighth when a record that landed during a settle that then failed is left behind, and the ninth when a late answer to an older connection's read lets go of the new connection's claim.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -1433,9 +1470,10 @@ Expected: FAIL: `Cannot find module './outboxFlush'`.
 In `nativeMutationRuntime.ts`, before `beginAuthoritativeRead`:
 
 ```ts
-	/** Whether a session screen, or the flush, has registered this target. */
-	hasTarget(hubId: string, targetRef: string): boolean {
-		return this.#targets.has(nativeMutationTargetKey(hubId, targetRef));
+	/** The client a session screen, or the flush, registered this target
+	 * with; undefined while nobody holds it. */
+	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined {
+		return this.#targets.get(nativeMutationTargetKey(hubId, targetRef))?.client;
 	}
 ```
 
@@ -1464,7 +1502,7 @@ export interface FlushRuntime {
 		listOutbox(targetRef: string): Promise<readonly { state: string }[]>;
 	};
 	start(): Promise<void>;
-	hasTarget(hubId: string, targetRef: string): boolean;
+	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined;
 	registerTarget(hubId: string, targetRef: string, client: AppwireClientLike | null): () => void;
 	settleTarget(hubId: string, targetRef: string, client: AppwireClientLike): Promise<SettleResult>;
 	subscribeStorage(listener: (targetRefs: readonly string[]) => void): () => void;
@@ -1534,7 +1572,7 @@ export class OutboxFlush {
 				// A read or storage failure leaves this target's records where
 				// they are, for the next ready connection or the next record,
 				// and the other targets still go.
-				this.letGo(key);
+				this.letGo(key, generation);
 			}
 		}
 	}
@@ -1551,30 +1589,34 @@ export class OutboxFlush {
 		client: AppwireClientLike,
 		generation: number,
 	): Promise<void> {
-		if (runtime.hasTarget(hubId, ref)) {
+		const holder = runtime.targetClient(hubId, ref);
+		if (holder !== undefined) {
 			// A session screen holds this target. Under the Reader or a subagent
 			// it doesn't read, so after a reconnect its waiting message would
 			// wait for a trip back: settle it for the screen, which keeps its
-			// registration. settleTarget reads only for the client the target
-			// is registered to, so a screen bound to another client is left
-			// alone.
-			if (await this.waiting(runtime, key)) await runtime.settleTarget(hubId, ref, client);
+			// registration. Only a screen on this connection: a target held
+			// with another client is that client's.
+			if (holder === client && (await this.waiting(runtime, key))) await runtime.settleTarget(hubId, ref, client);
 			return;
 		}
 		this.owned.set(key, runtime.registerTarget(hubId, ref, client));
 		this.touched.delete(key);
+		// A read an older connection started can't land here: bind() lets that
+		// connection's claims go, and the runtime answers a read for a
+		// registration that is gone or replaced with "stale", before it
+		// reconciles or dispatches anything (isCurrentRead).
 		const settled = await runtime.settleTarget(hubId, ref, client);
-		if (generation !== this.generation) return;
-		if (settled === "reconciled" || settled === "open") await this.releaseIfDone(runtime, key);
-		else this.letGo(key);
+		if (settled === "reconciled" || settled === "open") await this.releaseIfDone(runtime, key, generation);
+		else this.letGo(key, generation);
 	}
 
 	/** Lets go of a target the flush couldn't settle. A record that landed on
 	 * it meanwhile was left to that settle, so look again for it; a failure
 	 * with nothing new waits for the next record or connection, so a failing
 	 * read never spins. */
-	private letGo(key: string): void {
-		this.release(key);
+	private letGo(key: string, generation: number): void {
+		if (generation !== this.generation) return;
+		this.release(key, generation);
 		if (this.touched.delete(key)) void this.flush().catch(() => undefined);
 	}
 
@@ -1589,11 +1631,12 @@ export class OutboxFlush {
 		for (const key of keys) {
 			if (this.owned.has(key)) {
 				this.touched.add(key);
-				void this.releaseIfDone(runtime, key).catch(() => undefined);
+				void this.releaseIfDone(runtime, key, this.generation).catch(() => undefined);
 				continue;
 			}
 			const target = parseTargetKey(key);
-			if (target !== null && target.hubId === this.hubId && !runtime.hasTarget(target.hubId, target.ref)) unclaimed = true;
+			if (target !== null && target.hubId === this.hubId && runtime.targetClient(target.hubId, target.ref) === undefined)
+				unclaimed = true;
 		}
 		if (unclaimed) void this.flush().catch(() => undefined);
 	}
@@ -1601,8 +1644,8 @@ export class OutboxFlush {
 	/** A target is done once nothing on it is waiting to be sent: what's left
 	 * is settled, or waits for you in its session (a message it couldn't
 	 * confirm, or one a Stop held). */
-	private async releaseIfDone(runtime: FlushRuntime, key: string): Promise<void> {
-		if (!(await this.waiting(runtime, key))) this.release(key);
+	private async releaseIfDone(runtime: FlushRuntime, key: string, generation: number): Promise<void> {
+		if (!(await this.waiting(runtime, key))) this.release(key, generation);
 	}
 
 	private async waiting(runtime: FlushRuntime, key: string): Promise<boolean> {
@@ -1610,7 +1653,11 @@ export class OutboxFlush {
 		return records.some((record) => record.state === "submitting");
 	}
 
-	private release(key: string): void {
+	/** Lets go of this connection's claim on a target. Every claim a
+	 * continuation of an earlier connection could reach was already let go
+	 * by bind(), so it must never touch the new connection's. */
+	private release(key: string, generation: number): void {
+		if (generation !== this.generation) return;
 		const release = this.owned.get(key);
 		if (release === undefined) return;
 		this.owned.delete(key);
@@ -1618,7 +1665,8 @@ export class OutboxFlush {
 	}
 
 	private releaseAll(): void {
-		for (const key of [...this.owned.keys()]) this.release(key);
+		for (const release of this.owned.values()) release();
+		this.owned.clear();
 	}
 }
 ```
@@ -1650,8 +1698,8 @@ git add mobile-native/src/outbox/outboxFlush.ts mobile-native/src/outbox/outboxF
 git commit -m "feat(native): messages you left behind send themselves when the connection returns"
 ```
 
-### The Board's side: phase 2 part 3 builds it
+### The Board's side: part 2 holds it
 
-The Board's half of spec 14's outbox needs no task here, so Task 16 is gone and the numbers skip it. Phase 2 part 3 shows the Board's hub-writing actions only while connected (its ruling 21, through `rowMenuActions`' `connected` context, its Task 12.3), reconciles its one organization journal on focus and whenever the connection turns ready (its ruling 16, `useBoardOrganization`, its Task 10.5), and sends a Board Stop through the durable runtime, holding its target until the interrupt leaves (its ruling 17, `BoardStops`, its Task 12.2). Phase 6 writes no second copy of any of it.
+The Board's half of spec 14's outbox has no task in part 1, so Task 16 is gone and the numbers skip it. Phase 2 part 3 hides the Board's hub-writing actions while offline (its ruling 21, through `rowMenuActions`' `connected` context, its Task 12.3), reconciles its one organization journal on focus and whenever the connection turns ready (its ruling 16, `useBoardOrganization`, its Task 10.5), and sends a Board Stop through the durable runtime, holding its target until the interrupt leaves (its ruling 17, `BoardStops`, its Task 12.2). Jesse's answer (ruling 18) turns the hiding into a hold, which part 2's PR H builds on those same pieces. Phase 6 writes no second copy of any of them.
 
 Open PR F: "feat(native): Send while offline (phase 6, PR F)".
