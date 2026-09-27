@@ -135,6 +135,8 @@ interface Fleet {
 	needsYou: NavigationSessionSummary[];
 	pins: Array<{ id: string; name: string; count: number }>;
 	manifest: ReturnType<typeof manifest>;
+	/** Sessions only search finds: the Board doesn't list them. */
+	searchOnly?: NavigationSessionSummary[];
 }
 const fleet: Fleet = {
 	// The ask is in the hub's needs_you section only: bands union it.
@@ -180,6 +182,22 @@ function hub(
 	const client: ConversationClientLike = {
 		request: (method, params) =>
 			new Promise((resolve, reject) => {
+				if (method === "thread/list") {
+					// Search answers with every session the hub has, as wire threads.
+					const sessions = [...shape.live.flat(), ...shape.needsYou, ...(shape.searchOnly ?? [])].filter(
+						(row, index, all) => all.findIndex((other) => other.ref === row.ref) === index,
+					);
+					resolve({
+						data: sessions.map((row) => ({
+							id: row.session_id,
+							name: row.title,
+							status: { type: "idle" },
+							updatedAt: 0,
+							evener: { ref: row.ref },
+						})),
+					} as never);
+					return;
+				}
 				if (method !== "evener/navigation/read") throw new Error(`unexpected ${method}`);
 				const read = params as NavigationReadParams;
 				requests.push(read);
@@ -424,6 +442,33 @@ it("offers the hub menu as an alert off iOS, without Hub settings while the hub 
 	} finally {
 		Platform.OS = "ios";
 	}
+	act(() => tree.unmount());
+});
+
+it("opens a search result the way the Board opens its row, marking it seen", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const gone = session("local:gone", { title: "Old report" });
+	connect(id, hub({ ...fleet, searchOnly: [gone] }).client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(bandHeaders(tree)).toContain("FINISHED · 1");
+	act(() => headerOptions(nav).unstable_headerRightItems({})[0].onPress());
+	const field = tree.root.findByType("TextInput" as never);
+	act(() => field.props.onChangeText("report"));
+	act(() => field.props.onSubmitEditing());
+	await settle();
+	pressLabel(tree, "Open Ship it");
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:done", title: "Ship it" });
+	expect(seenMarkers(id).isSeen(finished)).toBe(true);
+	// A session only in Needs you (past Live's loaded pages) is found too.
+	expect(seenMarkers(id).isSeen(asking)).toBe(false);
+	pressLabel(tree, "Open Pick a name");
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:ask", title: "Pick a name" });
+	expect(seenMarkers(id).isSeen(asking)).toBe(true);
+	// A session the Board doesn't list has no Finished state to clear.
+	pressLabel(tree, "Open Old report");
+	expect(nav.navigate).toHaveBeenLastCalledWith("Conversation", { hubId: id, ref: "local:gone", title: "Old report" });
 	act(() => tree.unmount());
 });
 
