@@ -132,7 +132,9 @@ const HELP_ROWS: HelpRow[] = [
 // used to be a second, hand-duplicated copy of the exact same switch).
 // Pulsing alive/attention/danger dots read as "live" for
 // active/awaiting/errored, the exact set the legacy pulsed
-// (search.js:1007-1009); past rows are always "ended" (neutral).
+// (search.js:1007-1009); past rows are always "ended" (neutral). The state
+// first goes through the rail's displayState, so a hit blocked on an
+// approval (still "active" on the wire) gets the rail's needs-you dot.
 
 // A single navigable row in the results list.
 type PaletteItem =
@@ -1000,15 +1002,9 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
   // (§2.3, search.js:994-1013).
   return (
     <>
-      {/* SearchResult lives in package appwire (camelCase askPending /
-          approvalPending), unlike NavigationSessionSummary's snake_case, so
-          the fields are renamed here rather than spread. SearchResult carries
-          no `kind` at all (an orphaned subagent can be its own search hit,
-          same as its own top-level Live row), so "session" is the only value
-          available; it only skips displayState's subagent-only collapse rule,
-          which is unreachable here anyway without a real kind. This matches
-          the row's pre-existing behavior (cadenceStateFor(state) directly),
-          not a regression. */}
+      {/* SearchResult has no `kind`, so every hit is passed as a "session":
+          displayState's turn-ended-subagent rule, which presents such a
+          subagent as idle in the rail, never applies to a search hit. */}
       <StatusDot
         state={cadenceStateFor(
           displayState({
