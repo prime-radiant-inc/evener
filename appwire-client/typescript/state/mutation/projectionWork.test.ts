@@ -39,6 +39,17 @@ describe("createMutationProjectionWorkTracker", () => {
     await expect(settling).resolves.toBe(1);
   });
 
+  // Durable work that starts a few microtasks after the operation before it
+  // finished (a receipt write after its RPC answers, a refresh after a commit's
+  // notify) registers during a round that began with nothing outstanding. The
+  // round must report it, or its caller stops looking with that work in flight.
+  test("settle reports work registered while its round runs", async () => {
+    const tracker = createMutationProjectionWorkTracker(realPorts());
+    const settling = tracker.settle();
+    void tracker.track(Promise.resolve());
+    await expect(settling).resolves.toBe(1);
+  });
+
   test("the stall tripwire fires after 4s of fake time when tracked work never settles", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
