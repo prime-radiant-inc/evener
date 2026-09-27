@@ -542,7 +542,7 @@ test("falls back to the raw ref as the title when the thread has no name yet", a
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
 });
 
-function setNavigationTitle(ref: string, title: string, topLevel = true): void {
+function setNavigationTitle(ref: string, title: string, topLevel = true, fields: Record<string, unknown> = {}): void {
   const key = { kind: "location", ref } as const;
   const data = {
     generation_id: "generation_test",
@@ -560,6 +560,7 @@ function setNavigationTitle(ref: string, title: string, topLevel = true): void {
       kind: topLevel ? "session" : "fork",
       live: true,
       children: [],
+      ...fields,
     },
   };
   navigationStore.setState({
@@ -584,6 +585,31 @@ function setNavigationTitle(ref: string, title: string, topLevel = true): void {
     ]),
   });
 }
+
+// S4: opening a session pane marks the turn its row shows as seen on the hub,
+// so the session's blue dot clears on the phone too.
+test("opening the pane marks the session's unseen turn seen", async () => {
+  setNavigationTitle("ref_a", "Finished work", true, { turn_ended_at: "2026-09-26T11:58:00.123Z", unseen: true });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  fake.on("evener/session/seen/set", () => ({
+    ok: true,
+    changed: true,
+    navigation: { generation_id: "generation_test", targets: [] },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/session/seen/set").map((call) => call.params)).toEqual([
+      { sessions: [{ ref: "ref_a", seenThrough: Date.parse("2026-09-26T11:58:00.123Z") }] },
+    ]),
+  );
+});
 
 // kata (session-pane header fix): the pane's own in-pane header (this
 // PaneScaffold title) used to fall straight to the raw ref whenever the
