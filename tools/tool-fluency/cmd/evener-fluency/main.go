@@ -59,6 +59,8 @@ func run(args []string) error {
 		return runProseCount(args[1:])
 	case "review-pack":
 		return runReviewPack(args[1:])
+	case "matrix":
+		return runMatrixCommand(args[1:])
 	case "help", "-h", "--help":
 		usage()
 		return nil
@@ -77,6 +79,7 @@ USAGE
   evener-fluency prose-stats --results LABEL=DIR [--results LABEL=DIR ...] [--channel to_user|all] [--json]
   evener-fluency prose-count FILE...
   evener-fluency review-pack --results LABEL=DIR [...] --mask-root DIR --packets DIR --key FILE [--seed N]
+  evener-fluency matrix --version LABEL=BIN [...] --models M1,M2 --out DIR [--max-concurrent N] [run flags]
 
 `)
 }

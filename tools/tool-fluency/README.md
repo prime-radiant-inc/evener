@@ -119,6 +119,13 @@ The live harness wires the same session notification and continuation callbacks
 that `evener serve` wires, waits on runtime kicks, and then closes the session
 after the bounded post-turn window. It is not a polling harness.
 
+To compare system prompt versions, `matrix` runs every version's `evener`
+binary against every model, `prose-stats` counts the writing tics and bare
+identifiers in what the agents wrote, and `review-pack` makes blind transcripts
+for a human read. `tools/prompt-eval/README.md` shows them with the prompt
+evaluation tasks. `prose-count FILE...` counts the same tics in any file, such
+as a prompt section.
+
 ## Data model
 
 ### Suite
