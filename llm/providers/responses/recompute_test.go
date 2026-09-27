@@ -130,6 +130,27 @@ func TestExtractRecordedResponse_ResponsesSSE_SynthesizesFromAccumulatedItems(t 
 	}
 }
 
+func TestExtractRecordedResponse_ResponsesSSE_AccumulatedRawArguments(t *testing.T) {
+	args := `{ "path" : "` + "\xfe" + `" }`
+	done := []byte(`{"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","id":"item_1","name":"write_file","arguments":`)
+	done = append(done, jsonStringToken(args)...)
+	done = append(done, []byte(`}}`)...)
+	body := append([]byte("event: response.output_item.done\ndata: "), done...)
+	body = append(body, []byte("\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.2\",\"status\":\"completed\",\"output\":[]}}\n\n")...)
+
+	resp, err := ExtractRecordedResponse(body, "gpt-5.2")
+	if err != nil {
+		t.Fatalf("ExtractRecordedResponse: %v", err)
+	}
+	calls := resp.ToolCalls()
+	if len(calls) != 1 {
+		t.Fatalf("ToolCalls() = %d, want 1", len(calls))
+	}
+	if !bytes.Equal(calls[0].Arguments, []byte(args)) {
+		t.Fatalf("Arguments = %q (% x), want %q (% x)", calls[0].Arguments, calls[0].Arguments, args, []byte(args))
+	}
+}
+
 // TestExtractRecordedResponse_EmptyBody covers the empty body error path.
 func TestExtractRecordedResponse_EmptyBody(t *testing.T) {
 	if _, err := ExtractRecordedResponse([]byte("   "), "gpt-5.2"); err == nil {
