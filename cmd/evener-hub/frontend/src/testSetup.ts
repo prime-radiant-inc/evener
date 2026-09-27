@@ -1,6 +1,6 @@
 import { cleanup } from "@testing-library/react";
 import * as React from "react";
-import { afterAll, afterEach, beforeAll } from "vitest";
+import { afterAll, beforeAll, beforeEach } from "vitest";
 import { reactActScopeGuardPorts, waitOutLeakedActScope } from "./testActScopeGuard";
 import { guardConsoleOutput } from "./testConsoleGuard";
 
@@ -20,20 +20,20 @@ contextMarker.__evenerTestContextInUse = true;
 
 // Guarded here at module scope, before the test file loads, so a file that
 // captures console.error at its own module scope captures the guarded method.
-// This file's hooks register first, so they run after the test file's own
-// afterEach and afterAll: output from its cleanup (unmounts) counts too.
+// Each test's teardown below runs after all of that test's afterEach hooks, and
+// this file's afterAll hooks register first, so they run after the test file's
+// own: output from their cleanup (unmounts) counts too.
 const consoleGuard = guardConsoleOutput(console);
 
-// What the act-scope guard and the unmount below found for the test that just
-// ran. The check after them reports these instead of either hook throwing
-// them: vitest runs a file's afterEach hooks in one loop, so a throw from one
-// hook skips the rest, and the unmount and the check must still run for that
-// test.
+// What the act-scope wait and the unmount in a test's teardown found. The check
+// at the end of the teardown reports these instead of either step throwing
+// them, so the steps after it still run for that test.
 const teardownFailures: unknown[] = [];
 
-// Registered first, so it runs last of all: it fails the test on what it left
-// behind, which is an act() scope it left open, errors from work that ran in
-// that scope, and console output.
+// The last step of each test's teardown, and registered first as an afterAll,
+// so it runs last of all: it fails the test on what it left behind, which is an
+// act() scope it left open, errors from work that ran in that scope, a tree
+// whose unmount threw, and console output.
 function failOnTestLeftovers() {
   const failures = teardownFailures.splice(0);
   const unexpectedOutput = consoleGuard.takeUnexpectedOutput();
@@ -43,13 +43,12 @@ function failOnTestLeftovers() {
   if (failures.length > 1) throw new AggregateError(failures);
 }
 
-afterEach(failOnTestLeftovers);
 afterAll(failOnTestLeftovers);
 
 // Testing Library registers its automatic unmount only when vitest exposes a
 // global afterEach, which it does not here, so a test's rendered trees and
-// hooks would otherwise stay mounted into the next test. Registered after the
-// leftovers check so it runs before it: output from the unmount counts.
+// hooks would otherwise stay mounted into the next test. The teardown runs it
+// before the leftovers check, so output from the unmount counts.
 //
 // cleanup() unmounts each tree inside act() and stops at the first whose
 // unmount throws (an effect cleanup that throws), before it removes that
@@ -64,7 +63,6 @@ function unmountEveryTree(): void {
     unmountEveryTree();
   }
 }
-afterEach(unmountEveryTree);
 
 const reactEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 let previousActEnvironment: boolean | undefined;
@@ -105,9 +103,9 @@ Object.defineProperty(reactInternals, "recentlyCreatedOwnerStacks", {
 });
 
 // A test that timed out inside act() leaves React's act scope open, and the
-// next test would run inside it (testActScopeGuard.ts). Registered last, so it
-// runs first of this file's hooks: whatever the scope's work does as it closes
-// happens before the leftovers check, which reports it on this test along with
+// next test would run inside it (testActScopeGuard.ts). The teardown waits it
+// out first: whatever the scope's work does as it closes happens before the
+// unmount and the leftovers check, which reports it on this test along with
 // what the guard found. The timers and clock are captured here, before any
 // test can fake them. A scope still open after the bound is reported once, and
 // later tests are not blamed for it until it has closed. React keeps the open
@@ -119,11 +117,26 @@ if (!("actQueue" in reactInternals)) {
 const actInternals = reactInternals as { actQueue: unknown };
 const actScopeGuard = reactActScopeGuardPorts(actInternals, React.act, (error) => teardownFailures.push(error));
 let stuckActScopeReported = false;
-afterEach(async () => {
+async function waitOutAnActScopeLeftOpen(): Promise<void> {
   if (stuckActScopeReported && actScopeGuard.actScopeOpen()) return;
   stuckActScopeReported = false;
   const leak = await waitOutLeakedActScope(actScopeGuard, 20_000);
   if (leak === undefined) return;
   teardownFailures.push(new Error(leak));
   stuckActScopeReported = actScopeGuard.actScopeOpen();
+}
+
+// Each test's teardown runs as an onTestFinished, not an afterEach. Vitest runs
+// a file's afterEach hooks in one loop, so a throw from any of them skips the
+// rest, and a test file's own afterEach hooks run before this file's would.
+// Vitest runs finish hooks after every afterEach, even one that threw, and each
+// in a try of its own. This file's beforeEach runs before any of the test
+// file's, so the teardown is registered before anything else in the test can
+// fail.
+beforeEach(({ onTestFinished }) => {
+  onTestFinished(async () => {
+    await waitOutAnActScopeLeftOpen();
+    unmountEveryTree();
+    failOnTestLeftovers();
+  });
 });
