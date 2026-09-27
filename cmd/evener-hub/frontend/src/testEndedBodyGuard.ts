@@ -21,23 +21,21 @@
 // whichever test later advances that clock, so it counts as that test's work;
 // it is out of reach only once the clock is put away (vi.useRealTimers).
 import { AsyncLocalStorage } from "node:async_hooks";
-import { configure, getConfig } from "@testing-library/react";
+import { configure } from "@testing-library/react";
 
 interface TestRun {
-  timedOut: boolean;
+  // Vitest aborts it when the test times out.
+  signal: AbortSignal;
   ended: boolean;
 }
 
 const currentTest = new AsyncLocalStorage<TestRun>();
 let latestRun: TestRun | undefined;
 
-export function runAsTheCurrentTest<T>(runTest: () => Promise<T>, signal: AbortSignal): Promise<T> {
+export function runAsTheCurrentTest(runTest: () => Promise<void>, signal: AbortSignal): Promise<void> {
   if (latestRun) latestRun.ended = true;
-  const run: TestRun = { timedOut: false, ended: false };
+  const run: TestRun = { signal, ended: false };
   latestRun = run;
-  signal.addEventListener("abort", () => {
-    run.timedOut = true;
-  });
   return currentTest.run(run, runTest);
 }
 
@@ -75,37 +73,29 @@ function jestFakeTimersAreEnabled(): boolean {
 // can start during it): a stopped wait never reaches the restore of the act
 // environment. Events go through Testing Library's own eventWrapper.
 export function guardTestingLibraryAgainstEndedBodies(): void {
-  const testingLibrary = getConfig();
-  configure({
+  configure((testingLibrary) => ({
     asyncWrapper: async (callback) => {
       const run = currentTest.getStore();
       if (run?.ended) return stopBody();
-      const begunBeforeTimeout = run !== undefined && !run.timedOut;
-      const abandoned = () => run !== undefined && (run.ended || (run.timedOut && begunBeforeTimeout));
+      const begunBeforeTimeout = run !== undefined && !run.signal.aborted;
+      const abandoned = () => run !== undefined && (run.ended || (run.signal.aborted && begunBeforeTimeout));
       const previousActEnvironment = reactEnvironment.IS_REACT_ACT_ENVIRONMENT;
       reactEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
-      let stopped = false;
       try {
         const result = await callback();
         await new Promise<void>((resolve) => {
           setTimeout(() => resolve(), 0);
           if (jestFakeTimersAreEnabled()) testGlobals.jest?.advanceTimersByTime(0);
         });
-        if (abandoned()) {
-          stopped = true;
-          return stopBody();
-        }
+        if (abandoned()) return stopBody();
         return result;
       } catch (error) {
-        if (abandoned()) {
-          stopped = true;
-          return stopBody();
-        }
+        if (abandoned()) return stopBody();
         throw error;
       } finally {
-        if (!stopped) reactEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+        if (!abandoned()) reactEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
       }
     },
     eventWrapper: (callback) => (currentTest.getStore()?.ended ? undefined : testingLibrary.eventWrapper(callback)),
-  });
+  }));
 }
