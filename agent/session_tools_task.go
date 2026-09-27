@@ -453,7 +453,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					// construction, so the steering may name it.
 					if err := deps.steer(formatCurrentTaskSteering(afterByID[manuallyStartedID], true), events.SteeringKindCurrentTask); err != nil {
 						postCommitErr = fmt.Errorf("post-commit current-task steering failed: %w", err)
-						postCommitAdvice = "The task update was committed; retry after fixing steering."
+						postCommitAdvice = "The task update was committed, but the current-task reminder was not delivered; inspect the committed task state before choosing the next update."
 					}
 				}
 
@@ -484,13 +484,13 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 							auto, err := store.UpdateWithSnapshot([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}})
 							if err != nil {
 								postCommitErr = fmt.Errorf("post-commit auto-advance failed: %w", err)
-								postCommitAdvice = "The terminal update was committed; start the next task explicitly after fixing persistence."
+								postCommitAdvice = "The terminal update was committed, but the next-task update failed; inspect the committed task state and resolve the reported cause before choosing the next task update."
 							} else {
 								finalTasks = auto.After
 								started[next.ID] = true
 								if err := deps.steer(formatCurrentTaskSteering(next, true), events.SteeringKindCurrentTask); err != nil {
 									postCommitErr = fmt.Errorf("post-commit auto-advance steering failed: %w", err)
-									postCommitAdvice = "The terminal update and auto-advance were committed; retry steering after fixing steering."
+									postCommitAdvice = "The terminal update and auto-advance were committed, but the current-task reminder was not delivered; inspect the committed task state before choosing the next update."
 								}
 							}
 						} else {
@@ -504,7 +504,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 								}
 								if err := deps.sendTaskCompletionSteering(taskReminderTerminalWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs, summary.AllDone()), blockingDelegateIDs); err != nil {
 									postCommitErr = fmt.Errorf("post-commit task-completion steering failed: %w", err)
-									postCommitAdvice = "The terminal update was committed; retry completion steering after fixing the reported error."
+									postCommitAdvice = "The terminal update was committed, but the completion reminder was not delivered; inspect the committed task state before choosing the next update."
 								} else if len(blockingDelegateIDs) == 0 {
 									if summary.AllDone() {
 										msg.WriteString("All tasks complete. ")

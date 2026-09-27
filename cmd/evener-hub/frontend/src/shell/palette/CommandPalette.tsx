@@ -25,6 +25,7 @@ import { useClient } from "../clientContext";
 import { openInNewTab } from "../openInNewTab";
 import { openNeedsYouSession } from "../rail/needsYouCycle";
 import { cadenceStateFor } from "../rail/RailRow";
+import { displayState } from "../rail/railNodes";
 import { navigate } from "../routing";
 import { isBlocked } from "./blocked";
 import styles from "./commandpalette.module.css";
@@ -976,7 +977,7 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
   if (item.kind === "needsYou") {
     return (
       <>
-        <StatusDot state={cadenceStateFor(item.node.state)} />
+        <StatusDot state={cadenceStateFor(displayState(item.node))} />
         <span className={CLASS.title}>{item.node.title}</span>
         <span className={CLASS.hint}>needs you</span>
       </>
