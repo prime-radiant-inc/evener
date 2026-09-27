@@ -606,8 +606,11 @@ type SearchResult struct {
 	// session that has ended has no live ask or escalation left to be
 	// pending. Additive: an older client reading a payload without these
 	// keys sees no information, the same as an absent field elsewhere.
-	AskPending      bool `json:"ask_pending,omitempty"`
-	ApprovalPending bool `json:"approval_pending,omitempty"`
+	// camelCase, not the navigation summary's snake_case: SearchResult lives
+	// in package appwire, which tagliatelle's json-casing override (.golangci.yml)
+	// forces to camelCase, unlike hubapi where NavigationSessionSummary lives.
+	AskPending      bool `json:"askPending,omitempty"`
+	ApprovalPending bool `json:"approvalPending,omitempty"`
 }
 
 // SearchResponse groups matching live sessions separately from persisted

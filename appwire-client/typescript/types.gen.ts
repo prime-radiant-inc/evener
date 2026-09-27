@@ -2521,9 +2521,12 @@ export interface SearchResult {
    * session that has ended has no live ask or escalation left to be
    * pending. Additive: an older client reading a payload without these
    * keys sees no information, the same as an absent field elsewhere.
+   * camelCase, not the navigation summary's snake_case: SearchResult lives
+   * in package appwire, which tagliatelle's json-casing override (.golangci.yml)
+   * forces to camelCase, unlike hubapi where NavigationSessionSummary lives.
    */
-  ask_pending?: boolean;
-  approval_pending?: boolean;
+  askPending?: boolean;
+  approvalPending?: boolean;
 }
 
 export interface ServerInfo {
