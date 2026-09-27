@@ -159,7 +159,13 @@ function Board({
 		// activityRevision re-runs isStuck after each read and the moment the
 		// connection drops or returns (useActivityPoll gates pollActivity and
 		// pollMsSinceRead on connected itself, so this needs no separate check).
-		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision, pollActivity, pollMsSinceRead, activityRevision],
+		// pollMsSinceRead itself is deliberately not a dependency: it ticks every
+		// millisecond between reads, so treating it as one would re-sort Working
+		// on every render; activityRevision already re-runs this within
+		// ACTIVITY_POLL_MS of any read landing, which is fresh enough for where
+		// a row sits in the list (the row's own why-line text stays live every
+		// render regardless, since it isn't behind this memo).
+		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision, pollActivity, activityRevision],
 	);
 	useFirstRun(board, markers, snapshot, focused);
 
