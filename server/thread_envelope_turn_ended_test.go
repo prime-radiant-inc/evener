@@ -31,7 +31,7 @@ func TestThreadSnapshotsCarryTheLastTurnEndedTime(t *testing.T) {
 	if got := listed(); got != ended.UnixMilli() {
 		t.Fatalf("listed lastTurnEndedAt = %d, want %d", got, ended.UnixMilli())
 	}
-	if got := srv.appThreadReadSnapshot(appwire.ThreadReadParams{}).Thread.Evener.LastTurnEndedAt; got != ended.UnixMilli() {
+	if got := readThreadOverWire(t, srv, "local:root").Evener.LastTurnEndedAt; got != ended.UnixMilli() {
 		t.Fatalf("read lastTurnEndedAt = %d, want %d", got, ended.UnixMilli())
 	}
 	later := ended.Add(time.Minute)
@@ -47,7 +47,7 @@ func TestThreadSnapshotsOmitTheTurnEndBeforeAnyTurnEnds(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{meta: schema.SessionMeta{ID: "root"}})
-	raw, err := json.Marshal(srv.appThreadReadSnapshot(appwire.ThreadReadParams{}).Thread.Evener)
+	raw, err := json.Marshal(readThreadOverWire(t, srv, "local:root").Evener)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -88,8 +88,8 @@ type threadEnvelope struct {
 	// VisionModel is the session's vision side-channel setting ("", "off", or
 	// a model ref), sampled under its own facet beside reasoning's trio.
 	VisionModel string
-	// Name, Preview and LastTurnEndedAt are the only things appThread reads out
-	// of schema.SessionMeta. Storing them rather than the whole struct is
+	// Name, Preview and LastTurnEndedAt are the facetMeta fields appThread reads
+	// out of schema.SessionMeta. Storing them rather than the whole struct is
 	// deliberate: SessionMeta has roughly a dozen other fields (turn counts,
 	// pinned notes, worktree paths) that change constantly and silently, and
 	// storing them would create a dozen values this envelope claims to keep

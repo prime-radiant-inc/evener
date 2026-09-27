@@ -434,14 +434,14 @@ func (s *Session) finishProcessingAtRestoredFailureBoundary(ctx context.Context)
 	}
 }
 
-// accumulateWorkLocked adds the just-ended turn's wall-clock to workMillis and
-// returns that turn's duration in ms. Caller holds s.mu; a zero turnStartedAt
-// (no turn was timed) contributes nothing.
-func (s *Session) accumulateWorkLocked() int64 {
+// accumulateWorkLocked adds the just-ended turn's wall-clock, up to end, to
+// workMillis and returns that turn's duration in ms. Caller holds s.mu; a zero
+// turnStartedAt (no turn was timed) contributes nothing.
+func (s *Session) accumulateWorkLocked(end time.Time) int64 {
 	if s.turnStartedAt.IsZero() {
 		return 0
 	}
-	ms := max(s.sclock().Now().Sub(s.turnStartedAt).Milliseconds(), 0)
+	ms := max(end.Sub(s.turnStartedAt).Milliseconds(), 0)
 	s.workMillis += ms
 	s.turnStartedAt = time.Time{}
 	return ms
@@ -453,8 +453,9 @@ func (s *Session) accumulateWorkLocked() int64 {
 // and a Close that lands mid-turn, which never reaches the boundary. Caller
 // holds s.mu.
 func (s *Session) endTurnLocked() int64 {
-	turnMS := s.accumulateWorkLocked()
-	s.lastTurnEndedAt = s.sclock().Now().UTC()
+	end := s.sclock().Now()
+	turnMS := s.accumulateWorkLocked(end)
+	s.lastTurnEndedAt = end.UTC()
 	return turnMS
 }
 
