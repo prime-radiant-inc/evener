@@ -1132,6 +1132,26 @@ func (r *Roster) IsSubagentActive(sessionID string) bool {
 	return live
 }
 
+// RestartRequired reports whether any live daemon on this roster needs a
+// restart (an incompatible build: thread status restart-required). It is the
+// direct local scan evener/host/running's health predicate evaluates — under
+// the roster's read lock, without List's per-entry clones and sort — and never
+// the authenticated-probe path (restartRequiredDaemon), which dials and
+// verifies ownership.
+func (r *Roster) RestartRequired() bool {
+	if r == nil {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, entry := range r.byPID {
+		if !entry.Crashed && entry.Status == appwire.ThreadStatusRestartRequired {
+			return true
+		}
+	}
+	return false
+}
+
 // SubagentState resolves a running in-process child's own projected status.
 // live is true when a live parent daemon currently lists the child (it is
 // non-closed and resumable); the returned state is the child's own reported

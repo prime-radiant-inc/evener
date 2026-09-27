@@ -12781,6 +12781,11 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		// persists the confirmation token — controller-local like the rest of
 		// the host surface, so a peer hub cannot plan against this hub's hosts.
 		appwire.MethodEvenerHostPlan,
+		// The deploy pipeline's running probe (08b §10): served by every hub, and
+		// the one host method that admits the attached controller session
+		// instead of refusing it — a browser-origin or forwarded request is
+		// still refused by the handler itself.
+		appwire.MethodEvenerHostRunning,
 		// Component 07c's credential push: controller-local like the proxy, so a
 		// peer hub cannot make this hub push its credentials by forwarding it.
 		appwire.MethodEvenerHostPushCredentials,

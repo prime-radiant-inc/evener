@@ -8,14 +8,17 @@ package hub
 // controller-local origin guard add/update/remove register through, so a peer
 // hub calling over its attach bridge can never plan against this hub's hosts.
 //
-// What this slice builds is the plan's shape and its token: the ungated facts
-// refresh, the running-state probe, the drift re-checks, the mint, and the
-// no-token arms this hub can reach. The per-host gate, the durable probe epoch,
-// the gated probe primitive, the last-known publication and the operation
-// store's dedup/consume half are the slices that own them (§5, §6 steps 2-3,
-// §10); where this slice needs one it goes through a seam and reports the arm
-// the missing half produces, never a stand-in that would answer as if the work
-// had happened.
+// This handler builds the plan's shape and its token AND fences them: the
+// ungated facts refresh runs first with nothing held, then the per-host gate is
+// try-acquired once and held through the durable probe-epoch write, the gated
+// running-state probe, the under-gate re-checks, the mint, and the return
+// (§5's gate-first order, §6 step 2). The probe epoch is the fencing-shaped
+// durable record that authorizes exactly the bounded probe window; the mint
+// supersedes it, a refusal deletes it, and boot deletes an epoch-only row
+// silently. The last-known publication and the operation store's dedup/consume
+// half remain the slices that own them (§6 steps 3-4, §10): where this handler
+// needs one it goes through a seam and reports the arm the missing half
+// produces, never a stand-in that would answer as if the work had happened.
 
 import (
 	"context"
@@ -221,15 +224,25 @@ func hostPlanFactsFromPreflight(host hostreg.Host, preflight sshconn.Preflight, 
 //     `refresh-failed`, and resolve the deploy target the plan names
 //     (`target-missing-prereq` when the entry and facts cannot name a run target
 //     a hub could serve);
-//  3. probe the running state through the wired probe: a probe that reports the
-//     remote predates the handler is `handler-absent`, any other failure is
-//     `probe-failed`, and no probe seam at all is `handler-absent` too (the
-//     honest answer until evener/host/running ships);
-//  4. re-check that the entry has not moved and that no operation on this host
-//     reached a terminal state while the plan was being built — both §6 step
-//     2's re-plan refusals, emitted as typed `stale-entry`;
-//  5. mint, superseding any outstanding token for the name, and answer the
-//     planned arm.
+//  3. try-acquire the per-host gate once (§5: gate first, nothing waits) and
+//     hold it through everything below — a held gate fails fast with the typed
+//     busy error naming its holder;
+//  4. immediately re-read the registry entry under the gate (§5's
+//     post-acquisition re-read): a mutation that landed in the ungated window
+//     is a typed `stale-entry` refusal, never a plan against the superseded
+//     entry;
+//  5. persist the durable probe epoch first — its own atomic store write,
+//     bound to the entry's current (generation, incarnation id) pair — so the
+//     probe's remote write half is recoverable under the persisted-before-write
+//     rule; a write failure refuses `probe-failed` with nothing launched;
+//  6. probe the running state through the gate-aware primitive, presenting the
+//     persisted epoch (never a default, never absent): a remote that predates
+//     the handler is `handler-absent`, any other failure — timeout included —
+//     is `probe-failed`, with the epoch dropped on the way out;
+//  7. re-check the entry, the attachment, the facts' freshness, and the
+//     terminal-operation sequence under the same gate and mint, superseding any
+//     outstanding token and the probe epoch for the name — all in the mint's
+//     own locked write.
 //
 // Never dials: the facts and probe seams read the host's attached channel, or
 // report the arm that says they could not.
@@ -252,7 +265,7 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 	// is about this hub but still tells a client whether its host is attached: a
 	// hard-coded false there would push a client into a reconnect it does not
 	// need. It reads the channel registry only; nothing here dials.
-	client, attached := m.attachedClient(entry)
+	_, attached := m.attachedClient(entry)
 	if m.controllerDirty() {
 		return planNoToken(appwire.HostPlanReasonControllerDirty,
 			fmt.Sprintf("this controller was built from a dirty tree (version %q), so it cannot install its own build or prove a host's build matches it; rebuild the controller from a clean checkout", buildinfo.Version()), attached, "")
@@ -286,62 +299,193 @@ func (m *hubHostManager) Plan(ctx context.Context, params appwire.HostPlanParams
 			fmt.Sprintf("host %q: %v", name, err), attached, "")
 	}
 
-	// §6 step 2's gated running probe. The gate, the durable probe epoch and the
-	// probe's fencing write half belong to the slices that ship them; the probe
-	// value and its two failure arms are this handler's.
+	// §6 step 2's gate acquisition, after the ungated refresh. The hold spans
+	// the probe window, the re-checks, the mint, and the return.
+	release, err := m.acquireHostGate(name, hostops.Holder{Kind: hostops.HolderPlan})
+	if err != nil {
+		return appwire.HostPlanResult{}, err
+	}
+	defer release()
+
+	// §5's post-acquisition re-read, immediately after acquisition: a mutation
+	// can legally commit in the window between the resolution above and this
+	// gate, and a plan must never proceed on the superseded entry.
+	if !m.cfg.hosts.SameRegistration(name, entry) {
+		return appwire.HostPlanResult{}, appwire.StaleEntry(appwire.StaleEntryBindingGeneration,
+			fmt.Sprintf("host %q's registration moved while this plan was being built; plan again", name))
+	}
+	// The probe pairs with the client the gate resolves, not the one the ungated
+	// refresh started from: a reconnect that replaced the channel in that window
+	// must not be probed through the retired generation.
+	client, attachedNow := m.attachedClient(entry)
+	if !attachedNow {
+		return planNoToken(appwire.HostPlanReasonUnattached,
+			fmt.Sprintf("host %q detached while this plan was being built; connect it and plan again", name), false, "")
+	}
+
+	// §6 step 2: the durable probe epoch first. Nothing is probed — and no
+	// remote write half can run — until the epoch is recoverable in the store.
+	epoch, err := m.persistPlanProbeEpoch(entry)
+	switch {
+	case err != nil && !hostops.RenameLanded(err):
+		// Nothing was written: no epoch, no probe, nothing launched.
+		return planNoToken(appwire.HostPlanReasonProbeFailed,
+			fmt.Sprintf("host %q: the durable probe epoch could not be persisted, so nothing was probed: %v", name, err), true, "")
+	case err != nil:
+		// The rename landed and the store adopted the row, so the epoch is
+		// durable and memory agrees — only the directory sync behind it failed.
+		// This is the same landed-write posture the mint takes for its token
+		// (see hostops.RenameLanded): the plan proceeds with the durable epoch,
+		// and a later refusal drops it through the ordinary drop path rather
+		// than leaving an epoch-only row behind.
+		m.logf("host %q: the probe epoch's directory sync failed after its rename landed; the epoch is durable: %v", name, err)
+	}
+	result, err := m.probeAndMint(ctx, name, planMintInputs{
+		entry:          entry,
+		client:         client,
+		facts:          facts,
+		target:         target,
+		epoch:          epoch,
+		sequenceBefore: sequenceBefore,
+		// The attachment state the gate resolved, never the pre-gate read: the
+		// planned response and every under-gate refusal report what holds at the
+		// fence. (The early `!attachedNow` return below means this is always a
+		// true answer here, but it is now derived from the gate's own observation
+		// rather than an older one.)
+		attached: attachedNow,
+	})
+	if err == nil && result.HostPlanPlanned != nil {
+		// The mint's own atomic write superseded the epoch; nothing is left to
+		// drop.
+		return result, nil
+	}
+	// §6 step 2: a probe epoch never outlives its plan call — an arm that did
+	// not mint deletes it. (A mint whose rename landed with a directory-sync
+	// failure is still the planned arm and already superseded it.)
+	m.dropPlanProbeEpoch(name, epoch)
+	return result, err
+}
+
+// probeAndMint runs the gated probe, then the under-gate re-checks and the
+// mint. The caller holds the per-host gate across all of it.
+func (m *hubHostManager) probeAndMint(ctx context.Context, name string, in planMintInputs) (appwire.HostPlanResult, error) {
 	if m.cfg.planProbe == nil {
 		return planNoToken(appwire.HostPlanReasonHandlerAbsent,
-			fmt.Sprintf("host %q's hub does not serve the deploy pipeline's running probe yet, so nothing could be probed; upgrade the host's build before planning", name), attached, "")
+			fmt.Sprintf("host %q's hub does not serve the deploy pipeline's running probe yet, so nothing could be probed; upgrade the host's build before planning", name), in.attached, "")
 	}
-	var probe hubcore.HostRuntimeProbe
-	probe, err = m.cfg.planProbe(ctx, entry, client)
+	probe, err := m.cfg.planProbe(ctx, in.entry, in.client, appwire.FencingEpoch{BootID: in.epoch.BootID, OpSeq: in.epoch.OpSeq})
 	if err != nil {
 		if errors.Is(err, errPlanHandlerAbsent) {
 			return planNoToken(appwire.HostPlanReasonHandlerAbsent,
-				fmt.Sprintf("host %q's hub predates the deploy pipeline's running probe: %v", name, err), attached, "")
+				fmt.Sprintf("host %q's hub predates the deploy pipeline's running probe: %v", name, err), in.attached, "")
 		}
 		return planNoToken(appwire.HostPlanReasonProbeFailed,
-			fmt.Sprintf("probing host %q's running state failed: %v", name, err), attached, "")
+			fmt.Sprintf("probing host %q's running state failed: %v", name, err), in.attached, "")
 	}
-
-	return m.mintPlannedToken(name, planMintInputs{
-		entry:          entry,
-		facts:          facts,
-		target:         target,
-		probe:          probe,
-		sequenceBefore: sequenceBefore,
-		attached:       attached,
-	})
+	in.probe = probe
+	return m.mintPlannedToken(name, in)
 }
 
-// planMintInputs is everything the fenced final block needs: the resolution and
-// probe the plan was built from, and the state the re-checks compare against.
+// planMintInputs is everything the fenced final block needs: the resolution,
+// the probe epoch, and the probe the plan was built from, plus the state the
+// re-checks compare against.
 type planMintInputs struct {
 	entry          hostreg.Host
+	client         *appwire.Client
 	facts          hubcore.HostPlanFacts
 	target         string
+	epoch          hostops.ProbeEpoch
 	probe          hubcore.HostRuntimeProbe
 	sequenceBefore uint64
 	attached       bool
 }
 
-// mintPlannedToken runs §6 step 2's under-gate re-checks and the mint, holding
-// the manager's mutation mutex across all of them.
+// acquireHostGate try-acquires the per-host gate for one holder and answers
+// §5's typed busy refusal when it is held. Nothing waits: a held gate is a
+// fail-fast refusal, rendered by holder class — an operation-held gate names
+// the operation (open/wait-able), and every other holder renders the typed
+// transient form with no operation reference. `plan` passes its
+// validation-plus-mint holder; a deploy/restart slice passes
+// hostops.HolderOperation with its record id.
+func (m *hubHostManager) acquireHostGate(name string, holder hostops.Holder) (func(), error) {
+	if m.cfg.gate == nil {
+		return nil, appwire.InternalError("the per-host gate is not configured, so no plan can be fenced")
+	}
+	release, err := m.cfg.gate.TryAcquire(name, holder)
+	if err != nil {
+		return nil, hostBusyWireError(err)
+	}
+	return release, nil
+}
+
+// hostBusyWireError maps the gate's typed busy refusal onto §11's envelope:
+// `host-busy-operation` with the operation record id for an operation holder,
+// `host-busy-transient` with no operation reference for every other class. An
+// operation holder that carries no record id (a caller bug) renders the
+// transient form rather than an `operationId` no open/wait reference could
+// resolve — the same fallback BusyError.Error() renders in prose.
+func hostBusyWireError(err error) error {
+	var busy *hostops.BusyError
+	if !errors.As(err, &busy) {
+		return err
+	}
+	if busy.Holder.Kind == hostops.HolderOperation && strings.TrimSpace(busy.Holder.OperationID) != "" {
+		return appwire.HostBusyOperation(busy.Holder.OperationID, busy.Error())
+	}
+	return appwire.HostBusyTransient(busy.Error())
+}
+
+// persistPlanProbeEpoch writes the plan's durable probe epoch (§6 step 2): its
+// own atomic store write, bound to the entry's current (generation, incarnation
+// id) pair, with the store assigning the per-host op sequence. A hub with no
+// operation store or no boot id cannot persist one, so it refuses — the honest
+// answer, because a probe without a durable epoch is exactly the unfenced write
+// the spec forbids.
+func (m *hubHostManager) persistPlanProbeEpoch(entry hostreg.Host) (hostops.ProbeEpoch, error) {
+	if m.cfg.ops == nil {
+		return hostops.ProbeEpoch{}, errors.New("the host operation store is not configured")
+	}
+	if strings.TrimSpace(m.cfg.bootID) == "" {
+		return hostops.ProbeEpoch{}, errors.New("this hub carries no boot id, so no fencible probe epoch can be bound")
+	}
+	return m.cfg.ops.PersistProbeEpoch(hostops.ProbeEpochRequest{
+		Host:          entry.Name,
+		BootID:        m.cfg.bootID,
+		Generation:    entry.Generation,
+		IncarnationID: entry.IncarnationID,
+	})
+}
+
+// dropPlanProbeEpoch deletes the plan's epoch on a failure path. The match is
+// exact, so a stale drop can never remove a row another call persisted, and a
+// drop after the mint superseded the row is a no-op. A drop that cannot write
+// is logged, not returned: the row left behind is inert and the next boot's
+// reap deletes it.
+func (m *hubHostManager) dropPlanProbeEpoch(name string, epoch hostops.ProbeEpoch) {
+	if m.cfg.ops == nil {
+		return
+	}
+	if err := m.cfg.ops.DropProbeEpoch(name, epoch.BootID, epoch.OpSeq); err != nil {
+		m.logf("host %q: the probe epoch %s/%d could not be dropped after a refused plan: %v",
+			name, epoch.BootID, epoch.OpSeq, err)
+	}
+}
+
+// mintPlannedToken runs §6 step 2's under-gate re-checks and the mint. Its
+// caller (Plan) holds §5's per-host gate across this call, so the gate is
+// already held: nothing here acquires it again (it is non-reentrant), and the
+// gate's hold covers the re-checks, the durable mint write, and the return.
 //
-// That mutex is not §5's per-host gate — the gate (try-acquire, typed busy
-// classes, shared with deploy/restart/teardown) is the slice that ships the
-// running probe, and this handler takes no stand-in for it. What the mutex does
-// close is the one interleaving this slice can close without that gate: the host
-// management mutations that move this very entry. A removal or update in flight
-// refuses the plan — the name is transiently held, which is the conflict the
-// other host mutations report too — and one that starts while this block runs
-// waits for it, so the removal's revocation can never land between a plan's
-// checks and its mint and leave a token for a name whose registration is gone
-// (or, if the removal rolls back, one that outlived its plan).
-//
-// Lock order is the spec's: the mutation mutex is outermost among the durable
-// writes, the store mutex innermost — MintToken's write sits inside this hold —
-// and nothing here takes the host gate.
+// The manager's mutation mutex is taken across the block as the durable-write
+// outermost lock — lock order is §5's, gate first, then the mutation mutex,
+// then the store mutex the mint's write takes innermost. It closes the one
+// interleaving the gate alone cannot: the host-management mutations that move
+// this very entry. A removal or update in flight refuses the plan — the name is
+// transiently held, which is the conflict the other host mutations report too —
+// and one that starts while this block runs waits for it, so the removal's
+// revocation can never land between a plan's checks and its mint and leave a
+// token for a name whose registration is gone (or, if the removal rolls back,
+// one that outlived its plan).
 func (m *hubHostManager) mintPlannedToken(name string, in planMintInputs) (appwire.HostPlanResult, error) {
 	m.cfg.mu.Lock()
 	defer m.cfg.mu.Unlock()
@@ -428,7 +572,10 @@ func (m *hubHostManager) mintPlannedToken(name string, in planMintInputs) (appwi
 		RunningHealthy:     token.RunningHealthy,
 	}
 	if token.ProcessStartTime != nil {
-		plan.RunningProcessStartTime = token.ProcessStartTime.Format(time.RFC3339)
+		// The same sub-second precision the probe carried: the plan re-renders
+		// the value a deploy will compare after the restart, and a truncated
+		// string cannot distinguish two incarnations started in one second.
+		plan.RunningProcessStartTime = token.ProcessStartTime.Format(time.RFC3339Nano)
 	}
 	return appwire.HostPlanResult{HostPlanPlanned: &appwire.HostPlanPlanned{
 		Outcome: appwire.HostPlanOutcomePlanned,

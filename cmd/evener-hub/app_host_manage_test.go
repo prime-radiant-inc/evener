@@ -20,6 +20,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
@@ -2296,5 +2297,58 @@ func TestHostManageAddRefusalKeepsRetainedState(t *testing.T) {
 	f.m.cfg.state.apply(&row, 1)
 	if row.ServerName != "remote-hub" || row.ServerVersion != "0.1.0" {
 		t.Fatalf("the refused add dropped the name's retained state: %+v", row)
+	}
+}
+
+// TestHostManageAddRefusesAHeldGateWithTheTypedBusyError pins §5's order and
+// busy rendering through the Add handler: the manager's AddHost try-acquires
+// the name's gate (it is called while the mutation mutex is held, so it must
+// never wait), a held gate arrives as the typed busy envelope, and the failed
+// add leaves neither a live entry nor a durable one — the durable-first write
+// is compensated back.
+func TestHostManageAddRefusesAHeldGateWithTheTypedBusyError(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	reg, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	manager := sshconn.New(reg, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	m := newHubHostManager(nil, manager, hubcore.WebConfig{RemoteHostRegistry: reg}, configPath, reg, nil)
+
+	release, err := manager.TryAcquire("held", hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"})
+	if err != nil {
+		t.Fatalf("TryAcquire: %v", err)
+	}
+	_, err = m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "held", Address: "held.example"}})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("Add against a held gate = %T (%v), want the conflict-class refusal", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorHostBusyTransient {
+		t.Fatalf("busy data = %#v, want %q", wire.Data, appwire.ErrorHostBusyTransient)
+	}
+	if _, ok := reg.Get("held"); ok {
+		t.Fatal("an add refused by a held gate inserted the entry anyway")
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load hub.toml: %v", err)
+	}
+	for _, entry := range cfg.Hosts {
+		if entry.Name == "held" {
+			t.Fatalf("hub.toml kept %q after the gate-held refusal: the next start would resurrect it", entry.Name)
+		}
+	}
+	release()
+	if _, err := m.Add(context.Background(), appwire.HostAddParams{Entry: appwire.HostEntry{Name: "held", Address: "held.example"}}); err != nil {
+		t.Fatalf("Add after the release: %v", err)
+	}
+	if _, ok := reg.Get("held"); !ok {
+		t.Fatal("the add did not register the entry once the gate was free")
 	}
 }

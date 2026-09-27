@@ -11,10 +11,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 )
 
@@ -509,6 +511,10 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 	if err := lockHostCtx(ctx, lock); err != nil {
 		return nil, err
 	}
+	// The gate is held, so register this attach as its holder: a pipeline
+	// try-acquire that fails while the attach runs reports the attach (the
+	// manager holder class), never a stale holder or an invented operation.
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "attach"})
 	if err := ctx.Err(); err != nil {
 		lock.Unlock()
 		return nil, err
@@ -950,6 +956,7 @@ func (m *Manager) Close() error {
 		// announced as usable after its teardown has begun.
 		lock := m.hostLock(e.name)
 		lock.Lock()
+		lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "close"})
 		// Pair the Attached a consumer saw with a Detached, under the same lock
 		// that ordered them: the supervisor returns on the canceled base context
 		// without emitting one, so shutdown is where that channel's source is
@@ -1024,6 +1031,7 @@ func (m *Manager) DetachHost(name string) error {
 	// can inspect or publish the channel while it is being torn down.
 	lock := m.hostLock(name)
 	lock.Lock()
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "detach"})
 	// A remove/re-add that swapped the entry while this call waited for the
 	// gate leaves the re-added host's own channel mapped under the name; the
 	// teardown is scoped to the identity resolved above, so that channel — and
@@ -1175,6 +1183,7 @@ func (m *Manager) RemoveHost(name string) error {
 	lock := m.hostLock(name)
 	defer m.releaseHostLock(name)
 	lock.Lock()
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "remove"})
 	// Under the gate the name can hold a registration this call never captured
 	// — an add that landed the name while this call waited, the mirror of the
 	// remove/re-add below — so the unknown-name half is re-checked here rather
@@ -1227,7 +1236,10 @@ func (m *Manager) RemoveHost(name string) error {
 // Validation and normalization are the registry's own (Registry.Add), so this
 // inserts exactly what hostreg would; only the locking discipline is added. A
 // nil registry is an error rather than a silent no-op — an add that committed
-// nothing must not report success.
+// nothing must not report success. The gate acquisition is try-acquire and
+// answers the typed busy error when the name's gate is held (see the note at
+// the acquisition): the hub's Add calls this inside the mutation mutex, and
+// nothing may wait on a gate while holding that mutex.
 func (m *Manager) AddHost(entry hostreg.Host) error {
 	if m.reg == nil {
 		return errors.New("sshconn: AddHost with no registry")
@@ -1238,7 +1250,15 @@ func (m *Manager) AddHost(entry hostreg.Host) error {
 	name := strings.TrimSpace(entry.Name)
 	lock := m.hostLock(name)
 	defer m.releaseHostLock(name)
-	lock.Lock()
+	// Try-acquire, never wait (deploy pipeline 08b §5's acquisition rule): the
+	// hub's Add calls this while holding the process-wide mutation mutex, and
+	// the pipeline takes the gate *before* that mutex — so a blocking
+	// acquisition here would be the one reverse-order wait that can close a
+	// deadlock cycle with a plan. A held gate is the typed busy refusal instead.
+	if !lock.TryLock() {
+		return hostops.Busy(name, lock.holderOf())
+	}
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "add"})
 	defer lock.Unlock()
 	return m.reg.Add(entry)
 }
@@ -1321,6 +1341,7 @@ func (m *Manager) UpdateHost(entry hostreg.Host, onRetire func(retired hostreg.H
 	lock := m.hostLock(name)
 	defer m.releaseHostLock(name)
 	lock.Lock()
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "update"})
 	// The identity this call retires is resolved under the gate, and so is the
 	// swap: a remove/re-add that took the name while this call waited is not
 	// this call's to tear down, and the teardown below is scoped to the entry
@@ -2032,7 +2053,7 @@ func (t *lossWatchingTransport) Close() error {
 // It holds the host lock only around state inspection, channel teardown, and
 // one attach attempt. The backoff sleep happens with the lock released, so a
 // concurrent Ensure never waits behind a delay that can reach BackoffMax.
-func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel, lock *sync.Mutex) {
+func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel, lock *hostLockGate) {
 	select {
 	case <-ch.lost:
 	case <-ctx.Done():
@@ -2043,6 +2064,7 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 		m.opts.beforeSuperviseGate(host.Name, ch)
 	}
 	lock.Lock()
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
 	// Ownership, not liveness, decides whether this supervisor still has work: the
 	// manager closing ends it, and a replaced channel means the replacement's
 	// supervisor owns the host now. A channel that was closed while still mapped is
@@ -2097,7 +2119,7 @@ func (m *Manager) supervise(ctx context.Context, host hostreg.Host, ch *Channel,
 // Every live loop stays registered as its own entry: a replacement attach adds a
 // loop rather than overwriting the host's slot, so stopSupervisor can end a
 // predecessor still parked in backoff instead of leaking it.
-func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *sync.Mutex) bool {
+func (m *Manager) startSupervise(host hostreg.Host, ch *Channel, lock *hostLockGate) bool {
 	ctx, cancel := context.WithCancel(m.baseCtx)
 	loop := &supervisorLoop{host: host, cancel: cancel}
 	m.mu.Lock()
@@ -2182,8 +2204,9 @@ func (m *Manager) stopSupervisor(name string) {
 // reconnectOnce runs one re-attach attempt with the host lock held, and reports
 // whether another attempt is worth making. Every outcome that ends the
 // supervisor emits its own state event first.
-func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *sync.Mutex) bool {
+func (m *Manager) reconnectOnce(ctx context.Context, host hostreg.Host, lock *hostLockGate) bool {
 	lock.Lock()
+	lock.holdAs(hostops.Holder{Kind: hostops.HolderManager, Activity: "reconnect"})
 	defer lock.Unlock()
 
 	if ctx.Err() != nil {
@@ -2373,8 +2396,69 @@ var ErrDeployUnstamped = errDeployUnstamped
 // holders and parked waiters both — so the entry can be dropped exactly when
 // nobody can still be using its mutex.
 type hostLockEntry struct {
-	mu   sync.Mutex
+	gate hostLockGate
 	refs int
+}
+
+// hostLockGate is the per-host gate itself: the mutex every holder of one
+// host's work serializes on (Ensure, the reconnect supervisor, AddHost,
+// UpdateHost, RemoveHost, DetachHost, Close — and, through Manager.TryAcquire,
+// the deploy pipeline's plan/deploy/restart paths), plus the holder
+// registration the pipeline's busy refusal renders (deploy pipeline 08b §5).
+//
+// The holder is written by whoever holds the mutex, after acquiring it, and
+// cleared by Unlock before the mutex is released, so a contender that fails
+// TryLock can never read a stale holder for a free gate — a free gate always
+// reads the zero Holder. It is an atomic pointer rather than a field under the
+// manager mutex so Unlock stays a lock-free operation, exactly as the plain
+// sync.Mutex it replaces was. The holder is published as the acquisition's very
+// next step (see TryAcquire and each holdAs call site): the one instant between
+// a successful TryLock and the store is not observable as a holder, so a
+// contender landing exactly there reads the zero Holder and gets the safe
+// generic transient form, never a wrong operation id.
+type hostLockGate struct {
+	mu     sync.Mutex
+	holder atomic.Pointer[hostops.Holder]
+}
+
+// Lock blocks until the gate is held, clearing any holder left by the previous
+// hold: an unregistered hold (this package's own paths register theirs
+// immediately after Lock) reads as the generic manager class, never as the
+// previous holder's identity.
+func (g *hostLockGate) Lock() {
+	g.mu.Lock()
+	g.holder.Store(nil)
+}
+
+// TryLock try-acquires the gate, reporting whether it now holds it.
+func (g *hostLockGate) TryLock() bool {
+	if !g.mu.TryLock() {
+		return false
+	}
+	g.holder.Store(nil)
+	return true
+}
+
+// Unlock clears the holder before releasing the mutex, so no contender can
+// observe a stale holder for a gate that is about to be free.
+func (g *hostLockGate) Unlock() {
+	g.holder.Store(nil)
+	g.mu.Unlock()
+}
+
+// holdAs registers the holder of the current hold. Callers call it immediately
+// after Lock/TryLock succeeded.
+func (g *hostLockGate) holdAs(holder hostops.Holder) {
+	g.holder.Store(&holder)
+}
+
+// holderOf returns the current hold's registered holder, or the zero Holder
+// when the hold never registered one.
+func (g *hostLockGate) holderOf() hostops.Holder {
+	if holder := g.holder.Load(); holder != nil {
+		return *holder
+	}
+	return hostops.Holder{}
 }
 
 // hostLock returns the per-host gate for name and registers the caller as a
@@ -2387,7 +2471,7 @@ type hostLockEntry struct {
 // so a gate is never dropped while a holder — or a goroutine parked
 // waiting on it — still uses it, and two callers can never hold two
 // different gates for one name.
-func (m *Manager) hostLock(name string) *sync.Mutex {
+func (m *Manager) hostLock(name string) *hostLockGate {
 	m.mu.Lock()
 	entry := m.locks[name]
 	if entry == nil {
@@ -2396,7 +2480,7 @@ func (m *Manager) hostLock(name string) *sync.Mutex {
 	}
 	entry.refs++
 	m.mu.Unlock()
-	return &entry.mu
+	return &entry.gate
 }
 
 // releaseHostLock pairs one hostLock call for name, dropping the entry when
@@ -2427,7 +2511,7 @@ func (m *Manager) releaseHostLock(name string) {
 // woken out of Lock directly. This helper parks a goroutine on Lock instead and,
 // when the caller gives up first, has that goroutine hand the lock straight back
 // once it acquires it — the gate is never left held by a caller that returned.
-func lockHostCtx(ctx context.Context, mu *sync.Mutex) error {
+func lockHostCtx(ctx context.Context, mu *hostLockGate) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -2455,6 +2539,44 @@ func lockHostCtx(ctx context.Context, mu *sync.Mutex) error {
 		return ctx.Err()
 	}
 }
+
+// TryAcquire implements hostops.Gate: it try-acquires name's per-host gate for
+// holder, returning the typed busy error naming the current holder when the
+// gate is held. The gate it takes is the one gate this Manager's own paths use
+// (Ensure, the reconnect supervisor, AddHost, UpdateHost, RemoveHost,
+// DetachHost, Close), so a plan cannot interleave with an in-flight attach or
+// teardown for the same host.
+//
+// Nothing waits: the acquisition is a TryLock on the same mutex, and a failed
+// attempt reports the holder the successful acquirer registered — the operation
+// class with its record id for a deploy/restart (or an Ensure-triggered
+// deploy), the transient plan form for a plan's validation-plus-mint window,
+// and the manager's activity class for this package's own holds.
+func (m *Manager) TryAcquire(host string, holder hostops.Holder) (func(), error) {
+	name := strings.TrimSpace(host)
+	if name == "" {
+		return nil, errors.New("sshconn: a gate acquisition needs a host name")
+	}
+	lock := m.hostLock(name)
+	if !lock.TryLock() {
+		held := lock.holderOf()
+		m.releaseHostLock(name)
+		return nil, hostops.Busy(name, held)
+	}
+	lock.holdAs(holder)
+	// The release is idempotent: a double release must not double-unlock.
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			lock.Unlock()
+			m.releaseHostLock(name)
+		})
+	}, nil
+}
+
+// hostGate is the compile-time assertion that the Manager is the production
+// hostops.Gate.
+var _ hostops.Gate = (*Manager)(nil)
 
 func (m *Manager) currentChannel(name string) *Channel {
 	m.mu.Lock()
