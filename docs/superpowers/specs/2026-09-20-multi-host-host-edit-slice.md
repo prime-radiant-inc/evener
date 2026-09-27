@@ -45,7 +45,7 @@ The registry spec defines update (§4) and the UI (§13). This slice implements:
   identity is fenced out first; commit first, then rebind or tear down, gate
   released last.
 - §13 — the Add/Edit dialog covers **all eight** `HostConfig` fields (the
-  component-03 set plus `key_path`), none
+  component-03 set, which includes `key_path`), none
   invented and none hidden, each with its validation message mapped from the
   backend's refusal; Edit does not offer `name`; the row renders the host's
   installed version beside the controller's.

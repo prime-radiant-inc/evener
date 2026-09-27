@@ -357,7 +357,7 @@ snapshot's current pair for the name render absent, exactly as after an
 update). `status` reads the same two snapshots for its single row.
 
 `evener/host/add` is a mutation: params are one full host entry (all eight
-`HostConfig` fields — the component-03 set plus `key_path`; `name` required) plus optional `mutationId`. It validates
+`HostConfig` fields — the component-03 set, which includes `key_path`; `name` required) plus optional `mutationId`. It validates
 with the component-03 rules (name validation, the `[[hosts]]` field validation
 at `cmd/evener-hub/config.go:247` — `validateHostConfigs`). The component-03 host-count cap was
 withdrawn by decision (Jesse, 2026-09-26; component 03 §Scope, design §2
@@ -781,7 +781,7 @@ the merge drops at most a colliding duplicate *host entry* (the file's wins),
 and because the merged rewrite is a read-modify-write, every machine-managed
 record `hub.toml` already holds survives it unchanged. A sidecar that fails to parse or validate is not
 migrated at all: boot logs the refusal loudly and leaves both files untouched
-(the posture the shipped store already takes for an unreadable sidecar). The file's stored host fields are the component-03 set plus `key_path` (the
+(the posture the shipped store already takes for an unreadable sidecar). The file's stored host fields are the component-03 set, which includes `key_path` (the
 SSH identity file the shipped Add/Edit dialog collects and `sshconn` dials
 with), so a UI host with a key path round-trips through a rewrite; component
 03's schema carries the field. `hub.toml` also carries the per-host records the
@@ -823,9 +823,14 @@ hyphenated record names are the same records (`mutationReceipts` →
 record's fields, that spec's field set holds — this layout fixes where each
 record lives, not what it holds. A rewrite re-emits every reserved key the
 mutation does not own unchanged (it writes only `hosts` and the records the
-mutation itself updates in that same atomic write — the update rule above), so
-a record this build does not recognize round-trips rather than being dropped,
-and a reserved key never carries operator data. Reserved keys are a documented
+mutation itself updates in that same atomic write — the update rule above),
+and a reserved key never carries operator data. Forward preservation for a
+reserved record this build does not recognize is explicitly not offered: a
+reserved value whose shape this build cannot decode is refused loudly before
+any rewrite — nothing lost, nothing reinterpreted, and a downgrade that meets a
+newer record refuses to rewrite rather than preserving or dropping it — so a
+version that adds a reserved record must teach the versions that will meet it.
+Reserved keys are a documented
 machine-owned namespace: the hub honors a reserved key only when the file
 carries the machine-managed banner every rewrite writes and the key's value
 matches the record shape exactly; anything else under a reserved name — a value
@@ -947,7 +952,7 @@ suppressed retry can never read it as a live commit. When the adoption's re-read
 finds the name gone from the file — a hand-edit deletion — the winning arm is
 the deletion: the response carries `removed: true` and no `host` (the same
 marker a tombstone row uses, without minting a tombstone), the receipt records
-`droppedEntry` and the winning fingerprint the same way, and a replay returns
+`droppedEntry`, the winning fingerprint, and `removed: true` the same way, and a replay returns
 the deletion, never a fabricated live row.
 
 The retired sidecar's cross-file boot-collision machinery goes with it: with
@@ -990,9 +995,11 @@ receipts and teardown-remnant records: `mutationReceipts` maps the scoped
 receipt key (mutationId, host name, mutation kind, post-commit generation,
 incarnation id — §5; a lookup compares all five) to `{outcome, row,
 generation, incarnationId, committedAt, droppedEntry?, winningFingerprint?,
-remnantId?, remnantResolvedAt?, recoveryAttestation?, bootRecovered?}` —
+removed?, remnantId?, remnantResolvedAt?, recoveryAttestation?, bootRecovered?}` —
 `recoveryAttestation` (`{operator, statement, observedAt}`) is present exactly
-on receipts resolved through `teardown-recover`, absent otherwise.
+on receipts resolved through `teardown-recover`, absent otherwise; `removed` is
+present exactly on a `collision-dropped` receipt whose winning arm is the
+hand-edit deletion.
 `droppedEntry` (the staged entry the post-rename reconcile dropped, persisted
 in the same lowerCamel effective-config shape as `HostRow`'s config fields —
 §11) and
@@ -1190,7 +1197,13 @@ phase (deploy-pipeline spec §5) with the lock released across the teardowns and
 persist the committed receipt plus real remnant (verifying the claim's attempt
 token still owns the marker); (4) if the swap itself fails, compensate fully
 before responding: restore the prior `hub.toml` bytes from the stash (atomic
-rename), then revert the runtime to the previous set, then report exactly
+rename) only while the file still holds the staged bytes — the restore compares
+the current whole-document content hash against the staged write's first, so a
+hand edit that landed after the staged write makes the restore skip itself: the
+mutation adopts the re-read file and reconciles the runtime to the reconciled
+set instead, reporting the swap failure with the typed `concurrent-edit`
+discriminator naming both hashes, and the edit is never erased — while in the
+restore case the runtime reverts to the previous set; then report exactly
 which step failed. Compensation runs in persisted phases, tracked in the
 store-side compensation record (deploy-pipeline spec §9 pins the phase field)
 — which the `hub.toml` restore cannot touch — never on `hub.toml`
@@ -1550,7 +1563,8 @@ documents and are cited, never restated):
   droppedEntry: <the staged effective config in the same lowerCamel shape as
   `HostRow`'s config fields — never a literal `HostConfig`, whose `toml`-only
   tags would generate `Name`/`SSH`/`EvenerPath`/… instead of
-  `name`/`ssh`/`evenerPath` —, winningFingerprint: string, host?: HostRow}` (the
+  `name`/`ssh`/`evenerPath` —, winningFingerprint: string, host?: HostRow,
+  removed?: bool}` (the
   dropped arm carries the authoritative `HostRow` whenever the file still holds
   the name — when the post-rename reconcile finds the file no longer carries the
   just-committed staged entry, the authoritative result is the winning `hub.toml` live
