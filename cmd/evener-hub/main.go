@@ -607,6 +607,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		HubProcessStart:       hubProcessStart,
 		HostProbeTimeout:      cfg.HostProbeTimeout,
 		HostMinFreeSpaceBytes: cfg.HostMinFreeSpaceBytes,
+		// The host-record retention knobs (registry spec 08 §6/§11/§15): the
+		// tombstone retention and bounds and the receipt/marker/audit bounds the
+		// host-management surface prunes and evicts by.
+		HostTombstoneRetention:        cfg.HostTombstoneRetention,
+		HostTombstoneMaxRows:          cfg.HostTombstoneMaxRows,
+		HostTombstoneMaxRowBytes:      cfg.HostTombstoneMaxRowBytes,
+		HostTombstoneMaxCount:         cfg.HostTombstoneMaxCount,
+		HostTombstoneMaxBytes:         cfg.HostTombstoneMaxBytes,
+		HostSupersededReceiptMaxCount: cfg.HostSupersededReceiptMaxCount,
+		HostSupersededReceiptTTL:      cfg.HostSupersededReceiptTTL,
+		HostPrunedReceiptMaxCount:     cfg.HostPrunedReceiptMaxCount,
+		HostPrunedReceiptTTL:          cfg.HostPrunedReceiptTTL,
+		HostKeylessAuditMaxCount:      cfg.HostKeylessAuditMaxCount,
+		HostKeylessAuditTTL:           cfg.HostKeylessAuditTTL,
 		RemoteHostClient: func(ctx context.Context, host string) (*appwire.Client, error) {
 			ch, err := sshManager.Ensure(ctx, host)
 			if err != nil {

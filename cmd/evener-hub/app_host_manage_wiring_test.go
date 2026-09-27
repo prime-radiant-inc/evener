@@ -212,7 +212,20 @@ func TestHostManageUIAddedHostThroughRealServer(t *testing.T) {
 		t.Fatalf("evener/host/list after remove: %v", err)
 	}
 	if len(after.Hosts) != 1 || after.Hosts[0].Name != "m4" {
-		t.Fatalf("list after remove = %+v, want only the hub.toml host", after.Hosts)
+		// Registry spec 08 §15 (S11): the removed host stays as a tombstone row
+		// (`removed: true`), so the live set is m4 plus that retained row.
+		live := map[string]bool{}
+		tombstoneRows := 0
+		for _, row := range after.Hosts {
+			if row.Removed {
+				tombstoneRows++
+				continue
+			}
+			live[row.Name] = true
+		}
+		if tombstoneRows != 1 || len(live) != 1 || !live["m4"] {
+			t.Fatalf("list after remove = %+v, want the hub.toml host live and one tombstone row", after.Hosts)
+		}
 	}
 	// hub.toml no longer carries the entry: a restart will not resurrect it.
 	data, err = os.ReadFile(configPath)

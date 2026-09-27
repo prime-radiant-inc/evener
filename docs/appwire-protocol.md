@@ -1035,6 +1035,8 @@ _(no fields)_
 | `lastAttachError` | `string` | yes |  |
 | `midAttach` | `bool` |  |  |
 | `removed` | `bool` |  |  |
+| `retainedRows` | `*int` | yes |  |
+| `rowsTruncated` | `bool` | yes |  |
 
 
 ### `HostRunningParams`
