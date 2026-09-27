@@ -7,7 +7,10 @@ manager does for a fleet of working sessions. It is the tool surface for
 evener's planned PM session, and it works with any MCP client.
 
 The server lives at `hub-mcp/` in the repository (see its README for the
-developer view).
+developer view). A scenario-by-scenario walkthrough for the agent holding
+these tools — orienting, starting a session with the model and directory,
+waiting, answering a session's question, steering, closing out — is in
+[evener-hub-mcp-guide.md](evener-hub-mcp-guide.md).
 
 ## Wiring: scope it to the sessions that need it
 

@@ -9,6 +9,9 @@ web UI and the mobile apps are built on.
 
 Design spec: `docs/superpowers/specs/2026-09-27-hub-mcp-design.md`.
 Operator documentation: `docs/evener-hub-mcp.md`.
+User guide — common scenarios for the agent wired to this server
+(starting a session, following work, question alerts and answers,
+steering, closing out): `docs/evener-hub-mcp-guide.md`.
 
 ## What the agent gets
 
