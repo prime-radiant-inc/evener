@@ -6,6 +6,7 @@ import { useEffect, useMemo, useReducer } from "react";
 import { Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
 import { PulseMeter } from "../board/PulseMeter";
 import { useColors } from "../ui";
+import { SymbolButton } from "./SymbolButton";
 import { FrameCounter, type TrayLine, type TraySource, trayLine } from "./trayLine";
 
 export interface StatusTrayProps {
@@ -64,24 +65,15 @@ export function StatusTray({
 				</Text>
 			</Pressable>
 			{canStop ? (
-				<Pressable
-					accessibilityRole="button"
-					accessibilityLabel="Stop"
-					accessibilityState={{ disabled: stopDisabled }}
+				<SymbolButton
+					label="Stop"
 					disabled={stopDisabled}
 					onPress={onStop}
 					// A 44pt target that overhangs the 36pt row.
-					style={({ pressed }) => ({
-						width: 44,
-						height: 44,
-						marginVertical: -4,
-						alignItems: "center",
-						justifyContent: "center",
-						opacity: stopDisabled ? 0.4 : pressed ? 0.6 : 1,
-					})}
+					style={{ marginVertical: -4 }}
 				>
 					<SymbolView name="stop.fill" tintColor={palette.inkHi} size={15 * scale} />
-				</Pressable>
+				</SymbolButton>
 			) : null}
 		</View>
 	);

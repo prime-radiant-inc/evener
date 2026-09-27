@@ -8,13 +8,13 @@ import {
 	ActionSheetIOS,
 	Alert,
 	Platform,
-	Pressable,
 	TextInput,
 	useWindowDimensions,
 	View,
 } from "react-native";
 import { useColors } from "../ui";
 import { ExpandedEditor } from "./ExpandedEditor";
+import { SymbolButton } from "./SymbolButton";
 
 /** The field grows to this many lines, then scrolls. */
 const MAX_LINES = 6;
@@ -126,57 +126,21 @@ export function Composer({
 					}}
 				/>
 				{overflows ? (
-					<Pressable
-						accessibilityRole="button"
-						accessibilityLabel="Expand editor"
+					<SymbolButton
+						label="Expand editor"
 						onPress={() => setExpanded(true)}
-						style={({ pressed }) => ({
-							position: "absolute",
-							top: -8,
-							right: -8,
-							width: 44,
-							height: 44,
-							alignItems: "center",
-							justifyContent: "center",
-							opacity: pressed ? 0.6 : 1,
-						})}
+						style={{ position: "absolute", top: -8, right: -8 }}
 					>
 						<SymbolView name="arrow.up.left.and.arrow.down.right" tintColor={palette.inkMid} size={15 * scale} />
-					</Pressable>
+					</SymbolButton>
 				) : null}
 			</View>
 			<View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-				<Pressable
-					accessibilityRole="button"
-					accessibilityLabel="Add"
-					accessibilityState={{ disabled: !editable }}
-					disabled={!editable}
-					onPress={openAddMenu}
-					style={({ pressed }) => ({
-						width: 44,
-						height: 44,
-						alignItems: "center",
-						justifyContent: "center",
-						opacity: !editable ? 0.4 : pressed ? 0.6 : 1,
-					})}
-				>
+				<SymbolButton label="Add" disabled={!editable} onPress={openAddMenu}>
 					<SymbolView name="plus" tintColor={palette.accentInk} size={20 * scale} />
-				</Pressable>
+				</SymbolButton>
 				<View style={{ flex: 1, minWidth: 0 }}>{settings}</View>
-				<Pressable
-					accessibilityRole="button"
-					accessibilityLabel={sendLabel}
-					accessibilityState={{ disabled: !sendEnabled }}
-					disabled={!sendEnabled}
-					onPress={onSend}
-					style={({ pressed }) => ({
-						width: 44,
-						height: 44,
-						alignItems: "center",
-						justifyContent: "center",
-						opacity: !sendEnabled ? 0.4 : pressed ? 0.6 : 1,
-					})}
-				>
+				<SymbolButton label={sendLabel} disabled={!sendEnabled} onPress={onSend}>
 					<View
 						style={{
 							width: 36,
@@ -189,7 +153,7 @@ export function Composer({
 					>
 						<SymbolView name="paperplane.fill" tintColor={palette.onFill} size={17} />
 					</View>
-				</Pressable>
+				</SymbolButton>
 			</View>
 			<ExpandedEditor
 				visible={expanded}
