@@ -8,7 +8,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
-import { holdIndexedDBEvent } from "../../../../stores/testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { useColdStartSkeleton } from "../../coldStart";
 import { readComposerDraft, writeComposerDraft } from "../draft";
@@ -26,7 +26,7 @@ import {
 } from "./pendingTurnsStore";
 import {
   flushPendingTurnsProjectionForTests,
-  outlastEmptyFlushRoundForTests,
+  startFlushPastEmptyRoundForTests,
 } from "./testing/flushPendingTurnsProjection";
 
 function thread(overrides: Partial<Thread> = {}): Thread {
@@ -437,19 +437,55 @@ test("a flush cannot settle while a submit is still in flight", async () => {
     () => submitting,
   );
 
-  let flushResolved = false;
-  const flushing = flushPendingTurnsProjectionForTests().then(() => {
-    flushResolved = true;
-  });
-
+  const flush = await startFlushPastEmptyRoundForTests();
   // If the submit is tracked, the flush cannot return here.
-  await outlastEmptyFlushRoundForTests();
-  expect(flushResolved).toBe(false);
+  expect(flush.isDone()).toBe(false);
 
   releaseSubmit();
   await submitted;
-  await flushing;
-  expect(flushResolved).toBe(true);
+  await flush.done;
+  expect(flush.isDone()).toBe(true);
+});
+
+// Durable work that starts outside this file is tracked by the storage itself:
+// every transaction the mutation storage runs registers when it starts, so a
+// Force stop's cancellation or the dispatcher settling a receipt after its RPC
+// answers holds a flush open as surely as a submit does. Each row holds a real
+// write's completion.
+test.each<
+  [string, readonly string[], (storage: MutationOutboxIndexedDB, clientMutationId: string) => Promise<unknown>]
+>([
+  ["a Force stop's cancellation", ["outbox", "sequences"], (storage) => storage.cancelUnattempted("ref_a")],
+  [
+    "the dispatcher's receipt settlement",
+    ["outbox", "optimistic", "recovery"],
+    (storage, clientMutationId) => storage.settleReceipt(clientMutationId, "reflected"),
+  ],
+])("a flush cannot settle while %s write is still in flight", async (_name, stores, write) => {
+  const storage = new MutationOutboxIndexedDB();
+  const input = [{ type: "text" as const, text: "in flight" }];
+  const record = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await flushPendingTurnsProjectionForTests();
+  const held = holdNextWriteTransaction(stores);
+  const writing = write(storage, record.clientMutationId);
+  await held.reached;
+
+  const flush = await startFlushPastEmptyRoundForTests();
+  // If the storage registers the write, the flush cannot return here.
+  expect(flush.isDone()).toBe(false);
+
+  held.release();
+  await writing;
+  await flush.done;
+  expect(flush.isDone()).toBe(true);
+  storage.close();
 });
 
 // The flush above waits inside act(), so durable work with no completion left

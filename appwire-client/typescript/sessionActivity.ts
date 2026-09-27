@@ -1,6 +1,7 @@
 // The pulse meter's data (spec 16.4) and the Quiet and May be stuck labels
 // (spec 13.1), read from evener/activity/read (server addition S5). Both apps
 // decode the read here and ask quietState which label a working session shows.
+import { isPlainObject } from "./plainObject";
 import type { SessionActivity } from "./types.gen";
 
 /** A working session reads Quiet after three minutes without transcript motion. */
@@ -8,8 +9,6 @@ export const QUIET_AFTER_MS = 3 * 60_000;
 /** A working session reads May be stuck after ten. */
 export const STUCK_AFTER_MS = 10 * 60_000;
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
 
 // One session entry, key by key as the navigation codec treats a value record:
@@ -17,7 +16,7 @@ const count = (value: unknown): value is number => Number.isSafeInteger(value) &
 // dropped. A malformed entry is dropped alone, so one bad row never blanks
 // every meter.
 function sessionActivity(value: unknown): SessionActivity | null {
-  if (!isRecord(value)) return null;
+  if (!isPlainObject(value)) return null;
   const { ref, minutes, runningSubagents, quietForMs } = value;
   if (typeof ref !== "string" || ref === "" || ref.length > 1024) return null;
   if (!Array.isArray(minutes) || minutes.length === 0 || minutes.length > 60 || !minutes.every(count)) return null;
@@ -30,7 +29,7 @@ function sessionActivity(value: unknown): SessionActivity | null {
  * list throws, so a caller keeps the meters it has rather than drawing them
  * flat. */
 export function decodeActivityRead(value: unknown): SessionActivity[] {
-  if (!isRecord(value) || !Array.isArray(value.sessions)) throw new Error("activity read: invalid response");
+  if (!isPlainObject(value) || !Array.isArray(value.sessions)) throw new Error("activity read: invalid response");
   const sessions: SessionActivity[] = [];
   for (const entry of value.sessions) {
     const session = sessionActivity(entry);

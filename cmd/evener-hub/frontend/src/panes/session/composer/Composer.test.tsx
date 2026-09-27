@@ -20,7 +20,7 @@ import { connectionStore } from "../../../stores/connection";
 import type { MutationOutboxRecord } from "../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
-import { holdIndexedDBEvent } from "../../../stores/testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "../../../stores/testing/stalledIndexedDB";
 import {
   readMutationPersistence,
   resetThreadsStoreForTests,
@@ -32,6 +32,7 @@ import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { hoverForTooltip } from "../../../widgets/tooltip/tooltipTestUtils";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { editorCursor, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -42,7 +43,7 @@ import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } fro
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import {
   flushPendingTurnsProjectionForTests,
-  outlastEmptyFlushRoundForTests,
+  startFlushPastEmptyRoundForTests,
 } from "./queue/testing/flushPendingTurnsProjection";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
 import { resetStoplessComposerSightingsForTests } from "./stoplessComposer";
@@ -190,24 +191,12 @@ class PausedCommitStorage extends MutationOutboxIndexedDB {
     this.releaseCommit?.();
   }
 
-  override enqueueIntent(
+  override async enqueueIntent(
     ...args: Parameters<MutationOutboxIndexedDB["enqueueIntent"]>
   ): ReturnType<MutationOutboxIndexedDB["enqueueIntent"]> {
-    return this.holdCommit(() => super.enqueueIntent(...args));
-  }
-
-  // Stop's write (the interrupt record and the cancellations it makes in the
-  // same transaction) is a local outbox commit too, held by the same gate.
-  override enqueueInterruptAndCancel(
-    ...args: Parameters<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]>
-  ): ReturnType<MutationOutboxIndexedDB["enqueueInterruptAndCancel"]> {
-    return this.holdCommit(() => super.enqueueInterruptAndCancel(...args));
-  }
-
-  private async holdCommit<T>(commit: () => Promise<T>): Promise<T> {
     this.markCommitStarted?.();
     await this.commitGate;
-    return commit();
+    return super.enqueueIntent(...args);
   }
 }
 
@@ -1260,13 +1249,11 @@ test("while a turn runs, Steer is primary and Send is quiet", async () => {
 });
 
 test("with nothing running, Send is the primary, sends now, and there is no Steer to outrank it", async () => {
-  const user = userEvent.setup();
   await mountComposer("ref_a", { status: { type: "idle" } });
   expect(submitButton().className.split(" ")).toContain(buttonStyles.primary);
   expect(screen.queryByTestId("composer-steer")).toBeNull();
   // The idle half of Send's timing reaching its bubble (canQueue false).
-  await user.hover(submitButton());
-  expect((await screen.findByRole("tooltip")).textContent).toMatch(/^Send now · /);
+  expect(hoverForTooltip(submitButton()).textContent).toMatch(/^Send now · /);
 });
 
 // The label is stable across states even though the ROUTE isn't: a mid-turn
@@ -1644,10 +1631,7 @@ test("the submit tooltip names the route the submit actually takes on a cold ses
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
 
   await user.type(editor, "m2");
-  // The tooltip opens on a 300ms hover delay (widgets/tooltip's own test pins
-  // it), so this waits for the bubble rather than reading straight after.
-  fireEvent.mouseEnter(submitButton());
-  const promisedQueue = /queue until the agent stops/i.test((await screen.findByRole("tooltip")).textContent ?? "");
+  const promisedQueue = /queue until the agent stops/i.test(hoverForTooltip(submitButton()).textContent ?? "");
 
   await user.click(submitButton());
   await waitFor(() => expect(routedCalls(fake)).toHaveLength(2));
@@ -1996,20 +1980,18 @@ test("with enterToSend on, Shift+Enter is a literal newline and does not steer",
 // the preference (and, mid-turn, Send's queue timing) reach each bubble.
 test("with enterToSend on, Steer's tooltip drops its chord and Send's names bare Enter", async () => {
   prefsStore.getState().setEnterToSend(true);
-  const user = userEvent.setup();
   await mountComposer("ref_a", {
     status: { type: "active" },
     evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
   });
-  await user.hover(steerButton());
-  const tip = await screen.findByRole("tooltip");
+  const tip = hoverForTooltip(steerButton());
   expect(tip.textContent).toMatch(/interrupt and redirect now/i);
   expect(tip.textContent).not.toMatch(/Shift/);
 
-  // getByRole throws while two bubbles show, so this waits for Steer's to go.
-  await user.unhover(steerButton());
-  await user.hover(submitButton());
-  await waitFor(() => expect(screen.getByRole("tooltip").textContent).toBe("Queue until the agent stops · Enter"));
+  // Leaving hides Steer's bubble at once. hoverForTooltip reads the tooltip
+  // with getByRole, which throws if two bubbles show.
+  fireEvent.mouseLeave(steerButton());
+  expect(hoverForTooltip(submitButton()).textContent).toBe("Queue until the agent stops · Enter");
 });
 
 // --- steer / drain-as-steer routing -----------------------------------------
@@ -3741,13 +3723,13 @@ test("a typed /interrupt on an active fenced session still mints its intent: Sto
 });
 
 // The test above settles its press with the projection flush, which awaits
-// only what registered with the pending-turns work tracker. Both Stop routes
-// run fire-and-forget, the typed /interrupt from the form's submit and the
-// button from its click, and both enqueue through the threads store, where the
-// refreshes a commit starts register only once the write lands. Untracked, a
-// flush that begins first finds nothing outstanding and returns, and the late
-// commit's refreshes then render outside act. The fenced mount parks the
-// intent, so the held write is all of the press's durable work.
+// only what registered with the projection work tracker. Both Stop routes run
+// fire-and-forget, the typed /interrupt from the form's submit and the button
+// from its click, and both enqueue through the threads store, whose storage
+// registers the write's transaction when it starts. Untracked, a flush that
+// begins first finds nothing outstanding and returns, and the late commit's
+// refreshes then render outside act. The fenced mount parks the intent, so the
+// held transaction is all of the press's durable work.
 test.each<[string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]>([
   [
     "a typed /interrupt",
@@ -3764,28 +3746,25 @@ test.each<[string, (user: ReturnType<typeof userEvent.setup>) => Promise<void>]>
     },
   ],
 ])("a flush cannot settle while %s's durable write is still in flight", async (_route, press) => {
-  const storage = new PausedCommitStorage();
-  setMutationStorageForTests(storage);
   const user = userEvent.setup();
   const ref = "local:active-fenced-interrupt-held";
   await mountActiveFencedForTypedCommands(ref);
   // Settle the mount's own projection work, so only the held write can keep
   // the flush below open.
   await flushPendingTurnsProjectionForTests();
+  // Stop's write: the interrupt record and the cancellations it makes, in one
+  // transaction over every mutation store.
+  const held = holdNextWriteTransaction(["outbox", "optimistic", "recovery", "sequences"]);
 
   await press(user);
-  await storage.commitStarted;
+  await held.reached;
 
-  let flushResolved = false;
-  const flushing = flushPendingTurnsProjectionForTests().then(() => {
-    flushResolved = true;
-  });
-  // If the press is tracked, the flush cannot return here.
-  await outlastEmptyFlushRoundForTests();
-  expect(flushResolved).toBe(false);
+  const flush = await startFlushPastEmptyRoundForTests();
+  // If the write is tracked, the flush cannot return here.
+  expect(flush.isDone()).toBe(false);
 
-  storage.release();
-  await flushing;
+  held.release();
+  await flush.done;
   expect((await parkedOutboxFor(ref)).map((record) => record.method)).toEqual(["turn/interrupt"]);
 });
 

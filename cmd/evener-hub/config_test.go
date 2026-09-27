@@ -720,3 +720,47 @@ exit 2
 		}
 	}
 }
+
+// TestHubTOMLRefusesUnknownFieldsInReservedRecordTables pins roborev round 6's
+// second finding: the reserved [host_records] and [generations] tables are
+// decoded into typed structs and reconstructed on every rewrite, so a field this
+// build does not decode would be silently dropped by the next write. Spec 08 §6
+// is explicit that forward preservation is not offered for a reserved record
+// this build does not recognize: "a reserved value whose shape this build cannot
+// decode is refused loudly before any rewrite". Unknown keys outside the
+// reserved set stay the operator's data and still load.
+func TestHubTOMLRefusesUnknownFieldsInReservedRecordTables(t *testing.T) {
+	const host = "[[hosts]]\nname = \"alpha\"\nssh = \"alpha.example\"\n"
+	refusals := map[string]string{
+		"unknown field in a live record": host +
+			"\n[host_records.alpha]\nincarnation_id = \"inc-alpha\"\npresence_epoch = 1\nnewer_field = \"from a newer build\"\n",
+		"unknown field in a high-water mark": host +
+			"\n[generations.alpha]\ngeneration = 1\nincarnation_id = \"inc-alpha\"\npresence_epoch = 1\nnewer_field = 2\n",
+		"unknown subtable inside a mark": host +
+			"\n[generations.alpha]\ngeneration = 1\nincarnation_id = \"inc-alpha\"\npresence_epoch = 1\n\n[generations.alpha.extra]\nfield = true\n",
+	}
+	for name, doc := range refusals {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hub.toml")
+			if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadConfig(path)
+			if err == nil {
+				t.Fatal("a reserved record carrying a field this build does not decode loaded, want a refusal")
+			}
+			if !strings.Contains(err.Error(), "newer_field") && !strings.Contains(err.Error(), "extra") {
+				t.Fatalf("the refusal does not name the unknown field: %v", err)
+			}
+		})
+	}
+	// Unknown keys outside the reserved set are operator data, not refusals.
+	path := filepath.Join(t.TempDir(), "hub.toml")
+	doc := host + "\n[operator_notes]\nnote = \"mine\"\n"
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err != nil {
+		t.Fatalf("an unknown key outside the reserved set refused: %v", err)
+	}
+}

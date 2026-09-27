@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -2204,4 +2205,96 @@ func TestHostManageRemoveWindowFencesTheNameAndKeepsConcurrentCommits(t *testing
 		t.Fatalf("re-Add after the removal finished: %v", err)
 	}
 	assertHubTOMLHostNames(t, pr.configPath, "keep", "other", "side")
+}
+
+// TestHostManageRemoveRollbackKeepsTheLiveIdentity pins the property roborev
+// round 7's rollback finding asks for, on the branch it names: a compensated
+// removal leaves the live entry's whole (generation, incarnation id, presence
+// epoch) triple exactly as it was, and hub.toml's records and the store row stay
+// that same triple. Compensation touches the store row and the file only — no
+// rollback path re-applies a captured entry through the registry's minting
+// methods (Add/Update), which would mint a fresh identity there while the
+// restored file kept the old triple. If such a re-apply were ever introduced,
+// this test would fail on the mismatched triple.
+func TestHostManageRemoveRollbackKeepsTheLiveIdentity(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	// A sidecar entry the boot migration folds in and records an identity for —
+	// the same shape TestHostManageRemoveRollsHubTOMLBackWhenLiveTeardownFails
+	// uses, with a manager that can never complete the teardown.
+	sidecarBytes := []byte(`{"hosts":[{"name":"side","ssh":"s.example","key_path":"/keys/s"}]}`)
+	if err := os.WriteFile(legacySidecarPathFor(configPath), sidecarBytes, 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	manager := sshconn.New(nil, sshconn.Options{})
+	t.Cleanup(func() { _ = manager.Close() })
+	m := newHubHostManager(appsource.NewRegistry(), manager, hubcore.WebConfig{}, configPath, nil, nil)
+
+	before, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("the boot left side out of the registry")
+	}
+	if !completeIdentity(before) {
+		t.Fatalf("the live entry carries no complete identity: %+v", before)
+	}
+	// The file already records the live triple, so a rollback that minted a new
+	// identity would disagree with these records.
+	recBefore, marksBefore := readHostRecords(t, configPath)
+	if recBefore["side"] != hostRecordFor(before) || marksBefore["side"] != hostGenerationFor(before) {
+		t.Fatalf("hub.toml records = (%+v, %+v), want the live triple (%+v, %+v)",
+			recBefore["side"], marksBefore["side"], hostRecordFor(before), hostGenerationFor(before))
+	}
+	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err == nil {
+		t.Fatal("Remove over a manager with no registry succeeded, want the live-teardown refusal")
+	}
+	after, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("the refused Remove dropped the live entry")
+	}
+	if after.Generation != before.Generation || after.IncarnationID != before.IncarnationID || after.PresenceEpoch != before.PresenceEpoch {
+		t.Fatalf("the refused Remove changed the live identity: %+v -> %+v", before, after)
+	}
+	recAfter, marksAfter := readHostRecords(t, configPath)
+	if recAfter["side"] != hostRecordFor(before) || marksAfter["side"] != hostGenerationFor(before) {
+		t.Fatalf("hub.toml records after the rollback = (%+v, %+v), want the live triple (%+v, %+v)",
+			recAfter["side"], marksAfter["side"], hostRecordFor(before), hostGenerationFor(before))
+	}
+	stored := m.cfg.store.snapshot()
+	if len(stored) != 1 || stored[0].Generation != before.Generation ||
+		stored[0].IncarnationID != before.IncarnationID || stored[0].PresenceEpoch != before.PresenceEpoch {
+		t.Fatalf("store rows after the rollback = %+v, want the live triple %+v", stored, before)
+	}
+}
+
+// TestHostManageAddRefusalKeepsRetainedState pins roborev round 8's low
+// finding: Add reset the name's retained attach state before it stamped the
+// entry, so a stamp refusal — the generation counter at its maximum — rejected
+// the add but dropped the retained state anyway, and a refused mutation must
+// commit nothing. The sweep is now a detach, and every refusal path restores
+// it, so a refused add leaves the retained state exactly as it was.
+func TestHostManageAddRefusalKeepsRetainedState(t *testing.T) {
+	f := newUpdateFixture(t)
+	// Retained state for a name the fixture does not hold live: the facts of a
+	// row that once rendered attached.
+	f.m.cfg.state.recordKnown(appwire.HostRow{
+		Name: "fresh", Attached: true, ServerName: "remote-hub", ServerVersion: "0.1.0",
+	}, hostFactsValidity{handshake: true}, 1)
+	// The generation counter at its maximum: the add's Stamp cannot mint an
+	// identity, so the add is refused before anything may change.
+	f.m.cfg.hosts.SeedHighWater(map[string]hostreg.HighWater{"exhausted": {Generation: math.MaxUint64}})
+	_, err := f.m.Add(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "fresh", Address: "fresh.example"},
+	})
+	if !errors.Is(err, hostreg.ErrCounterExhausted) {
+		t.Fatalf("Add at an exhausted generation counter = %v, want hostreg.ErrCounterExhausted", err)
+	}
+	// The refused add left the retained state exactly as it was.
+	row := appwire.HostRow{Name: "fresh"}
+	f.m.cfg.state.apply(&row, 1)
+	if row.ServerName != "remote-hub" || row.ServerVersion != "0.1.0" {
+		t.Fatalf("the refused add dropped the name's retained state: %+v", row)
+	}
 }

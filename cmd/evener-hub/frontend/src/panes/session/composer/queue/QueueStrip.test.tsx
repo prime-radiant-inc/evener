@@ -22,6 +22,7 @@ import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexe
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
+import { hoverForTooltip } from "../../../../widgets/tooltip/tooltipTestUtils";
 import { PendingChips } from "../../pending/PendingChips";
 import {
   pendingTurnEntries,
@@ -2050,8 +2051,7 @@ describe("drain-as-steer affordance", () => {
     expect(isDisabled(steerNow)).toBe(true);
     const wrapper = steerNow.parentElement;
     if (!wrapper) throw new Error("Steer now has no tooltip wrapper");
-    fireEvent.mouseEnter(wrapper);
-    expect((await screen.findByRole("tooltip")).textContent).toBe(NO_ACTIVE_TURN);
+    expect(hoverForTooltip(wrapper).textContent).toBe(NO_ACTIVE_TURN);
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
   });
 
