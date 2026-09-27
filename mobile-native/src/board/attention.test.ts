@@ -10,6 +10,7 @@ import {
 	liveSummary,
 	stateWord,
 	summaryText,
+	taskLine,
 	usualPlace,
 	whyLine,
 	workingActivity,
@@ -114,15 +115,67 @@ describe("Live bands (spec 7.1)", () => {
 		expect(bandOf(state)).toBe(band);
 	});
 
-	it("puts failures first, oldest first, then the rest of Needs you oldest waiting first", () => {
+	it("sorts Needs you by failed, then question or approval, then warning or restart-needed, then oldest first", () => {
+		// Every row is newer than each row in the bands below it, ages interleave
+		// within a band, and the rows arrive newest first: age order, arrival
+		// order and any merged or split band would each give a different sequence.
 		const live = [
-			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(30) }),
-			row("f-new", { state: "errored", updated_at: at(20) }),
-			row("w-old", { state: "warning", updated_at: at(5) }),
-			row("f-old", { state: "errored", updated_at: at(10) }),
+			row("f-new", { state: "errored", updated_at: at(8) }),
+			row("f-old", { state: "errored", updated_at: at(7) }),
+			row("q-new", { state: "awaiting", ask_pending: true, updated_at: at(6) }),
+			row("a", { state: "active", approval_pending: true, updated_at: at(5) }),
+			row("q-old", { state: "awaiting", ask_pending: true, updated_at: at(4) }),
+			row("w-new", { state: "warning", updated_at: at(3) }),
+			row("r", { state: "restartRequired", updated_at: at(2) }),
+			row("w-old", { state: "warning", updated_at: at(1) }),
 		];
-		const bands = liveBands(live, [], never);
-		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["f-old", "f-new", "w-old", "q-new"]);
+		const needsYou = liveBands(live, [], never).needsYou.map((item) => item.row.ref);
+		expect(needsYou).toEqual(["f-old", "f-new", "q-old", "a", "q-new", "w-old", "r", "w-new"]);
+	});
+
+	// boardState's mark precedence returns "warning"/"restartNeeded" for these
+	// rows before it ever looks at ask_pending/approval_pending, so ranking by
+	// mark alone would bury a row the hub still counts as blocked on you under
+	// every plain warning or restart-needed row, however old. The band must
+	// read the flags directly instead.
+	it("a warning that also carries ask_pending sorts in the middle band, above an older plain warning", () => {
+		const bands = liveBands(
+			[
+				row("w-plain", { state: "warning", updated_at: at(5) }),
+				row("w-asking", { state: "warning", ask_pending: true, updated_at: at(30) }),
+			],
+			[],
+			never,
+		);
+		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["w-asking", "w-plain"]);
+		// The mark itself is untouched: it still reads Warning, not Question.
+		expect(bands.needsYou.find((item) => item.row.ref === "w-asking")?.state).toBe("warning");
+	});
+
+	it("a restart-needed row that also carries approval_pending sorts in the middle band, above an older plain restart-needed", () => {
+		const bands = liveBands(
+			[
+				row("r-plain", { state: "restartRequired", updated_at: at(5) }),
+				row("r-approving", { state: "restartRequired", approval_pending: true, updated_at: at(30) }),
+			],
+			[],
+			never,
+		);
+		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["r-approving", "r-plain"]);
+		expect(bands.needsYou.find((item) => item.row.ref === "r-approving")?.state).toBe("restartNeeded");
+	});
+
+	// A hub that predates S2a never sends approval_pending; approvalRefs infers
+	// the approval from needs_you section membership instead (the row's raw
+	// approval_pending is absent). That inferred approval must still land in
+	// the middle band, not fall to "everything else" for lack of the raw flag.
+	it("an approval inferred from the needs_you section (no raw approval_pending) still sorts in the middle band", () => {
+		const bands = liveBands(
+			[row("w", { state: "warning", updated_at: at(30) }), row("inferred", { state: "active", updated_at: at(1) })],
+			[row("inferred", { state: "active" })],
+			never,
+		);
+		expect(bands.needsYou.map((item) => item.row.ref)).toEqual(["inferred", "w"]);
 	});
 
 	it("orders Finished and Idle newest first and keeps the hub's order for Working", () => {
@@ -259,6 +312,46 @@ describe("why lines on the fallbacks (spec 7.2, 18)", () => {
 	});
 });
 
+describe("the task line (spec 7.2, S13)", () => {
+	it("names the task now in progress by the hub's own position for it", () => {
+		const unfinished = row("s", {
+			tasks: { total: 7, done: 3, current_id: 4, current: "Fix the settle/drain race" },
+		});
+		expect(taskLine(unfinished)).toBe("Task 4 of 7 · Fix the settle/drain race");
+	});
+
+	it("trusts current_id over done/cancelled when a later task already settled out of order", () => {
+		// 3 tasks are settled (done or cancelled), but the one still in progress
+		// is task 2, not task 4: dependency-driven completion can settle a
+		// later task before an earlier one. done + cancelled + 1 would say 4.
+		const outOfOrder = row("s", {
+			tasks: { total: 7, done: 2, cancelled: 1, current_id: 2, current: "Fix the settle/drain race" },
+		});
+		expect(taskLine(outOfOrder)).toBe("Task 2 of 7 · Fix the settle/drain race");
+	});
+
+	it("falls back to counting done and cancelled tasks when the hub omits current_id", () => {
+		const withCancellation = row("s", {
+			tasks: { total: 4, done: 2, cancelled: 1, current: "Cap retries per host" },
+		});
+		expect(taskLine(withCancellation)).toBe("Task 4 of 4 · Cap retries per host");
+	});
+
+	it("has no line once every task is done or cancelled (current absent)", () => {
+		const finished = row("s", { tasks: { total: 3, done: 2, cancelled: 1 } });
+		expect(taskLine(finished)).toBeNull();
+	});
+
+	it("has no line before any task starts (current absent, nothing done yet)", () => {
+		const notStarted = row("s", { tasks: { total: 5, done: 0 } });
+		expect(taskLine(notStarted)).toBeNull();
+	});
+
+	it("has no line for a session with no task list", () => {
+		expect(taskLine(row("s"))).toBeNull();
+	});
+});
+
 describe("the last line prints project and host only when unusual", () => {
 	const fleet = [
 		row("a", { project: "evener", host_id: "local" }),
@@ -278,5 +371,25 @@ describe("the last line prints project and host only when unusual", () => {
 			project: "docs",
 			host: "paradise-park",
 		});
+	});
+
+	it("carries task progress alongside an unusual project and host", () => {
+		const usual = usualPlace(fleet);
+		const withTask = row("d", {
+			project: "docs",
+			host_id: "paradise-park",
+			tasks: { total: 7, done: 3, current: "Fix the settle/drain race" },
+		});
+		expect(lastLine(withTask, usual, label)).toEqual({
+			task: "Task 4 of 7 · Fix the settle/drain race",
+			project: "docs",
+			host: "paradise-park",
+		});
+	});
+
+	it("has no last line when the task list is finished and the project and host are usual", () => {
+		const usual = usualPlace(fleet);
+		const finished = row("a", { tasks: { total: 2, done: 2 } });
+		expect(lastLine(finished, usual, label)).toBeNull();
 	});
 });

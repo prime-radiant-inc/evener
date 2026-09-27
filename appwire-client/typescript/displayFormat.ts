@@ -8,7 +8,10 @@ export function formatTokenCount(n: number): string {
 }
 
 // Floors at 1ms, then uses decimal or whole seconds as durations grow.
+// Non-finite input renders "" (no duration to show): unlike a token count,
+// a duration has no honest zero to clamp to.
 export function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms)) return "";
   const rounded = Math.max(1, Math.round(ms));
   if (rounded < 1000) return `${rounded}ms`;
   if (rounded < 10000) return `${(rounded / 1000).toFixed(1).replace(/\.0$/, "")}s`;

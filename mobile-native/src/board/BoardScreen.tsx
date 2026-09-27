@@ -1,6 +1,7 @@
 import {
 	humanizeState,
 	type NavigationPinSectionDescriptor,
+	type NavigationProjectSummary,
 	type NavigationSessionSummary,
 } from "@evener/appwire-client";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
@@ -31,9 +32,9 @@ import { drafts } from "../nativeDrafts";
 import { RosterSearch } from "../rosterSearch";
 import type { Routes } from "../screens";
 import { Action, Copy, styles, useColors, useTextScale } from "../ui";
-import { usePinNavigation } from "../usePinNavigation";
 import {
 	type Band,
+	boardState,
 	type ClassifiedRow,
 	type LiveSummary,
 	liveBands,
@@ -44,14 +45,27 @@ import {
 	summaryText,
 	usualPlace,
 } from "./attention";
-import type { SeenMarkers } from "./boardMemory";
+import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { bandHeaderText, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { BoardSeen, type HubSeenMarks, hubSeenMarks } from "./hubSeen";
-import { foldedSections, seenMarkers } from "./nativeBoardMemory";
-import { PinnedSection, useCategoryFolds } from "./PinnedSections";
+import { foldedSections, organizeByPreference, seenMarkers } from "./nativeBoardMemory";
+import { PinnedSection, useBoardFolds, useCategoryFolds } from "./PinnedSections";
+import { journalHoldsProject, PROJECT_MENU_LABELS, type ProjectMenuAction, projectMenuActions } from "./projectMenu";
+import {
+	expandedProjectKeys,
+	grouping,
+	liveCountsByHost,
+	type ProjectSection,
+	type ProjectTreeItem,
+	projectTreeItems,
+	SECTION_FOLDS,
+} from "./projectTree";
+import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTreeRow";
 import { PulseMeter } from "./PulseMeter";
+import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
+import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -65,6 +79,8 @@ const BAND_HEADERS: Record<Exclude<Band, "idle">, string> = {
 	finished: "FINISHED",
 	working: "WORKING",
 };
+/** A row that reads a section's next page: a tier's sessions or the catalog's projects. */
+type MoreItem = Extract<ProjectTreeItem, { kind: "more" | "moreProjects" }>;
 
 /** Home (spec 7.1): every live session ordered by who needs you, then the
  * user's pinned categories, projects and archive. */
@@ -138,7 +154,12 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		[snapshot.needsYou.rows, seen, seenRevision, hubSeenRevision],
 	);
 	const folds = useCategoryFolds(hubId);
-	const categoryMenu = useCategoryMenu(hubId, () => board.getSnapshot().pins.rows);
+	const organization = useBoardOrganization(hubId);
+	const categoryMenu = pinnedCategoryMenu(organization, () => board.getSnapshot().pins.rows);
+	const projectSections = useProjectSections(hubId);
+	const [organizeBy, setOrganizeBy] = useState(() => organizeByPreference(hubId).get());
+	// Every fold inside the project sections, by its ProjectTreeItem fold.
+	const { isFolded, setFolded } = useBoardFolds(hubId);
 
 	const [idleFolded, setIdleFolded] = useState(() => foldedSections(hubId).isFolded("idle", true));
 	const foldIdle = (folded: boolean) => {
@@ -190,6 +211,9 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// Within about a screen of the end of Live, read its next page. Layout
 	// checks too, so a first page too short to scroll keeps reading.
 	const viewport = useRef({ offset: 0, height: 0 });
+	// Where each of the project sections' "more" rows (a tier's sessions, or
+	// the catalog's projects) was last laid out inside its section.
+	const moreFrames = useRef(new Map<string, { y: number; height: number }>());
 	const readMoreLiveIfNear = () => {
 		const page = board.getSnapshot().live;
 		if (liveEnd.current === null || page.remaining === 0 || page.loading || page.stale || page.error) return;
@@ -200,6 +224,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		const { contentOffset, layoutMeasurement } = event.nativeEvent;
 		viewport.current = { offset: contentOffset.y, height: layoutMeasurement.height };
 		readMoreLiveIfNear();
+		readVisibleMore();
 	};
 
 	const manifest = snapshot.manifest;
@@ -207,6 +232,10 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	// Every category keeps its section; only the chips hide empty ones.
 	const pins = snapshot.pins.rows;
 	const projects = manifest?.catalogs.projects.count ?? 0;
+	// Projects shows while the manifest counts projects, until its catalog
+	// loads empty; the chip follows the section.
+	const projectsShown =
+		projects > 0 && !(projectSections.projects.view.loaded && projectSections.projects.view.projects.length === 0);
 	const archived = manifest?.catalogs.archived_projects.count ?? 0;
 	const chips: ChipProps[] = [];
 	const liveChipCount = manifest?.sections.live.count ?? liveTotal;
@@ -232,7 +261,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 				scrollTo(`pin:${pin.id}`);
 			},
 		});
-	if (projects > 0)
+	if (projectsShown)
 		chips.push({
 			key: "projects",
 			name: "Projects",
@@ -261,6 +290,130 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 			</View>
 		) : null;
 	const summary = liveSummary(bands);
+
+	// Projects (or Hosts), Test runs and Archived, after the pinned categories.
+	const hostSources = sources ?? [];
+	const projectGrouping = grouping(hostSources, organizeBy);
+	const chooseOrganizeBy = (next: OrganizeBy) => {
+		organizeByPreference(hubId).set(next);
+		setOrganizeBy(next);
+	};
+	// A host's live count needs every Live and Needs you row (ruling 12).
+	const hostLiveCount = liveCountsByHost(
+		[...snapshot.live.rows, ...snapshot.needsYou.rows],
+		snapshot.live.loaded &&
+			snapshot.needsYou.loaded &&
+			snapshot.live.remaining === 0 &&
+			snapshot.needsYou.remaining === 0,
+	);
+	const testRuns = manifest?.catalogs.test_runs.count ?? 0;
+	const projectHeaders: Record<ProjectSection, { title: string; label: string; shown: boolean }> = {
+		projects: {
+			title: projectGrouping === "host-project" ? "HOSTS" : "PROJECTS",
+			label: projectGrouping === "host-project" ? "Hosts" : "Projects",
+			shown: projectsShown,
+		},
+		"test-runs": { title: `Test runs · ${testRuns}`, label: sectionLabel("Test runs", testRuns, "project"), shown: testRuns > 0 },
+		archived: { title: `ARCHIVED · ${archived}`, label: sectionLabel("Archived", archived, "project"), shown: archived > 0 },
+	};
+	const shownSections = PROJECT_SECTIONS.filter((section) => projectHeaders[section].shown).map((section) => {
+		const folded = isFolded(SECTION_FOLDS[section].fold, SECTION_FOLDS[section].foldedByDefault);
+		const { view } = projectSections[section];
+		const items = folded
+			? []
+			: projectTreeItems({
+					section,
+					projects: view.projects,
+					pages: view.pages,
+					sources: hostSources,
+					organizeBy,
+					isFolded,
+					hostLiveCount,
+					remainingProjects: view.remaining,
+				});
+		return { section, folded, items };
+	});
+	const itemsOf = (section: ProjectSection) => shownSections.find((shown) => shown.section === section)?.items ?? [];
+	// A section's catalog is read when it's first shown unfolded, so a folded
+	// Test runs or Archived costs no read.
+	const opening = focused ? shownSections.filter((shown) => !shown.folded).map((shown) => shown.section) : [];
+	const openingKey = opening.join(" ");
+	// The sections' controllers change together, with the connection.
+	const projectsController = projectSections.projects.controller;
+	useEffect(() => {
+		for (const section of opening) projectSections[section].open();
+	}, [openingKey, projectsController]);
+	// After each render, the browsers read exactly the projects on screen.
+	useEffect(() => {
+		if (!focused) return;
+		for (const section of PROJECT_SECTIONS) {
+			const controller = projectSections[section].controller;
+			if (controller) showExpanded(controller, expandedProjectKeys(itemsOf(section)));
+		}
+	});
+	// A "more" row reads its next page when pressed, and once at least half of
+	// it is on screen (checked on scroll and on layout, as Live's paging is).
+	const readMore = (section: ProjectSection, item: MoreItem) => {
+		const controller = projectSections[section].controller;
+		if (item.kind === "moreProjects") void controller?.loadMoreProjects();
+		else void controller?.loadMoreSessions(item.projectKey, item.tier);
+	};
+	const readVisibleMore = () => {
+		const { offset, height } = viewport.current;
+		if (height === 0) return;
+		for (const { section, items } of shownSections) {
+			const top = offsets.current[section];
+			if (top === undefined) continue;
+			for (const item of items) {
+				if (item.kind !== "more" && item.kind !== "moreProjects") continue;
+				const frame = moreFrames.current.get(item.key);
+				if (!frame) continue;
+				const start = top + frame.y;
+				const shown = Math.min(start + frame.height, offset + height) - Math.max(start, offset);
+				if (shown >= frame.height / 2) readMore(section, item);
+			}
+		}
+	};
+	const projectMenu = (section: ProjectSection, project: NavigationProjectSummary) => {
+		const actions = projectMenuActions(project, {
+			connected,
+			organizationReady: organization.ready,
+			archived: section === "archived",
+		});
+		return actions.length ? () => openProjectMenu(organization, project, actions) : undefined;
+	};
+	const projectItem = (section: ProjectSection, item: ProjectTreeItem) => {
+		if (item.kind === "session")
+			return (
+				<View key={item.key} style={{ marginLeft: 16 * item.depth }}>
+					{rows([{ row: item.row, state: boardState(item.row, false, markers.isSeen(item.row)) }], "quiet", false)}
+				</View>
+			);
+		if (item.kind === "more" || item.kind === "moreProjects")
+			return (
+				<View
+					key={item.key}
+					testID={item.kind === "more" ? "project-more" : "project-more-projects"}
+					onLayout={(event) => {
+						moreFrames.current.set(item.key, event.nativeEvent.layout);
+						readVisibleMore();
+					}}
+				>
+					<ProjectTreeRow item={item} onPress={() => readMore(section, item)} />
+				</View>
+			);
+		return (
+			<ProjectTreeRow
+				key={item.key}
+				item={item}
+				onPress={() => {
+					if ("fold" in item) setFolded(item.fold, !item.folded);
+				}}
+				onLongPress={item.kind === "project" ? projectMenu(section, item.project) : undefined}
+				changing={item.kind === "project" && journalHoldsProject(organization, item.project.key)}
+			/>
+		);
+	};
 
 	let live: ReactNode;
 	// Update needed says everything there is to say until something loads.
@@ -300,6 +453,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 						onLayout={(event) => {
 							viewport.current = { ...viewport.current, height: event.nativeEvent.layout.height };
 							readMoreLiveIfNear();
+							readVisibleMore();
 						}}
 						onContentSizeChange={readMoreLiveIfNear}
 						scrollEventThrottle={100}
@@ -330,24 +484,30 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 								onLayout={measure(`pin:${pin.id}`)}
 							/>
 						))}
-						{projects > 0 ? (
-							<View onLayout={measure("projects")}>
-								<SectionRow
-									text={`Projects · ${projects}`}
-									label={sectionLabel("Projects", projects, "project")}
-									onPress={() => navigation.navigate("Projects", { hubId, archived: false })}
+						{shownSections.map(({ section, folded, items }) => (
+							<View
+								key={section}
+								testID={`project-section:${section}`}
+								onLayout={(event) => {
+									measure(section)(event);
+									readVisibleMore();
+								}}
+								style={{ paddingTop: 10 }}
+							>
+								<ProjectSectionHeader
+									title={projectHeaders[section].title}
+									label={projectHeaders[section].label}
+									folded={folded}
+									onToggle={() => setFolded(SECTION_FOLDS[section].fold, !folded)}
+									organize={
+										section === "projects" && projectGrouping !== "flat"
+											? { by: organizeBy, onChange: chooseOrganizeBy }
+											: null
+									}
 								/>
+								{items.map((item) => projectItem(section, item))}
 							</View>
-						) : null}
-						{archived > 0 ? (
-							<View onLayout={measure("archived")}>
-								<SectionRow
-									text={`Archived · ${archived}`}
-									label={sectionLabel("Archived", archived, "project")}
-									onPress={() => navigation.navigate("Projects", { hubId, archived: true })}
-								/>
-							</View>
-						) : null}
+						))}
 					</ScrollView>
 				</>
 			)}
@@ -356,19 +516,11 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	);
 }
 
-/** Rename and Delete for the pinned categories (spec 7.1), through one
- * organization journal for the whole Board. ⋯ shows only while a change can
- * go out: connected, the journal confirmed against the hub, and no change
- * pending or unresolved. The journal's own error text is never shown; a
- * change on its way dims its category. */
-function useCategoryMenu(hubId: string, catalog: () => readonly NavigationPinSectionDescriptor[]) {
-	const pin = usePinNavigation(hubId);
-	const free = (action: { pending: boolean; uncertain: boolean; storageUnavailable: boolean } | null) =>
-		!!action && !action.pending && !action.uncertain && !action.storageUnavailable;
-	const canChange = pin.ready && pin.confirmed && !!pin.actions && free(pin.action);
-	// Checked again at every press: the connection or the journal may have
-	// moved while the sheet or an alert was up.
-	const canChangeNow = () => pin.isCurrent() && !!pin.actions && free(pin.actions.getSnapshot());
+/** Rename and Delete for the pinned categories (spec 7.1), through the
+ * Board's one organization journal. ⋯ shows only while a change can go out:
+ * connected, and no change pending or unresolved. The journal's own error
+ * text is never shown; a change on its way dims its category. */
+function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => readonly NavigationPinSectionDescriptor[]) {
 	const listed = (sectionId: string) => catalog().some((section) => section.id === sectionId);
 	const rename = (section: NavigationPinSectionDescriptor) =>
 		Alert.prompt(
@@ -385,8 +537,8 @@ function useCategoryMenu(hubId: string, catalog: () => readonly NavigationPinSec
 							Alert.alert("Category names can be up to 80 characters.");
 							return;
 						}
-						if (!canChangeNow() || !listed(section.id)) return;
-						void pin.actions?.renamePinSection({ sectionId: section.id, name });
+						if (!organizationOpen(organization) || !listed(section.id)) return;
+						void organization.actions?.renamePinSection({ sectionId: section.id, name });
 					},
 				},
 			],
@@ -400,13 +552,13 @@ function useCategoryMenu(hubId: string, catalog: () => readonly NavigationPinSec
 				text: "Delete",
 				style: "destructive",
 				onPress: () => {
-					if (!canChangeNow() || !listed(section.id)) return;
-					void pin.actions?.deletePinSection({ sectionId: section.id });
+					if (!organizationOpen(organization) || !listed(section.id)) return;
+					void organization.actions?.deletePinSection({ sectionId: section.id });
 				},
 			},
 		]);
 	const open = (section: NavigationPinSectionDescriptor) => {
-		if (!canChangeNow()) return;
+		if (!organizationOpen(organization)) return;
 		if (Platform.OS === "ios") {
 			ActionSheetIOS.showActionSheetWithOptions(
 				{ title: section.name, options: ["Rename", "Delete", "Cancel"], destructiveButtonIndex: 1, cancelButtonIndex: 2 },
@@ -423,13 +575,47 @@ function useCategoryMenu(hubId: string, catalog: () => readonly NavigationPinSec
 			{ text: "Cancel", style: "cancel" },
 		]);
 	};
-	const operation = pin.action?.pending ? pin.action.recovery?.operation : undefined;
+	const operation = organization.state?.pending ? organization.state.recovery?.operation : undefined;
 	return {
-		menuFor: (section: NavigationPinSectionDescriptor) => (canChange ? () => open(section) : null),
+		menuFor: (section: NavigationPinSectionDescriptor) => (organization.ready ? () => open(section) : null),
 		changing: (sectionId: string) =>
 			(operation?.kind === "renamePinSection" || operation?.kind === "deletePinSection") &&
 			operation.params.sectionId === sectionId,
 	};
+}
+
+/** A project row's long-press menu (ruling 15): Pin to top or Unpin, and
+ * Archive or Unarchive, as an action sheet, or an alert off iOS. */
+function openProjectMenu(
+	organization: BoardOrganization,
+	project: NavigationProjectSummary,
+	actions: readonly ProjectMenuAction[],
+) {
+	if (!organizationOpen(organization)) return;
+	const act = (action: ProjectMenuAction) => {
+		if (!organizationOpen(organization)) return;
+		if (action === "pin" || action === "unpin") void organization.actions?.favorite(project.key, action === "pin");
+		else
+			void organization.actions?.archive(
+				{ kind: "project", id: project.key, workingDir: project.working_dir },
+				action === "archive",
+			);
+	};
+	const title = projectName(project);
+	if (Platform.OS === "ios") {
+		ActionSheetIOS.showActionSheetWithOptions(
+			{ title, options: [...actions.map((action) => PROJECT_MENU_LABELS[action]), "Cancel"], cancelButtonIndex: actions.length },
+			(index) => {
+				const action = actions[index];
+				if (action) act(action);
+			},
+		);
+		return;
+	}
+	Alert.alert(title, undefined, [
+		...actions.map((action) => ({ text: PROJECT_MENU_LABELS[action], onPress: () => act(action) })),
+		{ text: "Cancel", style: "cancel" },
+	]);
 }
 
 /** The drafts saved on this device for a hub's sessions, or none when the
@@ -832,35 +1018,6 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 				{`Idle · ${count}`}
 			</Text>
 			<FoldChevron folded={folded} />
-		</Pressable>
-	);
-}
-
-/** Projects or Archived, after the pinned categories: a row that opens its
- * own screen until PR 3b brings it inline. */
-function SectionRow({ text, label, onPress }: { text: string; label: string; onPress: () => void }) {
-	const { palette } = useColors();
-	const scale = useTextScale();
-	return (
-		<Pressable
-			accessibilityRole="button"
-			accessibilityLabel={label}
-			onPress={onPress}
-			style={({ pressed }) => ({
-				minHeight: 48,
-				paddingHorizontal: 16,
-				flexDirection: "row",
-				alignItems: "center",
-				columnGap: 8,
-				borderTopWidth: 0.5,
-				borderColor: palette.edge,
-				backgroundColor: pressed ? palette.pressed : palette.page,
-			})}
-		>
-			<Text allowFontScaling={Platform.OS !== "ios"} style={{ flex: 1, fontSize: 17 * scale, color: palette.inkHi }}>
-				{text}
-			</Text>
-			<SymbolView name="chevron.right" size={13 * scale} tintColor={palette.inkLow} />
 		</Pressable>
 	);
 }

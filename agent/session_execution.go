@@ -331,6 +331,9 @@ func (s *Session) deliverCommunicate(data events.CommunicateData) error {
 			return refusal
 		}
 	}
+	s.mu.Lock()
+	s.noteAgentMessageLocked(data.Message)
+	s.mu.Unlock()
 	s.emit(events.EventCommunicate, data)
 	return nil
 }
