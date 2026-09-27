@@ -339,9 +339,9 @@ describe("createPendingTurnsStore", () => {
 });
 
 describe("awaitingFirstFrameSend", () => {
-  test("derives from the identified active turn and needs no confirmation timer", () => {
+  test("derives from the identified running turn and needs no confirmation timer", () => {
     const model = threadModel({
-      activeTurnId: "turn_1",
+      runningTurnId: "turn_1",
       turns: [{ id: "turn_1", status: "inProgress", items: [userMessageItem({ clientMutationId: "mutation_1" })] }],
     });
     expect(awaitingFirstFrameSend(model)).toBe(true);
@@ -349,7 +349,7 @@ describe("awaitingFirstFrameSend", () => {
 
   test("an authoritative assistant frame retires first-frame state by model identity", () => {
     const model = threadModel({
-      activeTurnId: "turn_1",
+      runningTurnId: "turn_1",
       turns: [
         {
           id: "turn_1",
@@ -364,8 +364,21 @@ describe("awaitingFirstFrameSend", () => {
     expect(awaitingFirstFrameSend(model)).toBe(false);
   });
 
-  test("returns false with no active turn or no model at all", () => {
-    expect(awaitingFirstFrameSend(threadModel({ activeTurnId: undefined, turns: [] }))).toBe(false);
+  test("a fresh read's activeTurnId alone (before any live status frame) still counts", () => {
+    // threadFields/runningTurn (reducer.ts) set runningTurnId from the read's
+    // own evener.activeTurnId at every hydrate, so a resumed cold session
+    // that has not yet received a live thread/status/changed frame still
+    // resolves through this same field.
+    const model = threadModel({
+      activeTurnId: "turn_1",
+      runningTurnId: "turn_1",
+      turns: [{ id: "turn_1", status: "inProgress", items: [userMessageItem({ clientMutationId: "mutation_1" })] }],
+    });
+    expect(awaitingFirstFrameSend(model)).toBe(true);
+  });
+
+  test("returns false with no running turn or no model at all", () => {
+    expect(awaitingFirstFrameSend(threadModel({ runningTurnId: undefined, turns: [] }))).toBe(false);
     expect(awaitingFirstFrameSend(undefined)).toBe(false);
   });
 });
