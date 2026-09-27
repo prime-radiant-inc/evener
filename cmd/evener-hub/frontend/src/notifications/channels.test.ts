@@ -3,7 +3,14 @@ import type { AttentionEntry } from "./attention";
 import { fireOsNotification, playTone } from "./channels";
 
 function entry(overrides: Partial<AttentionEntry> = {}): AttentionEntry {
-  return { ref: "local:r1", title: "Fix the parser", level: "needs_you", askPending: false, ...overrides };
+  return {
+    ref: "local:r1",
+    title: "Fix the parser",
+    level: "needs_you",
+    askPending: false,
+    approvalPending: false,
+    ...overrides,
+  };
 }
 
 // --- Notification double ---------------------------------------------------

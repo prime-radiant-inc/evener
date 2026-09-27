@@ -387,6 +387,17 @@ func (s *Server) SetDescendantLiveWatchesFunc(fn func(threadIDs []string) map[st
 	s.mu.Unlock()
 }
 
+// SetSubagentTallyFunc installs the seam the thread LIST path reads the root
+// session's subagent tally through (S3). Like SetDescendantLiveWatchesFunc it
+// reaches across the delegate-controller boundary, so the list calls it after
+// releasing s.mu. fn reports false for a session with no delegate tree of its
+// own; nil disables the tally.
+func (s *Server) SetSubagentTallyFunc(fn func() (appwire.SubagentTally, bool)) {
+	s.mu.Lock()
+	s.appSubagentTallyFunc = fn
+	s.mu.Unlock()
+}
+
 func (s *Server) AppNotificationsAfter(cursor uint64, threadID string) []appserver.SequencedNotification {
 	return s.appNotifier.ReplayAfter(cursor, s.appNotificationTarget(threadID))
 }
@@ -1332,6 +1343,7 @@ func (s *Server) handleAppThreadList(_ context.Context, params appwire.ThreadLis
 	// single walk of the live tree, where resolving each row on its own searched
 	// that tree once per row.
 	s.attachLiveWatches(data)
+	s.attachSubagentTally(&data[0])
 	return appwire.ThreadListResponse{Data: data}, nil
 }
 
@@ -2508,6 +2520,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
 	visionModel := envelope.VisionModel
+	lastTurnEndedAt := envelope.LastTurnEndedAt
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
 	if threadPreview == "" {
@@ -2553,6 +2566,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			ReasoningEffortLevels: reasoningEffortLevels,
 			SupportsReasoning:     supportsReasoning,
 			VisionModel:           visionModel,
+			LastTurnEndedAt:       lastTurnEndedAt,
 		},
 	}
 }
@@ -2739,6 +2753,24 @@ func (s *Server) attachLiveWatches(data []appwire.Thread) {
 		}
 		data[i] = appThreadWithWatches(data[i], statuses)
 	}
+}
+
+// attachSubagentTally stamps the root row with its tree's subagent
+// tally. A nested delegate's lifecycle change is emitted on its owner's stream
+// and never samples the root's envelope, so the tally is read when the row is
+// listed rather than cached. A tree with no subagent carries none.
+func (s *Server) attachSubagentTally(root *appwire.Thread) {
+	s.mu.RLock()
+	fn := s.appSubagentTallyFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return
+	}
+	tally, ok := fn()
+	if !ok || tally == (appwire.SubagentTally{}) {
+		return
+	}
+	root.Evener.Subagents = &tally
 }
 
 // appThreadWithWatches returns thread with statuses as its diagnostics watch

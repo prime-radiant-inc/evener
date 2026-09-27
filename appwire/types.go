@@ -598,6 +598,14 @@ type SearchResult struct {
 	State   string `json:"state"`
 	Age     string `json:"age"`
 	Ref     string `json:"ref"`
+	// AskPending and ApprovalPending carry the flags a navigation row does: a
+	// live session is waiting on an answer to an ask_user question, or on a
+	// person to allow or deny a sandbox escalation (M7). State keeps its real
+	// value ("active" while an escalation blocks mid-turn), so a pending
+	// approval shows only in ApprovalPending. A past (ended) result carries
+	// neither. Additive: an older hub omits both, decoding as false.
+	AskPending      bool `json:"askPending,omitempty"`
+	ApprovalPending bool `json:"approvalPending,omitempty"`
 }
 
 // SearchResponse groups matching live sessions separately from persisted
@@ -825,6 +833,17 @@ type EvenerThread struct {
 	// changes to a subscriber; the hub serves it through evener/activity/read,
 	// never navigation. Absent on descendant rows and from an older daemon.
 	Activity *ThreadActivity `json:"activity,omitempty"`
+	// LastTurnEndedAt is when the session's last turn ended, in Unix
+	// milliseconds (S4); absent before any turn has ended and from an older
+	// daemon. The hub compares it with its seen-through marker to tell a
+	// Finished session from an Idle one. Snapshot-only: no notification
+	// carries it.
+	LastTurnEndedAt int64 `json:"lastTurnEndedAt,omitempty"`
+	// Subagents tallies a live root session's whole delegate tree (S3), read
+	// from the root's delegate controller when the row is listed. It rides
+	// thread/list root rows only, when the tree has at least one subagent, and
+	// never a thread/read snapshot: no notification announces its changes.
+	Subagents *SubagentTally `json:"subagents,omitempty"`
 }
 
 // ThreadActivity is one pulse meter sample. Minutes holds seven one-minute
@@ -837,6 +856,17 @@ type EvenerThread struct {
 type ThreadActivity struct {
 	Minutes        []int `json:"minutes"`
 	LastActivityAt int64 `json:"lastActivityAt"`
+}
+
+// SubagentTally counts a live root session's subagents, at every depth, by how
+// each one's latest run stands (spec 9, S3). Running: no run has ended yet, or
+// a run is open again after the last one ended. Failed: the latest run ended
+// failed or exhausted. Done: it ended any other way (completed, cancelled or
+// stopped), including a subagent idle between runs.
+type SubagentTally struct {
+	Running int `json:"running"`
+	Failed  int `json:"failed"`
+	Done    int `json:"done"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the

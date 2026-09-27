@@ -112,6 +112,20 @@ func TestCompletionWithNoRunningExecutionRecordsNothing(t *testing.T) {
 	}
 }
 
+// beginExecution admits a turn before its first entry is recorded — a
+// rejected input (a budget-exhausted start, say) can complete an execution
+// that never recorded anything. That completion must not become an orphan
+// entry: the running turn is still "fresh" (place already special-cases it
+// above), so the completion is skipped exactly as with no execution at all.
+func TestCompletionOfAFreshExecutionRecordsNothing(t *testing.T) {
+	w := newPlacementWriter(t)
+	w.BeginExecution("turn_m5", false)
+	r, err := w.Record(completionTurn(), RecordOptions{Door: DoorDurable, Place: PlaceCompletion})
+	if err != nil || r.Recorded {
+		t.Fatalf("completion of a fresh execution = %+v, %v", r, err)
+	}
+}
+
 func TestReopenedExecutionDoesNotRestampTurnKind(t *testing.T) {
 	w := newPlacementWriter(t)
 	w.BeginExecution("turn_m3", true)

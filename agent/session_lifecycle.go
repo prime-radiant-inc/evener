@@ -451,7 +451,7 @@ func (s *Session) releaseRuntimeOnce(ctx context.Context, options closeOptions, 
 		emitEnd := emitTerminal || !s.sessionEndEmitted
 		s.sessionEndEmitted = true
 		if s.state == SessionProcessing {
-			s.accumulateWorkLocked() // dying turn's work counts (Decision 4/L3)
+			s.endTurnLocked() // dying turn's work counts and it ends now (Decision 4/L3)
 		}
 		s.closing = true
 		if !retirement {
@@ -1337,6 +1337,8 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					s.finishProcessingAtBoundary(processCtx, SessionIdle)
 					s.clearAskPending()
 				}
+				// The interrupt marker was the execution's last entry.
+				s.completeExecution(schema.TurnInterrupted)
 				if markerAccepted {
 					s.mu.Lock()
 					turns := s.modelResponses
@@ -1437,9 +1439,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// failed, but nothing told it the thread is idle again, so its belief
 			// that a turn was still running leaked until it left and re-entered
 			// the session.
+			s.completeExecution(schema.TurnFailed) // no-op after an interrupt already completed it
 			s.endInputAtTurnFailure()
 			return strings.Join(outputs, "\n"), err
 		}
+		s.completeExecution(schema.TurnCompleted)
 		// Drain the next action after a completed (non-error) turn. The pops and the
 		// goal-gate fold are side effects kept here; selectDrainNextAction is the pure
 		// priority decision over their results. popQueueHead is reached only when no
@@ -2130,6 +2134,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		runningTurnID, _ = s.mintRunningTurnID()
 	}
 
+	// Admit the execution before its first entry: a continuation or a
+	// notification runs under the name minted above, user input under the
+	// name its durable claim reserved, anything else under a fresh id.
+	executionName := runningTurnID
+	if executionName == "" {
+		executionName = queuedIdentity.StableTurnID
+	}
+	s.beginExecution(executionName)
+
 	if kind == EntryContinuation {
 		s.acceptContinuationInput(ctx, input, runningTurnID)
 	} else if kind == EntryNotification {
@@ -2488,6 +2501,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 	}
 
+	s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput}})
 	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
 	s.finishProcessingAtFailureBoundary(ctx)
 	if goalControlsCap {
@@ -2620,6 +2634,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			if _, exhausted := budgetExhaustionFromError(err); !exhausted {
 				return fmt.Errorf("reserve user turn budget: %w", err)
 			}
+			s.recordNotice(schema.NoticeInfo{Kind: schema.NoticeTurnLimit, TurnLimit: &schema.TurnLimitNotice{MaxTurns: s.cfg.MaxTurns}})
 			s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
 			s.finishProcessingAtFailureBoundary(ctx)
 			return &budgetExhaustionError{
@@ -2667,6 +2682,9 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	// userInputTurn is computed AFTER any SessionStart-hook and environment-context
 	// turns above so it reports the USER_INPUT turn's actual history position,
 	// not a position stale by however many turns those inserted ahead of it.
+	// With a transcript, the entry index the USER_INPUT entry was recorded at
+	// replaces it (recordedUserInputTurn): the transcript also holds entries
+	// history never does.
 	s.mu.Lock()
 	userInputTurn := len(s.history) + 1
 	if preseededInput {
@@ -2720,7 +2738,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 					Images:           userInputImagesFromAttachments(images),
 					ClientMutationID: queuedIdentity.ClientMutationID,
 					StableTurnID:     queuedIdentity.StableTurnID,
-					Turn:             userInputTurn,
+					Turn:             s.recordedUserInputTurn(userInputTurn),
 				})
 				s.emit(events.EventError, errorDataFromError(failure))
 				return failure
@@ -2753,7 +2771,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		Images:           userInputImagesFromAttachments(images),
 		ClientMutationID: queuedIdentity.ClientMutationID,
 		StableTurnID:     queuedIdentity.StableTurnID,
-		Turn:             userInputTurn,
+		Turn:             s.recordedUserInputTurn(userInputTurn),
 	})
 	s.launchInitialPromptNamer(s.sessionCtx, input)
 

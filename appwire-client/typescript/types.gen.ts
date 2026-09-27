@@ -844,6 +844,21 @@ export interface EvenerThread {
    * never navigation. Absent on descendant rows and from an older daemon.
    */
   activity?: ThreadActivity;
+  /**
+   * LastTurnEndedAt is when the session's last turn ended, in Unix
+   * milliseconds (S4); absent before any turn has ended and from an older
+   * daemon. The hub compares it with its seen-through marker to tell a
+   * Finished session from an Idle one. Snapshot-only: no notification
+   * carries it.
+   */
+  lastTurnEndedAt?: number;
+  /**
+   * Subagents tallies a live root session's whole delegate tree (S3), read
+   * from the root's delegate controller when the row is listed. It rides
+   * thread/list root rows only, when the tree has at least one subagent, and
+   * never a thread/read snapshot: no notification announces its changes.
+   */
+  subagents?: SubagentTally;
 }
 
 export interface EvenerToolInfo {
@@ -2512,6 +2527,16 @@ export interface SearchResult {
   state: string;
   age: string;
   ref: string;
+  /**
+   * AskPending and ApprovalPending carry the flags a navigation row does: a
+   * live session is waiting on an answer to an ask_user question, or on a
+   * person to allow or deny a sandbox escalation (M7). State keeps its real
+   * value ("active" while an escalation blocks mid-turn), so a pending
+   * approval shows only in ApprovalPending. A past (ended) result carries
+   * neither. Additive: an older hub omits both, decoding as false.
+   */
+  askPending?: boolean;
+  approvalPending?: boolean;
 }
 
 export interface ServerInfo {
@@ -2720,6 +2745,12 @@ export interface SpawnSlashCatalogParams {
 export interface SpawnSlashCatalogResponse {
   commands: CommandDescriptor[];
   skills?: EvenerSkillInfo[];
+}
+
+export interface SubagentTally {
+  running: number;
+  failed: number;
+  done: number;
 }
 
 export interface TaskAggregate {

@@ -544,6 +544,36 @@ describe("activityGloss", () => {
     expect(activityGloss(apiNode({ state: "awaiting", ask_pending: true }))).toBe("question waiting");
   });
 
+  // An approval blocks its turn mid-tool, so the session's wire state stays
+  // "active"; approval_pending is the only thing saying it waits on a person.
+  test("an active session waiting on an approval glosses as approval waiting, not working", () => {
+    expect(activityGloss(apiNode({ state: "active", approval_pending: true }))).toBe("approval waiting");
+  });
+
+  // Like restart required, the approval is what the row needs from a person,
+  // so it leads even while subagents or jobs keep running beside it.
+  test("an approval leads the gloss beside working subagents and running jobs", () => {
+    const session = apiNode({
+      state: "active",
+      approval_pending: true,
+      children: [apiNode({ kind: "subagent", state: "active" })],
+    });
+    Object.assign(session, {
+      running_jobs: [{ job_id: "job-1", job_type: "shell", status: "running" }],
+    });
+    expect(activityGloss(session)).toBe("approval waiting · 1 subagent working · 1 job running");
+  });
+
+  // A question blocks its session on a person's answer the same way, so it
+  // leads too; a plain your-move row still reads as its subagents' work.
+  test("a question leads the gloss beside working subagents", () => {
+    const child = apiNode({ kind: "subagent", state: "active" });
+    expect(activityGloss(apiNode({ state: "awaiting", ask_pending: true, children: [child] }))).toBe(
+      "question waiting · 1 subagent working",
+    );
+    expect(activityGloss(apiNode({ state: "awaiting", children: [child] }))).toBe("1 subagent working");
+  });
+
   test("omits an empty branch", () => {
     expect(activityGloss(apiNode({ state: "idle", branch: "" }))).toBe("idle");
   });
@@ -1359,6 +1389,61 @@ describe("session row", () => {
       />,
     );
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/question waiting/i);
+  });
+
+  // --- a row waiting on an approval needs you, never reads as working -------
+  //
+  // A sandbox escalation blocks the turn mid-tool, so the row's wire state
+  // stays "active". Its dot, gloss and tint must still say a person is
+  // needed: the row's own "active" and any running subagents or jobs must not
+  // turn it into a green working row.
+
+  test("an active row waiting on an approval shows the needs-you dot and an approval gloss", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "active", approval_pending: true }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
+    const activity = screen.getByTestId("rail-row-activity");
+    expect(activity.textContent).toBe("approval waiting");
+    expect(activity.className.split(" ")).toContain(railStyles.activityAttention);
+  });
+
+  test("an approval row keeps the needs-you dot while its subagents work", () => {
+    const session = apiNode({
+      state: "active",
+      approval_pending: true,
+      children: [apiNode({ row_id: "child", ref: "local:child", kind: "subagent", state: "active" })],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("approval waiting · 1 subagent working");
+  });
+
+  test("a question row keeps the needs-you dot while its subagents work", () => {
+    const session = apiNode({
+      state: "awaiting",
+      ask_pending: true,
+      children: [apiNode({ row_id: "child", ref: "local:child", kind: "subagent", state: "active" })],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info({ depth: 1 })} actions={actions()} />);
+    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Needs you" })).toBeTruthy();
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("question waiting · 1 subagent working");
+  });
+
+  test("a failed row stays failed with an approval pending", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "errored", approval_pending: true }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
+    );
+    expect(within(screen.getByTestId("rail-row-signal")).getByRole("img", { name: "Failed" })).toBeTruthy();
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("failed");
   });
 
   // --- a turn-ended subagent is quiet, never "your move" -------------------

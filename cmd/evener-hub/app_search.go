@@ -29,12 +29,14 @@ func hubSearch(cfg hubcore.WebConfig, params appwire.SearchParams) appwire.Searc
 				continue
 			}
 			resp.Live = append(resp.Live, appwire.SearchResult{
-				ID:      le.SessionID,
-				Title:   title,
-				State:   hubcore.NormalizeState(le.Status),
-				Project: filepath.Base(le.WorkingDir),
-				Age:     "now",
-				Ref:     hubRefFromTreeNodeID(le.SessionID).String(),
+				ID:              le.SessionID,
+				Title:           title,
+				State:           hubcore.NormalizeState(le.Status),
+				Project:         filepath.Base(le.WorkingDir),
+				Age:             "now",
+				Ref:             hubRefFromTreeNodeID(le.SessionID).String(),
+				AskPending:      le.PendingAsk,
+				ApprovalPending: le.PendingEscalation,
 			})
 		}
 	}

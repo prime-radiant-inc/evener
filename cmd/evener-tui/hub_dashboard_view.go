@@ -592,8 +592,9 @@ func projectSummary(project hubRow, rows []hubRow) string {
 		if row.kind != hubRowSession || dashboardGroupKey(row) != dashboardGroupKey(project) {
 			continue
 		}
-		if attentionRankLabel(row.state) > attentionRankLabel(worstState) {
-			worstState = row.state
+		contribution := rollupContribution(row.state, row.isSubagent)
+		if attentionRankLabel(contribution) > attentionRankLabel(worstState) {
+			worstState = contribution
 			worstAsk = row.askPending
 		}
 	}
