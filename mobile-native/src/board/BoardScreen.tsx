@@ -7,7 +7,16 @@ import {
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useMemo,
+	useReducer,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import {
 	ActionSheetIOS,
 	Alert,
@@ -46,7 +55,7 @@ import {
 	summaryText,
 	usualPlace,
 } from "./attention";
-import { ActivityPoll } from "./activityPoll";
+import { ACTIVITY_POLL_MS, ActivityPoll, isFreshRead } from "./activityPoll";
 import type { SeenMarkers } from "./boardMemory";
 import { bandHeaderText, BoardRows, FoldChevron, type RowContext } from "./BoardRow";
 import { BoardToolbar } from "./BoardToolbar";
@@ -526,13 +535,20 @@ const noRevision = () => 0;
  * revision changes with each read that lands.
  *
  * The underlying client survives a reconnect (hubConnection.ts), so a poll
- * that stops on disconnect still holds its last read - reading it as current
- * would let a long enough drop read a healthy session as "stuck" once
- * msSinceRead alone crosses the threshold, a false alarm about the
- * connection rather than the session (Jesse's ruling). Gating the RETURNED
- * reading on `connected` too, and never handing back the poll itself, means
- * no caller can read around this: every row and the fleet meter fall back to
- * their pre-S5 appearance for as long as the connection is down. */
+ * that stops on disconnect still holds its last read, and a hub that reports
+ * ready but has stopped delivering reads leaves the same stale data behind
+ * without ever disconnecting at all - reading either as current would let a
+ * read merely aging past isFreshRead's threshold read as "stuck", a false
+ * alarm about the connection or the hub rather than the session (Jesse's
+ * ruling). Gating the RETURNED reading on `connected` AND freshness, and
+ * never handing back the poll itself, means no caller can read around this:
+ * every row, its meter and the Working order all fall back to their pre-S5
+ * appearance the moment either one fails, and agree with each other since
+ * there is only the one gate. A read going stale with no new poll attempt to
+ * reveal it needs its own nudge to be noticed, since activityRevision only
+ * changes when a read actually lands: the tick below re-renders at the same
+ * cadence polling itself runs on, comfortably ahead of the two-interval
+ * staleness bound. */
 function useActivityPoll(client: ConversationClientLike | null, connected: boolean, inFront: boolean) {
 	const poll = useMemo(() => (client ? new ActivityPoll(client) : null), [client]);
 	const revision = useSyncExternalStore(poll?.subscribe ?? noSubscription, poll?.getRevision ?? noRevision);
@@ -541,7 +557,14 @@ function useActivityPoll(client: ConversationClientLike | null, connected: boole
 		poll.start();
 		return () => poll.stop();
 	}, [poll, connected, inFront]);
-	const reading = connected ? poll : null;
+	const [, forceTick] = useReducer((n: number) => n + 1, 0);
+	useEffect(() => {
+		if (!connected || !inFront) return;
+		const timer = setInterval(forceTick, ACTIVITY_POLL_MS);
+		return () => clearInterval(timer);
+	}, [connected, inFront]);
+	const msSinceRead = poll?.msSinceRead() ?? null;
+	const reading = connected && isFreshRead(msSinceRead) ? poll : null;
 	const activityOf = useCallback((ref: string) => reading?.activity(ref), [reading]);
 	return { revision, activityOf, msSinceRead: reading?.msSinceRead() ?? null };
 }

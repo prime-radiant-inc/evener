@@ -17,7 +17,7 @@ import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { alertRequests, render, renderedText, screenConnection } from "../renderNative.testkit";
-import { ACTIVITY_POLL_MS } from "./activityPoll";
+import { ACTIVITY_POLL_MS, STALE_AFTER_MS } from "./activityPoll";
 import { BoardScreen } from "./BoardScreen";
 import { PulseMeter } from "./PulseMeter";
 import { seenMarkers } from "./nativeBoardMemory";
@@ -1051,8 +1051,10 @@ it("stops retrying a failed first read when it unmounts", async () => {
 	connect(id, fake.client, "ready");
 	const tree = await mount(navigation());
 	expect(liveReads(fake)).toEqual([0]);
-	// The row-age ticker and the retry.
-	expect(vi.getTimerCount()).toBe(2);
+	// The row-age ticker, the retry, and S5's activity poll (which reads this
+	// hub as too old to support it after its first attempt, but still ticks
+	// to recheck staleness for as long as the Board is in front and ready).
+	expect(vi.getTimerCount()).toBe(3);
 	act(() => tree.unmount());
 	expect(vi.getTimerCount()).toBe(0);
 	await advance(60_000);
@@ -1068,7 +1070,12 @@ it("schedules no retry while the Board is out of view", async () => {
 	expect(liveReads(fake)).toEqual([0]);
 	setFocused(false);
 	await settle();
-	expect(vi.getTimerCount()).toBe(0);
+	// S5's activity poll follows useScreenInFront (navigation state alone),
+	// not useIsFocused, so toggling this mock's focus flag with the
+	// navigation stack unchanged leaves its recheck tick running - real
+	// navigation can't produce that combination (useScreenInFront's own
+	// doc comment), only this test's decoupled mock can.
+	expect(vi.getTimerCount()).toBe(1);
 	await advance(60_000);
 	expect(liveReads(fake)).toEqual([0]);
 	act(() => tree.unmount());
@@ -1426,10 +1433,12 @@ it("shows each working row's activity read: its meter, the hub's subagent tally,
 	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Quiet 4m");
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("May be stuck · no updates for 11m");
 
-	// A failed read keeps the last one, and quiet time keeps counting from it.
+	// A run of failures well under the staleness bound doesn't blank a row -
+	// it gets a chance to self-heal on the very next tick before falling
+	// back (the sustained-failure case past that bound has its own test).
 	shape.activity = null;
-	await advance(2 * MINUTE);
-	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Quiet 6m");
+	await advance(STALE_AFTER_MS - 1_000);
+	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Quiet 4m");
 	expect(meterIn(rowTitled(tree, "Build docs")).props.perMinute).toEqual([2, 4, 8]);
 	act(() => tree.unmount());
 });
@@ -1458,6 +1467,91 @@ it("shows no stuck label or reordering from a stale read while offline (Jesse's 
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("May be stuck · no updates for 13m");
 	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
 	expect(meterIn(rowTitled(tree, "Migrate schema")).props.perMinute).toBeUndefined();
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+	act(() => tree.unmount());
+});
+
+it("falls back once the last successful read goes stale, even while the connection reports ready (Jesse's ruling)", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 4 * MINUTE }],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
+
+	// The connection reports "ready" throughout - reads simply stop landing,
+	// the failure mode a bare connected check can't catch (a hub that has
+	// gone quiet, not a client that knows it's disconnected).
+	shape.activity = null;
+	await advance(STALE_AFTER_MS + 1_000);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 4m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+	expect(meterIn(rowTitled(tree, "Migrate schema")).props.perMinute).toBeUndefined();
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+	act(() => tree.unmount());
+});
+
+it("keeps the fallback after a reconnect until a new read actually lands", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 4 * MINUTE }],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const nav = navigation();
+	const tree = await mount(nav);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 4m");
+
+	// Long enough offline that the cached read is provably stale by the time
+	// the connection returns.
+	connect(id, fake.client, "reconnecting");
+	rerender(tree, nav);
+	await advance(STALE_AFTER_MS * 2);
+	const readsBeforeReconnect = fake.activityReads.length;
+
+	// The next poll attempt reads shape.activity synchronously the moment
+	// it's sent (the fake resolves from whatever the field holds right then,
+	// not when the promise later settles) - set the new read before the
+	// reconnect so it's what actually lands, and prove the OLD text is gone
+	// even before that new read has had a chance to resolve.
+	shape.activity = [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 3 * MINUTE }];
+	connect(id, fake.client, "ready");
+	rerender(tree, nav);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).not.toContain("Quiet 3m");
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
+
+	await advance(0);
+	expect(fake.activityReads.length).toBeGreaterThan(readsBeforeReconnect);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Quiet 3m");
+	act(() => tree.unmount());
+});
+
+it("stays out of Working's stuck slot for as long as reads keep failing, not just at the moment staleness is first crossed", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [{ ref: "local:migrate", minutes: [0, 0, 0], runningSubagents: 0, quietForMs: 11 * MINUTE }],
+	};
+	const fake = hub(shape);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("May be stuck · no updates for 11m");
+	expect(workingTitles(tree)).toEqual(["Migrate schema", "Build docs", "Tidy imports"]);
+
+	shape.activity = null;
+	await advance(STALE_AFTER_MS + 1_000);
+	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
+	// Several more poll cycles of continued failure: still no stuck label,
+	// still in hub order - not just true for a moment right at the threshold.
+	await advance(ACTIVITY_POLL_MS * 5);
+	expect(textsIn(rowTitled(tree, "Migrate schema"))).toContain("Working");
 	expect(workingTitles(tree)).toEqual(["Build docs", "Tidy imports", "Migrate schema"]);
 	act(() => tree.unmount());
 });
