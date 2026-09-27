@@ -55,7 +55,11 @@ function createWorkGeneration(): WorkGeneration {
     whenDrained: [],
     end: () => {
       generation.outstanding -= 1;
-      if (generation.outstanding === 0) for (const wake of generation.whenDrained.splice(0)) wake();
+      // Nothing outside a test waits on a drain, so a drain with no waiter
+      // skips the splice and allocates nothing.
+      if (generation.outstanding === 0 && generation.whenDrained.length > 0) {
+        for (const wake of generation.whenDrained.splice(0)) wake();
+      }
     },
   };
   return generation;
