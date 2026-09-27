@@ -186,11 +186,9 @@ export function routeToSave<Route extends { name: string }>(state: {
 	index: number;
 	routes: readonly Route[];
 }): Route | undefined {
-	for (let index = state.index; index >= 0; index -= 1) {
-		const route = state.routes[index];
-		if (route && !isSheetRoute(route.name)) return route;
-	}
-	return undefined;
+	return state.routes
+		.slice(0, state.index + 1)
+		.findLast((route) => !isSheetRoute(route.name));
 }
 export function locationForRoute(
 	route: { name: string; params?: unknown },
