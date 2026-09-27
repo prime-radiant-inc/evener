@@ -582,6 +582,32 @@ it("on a device's first run, reads every Live page before adopting, so nothing f
 	act(() => tree.unmount());
 });
 
+it("stops first-run paging while the Board is out of view, and finishes it on return", async () => {
+	const id = hubId();
+	let holdLater = true;
+	const fake = hub(
+		{ ...fleet, live: [[failing, working], [finished], [idleOne]], needsYou: [failing] },
+		(read) => holdLater && (read.offset ?? 0) > 0,
+	);
+	connect(id, fake.client, "ready");
+	const tree = await mount(navigation());
+	expect(liveReads(fake)).toEqual([0, 2]);
+	// Leaving the Board mid-way cancels the page in flight; nothing replaces it.
+	setFocused(false);
+	await settle();
+	expect(liveReads(fake)).toEqual([0, 2]);
+	holdLater = false;
+	fake.release();
+	await settle();
+	expect(liveReads(fake)).toEqual([0, 2]);
+	expect(seenMarkers(id).adopted).toBe(false);
+	setFocused(true);
+	await settle();
+	expect(liveReads(fake)).toEqual([0, 2, 2, 3]);
+	expect(seenMarkers(id).adopted).toBe(true);
+	act(() => tree.unmount());
+});
+
 it("shows the Draft tag on sessions with a saved draft", async () => {
 	const id = hubId();
 	adoptedAnHourAgo(id);

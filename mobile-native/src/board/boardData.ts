@@ -392,6 +392,8 @@ export function createBoardController(): BoardController {
 			publish();
 		},
 		async loadMoreLive() {
+			// A paused Board reads nothing new, as Needs you's paging doesn't.
+			if (paused) return;
 			await readers?.live.more();
 		},
 		pause() {

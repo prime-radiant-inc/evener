@@ -1,6 +1,6 @@
 import type { CellRendererProps } from "@react-native/virtualized-lists";
 import { useHeaderHeight } from "@react-navigation/elements";
-import { useFocusEffect, useIsFocused } from "@react-navigation/native";
+import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import {

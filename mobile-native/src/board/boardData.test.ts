@@ -307,6 +307,20 @@ it("loads the next Live page on request", async () => {
 	expect(board.getSnapshot().live.rows).toHaveLength(70);
 });
 
+it("reads no more Live while paused", async () => {
+	const hub = boundary();
+	const board = createBoardController();
+	board.setClient(hub.client);
+	answer(hub, "live", { sessions: sessions("live-", 50), remaining: 20 });
+	await tick();
+	board.pause();
+	await board.loadMoreLive();
+	expect(requestsFor(hub, "live")).toHaveLength(1);
+	board.resume();
+	void board.loadMoreLive();
+	expect(requestsFor(hub, "live")).toHaveLength(2);
+});
+
 it("re-reads the manifest when the hub invalidates it", async () => {
 	const hub = boundary();
 	const board = createBoardController();

@@ -114,7 +114,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		// seenRevision re-runs isSeen after a mark or first run.
 		[snapshot.live.rows, snapshot.needsYou.rows, markers, seenRevision],
 	);
-	useFirstRun(board, markers, snapshot);
+	useFirstRun(board, markers, snapshot, focused);
 
 	const usual = useMemo(() => usualPlace(snapshot.live.rows), [snapshot.live.rows]);
 	const sources = snapshot.manifest?.sources;
@@ -352,9 +352,11 @@ function readDraftRefs(hubId: string): Set<string> {
  * attention, not time, so a newer row can sit on a later page: until the
  * epoch is adopted, keep reading Live's pages. Until then isSeen counts
  * every row as seen, so nothing flashes Finished. */
-function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: BoardSnapshot) {
+function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: BoardSnapshot, focused: boolean) {
 	useEffect(() => {
-		if (markers.adopted) return;
+		// Out of view the Board is paused; coming back re-runs this and picks
+		// the paging up where it stopped.
+		if (!focused || markers.adopted) return;
 		const { loaded, retained, live, needsYou } = snapshot;
 		if (!loaded || retained || live.loading || live.stale) return;
 		if (live.remaining > 0) {
@@ -365,7 +367,7 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 		// The controller pages Needs you to the end on its own.
 		if (!needsYou.loaded || needsYou.loading || needsYou.stale || needsYou.remaining > 0) return;
 		markers.adoptEpoch([...live.rows, ...needsYou.rows]);
-	}, [board, markers, snapshot]);
+	}, [board, markers, snapshot, focused]);
 }
 
 /** While a Live read has failed on a ready connection, first page or later,
