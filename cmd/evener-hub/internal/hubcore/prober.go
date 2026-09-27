@@ -163,7 +163,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		Watches:               diagnosticsWatches(root.Evener.Diagnostics),
 		ChildWatches:          childWatches,
 		Tasks:                 root.Evener.Tasks,
-		Activity:              appwire.CloneThreadActivity(root.Evener.Activity),
+		Activity:              root.Evener.Activity,
 		OK:                    true,
 	}
 }
