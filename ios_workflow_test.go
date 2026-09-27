@@ -32,7 +32,7 @@ func TestIOSWorkflowTriggersOnlyOnVersionTags(t *testing.T) {
 
 	push := workflow.On.Push
 	if !reflect.DeepEqual(push.Tags, []string{"v[0-9]*"}) {
-		t.Errorf("ios-testflight push tags = %#v, want exactly [\"v[0-9]*\"] so the snapshot tag and non-version v-tags cannot build", push.Tags)
+		t.Errorf("ios-testflight push tags = %#v, want exactly [\"v[0-9]*\"] so the snapshot tag cannot build", push.Tags)
 	}
 	if len(push.Branches) != 0 {
 		t.Errorf("ios-testflight push branches = %#v, want none (branch pushes must not build)", push.Branches)
