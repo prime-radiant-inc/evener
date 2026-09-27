@@ -503,6 +503,7 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		"evener/session-pin/unpin":                false,
 		"evener/session/delete":                   false,
 		"evener/session/image":                    false,
+		"evener/session/seen/set":                 false, // controller-owned: every source's seen marks live in the controller's own store
 		"evener/settings/agentsDoc/get":           true,
 		"evener/settings/agentsDoc/set":           true,
 		"evener/settings/keybindings/get":         false,

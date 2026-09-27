@@ -879,6 +879,12 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 	}
 	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
 	entry.Watches = diagnosticsWatches(thread.Evener.Diagnostics)
+	// The remote hub's root row carries its tree's subagent tally (S3), so the
+	// remote row counts its subagents like a local one.
+	if thread.Evener.Subagents != nil {
+		entry.Subagents = *thread.Evener.Subagents
+	}
+	entry.LastTurnEndedAt = hubcore.UnixMilliTime(thread.Evener.LastTurnEndedAt)
 	return meta, entry, true
 }
 

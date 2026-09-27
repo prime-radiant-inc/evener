@@ -444,7 +444,8 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 			return false
 		}
 	}
-	return value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)
+	return (value.Tasks == nil || navigationTaskProgressValid(*value.Tasks)) &&
+		(value.Subagents == nil || navigationSubagentTallyValid(*value.Subagents))
 }
 
 // navigationTaskProgressValid mirrors the web codec's tasksValue: every count is
@@ -456,6 +457,13 @@ func navigationTaskProgressValid(tasks hubapi.NavigationTaskProgress) bool {
 		navigationIntCount(tasks.Cancelled) && navigationIntCount(tasks.CurrentID) &&
 		tasks.Done <= tasks.Total && tasks.Cancelled <= tasks.Total-tasks.Done &&
 		utf8.RuneCountInString(tasks.Current) <= maxNavigationLabelRunes
+}
+
+// navigationSubagentTallyValid mirrors the web codec's subagentTallyValue: every
+// count is a safe non-negative integer. The projector drops a tally this
+// refuses rather than failing the whole resource over it.
+func navigationSubagentTallyValid(tally hubapi.NavigationSubagentTally) bool {
+	return navigationIntCount(tally.Running) && navigationIntCount(tally.Failed) && navigationIntCount(tally.Done)
 }
 
 // navigationWatchValueValid mirrors the web codec's watch row validation for one
