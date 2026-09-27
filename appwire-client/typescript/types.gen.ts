@@ -2512,6 +2512,18 @@ export interface SearchResult {
   state: string;
   age: string;
   ref: string;
+  /**
+   * AskPending and ApprovalPending mirror a live session's navigation-row
+   * flags (computed from the same hubcore.LiveEntry.PendingAsk /
+   * PendingEscalation navigation rows read, not a second derivation), so a
+   * session found by search shows the same needs-you mark it shows in the
+   * rail (#2567). Both are always false/absent for a past (ended) result: a
+   * session that has ended has no live ask or escalation left to be
+   * pending. Additive: an older client reading a payload without these
+   * keys sees no information, the same as an absent field elsewhere.
+   */
+  ask_pending?: boolean;
+  approval_pending?: boolean;
 }
 
 export interface ServerInfo {
