@@ -985,10 +985,27 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		// channel's captured snapshot instead would let a token's freshness term
 		// measure from the wrong instant — the snapshot was taken whenever the
 		// channel attached, which can be arbitrarily long before the plan.
+		//
+		// It is deliberately an SSH execution rather than a read of the attached
+		// channel's snapshot: §6 step 1 defines the refresh that way ("the refresh
+		// is an SSH command execution, not [the probe]"), precisely so a plan's
+		// facts are read now instead of inherited from whenever the channel
+		// attached. The identity pairing the two round-trips could otherwise
+		// blur — one connection's facts against another registration's probe — is
+		// pinned twice: this seam refuses a preflight that answers for a different
+		// host name, and the plan's fence re-checks that the entry both legs were
+		// resolved from is still the registry's registration before it mints, so
+		// an entry that moved mid-plan refuses rather than pairing two
+		// registrations. A refresh that fails (an unreachable host, a dropped
+		// channel's transport) is the no-token `refresh-failed` arm, never a mint
+		// from facts nothing read.
 		m.cfg.planFacts = func(ctx context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
 			preflight, err := manager.Preflight(ctx, host)
 			if err != nil {
 				return hubcore.HostPlanFacts{}, err
+			}
+			if preflight.Host != host.Name {
+				return hubcore.HostPlanFacts{}, fmt.Errorf("the preflight answered for host %q, not %q", preflight.Host, host.Name)
 			}
 			return hostPlanFactsFromPreflight(host, preflight, time.Now().UTC()), nil
 		}

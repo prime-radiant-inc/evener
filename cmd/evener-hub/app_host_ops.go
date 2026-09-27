@@ -353,9 +353,12 @@ func (m *hubHostManager) mintPlannedToken(name string, in planMintInputs) (appwi
 		return appwire.HostPlanResult{}, appwire.StaleEntry(appwire.StaleEntryBindingGeneration,
 			fmt.Sprintf("host %q's registration moved while this plan was being built; plan again", name))
 	}
-	if finished, ok := m.terminalOperationSince(name, in.sequenceBefore); ok {
-		return appwire.HostPlanResult{}, appwire.StaleEntry(appwire.StaleEntryBindingConcurrentTerminalOp,
-			fmt.Sprintf("host %q completed operation %q while this plan was being built; plan again", name, finished))
+	// §6 step 2's attachment re-check, from the fence rather than from the
+	// pre-refresh read: a host that dropped its channel while the refresh and the
+	// probe ran must not reach the mint with a stale attached answer.
+	if _, attachedNow := m.attachedClient(in.entry); !attachedNow {
+		return planNoToken(appwire.HostPlanReasonUnattached,
+			fmt.Sprintf("host %q detached while this plan was being built; connect it and plan again", name), false, "")
 	}
 
 	fingerprint, ok := m.hostTOMLFingerprint(name)
@@ -374,7 +377,10 @@ func (m *hubHostManager) mintPlannedToken(name string, in planMintInputs) (appwi
 	}
 
 	now := time.Now().UTC()
-	token, err := m.cfg.ops.MintToken(hostops.MintRequest{
+	// The terminal-operation guard rides the mint's own locked read
+	// (MintTokenIfQuiescent): a scan run here could not see a terminal transition
+	// landing between it and the mint, while the store's guard cannot miss one.
+	token, err := m.cfg.ops.MintTokenIfQuiescent(hostops.MintRequest{
 		Host:               name,
 		Generation:         in.entry.Generation,
 		IncarnationID:      in.entry.IncarnationID,
@@ -387,15 +393,25 @@ func (m *hubHostManager) mintPlannedToken(name string, in planMintInputs) (appwi
 		RunningVersion:     in.probe.Version,
 		RunningHealthy:     in.probe.RunningHealthy,
 		ProcessStartTime:   in.probe.ProcessStartTime,
-	})
-	if errors.Is(err, hostops.ErrFactsStale) {
+	}, in.sequenceBefore)
+	var concurrent *hostops.ConcurrentTerminalOpError
+	switch {
+	case errors.As(err, &concurrent):
+		return appwire.HostPlanResult{}, appwire.StaleEntry(appwire.StaleEntryBindingConcurrentTerminalOp,
+			fmt.Sprintf("host %q completed operation %q while this plan was being built; plan again", name, concurrent.ID))
+	case errors.Is(err, hostops.ErrFactsStale):
 		// §3: stale facts at mint read as a refresh failure, and re-planning
 		// refreshes them — never an already-expired token.
 		return planNoToken(appwire.HostPlanReasonRefreshFailed,
 			fmt.Sprintf("host %q's refreshed facts went stale before the token was minted: %v", name, err), in.attached, "")
+	case err != nil && !hostops.RenameLanded(err):
+		return appwire.HostPlanResult{}, appwire.InternalError(fmt.Sprintf("minting the confirmation token for host %q failed: %v", name, err))
 	}
 	if err != nil {
-		return appwire.HostPlanResult{}, appwire.InternalError(fmt.Sprintf("minting the confirmation token for host %q failed: %v", name, err))
+		// The rename landed, so the token row is durable (see RenameLanded) and
+		// the client must not be told nothing was minted: answer the planned arm
+		// with the token the store already holds, and log the sync trouble.
+		m.logf("host %q: the mint's directory sync failed after its rename landed; the token is durable: %v", name, err)
 	}
 
 	plan := appwire.HostPlan{
@@ -460,25 +476,6 @@ func planRestartFollows(probe hubcore.HostRuntimeProbe, controllerRevision strin
 		return true
 	}
 	return probe.Version != controllerRevision
-}
-
-// terminalOperationSince reports the first operation on host whose terminal
-// transition carries a sequence above sequenceBefore, which is §6 step 2's
-// concurrent-terminal-op condition. It is a local store read, never a network
-// call.
-func (m *hubHostManager) terminalOperationSince(host string, sequenceBefore uint64) (string, bool) {
-	if m.cfg.ops == nil {
-		return "", false
-	}
-	for _, record := range m.cfg.ops.Records() {
-		if record.Host != host || !record.State.Terminal() {
-			continue
-		}
-		if record.Sequence > sequenceBefore {
-			return record.ID, true
-		}
-	}
-	return "", false
 }
 
 // controllerDirty reports whether the running controller's build cannot prove a

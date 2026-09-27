@@ -857,3 +857,84 @@ func TestTokenRunningStateAndFactsAgeRefuseDrift(t *testing.T) {
 		t.Fatalf("ConsumeToken after the running-state checks: %v", err)
 	}
 }
+
+// TestTokenMintIfQuiescentRefusesAConcurrentTerminalOperation pins §6 step 2's
+// concurrent-terminal-op guard where it is atomic: the check rides the mint's
+// own locked read, so an operation that reached a terminal state after the
+// caller's pre-read position refuses the mint with the record named, writes
+// nothing, and leaves the host plannable once the caller re-reads the position.
+func TestTokenMintIfQuiescentRefusesAConcurrentTerminalOperation(t *testing.T) {
+	store, _, _ := openClockStore(t)
+	record := createTestRecord(t, store, "m4")
+	position := store.Sequence()
+	if _, err := store.Transition(record.ID, StateComplete, nil); err != nil {
+		t.Fatalf("Transition(complete): %v", err)
+	}
+
+	_, err := store.MintTokenIfQuiescent(mintDefaults("m4", tokenEpoch), position)
+	if !errors.Is(err, ErrConcurrentTerminalOp) {
+		t.Fatalf("MintTokenIfQuiescent = %v, want %v", err, ErrConcurrentTerminalOp)
+	}
+	var concurrent *ConcurrentTerminalOpError
+	if !errors.As(err, &concurrent) || concurrent.ID != record.ID {
+		t.Fatalf("refusal = %v, want the record %q named", err, record.ID)
+	}
+	if _, ok := store.OutstandingToken("m4"); ok {
+		t.Fatal("a mint refused by a concurrent terminal operation stored a token")
+	}
+
+	// The same request against the store's current position mints: the guard
+	// refuses the stale plan, never the host.
+	minted, err := store.MintTokenIfQuiescent(mintDefaults("m4", tokenEpoch), store.Sequence())
+	if err != nil {
+		t.Fatalf("MintTokenIfQuiescent at the current position: %v", err)
+	}
+	if _, err := store.ValidateToken("m4", minted.Value); err != nil {
+		t.Fatalf("the quiescent mint's token does not validate: %v", err)
+	}
+}
+
+// TestTokenValidatePassIsARead pins §6 step 2's contract that validate is a
+// fail-fast readability check: a pass with nothing to reap and nothing to
+// consume compares against max(now, mark) without rewriting the store file.
+// Advancing the mark is a writing pass's act — a mint, a consume, a reap — so a
+// read never turns into a durable whole-file write just because the clock moved.
+func TestTokenValidatePassIsARead(t *testing.T) {
+	store, path, clock := openClockStore(t)
+	minted := mustMint(t, store, mintDefaults("m4", tokenEpoch))
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	// Real time moves past the mark; the token is unexpired, so nothing is reaped.
+	clock.advance(30 * time.Second)
+	if _, err := store.ValidateToken("m4", minted.Value); err != nil {
+		t.Fatalf("ValidateToken: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("a read-only validate pass rewrote the store file:\nbefore %s\nafter  %s", before, after)
+	}
+
+	// A consuming pass writes, and records the clock it observed.
+	if _, err := store.ConsumeToken("m4", minted.Value); err != nil {
+		t.Fatalf("ConsumeToken: %v", err)
+	}
+	var doc struct {
+		Mark string `json:"wallClockHighWaterMark"`
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode store: %v", err)
+	}
+	if want := tokenEpoch.Add(30 * time.Second).Format(time.RFC3339); doc.Mark != want {
+		t.Fatalf("durable mark = %s, want the consume's %s", doc.Mark, want)
+	}
+}

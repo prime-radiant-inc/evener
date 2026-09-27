@@ -741,3 +741,31 @@ func TestHostPlanRefusesAMutationInFlight(t *testing.T) {
 		t.Fatalf("Plan after the mutation finished = %+v/%v, want the planned arm", result, err)
 	}
 }
+
+// TestHostPlanRefusesADetachDuringThePlan pins §6 step 2's attachment re-check
+// from the fence: a host that drops its channel while the refresh and the probe
+// run refuses the unattached arm and mints nothing, rather than minting with the
+// attachment answer the plan started with.
+func TestHostPlanRefusesADetachDuringThePlan(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "hub.toml")
+	if err := os.WriteFile(configPath, []byte(planTestHubTOML([]hostreg.Host{planTestHost()})), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	m, store, _ := planTestManager(t, configPath, []hostreg.Host{planTestHost()}, planSeams{})
+	m.cfg.planFacts = func(_ context.Context, host hostreg.Host) (hubcore.HostPlanFacts, error) {
+		// The channel drops mid-plan: the attached-only seam stops answering.
+		m.cfg.clientIfAttached = nil
+		return planTestFacts(host), nil
+	}
+	result, err := m.Plan(context.Background(), appwire.HostPlanParams{Name: "m4"})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	arm := planNoTokenReasonOf(t, result, appwire.HostPlanReasonUnattached, false)
+	if arm.StaleFacts.Attached {
+		t.Fatal("the unattached arm reported an attached host")
+	}
+	if _, ok := store.OutstandingToken("m4"); ok {
+		t.Fatal("a plan whose host detached mid-flight stored a token")
+	}
+}

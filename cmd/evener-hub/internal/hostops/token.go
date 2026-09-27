@@ -173,6 +173,26 @@ var ErrFactsStale = errors.New("hostops: facts are stale")
 // every writer of this store produces.
 var ErrInvalidToken = errors.New("hostops: invalid confirmation token")
 
+// ErrConcurrentTerminalOp reports a mint refused because an operation on the
+// host reached a terminal state after the caller's pre-read sequence position:
+// §6 step 2's concurrent-terminal-op re-plan condition. The refusal is the
+// wrapped *ConcurrentTerminalOpError, which names the record that landed.
+var ErrConcurrentTerminalOp = errors.New("hostops: a terminal operation landed on the host")
+
+// ConcurrentTerminalOpError is ErrConcurrentTerminalOp with the record it saw.
+type ConcurrentTerminalOpError struct {
+	// ID is the controller-assigned id of the terminal record.
+	ID string
+}
+
+func (e *ConcurrentTerminalOpError) Error() string {
+	return ErrConcurrentTerminalOp.Error() + ": operation " + e.ID
+}
+
+// Unwrap makes every concurrent-terminal-op refusal answer errors.Is against
+// ErrConcurrentTerminalOp.
+func (e *ConcurrentTerminalOpError) Unwrap() error { return ErrConcurrentTerminalOp }
+
 // MintToken mints a confirmation token for req.Host and persists it in one
 // atomic store write, superseding the host's earlier unconsumed row in that same
 // write (§3: "the same atomic store write that persists the new token deletes
@@ -194,6 +214,25 @@ var ErrInvalidToken = errors.New("hostops: invalid confirmation token")
 // failure before the rename wrote nothing; a post-rename failure returned with
 // RenameLanded means the token is the durable row (see RenameLanded).
 func (s *Store) MintToken(req MintRequest) (Token, error) {
+	return s.mintToken(req, nil)
+}
+
+// MintTokenIfQuiescent mints req's token only while the host has no terminal
+// operation above sequenceBefore, in the same locked read as the mint. It is §6
+// step 2's concurrent-terminal-op re-check made atomic with the mint: a scan the
+// caller runs itself, however carefully fenced, cannot see a terminal transition
+// that lands between the scan and the mint, while this can — both happen under
+// the store mutex, which is the mutex every transition takes.
+//
+// A refusal is *ConcurrentTerminalOpError (errors.Is ErrConcurrentTerminalOp)
+// re-plans, exactly as it would had its own scan seen the record.
+func (s *Store) MintTokenIfQuiescent(req MintRequest, sequenceBefore uint64) (Token, error) {
+	return s.mintToken(req, &sequenceBefore)
+}
+
+// mintToken is MintToken's body. quiescentSince, when set, adds the §6 step 2
+// terminal-operation guard to the same locked read-modify-write.
+func (s *Store) mintToken(req MintRequest, quiescentSince *uint64) (Token, error) {
 	if s == nil {
 		return Token{}, errors.New("hostops: store is not configured")
 	}
@@ -263,6 +302,16 @@ func (s *Store) MintToken(req MintRequest) (Token, error) {
 	if err := validateTokenRow(row); err != nil {
 		return Token{}, err
 	}
+	if quiescentSince != nil {
+		// §6 step 2's concurrent-terminal-op guard, in the same locked read the
+		// mint's write is built from: a terminal transition that landed since the
+		// caller's pre-read position must refuse the mint, and no transition can
+		// slip between this check and the write below (both hold the store
+		// mutex, which every transition takes).
+		if record, ok := terminalOperationSinceLocked(&next, req.Host, *quiescentSince); ok {
+			return Token{}, &ConcurrentTerminalOpError{ID: record}
+		}
+	}
 	next.WallClockHighWaterMark = anchor
 	next.Tokens = append(dropTokenHost(next.Tokens, req.Host), row)
 	landed, err := s.commitLocked(next)
@@ -273,6 +322,21 @@ func (s *Store) MintToken(req MintRequest) (Token, error) {
 	// See Create: a landed rename is this token's durable row even when the
 	// directory sync behind it failed.
 	return cloneToken(row), err
+}
+
+// terminalOperationSinceLocked reports the first operation on host whose
+// terminal transition carries a sequence above sequenceBefore. Callers hold the
+// store mutex, so the answer cannot change before the write it guards.
+func terminalOperationSinceLocked(state *snapshot, host string, sequenceBefore uint64) (string, bool) {
+	for _, record := range state.Records {
+		if record.Host != host || !record.State.Terminal() {
+			continue
+		}
+		if record.Sequence > sequenceBefore {
+			return record.ID, true
+		}
+	}
+	return "", false
 }
 
 // ValidateToken classifies a presented token for host without consuming it. It
@@ -340,14 +404,19 @@ func (s *Store) tokenPass(host, value string, consume bool) (Token, error) {
 	}
 	next.Tokens = kept
 
-	changed := reaped || now.After(mark)
-	if now.After(mark) {
-		// §3: the mark is the greatest observed wall-clock value, and it never
-		// moves backward. A rollback (now behind the mark) is therefore not a
-		// capture: it advances nothing.
+	// §6 step 2 calls ValidateToken a fail-fast readability check, and §1 defines
+	// the mark as "the greatest wall-clock value observed by any token mint or
+	// facts-capture write" — so a pass that changes nothing is a read: it
+	// compares against max(now, mark) but commits nothing, never rewriting (and
+	// fsyncing) the whole store file because the clock moved. Only a pass with
+	// something to write — a reap, or a consume that matched — advances the mark
+	// it observed, and the mark never moves backward: a rollback (now behind the
+	// mark) is not a capture, so it advances nothing.
+	writing := reaped || (consume && passErr == nil)
+	if writing && now.After(mark) {
 		next.WallClockHighWaterMark = now
 	}
-	if changed || (consume && passErr == nil) {
+	if writing {
 		landed, err := s.commitLocked(next)
 		if err != nil && !landed {
 			// Nothing was written: the pass reports the refusal it classified
