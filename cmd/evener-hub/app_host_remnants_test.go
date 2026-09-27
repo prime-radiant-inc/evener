@@ -853,3 +853,183 @@ func TestHostStagedCompensationLeavesNoMarkerOrReceipt(t *testing.T) {
 		t.Fatalf("fresh update = %+v, want a normal fresh commit", fresh)
 	}
 }
+
+// TestHostRemnantFenceGatesRetentionFromTheRealRecords pins §6's retention rule
+// against the REAL remnant set rather than the test-only override: "Retention
+// expiry never purges a tombstone whose name still holds an open remnant (§15)",
+// and a tombstone past its retention that is remnant-gated survives the next
+// mutation's derivation write.
+func TestHostRemnantFenceGatesRetentionFromTheRealRecords(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{
+		{Name: "keep", SSH: "keep.example"},
+		{Name: "side", SSH: "side.example"},
+	}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	// A committed removal whose teardown fails leaves the tombstone plus an open
+	// remnant — the durable state the fence is about.
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected teardown failure") }
+	host, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("fixture lost the host")
+	}
+	result, err := m.RemoveResult(context.Background(), removeRequest(t, m, "side"))
+	if err != nil {
+		t.Fatalf("Remove = %v", err)
+	}
+	arm := result.HostMutationTeardownFailureRemoved
+	if arm == nil {
+		t.Fatalf("Remove = %+v, want the teardown-failure arm", result)
+	}
+	m.testOnlyTeardown = nil
+	if _, ok := m.cfg.store.tombstoneSnapshot()["side"]; !ok {
+		t.Fatal("the removal left no tombstone to gate")
+	}
+	if _, ok := m.cfg.store.remnantByID(arm.RemnantID); !ok {
+		t.Fatalf("no durable remnant %q", arm.RemnantID)
+	}
+
+	// Past the retention period, with an unrelated mutation writing hub.toml:
+	// the gated tombstone is never an expiry candidate.
+	m.cfg.now = func() time.Time { return time.Now().Add(30 * 24 * time.Hour) }
+	if _, err := m.AddResult(context.Background(), appwire.HostAddParams{
+		Entry: appwire.HostEntry{Name: "other", Address: "other.example"},
+	}); err != nil {
+		t.Fatalf("Add(other) = %v", err)
+	}
+	if _, ok := m.cfg.store.tombstoneSnapshot()["side"]; !ok {
+		t.Fatal("the remnant-gated tombstone was expired away by an unrelated write")
+	}
+	if id, open := m.openRemnantID("side"); !open || id != arm.RemnantID {
+		t.Fatalf("the fence lifted: (%q, %v), want %q", id, open, arm.RemnantID)
+	}
+	// hub.toml still carries both records, so a restart cannot lose the repair
+	// handle either.
+	reloaded, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload hub.toml: %v", err)
+	}
+	if _, ok := reloaded.Tombstones["side"]; !ok {
+		t.Fatal("hub.toml dropped the gated tombstone")
+	}
+	if _, ok := reloaded.TeardownRemnants[arm.RemnantID]; !ok {
+		t.Fatalf("hub.toml dropped remnant %q", arm.RemnantID)
+	}
+	// The row still names the fence, and the generation is pinned: no mutation
+	// advanced the name past it.
+	list, err := m.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List = %v", err)
+	}
+	found := false
+	for _, row := range list.Hosts {
+		if row.Name == "side" {
+			found = true
+			if row.OpenRemnantID != arm.RemnantID {
+				t.Fatalf("tombstone row = %+v, want openRemnantId %q", row, arm.RemnantID)
+			}
+			if row.Generation != host.Generation {
+				t.Fatalf("tombstone row generation = %d, want the pinned %d", row.Generation, host.Generation)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("list lost the remnant-gated tombstone row")
+	}
+}
+
+// TestHostBootCollisionBlocksTheLiveEntryPendingTeardown pins §6's boot arm:
+// "boot excludes the colliding live entry from the live set as
+// `blocked-pending-teardown` (never published live) until `teardown-retry`
+// resolves it, so no live incarnation is ever created over an open remnant".
+func TestHostBootCollisionBlocksTheLiveEntryPendingTeardown(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	remnantID := "11111111-2222-3333-4444-555555555555"
+	raw := hostTOMLBanner + `[[hosts]]
+name = "side"
+ssh = "side.example"
+
+[tombstones."side"]
+name = "side"
+removed_at = "2026-09-26T00:00:00Z"
+origin = "hub.toml"
+generation = 3
+incarnation_id = "old-incarnation"
+presence_epoch = 4
+rows_truncated = false
+
+[tombstones."side".entry]
+name = "side"
+ssh = "side.example"
+
+[generations."side"]
+generation = 3
+incarnation_id = "old-incarnation"
+presence_epoch = 4
+
+[teardown_remnants."` + remnantID + `"]
+host = "side"
+kind = "remove"
+seam = "remove-host"
+generation = 3
+incarnation_id = "old-incarnation"
+mutation_key = "mut-1/side/remove/3/old-incarnation"
+committed_at = "2026-09-26T00:00:00Z"
+
+[teardown_remnants."` + remnantID + `".pending_teardown]
+name = "side"
+kind = "remove"
+generation = 3
+incarnation_id = "old-incarnation"
+supervisor = true
+channel = true
+
+[teardown_remnants."` + remnantID + `".cleanup_handle]
+kind = "local-boundary"
+generation = 3
+incarnation_id = "old-incarnation"
+presence_epoch = 4
+`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	// The colliding live entry was never published: the remnant-gated name is
+	// not in the live set.
+	if _, ok := m.cfg.hosts.Get("side"); ok {
+		t.Fatal("boot published a live entry over an open remnant")
+	}
+	if _, ok := m.cfg.store.entryByName("side"); ok {
+		t.Fatal("boot kept the blocked entry in the store's live set")
+	}
+	// The remnant is still resumable by id, and the tombstone still stands.
+	remnant, ok := m.cfg.store.remnantByID(remnantID)
+	if !ok || !remnant.open() {
+		t.Fatalf("remnant = %+v (ok=%v), want the open record", remnant, ok)
+	}
+	if _, ok := m.cfg.store.tombstoneSnapshot()["side"]; !ok {
+		t.Fatal("the colliding tombstone was dropped")
+	}
+	list, err := m.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List = %v", err)
+	}
+	if len(list.Hosts) != 1 || list.Hosts[0].OpenRemnantID != remnantID {
+		t.Fatalf("list rows = %+v, want the one gated tombstone row", list.Hosts)
+	}
+	// Forward repair resolves it, after which the name is free again.
+	retry, err := m.TeardownRetry(context.Background(), appwire.HostTeardownRetryParams{RemnantID: remnantID})
+	if err != nil {
+		t.Fatalf("TeardownRetry = %v", err)
+	}
+	if retry.HostTeardownRetryCompleteRemoved == nil {
+		t.Fatalf("retry = %+v, want the teardown-complete removed arm", retry)
+	}
+	if _, open := m.cfg.store.markedRemnantFor("side"); open {
+		t.Fatal("the fence still stands after the retry")
+	}
+}

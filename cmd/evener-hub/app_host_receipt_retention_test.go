@@ -322,7 +322,15 @@ func TestHostReceiptPrunedMarkerBound(t *testing.T) {
 func TestHostReceiptTombstonedNameBackstopExemption(t *testing.T) {
 	f := newUpdateFixture(t)
 	f.m.cfg.policy.supersededMaxCount = 1
-	f.m.cfg.policy.prunedMaxCount = 1
+	// The marker bound is deliberately wide while the remove key is churned into
+	// a marker: WHETHER that marker exists follows from the remove receipt being
+	// compacted away, and the bound is what may evict it afterwards. Asserting
+	// both at the tight bound made the precondition depend on which write's
+	// compaction dropped the receipt — a timing artifact of the commit's write
+	// sequence, not a rule the spec pins — so the wide bound pins the marker's
+	// creation and the tight bound below pins the tombstoned-name exemption,
+	// which is where §6 actually puts it.
+	f.m.cfg.policy.prunedMaxCount = 8
 	// Churn one remove key into a marker, then a newer update key into a
 	// newer marker, so the count bound would drop the older remove marker.
 	removeKey := newTestMutationID()
@@ -347,8 +355,10 @@ func TestHostReceiptTombstonedNameBackstopExemption(t *testing.T) {
 	if !hasRemoveMarker {
 		t.Fatalf("the remove-key marker was never created: %v", markers)
 	}
-	// Now tombstone the name again: the remove marker is the backstop and must
-	// survive compaction past the count bound.
+	// Now tombstone the name again and tighten the marker bound to the owner's
+	// one: the remove marker is the backstop and must survive compaction past
+	// the count bound, while every other marker of the name is fair game.
+	f.m.cfg.policy.prunedMaxCount = 1
 	if _, err := f.m.Remove(context.Background(), removeRequest(t, f.m, "side")); err != nil {
 		t.Fatalf("second Remove: %v", err)
 	}
