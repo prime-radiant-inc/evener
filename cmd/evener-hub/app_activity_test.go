@@ -120,18 +120,7 @@ func activityHost(reply any) func(string, json.RawMessage) any {
 // received, in order.
 func activityHostReads(t *testing.T, calls []remoteHubCall) []appwire.ActivityReadParams {
 	t.Helper()
-	var reads []appwire.ActivityReadParams
-	for _, call := range calls {
-		if call.method != appwire.MethodEvenerActivityRead {
-			continue
-		}
-		var params appwire.ActivityReadParams
-		if err := json.Unmarshal(call.params, &params); err != nil {
-			t.Fatalf("decode activity read params %s: %v", call.params, err)
-		}
-		reads = append(reads, params)
-	}
-	return reads
+	return scriptedRemoteHubParams[appwire.ActivityReadParams](t, calls, appwire.MethodEvenerActivityRead)
 }
 
 func activityHostRegistry(name string, client *appwire.Client, attached bool) *appsource.Registry {

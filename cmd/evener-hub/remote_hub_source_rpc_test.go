@@ -34,6 +34,24 @@ func newScriptedRemoteHub(t *testing.T, handle func(method string, params json.R
 	return client, calls
 }
 
+// scriptedRemoteHubParams decodes the params of every request for method a
+// scripted remote hub recorded, in order.
+func scriptedRemoteHubParams[P any](t *testing.T, calls []remoteHubCall, method string) []P {
+	t.Helper()
+	var decoded []P
+	for _, call := range calls {
+		if call.method != method {
+			continue
+		}
+		var params P
+		if err := json.Unmarshal(call.params, &params); err != nil {
+			t.Fatalf("decode %s params %s: %v", method, call.params, err)
+		}
+		decoded = append(decoded, params)
+	}
+	return decoded
+}
+
 // newPushableScriptedRemoteHub is newScriptedRemoteHub plus the remote hub's side
 // of a subscription fan-out: the returned push writes an unsolicited notification
 // onto the same transport the scripted replies answer on. StreamTransport.Send is

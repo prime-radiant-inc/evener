@@ -5,11 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -19,85 +17,6 @@ import (
 
 const sessionImageRouteSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-// newScriptedImageHost wires an initialized AppWire client to an in-memory
-// server that answers evener/session/image with either bytes or a typed wire
-// error and records every request's params. No SSH, no network, no host.
-func newScriptedImageHost(
-	t *testing.T,
-	handle func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError),
-) (*appwire.Client, func() []appwire.SessionImageParams) {
-	t.Helper()
-	clientConn, serverConn := net.Pipe()
-	server := appwire.NewStreamTransport(serverConn)
-
-	var mu sync.Mutex
-	var seen []appwire.SessionImageParams
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			msg, err := server.Recv(ctx)
-			if err != nil {
-				return
-			}
-			if msg.Request == nil {
-				continue
-			}
-			if msg.Request.Method == appwire.MethodInitialize {
-				data, _ := json.Marshal(appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"})
-				if err := server.Send(ctx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
-					return
-				}
-				continue
-			}
-			if msg.Request.Method != appwire.MethodEvenerSessionImage {
-				return
-			}
-			var params appwire.SessionImageParams
-			if err := json.Unmarshal(msg.Request.Params, &params); err != nil {
-				return
-			}
-			mu.Lock()
-			seen = append(seen, params)
-			mu.Unlock()
-
-			resp, wireErr := handle(params)
-			if wireErr != nil {
-				if err := server.Send(ctx, appwire.ErrorMessage(msg.Request.ID, *wireErr)); err != nil {
-					return
-				}
-				continue
-			}
-			data, err := json.Marshal(resp)
-			if err != nil {
-				return
-			}
-			if err := server.Send(ctx, appwire.ResponseMessage(msg.Request.ID, json.RawMessage(data))); err != nil {
-				return
-			}
-		}
-	}()
-
-	client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
-	client.Start(ctx)
-	if _, err := client.Initialize(ctx, appwire.InitializeParams{}); err != nil {
-		cancel()
-		t.Fatalf("initialize scripted host: %v", err)
-	}
-	t.Cleanup(func() {
-		cancel()
-		_ = client.Close()
-		<-done
-	})
-	recorded := func() []appwire.SessionImageParams {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]appwire.SessionImageParams(nil), seen...)
-	}
-	return client, recorded
-}
-
 // newRemoteSessionImageServer serves a hub with one attached host source whose
 // client answers evener/session/image through handle.
 func newRemoteSessionImageServer(
@@ -106,7 +25,27 @@ func newRemoteSessionImageServer(
 	handle func(appwire.SessionImageParams) (appwire.SessionImageResponse, *appwire.WireError),
 ) (*httptest.Server, *WebServer, func() []appwire.SessionImageParams) {
 	t.Helper()
-	client, seen := newScriptedImageHost(t, handle)
+	client, calls := newScriptedRemoteHub(t, func(method string, raw json.RawMessage) any {
+		switch method {
+		case appwire.MethodInitialize:
+			return appwire.InitializeResponse{ProtocolVersion: appwire.ProtocolVersion, SourceID: "local"}
+		case appwire.MethodEvenerSessionImage:
+			var params appwire.SessionImageParams
+			if err := json.Unmarshal(raw, &params); err != nil {
+				return appwire.InvalidParams(err.Error())
+			}
+			response, wireErr := handle(params)
+			if wireErr != nil {
+				return *wireErr
+			}
+			return response
+		default:
+			return appwire.EmptyResponse{}
+		}
+	})
+	seen := func() []appwire.SessionImageParams {
+		return scriptedRemoteHubParams[appwire.SessionImageParams](t, calls(), appwire.MethodEvenerSessionImage)
+	}
 	source := appsource.NewRemoteHubSource("h1", nil, func(context.Context, string) (*appwire.Client, error) {
 		return client, nil
 	})
