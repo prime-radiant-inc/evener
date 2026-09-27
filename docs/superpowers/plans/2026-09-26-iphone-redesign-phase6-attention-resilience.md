@@ -52,7 +52,7 @@ Decisions this plan makes where the spec is silent or its data doesn't exist yet
 9. **Alerts read the fleet with their own board controller, never paused.** The Board and the Session pause theirs on blur (phase 3 ruling 33), and alerts must hear about sessions while you're anywhere. That costs a second set of navigation reads while the Board or a Session is in front; sharing one controller is a later consolidation.
 10. **The connection clock counts only time in front.** The app closes its connection in the background (`ConnectionProvider`), so returning never flashes "Offline". "Updated 3m ago" still counts from when the data was last live, background included.
 11. **The offline age is whole minutes, at least 1m** ("updated 1m ago" from the 30-second mark), because the status changes once a minute. `relativeAge` says "now" under a minute, which would read "updated now ago".
-12. **Offline Send is fenced to the session instance the phone last saw,** as an online send is. A session this phone hasn't read since launch has no instance to fence with, so there Send stays disabled offline and the draft stays. That is about the phone's read, not the session's status: a shut-down session (`notLoaded` on the hub) the phone has read resumes on a send, fenced as an online resume is.
+12. **Offline Send is fenced to the session instance the phone last saw,** as an online send is: the conversation's `instanceId`, which the service sets on every read (the read's instance, or the thread id when the read names none, `mobile/src/services/conversation.ts:729-736`). Phase 6 adds no fallback of its own. A session this phone hasn't read since launch has no instance to fence with, so there Send stays disabled offline and the draft stays. That is about the phone's read, not the session's status: a shut-down session (`notLoaded` on the hub) the phone has read resumes on a send, fenced as an online resume is.
 13. **Offline, Send queues whenever the harness can.** By the time the message arrives another turn may have started, which refuses a `turn/start`; the daemon runs a queued message at once on an idle session and holds it behind a running one (`clientMutationQueue`, `agent/session_client_mutation_queue.go`). So offline routing is the package's table as if a send of this phone's were already pending (`deriveSendQueueAvailability`'s tier 6), which also queues a second message behind a first this phone still holds. A harness that can't queue waits for the connection. A shut-down session resumes on its first message.
 14. **What a waiting message says.** "Sending…" while the connection is live, "Will send when you're back online" while it isn't (the prototype's words, and principle 5: nothing is sending), and Send's label offline says the same.
 15. **"Couldn't confirm this was sent" offers Check only while connected, and Discard always,** since Check needs the hub and Discard doesn't. This covers a lost send, the unconfirmed draft and a record the phone couldn't place.
@@ -1001,11 +1001,11 @@ Phase 3 disables Send while offline (its ruling 4): the durable submitter refuse
 - Produces:
   - `sendAction(conversation, pendingMutations, connected)` keeps its signature. Offline it returns the action the message will take when it arrives, instead of `"none"`.
   - `sendLabel(action, questionPending, connected = true)`.
-  - `interface OfflineTarget { hubId: string; ref: string; threadId: string; instanceId?: string | null }` and `offlineRequest(target: OfflineTarget, action: "send" | "queue" | "resume", input: InputItem[]): ConversationMutationRequest`, from `src/outbox/offlineSend.ts`.
+  - `interface OfflineTarget { hubId: string; ref: string; threadId: string; instanceId: string }` and `offlineRequest(target: OfflineTarget, action: "send" | "queue" | "resume", input: InputItem[]): ConversationMutationRequest`, from `src/outbox/offlineSend.ts`.
 
 **Requirements (spec 8.5 and 14; rulings 12 to 14):**
 1. **Routing offline.** A message waits in the outbox, and by the time it arrives another turn may have started, where `turn/start` is refused. So offline, Send routes by the package's table as if a send of this phone's were already pending (`deriveSendQueueAvailability` with `hasPendingSend: true`, its tier 6): it queues whenever the harness can, and the daemon runs a queued message at once on an idle session (`clientMutationQueue` wakes it, `agent/session_client_mutation_queue.go:107-190`) and holds it behind a running one. A message after one this phone still holds queues behind it, as online. The first message to a shut-down session resumes it. A paused session, one that needs a restart, and one whose harness can't queue stay `"none"`, and the draft stays.
-2. **What Send admits offline.** When the screen isn't connected and the phone has read the session since launch (`store.getState().conversation` is set), Send is enabled on the same draft conditions as online, minus `ready`. It runs `document.submit(async (text, images) => …)`, which submits `offlineRequest({ hubId, ref, threadId, instanceId }, action, buildComposerInput(text, images))` to `getNativeMutationRuntime()`, and returns `true`. Its haptic comes with part 2's Task 6. The ghost shows at once through the durable pending rows the screen already follows (phase 3 Task 8).
+2. **What Send admits offline.** When the screen isn't connected and the phone has read the session since launch (`store.getState().conversation` is set, with the `instanceId` every read sets), Send is enabled on the same draft conditions as online, minus `ready`. It runs `document.submit(async (text, images) => …)`, which submits `offlineRequest({ hubId, ref, threadId, instanceId }, action, buildComposerInput(text, images))` to `getNativeMutationRuntime()`, and returns `true`. Its haptic comes with part 2's Task 6. The ghost shows at once through the durable pending rows the screen already follows (phase 3 Task 8).
 3. **Never read.** A session this phone hasn't read since launch (`store.getState().conversation` is unset) has no instance to fence with (ruling 12), so its Send stays disabled offline, and the draft stays. `sendAction` is never asked there. A thread whose hub status is `notLoaded` is a shut-down session the phone did read, and routes to `"resume"`.
 4. **Words.** The placeholder is `composerPlaceholder` of the connected routing, so it describes the session rather than the outbox. Send's accessibility label offline is "Send when you're back online", or "Send answer when you're back online" while a question is pending.
 5. **Answers.** The dock's "Send answer" admits offline through the same `offlineRequest` path, with the composed text as one text input, and marks the batch sent as `sendAnswers` does online.
@@ -1070,12 +1070,9 @@ it("fences a message to the session instance the phone last saw", () => {
 	});
 });
 
-it("sends to start or resume, and falls back to the thread id for a session with no instance", () => {
-	expect(offlineRequest(target, "send", input).kind).toBe("send");
-	expect(offlineRequest({ ...target, instanceId: undefined }, "resume", input)).toMatchObject({
-		kind: "send",
-		instanceId: "thread-1",
-	});
+it("starts or resumes a session with a send, fenced the same way", () => {
+	expect(offlineRequest(target, "send", input)).toMatchObject({ kind: "send", instanceId: "instance-7" });
+	expect(offlineRequest(target, "resume", input)).toMatchObject({ kind: "send", instanceId: "instance-7" });
 });
 ```
 
@@ -1139,11 +1136,11 @@ export function sendLabel(action: SendAction, questionPending: boolean, connecte
 ```ts
 // mobile-native/src/outbox/offlineSend.ts
 // The durable request for a message sent while offline (spec 8.5, ruling
-// 12). It is fenced to the session instance the phone last saw, the same
-// fence an online send carries (conversation.ts submitMutation), so a session
-// that restarted meanwhile refuses it and its ghost says so. A thread with no
-// instance id is fenced with its thread id, as the online send is and as the
-// hub stamps a daemon's thread (appsource/local_daemon.go).
+// 12). It is fenced to the session instance the phone last saw: the fence the
+// conversation service computed on its last read of the session
+// (mobile/src/services/conversation.ts:729-736), the same value an online
+// send carries, so a session that restarted meanwhile refuses it and its
+// ghost says so. This module adds no fallback of its own.
 import type { InputItem } from "@evener/appwire-client";
 import type { ConversationMutationRequest } from "../../../mobile/src/state/conversationMutation";
 
@@ -1151,7 +1148,8 @@ export interface OfflineTarget {
 	hubId: string;
 	ref: string;
 	threadId: string;
-	instanceId?: string | null;
+	/** The conversation's instanceId, which every read sets. */
+	instanceId: string;
 }
 
 export function offlineRequest(
@@ -1164,7 +1162,7 @@ export function offlineRequest(
 		hubId: target.hubId,
 		targetRef: target.ref,
 		threadId: target.threadId,
-		instanceId: target.instanceId ?? target.threadId,
+		instanceId: target.instanceId,
 		input,
 	};
 }
