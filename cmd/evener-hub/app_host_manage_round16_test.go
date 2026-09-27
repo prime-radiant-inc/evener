@@ -101,7 +101,7 @@ func TestHostManageRemoveSaveFailureAfterRenameKeepsTheHost(t *testing.T) {
 	// The removal's own save fails behind its rename; the compensation save
 	// that follows runs the real sync.
 	flakyHubTOMLDirSync(t, func(call int) bool { return call == 1 })
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "keep"}); err == nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err == nil {
 		t.Fatal("Remove over a failing directory sync succeeded, want refusal")
 	}
 	// The live set still holds the host fully intact...
@@ -128,7 +128,7 @@ func TestHostManageRemoveSaveFailureAfterRenameKeepsTheHost(t *testing.T) {
 	if resp.Host.Removed {
 		t.Fatalf("row = %+v, want the host still present", resp.Host)
 	}
-	if _, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "keep"}); err != nil {
+	if _, err := m.Remove(context.Background(), removeRequest(t, m, "keep")); err != nil {
 		t.Fatalf("Remove(keep) retry = %v, want success", err)
 	}
 	if names := hubTOMLHostNames(t, configPath); slices.Contains(names, "keep") {
@@ -157,7 +157,7 @@ func TestHostManageHubTOMLRollbackLandsWhenItsOwnSyncFails(t *testing.T) {
 	// The removal's save fails behind its rename, and so does the
 	// compensation save it owes — the second rename still lands.
 	flakyHubTOMLDirSync(t, func(call int) bool { return call == 1 || call == 2 })
-	_, err := m.Remove(context.Background(), appwire.HostRemoveParams{Name: "keep"})
+	_, err := m.Remove(context.Background(), removeRequest(t, m, "keep"))
 	if err == nil {
 		t.Fatal("Remove over a failing directory sync succeeded, want refusal")
 	}

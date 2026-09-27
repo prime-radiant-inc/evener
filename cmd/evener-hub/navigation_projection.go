@@ -112,6 +112,9 @@ type navigationBuildInputs struct {
 	// row that shares its bare ID.
 	PinSections    []hubcore.PinSection
 	PinAssignments map[hubcore.ArchiveKey]hubcore.SessionPin
+	// SessionSeen is the hub's seen-through markers and their epoch, captured
+	// with Tree. A live row's unseen flag is computed against it (S4).
+	SessionSeen hubcore.SessionSeenSnapshot
 }
 
 type navigationProjection struct {
@@ -249,6 +252,7 @@ func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs)
 		}
 		out.PinAssignments[key] = assignment
 	}
+	out.SessionSeen = in.SessionSeen.Clone()
 	out.Tree, err = in.Tree.SnapshotContext(ctx)
 	if err != nil {
 		return navigationBuildInputs{}, err
@@ -267,6 +271,7 @@ func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
 	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
 	out.PinAssignments = make(map[hubcore.ArchiveKey]hubcore.SessionPin, len(in.PinAssignments))
 	maps.Copy(out.PinAssignments, in.PinAssignments)
+	out.SessionSeen = in.SessionSeen.Clone()
 	return out
 }
 
@@ -1805,11 +1810,6 @@ func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hub
 
 func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.NavigationSessionSummary {
 	ref, _ := navigationNodeRef(node)
-	updated := node.UpdatedAt
-	var updatedAt *time.Time
-	if !updated.IsZero() {
-		updatedAt = &updated
-	}
 	pinned := p.projection.pinSectionIDFor(ref) != ""
 	watches, omittedWatches, omittedArmedWatches := navigationWatches(node.Watches)
 	return hubapi.NavigationSessionSummary{
@@ -1837,9 +1837,11 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		ApprovalTarget:      truncateNavigationRunes(node.ApprovalTarget, maxNavigationLabelRunes),
 		Dormant:             node.Dormant,
 		Offline:             p.projection.sourceOffline(ref.HostID),
-		UpdatedAt:           updatedAt,
+		UpdatedAt:           optionalTime(node.UpdatedAt),
 		MoreSubagents:       node.MoreSubagents,
 		Subagents:           navigationSubagentTally(node.Subagents),
+		TurnEndedAt:         optionalTime(node.TurnEndedAt),
+		Unseen:              p.projection.unseen(ref, node.TurnEndedAt),
 		RunningJobs:         navigationJobs(node.RunningJobs),
 		CompletedJobs:       navigationJobs(node.CompletedJobs),
 		Watches:             watches,
@@ -1848,6 +1850,15 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 		Tasks:               navigationTaskProgress(node.Tasks),
 		Children:            hubapi.NavigationArray[hubapi.NavigationSessionSummary]{},
 	}
+}
+
+// optionalTime is t as an optional wire timestamp: nil when t is zero, so the
+// summary omits the key.
+func optionalTime(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 // navigationTaskProgress is the row's task line: a session's task-list progress
@@ -2147,9 +2158,18 @@ func (p navigationProjection) pinSectionIDFor(ref hubapi.Ref) string {
 	return assignment.SectionID
 }
 
+// unseen reports whether a row's last turn ended after the hub's seen-through
+// marker for it (S4). The marker is keyed by the row's own ref, the one a
+// client marks it by, so a live session's Live, project and pin rows, which
+// share that ref, agree.
+func (p navigationProjection) unseen(ref hubapi.Ref, turnEndedAt time.Time) bool {
+	return p.inputs.SessionSeen.Unseen(hubcore.SessionPinKey(ref.HostID, ref.SessionID), turnEndedAt)
+}
+
 func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {
 	clone := summary
 	clone.UpdatedAt = clonePointer(summary.UpdatedAt)
+	clone.TurnEndedAt = clonePointer(summary.TurnEndedAt)
 	clone.RunningJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.RunningJobs...)
 	clone.CompletedJobs = append(hubapi.NavigationArray[hubapi.NavigationJobSummary](nil), summary.CompletedJobs...)
 	clone.Watches = append(hubapi.NavigationArray[hubapi.NavigationWatchSummary](nil), summary.Watches...)

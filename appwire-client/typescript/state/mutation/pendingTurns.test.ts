@@ -138,6 +138,56 @@ describe("createPendingTurnsStore", () => {
     });
   });
 
+  describe("projectSnapshot", () => {
+    // A durable read of ref-a as storage hands it back: new objects on every
+    // call, with the same content.
+    function readRefA() {
+      return {
+        outbox: [
+          outboxRecord({
+            clientMutationId: "out-1",
+            targetRef: "ref-a",
+            payload: { input: [{ type: "text", text: "queued" }] },
+          }),
+        ],
+        optimistic: [optimisticRecord({ clientMutationId: "opt-1", targetRef: "ref-a" })],
+        recovery: [recoveryRecord({ clientMutationId: "rec-1", targetRef: "ref-a", recoveryReason: "refused" })],
+      };
+    }
+
+    test("is a no-op when a fresh read holds what the store already does", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+      store.projectSnapshot(new Set(["ref-a"]), readRefA());
+      const stateAfterFirst = store.getState();
+
+      store.projectSnapshot(new Set(["ref-a"]), readRefA());
+      expect(store.getState()).toBe(stateAfterFirst); // no new setState published
+    });
+
+    test("publishes a change, and the record maps it did not change keep their identity", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+      store.projectSnapshot(new Set(["ref-a"]), readRefA());
+      const before = store.getState();
+
+      const changed = readRefA();
+      changed.outbox = [outboxRecord({ ...changed.outbox[0], state: "blockedUnknown" })];
+      store.projectSnapshot(new Set(["ref-a"]), changed);
+
+      const after = store.getState();
+      expect(after.outbox.get("out-1")?.state).toBe("blockedUnknown");
+      expect(after.optimistic).toBe(before.optimistic);
+      expect(after.recovery).toBe(before.recovery);
+    });
+  });
+
   describe("beginSubmission / endSubmission", () => {
     test("guards a second call for the same ref while one is in flight, and endSubmission releases it", () => {
       const store = createPendingTurnsStore({

@@ -974,6 +974,11 @@ export interface FeatureSet {
   keybindingsSettings?: boolean;
 }
 
+export interface FencingEpoch {
+  bootId: string;
+  opSeq: number;
+}
+
 export interface GitHeadParams {
   cwd: string;
   /**
@@ -1034,6 +1039,7 @@ export interface HarnessListResponse {
 
 export interface HostAddParams {
   entry: HostEntry;
+  mutationId?: string;
 }
 
 export interface HostAttachParams {
@@ -1067,6 +1073,18 @@ export interface HostCredentialPushResult {
   reason?: string;
 }
 
+export interface HostDeployParams {
+  name: string;
+  token: string;
+  operationId: string;
+}
+
+export interface HostDeployResponse {
+  id: string;
+  clientOperationId: string;
+  state: string;
+}
+
 export interface HostEntry {
   name?: string;
   address: string;
@@ -1091,6 +1109,44 @@ export interface HostNotificationParams {
   params?: unknown;
 }
 
+export interface HostPlan {
+  host: string;
+  generation: number;
+  targetPath: string;
+  controllerRevision: string;
+  restartFollows: boolean;
+  factsRevision: string;
+  hubTomlFingerprint: string;
+  factsCapturedAt: string;
+  factsAgeSec: number;
+  runningVersion: string;
+  runningHealthy: boolean;
+  runningProcessStartTime?: string;
+}
+
+export interface HostPlanNoToken {
+  outcome: string;
+  staleFacts: HostPlanStaleFacts;
+  terminal: boolean;
+  remnantId?: string;
+}
+
+export interface HostPlanParams {
+  name: string;
+}
+
+export interface HostPlanPlanned {
+  outcome: string;
+  plan: HostPlan;
+  token: string;
+}
+
+export interface HostPlanStaleFacts {
+  message: string;
+  attached: boolean;
+  reason: string;
+}
+
 export interface HostPushCredentialsParams {
   host: string;
 }
@@ -1102,6 +1158,9 @@ export interface HostPushCredentialsResponse {
 
 export interface HostRemoveParams {
   name: string;
+  mutationId: string;
+  expectedGeneration: number;
+  expectedIncarnationId: string;
 }
 
 export interface HostRemoveResponse {
@@ -1114,6 +1173,19 @@ export interface HostRequestParams {
   params?: unknown;
 }
 
+export interface HostRestartParams {
+  name: string;
+  operationId: string;
+  generation: number;
+  incarnationId: string;
+}
+
+export interface HostRestartResponse {
+  id: string;
+  clientOperationId: string;
+  state: string;
+}
+
 export interface HostRow {
   name: string;
   address?: string;
@@ -1124,6 +1196,16 @@ export interface HostRow {
   addr?: string;
   roots?: string[];
   origin: string;
+  /**
+   * Generation and IncarnationID are the live entry's current
+   * (generation, incarnation id) pair — the guarded-mutation identity
+   * `update`/`remove` require back as expectedGeneration /
+   * expectedIncarnationId (registry spec 08 §1, §11). The UI echoes both
+   * values from the list/status row it holds. Tombstone rows carry the
+   * removed entry's pair (S11).
+   */
+  generation: number;
+  incarnationId: string;
   attached: boolean;
   serverName?: string;
   serverVersion?: string;
@@ -1133,6 +1215,16 @@ export interface HostRow {
   lastAttachError?: string;
   midAttach: boolean;
   removed: boolean;
+}
+
+export interface HostRunningParams {
+  fencingEpoch: FencingEpoch;
+}
+
+export interface HostRunningResponse {
+  buildRevision: string;
+  healthy: boolean;
+  processStartTime?: string;
 }
 
 export interface HostStatusParams {
@@ -1146,6 +1238,9 @@ export interface HostStatusResponse {
 export interface HostUpdateParams {
   name: string;
   entry: HostEntry;
+  mutationId: string;
+  expectedGeneration: number;
+  expectedIncarnationId: string;
 }
 
 export interface HostUpdateResponse {
@@ -2142,6 +2237,19 @@ export interface NavigationSessionSummary {
   subagents?: NavigationSubagentTally;
   omitted_descendants?: number;
   /**
+   * TurnEndedAt is when a live session's last turn ended, stamped by its
+   * daemon (S4). It is present only on a live row whose daemon reported one.
+   * A client that marks the row seen echoes it back as seenThrough.
+   */
+  turn_ended_at?: string;
+  /**
+   * Unseen marks a live row whose last turn ended after the hub's
+   * seen-through marker for it, or that was marked unread (S4): Finished on
+   * the Board, and Idle when absent. It is only ever set on a row that
+   * carries TurnEndedAt.
+   */
+  unseen?: boolean;
+  /**
    * OmittedWatches counts live-watch rows this session's summary does not
    * carry: rows beyond the projector's per-session cap, rows it could not
    * represent, and rows the byte-budget fitter shed. It mirrors
@@ -2644,6 +2752,22 @@ export interface SessionPinUnpinResponse {
   ok: boolean;
   changed: boolean;
   assignment: SessionPinUnpinAssignment;
+  navigation: NavigationMutation;
+}
+
+export interface SessionSeenMark {
+  ref: string;
+  seenThrough?: number;
+  unread?: boolean;
+}
+
+export interface SessionSeenSetParams {
+  sessions: SessionSeenMark[];
+}
+
+export interface SessionSeenSetResponse {
+  ok: boolean;
+  changed: boolean;
   navigation: NavigationMutation;
 }
 
@@ -3694,6 +3818,7 @@ export const METHOD_NAMES = [
   "evener/pin-section/delete",
   "evener/session-pin/assign",
   "evener/session-pin/unpin",
+  "evener/session/seen/set",
   "evener/search",
   "evener/activity/read",
   "evener/harnesses/list",
@@ -3757,6 +3882,10 @@ export const METHOD_NAMES = [
   "evener/host/status",
   "evener/host/remove",
   "evener/host/update",
+  "evener/host/plan",
+  "evener/host/deploy",
+  "evener/host/restart",
+  "evener/host/running",
   "evener/host/pushCredentials",
   "evener/session/image",
 ] as const;
@@ -3908,6 +4037,7 @@ export interface MethodTypes {
   "evener/pin-section/delete": { params: PinSectionDeleteParams; result: PinSectionDeleteResponse };
   "evener/session-pin/assign": { params: SessionPinAssignParams; result: SessionPinAssignResponse };
   "evener/session-pin/unpin": { params: SessionPinUnpinParams; result: SessionPinUnpinResponse };
+  "evener/session/seen/set": { params: SessionSeenSetParams; result: SessionSeenSetResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/activity/read": { params: ActivityReadParams; result: ActivityReadResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
@@ -3971,6 +4101,10 @@ export interface MethodTypes {
   "evener/host/status": { params: HostStatusParams; result: HostStatusResponse };
   "evener/host/remove": { params: HostRemoveParams; result: HostRemoveResponse };
   "evener/host/update": { params: HostUpdateParams; result: HostUpdateResponse };
+  "evener/host/plan": { params: HostPlanParams; result: HostPlanPlanned | HostPlanNoToken };
+  "evener/host/deploy": { params: HostDeployParams; result: HostDeployResponse };
+  "evener/host/restart": { params: HostRestartParams; result: HostRestartResponse };
+  "evener/host/running": { params: HostRunningParams; result: HostRunningResponse };
   "evener/host/pushCredentials": { params: HostPushCredentialsParams; result: HostPushCredentialsResponse };
   "evener/session/image": { params: SessionImageParams; result: SessionImageResponse };
 }

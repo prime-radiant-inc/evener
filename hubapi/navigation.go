@@ -292,6 +292,15 @@ type NavigationSessionSummary struct {
 	// children cap).
 	Subagents          *NavigationSubagentTally `json:"subagents,omitempty"`
 	OmittedDescendants int                      `json:"omitted_descendants,omitempty"`
+	// TurnEndedAt is when a live session's last turn ended, stamped by its
+	// daemon (S4). It is present only on a live row whose daemon reported one.
+	// A client that marks the row seen echoes it back as seenThrough.
+	TurnEndedAt *time.Time `json:"turn_ended_at,omitempty"`
+	// Unseen marks a live row whose last turn ended after the hub's
+	// seen-through marker for it, or that was marked unread (S4): Finished on
+	// the Board, and Idle when absent. It is only ever set on a row that
+	// carries TurnEndedAt.
+	Unseen bool `json:"unseen,omitempty"`
 	// OmittedWatches counts live-watch rows this session's summary does not
 	// carry: rows beyond the projector's per-session cap, rows it could not
 	// represent, and rows the byte-budget fitter shed. It mirrors

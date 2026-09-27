@@ -60,7 +60,7 @@ func TestHostManageUpdateRefusesUnusableHostAddr(t *testing.T) {
 		{Address: "side.example", Addr: "127.0.0.1:9180"},
 		{Address: "side.example", ConfigPath: "/etc/evener/hub.toml", Addr: "10.0.0.5:9180"},
 	} {
-		if _, err := f.m.Update(context.Background(), appwire.HostUpdateParams{Name: "side", Entry: entry}); err == nil {
+		if _, err := f.m.Update(context.Background(), updateRequest(t, f.m, "side", entry)); err == nil {
 			t.Errorf("Update(%+v) accepted an entry hub.toml loading refuses", entry)
 		}
 	}

@@ -10,6 +10,8 @@ import { HOST_POLL_MS, HostsSection } from "./hosts";
 
 function row(overrides: Partial<HostRow> & Pick<HostRow, "name">): HostRow {
   return {
+    generation: 1,
+    incarnationId: "inc-1",
     origin: "hub.toml",
     attached: false,
     midAttach: false,
@@ -35,7 +37,15 @@ test("lists hosts with online/offline state chips", async () => {
   const fake = connectFakeClient();
   fake.on("evener/host/list", () => ({
     hosts: [
-      row({ name: "alpha", address: "a.example", attached: true, hubVersion: "1.2.3", origin: "hub.toml" }),
+      row({
+        name: "alpha",
+        address: "a.example",
+        attached: true,
+        hubVersion: "1.2.3",
+        generation: 1,
+        incarnationId: "inc-1",
+        origin: "hub.toml",
+      }),
       row({ name: "beta", address: "b.example", attached: false }),
     ],
   }));
@@ -139,7 +149,9 @@ test("a host row offers Edit, prefills the whole entry, and sends no name input"
 
 test("a hub.toml row offers Edit and Remove like every other row", async () => {
   const fake = connectFakeClient();
-  fake.on("evener/host/list", () => ({ hosts: [row({ name: "alpha", address: "a.example", origin: "hub.toml" })] }));
+  fake.on("evener/host/list", () => ({
+    hosts: [row({ name: "alpha", address: "a.example", generation: 1, incarnationId: "inc-1", origin: "hub.toml" })],
+  }));
   render(<HostsSection sectionId="hosts" />);
   const rowEl = (await screen.findByText("alpha")).closest("li")!;
   expect(within(rowEl).getByRole("button", { name: "Edit" })).toBeTruthy();

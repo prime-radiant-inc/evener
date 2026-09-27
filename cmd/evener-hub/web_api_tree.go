@@ -884,6 +884,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 	if thread.Evener.Subagents != nil {
 		entry.Subagents = *thread.Evener.Subagents
 	}
+	entry.LastTurnEndedAt = hubcore.UnixMilliTime(thread.Evener.LastTurnEndedAt)
 	return meta, entry, true
 }
 

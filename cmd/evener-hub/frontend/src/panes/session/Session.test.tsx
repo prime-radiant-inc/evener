@@ -11,6 +11,7 @@ import type {
 } from "@evener/appwire-client";
 import { AppwireClient, makeTranscriptDisplayConfig, WireError } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
+import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -212,6 +213,22 @@ function connectFakeClient(): FakeClient {
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }
+
+// The pane's clock tests fake the now-tick's interval and Date, and nothing
+// else. Faking every timer would also fake setImmediate and
+// requestAnimationFrame, which fake-indexeddb and the transcript's virtualizer
+// schedule on, and advanceTimersByTimeAsync yields one real macrotask per fake
+// timer it fires: a 21s advance would take about 750 real turns (the storage
+// steps of ten discovery scans and a scroll-reconcile frame loop), enough for a
+// starved host to push the test past its timeout. With only these faked, the
+// same advance fires about seventeen timers. setTimeout stays real as well:
+// the storage's 10s transaction deadlines and the projection flush's 4s stall
+// tripwire run on it, and a long fake advance would fire them while
+// fake-indexeddb's work still runs in real time. The discovery scans the faked
+// interval still starts run on real IndexedDB, so a test settles them with the
+// projection flush after it advances, before the file's afterEach resets the
+// pending-turns store they publish into.
+const FAKE_CLOCK_ONLY: Parameters<typeof vi.useFakeTimers>[0] = { toFake: ["setInterval", "clearInterval", "Date"] };
 
 // jsdom performs no real layout (every element's offsetHeight is 0, no
 // ResizeObserver) - VirtualList's own test suite stubs this for the exact
@@ -542,7 +559,7 @@ test("falls back to the raw ref as the title when the thread has no name yet", a
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
 });
 
-function setNavigationTitle(ref: string, title: string, topLevel = true): void {
+function setNavigationTitle(ref: string, title: string, topLevel = true, fields: Record<string, unknown> = {}): void {
   const key = { kind: "location", ref } as const;
   const data = {
     generation_id: "generation_test",
@@ -560,6 +577,7 @@ function setNavigationTitle(ref: string, title: string, topLevel = true): void {
       kind: topLevel ? "session" : "fork",
       live: true,
       children: [],
+      ...fields,
     },
   };
   navigationStore.setState({
@@ -584,6 +602,31 @@ function setNavigationTitle(ref: string, title: string, topLevel = true): void {
     ]),
   });
 }
+
+// S4: opening a session pane marks the turn its row shows as seen on the hub,
+// so the session's blue dot clears on the phone too.
+test("opening the pane marks the session's unseen turn seen", async () => {
+  setNavigationTitle("ref_a", "Finished work", true, { turn_ended_at: "2026-09-26T11:58:00.123Z", unseen: true });
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  fake.on("evener/session/seen/set", () => ({
+    ok: true,
+    changed: true,
+    navigation: { generation_id: "generation_test", targets: [] },
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/session/seen/set").map((call) => call.params)).toEqual([
+      { sessions: [{ ref: "ref_a", seenThrough: Date.parse("2026-09-26T11:58:00.123Z") }] },
+    ]),
+  );
+});
 
 // kata (session-pane header fix): the pane's own in-pane header (this
 // PaneScaffold title) used to fall straight to the raw ref whenever the
@@ -1284,7 +1327,9 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   // millisecond after the component's last-rendered `now` reads as
   // "timestamped after now" and Cadence's own clock-skew guard (see
   // widgets/cadence's ticksFor) correctly hides it until the next tick.
-  vi.useFakeTimers();
+  // Only the interval and the clock are faked (FAKE_CLOCK_ONLY), so the
+  // storage and the transcript's frames keep running on real scheduling.
+  vi.useFakeTimers(FAKE_CLOCK_ONLY);
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
@@ -1298,6 +1343,9 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   });
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
 
+  // A live frame lands after the `now` the pane last rendered. Moving the clock
+  // one millisecond stamps this one that way; it fires no timer.
+  vi.advanceTimersByTime(1);
   act(() => {
     fake.emitNotification({
       method: "thread/status/changed",
@@ -1306,6 +1354,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   });
   // The ring itself (store-level) grows immediately - no timer involved.
   expect(threadsStore.getState().frameTimes.get("ref_a")).toHaveLength(1);
+  expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect')).toHaveLength(0);
 
   // The pane's own `now` prop only advances on its 3s tick (Cadence itself
   // is pure/prop-driven - see widgets/cadence's own doc comment); advance
@@ -1314,6 +1363,7 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   await act(async () => {
     await vi.advanceTimersByTimeAsync(3_000);
   });
+  await flushPendingTurnsProjectionForTests();
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect').length).toBeGreaterThan(0);
 });
 
@@ -1550,7 +1600,7 @@ test("clicking the real NewContentPill clears it", async () => {
 // footer (flex: none, always laid out after body - panescaffold.module.css)
 // beside the composer, never inside the transcript's floating overlay.
 test("the liveness line renders in the reserved footer beside the composer, never inside the transcript's floating overlay", async () => {
-  vi.useFakeTimers();
+  vi.useFakeTimers(FAKE_CLOCK_ONLY);
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", { status: { type: "active" }, turns: [turnFixture("turn_1", "hi")] }),
@@ -1571,6 +1621,7 @@ test("the liveness line renders in the reserved footer beside the composer, neve
   await act(async () => {
     await vi.advanceTimersByTimeAsync(21_000);
   });
+  await flushPendingTurnsProjectionForTests();
 
   const line = screen.getByTestId("liveness-line");
   expect(line.textContent).toContain("Quiet");
@@ -2576,6 +2627,24 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
   try {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a", liveSurfaceThread()));
+    // The hydrated session dispatches the seeded steer at once, and the steer
+    // stays held while the daemon has not answered: the test holds that
+    // answer, then gives it to make the departure.
+    const steerSent = deferred<() => void>();
+    fake.on("turn/steer", (params) => {
+      return new Promise((resolve) => {
+        steerSent.resolve(() =>
+          resolve({
+            receipt: {
+              clientMutationId: params.clientMutationId,
+              disposition: "applied",
+              threadId: "thr_ref_a",
+              projectionState: "reflected",
+            },
+          }),
+        );
+      });
+    });
 
     render(
       <ClientProvider client={fake}>
@@ -2587,13 +2656,11 @@ test("heldEpoch bumps on arrival only - never on removal", async () => {
     });
     await waitFor(() => expect(screen.getByTestId("held-steer-stack")).toBeTruthy());
     expect(Math.max(...epochs)).toBe(1); // arrival bumped it exactly once
-    // A departure: Stop-cancel the ref's unattempted rows through the same
-    // real write every Stop path makes (PendingChips.test.tsx's shape).
+    // A departure: the daemon acknowledges the steer, and settling that
+    // receipt removes the row.
+    const answerSteer = await act(() => steerSent.promise);
     await act(async () => {
-      const storage = new MutationOutboxIndexedDB();
-      await storage.cancelUnattempted("ref_a");
-      storage.close();
-      await refreshPendingTurnsProjection("ref_a");
+      answerSteer();
       await flushPendingTurnsProjectionForTests();
     });
     await waitFor(() => expect(screen.queryByTestId("held-steer-stack")).toBeNull());

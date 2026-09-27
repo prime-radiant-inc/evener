@@ -469,6 +469,10 @@ type TreeNode struct {
 	// diagnostics. Rows are never aggregated across sessions, so a receiver
 	// watch that two sessions can see is counted once per owning summary.
 	Watches []appwire.EvenerWatchInfo
+	// TurnEndedAt is when a live session's last turn ended (LiveEntry.
+	// LastTurnEndedAt, S4). Every builder sets it from one closure so a
+	// session's rows agree; an ended session has none.
+	TurnEndedAt time.Time
 	// Tasks is this session's own task-list progress, carried from its live
 	// entry; nil for a session with no live entry, which includes every
 	// in-process child.
@@ -1083,6 +1087,12 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return appwire.SubagentTally{}
 	}
 
+	// turnEndedAtFor resolves a live session's last turn end from the same live
+	// map stateFor reads, so its Live, project and NeedsYou rows agree (S4).
+	turnEndedAtFor := func(id string) time.Time {
+		return liveMap[id].LastTurnEndedAt
+	}
+
 	// dormantFor resolves "this session has never run" for a session ID, from
 	// the same metaMap every builder below already consults — one closure, for
 	// the same reason stateFor and askPendingFor are: a session listed in both
@@ -1247,12 +1257,14 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		approvalPending := approvalPendingFor(m.ID)
 		approval := firstApprovalFor(m.ID)
 		subagentTally := subagentsFor(m.ID)
+		turnEndedAt := turnEndedAtFor(m.ID)
 		if parentDead {
 			state = "ended"
 			askPending = false
 			approvalPending = false
 			approval = appwire.SandboxEscalationRequested{}
 			subagentTally = appwire.SubagentTally{}
+			turnEndedAt = time.Time{}
 		}
 		// A subagent's state already resolved through stateFor above: its own
 		// live entry's status when it has one, else the parent's carried state
@@ -1282,6 +1294,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Watches:         watchesFor(m.ID),
 			Tasks:           tasksFor(m.ID),
 			Subagents:       subagentTally,
+			TurnEndedAt:     turnEndedAt,
 		}
 
 		childMetas := childrenByParent[m.ID]
@@ -1532,6 +1545,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				Watches:         appwire.CloneEvenerWatches(le.Watches),
 				Tasks:           tasksFor(le.SessionID),
 				Subagents:       subagentsFor(le.SessionID),
+				TurnEndedAt:     turnEndedAtFor(le.SessionID),
 			}
 			liveNodes = append(liveNodes, node)
 			continue
@@ -1637,6 +1651,7 @@ func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Watches:         appwire.CloneEvenerWatches(le.Watches),
 			Tasks:           tasksFor(le.SessionID),
 			Subagents:       subagentsFor(le.SessionID),
+			TurnEndedAt:     turnEndedAtFor(le.SessionID),
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))
@@ -1903,7 +1918,10 @@ func clusterID(project, title string) string {
 }
 
 // clusterable reports whether a session row may be folded into a repeated-title
-// cluster: it must be a plain idle/ended session with no children of its own.
+// cluster: a plain ended session with no children, jobs or watches of its own.
+// A live session never folds, idle included: clusterRepeatedTitles keeps live
+// signal out of a fold, and a live session that finished a turn nobody has
+// seen carries the Board's unseen mark (S4).
 func clusterable(n TreeNode) bool {
 	if n.Kind != "session" {
 		return false
@@ -1911,7 +1929,7 @@ func clusterable(n TreeNode) bool {
 	if len(n.Children) > 0 || len(n.RunningJobs) > 0 || len(n.CompletedJobs) > 0 || len(n.Watches) > 0 {
 		return false
 	}
-	return n.State == "idle" || n.State == "ended"
+	return n.State == "ended"
 }
 
 func treeNodeLess(a, b TreeNode, metaMap map[string]schema.SessionMeta, liveMap map[string]LiveEntry) bool {

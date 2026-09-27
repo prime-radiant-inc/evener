@@ -525,7 +525,12 @@ test("the primary button sends once the last unanswered question is answered - t
 
   const persisted = nextMutationPersistence("ref_a");
   await user.click(screen.getByRole("button", { name: /send answers/i }));
-  await persisted;
+  // Persistence is announced before sendBatch settles the batch, a few
+  // microtasks later, so the wait runs inside act, as the Mod+Enter sends'
+  // below do.
+  await act(async () => {
+    await persisted;
+  });
 
   const [record] = (await readMutationPersistence("ref_a")).outbox;
   expect(record?.payload).toMatchObject({ ref: "ref_a" });

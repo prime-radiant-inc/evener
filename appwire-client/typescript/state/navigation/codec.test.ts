@@ -1238,6 +1238,26 @@ test("codec rejects an armed omitted count above the omitted watch total", () =>
   expect(() => statusFor(undefined, 1)).toThrow();
 });
 
+// S4: a live row carries when its last turn ended and whether that turn is
+// unseen. The codec accepts both and refuses a malformed value, which the hub
+// never sends.
+test("codec accepts a row's turn end and unseen mark and refuses malformed ones", () => {
+  const session = entityKey(key, "1");
+  const statusFor = (extra: Record<string, unknown>) =>
+    decodeNavigationResponse(
+      key,
+      undefined,
+      snapshotResponse(key, {
+        ...liveSnapshot(),
+        entities: [{ key: session, kind: "session", value: { ...sessionValue("local:session"), ...extra } }],
+      }),
+    ).status;
+
+  expect(statusFor({ turn_ended_at: "2026-09-26T11:58:00.123Z", unseen: true })).toBe("snapshot");
+  expect(() => statusFor({ turn_ended_at: "yesterday" })).toThrow();
+  expect(() => statusFor({ unseen: "yes" })).toThrow();
+});
+
 // A snapshot whose one session value carries `value` under `field`, for the
 // nested value records below.
 const snapshotWithSessionField = (field: string, value: unknown): NavigationSnapshot => ({

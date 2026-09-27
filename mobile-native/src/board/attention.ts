@@ -2,8 +2,9 @@
 // navigation rows the hub already sends. Where the spec wants a fact the rows
 // don't carry yet, the fallback from spec 18 lives here, and each server
 // addition replaces its fallback in this file: S1 (why text), S2 (approval
-// flag), S3 (subagent failures), S5 (activity), S13 (tasks). S4 replaces the
-// seen marker, which lives in boardMemory.ts.
+// flag), S3 (subagent counts), S5 (activity), S13 (tasks). S4 replaces the
+// seen marker, which lives in boardMemory.ts. Subagent failures never appear
+// on a Board row; they show only in the session's Subagents chip and list.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 
 export type BoardState =
@@ -252,8 +253,9 @@ export interface LastLine {
 	host?: string;
 }
 
-/** The row's last line on the fallbacks: task progress waits for S13 and
- * subagent failures for S3, so today it is the unusual project and host. */
+/** The row's last line on the fallback: task progress waits for S13, so today
+ * it is the unusual project and host. Subagent failures never appear here;
+ * they show only in the session's Subagents chip and list. */
 export function lastLine(
 	row: NavigationSessionSummary,
 	usual: Usual,

@@ -7,15 +7,16 @@
 // submission settles.
 //
 // Framework-free: no React, no zustand, no storage. `outbox`/`optimistic`/
-// `recovery` are plain settable fields the host writes after its own durable
-// read (IndexedDB on the web) - this module never reads or writes storage
-// itself. The two things a host's storage and drafts DO have to answer -
+// `recovery` hold what the host's own durable read found (IndexedDB on the
+// web), written through `projectSnapshot` - this module never reads or writes
+// storage itself. The two things a host's storage and drafts DO have to answer -
 // "what is ref X's current thread model" and "what did ref X's composer
 // draft hold, and how do I clear it" - are the injected ports below, sized
 // to exactly what this module calls.
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { ThreadModel } from "../../model";
 import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } from "./pendingEntries";
+import { type MutationPersistenceSnapshot, replaceTargetRecords } from "./projection";
 import type {
   ClientIdentity,
   MutationAttachmentRef,
@@ -144,6 +145,13 @@ export interface PendingTurnsStore<A extends MutationAttachmentRef = MutationAtt
   // `submittedHere`. A no-op (no `setState`, `getState()` unchanged) when
   // every discovered id is already known.
   recordSubmittedHere(snapshot: { outbox: MutationOutboxRecord<A>[]; optimistic: MutationOptimisticRecord<A>[] }): void;
+  // Replaces each of `targets`' outbox, optimistic and recovery records with
+  // `snapshot`'s (replaceTargetRecords). A no-op (no `setState`, `getState()`
+  // unchanged) when the snapshot holds what the store already does: most
+  // reads find nothing new (the web's outbox rescans storage every two seconds
+  // while connected), and a publish wakes every subscriber. A map with no
+  // change keeps its identity when another one changed.
+  projectSnapshot(targets: ReadonlySet<string>, snapshot: MutationPersistenceSnapshot<A>): void;
   // Marks `ref` as having a submission in flight. Returns false (and leaves
   // state alone) if one already is - the guard a caller turns into its own
   // rejection - otherwise marks it and returns true.
@@ -197,6 +205,15 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
       .filter(([id]) => !known.has(id));
     if (discovered.length === 0) return;
     store.setState((state) => ({ submittedHere: new Map([...state.submittedHere, ...discovered]) }));
+  };
+
+  store.projectSnapshot = (targets, snapshot) => {
+    const state = store.getState();
+    const outbox = replaceTargetRecords(state.outbox, targets, snapshot.outbox);
+    const optimistic = replaceTargetRecords(state.optimistic, targets, snapshot.optimistic);
+    const recovery = replaceTargetRecords(state.recovery, targets, snapshot.recovery);
+    if (outbox === state.outbox && optimistic === state.optimistic && recovery === state.recovery) return;
+    store.setState({ outbox, optimistic, recovery });
   };
 
   store.beginSubmission = (ref) => {
