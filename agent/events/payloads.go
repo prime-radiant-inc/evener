@@ -576,6 +576,12 @@ type CompactionTurnData struct {
 // WarningCodeDelegateAbandonedByDrain identifies a drain abandonment warning.
 const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
 
+// WarningCodeContextBudget identifies the informational context-budget
+// notices (a context-usage heads-up, an output-allocation clamp): budget
+// arithmetic succeeding, not a failure. Clients demote and verbosity-gate
+// these warnings by this stable code, never by matching their prose.
+const WarningCodeContextBudget = "context_budget"
+
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {
 	Message           string `json:"message"`

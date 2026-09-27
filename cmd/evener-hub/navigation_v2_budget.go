@@ -45,24 +45,28 @@ func fitNavigationV2Snapshot(
 		bytes    int
 		object   any
 	}
+	// encoding/json writes a RawMessage that is already json.Marshal output
+	// byte for byte, so every candidate's response is exactly this envelope's
+	// bytes plus its snapshot data: the envelope is encoded once, not per probe.
+	envelope := response
+	envelope.Representation = appwire.NavigationRepresentationSnapshot
+	envelope.Base = nil
+	envelope.Data = json.RawMessage(`{}`)
+	encodedEnvelope, err := navigationEnvelopeMarshal(envelope)
+	if err != nil {
+		return hubapi.NavigationSnapshot{}, nil, fmt.Errorf("encode navigation v2 response: %w", err)
+	}
+	envelopeBytes := len(encodedEnvelope) - len(envelope.Data)
 	probe := func(candidate any) (candidateResult, error) {
 		snapshot, err := normalizeNavigationResource(key, candidate)
 		if err != nil {
 			return candidateResult{}, err
 		}
-		data, err := json.Marshal(snapshot)
+		data, err := navigationEnvelopeMarshal(snapshot)
 		if err != nil {
 			return candidateResult{}, fmt.Errorf("encode navigation v2 snapshot: %w", err)
 		}
-		candidateResponse := response
-		candidateResponse.Representation = appwire.NavigationRepresentationSnapshot
-		candidateResponse.Base = nil
-		candidateResponse.Data = data
-		encoded, err := json.Marshal(candidateResponse)
-		if err != nil {
-			return candidateResult{}, fmt.Errorf("encode navigation v2 response: %w", err)
-		}
-		return candidateResult{snapshot: snapshot, data: data, bytes: len(encoded), object: candidate}, nil
+		return candidateResult{snapshot: snapshot, data: data, bytes: envelopeBytes + len(data), object: candidate}, nil
 	}
 
 	initial, err := probe(object)
@@ -85,20 +89,19 @@ func fitNavigationV2Snapshot(
 			return hubapi.NavigationSnapshot{}, nil, navigationV2ResponseInvariantError{kind: key.Kind, bytes: minimal.bytes, maxBytes: maxBytes}
 		}
 		fitted := minimal
-		// attempt runs the full binary search for one trim level and records the
-		// largest candidate that fits. Running "full" first preserves the exact
-		// pre-existing answer and probe count for every resource that fits; the
-		// degraded levels are probed only when no untrimmed row could be kept,
-		// so an oversized watch payload cannot reject the whole resource with
-		// rows still remaining (validateNavigationPageProgress).
+		// attempt searches one trim level and records the largest candidate
+		// that fits. Running "full" first keeps every untrimmed row that fits;
+		// the degraded levels are probed only when no untrimmed row could be
+		// kept, so an oversized watch payload cannot reject the whole resource
+		// with rows still remaining (validateNavigationPageProgress).
 		attempt := func(trim navigationWatchPayloadTrim) (int, error) {
-			best := minimal
-			budget, probeErr := navigationFittingBudgetChecked(nodes, func(budget int) (bool, error) {
+			best, bestBudget := minimal, 0
+			budget, probeErr := navigationFittingBudget(nodes, maxBytes, initial.bytes, func(budget int) (int, error) {
 				result, err := probe(candidate(trim, budget))
-				if err == nil && result.bytes <= maxBytes {
-					best = result
+				if err == nil && result.bytes <= maxBytes && budget > bestBudget {
+					best, bestBudget = result, budget
 				}
-				return result.bytes <= maxBytes, err
+				return result.bytes, err
 			})
 			if probeErr != nil {
 				return 0, probeErr
@@ -201,23 +204,6 @@ func fitNavigationV2Snapshot(
 	default:
 		return hubapi.NavigationSnapshot{}, nil, navigationV2ResponseInvariantError{kind: key.Kind, bytes: initial.bytes, maxBytes: maxBytes}
 	}
-}
-
-func navigationFittingBudgetChecked(nodes int, fits func(int) (bool, error)) (int, error) {
-	low, high := 0, nodes+1
-	for high-low > 1 {
-		middle := low + (high-low)/2
-		fit, err := fits(middle)
-		if err != nil {
-			return 0, err
-		}
-		if fit {
-			low = middle
-		} else {
-			high = middle
-		}
-	}
-	return low, nil
 }
 
 func navigationV2ResponseFits(response appwire.NavigationReadResponse, maxBytes int) (bool, error) {

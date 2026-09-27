@@ -76,6 +76,7 @@
     "builtinInvocation.ts",
     "transcriptDisplayConfig.ts",
     "transcriptProjector.ts",
+    "warnings.ts",
     "state/navigation/index.ts",
     "state/navigation/codec.ts",
     "state/navigation/immutable.ts",

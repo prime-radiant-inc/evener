@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 
 	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // appendTail is the one sequence allocator and append point of a transcript
@@ -29,6 +31,17 @@ type appendTail struct {
 	mu sync.Mutex
 	// nextSeq is the sequence number the next appended entry takes.
 	nextSeq int
+	// nextOrdinal is the entry ordinal the next recorded entry takes, and
+	// recordedLength the length of the file's recorded prefix: the header and
+	// every recorded entry line.
+	nextOrdinal    uint64
+	recordedLength int64
+	// turns is the file's turn placement state: the running execution, the
+	// open gap turn and the prelude. See Placement.
+	turns turnPlacement
+	// onRecorded, when set, is called for each recorded entry; see
+	// Writer.OnRecorded.
+	onRecorded func(Record)
 	// move counts the times a writer positioned its handle at the file's end
 	// to append (or opened the file). A writer whose last recorded move is
 	// not the current one may have a handle position behind the end.
@@ -100,7 +113,18 @@ func createAppendTail(path string, create func() (afero.File, error)) (afero.Fil
 	if openInProcess(path) {
 		return nil, nil, fmt.Errorf("create transcript file: %s is open in this process", path)
 	}
-	return attachLocked(create, "create transcript file")
+	f, tail, err := attachLocked(create, "create transcript file")
+	if err != nil {
+		return nil, nil, err
+	}
+	// The transcript is fresh, so its startup entries form the prelude until
+	// the first execution begins. Decided here, before attachMu lets another
+	// writer onto the tail: one that opens the file once its header lands
+	// scans it, and the creating writer can no longer tell it is fresh.
+	tail.mu.Lock()
+	tail.turns.prelude = openTurn{id: appwire.SystemPreludeTurnID, fresh: true}
+	tail.mu.Unlock()
+	return f, tail, nil
 }
 
 // openAppendTail opens an existing transcript through open and registers its
