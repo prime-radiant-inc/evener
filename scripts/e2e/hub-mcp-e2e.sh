@@ -73,6 +73,12 @@ fi
 # teardown reclaims it with the no-argument scratch_rm instead of rm -rf.
 # The marker file matches what e2e_make_run_dir stamped, so --stop and the
 # reaper keep validating the same run directory.
+# Arm the leak guard before minting: the audit measured 29/150 runs leaking
+# the directory when a crash lands between mint and the next trap, so the
+# EXIT trap comes first. The reaper's own trap, armed right after, replaces
+# it — on failure past that point the run directory deliberately stays for
+# diagnosis — and the success path reclaims it with scratch_rm below.
+trap 'scratch_rm' EXIT
 scratch_dir run "evener-e2e-hub-mcp"
 touch "$run/.$SCRIPT_NAME"
 e2e_setup_reaper "$run" "$SCRIPT_NAME" "$repo_root"
