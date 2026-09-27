@@ -33,17 +33,26 @@ type ProviderConfig struct {
 type HostConfig struct {
 	Name string `toml:"name"`
 	SSH  string `toml:"ssh"`
-	User string `toml:"user"`
+	// User, and every field below it, is optional: omitempty is what the
+	// machine-managed hub.toml writer relies on so a rewrite never invents a
+	// key the operator (or the dialog that added the host) did not set. It has
+	// no effect on decoding.
+	User string `toml:"user,omitempty"`
 	// EvenerPath is the host binary's absolute path, when it is not on PATH.
-	EvenerPath string `toml:"evener_path"`
+	EvenerPath string `toml:"evener_path,omitempty"`
 	// ConfigPath is the host hub's hub.toml, when it is not at the default
 	// location, so the bridge attaches with the host's own configuration.
-	ConfigPath string `toml:"config_path"`
+	ConfigPath string `toml:"config_path,omitempty"`
 	// Addr is the host hub's listen address, when it is not the default. The
 	// manager needs it to restart the hub and to health-check it after a deploy,
 	// where a wrong default would probe or kill the wrong listener.
-	Addr  string   `toml:"addr"`
-	Roots []string `toml:"roots"`
+	Addr  string   `toml:"addr,omitempty"`
+	Roots []string `toml:"roots,omitempty"`
+	// KeyPath is the SSH private-key file for this host, when it is not the
+	// user's ssh_config default. The machine-managed hub.toml stores it (the
+	// UI's Add/Edit dialog collects it), so a UI-added host's key path
+	// round-trips through a rewrite (registry spec 08 §6).
+	KeyPath string `toml:"key_path,omitempty"`
 }
 
 // Config is the hub's runtime configuration loaded from hub.toml (see
@@ -170,22 +179,30 @@ func loadConfigForCommandLine(cfgPath string, explicit bool) (Config, error) {
 }
 
 func loadConfig(path string, explicit bool) (Config, error) {
-	cfg := DefaultConfig()
 	data, err := configReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && !explicit {
-			return cfg, nil
+			return DefaultConfig(), nil
 		}
-		return cfg, fmt.Errorf("read config %s: %w", path, err)
+		return DefaultConfig(), fmt.Errorf("read config %s: %w", path, err)
 	}
-	metadata, decodeErr := toml.Decode(string(data), &cfg)
+	return decodeConfig(path, string(data))
+}
+
+// decodeConfig decodes and validates one hub.toml document. loadConfig runs it
+// on the file it read; the host-management surface's in-place rewrite runs it
+// on the bytes it is about to write, so a hub.toml the hub writes is one the
+// hub can read back at boot. name is the path the error messages name.
+func decodeConfig(name, data string) (Config, error) {
+	cfg := DefaultConfig()
+	metadata, decodeErr := toml.Decode(data, &cfg)
 	for _, key := range []string{"codex_sources", "codex_launches"} {
 		if metadata.IsDefined(key) {
 			return cfg, fmt.Errorf("config section %q is no longer supported because Codex agent integration has been removed; remove it from hub.toml", key)
 		}
 	}
 	if decodeErr != nil {
-		return cfg, fmt.Errorf("parse config %s: %w", path, decodeErr)
+		return cfg, fmt.Errorf("parse config %s: %w", name, decodeErr)
 	}
 	// DaemonIdleTimeout is a duration STRING. BurntSushi/toml decodes a bare
 	// integer as a nanosecond count without error, so `daemon_idle_timeout =
@@ -258,6 +275,7 @@ func validateHostConfigs(hosts []HostConfig) error {
 			ConfigPath: h.ConfigPath,
 			Addr:       h.Addr,
 			Roots:      h.Roots,
+			KeyPath:    h.KeyPath,
 		})
 		if err := validateHostEntry(entry); err != nil {
 			return err
@@ -269,6 +287,7 @@ func validateHostConfigs(hosts []HostConfig) error {
 		hosts[i].ConfigPath = entry.ConfigPath
 		hosts[i].Addr = entry.Addr
 		hosts[i].Roots = entry.Roots
+		hosts[i].KeyPath = entry.KeyPath
 		entries = append(entries, entry)
 	}
 	_, err := hostreg.New(entries)

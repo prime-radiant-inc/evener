@@ -81,6 +81,9 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 func responsesContinuationDeltaIneligibleReason(anchor schema.Turn, delta []schema.Turn) string {
 	anchorToolCallIDs := responsesContinuationToolCallIDs(anchor.Message)
 	for _, turn := range delta {
+		if turn.Kind.TranscriptOnly() {
+			continue // never on the wire, so nothing a continuation must carry
+		}
 		switch turn.Kind {
 		case schema.TurnUserInput, schema.TurnEnvironment, schema.TurnNotesContext:
 		case schema.TurnToolResults, schema.TurnTool:

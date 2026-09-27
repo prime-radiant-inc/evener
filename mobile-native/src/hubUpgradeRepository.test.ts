@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-	HubUpgradeRepository,
-	type SyncUpgradeStorage,
-} from "./hubUpgradeRepository";
+import { HubUpgradeRepository } from "./hubUpgradeRepository";
+import type { SyncStringStorage } from "./syncStringStorage";
 
 const response = {
 	release: "v1",
@@ -15,7 +13,7 @@ const response = {
 	installed: ["evener"],
 	restartMessage: "restart",
 };
-function fixture(): SyncUpgradeStorage & { values: Map<string, string> } {
+function fixture(): SyncStringStorage & { values: Map<string, string> } {
 	const values = new Map<string, string>();
 	return {
 		values,

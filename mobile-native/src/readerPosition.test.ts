@@ -8,23 +8,23 @@ import {
 	type ReaderAnchor,
 	ReaderPositionRepository,
 	ReaderRestoreAttempts,
-	type ReaderStorage,
 	reachableReaderOffset,
 	readerKey,
 	resolveReaderAnchor,
 	restoreReaderCommand,
 	shouldApplyExactRestore,
 } from "./readerPosition";
+import type { SyncStringStorage } from "./syncStringStorage";
 import type { TimelineRow } from "./timeline";
 
-function storageFrom(values: Map<string, string>): ReaderStorage {
+function storageFrom(values: Map<string, string>): SyncStringStorage {
 	return {
 		getItemSync: (key) => values.get(key) ?? null,
 		setItemSync: (key, value) => void values.set(key, value),
 		removeItemSync: (key) => void values.delete(key),
 	};
 }
-function storage(): ReaderStorage {
+function storage(): SyncStringStorage {
 	return storageFrom(new Map<string, string>());
 }
 const row = (
@@ -466,7 +466,7 @@ describe("reader positions", () => {
 	});
 	it("propagates a failed disk read without clearing cached anchors", () => {
 		let writes = 0;
-		const disk: ReaderStorage = {
+		const disk: SyncStringStorage = {
 			getItemSync: () => {
 				throw new Error("unavailable");
 			},
@@ -549,7 +549,7 @@ describe("reader positions", () => {
 				}),
 			],
 		]);
-		const disk: ReaderStorage = {
+		const disk: SyncStringStorage = {
 			getItemSync: (key) => values.get(key) ?? null,
 			setItemSync: () => {
 				throw new Error("disk full");

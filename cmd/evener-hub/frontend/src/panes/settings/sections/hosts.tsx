@@ -60,7 +60,10 @@ function rowDetail(row: HostRow): string | null {
   // a host goes offline.
   if (row.hubVersion) parts.push(`hub ${row.hubVersion}`);
   if (row.os || row.arch) parts.push([row.os, row.arch].filter(Boolean).join("/"));
-  parts.push(row.origin === "hub.toml" ? "hub.toml" : "added in UI");
+  // The row's origin names the file it lives in: the machine-managed hub.toml
+  // for every host (registry spec 08 §6). Render the server's own value so the
+  // pane cannot drift from the wire's answer.
+  if (row.origin) parts.push(row.origin);
   if (row.lastAttachError) parts.push(row.lastAttachError);
   return parts.length > 0 ? parts.join(" · ") : null;
 }
@@ -74,8 +77,10 @@ function rowDetail(row: HostRow): string | null {
  * fixed — it is the immutable target, so edit mode only ever changes the
  * entry's other fields; Connect drives the same evener/host/attach the spawn
  * picker uses, with a retry affordance on failure; Remove confirms over
- * evener/host/remove. hub.toml-declared rows cannot be removed here — the
- * confirm explains to edit the file.
+ * evener/host/remove. Every host lives in the machine-managed hub.toml and is
+ * editable and removable here; the file's banner tells the operator that the
+ * hub rewrites it in place and that comments and formatting are not
+ * preserved.
  */
 export function HostsSection(_props: HostsSectionProps) {
   const load = useHostsStore((s) => s.load);
@@ -168,7 +173,8 @@ export function HostsSection(_props: HostsSectionProps) {
     <div className={CLASS.root}>
       <p className={CLASS.help}>
         Remote hubs this controller can attach to. Add a host with its SSH address, Connect to bring it online, or
-        remove it. Hosts declared in <Code>hub.toml</Code> are read-only here — edit the file to change them.
+        remove it. Hosts live in <Code>hub.toml</Code>, which the hub manages and rewrites in place — comments and
+        formatting in that file are not preserved.
       </p>
       <div>
         <Button
@@ -202,7 +208,7 @@ export function HostsSection(_props: HostsSectionProps) {
                       {isConnecting ? "Connecting…" : "Connect"}
                     </Button>
                   )}
-                  {row.origin === "sidecar" && !row.removed && (
+                  {!row.removed && (
                     <Button
                       size="sm"
                       variant="quiet"
@@ -213,7 +219,7 @@ export function HostsSection(_props: HostsSectionProps) {
                       Edit
                     </Button>
                   )}
-                  {row.origin === "sidecar" && !row.removed && (
+                  {!row.removed && (
                     <Button size="sm" variant="quiet" onClick={() => setPendingRemove(row)}>
                       Remove
                     </Button>

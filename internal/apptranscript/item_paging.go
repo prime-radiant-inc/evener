@@ -432,6 +432,9 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 				return nil, projectedRecords, err
 			}
 			record := index.recordAt(i)
+			if record.transparent() {
+				continue
+			}
 			raw := make([]byte, record.Length)
 			if _, err := file.ReadAt(raw, record.Offset); err != nil {
 				_ = file.Close()
@@ -511,7 +514,7 @@ func projectIndexedItemRangesContext(ctx context.Context, path string, index tur
 			}
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
-		stampGroupedTurnFromEntries(&turn, entries)
+		StampGroupedTurn(&turn, entries)
 		for itemIndex := range positioned {
 			position := *positioned[itemIndex].Position
 			if uint64(itemIndex) < itemRange.lo || uint64(itemIndex) >= itemRange.hi {
