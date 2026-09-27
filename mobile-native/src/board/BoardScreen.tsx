@@ -53,6 +53,7 @@ import { BoardToolbar } from "./BoardToolbar";
 import { type BoardController, type BoardSnapshot, createBoardController } from "./boardData";
 import { foldedSections, seenMarkers } from "./nativeBoardMemory";
 import { PinnedSection, useCategoryFolds } from "./PinnedSections";
+import { fleetMinutes } from "./pulse";
 import { PulseMeter } from "./PulseMeter";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
@@ -300,6 +301,12 @@ function Board({
 			</View>
 		) : null;
 	const summary = liveSummary(bands);
+	// The fleet meter sums the working sessions the poll has read so far, and
+	// stays still until it has read one.
+	const workingMinutes = bands.working
+		.map((item) => poll?.activity(item.row.ref)?.minutes)
+		.filter((minutes): minutes is number[] => minutes !== undefined);
+	const fleetPerMinute = workingMinutes.length ? fleetMinutes(workingMinutes) : undefined;
 
 	let live: ReactNode;
 	// Update needed says everything there is to say until something loads.
@@ -310,7 +317,9 @@ function Board({
 	else
 		live = (
 			<>
-				{summary ? <SummaryLine summary={summary} connected={connected} onJump={jumpToBand} /> : null}
+				{summary ? (
+					<SummaryLine summary={summary} connected={connected} perMinute={fleetPerMinute} onJump={jumpToBand} />
+				) : null}
 				{band("needsYou", false)}
 				{band("finished", false)}
 				{band("working", true)}
@@ -766,10 +775,13 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 function SummaryLine({
 	summary,
 	connected,
+	perMinute,
 	onJump,
 }: {
 	summary: LiveSummary;
 	connected: boolean;
+	/** The fleet meter's per-minute counts; absent, it shows its still fallback. */
+	perMinute?: readonly number[];
 	onJump: (band: Band) => void;
 }) {
 	const { palette } = useColors();
@@ -809,7 +821,7 @@ function SummaryLine({
 							opacity: pressed ? 0.6 : 1,
 						})}
 					>
-						{band === "working" ? <PulseMeter tone={connected ? "alive" : "gray"} /> : null}
+						{band === "working" ? <PulseMeter tone={connected ? "alive" : "gray"} perMinute={perMinute} /> : null}
 						<Text
 							allowFontScaling={Platform.OS !== "ios"}
 							style={{

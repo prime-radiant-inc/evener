@@ -1394,7 +1394,9 @@ const migrating = session("local:migrate", { title: "Migrate schema", state: "ac
 const tidying = session("local:tidy", { title: "Tidy imports", state: "active", updated_at: minutesAgo(1) });
 const busyFleet: Fleet = {
 	...fleet,
-	live: [[failing, { ...working, children: [session("local:child", { state: "active" })] }, tidying, migrating, finished]],
+	live: [
+		[failing, { ...working, children: [session("local:child", { state: "active" })] }, tidying, migrating, finished],
+	],
 };
 const workingTitles = (tree: ReactTestRenderer) =>
 	tree.root
@@ -1445,5 +1447,36 @@ it("keeps every working row as it was before S5 on a hub that has no activity re
 	expect(textsIn(rowTitled(tree, "Tidy imports"))).toContain("Working");
 	await advance(ACTIVITY_POLL_MS * 3);
 	expect(fake.activityReads).toHaveLength(1);
+	act(() => tree.unmount());
+});
+
+const fleetMeter = (tree: ReactTestRenderer) =>
+	tree.root.find((node) => node.props.testID === "live-summary").findByType(PulseMeter);
+
+it("sums the working sessions' activity into the summary's meter, bar by bar", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	const shape: Fleet = {
+		...busyFleet,
+		activity: [
+			{ ref: "local:work", minutes: [2, 4, 8], runningSubagents: 3 },
+			{ ref: "local:tidy", minutes: [1, 0, 0], runningSubagents: 0 },
+			// A session that isn't working adds nothing to the fleet meter.
+			{ ref: "local:done", minutes: [50, 50, 50], runningSubagents: 0 },
+		],
+	};
+	connect(id, hub(shape).client, "ready");
+	const tree = await mount(navigation());
+	// Migrate schema has no read yet: the meter sums the sessions that do.
+	expect(fleetMeter(tree).props.perMinute).toEqual([0, 0, 0, 0, 3, 4, 8]);
+	act(() => tree.unmount());
+});
+
+it("keeps the summary's meter still until a working session has an activity read", async () => {
+	const id = hubId();
+	adoptedAnHourAgo(id);
+	connect(id, hub(busyFleet).client, "ready");
+	const tree = await mount(navigation());
+	expect(fleetMeter(tree).props.perMinute).toBeUndefined();
 	act(() => tree.unmount());
 });
