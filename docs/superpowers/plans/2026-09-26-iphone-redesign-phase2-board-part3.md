@@ -50,7 +50,7 @@ Each Board action takes the path the app already uses for the same change. The d
 | Project Pin to top, Archive project | `ProjectsScreen` (`ProjectsScreen.tsx:659-671`): `NavigationActions.favorite` and `.archive` with `{ kind: "project", id, workingDir }` | The same calls through `useBoardOrganization` (Task 10.6) | The organization journal, checked with `readOrganizationNavigation` |
 | Shut down | Session sheet → `SessionControls.shutdown` (`sessionControls.ts:85`) → `service.shutdown` → `thread/shutdown { ref }` (`conversation.ts:1128-1132`) | `shutDownSession(client, ref)` (Task 12.3), after a confirmation | None: a direct request, as the Session's is |
 | Rename | Session sheet → `SessionControls.rename` → `service.rename` → `evener/thread/name/set { ref, name }` (`conversation.ts:1197-1201`) | `renameSession(client, ref, name)` (Task 12.3), from an `Alert.prompt` | None: a direct request, as the Session's is |
-| Mark as read, unread | none | `boardSeen(hubId).markRead(client, rows)` and `.markUnread(client, rows)` (S4, phase 2 PR 7: the hub's seen marker for a row with `turn_ended_at`, `seenMarkers(hubId)` for any other) | This phone's own seen markers |
+| Mark as read, unread | none | `boardSeen(hubId).markRead(client, rows)` and `.markUnread(client, rows)` (S4, phase 2 PR 7: the hub's seen marker for a row with `turn_ended_at`, `seenMarkers(hubId)` for any other) | None for a hub row: the call is idempotent and goes again on the next ready connection (S4). Any other row keeps this phone's own seen markers |
 
 ## What part 2's review found, and where this plan answers it
 
@@ -3498,7 +3498,7 @@ This task draws Tasks 10.2-10.5 on the Board. It is a screen task: the requireme
 - Test: `mobile-native/src/board/projectMenu.test.ts`, `mobile-native/src/board/ProjectTreeRow.test.tsx`, `mobile-native/src/board/BoardScreen.test.tsx`, `mobile-native/src/dev/demoFleet.test.ts`
 
 **Interfaces:**
-- Consumes: Tasks 10.2-10.5; part 1's `BoardRow`, `boardState`, `seenMarkers`, `foldedSections`, the Board's `manifest`, Live and Needs you snapshots (`BoardSnapshot`, part 1 Task 5), and `useConnection()`.
+- Consumes: Tasks 10.2-10.5; part 1's `BoardRow`, `boardState`, `foldedSections`, the Board's `manifest`, Live and Needs you snapshots (`BoardSnapshot`, part 1 Task 5), `boardSeen` (S4, phase 2 PR 7), and `useConnection()`.
 - Produces:
   - `useProjectSections(hubId: string, sources: readonly Source[]): Record<ProjectSection, { view: ProjectsView; controller: ProjectBrowserController | null; open(): void }>`
   - `type ProjectMenuAction = "pin" | "unpin" | "archive" | "unarchive"`, `PROJECT_MENU_LABELS: Record<ProjectMenuAction, string>` and `projectMenuActions(project: NavigationProjectSummary, context: { connected: boolean; organizationReady: boolean; archived: boolean }): ProjectMenuAction[]`
@@ -3523,7 +3523,7 @@ This task draws Tasks 10.2-10.5 on the Board. It is a screen task: the requireme
    - `more`: "N more" in 13pt `inkLow`, 44pt, pressable.
    - `loading`: one 48pt skeleton on `inset`, no shimmer. `failed`: "Couldn't load these sessions." in 13pt `inkMid`, with no button: the Board reads it again on its own (requirement 6).
    - Every folding row is one pressable with `accessibilityRole="button"` and `accessibilityState={{ expanded: !folded }}`.
-   - Session items render as part 1's quiet `BoardRow` (`variant: "quiet"`, `moving: false`) with `boardState(row, false, seenMarkers(hubId).isSeen(row))`, indented by `depth`.
+   - Session items render as part 1's quiet `BoardRow` (`variant: "quiet"`, `moving: false`) with `boardState(row, false, boardSeen(hubId).isSeen(row))` (S4, phase 2 PR 7: the hub decides a row with `turn_ended_at`), indented by `depth`.
 5. **Reads:** `useProjectSections` makes one `createProjectBrowserController(client, catalog)` per section and client, pauses them when the Board blurs and resumes them on focus, and disposes them when the client changes or the Board unmounts. Each section's `view` is `projectsView(controller.getSnapshot(), retained)`, where `retained` is the view shown last; it resets to null when `hubId` changes, so a reconnect never blanks a section and a hub switch never shows another hub's projects. After each render, the projects in `expandedProjectKeys(items)` are expanded and the rest collapsed (`controller.expand` / `collapse`).
 6. **Loading more, and reading again:** the list's `onViewableItemsChanged` (a stable callback, `viewabilityConfig: { itemVisiblePercentThreshold: 50 }`) passes the visible items to `morePagesToLoad`, and each result calls `controller.loadMoreSessions(projectKey, tier)`; pressing a `more` row does the same. When the Board is focused and the connection turns ready, and when a folded project is unfolded, each tier whose first read failed is read again with `controller.retry(projectKey, tier)`, and a failed catalog with `controller.retry()`. Nothing asks you to refresh.
 7. **The project menu** (ruling 15): long-pressing a `project` row, while `projectMenuActions(project, { connected, organizationReady: organization.ready, archived: section === "archived" })` is not empty, opens `ActionSheetIOS.showActionSheetWithOptions` titled with the project's name, listing `PROJECT_MENU_LABELS` for each action and "Cancel". "Pin to top" and "Unpin" call `organization.actions.favorite(project.key, true | false)`; "Archive project" and "Unarchive project" call `organization.actions.archive({ kind: "project", id: project.key, workingDir: project.working_dir }, true | false)`. The project's rows dim (opacity 0.5) while the journal holds that project's change. Off iOS, `Alert.alert` with the same buttons.
@@ -4932,7 +4932,7 @@ Open PR 4a: "feat(native): swipe actions on Board rows (phase 2, PR 4a)". The de
 - Test: `mobile-native/src/board/BoardScreen.test.tsx`
 
 **Interfaces:**
-- Consumes: Task 12.6 (`RowMenu`, `RowMenuSheet`, `rowMenuHosts`); Task 12.5's `rowContext` and `runRowAction`; `shutDownSession`, `renameSession` and `rowMenuActions` (Task 12.3); `seenMarkers` (part 1 Task 3); `useProvideSheetHost` and `sheetKey` (Task 18.1).
+- Consumes: Task 12.6 (`RowMenu`, `RowMenuSheet`, `rowMenuHosts`); Task 12.5's `rowContext` and `runRowAction`; `shutDownSession`, `renameSession` and `rowMenuActions` (Task 12.3); `boardSeen` (S4, phase 2 PR 7); `useProvideSheetHost` and `sheetKey` (Task 18.1).
 
 **Requirements (spec 7.3; rulings 18-21, 27-28):**
 1. **Every session row** sits in a `RowMenu` inside its `SwipeRow`, with `rowMenuActions(item, rowContext(item, archived))`. Its `onOpenSheet` opens `RowMenuSheet` for the row: `navigation.navigate("RowMenuSheet", { hubId, ref: item.row.ref })`.
@@ -5838,7 +5838,7 @@ export const ROW_MOVE = LinearTransition.springify().duration(250).dampingRatio(
 - Test: `mobile-native/src/board/selection.test.ts`, `mobile-native/src/board/SelectBar.test.tsx` and `mobile-native/src/board/BoardScreen.test.tsx`
 
 **Interfaces:**
-- Consumes: `archiveTarget`, `isTopLevel`, `archiveSession`, `pinSession` (Task 12.3); `useBoardOrganization` (Task 10.5); `SettledList.setInteraction` (Task 13.2); `seenMarkers` (part 1).
+- Consumes: `archiveTarget`, `isTopLevel`, `archiveSession`, `pinSession` (Task 12.3); `useBoardOrganization` (Task 10.5); `SettledList.setInteraction` (Task 13.2); `boardSeen` (S4, phase 2 PR 7).
 - Produces:
   - `interface SelectedRow { item: ClassifiedRow; archived: boolean }` and `interface SelectionActions { archive: NavigationSessionSummary[]; pin: NavigationSessionSummary[]; markRead: NavigationSessionSummary[] }`
   - `selectionActions(selected: readonly SelectedRow[], context: { connected: boolean; organizationReady: boolean }): SelectionActions`
