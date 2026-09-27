@@ -816,7 +816,7 @@ func runProbe(cfg runConfig, probe probeFile, rep int, available map[string]bool
 
 func runCLIProbe(ctx context.Context, cfg runConfig, probe probeFile, res probeResult, stdout, stderr *bytes.Buffer) error {
 	cmd := exec.CommandContext(ctx, cfg.evenerBin, cliProbeArgs(cfg, probe, res)...)
-	cmd.Env = os.Environ()
+	cmd.Env = fixtureEnv(res.WorkDir)
 	if cfg.clearOpenAIAPIKey {
 		cmd.Env = append(cmd.Env, envvars.OpenAIAPIKey.Assignment(""))
 	}
@@ -1145,6 +1145,18 @@ func commitFixture(workDir string) error {
 	return nil
 }
 
+// fixtureEnv is the environment for anything that acts on a fixture: the
+// agent's evener process and the task checks. It cuts the fixture off from any
+// Go workspace or git repository above it, so results that land inside a
+// repository, such as evener's own, still run each fixture as its own project.
+func fixtureEnv(workDir string) []string {
+	env := append(os.Environ(), "GOWORK=off")
+	if parent, err := filepath.Abs(filepath.Dir(workDir)); err == nil {
+		env = append(env, "GIT_CEILING_DIRECTORIES="+parent)
+	}
+	return env
+}
+
 func parseEvents(data []byte) (map[string]int, map[string]int, []string) {
 	counts := map[string]int{}
 	errorsByTool := map[string]int{}
@@ -1354,6 +1366,7 @@ func runCheck(workDir string, check checkSpec, timeout time.Duration) (bool, str
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-c", check.Run)
 	cmd.Dir = workDir
+	cmd.Env = fixtureEnv(workDir)
 	// A killed check can leave a child holding the output pipe; stop waiting
 	// for it shortly after the kill.
 	cmd.WaitDelay = 5 * time.Second
