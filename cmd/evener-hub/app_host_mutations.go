@@ -490,19 +490,23 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 	if hit != nil {
 		return m.receiptArm(hit, hostMutationUpdate), nil
 	}
-	current2, currentKnown2 := m.currentHostIdentity(name)
 	// The foreign-marker rule (spec §5): a leftover marker for this host is
 	// finalized before this edit stages, and a finalized receipt under this
-	// request's own key is the lost-response replay.
+	// request's own key is the lost-response replay. The pair is read AFTER that
+	// finalization — it can advance the name's identity, because the phase-aware
+	// recovery re-applies the staged runtime set — so the lookup below sees the
+	// pair the finalizer just wrote, exactly as AddResult and RemoveResult read
+	// it after their own finalization.
 	if _, err := m.finalizeOrphanMarkerIfAny(ctx, name, false); err != nil {
 		return appwire.HostMutationResult{}, err
 	}
+	afterFinalize, afterFinalizeKnown := m.currentHostIdentity(name)
 	if hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
 		MutationID:   params.MutationID,
 		Name:         name,
 		Kind:         hostMutationUpdate,
-		Current:      current2,
-		CurrentKnown: currentKnown2,
+		Current:      afterFinalize,
+		CurrentKnown: afterFinalizeKnown,
 	}); err != nil {
 		return appwire.HostMutationResult{}, err
 	} else if hit != nil {
@@ -654,6 +658,13 @@ func (m *hubHostManager) UpdateResult(ctx context.Context, params appwire.HostUp
 			return appwire.HostMutationResult{}, err
 		}
 		row := hostReceiptRow(receipt, hostMutationUpdate)
+		// The row names the open remnant it is waiting on, exactly as the
+		// removal's failure arm and every replayed failure arm do: §11's
+		// `openRemnantId`/`escalationAgeSec` are "present exactly on rows whose
+		// name holds an open remnant", and the immediate response must render what
+		// its replay renders.
+		row.OpenRemnantID = remnantID
+		row.EscalationAgeSec = m.escalationAgeSec(remnant)
 		m.cfg.mu.Unlock()
 		if finalized.Outcome == hostReceiptOutcomeCollisionDropped {
 			return m.collisionArm(finalized), nil

@@ -1947,3 +1947,148 @@ func TestHostTeardownRecoverRetiresTheClearedRemovalsDerivedState(t *testing.T) 
 		t.Fatal("the cleared removal's attach record survived the recovery")
 	}
 }
+
+// TestHostUpdateReplayAfterOrphanFinalizationDoesNotRestage pins roborev's
+// Medium on the update path's ordering: the orphan finalizer can advance the
+// name's identity while it finalizes a leftover marker (it re-applies the staged
+// runtime set), so a dedup lookup built on a pair read BEFORE the finalization
+// misses the receipt the finalization just wrote — and the replay of that
+// mutationId stages the edit a second time. The pair must be read after the
+// finalization, exactly as AddResult and RemoveResult already do it.
+func TestHostUpdateReplayAfterOrphanFinalizationDoesNotRestage(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := writeHubTOMLHosts(configPath, []hostreg.Host{{Name: "side", SSH: "side.example"}}); err != nil {
+		t.Fatalf("seed hub.toml: %v", err)
+	}
+	m := bootHostManager(t, configPath)
+	host, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("fixture lost the host")
+	}
+	// A leftover marker for the name under the RECORDED key, whose pinned target
+	// is an edit: finalizing it re-applies the staged set, which registers the
+	// entry and so advances the pair the pre-finalizer read would have held.
+	replayKey := "replayed-mutation"
+	receipt := newHostMutationReceipt(replayKey, hostMutationUpdate, host, m.nowTime())
+	receipt.RemnantID = mintRemnantID()
+	key := hostMutationReceiptKey(replayKey, "side", hostMutationUpdate, hostMutationIdentity{
+		Generation:    host.Generation,
+		IncarnationID: host.IncarnationID,
+	})
+	marker := HostStagedReceipt{
+		Key:             key,
+		StagedAt:        m.nowTime().UTC().Format(time.RFC3339),
+		Phase:           hostStagedPhaseRuntimeSwapped,
+		TeardownStarted: true,
+		SwapStarted:     true,
+		Provisional:     receipt,
+		PendingTeardown: pendingTeardownFor(host, hostTeardownKindUpdate),
+	}
+	entries := m.cfg.store.snapshot()
+	if err := m.persistHosts(entries, entries, hostPersistChange{marker: &pendingHostMarker{Name: "side", Marker: marker}}); err != nil {
+		t.Fatalf("stage marker: %v", err)
+	}
+	beforeEdit, ok := m.cfg.hosts.Get("side")
+	if !ok {
+		t.Fatal("the fixture host is not live")
+	}
+
+	// The replay: the same mutationId, carrying the pair the caller holds. Its
+	// receipt is the one the finalization writes, so it must come back as the
+	// recorded outcome — never a second stage of the edit.
+	replay, err := m.UpdateResult(context.Background(), appwire.HostUpdateParams{
+		Name:                  "side",
+		Entry:                 appwire.HostEntry{Address: "replayed.example"},
+		MutationID:            replayKey,
+		ExpectedGeneration:    beforeEdit.Generation,
+		ExpectedIncarnationID: beforeEdit.IncarnationID,
+	})
+	if err != nil {
+		t.Fatalf("UpdateResult replay = %v", err)
+	}
+	if replay.HostMutationCommitted == nil {
+		t.Fatalf("replay = %+v, want the recorded committed arm", replay)
+	}
+	// The recorded row is the one the finalization wrote — not a fresh stage of
+	// the replay's own entry.
+	if got := replay.HostMutationCommitted.Host.Address; got != "side.example" {
+		t.Fatalf("replay row address = %q, want the recorded outcome (%q), not a fresh stage", got, "side.example")
+	}
+	if _, ok := m.cfg.store.stagedSnapshot()["side"]; ok {
+		t.Fatal("the replay staged the edit instead of returning the recorded outcome")
+	}
+}
+
+// TestHostUpdateFailureArmNamesItsOpenRemnant pins roborev's Low: the immediate
+// `committed-with-teardown-failure` arm for an edit must render the same row
+// fields as its replay — §11 has `openRemnantId`/`escalationAgeSec` "present
+// exactly on rows whose name holds an open remnant", so the response a caller
+// sees first cannot differ from the one a retry sees later.
+func TestHostUpdateFailureArmNamesItsOpenRemnant(t *testing.T) {
+	m, _, _ := newRemnantFixture(t)
+	m.testOnlyTeardown = func(context.Context, string) error { return errors.New("injected rebind failure") }
+	result, err := m.UpdateResult(context.Background(), updateRequest(t, m, "side", appwire.HostEntry{Address: "edited.example"}))
+	if err != nil {
+		t.Fatalf("Update = %v", err)
+	}
+	m.testOnlyTeardown = nil
+	arm := result.HostMutationTeardownFailure
+	if arm == nil {
+		t.Fatalf("Update = %+v, want the teardown-failure arm", result)
+	}
+	if arm.Host.OpenRemnantID != arm.RemnantID {
+		t.Fatalf("immediate arm row = %+v, want openRemnantId %q", arm.Host, arm.RemnantID)
+	}
+	// The replay renders the same row fields.
+	replay, err := m.UpdateResult(context.Background(), updateRequestFor("side", 0, "", appwire.HostEntry{Address: "edited.example"}))
+	if err == nil {
+		// A fresh keyed update over the fenced name refuses `remnant-open`; the
+		// recorded replay is what a lost-response retry carries, so ask with the
+		// original key.
+		t.Fatalf("a fresh keyed update = %+v, want the fence refusal", replay)
+	}
+	replayed, err := m.receiptArmForTest(arm.RemnantID)
+	if err != nil {
+		t.Fatalf("replay = %v", err)
+	}
+	if replayed.HostMutationTeardownFailure == nil {
+		t.Fatalf("replay = %+v, want the recorded teardown-failure arm", replayed)
+	}
+	if replayed.HostMutationTeardownFailure.Host.OpenRemnantID != arm.RemnantID {
+		t.Fatalf("replay row = %+v, want openRemnantId %q", replayed.HostMutationTeardownFailure.Host, arm.RemnantID)
+	}
+	if replayed.HostMutationTeardownFailure.Host.EscalationAgeSec != nil || arm.Host.EscalationAgeSec != nil {
+		t.Fatalf("escalation age present before the bound: immediate %+v replay %+v",
+			arm.Host.EscalationAgeSec, replayed.HostMutationTeardownFailure.Host.EscalationAgeSec)
+	}
+}
+
+// receiptArmForTest renders one remnant's recorded outcome through the same
+// replay arm a lost-response retry receives — the dedup lookup plus receiptArm —
+// so a test can compare the immediate response's row fields with the replay's.
+func (m *hubHostManager) receiptArmForTest(remnantID string) (appwire.HostMutationResult, error) {
+	remnant, ok := m.cfg.store.remnantByID(remnantID)
+	if !ok {
+		return appwire.HostMutationResult{}, teardownUnknownKeyRefusal(remnantID)
+	}
+	scope, ok := parseHostReceiptScopedKey(remnant.MutationKey)
+	if !ok {
+		return appwire.HostMutationResult{}, appwire.InvalidParams("the remnant carries no scoped receipt key")
+	}
+	current, currentKnown := m.currentHostIdentity(scope.Name)
+	hit, err := m.lookupHostMutationReceipt(hostReceiptQuery{
+		MutationID:   scope.MutationID,
+		Name:         scope.Name,
+		Kind:         scope.Kind,
+		Current:      current,
+		CurrentKnown: currentKnown,
+	})
+	if err != nil {
+		return appwire.HostMutationResult{}, err
+	}
+	if hit == nil {
+		return appwire.HostMutationResult{}, appwire.InvalidParams("no recorded receipt for the remnant")
+	}
+	return m.receiptArm(hit, scope.Kind), nil
+}
