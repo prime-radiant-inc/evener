@@ -139,7 +139,7 @@ func TestHubSearchFillsPastLimitAfterSuppressingLiveRow(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < searchPastLimit+1; i++ {
+	for i := range searchPastLimit + 1 {
 		id, err := identifier.NewSessionID()
 		if err != nil {
 			t.Fatal(err)
