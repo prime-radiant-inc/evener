@@ -77,7 +77,7 @@ function offendersIn(trees: readonly string[], deleted: string): string[] {
 	// ".../conversation" must name that segment) or a backslash escape that
 	// could decode to it. A string literal decodes to its raw text unless it
 	// holds an escape, and every escape begins with a backslash, so a file
-	// with neither cannot name the directory: skip the read and the parse.
+	// with neither cannot name the directory: read it, but do not parse it.
 	// Escapes only ever add files to the parsed set, so this fast path never
 	// hides an offender — the escape fixture below still fails as before.
 	const deletedName = path.basename(deleted);
