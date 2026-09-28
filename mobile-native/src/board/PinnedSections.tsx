@@ -1,8 +1,8 @@
 import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useReducer } from "react";
-import { type LayoutChangeEvent, Platform, Pressable, Text, View } from "react-native";
-import { useColors, useTextScale } from "../ui";
+import { type LayoutChangeEvent, Pressable, Text, View } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { sectionLabel } from "./attention";
 import { bandHeaderText, FoldChevron } from "./BoardRow";
 import { foldedSections } from "./nativeBoardMemory";
@@ -60,7 +60,7 @@ export function PinnedEmptyHint() {
 	const scale = useTextScale();
 	return (
 		<Text
-			allowFontScaling={Platform.OS !== "ios"}
+			allowFontScaling={allowFontScaling}
 			style={{
 				marginHorizontal: 16,
 				paddingBottom: 12,
@@ -103,13 +103,13 @@ export function PinnedSection({ section, folded, onToggle, onMenu, changing, onL
 					    label; the pin keeps its distance with its own margin. */}
 					<SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} style={{ marginRight: 6 }} />
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						numberOfLines={1}
 						style={{ ...headerText, flexShrink: 1, textTransform: "uppercase" }}
 					>
 						{section.name}
 					</Text>
-					<Text allowFontScaling={Platform.OS !== "ios"} style={{ ...headerText, fontVariant: ["tabular-nums"] }}>
+					<Text allowFontScaling={allowFontScaling} style={{ ...headerText, fontVariant: ["tabular-nums"] }}>
 						{` · ${section.count}`}
 					</Text>
 					<View style={{ flex: 1, alignItems: "flex-end" }}>

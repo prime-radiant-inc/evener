@@ -13,7 +13,7 @@
 import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import { type ReactElement, type ReactNode, useEffect, useMemo, useRef } from "react";
 import { Alert, Platform, Pressable, Text, useWindowDimensions, View } from "react-native";
-import { useColors } from "../ui";
+import { allowFontScaling, useColors } from "../ui";
 import { DISCARD_TITLE, discardAlert, sheetLeave } from "./sheetLeave";
 
 export interface SheetController {
@@ -107,7 +107,7 @@ export function Sheet({ title, onCancel, done, accessory, children }: SheetProps
 					{title ? (
 						<Text
 							accessibilityRole="header"
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							numberOfLines={1}
 							style={{
 								flexShrink: 1,
@@ -165,7 +165,7 @@ function HeaderButton({
 			})}
 		>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{
 					color: palette.accentInk,
 					fontSize: 17 * scale,

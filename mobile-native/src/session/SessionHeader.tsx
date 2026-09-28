@@ -5,10 +5,10 @@
 // position in it, never move.
 import { type SFSymbol, SymbolView } from "expo-symbols";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { Animated, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Animated, Pressable, ScrollView, Text, View } from "react-native";
 import { UPDATE_NEEDED, UPDATE_NEEDED_HINT } from "../board/connectionStatus";
 import { useReduceMotion } from "../reduceMotion";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { FreshDot } from "../reader/FreshDot";
 import type { ChipKind, ContextChip } from "./sessionState";
 
@@ -64,7 +64,7 @@ export function SessionHeader({
 					}}
 				>
 					<Text
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						accessibilityLiveRegion="polite"
 						accessibilityHint={status === UPDATE_NEEDED ? UPDATE_NEEDED_HINT : undefined}
 						style={{
@@ -158,7 +158,7 @@ function Chip({ chip, onPress }: { chip: ContextChip; onPress: () => void }) {
 				tintColor={chip.attention ? palette.attentionInk : palette.inkMid}
 			/>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
 				style={{ fontSize: 15 * scale, lineHeight: 20 * scale, color: ink, fontVariant: ["tabular-nums"] }}
 			>

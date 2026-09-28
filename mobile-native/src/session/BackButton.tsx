@@ -2,8 +2,8 @@
 // other sessions that need you, so you know before leaving whether anything
 // is waiting.
 import { SymbolView } from "expo-symbols";
-import { Platform, Pressable, Text } from "react-native";
-import { useColors, useTextScale } from "../ui";
+import { Pressable, Text } from "react-native";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 
 function backLabel(count: number): string {
 	if (count <= 0) return "Back";
@@ -31,7 +31,7 @@ export function BackButton({ count, onPress }: { count: number; onPress: () => v
 			<SymbolView name="chevron.left" tintColor={palette.accentInk} size={20 * scale} weight="semibold" />
 			{count > 0 ? (
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					style={{
 						color: palette.attentionInk,
 						fontSize: 17 * scale,
