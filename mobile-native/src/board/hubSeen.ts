@@ -5,9 +5,6 @@
 // hub's rows catch up. A row without a readable turn_ended_at (an older hub,
 // or a daemon that hasn't stamped a turn end) keeps the device's own
 // SeenMarkers.
-//
-// This module must not import expo-sqlite/kv-store: the session screen
-// imports it, and its test harnesses mock kv-store only partly.
 import { type NavigationSessionSummary, type SessionSeenMark, WireError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../../mobile/src/services/conversation";
 import { hubTime } from "./attention";
