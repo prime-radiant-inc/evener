@@ -702,12 +702,32 @@ function recordToOperationRef(record: OperationRecord): HostOperationRef {
 type OperationSet = (updater: (previous: HostOpsStoreState) => Partial<HostOpsStoreState>) => void;
 type OperationGet = () => HostOpsStoreState;
 
-/** publishStartedOperation seeds one started operation and supersedes any
- * in-flight read for the name: the previous operation's poll must not publish
- * onto the record this one just answered. */
-function publishStartedOperation(set: OperationSet, name: string, ref: HostOperationRef): void {
-  operationSequences.set(name, operationSequence(name) + 1);
-  set((previous) => ({ operations: { ...previous.operations, [name]: ref } }));
+/** publishStartedOperation seeds one started operation — but only while the
+ * name's tracked operation is unchanged since this request was issued.
+ * `issuedId` is the operation-currency token: the tracked operation id at issue
+ * time (undefined when none). A late response from a superseded request must
+ * not replace the host's active operation or bump the polling sequence out from
+ * under it, while a superseded CONFIRMATION with no newer operation still
+ * publishes (the operation exists server-side and its record must be tracked —
+ * S14's designed case). The tracked id, not `operationSequence`, is the token:
+ * stopOperationPoll (unmount) bumps the sequence for every tracked name, and a
+ * deploy started while a previous operation is still tracked must not lose its
+ * seed because the section unmounted while the request was out. On a real
+ * publish it supersedes any in-flight read for the name: the previous
+ * operation's poll must not publish onto the record this one just answered. */
+function publishStartedOperation(
+  set: OperationSet,
+  name: string,
+  ref: HostOperationRef,
+  issuedId: string | undefined,
+): void {
+  let published = false;
+  set((previous) => {
+    if (previous.operations[name]?.id !== issuedId) return previous;
+    published = true;
+    return { operations: { ...previous.operations, [name]: ref } };
+  });
+  if (published) operationSequences.set(name, operationSequence(name) + 1);
 }
 
 /** publishOperationRecord merges one read's record onto the ref the row
@@ -890,6 +910,12 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         plans: { ...previous.plans, [name]: { ...state, operationId, refusal: null } },
       }));
     }
+    // The operation-currency token this request's response must still match at
+    // publish time: the tracked operation id at issue (undefined when none). A
+    // newer operation published meanwhile changes it and invalidates this
+    // response; a dialog close alone does not (its record must still seed
+    // polling — S14's designed case).
+    const issuedOperationId = get().operations[name]?.id;
     try {
       const result = await client.request(
         "evener/host/deploy",
@@ -916,6 +942,7 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
             generation: rowPair?.generation ?? state.plan.generation,
             ...(rowPair === undefined ? {} : { incarnationId: rowPair.incarnationId }),
           }),
+          issuedOperationId,
         );
       }
       if (!planIsCurrent(name, sequence, client)) return;
@@ -1022,6 +1049,7 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         { timeoutMs: HOST_GATE_TIMEOUT_MS },
       );
     try {
+      const issuedOperationId = get().operations[name]?.id;
       const result = await send(attempt.pair, operationId);
       if (connectionStore.getState().client === client) {
         publishStartedOperation(
@@ -1032,6 +1060,7 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
             generation: attempt.pair.generation,
             incarnationId: attempt.pair.incarnationId,
           }),
+          issuedOperationId,
         );
       }
       if (!restartIsCurrent(name, sequence, client)) return;
@@ -1108,6 +1137,7 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         return { restarts: { ...previous.restarts, [name]: { ...held, pair: current, operationId: retryId } } };
       });
       try {
+        const issuedOperationId = get().operations[name]?.id;
         const result = await send(current, retryId);
         if (connectionStore.getState().client === client) {
           publishStartedOperation(
@@ -1118,6 +1148,7 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
               generation: current.generation,
               incarnationId: current.incarnationId,
             }),
+            issuedOperationId,
           );
         }
         if (!restartIsCurrent(name, sequence, client)) return;

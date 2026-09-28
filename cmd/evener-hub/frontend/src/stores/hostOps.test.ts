@@ -1186,6 +1186,86 @@ describe("operations polling (S15)", () => {
     expect(ref.incarnationId).toBe("inc-3");
   });
 
+  test("a late response from a superseded deploy cannot replace the newer operation", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    const settlements = gateSettlements(fake, "evener/host/deploy");
+    await hostOpsStore.getState().plan("beta");
+    const first = hostOpsStore.getState().deploy("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+
+    // The confirmation is superseded: the dialog closes, a fresh plan mints a
+    // new operation ID, and a second deploy goes out while the first hangs.
+    hostOpsStore.getState().discardPlan("beta");
+    await hostOpsStore.getState().plan("beta");
+    const second = hostOpsStore.getState().deploy("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(2));
+    settlements[1]!.resolve({ id: "op-2", clientOperationId: "client-op-2", state: "pending" });
+    await second;
+    expect(hostOpsStore.getState().operations.beta?.id).toBe("op-2");
+
+    // The late first response answers an operation the newer request already
+    // superseded: adopting it would flip the row onto stale progress and bump
+    // the polling sequence out from under the newer record.
+    settlements[0]!.resolve({ id: "op-1", clientOperationId: "client-op-1", state: "pending" });
+    await first;
+    expect(hostOpsStore.getState().operations.beta?.id).toBe("op-2");
+
+    // The row's polling still reads the newer operation's record.
+    fake.on("evener/host/operations", () => ({
+      operations: [operationRecord({ id: "op-2", clientOperationId: "client-op-2" })],
+    }));
+    await hostOpsStore.getState().pollOperation("beta");
+    const reads = fake.calls.filter((c) => c.method === "evener/host/operations");
+    expect(reads[reads.length - 1]?.params).toEqual({ name: "beta", id: "op-2" });
+  });
+
+  test("a late response after only a dialog close still seeds polling", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    const settlements = gateSettlements(fake, "evener/host/deploy");
+    await hostOpsStore.getState().plan("beta");
+    const deploy = hostOpsStore.getState().deploy("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    // Only the dialog closed: no newer operation exists, so the response is a
+    // real operation whose record must still seed polling (S14's rule).
+    hostOpsStore.getState().discardPlan("beta");
+    settlements[0]!.resolve({ id: "op-1", clientOperationId: "client-op-1", state: "pending" });
+    await deploy;
+    expect(hostOpsStore.getState().operations.beta?.id).toBe("op-1");
+  });
+
+  test("a late restart response cannot replace the newer restart operation", async () => {
+    const fake = connectFakeClient();
+    const settlements = gateSettlements(fake, "evener/host/restart");
+    hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
+    const first = hostOpsStore.getState().restart("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    // A second attempt (a re-opened dialog) supersedes the first while it hangs.
+    hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
+    const second = hostOpsStore.getState().restart("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(2));
+    settlements[1]!.resolve({ id: "op-2", clientOperationId: "client-op-2", state: "pending" });
+    await second;
+    expect(hostOpsStore.getState().operations.beta?.id).toBe("op-2");
+
+    settlements[0]!.resolve({ id: "op-1", clientOperationId: "client-op-1", state: "pending" });
+    await first;
+    expect(hostOpsStore.getState().operations.beta?.id).toBe("op-2");
+  });
+
+  test("a late restart response after only a dialog close still seeds polling", async () => {
+    const fake = connectFakeClient();
+    const settlements = gateSettlements(fake, "evener/host/restart");
+    hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
+    const restart = hostOpsStore.getState().restart("beta");
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    hostOpsStore.getState().discardRestart("beta");
+    settlements[0]!.resolve({ id: "op-1", clientOperationId: "client-op-1", state: "pending" });
+    await restart;
+    expect(hostOpsStore.getState().operations.beta?.id).toBe("op-1");
+  });
+
   test("a lost connection is a visible progress state that a good read clears", async () => {
     const fake = connectFakeClient();
     await startedDeploy(fake, () => ({
