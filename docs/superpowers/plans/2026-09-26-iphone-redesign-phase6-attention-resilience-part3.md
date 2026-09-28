@@ -10,20 +10,22 @@ Part 1's review (#2511) raised Task 15's flush in rounds 3, 4, 6, 7, 8 and 9; ea
 
 This PR's first review found that a storage change mid-settle could let go of the claim, and the settle's late end could then let go of a newer claim on the same target, stranding a message. Claims are now objects: a change while a claim's settle is out only notes the target, only that settle's end lets the claim go, and any late continuation can release its own claim and never another. The plan lists which test pins each rule.
 
+A later review, after main moved, found two more gaps, both now fixed with tests that fail without the fix. First, targets settled one at a time, so one slow read held up the rest: they now settle together, as `handleReady` does. Second, a storage failure before the flush could list its targets was swallowed: it now tries again on the Board's backoff while the connection lasts. The same review's third finding, a race when the connection is replaced, can't happen; Step 4 says why.
+
 ---
 
 ## PR I: what you left behind sends itself
 
 ### Task 15: What you left behind sends itself
 
-A message sent offline in a session you then left waits in the outbox with no screen to send it: only an open session screen registers its target (`createNativeMutationHost`, `nativeMutationHost.ts:57-108`). So does anything admitted for a session no screen holds, such as a review sent from a Reader opened from the Board (phase 4's `submitSessionMessage` settles only a registered target), or a Board Stop whose connection dropped before `BoardStops` let its target go (phase 2 part 3's Task 12.2). The web sends every target with waiting records on each ready connection (`handleReady`, `cmd/evener-hub/frontend/src/stores/threads.ts:2702-2767`). This task does the same, and also looks again whenever a record lands for a target nobody holds. It reuses phase 4's `settleTarget` (phase 4 Task 2), which releases a registered target with a read that leaves the connection's subscription alone. That also covers a session screen under the Reader or a subagent: it keeps its target but doesn't read while covered (phase 4 Task 2), so on a ready connection the flush settles its target for it when something on it waits to be sent.
+A message sent offline in a session you then left waits in the outbox with no screen to send it: only an open session screen registers its target (`createNativeMutationHost`, `nativeMutationHost.ts:57-108`). So does anything admitted for a session no screen holds, such as a review sent from a Reader opened from the Board (phase 4's `submitSessionMessage` settles only a registered target), or a Board Stop whose connection dropped before `BoardStops` let its target go (phase 2 part 3's Task 12.2). The web sends every target with waiting records on each ready connection (`handleReady`, `cmd/evener-hub/frontend/src/stores/threads.ts:2856-2921` on main at `d18386ade`, which settles them all at once). This task does the same, and also looks again whenever a record lands for a target nobody holds. It reuses phase 4's `settleTarget` (phase 4 Task 2), which releases a registered target with a read that leaves the connection's subscription alone. That also covers a session screen under the Reader or a subagent: it keeps its target but doesn't read while covered (phase 4 Task 2), so on a ready connection the flush settles its target for it when something on it waits to be sent.
 
 A target nobody holds is settled whatever its records hold, as `handleReady` reads every stored target. The read is how the phone confirms a send whose answer was lost: a record the hub's read reflects is settled (`reconcileIdentities`), and one the hub proves it never received goes back to the outbox to send (`restoreProvenAbsent`, `mutationOutboxStorage.ts:492`). Spec 14 shows "Couldn't confirm this was sent" only when "delivery can't be confirmed after reconnecting".
 
 **Files:**
 - Create: `mobile-native/src/outbox/outboxFlush.ts`, `mobile-native/src/outbox/nativeOutboxFlush.ts` and `mobile-native/src/outbox/outboxFlush.test.ts`
 - Modify: `mobile-native/src/nativeMutationRuntime.ts` (`targetClient`, beside `registerTarget`)
-- Modify: `mobile-native/App.tsx` (bind the flush to the connection) and the session screen's durable-host effect (`screens.tsx:1048-1072`: flush after its host lets go)
+- Modify: `mobile-native/App.tsx` (bind the flush to the connection) and the session screen's durable-host effect (`screens.tsx:663-693`: flush after its host lets go)
 
 **Interfaces:**
 - Consumes: `NativeMutationRuntime.settleTarget(hubId, targetRef, client)` (phase 4 Task 2), `registerTarget`, `start`, `subscribeStorage`, `storage.listTargetRefs` and `storage.listOutbox`.
@@ -40,6 +42,7 @@ A target nobody holds is settled whatever its records hold, as `handleReady` rea
 import type { ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, expect, it, vi } from "vitest";
+import { reconnectDelay } from "../hubConnection";
 import { NativeMutationRuntime, type NativeMutationRequest } from "../nativeMutationRuntime";
 import { openSqliteSyncDouble, type SqliteDoubleDatabase } from "../sqliteSync.testkit";
 import { OutboxFlush, parseTargetKey } from "./outboxFlush";
@@ -308,6 +311,51 @@ it("lets go of a target it can't settle, and still sends the others", async () =
 	await outbox.stop();
 });
 
+it("settles every target at once, so a read the hub is slow to answer holds up no other", async () => {
+	const outbox = runtime();
+	await outbox.submit(message({ targetRef: "ref-1" }));
+	await outbox.submit(message({ targetRef: "ref-2" }));
+	const client = new FakeClient("ready");
+	let reads = 0;
+	// The first read, whichever target it is for, never answers.
+	client.on("thread/read", (params) =>
+		++reads === 1 ? new Promise<never>(() => {}) : read((params as { ref: string }).ref),
+	);
+	client.on("turn/start", applied);
+	const flush = new OutboxFlush(() => outbox);
+
+	flush.bind("hub-1", client);
+
+	await vi.waitFor(() => expect(methods(client)).toContain("turn/start"));
+	expect(reads).toBe(2);
+	flush.dispose();
+	await outbox.stop();
+});
+
+it("tries again after a backoff when storage fails before it can list what waits", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const outbox = runtime();
+		await outbox.submit(message());
+		vi.spyOn(outbox, "start").mockRejectedValueOnce(new Error("the database is busy"));
+		const client = new FakeClient("ready");
+		client.on("thread/read", () => read("ref-1"));
+		client.on("turn/start", applied);
+		const flush = new OutboxFlush(() => outbox);
+
+		flush.bind("hub-1", client);
+		await vi.advanceTimersByTimeAsync(reconnectDelay(1) - 1);
+		expect(methods(client)).toEqual([]);
+		await vi.advanceTimersByTimeAsync(1);
+
+		await vi.waitFor(() => expect(methods(client)).toEqual(["thread/read", "turn/start"]));
+		flush.dispose();
+		await outbox.stop();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 it("looks again for a record that landed while a settle it then lost was in flight", async () => {
 	const outbox = runtime();
 	await outbox.submit(message());
@@ -491,6 +539,8 @@ Each test pins one part of the flush, and fails without it:
 - "sends what another screen admits for a session no screen has open": the storage watch;
 - "keeps a message it can't settle, and lets its session go": letting go of a target whose settle comes back blocked, record kept;
 - "lets go of a target it can't settle, and still sends the others": the per-target catch;
+- "settles every target at once, so a read the hub is slow to answer holds up no other": settling the targets together, as `handleReady` does;
+- "tries again after a backoff when storage fails before it can list what waits": the retry on the Board's backoff (`reconnectDelay`);
 - "looks again for a record that landed while a settle it then lost was in flight": the `touched` set;
 - "lets only a settle's own end release its claim, so a record that lands meanwhile still goes": a change while a settle is out only notes the target, and one read per settle;
 - "leaves sending to the runtime: a record for a target it holds open goes without another settle": the division of labor, with one read for two sends;
@@ -538,6 +588,7 @@ In `nativeMutationRuntime.ts`, before `beginAuthoritativeRead`:
 // after a settle goes either way; the flush only decides when to let a
 // registration go.
 import type { AppwireClientLike } from "@evener/appwire-client";
+import { reconnectDelay } from "../hubConnection";
 
 export type SettleResult = "open" | "reconciled" | "blocked" | "stale" | "unregistered";
 
@@ -585,6 +636,9 @@ export class OutboxFlush {
 	/** Screens' targets this connection is settling for them right now. */
 	private readonly settlingForScreens = new Map<string, symbol>();
 	private unsubscribe: (() => void) | null = null;
+	/** A look again after storage failed, and how many failed in a row. */
+	private retry: ReturnType<typeof setTimeout> | null = null;
+	private failures = 0;
 
 	/** `runtime` is read at the first ready connection: a message kept from an
 	 * earlier launch can only be found in the mutations database. */
@@ -599,6 +653,7 @@ export class OutboxFlush {
 		this.owned.clear();
 		this.touched.clear();
 		this.settlingForScreens.clear();
+		this.stopRetrying();
 		// The runtime calls storage listeners synchronously, and unsubscribing
 		// deletes this one at once, so no callback of an earlier bind runs after
 		// this line. A check one started before holds the claim it found, and
@@ -620,18 +675,31 @@ export class OutboxFlush {
 		const { hubId, client, generation } = this;
 		if (hubId === null || client === null || client.state !== "ready") return;
 		const runtime = this.runtime();
-		// A fresh runtime dispatches nothing until started.
-		await runtime.start();
-		for (const key of await runtime.storage.listTargetRefs()) {
-			if (generation !== this.generation) return;
-			const target = parseTargetKey(key);
-			// A claim is taken before settle's first await, so a second flush
-			// running beside this one finds the target owned and skips it.
-			if (target === null || target.hubId !== hubId || this.owned.has(key)) continue;
-			// A storage failure before any claim leaves the target for the next
-			// ready connection or the next record; the other targets still go.
-			await this.settle(runtime, key, hubId, target.ref, client).catch(() => undefined);
+		let keys: string[];
+		try {
+			// A fresh runtime dispatches nothing until started.
+			await runtime.start();
+			keys = await runtime.storage.listTargetRefs();
+		} catch {
+			// Storage failed before anything was claimed: look again after a
+			// backoff while this connection lasts, as the Board retries a read.
+			this.retryLater(generation);
+			return;
 		}
+		if (generation !== this.generation) return;
+		this.stopRetrying();
+		// Every target settles at once, as the web's handleReady does, so a read
+		// the hub is slow to answer holds up no other. A claim is taken before a
+		// settle's first await, so a flush running beside this one finds the
+		// target owned and skips it. Each settle catches its own failure, which
+		// leaves that target for the next ready connection or the next record.
+		await Promise.all(
+			keys.map((key) => {
+				const target = parseTargetKey(key);
+				if (target === null || target.hubId !== hubId || this.owned.has(key)) return undefined;
+				return this.settle(runtime, key, hubId, target.ref, client).catch(() => undefined);
+			}),
+		);
 	}
 
 	dispose(): void {
@@ -722,6 +790,24 @@ export class OutboxFlush {
 		if (!(await this.waiting(runtime, key))) this.release(key, claim);
 	}
 
+	/** Looks again after the Board's backoff (reconnectDelay: 1, 2, 4, 8 and
+	 * 16 seconds, then every 30), while the connection the failed look ran on
+	 * is still bound; bind() stops it. */
+	private retryLater(generation: number): void {
+		if (generation !== this.generation || this.retry !== null) return;
+		this.failures += 1;
+		this.retry = setTimeout(() => {
+			this.retry = null;
+			void this.flush().catch(() => undefined);
+		}, reconnectDelay(this.failures));
+	}
+
+	private stopRetrying(): void {
+		if (this.retry !== null) clearTimeout(this.retry);
+		this.retry = null;
+		this.failures = 0;
+	}
+
 	private async waiting(runtime: FlushRuntime, key: string): Promise<boolean> {
 		const records = await runtime.storage.listOutbox(key);
 		return records.some((record) => record.state === "submitting");
@@ -750,8 +836,9 @@ export const outboxFlush = new OutboxFlush(getNativeMutationRuntime);
 ```
 
 - [ ] **Step 4: Wire it**
-  - In `App.tsx`'s `Navigation`, bind the flush to the connection. `Navigation` already names its navigation state `state` (`App.tsx:62`), so take the connection's under another name: `const { client, state: connectionState } = useConnection();` beside the existing destructuring, then `useEffect(() => { outboxFlush.bind(activeProfile?.id ?? null, connectionState === "ready" ? client : null); }, [activeProfile?.id, connectionState, client]);`.
-  - In the session screen's durable-host effect cleanup (`screens.tsx:1068-1071`), after `host.dispose()`, call `void outboxFlush.flush()`: letting go of a target writes nothing to storage, so without it a message still waiting when you leave a session would wait for the next connection.
+  - In `App.tsx`'s `Navigation`, bind the flush to the connection. `Navigation` already names its navigation state `state` (`App.tsx:67`), so take the connection's under another name: `const { client, state: connectionState } = useConnection();` beside the existing destructuring, then `useEffect(() => { outboxFlush.bind(activeProfile?.id ?? null, connectionState === "ready" ? client : null); }, [activeProfile?.id, connectionState, client]);`.
+  - In the session screen's durable-host effect cleanup (`screens.tsx:689-692`), after `host.dispose()`, call `void outboxFlush.flush()`: letting go of a target writes nothing to storage, so without it a message still waiting when you leave a session would wait for the next connection.
+  - Why a covered screen whose connection is replaced is never skipped: the screen's effect and App's bind both follow `useConnection()` (the screen's `connected` is `connectionState === "ready"` and its hub, `screens.tsx:641-642`), so they run in the same commit. The screen registers synchronously (`host.start()` calls `registerTarget` before its first await, `nativeMutationHost.ts:66-71`). The flush looks only after an await (`runtime.start()`), so when it checks ownership the screen already holds the target with the new client. Keep the bind in `Navigation`, and keep the flush's first check after an await.
   - Screen tests that import `screens.tsx` mock `./outbox/nativeOutboxFlush` to `{ outboxFlush: { flush: async () => {}, bind: () => {} } }`, the way they mock other native singletons.
 
 - [ ] **Step 5: Run the tests and watch them pass**
