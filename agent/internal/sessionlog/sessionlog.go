@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,6 +36,12 @@ type SessionLog struct {
 	marshal func(any) ([]byte, error)
 	mu      sync.RWMutex
 	entries []SessionLogEntry
+	// tornTail records that the file ended in an unterminated final line when
+	// it was loaded — the residue of an interrupted append. The bytes are left
+	// on disk (malformed lines are tolerated), but the next append must first
+	// terminate that line so the new record is not concatenated onto it and
+	// silently lost by the following load.
+	tornTail bool
 }
 
 // NewSessionLog creates a new SessionLog that persists to the given path.
@@ -66,7 +73,9 @@ func newSessionLogFS(path string, fs afero.Fs) (*SessionLog, error) {
 	return log, nil
 }
 
-// loadFromDisk reads entries from the log file.
+// loadFromDisk reads entries from the log file. Malformed lines are skipped to
+// tolerate partial writes; an unterminated final line (a torn write) is
+// recorded so the next append can separate itself from it.
 func (l *SessionLog) loadFromDisk() error {
 	f, err := l.fs.Open(l.path)
 	if err != nil {
@@ -74,7 +83,8 @@ func (l *SessionLog) loadFromDisk() error {
 	}
 	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
-	scanner := bufio.NewScanner(f)
+	tail := &tailReader{r: f}
+	scanner := bufio.NewScanner(tail)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -91,7 +101,33 @@ func (l *SessionLog) loadFromDisk() error {
 		l.entries = append(l.entries, entry)
 	}
 
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	// A file that does not end in a newline ends in an unterminated final
+	// line: an interrupted append whose bytes the scanner skipped as
+	// malformed. Record it so the next append terminates that line first,
+	// rather than concatenating onto it and losing the new record on reload.
+	l.tornTail = tail.n > 0 && tail.last != '\n'
+	return nil
+}
+
+// tailReader records the last byte it read, so loadFromDisk can tell whether
+// the log ended in an unterminated line without a second pass over the file.
+type tailReader struct {
+	r    io.Reader
+	last byte
+	n    int
+}
+
+func (t *tailReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 {
+		t.last = p[n-1]
+		t.n += n
+	}
+	return n, err
 }
 
 // Append appends an entry to the in-memory list and persists to disk.
@@ -122,8 +158,20 @@ func (l *SessionLog) appendToDisk(entry SessionLogEntry) error {
 		return err
 	}
 
-	_, err = f.Write(append(data, '\n'))
-	return err
+	record := make([]byte, 0, len(data)+2)
+	if l.tornTail {
+		// Terminate the torn tail so the new record starts on its own line.
+		// The torn bytes stay on disk as a malformed line, which load tolerates
+		// — consistent with the existing skip-malformed behavior.
+		record = append(record, '\n')
+	}
+	record = append(record, data...)
+	record = append(record, '\n')
+	if _, err := f.Write(record); err != nil {
+		return err
+	}
+	l.tornTail = false
+	return nil
 }
 
 // Entries returns a copy of all entries.

@@ -1,7 +1,11 @@
 package sessionlog
 
 import (
+	"bytes"
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -398,6 +402,126 @@ func TestSessionLog_Len(t *testing.T) {
 		if log.Len() != i {
 			t.Errorf("after appending %d entries, Len() = %d, want %d", i, log.Len(), i)
 		}
+	}
+}
+
+// TestSessionLog_TornTailDoesNotSwallowNextAppend reproduces DATA-08: a log
+// whose final line is an unterminated torn write is skipped on load, but the
+// torn bytes stay on disk. Without repair the next O_APPEND write concatenates
+// the new record onto those bytes, forming one malformed line that the next
+// load discards — silently losing a successfully appended entry.
+func TestSessionLog_TornTailDoesNotSwallowNextAppend(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.log")
+
+	prefix := []SessionLogEntry{
+		{Turn: 1, Action: "shell", Summary: "first", Outcome: "success"},
+		{Turn: 2, Action: "edit_file", Summary: "second", Outcome: "success"},
+	}
+	var raw []byte
+	for _, e := range prefix {
+		b, err := json.Marshal(e)
+		if err != nil {
+			t.Fatalf("marshal prefix entry: %v", err)
+		}
+		raw = append(raw, b...)
+		raw = append(raw, '\n')
+	}
+	// Unterminated torn tail: a partial record with no trailing newline.
+	raw = append(raw, []byte(`{"kind":"advisory","turn":3,"action":"assist`)...)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write seed log: %v", err)
+	}
+
+	log := mustNewSessionLog(t, path)
+	if log.Len() != len(prefix) {
+		t.Fatalf("reopened log Len() = %d, want %d (torn tail skipped)", log.Len(), len(prefix))
+	}
+
+	appended := SessionLogEntry{Turn: 4, Action: "shell", Summary: "survivor", Outcome: "success"}
+	if err := log.Append(appended); err != nil {
+		t.Fatalf("Append after torn tail: %v", err)
+	}
+
+	reloaded := mustNewSessionLog(t, path)
+	entries := reloaded.Entries()
+	if len(entries) != len(prefix)+1 {
+		t.Fatalf("reloaded Len() = %d, want %d (prefix + newly appended record)", len(entries), len(prefix)+1)
+	}
+	for i, want := range prefix {
+		if !reflect.DeepEqual(entries[i], want) {
+			t.Errorf("prefix entry %d = %+v, want %+v", i, entries[i], want)
+		}
+	}
+	if got := entries[len(entries)-1]; !reflect.DeepEqual(got, appended) {
+		t.Errorf("appended record not preserved: got %+v, want %+v", got, appended)
+	}
+}
+
+// TestSessionLog_AppendAfterTerminatedMalformedLine pins that a durable
+// malformed line (one that is newline-terminated, not a torn tail) keeps the
+// documented tolerance behavior: it is skipped on load, and the next append
+// lands intact on its own line without an extra blank separator.
+func TestSessionLog_AppendAfterTerminatedMalformedLine(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.log")
+
+	raw := []byte(`{"turn":1,"action":"shell","summary":"keep","outcome":"success"}` + "\n" +
+		"this is not json\n")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write seed log: %v", err)
+	}
+
+	log := mustNewSessionLog(t, path)
+	if log.Len() != 1 {
+		t.Fatalf("reopened Len() = %d, want 1 (malformed line skipped)", log.Len())
+	}
+	appended := SessionLogEntry{Turn: 2, Action: "shell", Summary: "survivor", Outcome: "success"}
+	if err := log.Append(appended); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	reloaded := mustNewSessionLog(t, path)
+	entries := reloaded.Entries()
+	if len(entries) != 2 || !reflect.DeepEqual(entries[1], appended) {
+		t.Fatalf("reloaded entries = %+v, want the kept entry plus %+v", entries, appended)
+	}
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if bytes.Contains(onDisk, []byte("\n\n")) {
+		t.Errorf("append after a terminated malformed line introduced a blank separator:\n%q", onDisk)
+	}
+}
+
+// TestSessionLog_LoadDoesNotModifyFile proves that read-only inspection leaves
+// the log byte-identical: repair must not happen on load.
+func TestSessionLog_LoadDoesNotModifyFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.log")
+
+	raw := []byte(`{"turn":1,"action":"shell","summary":"keep","outcome":"success"}` + "\n" +
+		`{"turn":2,"action":"assist`)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write seed log: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read before: %v", err)
+	}
+
+	_ = mustNewSessionLog(t, path)
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("NewSessionLog modified the log:\n before=%q\n after =%q", before, after)
 	}
 }
 
