@@ -1,10 +1,10 @@
 // One block of a document in the Reader (spec 10.2): markdown in the document
-// role with serif headings, code in the machine face on an inset box, a
-// table as the markdown view draws it (it scrolls a wide one sideways
-// itself), a rule as a line. A block that changed
-// since you last read it carries an accent rule down its left edge. Touch
-// and hold opens its menu (comment, quote, copy, select), and a pill at its
-// top trailing corner counts the comments on it.
+// role with serif headings, code in the machine face on an inset box, a table
+// as the markdown view draws it (it scrolls a wide one sideways itself), a
+// rule as a line. A block that changed since you last read it carries an
+// accent rule down its left edge. Touch and hold opens its menu (comment,
+// quote, copy, select), and a pill at its top trailing corner counts the
+// comments on it.
 import { SymbolView } from "expo-symbols";
 import { memo, useMemo } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
@@ -182,9 +182,6 @@ export const ReaderBlock = memo(function ReaderBlock({
 	const style = {
 		...(changed ? { borderLeftWidth: 3, borderLeftColor: palette.accent, paddingLeft: 12 } : {}),
 		...(selected ? { backgroundColor: palette.accentBg } : {}),
-		// Room for the comment pill at the top trailing corner, so it never
-		// sits on the block's words.
-		...(commentCount > 0 ? { paddingRight: 48 * scale } : {}),
 	};
 	const body = (
 		<BlockBody block={block} selecting={selecting} onSelection={onSelection} accessibility={accessibility} />
@@ -201,7 +198,9 @@ export const ReaderBlock = memo(function ReaderBlock({
 				onMenu?.(block.index);
 				showMenu(menu, menuPreview(block.text), () => onMenu?.(null));
 			}}
-			style={style}
+			// Room for the comment pill at the top trailing corner, so it never
+			// sits on the block's words.
+			style={commentCount > 0 ? { ...style, paddingRight: 48 * scale } : style}
 		>
 			{body}
 			{commentCount > 0 ? <CommentMarker count={commentCount} onPress={() => onAction?.("comments", block)} /> : null}
