@@ -1490,3 +1490,90 @@ test("a failed outbox setup unwinds its listeners and channel, and the retry re-
 	expect(lifecycleRemoves).toBe(4);
 	expect(cleared).toEqual([1]);
 });
+
+test("a screen above its session releases the session's blocked target without taking the subscription", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
+	const client = new FakeClient("ready");
+	client.on("turn/start", appliedReceipt);
+	client.on("thread/read", () => readResponse("ref-1"));
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+
+	await expect(runtime.settleTarget("hub-1", "ref-1", client)).resolves.toBe("reconciled");
+
+	expect(client.calls.find((call) => call.method === "thread/read")?.params).toEqual({
+		ref: "ref-1",
+		includeTurns: true,
+		itemsView: "fragment",
+		itemLimit: 40,
+	});
+	await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
+	await runtime.stop();
+});
+
+test("settling leaves an open target alone and refuses a target it can't read for", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
+	const client = new FakeClient("ready");
+	await registerAndStart(runtime, client);
+	const lease = runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+	expect(lease).toBeDefined();
+	await runtime.reconcileAuthoritativeRead(lease!, readResponse("ref-1"));
+
+	await expect(runtime.settleTarget("hub-1", "ref-1", client)).resolves.toBe("open");
+	await expect(runtime.settleTarget("hub-1", "ref-2", client)).resolves.toBe("unregistered");
+	runtime.registerTarget("hub-1", "ref-3", client);
+	await expect(runtime.settleTarget("hub-1", "ref-3", new FakeClient("ready"))).resolves.toBe("blocked");
+	expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(0);
+	await runtime.stop();
+});
+
+test("a settling read that fails leaves the target blocked and sends nothing", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
+	const client = new FakeClient("ready");
+	client.on("turn/start", appliedReceipt);
+	client.on("thread/read", () => Promise.reject(new Error("offline")));
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+
+	await expect(runtime.settleTarget("hub-1", "ref-1", client)).resolves.toBe("blocked");
+
+	expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+	await runtime.stop();
+});
+
+test("remembers what this phone submitted to each target, the most recent hundred", async () => {
+	let next = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => `mutation-${(next += 1)}` });
+	const client = new FakeClient("ready");
+	await registerAndStart(runtime, client);
+	for (let index = 0; index < 101; index += 1) await runtime.submit(request("queue"));
+	const submitted = runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-1"));
+	expect(submitted.size).toBe(100);
+	expect(submitted.has("mutation-1")).toBe(false);
+	expect(submitted.has("mutation-101")).toBe(true);
+	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-other")).size).toBe(0);
+	await runtime.stop();
+});
+
+test("keeps what it submitted across a reconnect, and forgets the targets it wrote to longest ago", async () => {
+	let next = 0;
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => `mutation-${(next += 1)}` });
+	const client = new FakeClient("ready");
+	const release = runtime.registerTarget("hub-1", "ref-0", client);
+	await runtime.start();
+	const submitTo = async (ref: string) => runtime.submit({ ...request("queue"), targetRef: ref });
+	await submitTo("ref-0");
+	// A reconnect re-registers the target: what was sent just before still
+	// counts as this phone's.
+	release();
+	runtime.registerTarget("hub-1", "ref-0", client);
+	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-0")).size).toBe(1);
+	for (let index = 1; index <= 50; index += 1) {
+		runtime.registerTarget("hub-1", `ref-${index}`, client);
+		await submitTo(`ref-${index}`);
+	}
+	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-0")).size).toBe(0);
+	expect(runtime.submittedHere(nativeMutationTargetKey("hub-1", "ref-50")).size).toBe(1);
+	await runtime.stop();
+});
