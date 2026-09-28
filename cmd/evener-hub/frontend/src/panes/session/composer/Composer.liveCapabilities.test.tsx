@@ -32,7 +32,7 @@
 
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -59,6 +59,7 @@ function Composer(props: React.ComponentProps<typeof ComposerView>) {
 }
 
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetStoplessComposerSightingsForTests, stoplessComposerSightings } from "./stoplessComposer";
 
 beforeAll(() => {
@@ -129,7 +130,16 @@ function thread(status: string, capabilities: ThreadCapabilities): Thread {
 async function mountComposer(status: string, capabilities: ThreadCapabilities): Promise<FakeClient> {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
-  fake.on("thread/read", () => ({ thread: thread(status, capabilities) }) as ThreadReadResponse);
+  fake.on(
+    "thread/read",
+    () =>
+      ({
+        thread: thread(status, capabilities),
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 0 },
+      }) as ThreadReadResponse,
+  );
   await threadsStore.getState().ensureThread(REF);
   render(
     <ClientProvider client={fake}>
@@ -148,26 +158,36 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
 // sequence from a source that state-gates nothing.
 function turnStartedFrame(turnId: string): AnyNotification {
   return {
-    method: "turn/started",
+    method: "history/updated",
     params: {
       threadId: `thr_${REF}`,
       ref: REF,
-      turn: { id: turnId, status: "inProgress", itemsView: "full", startedAt: 5000 },
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: turnId, status: "inProgress", itemsView: "full", startedAt: 5000 }],
     },
   };
 }
 
 function turnCompletedFrame(turnId: string): AnyNotification {
   return {
-    method: "turn/completed",
-    params: { threadId: `thr_${REF}`, ref: REF, turn: { id: turnId, status: "completed", itemsView: "" } },
+    method: "history/updated",
+    params: {
+      threadId: `thr_${REF}`,
+      ref: REF,
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [{ id: turnId, status: "completed", itemsView: "" }],
+    },
   };
 }
 
-function statusActiveFrame(capabilities?: ThreadCapabilities): AnyNotification {
+function statusActiveFrame(capabilities?: ThreadCapabilities, activeTurnId?: string): AnyNotification {
   return {
     method: "thread/status/changed",
-    params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities },
+    params: { threadId: `thr_${REF}`, ref: REF, status: { type: "active" }, capabilities, activeTurnId },
   };
 }
 
@@ -175,15 +195,22 @@ function emitTurnStart(fake: FakeClient, turnId: string, capabilities?: ThreadCa
   act(() => {
     fake.emitNotification(turnStartedFrame(turnId));
     fake.emitNotification({
-      method: "item/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turnId,
-        item: { type: "userMessage", id: "item_user_1", turnId, text: "hi", status: "completed" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        items: [
+          {
+            ...{ type: "userMessage", id: "item_user_1", turnId, text: "another thought", status: "completed" },
+            turnId: "",
+          },
+        ],
       },
     });
-    fake.emitNotification(statusActiveFrame(capabilities));
+    fake.emitNotification(statusActiveFrame(capabilities, turnId));
   });
 }
 
@@ -221,9 +248,9 @@ test("a resumed cold session's controls follow the turn it is running", async ()
   await type("hi");
 
   const model = threadsStore.getState().threads.get(REF);
-  expect({ status: model?.status.type, activeTurnId: model?.activeTurnId }).toEqual({
+  expect({ status: model?.status.type, runningTurnId: model?.runningTurnId }).toEqual({
     status: "active",
-    activeTurnId: "turn_5",
+    runningTurnId: "turn_5",
   });
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
@@ -278,9 +305,9 @@ test("a working session offers Stop and Steer before its turn has announced a na
   });
 
   const model = threadsStore.getState().threads.get(REF);
-  expect({ status: model?.status.type, activeTurnId: model?.activeTurnId }).toEqual({
+  expect({ status: model?.status.type, runningTurnId: model?.runningTurnId }).toEqual({
     status: "active",
-    activeTurnId: undefined,
+    runningTurnId: undefined,
   });
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
   expect(screen.queryByTestId("composer-steer")).not.toBeNull();
@@ -368,11 +395,14 @@ test("the turn ending puts the controls back to a plain send", async () => {
 
   act(() => {
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turn: { id: "turn_5", status: "completed", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_5", status: "completed", itemsView: "" }],
       },
     });
     fake.emitNotification({
@@ -426,11 +456,14 @@ test("a session that shuts down mid-turn keeps a way to reply", async () => {
 
   act(() => {
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turn: { id: "turn_5", status: "interrupted", itemsView: "" },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_5", status: "interrupted", itemsView: "" }],
       },
     });
     fake.emitNotification({
@@ -477,7 +510,7 @@ function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnI
   const frames: Array<[string, AnyNotification]> = [
     ["turn/completed of the previous turn", turnCompletedFrame(endedTurnId)],
     ["turn/started of the next turn", turnStartedFrame(nextTurnId)],
-    ["the status frame", statusActiveFrame(daemonCapabilities(true))],
+    ["the status frame", statusActiveFrame(daemonCapabilities(true), nextTurnId)],
   ];
   for (const [step, frame] of frames) {
     act(() => {
@@ -489,9 +522,11 @@ function emitInlineTurnBoundary(fake: FakeClient, endedTurnId: string, nextTurnI
 }
 
 // The click follows the same rule as the button. Between the two turn frames
-// the model has no activeTurnId, and the handler used to refuse there with a
-// "no active turn" toast (issue #1341); the daemon is mid-input and its v3
-// turn/steer names no turn, so the steer is sent.
+// the completed turn's history status is the only thing that changed (no
+// thread/status/changed has landed yet, so runningTurnId is still stale at
+// turn_5); the handler used to refuse there with a "no active turn" toast
+// (issue #1341); the daemon is mid-input and its v3 turn/steer names no turn,
+// so the steer is sent regardless of what runningTurnId names.
 test("a Steer clicked between turn/completed and turn/started sends turn/steer, with no toast", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
   fake.on("turn/steer", (params) => ({
@@ -508,10 +543,10 @@ test("a Steer clicked between turn/completed and turn/started sends turn/steer, 
   act(() => {
     fake.emitNotification(turnCompletedFrame("turn_5"));
   });
-  expect(threadsStore.getState().threads.get(REF)?.activeTurnId).toBeUndefined();
 
   await userEvent.click(screen.getByTestId("composer-steer"));
-  await waitFor(() => expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1));
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(1);
   expect(fake.calls.find((c) => c.method === "turn/steer")?.params).toMatchObject({
     ref: REF,
     input: [{ type: "text", text: "go left" }],
@@ -533,11 +568,14 @@ test("a failed turn takes Stop and Steer off and gives Send back", async () => {
 
   act(() => {
     fake.emitNotification({
-      method: "turn/completed",
+      method: "history/updated",
       params: {
         threadId: `thr_${REF}`,
         ref: REF,
-        turn: { id: "turn_5", status: "failed", itemsView: "", error: { message: "rate limited" } },
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [{ id: "turn_5", status: "failed", itemsView: "", error: { message: "rate limited" } }],
       },
     });
   });
@@ -567,5 +605,5 @@ test("Steer and Stop stay on screen across an inline turn boundary delivered one
   emitInlineTurnBoundary(fake, "turn_5", "turn_6");
 
   expect(screen.queryByTestId("composer-stop")).not.toBeNull();
-  expect(threadsStore.getState().threads.get(REF)?.activeTurnId).toBe("turn_6");
+  expect(threadsStore.getState().threads.get(REF)?.runningTurnId).toBe("turn_6");
 });

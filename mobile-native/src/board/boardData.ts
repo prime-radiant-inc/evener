@@ -1,8 +1,10 @@
 import type {
+	AuthStatusResponse,
 	NavigationInvalidatedPayload,
 	NavigationManifest,
 	NavigationPinSectionDescriptor,
 	NavigationSessionSummary,
+	PluginEntry,
 } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
@@ -22,15 +24,22 @@ export interface BoardSnapshot {
 	live: Page<NavigationSessionSummary>;
 	needsYou: Page<NavigationSessionSummary>;
 	pins: Page<NavigationPinSectionDescriptor>;
+	/** Each category's sessions, keyed by section id in the catalog's order:
+	 * one entry for every category the catalog shown lists. */
+	pinSections: Record<string, Page<NavigationSessionSummary>>;
 	/** True from the first time Live loaded for this hub, and never false again. */
 	loaded: boolean;
 	/** True while the rows shown were read over an earlier connection and the
 	 * current one hasn't replaced them yet. */
 	retained: boolean;
-	/** True while any of the Board's reads (Live, Needs you, the pin catalog
-	 * or the manifest) is out. */
+	/** True while any of the Board's reads (Live, Needs you, the pin catalog,
+	 * a category or the manifest) is out. */
 	reading: boolean;
 	error: string | null;
+	/** The hub's providers, for the sign-in notices. */
+	auth: AuthStatusResponse[];
+	/** The hub's plugins, for the broken-plugin notices. */
+	plugins: PluginEntry[];
 }
 export interface BoardController {
 	getSnapshot(): BoardSnapshot;
@@ -49,6 +58,9 @@ const PAGE_LIMIT = 50;
 const PIN_CATALOG_LIMIT = 100;
 const MANIFEST_PARAMS = { resource: "manifest", representationVersion: 2 };
 const MANIFEST_KEY = navigationParamsToResourceKey(MANIFEST_PARAMS);
+/** evener/plugin/updated fires only on mutations, so a plugin that breaks on
+ * its own shows up on this poll (ruling 8). */
+const PLUGIN_POLL = 5 * 60_000;
 
 interface ManifestState {
 	manifest: NavigationManifest | null;
@@ -190,12 +202,24 @@ class ManifestReader {
 	}
 }
 
+/** One category's sessions, and what stops following them. */
+interface CategoryReader {
+	pages: NavigationPages<NavigationSessionSummary>;
+	stop: Array<() => void>;
+}
 interface Readers {
 	live: NavigationPages<NavigationSessionSummary>;
 	needsYou: NavigationPages<NavigationSessionSummary>;
 	pins: NavigationPages<NavigationPinSectionDescriptor>;
 	manifest: ManifestReader;
+	/** One reader per category the catalog shown lists, keyed by id. */
+	categories: Map<string, CategoryReader>;
+	client: ConversationClientLike;
 	stop: Array<() => void>;
+	/** The latest read of each notice list, so an older answer that lands
+	 * after a newer one is dropped. */
+	noticeReads: { auth: number; plugins: number };
+	pluginPoll: ReturnType<typeof setInterval> | null;
 }
 /** What the Board showed when its last connection went away, per reader,
  * until the current connection's read of that reader lands. */
@@ -203,12 +227,14 @@ interface Retained {
 	live: Page<NavigationSessionSummary> | null;
 	needsYou: Page<NavigationSessionSummary> | null;
 	pins: Page<NavigationPinSectionDescriptor> | null;
+	categories: Record<string, Page<NavigationSessionSummary>>;
 	manifest: NavigationManifest | null;
 }
 const nothingRetained: Retained = {
 	live: null,
 	needsYou: null,
 	pins: null,
+	categories: {},
 	manifest: null,
 };
 const emptyPage = {
@@ -222,6 +248,8 @@ const emptyPage = {
 };
 const sessionKey = (row: NavigationSessionSummary) => row.ref;
 const pinSectionKey = (row: NavigationPinSectionDescriptor) => row.id;
+const categoryPagesOf = (bound: Readers) =>
+	[...bound.categories.values()].map((category) => category.pages);
 
 /** A page worth keeping across a reconnect: one that loaded. Its read died
  * with the connection, so it no longer says it is loading. */
@@ -249,33 +277,57 @@ export function createBoardController(): BoardController {
 	let loaded = false;
 	let paused = false;
 	let disposed = false;
+	// The notice lists outlive a connection: each keeps what it last read
+	// until the current connection's read of it lands.
+	let auth: AuthStatusResponse[] = [];
+	let plugins: PluginEntry[] = [];
 
-	const build = (): BoardSnapshot => ({
-		manifest: readers?.manifest.state.loaded
-			? readers.manifest.state.manifest
-			: retained.manifest,
-		live: shown(readers?.live, retained.live),
-		needsYou: shown(readers?.needsYou, retained.needsYou),
-		pins: shown(readers?.pins, retained.pins),
-		loaded,
-		retained:
-			retained.live !== null ||
-			retained.needsYou !== null ||
-			retained.pins !== null ||
-			retained.manifest !== null,
-		reading: readers
-			? readers.live.getSnapshot().loading ||
-				readers.needsYou.getSnapshot().loading ||
-				readers.pins.getSnapshot().loading ||
-				readers.manifest.state.loading
-			: false,
-		error: readers
-			? (readers.live.getSnapshot().error ??
-				readers.needsYou.getSnapshot().error ??
-				readers.pins.getSnapshot().error ??
-				readers.manifest.state.error)
-			: null,
-	});
+	const build = (): BoardSnapshot => {
+		const pins = shown(readers?.pins, retained.pins);
+		const categoryPages = readers ? categoryPagesOf(readers) : [];
+		return {
+			manifest: readers?.manifest.state.loaded
+				? readers.manifest.state.manifest
+				: retained.manifest,
+			live: shown(readers?.live, retained.live),
+			needsYou: shown(readers?.needsYou, retained.needsYou),
+			pins,
+			pinSections: Object.fromEntries(
+				pins.rows.map((row) => [
+					row.id,
+					shown(
+						readers?.categories.get(row.id)?.pages,
+						retained.categories[row.id] ?? null,
+					),
+				]),
+			),
+			loaded,
+			retained:
+				retained.live !== null ||
+				retained.needsYou !== null ||
+				retained.pins !== null ||
+				Object.keys(retained.categories).length > 0 ||
+				retained.manifest !== null,
+			reading: readers
+				? readers.live.getSnapshot().loading ||
+					readers.needsYou.getSnapshot().loading ||
+					readers.pins.getSnapshot().loading ||
+					categoryPages.some((page) => page.getSnapshot().loading) ||
+					readers.manifest.state.loading
+				: false,
+			error: readers
+				? (readers.live.getSnapshot().error ??
+					readers.needsYou.getSnapshot().error ??
+					readers.pins.getSnapshot().error ??
+					categoryPages
+						.map((page) => page.getSnapshot().error)
+						.find((error) => error !== null) ??
+					readers.manifest.state.error)
+				: null,
+			auth,
+			plugins,
+		};
+	};
 	let snapshot = build();
 	// A reader republishes on cancel() with nothing changed, and every fresh
 	// reader starts with its own empty rows, so pages compare by content.
@@ -285,11 +337,25 @@ export function createBoardController(): BoardController {
 				? a.rows === b.rows || (!a.rows.length && !b.rows.length)
 				: a[field] === b[field],
 		);
+	// The same categories on the same pages. Their order needs no check: it
+	// follows pins.rows, which unchanged() compares on its own.
+	const sameCategories = (
+		a: BoardSnapshot["pinSections"],
+		b: BoardSnapshot["pinSections"],
+	) => {
+		const ids = Object.keys(a);
+		return (
+			ids.length === Object.keys(b).length &&
+			ids.every((id) => Object.hasOwn(b, id) && samePage(a[id], b[id]))
+		);
+	};
 	const unchanged = (next: BoardSnapshot) =>
 		(Object.keys(next) as Array<keyof BoardSnapshot>).every((field) =>
 			field === "live" || field === "needsYou" || field === "pins"
 				? samePage(next[field], snapshot[field])
-				: next[field] === snapshot[field],
+				: field === "pinSections"
+					? sameCategories(next.pinSections, snapshot.pinSections)
+					: next[field] === snapshot[field],
 		);
 
 	const publish = () => {
@@ -306,6 +372,7 @@ export function createBoardController(): BoardController {
 				retained = { ...retained, pins: null };
 			if (readers.manifest.state.loaded)
 				retained = { ...retained, manifest: null };
+			followCatalog(readers);
 		}
 		const next = build();
 		if (unchanged(next)) return;
@@ -313,9 +380,9 @@ export function createBoardController(): BoardController {
 		for (const listener of listeners) listener();
 	};
 
-	/** Needs you and the pin catalog must be complete (every session that
-	 * needs you, and every category's row), so keep paging each until the
-	 * hub has no more rows. */
+	/** Needs you, the pin catalog and each category must be complete (every
+	 * session that needs you, every category's row, and every session a
+	 * category counts), so keep paging each until the hub has no more rows. */
 	const fill = <T,>(page: NavigationPages<T>) => {
 		if (paused) return;
 		const state = page.getSnapshot();
@@ -329,7 +396,122 @@ export function createBoardController(): BoardController {
 			void page.more();
 	};
 
-	const pages = (bound: Readers) => [bound.live, bound.needsYou, bound.pins];
+	/** Follow a reader that must be complete: publish each of its changes,
+	 * then page on. */
+	const followInFull = <T,>(page: NavigationPages<T>) =>
+		page.subscribe(() => {
+			publish();
+			fill(page);
+		});
+
+	/** Every paged reader: Live, Needs you, the pin catalog and the
+	 * categories. */
+	const pages = (bound: Readers) => [
+		bound.live,
+		bound.needsYou,
+		bound.pins,
+		...categoryPagesOf(bound),
+	];
+
+	/** Keep one reader per category the catalog shown lists (the fresh
+	 * catalog once it loaded, the retained one until then), and forget the
+	 * retained rows of a category that has left it or whose fresh read has
+	 * landed. A category is read whatever its fold, and to completion, since
+	 * its header shows the hub's full count. */
+	const followCatalog = (bound: Readers) => {
+		const listed = new Set(
+			shown(bound.pins, retained.pins).rows.map((row) => row.id),
+		);
+		for (const [id, category] of bound.categories) {
+			if (listed.has(id)) continue;
+			bound.categories.delete(id);
+			for (const stop of category.stop) stop();
+			category.pages.cancel();
+		}
+		for (const id of listed) {
+			if (bound.categories.has(id)) continue;
+			const pages = new NavigationPages<NavigationSessionSummary>(
+				bound.client,
+				{ resource: "pin_section", sectionId: id },
+				"sessions",
+				sessionKey,
+				PAGE_LIMIT,
+			);
+			// A new reader reads before the Board subscribes to it, so its
+			// loading publish reaches no one; the publish() running this
+			// builds the reader's state into the snapshot next.
+			if (paused) pages.cancel();
+			else void pages.refresh();
+			bound.categories.set(id, {
+				pages,
+				stop: [followInFull(pages), pages.watch()],
+			});
+		}
+		const kept = Object.entries(retained.categories).filter(
+			([id]) =>
+				listed.has(id) && !bound.categories.get(id)?.pages.getSnapshot().loaded,
+		);
+		if (kept.length !== Object.keys(retained.categories).length)
+			retained = { ...retained, categories: Object.fromEntries(kept) };
+	};
+
+	/** Reads one of the lists the notices come from. These reads stand apart
+	 * from the Board's navigation reads: a failure keeps the last list and
+	 * says nothing, so it never counts as the Board's error, holds up first
+	 * run or starts the rebind retry. The next focus, auth update or poll
+	 * tries it again. */
+	const readNoticeList = <T,>(
+		bound: Readers,
+		list: keyof Readers["noticeReads"],
+		read: () => Promise<T>,
+		land: (value: T) => void,
+	) => {
+		if (paused) return;
+		const request = ++bound.noticeReads[list];
+		read().then(
+			(value) => {
+				if (readers !== bound || request !== bound.noticeReads[list]) return;
+				land(value);
+				publish();
+			},
+			() => {},
+		);
+	};
+	/** The list a read returned, or the current one when nothing in it
+	 * changed: the snapshot keeps its identity, so a poll that finds the
+	 * same lists re-renders nothing. */
+	const unlessSame = <T,>(current: T[], next: T[]) =>
+		JSON.stringify(current) === JSON.stringify(next) ? current : next;
+	const readAuth = (bound: Readers) =>
+		readNoticeList(
+			bound,
+			"auth",
+			() => bound.client.request("evener/auth/list", {}),
+			(result) => {
+				// Go sends an empty (nil) slice as null.
+				auth = unlessSame(auth, result.providers ?? []);
+			},
+		);
+	const readPlugins = (bound: Readers) =>
+		readNoticeList(
+			bound,
+			"plugins",
+			() => bound.client.request("evener/plugin/list", {}),
+			(result) => {
+				plugins = unlessSame(plugins, result.plugins ?? []);
+			},
+		);
+	const stopPluginPoll = (bound: Readers) => {
+		if (bound.pluginPoll !== null) clearInterval(bound.pluginPoll);
+		bound.pluginPoll = null;
+	};
+	/** Reads both notice lists and polls the plugins from now on. */
+	const readNoticeLists = (bound: Readers) => {
+		readAuth(bound);
+		readPlugins(bound);
+		stopPluginPoll(bound);
+		bound.pluginPoll = setInterval(() => readPlugins(bound), PLUGIN_POLL);
+	};
 
 	const connect = (client: ConversationClientLike): Readers => {
 		const section = (name: "live" | "needs_you") =>
@@ -351,27 +533,31 @@ export function createBoardController(): BoardController {
 				PIN_CATALOG_LIMIT,
 			),
 			manifest: new ManifestReader(client, publish),
+			categories: new Map(),
+			client,
 			stop: [],
+			noticeReads: { auth: 0, plugins: 0 },
+			pluginPoll: null,
 		};
 		bound.stop.push(
 			bound.live.subscribe(publish),
-			bound.needsYou.subscribe(() => {
-				publish();
-				fill(bound.needsYou);
-			}),
-			bound.pins.subscribe(() => {
-				publish();
-				fill(bound.pins);
-			}),
+			followInFull(bound.needsYou),
+			followInFull(bound.pins),
 		);
 		for (const page of pages(bound)) bound.stop.push(page.watch());
-		bound.stop.push(bound.manifest.watch());
+		bound.stop.push(
+			bound.manifest.watch(),
+			client.onNotification((event) => {
+				if (event.method === "evener/auth/updated") readAuth(bound);
+			}),
+		);
 		if (paused) {
 			for (const page of pages(bound)) page.cancel();
 			bound.manifest.pause();
 		} else {
 			for (const page of pages(bound)) void page.refresh();
 			bound.manifest.read();
+			readNoticeLists(bound);
 		}
 		return bound;
 	};
@@ -381,8 +567,11 @@ export function createBoardController(): BoardController {
 		const bound = readers;
 		readers = null;
 		for (const stop of bound.stop) stop();
+		for (const category of bound.categories.values())
+			for (const stop of category.stop) stop();
 		for (const page of pages(bound)) page.cancel();
 		bound.manifest.dispose();
+		stopPluginPoll(bound);
 	};
 
 	return {
@@ -398,6 +587,12 @@ export function createBoardController(): BoardController {
 					live: keep(snapshot.live),
 					needsYou: keep(snapshot.needsYou),
 					pins: keep(snapshot.pins),
+					categories: Object.fromEntries(
+						Object.entries(snapshot.pinSections).flatMap(([id, page]) => {
+							const kept = keep(page);
+							return kept ? [[id, kept]] : [];
+						}),
+					),
 					manifest: snapshot.manifest,
 				};
 			disconnect();
@@ -405,8 +600,8 @@ export function createBoardController(): BoardController {
 			publish();
 		},
 		async loadMoreLive() {
-			// A paused Board reads nothing new, as the Needs you and pin
-			// catalog paging doesn't.
+			// A paused Board reads nothing new, as the Needs you, pin catalog
+			// and category paging doesn't.
 			if (paused) return;
 			await readers?.live.more();
 		},
@@ -415,6 +610,7 @@ export function createBoardController(): BoardController {
 			if (!readers) return;
 			for (const page of pages(readers)) page.cancel();
 			readers.manifest.pause();
+			stopPluginPoll(readers);
 		},
 		resume() {
 			paused = false;
@@ -437,6 +633,8 @@ export function createBoardController(): BoardController {
 			readers.manifest.resume();
 			fill(readers.needsYou);
 			fill(readers.pins);
+			for (const page of categoryPagesOf(readers)) fill(page);
+			readNoticeLists(readers);
 		},
 		dispose() {
 			if (disposed) return;

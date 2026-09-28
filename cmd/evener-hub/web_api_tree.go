@@ -960,6 +960,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		PendingAsk:         thread.Evener.AskPending,
 		PendingEscalation:  len(thread.Evener.PendingEscalations) > 0,
 		PendingEscalations: thread.Evener.PendingEscalations,
+		PendingQuestion:    appwire.ClonePendingQuestion(thread.Evener.PendingQuestion),
 		Project:            project,
 	}
 	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
@@ -970,6 +971,9 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		entry.Subagents = *thread.Evener.Subagents
 	}
 	entry.LastTurnEndedAt = hubcore.UnixMilliTime(thread.Evener.LastTurnEndedAt)
+	// The remote hub's root row carries its session's task progress (S13b), so
+	// the remote row shows its task line like a local one.
+	entry.Tasks = appwire.CloneTaskAggregate(thread.Evener.Tasks)
 	return meta, entry, true
 }
 

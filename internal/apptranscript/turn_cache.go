@@ -22,7 +22,6 @@ const defaultTurnCacheSize = 32
 // The returned slice is shared and MUST be treated as read-only by callers.
 type TurnCache struct {
 	mu      sync.Mutex
-	indexMu sync.Mutex // serializes suffix advancement and journal appends
 	entries map[string]turnCacheEntry
 	order   []string // least-recently-used first, for bounded eviction
 	max     int
@@ -35,10 +34,6 @@ type turnCacheEntry struct {
 	changeIdentity string
 	turns          []appwire.Turn
 	full           bool
-	turnIndex      *turnIndexDisk
-	// toolResolver is private scanning state. indexMu protects it; published
-	// turnIndex snapshots never reference this mutable map.
-	toolResolver map[string]string
 	// usageTotal memoizes UsageTotalFromFile's full-transcript token sum for
 	// one file identity and divergence ordinal. Kept alongside the parse memo
 	// so both are evicted together, and separate from it because the sum is a

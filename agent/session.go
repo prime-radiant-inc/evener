@@ -410,6 +410,7 @@ type Session struct {
 	workMillis                    int64     // accumulated wall-clock work time across turns; seeded from SessionMeta on restore, mapped out via Meta()
 	turnStartedAt                 time.Time // wall-clock instant the current turn began (stamped at the processing-begin transition); zero when no turn is in flight. Guarded by mu, like workMillis.
 	lastTurnEndedAt               time.Time // when the last turn ended (stamped by endTurnLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu, like workMillis.
+	lastMessage                   string    // the opening of the last agent message the session wrote (S1d, noteAgentMessageLocked); seeded from SessionMeta on restore, mapped out via Meta(). Guarded by mu.
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
@@ -572,6 +573,20 @@ type Session struct {
 	// roundID names the open model round, "" when none is open; guarded by
 	// mu. See roundIDForModelCall.
 	roundID string
+	// lastRoundID is the latest round the session opened, and lastRoundEnded
+	// whether its EventRoundEnded was emitted; guarded by mu.
+	lastRoundID    string
+	lastRoundEnded bool
+	// sessionStarted is set once SESSION_START is emitted; guarded by mu.
+	// Restore can run an execution before then; it is recorded whole before
+	// any consumer learns the session exists, so it is not announced.
+	sessionStarted bool
+	// executionStarted is called with each execution's TurnID before its
+	// first entry is recorded; guarded by mu. See SetExecutionStartedFunc.
+	executionStarted func(turnID string)
+	// transcriptRecorded is the recorded-entry hook installed on every writer
+	// the session attaches; guarded by mu. See SetTranscriptRecordedFunc.
+	transcriptRecorded func(transcript.Record)
 	// recoveredTurnClaimReturned bounds the recovered turn's give-back to ONE
 	// in-process retry. The first failure of the inherited turn before its prompt
 	// is recorded hands its claim back, and the runner wake drives the immediate
@@ -2167,8 +2182,8 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 // (append first, then the entry), for the same publication-transaction
 // wholeness appendTurnAfterTranscriptWrite documents. The two turns differ
 // only when a tool exposes explicitly private evidence; every other caller
-// passes the same turn twice.
-func (s *Session) recordTurn(live, persisted schema.Turn) {
+// passes the same turn twice. It reports the entry's record.
+func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
@@ -2177,7 +2192,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.logPairPersistedLocked(persisted)
 	s.lastRecorded = recordedOrdinal{}
 	s.mu.Unlock()
-	err := s.writeTranscriptLocked(persisted)
+	rec, err := s.recordTranscriptLocked(persisted, transcript.DoorBuffered, transcript.PlaceSession)
 	if err == nil {
 		s.mu.Lock()
 		s.markLastPairOrdinalLocked()
@@ -2198,6 +2213,7 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.surfaceTranscriptWarnings()
+	return rec
 }
 
 // The transcript writer cannot exist for the whole of a session's life. Its
@@ -2380,7 +2396,7 @@ func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
 // accumulating for the session's lifetime.
 func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.mu.Lock()
-	s.transcript = w
+	s.setTranscriptLocked(w)
 	s.transcriptReady = true
 	held := s.pendingTranscriptTurns
 	s.pendingTranscriptTurns = nil
@@ -2470,6 +2486,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 			// round (a pause_turn continuation, a bare-text retry, the next
 			// tool round).
 			s.roundID = ""
+			s.noteAgentMessageLocked(lastAgentText(t.Message))
 		},
 	)
 	if err != nil {

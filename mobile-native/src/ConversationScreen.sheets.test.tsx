@@ -805,3 +805,14 @@ it("says Reconnecting… and then how old the session is while the hub is out of
 	}
 	tree.unmount();
 });
+
+it("marks its session seen through the read's turn end once it has loaded in front (S4)", async () => {
+	const endedAt = Date.UTC(2026, 8, 26, 12, 0, 0, 123);
+	const { tree, requests } = mount({ ...thread, evener: { ...thread.evener, lastTurnEndedAt: endedAt } });
+	await flush();
+
+	expect(requests.filter((request) => request.method === "evener/session/seen/set")).toEqual([
+		{ method: "evener/session/seen/set", params: { sessions: [{ ref, seenThrough: endedAt }] } },
+	]);
+	tree.unmount();
+});

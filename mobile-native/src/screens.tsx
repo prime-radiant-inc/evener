@@ -49,6 +49,7 @@ import {
 import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalSheet } from "./ApprovalSheet";
 import { ApprovalControls } from "./approvalControls";
+import { useMarkSeenInFront } from "./board/sessionSeen";
 import { CommandCompletion } from "./CommandCompletion";
 import { type ComposerSetting, ComposerSettings } from "./ComposerSettings";
 import { ComposerSettingsSheet } from "./ComposerSettingsSheet";
@@ -679,6 +680,12 @@ export function ConversationScreen({
 	const unconfirmedSend = draft.submitting ? null : draft.record.unconfirmed;
 	const connected =
 		connectionState === "ready" && activeProfile?.id === route.params.hubId;
+	useMarkSeenInFront(
+		route.params,
+		focused,
+		connected ? client : null,
+		snapshot.status === "open" ? snapshot.conversation : null,
+	);
 	// The recovery surface: this exact hub/conversation target's durable
 	// recovery rows, mounted in the recovery modal below. useRecoveryPanel
 	// acquires the runtime only once the conversation is connected (the

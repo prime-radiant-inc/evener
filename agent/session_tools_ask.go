@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
 
@@ -25,14 +26,18 @@ const (
 )
 
 // askQuestion is one question posted by an ask_user call, recorded in the
-// session's per-turn pending set (spec §5.1) purely so a round-boundary check
-// can tell whether the round just posted question(s). The transcript remains
-// the durable, renderable record of the questions and their options (spec
-// §5.1, §6); this struct carries just enough to identify a pending question,
-// not the full option/detail payload.
+// session's per-turn pending set (spec §5.1) so a round-boundary check can
+// tell whether the round just posted question(s), and so the session's row can
+// name its first pending question (PendingQuestion, S1b). The transcript
+// remains the durable, renderable record of the questions and their options
+// (spec §5.1, §6); this struct carries the question and its option labels,
+// never the options' details.
 type askQuestion struct {
 	Header   string
 	Question string
+	// Options are the question's option labels, in the order the call
+	// listed them.
+	Options []string
 }
 
 // isSubagentSession reports whether this session is a subagent, for the
@@ -68,6 +73,21 @@ func (s *Session) askPendingCount() int {
 // rests a session awaiting after any clean, output-producing turn).
 func (s *Session) HasPendingAsk() bool {
 	return s.askPendingCount() > 0
+}
+
+// PendingQuestion is the first question of the session's pending ask, which
+// its Needs you row names (S1b), cut to the wire's bounds; nil while no
+// question waits. It reads the pending set in one hold of s.mu, so the
+// question and its count describe the same moment.
+func (s *Session) PendingQuestion() *appwire.PendingQuestion {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.askPending) == 0 {
+		return nil
+	}
+	first := s.askPending[0]
+	question := appwire.BoundedPendingQuestion(first.Question, first.Options, len(s.askPending))
+	return &question
 }
 
 // clearAskPending empties the pending set. Callers: durable user-input
@@ -276,6 +296,7 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 		labelsSeen := map[string]bool{}
 		recommendedCount := 0
 		opts, _ := qm["options"].([]any)
+		labels := make([]string, 0, len(opts))
 		for _, o := range opts {
 			om, _ := o.(map[string]any)
 			label := fmt.Sprint(om["label"])
@@ -284,6 +305,7 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 				return nil, errors.New(errorMsg)
 			}
 			labelsSeen[label] = true
+			labels = append(labels, label)
 			if rec, _ := om["recommended"].(bool); rec {
 				recommendedCount++
 			}
@@ -296,6 +318,7 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 		parsed = append(parsed, askQuestion{
 			Header:   header,
 			Question: fmt.Sprint(qm["question"]),
+			Options:  labels,
 		})
 	}
 	return parsed, nil
