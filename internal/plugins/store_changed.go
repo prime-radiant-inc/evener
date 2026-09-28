@@ -14,8 +14,8 @@ type StoreChanged struct {
 }
 
 // OnStoreChanged installs fn as the callback lockStore's release invokes,
-// once per lock session, with whatever that session's writes actually
-// changed — never when a session wrote nothing. This is the one hook a
+// once per lock session, with whatever that session changed — never when a
+// session changed nothing. This is the one hook a
 // caller of Install, AddMarketplace, ListMarketplaces, and every other method
 // that takes the store lock can rely on to learn a write happened, instead of
 // threading its own success signal back by hand: the flag is set by the write

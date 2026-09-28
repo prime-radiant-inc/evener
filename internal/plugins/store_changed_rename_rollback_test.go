@@ -89,3 +89,44 @@ func TestEditWhoseUndoFailedReportsTheStoreChanged(t *testing.T) {
 		t.Errorf("reported %+v, want Marketplaces true: the clone is under the new name while the file still names the old", got)
 	}
 }
+
+// The rename moves the plugin cache as well as the clone, and each has its own
+// undo step. This pins the cache's step on its own: the clone is put back
+// cleanly, but the cache cannot be, so the store is still left between the
+// names and the hook must report it. Without this, only the clone's call site
+// would be covered.
+func TestAnIncompleteCacheRenameRollbackReportsTheStoreChanged(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "market-a", "widget")
+	reports := recordStoreChanges(m)
+
+	originalWrite := marketplaceAtomicWriteFile
+	originalRename := marketplaceRename
+	t.Cleanup(func() {
+		marketplaceAtomicWriteFile = originalWrite
+		marketplaceRename = originalRename
+	})
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("the store file could not be written")
+	}
+	// The cache's own undo restores newCache back to the old name; refuse only
+	// that, so the clone's undo still succeeds and the failure is the cache's.
+	newCache := filepath.Join(m.cacheDir(), "market-b")
+	marketplaceRename = func(from, to string) error {
+		if from == newCache {
+			return errors.New("cache restore refused")
+		}
+		return originalRename(from, to)
+	}
+
+	if _, err := m.EditMarketplace(context.Background(), "market-a", "market-b", nil); err == nil {
+		t.Fatal("EditMarketplace = nil, want the failed write reported")
+	}
+	if len(*reports) != 1 {
+		t.Fatalf("OnStoreChanged fired %d times, want 1: %+v", len(*reports), *reports)
+	}
+	if got := (*reports)[0]; !got.Marketplaces {
+		t.Errorf("reported %+v, want Marketplaces true: the cache could not be put back, so the store is left between the names", got)
+	}
+}
