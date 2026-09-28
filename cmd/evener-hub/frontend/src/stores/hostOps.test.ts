@@ -70,7 +70,7 @@ describe("hostOpRefusal", () => {
       { info: "token-mismatched", want: "This confirmation does not match the server's plan token." },
       { info: "token-superseded", want: "A newer plan has superseded this confirmation." },
       { info: "token-expired", want: "This plan expired before the deploy was submitted." },
-      { info: "stale-entry", want: "The host changed since this plan was made." },
+      { info: "stale-entry", want: "The host changed since this operation was prepared." },
       { info: "conflicting-operation-id", want: "This client operation ID is already used by another operation." },
       { info: "host-detached", want: "The host has no live attached channel." },
       { info: "probe-failed", want: "Probing the host's running state failed." },
@@ -441,7 +441,7 @@ describe("deploy", () => {
     const state = hostOpsStore.getState().plans.beta;
     if (state?.phase !== "planned") throw new Error("unreachable");
     expect(state.token).toBe("tok-2");
-    expect(state.notice).toContain("The host changed since this plan was made.");
+    expect(state.notice).toContain("The host changed since this operation was prepared.");
   });
 
   test("a lost response retries with the SAME operation ID, never a fresh operation", async () => {
@@ -738,6 +738,70 @@ describe("restart", () => {
       generation: 4,
       incarnationId: "inc-4",
     });
+  });
+
+  test("a failed forced read fails the attempt with the unknown-pair refusal and no second request", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [row("beta")] }));
+    // A ready pre-move snapshot stands...
+    await hostsStore.getState().fetch();
+    // ...and the forced read fails, so the snapshot on hand is the one the
+    // refusal just proved stale: the retry must not replay it.
+    fake.on("evener/host/list", () => {
+      throw new Error("registry unavailable");
+    });
+    fake.on("evener/host/restart", () => {
+      throw new WireError('host "beta": registration moved; retry', -32013, { evenerErrorInfo: "stale-entry" });
+    });
+    hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
+
+    await hostOpsStore.getState().restart("beta");
+
+    const state = hostOpsStore.getState().restarts.beta;
+    expect(state?.phase).toBe("failed");
+    expect(state?.refusal?.message).toContain("answered no current pair");
+    expect(fake.calls.filter((c) => c.method === "evener/host/restart")).toHaveLength(1);
+  });
+
+  test("a recovery completing after a close-and-reopen publishes nothing", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/list", () => ({ hosts: [{ ...row("beta"), generation: 4, incarnationId: "inc-4" }] }));
+    fake.on("evener/host/restart", () => {
+      throw new WireError("no live attached channel", -32014, { evenerErrorInfo: "host-detached" });
+    });
+    const attaches = gateSettlements(fake, "evener/host/attach");
+    hostOpsStore.getState().beginRestart("beta", { generation: 3, incarnationId: "inc-3" });
+    await hostOpsStore.getState().restart("beta");
+    const pending = hostOpsStore.getState().connectAndRestart("beta");
+    await Promise.resolve();
+
+    // The operator closes and reopens the dialog while Connect is in flight:
+    // a newer attempt owns the state, so the stale recovery publishes nothing.
+    hostOpsStore.getState().discardRestart("beta");
+    hostOpsStore.getState().beginRestart("beta", { generation: 9, incarnationId: "inc-9" });
+    attaches[0]!.resolve({ attached: true });
+    await pending;
+
+    const state = hostOpsStore.getState().restarts.beta;
+    expect(state?.phase).toBe("confirm");
+    expect(state?.pair).toEqual({ generation: 9, incarnationId: "inc-9" });
+  });
+
+  test("a failed connect recovery completing after a close-and-reopen publishes nothing", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/host/plan", () => ({ outcome: "planned", plan: plan(), token: "tok-1" }));
+    const attaches = gateSettlements(fake, "evener/host/attach");
+    const pending = hostOpsStore.getState().connectAndPlan("beta");
+    await Promise.resolve();
+
+    hostOpsStore.getState().discardPlan("beta");
+    await hostOpsStore.getState().plan("beta");
+    attaches[0]!.reject(new Error("dial refused"));
+    await pending;
+
+    // The newer plan owns the state; the stale Connect failure never overwrites it.
+    const state = hostOpsStore.getState().plans.beta;
+    expect(state?.phase).toBe("planned");
   });
 
   test("host-busy-operation names the running operation and blocks a bare retry", async () => {

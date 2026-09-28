@@ -734,7 +734,14 @@ function RestartDialog({ row, onClose }: HostOpDialogProps) {
           <Button variant="quiet" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
-          <Button variant="primary" disabled={busy || blocked} onClick={() => void handleRestart()}>
+          <Button
+            variant="primary"
+            // No attempt to submit yet (the seeding effect has not run, or the
+            // dialog is mid-reopen): restart() is a no-op without one, so the
+            // button must not read as an enabled action.
+            disabled={busy || attempt === undefined || blocked}
+            onClick={() => void handleRestart()}
+          >
             {busy ? "Restarting…" : "Restart"}
           </Button>
         </>

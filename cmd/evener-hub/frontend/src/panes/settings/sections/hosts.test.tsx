@@ -1,5 +1,5 @@
 import { type HostPlan, type HostRow, RequestTimeoutError, WireError } from "@evener/appwire-client";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { FakeClient, gateSettlements } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -837,4 +837,65 @@ test("a host-detached restart offers Connect and restart, never a bare repeat", 
     incarnationId: "inc-4",
   });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("the Deploy confirmation cannot submit before a plan is rendered", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  const plans = gateSettlements(fake, "evener/host/plan");
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Deploy" }));
+  const dialog = await screen.findByRole("dialog", { name: "Deploy beta" });
+
+  // The plan is still in flight: there is no confirmed plan to submit.
+  await waitFor(() => expect(plans.length).toBe(1));
+  expect((within(dialog).getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(true);
+
+  plans[0]!.resolve({ outcome: "planned", plan: planFixture(), token: "tok-1" });
+  await waitFor(() =>
+    expect((within(dialog).getByRole("button", { name: "Deploy" }) as HTMLButtonElement).disabled).toBe(false),
+  );
+});
+
+test("the Restart confirm is disabled while no attempt is seeded, so it can never no-op", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  fake.on("evener/host/restart", () => ({ id: "op-15", clientOperationId: "client-op-15", state: "pending" }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
+  // No attempt to submit: the confirm is inert (restart() is a no-op without
+  // one), exactly as it is on the first frame before the seeding effect runs.
+  act(() => {
+    hostOpsStore.getState().discardRestart("beta");
+  });
+  await waitFor(() =>
+    expect((within(dialog).getByRole("button", { name: "Restart" }) as HTMLButtonElement).disabled).toBe(true),
+  );
+  fireEvent.click(within(dialog).getByRole("button", { name: "Restart" }));
+  expect(fake.calls.filter((c) => c.method === "evener/host/restart")).toHaveLength(0);
+});
+
+test("a surfaced restart stale-entry names the operation, not a plan", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("evener/host/list", () => ({ hosts: [row({ name: "beta", address: "b.example" })] }));
+  // The pair never moves, so the single automatic retry refuses stale-entry
+  // again and the refusal surfaces in the dialog.
+  fake.on("evener/host/restart", () => {
+    throw new WireError('host "beta": registration moved; retry', -32013, { evenerErrorInfo: "stale-entry" });
+  });
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
+  await user.click(within(dialog).getByRole("button", { name: "Restart" }));
+
+  await waitFor(() =>
+    expect(within(dialog).getByText(/The host changed since this operation was prepared\./)).toBeTruthy(),
+  );
 });

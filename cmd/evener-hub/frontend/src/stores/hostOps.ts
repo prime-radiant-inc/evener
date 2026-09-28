@@ -91,7 +91,9 @@ export function hostOpRefusal(error: unknown): HostOpRefusal {
     case "token-expired":
       return { kind: info, message: withDetail("This plan expired before the deploy was submitted.", detail) };
     case "stale-entry":
-      return { kind: info, message: withDetail("The host changed since this plan was made.", detail) };
+      // Action-agnostic: the same refusal surfaces in the deploy dialog and
+      // the restart dialog, and only one of them has a plan.
+      return { kind: info, message: withDetail("The host changed since this operation was prepared.", detail) };
     case "conflicting-operation-id":
       return {
         kind: info,
@@ -307,7 +309,7 @@ function restartSequence(name: string): number {
   return restartSequences.get(name) ?? 0;
 }
 
-function planIsCurrent(name: string, sequence: number, client: AppwireClientLike): boolean {
+function planIsCurrent(name: string, sequence: number, client: AppwireClientLike | null): boolean {
   return planSequence(name) === sequence && connectionStore.getState().client === client;
 }
 /** planSequenceSuperseded answers whether a newer plan call (or a discard)
@@ -333,7 +335,7 @@ const RESTART_PAIR_UNKNOWN_REFUSAL: HostOpRefusal = {
   kind: "unknown",
   message: "The host registry answered no current pair for this host; re-read the host list and retry.",
 };
-function restartIsCurrent(name: string, sequence: number, client: AppwireClientLike): boolean {
+function restartIsCurrent(name: string, sequence: number, client: AppwireClientLike | null): boolean {
   return restartSequence(name) === sequence && connectionStore.getState().client === client;
 }
 
@@ -499,11 +501,14 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
   },
 
   connectAndPlan: async (name) => {
+    const sequence = planSequence(name);
+    const client = connectionStore.getState().client;
     try {
       await hostsStore.getState().connect(name);
     } catch (error) {
-      const sequence = planSequence(name) + 1;
-      planSequences.set(name, sequence);
+      // A close-and-reopen (a newer plan) or a replaced connection owns the
+      // state now; a stale recovery never overwrites it.
+      if (!planIsCurrent(name, sequence, client)) return;
       set((previous) => ({
         plans: {
           ...previous.plans,
@@ -603,8 +608,24 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
       // flight carries the pre-move snapshot and would consume the one retry
       // without moving). A second stale-entry surfaces instead of looping
       // (only a person can decide what is next).
-      await hostsStore.getState().reReadForced();
+      const published = await hostsStore.getState().reReadForced();
       if (!restartIsCurrent(name, sequence, client)) return;
+      if (!published) {
+        // The forced read failed (or a newer response owned the publish): the
+        // snapshot on hand is the one this refusal proved stale, so there is
+        // no pair to retry against - fail rather than replay the stale pair.
+        set((previous) => {
+          const held = previous.restarts[name];
+          if (held === undefined || held.phase === "started") return previous;
+          return {
+            restarts: {
+              ...previous.restarts,
+              [name]: { ...held, phase: "failed", refusal: RESTART_PAIR_UNKNOWN_REFUSAL },
+            },
+          };
+        });
+        return;
+      }
       const current = currentPairFor(name);
       if (current === undefined) {
         set((previous) => {
@@ -659,9 +680,14 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
   },
 
   connectAndRestart: async (name) => {
+    const sequence = restartSequence(name);
+    const client = connectionStore.getState().client;
     try {
       await hostsStore.getState().connect(name);
     } catch (error) {
+      // A close-and-reopen (or a replaced connection) owns the state now; a
+      // stale recovery never overwrites it.
+      if (!restartIsCurrent(name, sequence, client)) return;
       const refusal = hostOpRefusal(error);
       set((previous) => {
         const current = previous.restarts[name];
@@ -673,8 +699,9 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
     // Connect succeeded: re-seed the confirmation against what the registry NOW
     // answers. The refused attempt's pair is exactly what must not be resubmitted
     // blindly, so the operator confirms against the current pair instead.
-    await hostsStore.getState().reReadForced();
-    const pair = currentPairFor(name);
+    const published = await hostsStore.getState().reReadForced();
+    if (!restartIsCurrent(name, sequence, client)) return;
+    const pair = published ? currentPairFor(name) : undefined;
     set((previous) => {
       const current = previous.restarts[name];
       if (current === undefined || current.phase === "started") return previous;
