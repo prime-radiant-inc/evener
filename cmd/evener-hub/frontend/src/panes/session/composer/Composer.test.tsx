@@ -3551,9 +3551,11 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
 // The fence still covers a LIVE snapshot. A live read during a Stop relays the
 // daemon's still-active status while the hub overlays resumeRequired beside it
 // (applyThreadResumeRequirement), and the store arms the obligation on that
-// hydration. An idle status is NOT a shut-down status, so this is not the
-// merely-resumable carve-out (isResumeOnlyLocal keys on SHUT_DOWN_STATUSES):
-// the hub still refuses turn/start while the Stop drains, so Send stays disabled.
+// hydration. This fixture leaves resumeOnlyFoldable unset, so the hub bit is
+// absent; isResumeOnlyLocal keys on that bit (plus the uncertain/stop/queued
+// signals, and never on the status), so the merely-resumable carve-out does
+// not apply. The hub still refuses turn/start while the Stop drains, so Send
+// stays disabled.
 test("a live fenced idle local session renders a disabled Send and sends no turn/start", async () => {
   const user = userEvent.setup();
   const ref = "local:live-fenced-idle";

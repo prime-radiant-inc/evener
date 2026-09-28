@@ -674,8 +674,9 @@ export interface EvenerThread {
    * that admission would actually succeed, so a client can offer Send from the
    * hub's own answer instead of inferring the shape from ResumeRequired plus a
    * missing send capability, which this same overlay also sets for a Stop drain,
-   * an unconfirmed force-stop exit, and the connection-recovery fence - three
-   * shapes whose turn/start the hub still refuses.
+   * an unconfirmed force-stop exit, the connection-recovery fence, and a daemon
+   * on an incompatible protocol - four shapes whose turn/start the hub still
+   * refuses.
    */
   resumeOnlyFoldable?: boolean;
   ref: string;

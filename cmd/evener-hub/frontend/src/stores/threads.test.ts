@@ -62,6 +62,7 @@ import {
   readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
+  resumeOnlyLocalDispatchable,
   resumeOnlyLocalModel,
   resumeStopBaseline,
   resumeStopFence,
@@ -11073,6 +11074,83 @@ test("a merely-resumable local session's queued non-send method stays parked", a
   expect(threadsStore.getState().restartBlockingObligations.has("local:stopped-queued")).toBe(true);
   expect(queued).toBe(0);
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+});
+
+// RoboRev Medium: the queued-non-send fence was order-blind at dispatch. The
+// admission question ("may a NEW send be minted behind this queue?") and the
+// dispatch question ("is this exact head record admissible?") genuinely
+// differ: hasQueuedNonSend answers the first, but at dispatch the head record
+// may itself be the turn/start with nothing ahead of it. With this outbox
+// [turn/start, turn/queue] on a foldable ref, the head turn/start must
+// dispatch; before the fix the whole ref was refused before the gate could
+// inspect the head's method, so the session could neither resume nor drain.
+// The queued turn/queue behind it stays parked, and a NEW send is still
+// refused at admission while that queued row stands.
+test("a merely-resumable local session's head turn/start dispatches ahead of a queued non-send", async () => {
+  const ref = "local:head-send-queued-tail";
+  const storage = new MutationOutboxIndexedDB();
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/start",
+    payload: { ref, input: [{ type: "text", text: "resume and send" }] },
+    attachments: [],
+    optimisticDisplay: { text: "resume and send" },
+  });
+  await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input: [{ type: "text", text: "queued behind the send" }] },
+    attachments: [],
+    optimisticDisplay: { text: "queued behind the send" },
+  });
+  storage.close();
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () =>
+    readResponse(ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        resumeOnlyFoldable: true,
+        queue: { revision: 0 },
+      },
+    }),
+  );
+  let starts = 0;
+  fake.on("turn/start", (params) => {
+    starts += 1;
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  let queuedCalls = 0;
+  fake.on("turn/queue", (params) => {
+    queuedCalls += 1;
+    return { receipt: mutationReceipt(params.clientMutationId) };
+  });
+  fake.emitReady();
+  // The head turn/start dispatches even though a non-send row sits behind it.
+  await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/start"));
+  await flushIndexedDBUntil(() => false);
+  expect(starts).toBe(1);
+  // The queued non-send row behind it stays parked: the hub admits only
+  // turn/start under the resume-only carve-out.
+  expect(queuedCalls).toBe(0);
+  expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+  await refreshPendingTurnsProjection(ref);
+  // The two readings the fix splits: the head record is dispatchable even
+  // though a new send behind it is not (the queued row still stands).
+  expect(hasQueuedNonSend(ref)).toBe(true);
+  expect(resumeOnlyLocalModel(ref)).toBe(false);
+  expect(resumeOnlyLocalDispatchable(ref)).toBe(true);
+  await expect(threadsStore.getState().send(ref, "another")).rejects.toThrow(
+    "Send isn't available until this session is resumed",
+  );
 });
 
 // Part 2's predicate: a queued, not-yet-attempted NON-turn/start row parks at

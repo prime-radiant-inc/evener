@@ -834,8 +834,19 @@ function currentDispatchClient(targetRef?: string, method?: string): AppwireClie
       // refusal. The ref-less and pre-record calls pass no method, where the
       // exemption is the readiness answer they always were. Every other
       // obligation (Stop drain, restartRequired) still blocks it.
+      //
+      // This gate reads resumeOnlyLocalDispatchable, NOT resumeOnlyLocalModel:
+      // dispatch asks "is this exact head record admissible?". At the
+      // head-of-loop lookup the named record may itself be the turn/start with
+      // nothing ahead of it, while resumeOnlyLocalModel's hasQueuedNonSend
+      // clause answers the ADMISSION question ("may a NEW send be minted behind
+      // this queue?"), where a queued non-send row is genuinely ahead of the
+      // candidate. Used here that clause refused the head turn/start before the
+      // method-aware recheck could name it, so a ref holding [turn/start,
+      // turn/queue] could neither resume nor drain its outbox. The method check
+      // below still parks the tail non-send row.
       (threadsStore.getState().restartBlockingObligations.has(targetRef) &&
-        !(resumeOnlyLocalModel(targetRef) && (method === undefined || method === "turn/start"))) ||
+        !(resumeOnlyLocalDispatchable(targetRef) && (method === undefined || method === "turn/start"))) ||
       threadsStore.getState().mutationReconciliationFailures.has(targetRef))
   )
     return null;
@@ -1940,15 +1951,18 @@ export function hasQueuedNonSend(ref: string): boolean {
   return resumeOnlyProjection === null || resumeOnlyProjection.hasQueuedNonSend(ref);
 }
 
-// isResumeOnlyLocal over the store's current model for ref, the ONE synchronous
-// predicate the press (liveControls), enqueue (enqueueMutationIntent) and
-// dispatch (currentDispatchClient) paths share. Unlike isResumeOnlyLocal it
-// reads the delivery-uncertain signal itself, from the pending-turns projection
-// (hasBlockedUnknown), and the queued-non-send signal (hasQueuedNonSend), so a
-// direct caller that bypassed the composer's own reads - the palette's slash
-// fallthrough, the ask dock's batch send, a failed turn's Retry - still keeps
-// the fence while blockedUnknown rows or a queued non-send row stand. It can
-// also read the store's own in-flight Stop (stoppingRefs).
+// isResumeOnlyLocal over the store's current model for ref: the ADMISSION
+// predicate the press (liveControls) and enqueue (enqueueMutationIntent) paths
+// share. Unlike isResumeOnlyLocal it reads the delivery-uncertain signal
+// itself, from the pending-turns projection (hasBlockedUnknown), and the
+// queued-non-send signal (hasQueuedNonSend), so a direct caller that bypassed
+// the composer's own reads - the palette's slash fallthrough, the ask dock's
+// batch send, a failed turn's Retry - still keeps the fence while blockedUnknown
+// rows or a queued non-send row stand. It can also read the store's own
+// in-flight Stop (stoppingRefs). Dispatch reads its sibling instead:
+// resumeOnlyLocalDispatchable omits the queued-non-send clause because at
+// dispatch the named head record may itself be the send, with no non-send row
+// ahead of it (currentDispatchClient).
 export function resumeOnlyLocalModel(ref: string): boolean {
   const state = threadsStore.getState();
   const model = state.threads.get(ref);
@@ -1958,6 +1972,31 @@ export function resumeOnlyLocalModel(ref: string): boolean {
       stopInFlight: state.stoppingRefs.has(ref),
       uncertainMessages: hasBlockedUnknown(ref),
       queuedNonSend: hasQueuedNonSend(ref),
+    })
+  );
+}
+
+// The DISPATCH reading of the resume-only carve-out, used by
+// currentDispatchClient when it names the exact head record it is about to
+// send. It is deliberately NOT resumeOnlyLocalModel: the two callers ask
+// genuinely different questions. resumeOnlyLocalModel answers ADMISSION - "may
+// a new send be minted behind this queue?" - where any queued non-send row is
+// genuinely ahead of the candidate, so hasQueuedNonSend belongs. Dispatch asks
+// "is this exact head record admissible?", and the head record is the next
+// thing the wire sees: a queued non-send row BEHIND a head turn/start is not
+// ahead of it, so it must not park the head. currentDispatchClient still
+// exempts only turn/start (and the ref-less/pre-record calls), so the gate
+// names a queued non-send method itself and parks it; this reading only stops
+// a tail non-send row from refusing the head send. The delivery-uncertain and
+// in-flight-Stop signals stay, because both fence the head record too.
+export function resumeOnlyLocalDispatchable(ref: string): boolean {
+  const state = threadsStore.getState();
+  const model = state.threads.get(ref);
+  return (
+    model !== undefined &&
+    isResumeOnlyLocal(ref, model, {
+      stopInFlight: state.stoppingRefs.has(ref),
+      uncertainMessages: hasBlockedUnknown(ref),
     })
   );
 }
