@@ -15,12 +15,6 @@ const styles = {
   md: requireClass(rawStyles.md, "button.module.css", "md"),
 };
 
-// This project doesn't wire @testing-library/react's auto-cleanup into a
-// global vitest setup file (vite.config.ts's setupFiles is empty, and that
-// file is out of scope for this task), so every widget test file cleans up
-// its own renders explicitly: without this, a later test's queries can
-// match a still-mounted element from an earlier test in the same file.
-
 test("renders its children as the visible label", () => {
   render(<Button>Save changes</Button>);
   expect(screen.getByRole("button", { name: "Save changes" })).toBeTruthy();
