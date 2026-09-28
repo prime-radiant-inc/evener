@@ -841,12 +841,19 @@ export class AppwireClient {
     // every response, including a late reply nothing is waiting for.
     if (this.connectionState === "ready") this.armHeartbeat();
     if (typeof data !== "string") return;
-    let msg: WireMessage;
+    let parsed: unknown;
     try {
-      msg = JSON.parse(data) as WireMessage;
+      parsed = JSON.parse(data);
     } catch {
       return;
     }
+    // Only a JSON object is a WireMessage envelope. A syntactically valid frame
+    // that parses to null, a scalar, or an array has no id/method/error to read,
+    // and dereferencing it would throw a TypeError out of the socket callback
+    // (JSON null is the sharp case). Treat it like the other non-envelopes this
+    // boundary already ignores: non-string data and unparseable JSON.
+    if (!isPlainObject(parsed)) return;
+    const msg = parsed as WireMessage;
     if (msg.id != null) {
       const slot = this.pending.get(msg.id);
       if (!slot) return;
