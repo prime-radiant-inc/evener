@@ -48,6 +48,15 @@ import (
 
 const Version = "0.1.0"
 
+// Hub HTTP listener deadlines: ReadHeaderTimeout bounds the pre-auth window
+// before a peer finishes its request headers (before AuthGuard middleware
+// runs); IdleTimeout bounds an idle keep-alive socket. Neither governs a
+// hijacked AppWire connection, so long-lived streams are unaffected.
+const (
+	hubHTTPReadHeaderTimeout = 10 * time.Second
+	hubHTTPIdleTimeout       = 120 * time.Second
+)
+
 var (
 	hubExecutable  = os.Executable
 	hubProcessArgs = func() []string { return os.Args }
@@ -335,6 +344,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_, _ = fmt.Fprintf(stderr, "[hub] auth token: %v\n", err)
 		return err
 	}
+	// The message search index (S14) lives in its own file beside index.db.
+	// A hub that cannot open it still serves; search then finds sessions by
+	// title and prompt only.
+	messageSearch, err := hubcore.OpenMessageSearch(filepath.Join(hubStateRoot, "search.db"))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] message search: %v\n", err)
+	} else {
+		defer func() { _ = messageSearch.Close() }()
+	}
 	providersConfigPath, noUserLayer := cmdutil.ProvidersConfigPath()
 	credentialsPath := cmdutil.CredentialsPath()
 	credsStore, err := deps.loadCredentials(credentialsPath)
@@ -577,6 +595,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Favorite:                  favorite,
 		PinSections:               pinSections,
 		SessionSeen:               sessionSeen,
+		MessageSearch:             messageSearch,
 		Spawner:                   spawner,
 		APILogDefault:             cfg.APILog,
 		DeletionStore:             deletionStore,
@@ -764,12 +783,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		}
 	})
 
+	// Message search refresher: re-reads the transcripts that changed on the
+	// past index's rebuild interval (S14).
+	startBackground(func() { refreshHubMessageSearch(ctx, messageSearch, past, cfg.PastIndexRebuild) })
+
 	// Attention watcher: derives each live session's attention level from the
 	// same roster/past-index/archive inputs the sidebar tree uses, and
 	// broadcasts evener/attention/changed whenever a session's level actually
 	// transitions (notifications.js drives the tab title/favicon badge and OS
 	// notifications from it). Ticks every 5s and on-demand via attentionPoke.
 	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, past, roster, web) })
+
+	// Notices watcher: re-derives the hub's notices every few seconds and
+	// broadcasts evener/notices/changed when they change (S11).
+	startBackground(func() { watchHubNotices(ctx, web) })
 
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —
 	// see SeedDefaultMarketplaces). Every evener CLI path does this already
@@ -812,8 +839,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	srv := &listenerHTTPServer{
 		Server: &http.Server{
-			Addr:    cfg.Addr,
-			Handler: web.Handler(),
+			Addr:              cfg.Addr,
+			Handler:           web.Handler(),
+			ReadHeaderTimeout: hubHTTPReadHeaderTimeout,
+			IdleTimeout:       hubHTTPIdleTimeout,
 		},
 		ln: hubListener,
 	}

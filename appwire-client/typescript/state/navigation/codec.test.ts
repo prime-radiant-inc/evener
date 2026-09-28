@@ -1342,6 +1342,100 @@ test.each([
   expectContentFreeRejection(key, snapshotWithSessionField("subagents", subagents));
 });
 
+// A live row asking a question names it (S1b): a nested value record the hub
+// carries only while the row's ask flag is set. The codec keeps it, drops a
+// key inside it that it does not know, and holds it to the hub schema's
+// bounds (navigation_schema.go navigationQuestionValid).
+test("codec keeps a row's pending question and drops keys inside it that it does not know", () => {
+  const question = { text: "Keep or drop the implied options?", options: ["Drop them", "Keep them"], count: 2 };
+  const rows = materializeSnapshot(
+    key,
+    decodedSnapshot(key, snapshotWithSessionField("question", { ...question, future_question_key: futureValue })),
+  ).sessions as Array<Record<string, unknown>>;
+  expect(rows[0]?.question).toEqual(question);
+  const onTheBounds = {
+    text: "😀".repeat(200),
+    options: ["😀".repeat(80), "b", "c", "d", "e"],
+    count: Number.MAX_SAFE_INTEGER,
+  };
+  expect(decodedSnapshot(key, snapshotWithSessionField("question", onTheBounds)).snapshot.entities[0]?.value).toEqual({
+    ...sessionValue("local:session"),
+    question: onTheBounds,
+  });
+});
+
+test.each([
+  ["null", null],
+  ["a string in place of the record", "Keep or drop?"],
+  ["a missing text", { count: 1 }],
+  ["an empty text", { text: "", count: 1 }],
+  ["an over-long text", { text: "t".repeat(201), count: 1 }],
+  ["a missing count", { text: "Which?" }],
+  ["no question counted", { text: "Which?", count: 0 }],
+  ["a fractional count", { text: "Which?", count: 1.5 }],
+  ["six options", { text: "Which?", options: ["a", "b", "c", "d", "e", "f"], count: 1 }],
+  ["an empty option", { text: "Which?", options: [""], count: 1 }],
+  ["an over-long option", { text: "Which?", options: ["o".repeat(81)], count: 1 }],
+  ["a non-string option", { text: "Which?", options: [7], count: 1 }],
+  ["options that are not a list", { text: "Which?", options: "a", count: 1 }],
+] as const)("codec refuses a pending question with %s", (_name, question) => {
+  expectContentFreeRejection(key, snapshotWithSessionField("question", question));
+});
+
+// A Failed row says why (S1c): a nested value record of the failure's title and
+// its cause's kind, provider and status. The codec keeps it, drops a key
+// inside it that it does not know, and holds it to the hub schema's bounds
+// (navigation_schema.go navigationFailureValid).
+test("codec keeps a row's failure summary and drops keys inside it that it does not know", () => {
+  const failure = { title: "Provider error", cause_kind: "provider", provider: "codex-jesse-fsck.com", status: 401 };
+  const rows = materializeSnapshot(
+    key,
+    decodedSnapshot(key, snapshotWithSessionField("failure", { ...failure, future_failure_key: futureValue })),
+  ).sessions as Array<Record<string, unknown>>;
+  expect(rows[0]?.failure).toEqual(failure);
+  for (const kept of [
+    { cause_kind: "crashed" },
+    {
+      title: "😀".repeat(80),
+      cause_kind: "k".repeat(1024),
+      provider: "p".repeat(1024),
+      status: Number.MAX_SAFE_INTEGER,
+    },
+  ]) {
+    expect(decodedSnapshot(key, snapshotWithSessionField("failure", kept)).snapshot.entities[0]?.value).toEqual({
+      ...sessionValue("local:session"),
+      failure: kept,
+    });
+  }
+});
+
+test.each([
+  ["null", null],
+  ["a string in place of the record", "Provider error"],
+  ["nothing to say", {}],
+  ["a status alone", { status: 500 }],
+  ["an empty title", { title: "" }],
+  ["an over-long title", { title: "t".repeat(81) }],
+  ["an empty cause kind", { cause_kind: "" }],
+  ["an over-long provider", { cause_kind: "provider", provider: "p".repeat(1025) }],
+  ["a negative status", { cause_kind: "provider", status: -1 }],
+  ["a string status", { cause_kind: "provider", status: "401" }],
+] as const)("codec refuses a failure summary with %s", (_name, failure) => {
+  expectContentFreeRejection(key, snapshotWithSessionField("failure", failure));
+});
+
+// A row carries the opening of its session's last agent message (S1d). The
+// codec keeps one within the hub schema's bound and refuses anything else.
+test("codec keeps a row's last message within its bound and refuses one past it", () => {
+  const onTheBound = "😀".repeat(200);
+  expect(
+    decodedSnapshot(key, snapshotWithSessionField("last_message", onTheBound)).snapshot.entities[0]?.value,
+  ).toEqual({ ...sessionValue("local:session"), last_message: onTheBound });
+  for (const malformed of ["", "t".repeat(201), 7, ["Three layouts are ready."]]) {
+    expectContentFreeRejection(key, snapshotWithSessionField("last_message", malformed));
+  }
+});
+
 // cmd/evener-hub/navigation_value_records_test.go keeps this fixture naming
 // every wire field of every navigation value record. Decoding it must keep all
 // of them: a field the hub sends that the codec does not list would be dropped

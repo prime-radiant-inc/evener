@@ -18,6 +18,7 @@ import {
 	HubProfiles,
 	type HubUpdate,
 } from "./connection";
+import { runHubCleanups } from "./hubCleanups";
 import { useHubConnection } from "./hubConnection";
 import { HubSelection } from "./hubSelection";
 import type { SavedLocation } from "./location";
@@ -25,6 +26,8 @@ import { drafts } from "./nativeDrafts";
 import { locations } from "./nativeLocation";
 import { removeOrganizationData } from "./nativeOrganization";
 import { readerPositions } from "./nativeReaderPosition";
+import { forgetDocumentsForHub } from "./reader/nativeDocumentMemory";
+import { forgetDetailLevelsForHub } from "./session/nativeDetailLevels";
 
 const repository = new HubProfiles(SecureStore);
 interface Connection {
@@ -133,10 +136,14 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
 		(id: string) =>
 			selection.remove(id, {
 				removeHub(hubId: string) {
-					drafts.removeHub(hubId);
-					readerPositions.removeHub(hubId);
-					removeOrganizationData(hubId);
-					forgetBoardForHub(hubId);
+					runHubCleanups(hubId, [
+						(id) => drafts.removeHub(id),
+						(id) => readerPositions.removeHub(id),
+						removeOrganizationData,
+						forgetBoardForHub,
+						forgetDetailLevelsForHub,
+						forgetDocumentsForHub,
+					]);
 				},
 			}),
 		[selection],

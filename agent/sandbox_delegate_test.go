@@ -127,7 +127,6 @@ func TestDiscardRestoredCandidateDisposesSandboxScratch(t *testing.T) {
 	client.Register(&fakeAdapter{name: "openai"})
 	child := newSession(t, withClient(client), withDir(lane), withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
@@ -287,7 +286,6 @@ func sbxDelegateSessionWithProber(t *testing.T, prober sandbox.Prober) *Session 
 	return newSession(t, withClient(client), withConfig(SessionConfig{
 		StateDir:         packageFixtureTempDir(t, "sbx-delegate-*"),
 		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,

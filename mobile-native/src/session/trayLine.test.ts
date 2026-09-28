@@ -1,0 +1,194 @@
+import type { EvenerDelegateInfo, ItemModel, ModelRetryState, TurnModel } from "@evener/appwire-client";
+import { describe, expect, it } from "vitest";
+import { FrameCounter, type TraySource, trayLine } from "./trayLine";
+
+const NOW = Date.UTC(2026, 8, 26, 14, 0, 0);
+const ago = (ms: number) => new Date(NOW - ms).toISOString();
+
+const item = (over: Partial<ItemModel>): ItemModel => ({
+	id: "item-1",
+	turnId: "turn_1",
+	type: "commandExecution",
+	text: "",
+	...over,
+});
+const turn = (items: ItemModel[], status = "inProgress"): TurnModel => ({ id: "turn_1", status, items });
+const delegate = (status: string, n: number): EvenerDelegateInfo => ({
+	delegateId: `d-${n}`,
+	ownerSessionId: "root",
+	rootSessionId: "root",
+	childSessionId: `child-${n}`,
+	transcriptRef: `local:child-${n}`,
+	type: "subagent",
+	lifecycle: status,
+	phase: status,
+	status,
+	resumable: false,
+	needsAttention: false,
+	projectionRevision: 1,
+});
+const session = (over: Partial<TraySource> = {}): TraySource => ({
+	status: { type: "active" },
+	turns: [],
+	activeTurnId: "turn_1",
+	delegates: [],
+	modelRetry: undefined,
+	lastFrameAt: NOW,
+	...over,
+});
+
+describe("the tray's line (spec 8.3)", () => {
+	it("is absent unless a turn is running", () => {
+		expect(trayLine(session({ status: { type: "idle" } }), NOW)).toBeNull();
+		// #2514: a session resting on a failed turn reports systemError until its
+		// next turn. The tray shows only while a turn runs, so this reads null too.
+		expect(trayLine(session({ status: { type: "systemError" } }), NOW)).toBeNull();
+	});
+
+	it("names the command that is running and how long it has run", () => {
+		const running = item({
+			toolName: "shell",
+			argumentsJSON: JSON.stringify({ command: "go test ./agent/...\necho done" }),
+			status: "inProgress",
+			startedAt: ago(42_000),
+		});
+		expect(trayLine(session({ turns: [turn([running])] }), NOW)).toEqual({
+			text: "Running go test ./agent/... · 42s",
+			attention: false,
+		});
+	});
+
+	it("uses a step's own intent when it isn't a shell command", () => {
+		const reading = item({
+			toolName: "read_file",
+			description: "Reading agent/retirement_test.go",
+			status: "inProgress",
+			startedAt: ago(5_000),
+		});
+		expect(trayLine(session({ turns: [turn([reading])] }), NOW)?.text).toBe(
+			"Reading agent/retirement_test.go · 5s",
+		);
+	});
+
+	it("says Thinking with a token estimate and no clock", () => {
+		const thought = item({ type: "reasoning", text: "x".repeat(4_800), status: "inProgress" });
+		expect(trayLine(session({ turns: [turn([thought])] }), NOW)?.text).toBe("Thinking… · 1.2K tokens");
+	});
+
+	it("estimates a streaming thought from its summaries or its text, whichever is longer", () => {
+		const summarized = item({
+			type: "reasoning",
+			status: "inProgress",
+			reasoningSummaries: [["x".repeat(2_000), "x".repeat(2_000)], ["x".repeat(800)]],
+		});
+		expect(trayLine(session({ turns: [turn([summarized])] }), NOW)?.text).toBe("Thinking… · 1.2K tokens");
+		const streamed = item({
+			type: "reasoning",
+			status: "inProgress",
+			text: "x".repeat(800),
+			pendingText: ["x".repeat(2_000), "x".repeat(6_000)],
+			reasoningSummaries: [["x".repeat(400)]],
+		});
+		expect(trayLine(session({ turns: [turn([streamed])] }), NOW)?.text).toBe("Thinking… · 2.2K tokens");
+	});
+
+	it("says Writing while the reply streams", () => {
+		const reply = item({ type: "agentMessage", status: "inProgress" });
+		expect(trayLine(session({ turns: [turn([reply])] }), NOW)?.text).toBe("Writing…");
+	});
+
+	it("waits on subagents when nothing else runs, or when the step waits on them", () => {
+		const running = Array.from({ length: 12 }, (_, n) => delegate("running", n));
+		const finished = delegate("completed", 99);
+		expect(trayLine(session({ delegates: [...running, finished] }), NOW)?.text).toBe("Waiting on 12 subagents");
+		expect(trayLine(session({ delegates: [delegate("running", 1)] }), NOW)?.text).toBe("Waiting on 1 subagent");
+		const watching = item({ toolName: "job_watch", description: "Watching the jobs", status: "inProgress" });
+		expect(trayLine(session({ turns: [turn([watching])], delegates: running }), NOW)?.text).toBe(
+			"Waiting on 12 subagents",
+		);
+	});
+
+	it("goes Quiet after twenty seconds without a frame", () => {
+		expect(trayLine(session({ lastFrameAt: NOW - 19_000 }), NOW)?.text).toBe("Working");
+		expect(trayLine(session({ lastFrameAt: NOW - 40_000 }), NOW)?.text).toBe("Quiet 40s");
+	});
+
+	it("says it may be stuck, in amber, after ten minutes, whatever step is running", () => {
+		const running = item({ toolName: "shell", argumentsJSON: '{"command":"sleep 900"}', status: "inProgress" });
+		expect(trayLine(session({ turns: [turn([running])], lastFrameAt: NOW - 12 * 60_000 }), NOW)).toEqual({
+			text: "May be stuck · no updates for 12m",
+			attention: true,
+		});
+	});
+
+	it("never says Quiet or May be stuck while a subagent runs (Jesse's S5 ruling)", () => {
+		const silent = { delegates: [delegate("running", 1)], lastFrameAt: NOW - 15 * 60_000 };
+		expect(trayLine(session(silent), NOW)).toEqual({ text: "Waiting on 1 subagent", attention: false });
+		const running = item({ toolName: "shell", argumentsJSON: '{"command":"sleep 900"}', status: "inProgress" });
+		expect(trayLine(session({ ...silent, turns: [turn([running])] }), NOW)?.attention).toBe(false);
+	});
+
+	it("waits for the quiet threshold before explaining a first retry", () => {
+		const retry: ModelRetryState = {
+			attempt: 1,
+			maxAttempts: 11,
+			attemptCap: 4,
+			delayMs: 30_000,
+			errorClass: "rate_limit",
+			groupElapsedMs: 5_000,
+			receivedAt: NOW,
+		};
+		const reply = item({ type: "agentMessage", status: "inProgress" });
+		const withRetry = (lastFrameAt: number) =>
+			session({ modelRetry: retry, turns: [turn([reply])], lastFrameAt });
+		expect(trayLine(withRetry(NOW - 5_000), NOW)?.text).toBe("Writing…");
+		expect(trayLine(withRetry(NOW - 25_000), NOW)?.text).toBe("Retrying · rate limited · attempt 1 of 4");
+	});
+
+	it("explains a retry with its cause and place in the budget", () => {
+		const retry: ModelRetryState = {
+			attempt: 3,
+			maxAttempts: 11,
+			attemptCap: 4,
+			delayMs: 30_000,
+			errorClass: "rate_limit",
+			groupElapsedMs: 90_000,
+			receivedAt: NOW,
+		};
+		expect(trayLine(session({ modelRetry: retry }), NOW)?.text).toBe("Retrying · rate limited · attempt 3 of 4");
+		expect(trayLine(session({ modelRetry: { ...retry, errorClass: "server", attemptCap: 0 } }), NOW)?.text).toBe(
+			"Retrying · provider error · attempt 3",
+		);
+	});
+
+	it("keeps a long retry's explanation past ten minutes, adding the silence in amber", () => {
+		const retry: ModelRetryState = {
+			attempt: 9,
+			maxAttempts: 11,
+			attemptCap: 11,
+			delayMs: 60_000,
+			errorClass: "rate_limit",
+			groupElapsedMs: 700_000,
+			receivedAt: NOW - 60_000,
+		};
+		expect(trayLine(session({ modelRetry: retry, lastFrameAt: NOW - 12 * 60_000 }), NOW)).toEqual({
+			text: "Retrying · rate limited · attempt 9 of 11 · no updates for 12m",
+			attention: true,
+		});
+	});
+});
+
+describe("the tray's pulse counts (spec 16.4)", () => {
+	it("counts frames per minute, newest on the right, and forgets past seven minutes", () => {
+		const counter = new FrameCounter();
+		const start = Date.UTC(2026, 8, 26, 12, 0, 0);
+		expect(counter.hasFrames()).toBe(false);
+		counter.record(start + 1_000);
+		counter.record(start + 2_000);
+		counter.record(start + 3 * 60_000);
+		expect(counter.hasFrames()).toBe(true);
+		expect(counter.perMinute(start + 3 * 60_000 + 5_000)).toEqual([0, 0, 0, 2, 0, 0, 1]);
+		counter.record(start + 11 * 60_000);
+		expect(counter.perMinute(start + 11 * 60_000)).toEqual([0, 0, 0, 0, 0, 0, 1]);
+	});
+});

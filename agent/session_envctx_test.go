@@ -684,7 +684,7 @@ func TestEnvironmentContextResetIsAtomicWithFoldPublication(t *testing.T) {
 	t.Parallel()
 	s := newScriptedSummaryCompactSession(t, "env-fold-provider", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nSaved work summary\n[END SUMMARY]")}
-	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir(), testOnly: testConfig{
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: t.TempDir(), testOnly: testConfig{
 		envProbes: &envctx.Probes{Now: func() time.Time { return envctxFixedTime }},
 	}}))
 	if err := s.maybeAppendEnvironmentContext(); err != nil {

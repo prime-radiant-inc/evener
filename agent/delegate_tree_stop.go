@@ -40,6 +40,13 @@ type delegateStopDriver struct {
 	cancel context.CancelFunc
 }
 
+// errDelegateStopNotAdmitted reports that a stop request was cancelled by its
+// caller before durable admission. No stop fence was written and the target is
+// untouched; a reservation that was blocking admission stays owned, so
+// process-owned retry/reconciliation still reaches the durable stop once a
+// later request is admitted.
+var errDelegateStopNotAdmitted = errors.New("delegate stop not admitted")
+
 // newDelegateStopDriver mints a driver whose drain is bounded by a context the
 // close joins cancel once they give up on it. Without that wake a driver parked
 // on delegate stop progress would outlive the closed store for the life of the
@@ -103,7 +110,11 @@ func (c *delegateTreeController) StopSubtree(actor delegateActor, targetID strin
 // StopSubtreeAndDrive admits the durable stop and gives its reconciliation to
 // the root runtime. The driver is process-only and unique for the exact stop;
 // callers may stop waiting without stopping reconciliation.
-func (c *delegateTreeController) StopSubtreeAndDrive(actor delegateActor, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
+//
+// ctx bounds only the pre-admission wait on a retained attention-start
+// reservation, returning errDelegateStopNotAdmitted rather than parking on a
+// bare receive when the caller cancels.
+func (c *delegateTreeController) StopSubtreeAndDrive(ctx context.Context, actor delegateActor, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
 	retirementRelease, retirementErr := c.beginRetirementMutation()
 	if retirementErr != nil {
 		return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, retirementErr
@@ -123,7 +134,9 @@ func (c *delegateTreeController) StopSubtreeAndDrive(actor delegateActor, target
 			}
 			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
 				c.mu.Unlock()
-				<-blocker
+				if waitErr := waitAttentionStartAdmission(ctx, blocker); waitErr != nil {
+					return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, errors.Join(errDelegateStopNotAdmitted, waitErr)
+				}
 				continue
 			}
 		}
@@ -194,6 +207,19 @@ func (c *delegateTreeController) attentionStartBlockerLocked(targetID string, ac
 	}
 	slices.Sort(tokens)
 	return c.reservations[tokens[0]].done
+}
+
+// waitAttentionStartAdmission blocks until the blocker closes or the caller
+// context is cancelled, returning the cancellation error so a pre-admission
+// caller can give up without writing a stop fence. It is the context-aware
+// counterpart of the bare receive that cannot observe caller cancellation.
+func waitAttentionStartAdmission(ctx context.Context, blocker <-chan struct{}) error {
+	select {
+	case <-blocker:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *delegateTreeController) stopSubtreeLocked(actor delegateActor, targetID string, allowClosing bool) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
@@ -725,10 +751,8 @@ func (c *delegateTreeController) stopSubtreeForClose(ctx context.Context, target
 		if c.stop == nil {
 			if blocker := c.attentionStartBlockerLocked(targetID, false); blocker != nil {
 				c.mu.Unlock()
-				select {
-				case <-blocker:
-				case <-ctx.Done():
-					return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, ctx.Err()
+				if waitErr := waitAttentionStartAdmission(ctx, blocker); waitErr != nil {
+					return delegateStopResult{}, delegateCancelPlan{}, delegateMutationPlans{}, waitErr
 				}
 				continue
 			}

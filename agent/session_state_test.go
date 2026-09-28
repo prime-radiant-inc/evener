@@ -164,7 +164,7 @@ func TestResumedSubagentMetaSurvivesAutosave(t *testing.T) {
 		Model:           "gpt-5.2",
 		IsSubagent:      true,
 		ParentSessionID: parentID,
-		Config:          (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		Config:          (SessionConfig{}).toSnapshot(),
 	}
 	// restoreCfg.spawn intentionally left zero: the bare-resume case.
 	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})

@@ -45,7 +45,7 @@ func TestRestoreSessionAppliesTheAgentsDocOverride(t *testing.T) {
 // and its delegates would otherwise load different personal instructions.
 func TestFrozenDescriptorTakesTheAgentsDocPathFromTheLiveParent(t *testing.T) {
 	t.Parallel()
-	frozen := SessionConfig{AgentsDocPath: "/old/AGENTS.md", NoProjectPrompts: true}.toSnapshot()
+	frozen := SessionConfig{AgentsDocPath: "/old/AGENTS.md"}.toSnapshot()
 	got := subagentConfigFromFrozenDescriptor(frozen, SessionConfig{AgentsDocPath: "/hub/AGENTS.md"})
 	if got.AgentsDocPath != "/hub/AGENTS.md" {
 		t.Fatalf("frozen-descriptor AgentsDocPath = %q, want the live parent's %q (frozen was %q)", got.AgentsDocPath, "/hub/AGENTS.md", "/old/AGENTS.md")

@@ -44,7 +44,6 @@ type runConfig struct {
 	exportATIFProviderHandles string   // --export-atif-provider-handles
 	outputSchema              string   // --output-schema: raw JSON schema applied to communicate.output
 	verbose                   bool
-	noProjectPrompts          bool
 	agentName                 string // --agent persona name (default: default)
 	stdout                    io.Writer
 	stderr                    io.Writer
@@ -144,7 +143,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	// serve and plugin subcommands always seed (best-effort, first-run-only).
 	if !cfg.noDefaultMarketplaces {
 		if err := runSeedMarketplaces(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err) //nolint:errcheck
+			fmt.Fprintf(cfg.stderr, "warning: seeding default marketplaces: %v\n", err) //nolint:errcheck
 		}
 	}
 	// Seeding waits on the plugin store lock, and reports what it could not do
@@ -313,7 +312,6 @@ func run(ctx context.Context, cfg runConfig) error {
 		Project:                     project,
 		SystemPromptFile:            cfg.systemPrompt,
 		SystemPromptAppend:          cfg.systemPromptAppend,
-		NoProjectPrompts:            cfg.noProjectPrompts,
 		AgentName:                   cfg.agentName,
 		SkillsDirs:                  cfg.skillsDirs,
 		MCPConfigFiles:              cfg.mcpConfigs,

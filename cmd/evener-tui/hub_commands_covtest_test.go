@@ -9,6 +9,8 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/transcriptindex"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // TestCovPrettifyModelDisplayName exercises name prettification.
@@ -600,6 +602,37 @@ func TestCovIsDatedSnapshotModelID(t *testing.T) {
 	}
 }
 
+// TestModelDisplaySuffixParityWithRegistry pins the TUI model-picker suffix
+// policy to the canonical registry rule (audit CLI-04): the picker's dated
+// classification and display-name stripping must agree with
+// registry.StripDatedSuffix for every suffix form the registry recognizes —
+// -YYYYMMDD, Bedrock's -vN:N revision, and Vertex's @YYYYMMDD.
+func TestModelDisplaySuffixParityWithRegistry(t *testing.T) {
+	cases := []struct {
+		id    string
+		dated bool
+		name  string
+	}{
+		{"openai/gpt-5-20240101", true, "Openai/gpt 5"},
+		{"openai/gpt-5-20240101-v1", true, "Openai/gpt 5"},
+		{"openai/gpt-5-20240101-v1:2", true, "Openai/gpt 5"},
+		{"anthropic/claude-sonnet-4@20240101", true, "Anthropic/claude Sonnet 4"},
+		{"openai/gpt-5", false, "Openai/gpt 5"},
+	}
+	for _, tc := range cases {
+		canonicalDated := registry.StripDatedSuffix(tc.id) != tc.id
+		if canonicalDated != tc.dated {
+			t.Fatalf("table case %q: registry says dated=%v, want %v", tc.id, canonicalDated, tc.dated)
+		}
+		if got := isDatedSnapshotModelID(tc.id); got != canonicalDated {
+			t.Errorf("isDatedSnapshotModelID(%q) = %v, want %v (registry parity)", tc.id, got, canonicalDated)
+		}
+		if got := prettifyModelDisplayName(tc.id); got != tc.name {
+			t.Errorf("prettifyModelDisplayName(%q) = %q, want %q", tc.id, got, tc.name)
+		}
+	}
+}
+
 // TestCovModelInfoMetaTail exercises descriptor meta tail rendering.
 func TestCovModelInfoMetaTail(t *testing.T) {
 	// A descriptor carrying nothing but its identity.
@@ -675,7 +708,8 @@ func TestCovSendHubFork(t *testing.T) {
 	if !ok || msg.err != nil || msg.resp.Ref != "local:01FORK" || msg.aside {
 		t.Fatalf("fork result = %#v", msg)
 	}
-	if got.Ref != ref.String() || got.SourceTurnID != "7" || got.EditedInput != "edited" || got.Label != "test" {
+	wantKey := transcriptindex.ItemKey(forkEntryKeyTurnID, appwire.ThreadItemPosition{Entry: 7})
+	if got.Ref != ref.String() || got.SourceItemKey != wantKey || got.EditedInput != "edited" || got.Label != "test" {
 		t.Fatalf("thread/fork params = %#v", got)
 	}
 }

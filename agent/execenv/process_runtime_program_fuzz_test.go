@@ -577,17 +577,10 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		{"env", parentTmp, scratch},
 		{"child", childTmp, childScratch},
 	} {
-		if got.tmpDir == "" || got.tmpDir == got.scratch {
-			t.Fatalf("%s TMPDIR = %q, want a world-usable temp container distinct from the private scratch %q",
-				got.name, got.tmpDir, got.scratch)
-		}
-		if filepath.Base(got.tmpDir) != "tmp" ||
-			!strings.HasPrefix(filepath.Base(filepath.Dir(got.tmpDir)), "evener-sandbox-") {
-			t.Fatalf("%s TMPDIR = %q, want <host-temp>/evener-sandbox-*/tmp", got.name, got.tmpDir)
-		}
-		info, err := os.Stat(got.tmpDir)
-		if err != nil || !info.IsDir() || info.Mode().Perm() != 0o777 || info.Mode()&os.ModeSticky == 0 {
-			t.Fatalf("%s TMPDIR %q must be an existing 1777 sticky directory: %v (%v)", got.name, got.tmpDir, info, err)
+		// The predicate encodes both platform answers; the oracle supplies the
+		// real one.
+		if err := processRuntimeSessionTmpError(got.name, got.tmpDir, got.scratch, sandbox.SessionTmpSupported); err != nil {
+			t.Fatal(err)
 		}
 	}
 	for _, name := range []string{"argv-none", "argv-default", "argv-all", "argv-core"} {
@@ -603,10 +596,17 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 	// The container leaf is as random per environment as the scratch dir, so it
 	// has to be normalized too or the determinism oracle would see a fresh path on
 	// every replay. The container itself appears in no env value, so mapping the
-	// leaf is enough.
+	// leaf is enough. Where TMPDIR names the scratch itself (no container), the
+	// scratch placeholder already covers it, so only add the temp placeholders
+	// when the paths differ.
 	scratchPlaceholders := map[string]string{
 		scratch: "$SCRATCH", childScratch: "$CHILD_SCRATCH",
-		parentTmp: "$TMPDIR", childTmp: "$CHILD_TMPDIR",
+	}
+	if parentTmp != scratch {
+		scratchPlaceholders[parentTmp] = "$TMPDIR"
+	}
+	if childTmp != childScratch {
+		scratchPlaceholders[childTmp] = "$CHILD_TMPDIR"
 	}
 	for _, command := range factory.byName {
 		command.appendTrace(root, scratchPlaceholders)

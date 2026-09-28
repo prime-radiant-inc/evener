@@ -1,6 +1,6 @@
 # iPhone redesign, Phase 7: Server additions (Implementation Plan)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PR 1 and PR 3 are written out in full, and PR 2 is a requirements-only section. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. PRs 14 to 19 (S5, S4 and S3) are planned in full in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md`, and PRs 7 to 11 and 13 (S1b, S1c, S1d and S13b) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s1-s13b.md`. Every other later item is a design-level section; turn each into a full plan (same format as PR 1 or PR 3) just before it starts, against main as it is then.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. PR 1 and PR 3 are written out in full, and PR 2 is a requirements-only section. PRs 4 to 6 and 12 are task-level: the files, interfaces and tests are named and the code is given where its shape is obvious. PRs 14 to 19 (S5, S4 and S3) are planned in full in `docs/superpowers/plans/2026-09-26-iphone-redesign-server-s4-s5-s3.md`, PRs 7 to 11 and 13 (S1b, S1c, S1d and S13b) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s1-s13b.md`, PRs 22 to 25 (S11 and S14) in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s11-s14.md`, and PRs 30 to 33 (S6, S15 and S16) in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s15-s16-s6.md`. Every other later item is a design-level section; turn each into a full plan (same format as PR 1 or PR 3) just before it starts, against main as it is then.
 
 **Goal:** The hub gives the phone (and the web and the TUI) the facts the redesign's Board, Session and Hub screens need, item by item in the roadmap's value order, so the phone can switch from each fallback as its addition lands.
 
@@ -55,12 +55,14 @@
 | 16-17 | Seen-through marker (S4a turn-ended time, S4b store and method) | S4 | full, in the S4-S5-S3 plan | PR 1 |
 | 18-19 | Subagent tallies (S3a daemon counts, S3b rows) | S3 | full, in the S4-S5-S3 plan | PR 1 |
 | 20-21 | Scoped approvals (S12a daemon grants, S12b wire and hub) | S12 | design | none |
-| 22-23 | Hub notices feed (S11a derived notices, S11b sign-in state) | S11 | design | PR 9 |
-| 24-25 | Message-text search (S14a index, S14b results) | S14 | design | none |
+| 22-23 | Hub notices feed (S11a derived notices, S11b sign-in state) | S11 | full, in the S11-S14 plan | none |
+| 24-25 | Message-text search (S14a index, S14b results) | S14 | full, in the S11-S14 plan | PR 25 needs PR 24 |
 | 26-27 | Remote document and image proxying (S7a host methods, S7b controller proxy) | S7 | design | none |
 | 28 | Document revision identity | S9 | design | none |
 | 29 | Hub-stored launch recipes | S8 | design | none |
-| 30-31 | Direct subagent stop (S6a daemon method, S6b hub routing) | S6 | design | none |
+| 30-31 | Direct subagent stop (S6a daemon method, S6b hub routing and capability) | S6 | full, in the S15-S16-S6 plan | PR 31 needs PR 30 |
+| 32 | A session's sandbox mode and network on the thread read | S15 | full, in the S15-S16-S6 plan | none |
+| 33 | Transcript records for queued delivery and approval decisions | S16 | full, in the S15-S16-S6 plan | none |
 
 Documents and artifacts named in the final message (the last part of S1) wait for the shared-artifacts work to reach main; no PR is planned for it here and the phone keeps its fallback (no chips).
 
@@ -1385,7 +1387,10 @@ type NavigationTaskProgress struct {
 
 ---
 
-## S11: Hub notices feed (PRs 22-23, design level)
+## S11: Hub notices feed (PRs 22-23, full plan elsewhere)
+
+- **Plan.** Written in full in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s11-s14.md` (PRs 22 and 23, rulings 1 to 13). It departs from the sketch below. Sign-in notices come from the credential state rather than failed rows: a refused Codex refresh fails a turn with no provider cause, so S11 no longer depends on PR 9. S11b is the #2479 fix.
+
 
 - **Adds.** The Board's notices (spec 7.1): a provider sign-in expired, a host offline, a plugin broken, each naming its affected sessions and one action.
 - **What the hub knows today.**
@@ -1401,7 +1406,10 @@ type NavigationTaskProgress struct {
 
 ---
 
-## S14: Message-text search (PRs 24-25, design level)
+## S14: Message-text search (PRs 24-25, full plan elsewhere)
+
+- **Plan.** Written in full in `docs/superpowers/plans/2026-09-27-iphone-redesign-server-s11-s14.md` (PRs 24 and 25, rulings 14 to 25). It departs from the sketch below. The index reads through the transcript read model (#2475), so hits carry the reader's v2 keys, and search stays on this hub, with no host fan-out (that plan's question 3).
+
 
 - **Adds.** Search's "In sessions" group (message-text hits with a highlighted snippet, and the hit's position to scroll to) and its Archived scope (spec 7.4).
 - **Where message text is indexed today: nowhere.** `hubSearch` (`cmd/evener-hub/app_search.go:14-54`) matches live sessions by ID or title substring and past sessions through `PastIndex.Search` (`hubcore/past.go:578-604`), whose FTS5 table `past_sessions_fts` holds only ID, name, original prompt and working directory (`past.go:655-664`). The transcript sidecar index (`internal/apptranscript/turn_index.go:686-697`) keeps offsets, lengths and kinds and deliberately no text. The agent's `find_session_transcripts` tool scans the 200 newest transcripts per query (`agent/session_tools_find.go:26-37`) and cannot be called from the hub. `SearchResult` is `{id, title, project, state, age, ref}` (`appwire/types.go:580-603`): no snippet, no archived flag. Search does not fan out to remote hosts.
@@ -1446,7 +1454,9 @@ type NavigationTaskProgress struct {
 
 ---
 
-## S6: Direct subagent stop (PRs 30-31, design level)
+## S6: Direct subagent stop (PRs 30-31, full plan elsewhere)
+
+- **Plan.** Written in full in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s15-s16-s6.md` (PRs 30 and 31, rulings 1 to 8). It departs from the design below: the stop cancels the subagent's current run through the existing user-stop path rather than adding a non-cascading durable stop, because a target-only durable stop would fence the stopped subagent's own children (`ancestorFenceLocked`); and it takes no `clientMutationId`, because the stop is idempotent. S15 (PR 32) and S16 (PR 33) are planned in the same document.
 
 - **Adds.** "Stop subagent" with a confirmation (spec 9) in place of "Ask coordinator to stop it". Jesse's ruling: it stops that agent, not its tree. The target's own turn ends; its subagents keep running and report to it, and it takes their results when it next runs.
 - **Today.** A subagent's thread is a read-only alias: the hub refuses mutations on it (`entryForRef` skips aliases, `internal/appsource/local_daemon.go:1048-1068`), the daemon refuses any non-root target (`requireRootMutationTarget`, `server/appwire_runtime.go:2319-2386`), and aliases advertise no capabilities. The only delegate stop is the model's `job_stop` tool, which calls `delegateController.StopSubtreeAndDrive` (`agent/delegate_tree_stop.go:106-179`): durable (`EventDelegateSubtreeStopRequested`), always the whole subtree. Authorization lets the root actor stop a top-level delegate and only a delegate's parent stop a nested one (`agent/delegate_tree_controller.go:360-381`).

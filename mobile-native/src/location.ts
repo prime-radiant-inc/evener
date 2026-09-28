@@ -7,6 +7,7 @@ export interface SavedLocation {
 	hubId: string;
 	keybindings?: { editor?: { actionId: string; chord: string } };
 	conversation?: { ref: string; title: string };
+	reader?: { sessionRef: string; path: string; updatedAt?: string };
 	pinAssignment?: true;
 	deleteSession?: true;
 	fork?: ForkTarget;
@@ -30,6 +31,16 @@ function conversation(value: unknown): value is { ref: string; title: string } {
 		typeof value.ref === "string" &&
 		value.ref.length > 0 &&
 		typeof value.title === "string"
+	);
+}
+function reader(value: unknown): value is NonNullable<SavedLocation["reader"]> {
+	return (
+		object(value) &&
+		typeof value.sessionRef === "string" &&
+		value.sessionRef.length > 0 &&
+		typeof value.path === "string" &&
+		value.path.length > 0 &&
+		(value.updatedAt === undefined || typeof value.updatedAt === "string")
 	);
 }
 function pinned(value: unknown): value is NonNullable<SavedLocation["pinned"]> {
@@ -155,6 +166,16 @@ export class LocationRepository {
 			(value.pinAssignment !== true || !conversation(value.conversation))
 		)
 			return null;
+		// A reader needs its session and stands alone.
+		if (
+			value.reader !== undefined &&
+			(!reader(value.reader) ||
+				!conversation(value.conversation) ||
+				["pinAssignment", "fork", "deleteSession", "pinned", "projects", "keybindings"].some(
+					(key) => value[key] !== undefined,
+				))
+		)
+			return null;
 		return {
 			hubId: value.hubId,
 			...(keybindings(value.keybindings)
@@ -170,6 +191,15 @@ export class LocationRepository {
 						conversation: {
 							ref: value.conversation.ref,
 							title: value.conversation.title,
+						},
+					}
+				: {}),
+			...(reader(value.reader)
+				? {
+						reader: {
+							sessionRef: value.reader.sessionRef,
+							path: value.reader.path,
+							...(value.reader.updatedAt === undefined ? {} : { updatedAt: value.reader.updatedAt }),
 						},
 					}
 				: {}),
@@ -248,6 +278,15 @@ export function locationForRoute(
 		};
 		return pinned(destination) ? { hubId, pinned: destination } : null;
 	}
+	if (route.name === "Reader") {
+		if (!object(route.params) || route.params.hubId !== hubId) return null;
+		const { sessionRef, path, reviewRef, reviewTitle, updatedAt } = route.params;
+		const destination = { sessionRef, path, ...(typeof updatedAt === "string" ? { updatedAt } : {}) };
+		const session = { ref: reviewRef, title: reviewTitle };
+		return reader(destination) && conversation(session)
+			? { hubId, conversation: { ref: session.ref, title: session.title }, reader: destination }
+			: null;
+	}
 	if (
 		route.name === "Conversation" ||
 		route.name === "PinAssignment" ||
@@ -289,6 +328,11 @@ export function restoredStack(location: SavedLocation | null) {
 			projectKey?: string;
 			archived?: boolean;
 			tier?: "current" | "recent" | "archived";
+			sessionRef?: string;
+			path?: string;
+			reviewRef?: string;
+			reviewTitle?: string;
+			updatedAt?: string;
 		};
 	}[] = [{ name: "Hubs" }];
 	if (location) routes.push({ name: "Sessions" });
@@ -330,6 +374,18 @@ export function restoredStack(location: SavedLocation | null) {
 		routes.push({
 			name: "Conversation",
 			params: { hubId: location.hubId, ...location.conversation },
+		});
+	if (location?.reader && location.conversation)
+		routes.push({
+			name: "Reader",
+			params: {
+				hubId: location.hubId,
+				sessionRef: location.reader.sessionRef,
+				path: location.reader.path,
+				reviewRef: location.conversation.ref,
+				reviewTitle: location.conversation.title,
+				...(location.reader.updatedAt === undefined ? {} : { updatedAt: location.reader.updatedAt }),
+			},
 		});
 	if (location?.pinAssignment && location.conversation)
 		routes.push({

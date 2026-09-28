@@ -575,6 +575,16 @@ describe("effective transcript display state", () => {
     expect(client.calls).toHaveLength(0);
   });
 
+  test("a relayed change does not write hub while the section is unsupported", async () => {
+    // An older hub whose handshake omits the capability resolves to
+    // "unsupported"; a change relayed for that section must not write hub.
+    const features = { ...(await new FakeClient("idle").connect()).features, transcriptDisplaySettings: false };
+    connectionStore.setState({ features });
+    expect(transcriptDisplayStore.getState().hubSupport).toBe("unsupported");
+    transcriptDisplayStore.getState().applyHubChange({ layout: "desktop", revision: 4, config: preset("chat") });
+    expect(transcriptDisplayStore.getState().hub).toEqual({});
+  });
+
   test("fences notifications from a replaced client", async () => {
     const stale = new FakeClient("ready");
     const current = new FakeClient("ready");

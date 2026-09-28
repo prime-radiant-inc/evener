@@ -121,6 +121,23 @@ it("unrolls members, applies preset content, and keeps source-linked attachments
 	expect(result.activityPresentation.get("b")).toEqual({ mode: "full" });
 });
 
+it("carries a member's turnId onto its unrolled row", () => {
+	const items: MobileTimelineItem[] = [
+		{
+			kind: "activity",
+			id: "cluster",
+			label: "shell",
+			family: "tool",
+			state: "completed",
+			detail: {},
+			members: [{ ...member("a", "first", 0), turnId: "turn_2" }, member("b", "second", 1)],
+		},
+	];
+	const result = projectNativeTranscript(conversation(items), null);
+	expect(result.items[0]).toMatchObject({ id: "a", turnId: "turn_2" });
+	expect(result.items[1]).not.toHaveProperty("turnId");
+});
+
 // D24-6: the presentation layer no longer decides which rows exist — the
 // shared projector does, once, inside the store's seam. What survives here is
 // the RENDERING mode of each row the seam produced: a summary-only row (the

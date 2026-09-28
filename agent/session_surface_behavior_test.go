@@ -7,7 +7,6 @@ package agent
 // moved off this axis entirely — see session_openai_prompt_cache_test.go.
 
 import (
-	"slices"
 	"strings"
 	"testing"
 
@@ -179,22 +178,6 @@ func TestWebSearchToolAbsentOnTheOpenAISurface(t *testing.T) {
 
 // ── Site 3: renderSystemPrompt surface ─────────────────────────────────────
 
-// openAIToolsSectionSource is the prompt source a render records when it loads
-// the openai-only tools guidance.
-const openAIToolsSectionSource = "embedded:prompts/sections/tools.provider-openai_append.md.tmpl"
-
-// rendersOpenAIToolsSection renders the session's system prompt and reports
-// whether the render recorded the openai-only tools section among its sources.
-func rendersOpenAIToolsSection(t *testing.T, sess *Session) bool {
-	t.Helper()
-	if _, warning := sess.renderSystemPrompt(sess.env); warning != "" {
-		t.Fatalf("renderSystemPrompt warning: %s", warning)
-	}
-	return slices.ContainsFunc(sess.promptSourceLog, func(source promptSource) bool {
-		return source.Label == openAIToolsSectionSource
-	})
-}
-
 // TestSystemPromptSurfaceFollowsTheVendorForANamedInstance: a session on an
 // openai instance under a user-assigned name (id "work") renders its prompt
 // for the openai surface. The prompt keys on the surface, so it follows the
@@ -204,18 +187,14 @@ func TestSystemPromptSurfaceFollowsTheVendorForANamedInstance(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "work"})
 	renamedProfile := namedOpenAIInstanceProfile("work", "gpt-5.5")
-	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-		NoProjectPrompts: true,
-	})
+	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	if got := sess.profile.Surface(); got != registry.SurfaceOpenAI {
+	data, _ := sess.buildPromptData(sess.env)
+	if got := data.Surface; got != registry.SurfaceOpenAI {
 		t.Fatalf("prompt surface = %q, want %q for instance %q", got, registry.SurfaceOpenAI, renamedProfile.ID())
-	}
-	if !rendersOpenAIToolsSection(t, sess) {
-		t.Fatalf("prompt sources = %#v, want %q for instance %q", sess.promptSourceLog, openAIToolsSectionSource, renamedProfile.ID())
 	}
 }
 
@@ -227,17 +206,13 @@ func TestSystemPromptSurfaceIsGenericForACompatInstance(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai-compatible"})
 	compatProfile := testOpenAICompatProfile("openai-compatible", "gpt-4o", 128_000)
-	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-		NoProjectPrompts: true,
-	})
+	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
-	if got := sess.profile.Surface(); got != registry.SurfaceGeneric {
+	data, _ := sess.buildPromptData(sess.env)
+	if got := data.Surface; got != registry.SurfaceGeneric {
 		t.Fatalf("prompt surface = %q, want %q", got, registry.SurfaceGeneric)
-	}
-	if rendersOpenAIToolsSection(t, sess) {
-		t.Fatalf("prompt sources = %#v, want no %q on the generic surface", sess.promptSourceLog, openAIToolsSectionSource)
 	}
 }

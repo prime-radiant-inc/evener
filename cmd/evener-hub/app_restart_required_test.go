@@ -929,7 +929,7 @@ func TestHubUpgradeBlocksForkWritesUntilParentStops(t *testing.T) {
 				if mode == "aside" {
 					params.Aside = true
 				} else {
-					params.SourceTurnID = "1"
+					params.SourceItemKey = "apptranscript-item-v2:t_1:0:0"
 					params.Label = "parent branch"
 					if mode == "defer" {
 						params.DeferInput = true

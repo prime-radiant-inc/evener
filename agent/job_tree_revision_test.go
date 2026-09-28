@@ -21,7 +21,6 @@ func TestJobTreeRevisionSharedAcrossSpawnAndRestore(t *testing.T) {
 		withConfig(SessionConfig{
 			StateDir:         stateDir,
 			MaxSubagentDepth: 3,
-			NoProjectPrompts: true,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		}),
 	)
@@ -93,7 +92,6 @@ func TestJobTreeRevisionBareChildRestoreStartsIndependentRootTree(t *testing.T) 
 		withConfig(SessionConfig{
 			StateDir:         stateDir,
 			MaxSubagentDepth: 2,
-			NoProjectPrompts: true,
 			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 		}),
 	)

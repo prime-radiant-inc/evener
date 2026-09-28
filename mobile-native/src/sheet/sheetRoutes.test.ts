@@ -37,6 +37,10 @@ describe("a sheet's size (spec 6)", () => {
 		expect(isSheetRoute("Conversation")).toBe(false);
 		expect(isSheetRoute("toString")).toBe(false);
 		expect(SHEET_ROUTES.TasksSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
+		expect(isSheetRoute("RowMenuSheet")).toBe(true);
+		expect(SHEET_ROUTES.RowMenuSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
+		expect(isSheetRoute("QueueSheet")).toBe(true);
+		expect(SHEET_ROUTES.QueueSheet).toEqual(sheetOptions(["medium", "large"], "medium"));
 	});
 });
 

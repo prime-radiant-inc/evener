@@ -77,8 +77,12 @@ func DefEditFile() llm.ToolDefinition {
 
 func DefShell() llm.ToolDefinition {
 	return llm.ToolDefinition{
-		Name:        "shell",
-		Description: "Run a shell command and report stdout, stderr, and exit status.",
+		Name: "shell",
+		Description: "Run a shell command and report stdout, stderr, and exit status. " +
+			"The command runs in Bash with pipefail, so a failed stage fails the whole command; check the exit code. " +
+			"Small foreground output comes back in full. Larger or background output is bounded: a finished command with large output returns a head-and-tail digest and a job_id under which the full output is kept, so there is no need to pipe through head or tail. " +
+			"A background job reports a launch failure at once; once it is running you get its job_id and a notification when it finishes, so it needs no completion marker or redirect. " +
+			"To keep a complete log beyond the retained output, tee inside the command, for example `( make test ) 2>&1 | tee \"$EVENER_SCRATCH_DIR/test.log\"` when EVENER_SCRATCH_DIR is set: pipefail keeps the command's exit status, and tee overwrites the file.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -351,6 +355,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 		"Frames coalesce while the recipient is busy: it sees the latest state, not a backlog. " +
 		"Delivered assistant.tool frames include the matched `status` and the original tool `arguments_json`; use those frame fields as the first evidence before reaching for audit tools. " +
 		"Observers report findings with `communicate(end_turn=true)`. " +
+		"A `self` watch on your own events can feed itself: when a frame responds to this watch's earlier frames, it carries a system reminder saying so and how many exchanges deep the loop runs. As the depth grows, stop acting on those frames, and clear the watch if the loop goes on; Evener drops frames past a depth limit. For sustained watching of your own work, use an observer delegate when you can start one, and use a timer for state outside Evener. " +
 		"`operation=\"clear\"` removes a watch by `watch_id`."
 	return llm.ToolDefinition{
 		Name:        "job_watch",

@@ -758,3 +758,79 @@ func TestLocateLocalJobRetainedTarget_OutputNotRegularRejected(t *testing.T) {
 		t.Fatalf("expected 'output is not a regular file' error, got: %v", err)
 	}
 }
+
+// TestJobOutputOpenRootAnchorsAtProjects pins the descriptor-walk root for a
+// job output path in the evener projects layout. The walk must be bounded to
+// the projects directory that contains the path's bucket, not re-rooted at the
+// state home: the state home's evener/ and evener/projects/ prefixes and the
+// bucket are already validated by the locate step (validateLayoutPrefix), so
+// rooting the walk above projects/ only walks ancestors the read does not need.
+//
+// Before the fix jobOutputOpenRoot returned <stateHome>/evener, so this test
+// fails with that wider root and passes once the root is the projects dir.
+func TestJobOutputOpenRootAnchorsAtProjects(t *testing.T) {
+	t.Parallel()
+	stateHome := t.TempDir()
+	bucket := localJobProjectBucket(t, stateHome, localJobCurrentProject)
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	projectsDir := filepath.Join(stateHome, "evener", "projects")
+
+	outputPath := filepath.Join(bucket, "sessions", owner, "jobs", jobID+".log")
+	if got := jobOutputOpenRoot(outputPath); got != projectsDir {
+		t.Fatalf("jobOutputOpenRoot = %q, want projects dir %q", got, projectsDir)
+	}
+
+	// A legacy-named bucket (not a valid project id) is anchored the same way,
+	// never a deeper ancestor below projects/.
+	legacyBucket := filepath.Join(stateHome, "evener", "projects", "deadbeef")
+	legacyOutput := filepath.Join(legacyBucket, "sessions", owner, "jobs", jobID+".log")
+	if got := jobOutputOpenRoot(legacyOutput); got != projectsDir {
+		t.Fatalf("legacy jobOutputOpenRoot = %q, want projects dir %q", got, projectsDir)
+	}
+
+	// A path outside the layout has no walk root; the open falls back to the
+	// no-follow leaf form.
+	if got := jobOutputOpenRoot(filepath.Join(t.TempDir(), "output.log")); got != "" {
+		t.Fatalf("non-layout jobOutputOpenRoot = %q, want empty", got)
+	}
+}
+
+// TestOpenJobOutputFileRefusesSymlinkedProjectsRoot proves the projects-dir
+// anchor is no-followed: a projects directory swapped for a symlink after the
+// locate is refused at the root open (O_NOFOLLOW), not followed. Without the
+// no-follow root open this path would resolve through the symlink and read the
+// attacker tree's output.
+func TestOpenJobOutputFileRefusesSymlinkedProjectsRoot(t *testing.T) {
+	t.Parallel()
+	// The attacker tree lives under a real projects/ dir in a foreign home; the
+	// layout's projects/ dir is a symlink to it.
+	attackerProjects := filepath.Join(t.TempDir(), "projects")
+	attacker := filepath.Join(attackerProjects, localJobCurrentProject)
+	attackerOutput := filepath.Join(attacker, "sessions", "owner", "jobs", "output.log")
+	if err := os.MkdirAll(filepath.Dir(attackerOutput), 0o700); err != nil {
+		t.Fatalf("create attacker output dir: %v", err)
+	}
+	if err := os.WriteFile(attackerOutput, []byte("must not read\n"), 0o600); err != nil {
+		t.Fatalf("write attacker output: %v", err)
+	}
+
+	stateHome := t.TempDir()
+	projectsDir := filepath.Join(stateHome, "evener", "projects")
+	if err := os.MkdirAll(filepath.Dir(projectsDir), 0o700); err != nil {
+		t.Fatalf("create evener dir: %v", err)
+	}
+	if err := os.Symlink(attackerProjects, projectsDir); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	symlinkedOutput := filepath.Join(projectsDir, localJobCurrentProject,
+		"sessions", "owner", "jobs", "output.log")
+
+	f, err := openJobOutputFile(symlinkedOutput)
+	if f != nil {
+		_ = f.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("openJobOutputFile error = %v, want symlinked projects-root refusal", err)
+	}
+}

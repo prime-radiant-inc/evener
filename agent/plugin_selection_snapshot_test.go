@@ -36,10 +36,9 @@ func TestPluginSelectionRestorePreservesPersistedDirs(t *testing.T) {
 	stateDir := t.TempDir()
 	workDir := t.TempDir()
 	config := SessionConfig{
-		PluginDirs:       []string{pluginDir},
-		StateDir:         stateDir,
-		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		PluginDirs: []string{pluginDir},
+		StateDir:   stateDir,
+		testOnly:   testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
@@ -127,9 +126,8 @@ func TestPluginSelectionExcludedContributionsDoNotInitialize(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
-		PluginDirs:       resolution.SelectedDirs,
-		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		PluginDirs: resolution.SelectedDirs,
+		testOnly:   testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

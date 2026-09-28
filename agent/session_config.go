@@ -121,10 +121,6 @@ type SessionConfig struct {
 	// Always applied, even when SystemPromptFile is set (CLI --system-prompt-append flag).
 	SystemPromptAppend []string `json:"system_prompt_append,omitempty"`
 
-	// NoProjectPrompts suppresses loading .evener/prompts/ from the project directory.
-	// Useful for A/B testing to match Docker container behavior (no project prompts).
-	NoProjectPrompts bool `json:"no_project_prompts,omitempty"`
-
 	// AgentsDocPath is the personal AGENTS.md loaded ahead of the project's own
 	// instruction docs. Empty resolves <userdirs.DefaultConfigRoot()>/AGENTS.md
 	// from the process environment; a hub passes its own concrete path so
@@ -866,6 +862,13 @@ type spawnConfig struct {
 	// the whole in-process tree without consuming any child's event channel.
 	descendantEvent func(events.SessionEvent)
 
+	// descendantRecorded reports every entry a descendant's transcript
+	// records, with the descendant's session id, to the root daemon. It is
+	// inherited unchanged like descendantEvent; each descendant installs it as
+	// its own transcript's recorded-entry hook, so it runs under that
+	// transcript's append lock.
+	descendantRecorded func(sessionID string, rec transcript.Record)
+
 	// parentDelegateID is the durable delegate handle that owns this child
 	// session in its parent.
 	parentDelegateID string
@@ -1017,7 +1020,6 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		PluginDirs:                  c.PluginDirs,
 		SystemPromptFile:            c.SystemPromptFile,
 		SystemPromptAppend:          c.SystemPromptAppend,
-		NoProjectPrompts:            c.NoProjectPrompts,
 		AgentsDocPath:               c.AgentsDocPath,
 		NonInteractive:              c.NonInteractive,
 		TurnEndsProcess:             c.TurnEndsProcess,
@@ -1060,7 +1062,6 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		PluginDirs:                  s.PluginDirs,
 		SystemPromptFile:            s.SystemPromptFile,
 		SystemPromptAppend:          s.SystemPromptAppend,
-		NoProjectPrompts:            s.NoProjectPrompts,
 		AgentsDocPath:               s.AgentsDocPath,
 		NonInteractive:              s.NonInteractive,
 		TurnEndsProcess:             s.TurnEndsProcess,

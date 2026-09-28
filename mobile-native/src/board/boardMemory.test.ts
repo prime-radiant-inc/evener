@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SyncStringStorage } from "../syncStringStorage";
-import { FoldedSections, forgetBoard, OrganizeByPreference, SeenMarkers } from "./boardMemory";
+import { FoldedSections, forgetBoard, OrganizeByPreference, RecentSearches, SeenMarkers } from "./boardMemory";
 
 function memoryStorage(values = new Map<string, string>()): SyncStringStorage & { values: Map<string, string> } {
 	return {
@@ -218,6 +218,54 @@ describe("the Organize by choice", () => {
 	});
 });
 
+describe("recent searches", () => {
+	it("keeps the most recent first, once each, under the hub's key", () => {
+		const storage = memoryStorage();
+		const recent = new RecentSearches(storage, "hub-a");
+		expect(recent.list()).toEqual([]);
+		recent.add("fix");
+		recent.add("docs");
+		recent.add(" fix ");
+		expect(recent.list()).toEqual(["fix", "docs"]);
+		expect(JSON.parse(storage.values.get("evener.native.recent-searches.hub-a") ?? "null")).toEqual(["fix", "docs"]);
+		expect(new RecentSearches(storage, "hub-a").list()).toEqual(["fix", "docs"]);
+	});
+
+	it("keeps the last 8", () => {
+		const recent = new RecentSearches(memoryStorage(), "hub-a");
+		for (let index = 1; index <= 10; index++) recent.add(`query ${index}`);
+		expect(recent.list()).toEqual([10, 9, 8, 7, 6, 5, 4, 3].map((index) => `query ${index}`));
+	});
+
+	it("keeps each hub's searches apart", () => {
+		const storage = memoryStorage();
+		new RecentSearches(storage, "hub-a").add("fix");
+		expect(new RecentSearches(storage, "hub-b").list()).toEqual([]);
+	});
+
+	it("ignores an empty query", () => {
+		const recent = new RecentSearches(memoryStorage(), "hub-a");
+		recent.add("  ");
+		expect(recent.list()).toEqual([]);
+	});
+
+	it("clears them all", () => {
+		const storage = memoryStorage();
+		const recent = new RecentSearches(storage, "hub-a");
+		recent.add("fix");
+		recent.clear();
+		expect(recent.list()).toEqual([]);
+		expect(new RecentSearches(storage, "hub-a").list()).toEqual([]);
+	});
+
+	it("reads garbled storage as no searches, and skips entries that aren't text", () => {
+		const garbled = memoryStorage(new Map([["evener.native.recent-searches.hub-a", "{nope"]]));
+		expect(new RecentSearches(garbled, "hub-a").list()).toEqual([]);
+		const mixed = memoryStorage(new Map([["evener.native.recent-searches.hub-a", '["fix", 3, "", "docs"]']]));
+		expect(new RecentSearches(mixed, "hub-a").list()).toEqual(["fix", "docs"]);
+	});
+});
+
 describe("forgetBoard", () => {
 	it("removes every key of a hub's own and nothing else, without throwing", () => {
 		const storage = memoryStorage(
@@ -225,6 +273,7 @@ describe("forgetBoard", () => {
 				["evener.native.seen.hub-a", "{}"],
 				["evener.native.board-sections.hub-a", "{}"],
 				["evener.native.board-organize.hub-a", '"host-project"'],
+				["evener.native.recent-searches.hub-a", "[]"],
 				["evener.native.seen.hub-b", "{}"],
 				["evener.native.board-organize.hub-b", '"host-project"'],
 			]),
@@ -247,6 +296,10 @@ describe("forgetBoard", () => {
 			},
 		};
 		expect(() => forgetBoard(storage, "hub-a")).toThrow();
-		expect(removed).toEqual(["evener.native.board-sections.hub-a", "evener.native.board-organize.hub-a"]);
+		expect(removed).toEqual([
+			"evener.native.board-sections.hub-a",
+			"evener.native.board-organize.hub-a",
+			"evener.native.recent-searches.hub-a",
+		]);
 	});
 });

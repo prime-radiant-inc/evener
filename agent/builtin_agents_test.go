@@ -758,10 +758,11 @@ func TestSpawnAgent_BuiltinSubagentKeepsDelegateSendTool(t *testing.T) {
 	if !toolSet["delegate_send"] {
 		t.Fatalf("built-in subagent tools = %v, want delegate_send for child delegate follow-up", subagentTools)
 	}
-	for _, forbidden := range []string{"delegate", "job_watch"} {
-		if toolSet[forbidden] {
-			t.Fatalf("built-in subagent tools = %v, must keep leaf role without %s", subagentTools, forbidden)
-		}
+	if !toolSet["job_watch"] {
+		t.Fatalf("built-in subagent tools = %v, want job_watch so a leaf that runs jobs can await its own promoted job (#2645)", subagentTools)
+	}
+	if toolSet["delegate"] {
+		t.Fatalf("built-in subagent tools = %v, must keep leaf role without delegate", subagentTools)
 	}
 }
 
