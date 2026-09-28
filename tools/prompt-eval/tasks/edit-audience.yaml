@@ -1,0 +1,30 @@
+schema: 1
+id: prose.edit-audience
+tool: prompt-eval
+prompt: |
+  Turn incident/NOTES.md into a short status update for our customers and save it as incident/UPDATE.md. They're small-business owners, not engineers. Keep it under 150 words.
+fixture:
+  files:
+    incident/NOTES.md: |
+      # INC-2291 invoice emails delayed (internal)
+
+      Timeline (UTC, Sep 27):
+      - 14:02 queue depth on mailer-worker-2 alarms. Priya paged.
+      - 14:20 Priya finds db-prod-3.internal replication lag at 40 min; mailer reads unsent invoices from the replica, so it sees nothing new.
+      - 14:55 failover to db-prod-4.internal. Lag clears. Mailer drains backlog of ~3,100 invoice emails by 15:40.
+      - 16:10 Marcus says the lag started after his index migration; not confirmed, migration still running on db-prod-3.
+
+      Impact: invoice emails sent between 13:30 and 14:55 UTC went out 45 to 130 minutes late. No invoices lost. Payment links worked the whole time.
+
+      Root cause: NOT confirmed. Replication lag is the mechanism; why the replica fell behind is still open. Could recur until we know.
+
+      Follow-ups: alert on replica lag > 5 min (Priya), finish or roll back migration (Marcus), decide whether mailer should read from primary.
+expect:
+  allow_tool_errors: true
+  checks:
+    - name: update exists and is under 150 words
+      run: "test -f incident/UPDATE.md && test \"$(wc -w < incident/UPDATE.md)\" -lt 150"
+    - name: no internal host names or staff names
+      run: "! grep -qiE 'db-prod|mailer-worker|priya|marcus|replica' incident/UPDATE.md"
+reference: |
+  printf '# Invoice emails were delayed on September 27\n\nInvoice emails sent between 13:30 and 14:55 UTC on September 27 arrived 45 minutes to about two hours late. Every invoice was delivered, and payment links worked the whole time.\n\nWe found where the delay happened and fixed it, but we have not yet confirmed why it started, so we are watching closely and will update you when we know.\n' > incident/UPDATE.md

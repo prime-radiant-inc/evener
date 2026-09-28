@@ -25,6 +25,9 @@ Every command below assumes `/tmp/lab/evener-fluency` is that binary and that yo
 | `prose.research-proposals` | Reading two proposals and recommending one in a written note. |
 | `prose.ambiguous-export` | A vague request with no one to ask. |
 | `prose.handback-wordfreq` | A deliverable that must be left in place and working. |
+| `prose.research-conflicting` | Notes that disagree; the answer must match the one that actually applies to this codebase. |
+| `prose.edit-audience` | Rewriting an internal incident writeup for a non-technical customer audience. |
+| `prose.ops-logs` | A cleanup request with a retention rule that is easy to miss. |
 
 ### Adding a task
 
