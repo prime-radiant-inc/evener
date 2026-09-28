@@ -219,8 +219,9 @@ export function TimelineItem({
 					live={live}
 					expanded={expanded}
 					onToggle={toggle}
-					// A step's evidence arrives in PR 8.
-					onStep={() => {}}
+					hubId={hubId}
+					sessionRef={sessionRef}
+					evidenceOpenByDefault={expandByDefault}
 				/>
 			);
 			break;

@@ -162,6 +162,7 @@ const WATCH_KEYS = valueRecordKeys(
 const TASKS_KEYS = valueRecordKeys(["total", "done"], ["cancelled", "current_id", "current"]);
 const SUBAGENT_TALLY_KEYS = valueRecordKeys(["running", "failed", "done"]);
 const QUESTION_KEYS = valueRecordKeys(["text", "count"], ["options"]);
+const FAILURE_KEYS = valueRecordKeys([], ["title", "cause_kind", "provider", "status"]);
 const SESSION_KEYS = valueRecordKeys(
   ["ref", "host_id", "session_id", "title", "project", "state", "kind", "live", "children"],
   [
@@ -174,6 +175,7 @@ const SESSION_KEYS = valueRecordKeys(
     "approval_tool",
     "approval_target",
     "question",
+    "failure",
     "dormant",
     "offline",
     "updated_at",
@@ -196,6 +198,7 @@ const SESSION_KEYS = valueRecordKeys(
     tasks: TASKS_KEYS,
     subagents: SUBAGENT_TALLY_KEYS,
     question: QUESTION_KEYS,
+    failure: FAILURE_KEYS,
   },
 );
 const PROJECT_KEYS = valueRecordKeys(
@@ -324,6 +327,16 @@ const questionValue = (value: unknown): boolean =>
       Array.isArray(item) && item.length <= 5 && item.every((label) => boundedString(label, 80) && label !== ""),
   );
 
+// Mirrors navigationFailureValid: a title of 1 to 80 characters or a cause kind
+// (at least one), cause identities, and a safe non-negative status.
+const failureValue = (value: unknown): boolean =>
+  knownKeys(value, FAILURE_KEYS) &&
+  (value.title !== undefined || value.cause_kind !== undefined) &&
+  optional(value.title, (item) => boundedString(item, 80) && item !== "") &&
+  optional(value.cause_kind, (item) => identity(item)) &&
+  optional(value.provider, (item) => identity(item)) &&
+  optional(value.status, count);
+
 function sessionValue(value: unknown): value is Record<string, unknown> {
   return (
     knownKeys(value, SESSION_KEYS) &&
@@ -346,6 +359,7 @@ function sessionValue(value: unknown): value is Record<string, unknown> {
     optional(value.approval_tool, (item) => identity(item)) &&
     optional(value.approval_target, (item) => boundedString(item, 512)) &&
     optional(value.question, questionValue) &&
+    optional(value.failure, failureValue) &&
     optional(value.dormant, bool) &&
     optional(value.offline, bool) &&
     optional(value.updated_at, rfc3339Timestamp) &&

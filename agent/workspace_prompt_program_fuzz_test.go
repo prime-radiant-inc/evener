@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"testing/fstest"
 
 	"primeradiant.com/evener/agent/execenv"
 	tooldefs "primeradiant.com/evener/agent/internal/tool"
@@ -20,7 +19,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
-	"primeradiant.com/evener/internal/bundled"
 	"primeradiant.com/evener/llm"
 )
 
@@ -54,7 +52,6 @@ func FuzzWorkspacePromptProgram(f *testing.F) {
 		wppGitSnapshot(t, token)
 		wppRuntimePaths(t, token)
 		wppPromptDataAndRender(t, token)
-		wppSectionResolver(t, token)
 		wppOutline(t, token)
 	})
 }
@@ -365,12 +362,9 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 	sess.systemPromptOverride = " override " + token + " "
 	sess.cfg.SystemPromptFile = "override.md"
 	sess.delegationAllowance = 1
-	data := sess.buildPromptData(env)
+	data, _ := sess.buildPromptData(env)
 	if len(data.CLIAppends) != 1 || !strings.Contains(data.CLIAppends[0], token) {
 		t.Fatalf("CLI appends = %#v", data.CLIAppends)
-	}
-	if !wppHasTool(data.MCPTools, "wpp_mcp") || !wppHasTool(data.CustomTools, "wpp_custom") {
-		t.Fatalf("prompt tool tiers = mcp:%#v custom:%#v", data.MCPTools, data.CustomTools)
 	}
 	if !data.CanDelegate || !sess.canPromptDelegation() {
 		t.Fatal("root prompt should expose the registered delegation surface")
@@ -407,9 +401,6 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 	if got := prependSystemPromptToUserMessage("  ", user); len(got.Content) != len(user.Content) {
 		t.Fatalf("blank system prepend changed user: %#v", got)
 	}
-	if promptSectionDirExists("") || promptSectionDirExists(appendPath) || promptSectionDirExists(filepath.Join(root, "missing")) || !promptSectionDirExists(root) {
-		t.Fatal("prompt section directory guard returned an inconsistent result")
-	}
 	if sandboxPromptLine(env) != "" || sandboxPromptLine(nil) != "" {
 		t.Fatal("non-local environment unexpectedly emitted sandbox prompt text")
 	}
@@ -427,10 +418,6 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 	}
 
 	defs := []llm.ToolDefinition{{Name: "a", Description: "  alpha  "}, {Name: "", Description: ""}, {Name: "a"}, {Name: "b"}}
-	entries := toolEntriesFromDefinitions(defs)
-	if entries[0].Description != "alpha" || entries[1].Description != "(no description)" {
-		t.Fatalf("tool entries = %#v", entries)
-	}
 	if got := strings.Join(toolNamesFromDefinitions(defs), ","); got != "a,b" {
 		t.Fatalf("tool names = %q", got)
 	}
@@ -465,120 +452,6 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 	}
 	if got := formatToolNamesForPrompt([]string{"a", "b"}); got != "`a`, `b`" {
 		t.Fatalf("tool prompt names = %q", got)
-	}
-}
-
-func wppSectionResolver(t *testing.T, token string) {
-	t.Helper()
-	dir := t.TempDir()
-	wppWrite(t, dir, "tools.md", "base\n")
-	wppWrite(t, dir, "tools.provider-openai_prepend.md", "provider before\n")
-	wppWrite(t, dir, "tools.provider-openai_append.md", "provider after\n")
-	wppWrite(t, dir, "tools.agent-reviewer_prepend.md", "agent before\n")
-	wppWrite(t, dir, "tools.agent-reviewer.md", "agent body "+token+"\n")
-	wppWrite(t, dir, "tools.agent-reviewer_append.md", "agent after\n")
-	wppWrite(t, dir, "identity.md.tmpl", "identity {{ .Provider }}\n")
-	wppWrite(t, dir, "bad.md.tmpl", "{{")
-	wppWrite(t, dir, "role.agent-reviewer.md", "disk role\n")
-	wppWrite(t, dir, "page.md.tmpl", "{{ section \"identity\" }}\n\n\n{{ section \"tools\" }}\n")
-
-	r := &sectionResolver{surface: "openai", agent: "reviewer", sources: []sectionSource{diskSource{dir: dir}}}
-	if got := r.Section("tools", promptData{}); got != "agent before\n\nagent body "+token+"\n\nagent after" {
-		t.Fatalf("agent section = %q", got)
-	}
-	if got := r.Section("identity", promptData{Provider: "openai"}); got != "identity openai" {
-		t.Fatalf("templated section = %q", got)
-	}
-	if got := r.Section("bad", promptData{}); got != "" || !wppHasSourcePrefix(r.Sources(), "ERROR:") {
-		t.Fatalf("bad section = %q sources:%#v", got, r.Sources())
-	}
-	if got := r.Section("role", promptData{}); got != "disk role" {
-		t.Fatalf("disk role = %q", got)
-	}
-	if out, sources, err := r.Render(dir, "page", promptData{Provider: "openai"}); err != nil || !strings.Contains(out, "identity openai") || !strings.Contains(out, token) || len(sources) == 0 {
-		t.Fatalf("disk render = %q sources:%#v err:%v", out, sources, err)
-	}
-	if _, _, err := r.Render(dir, "missing", promptData{}); err == nil {
-		t.Fatal("missing disk template unexpectedly rendered")
-	}
-	if _, _, err := r.renderFromContent("bad", []byte("{{ .MissingField }}"), promptData{}); err == nil {
-		t.Fatal("missing template field unexpectedly executed")
-	}
-	if _, err := r.renderTemplate("bad", "{{", promptData{}); err == nil {
-		t.Fatal("bad section template unexpectedly parsed")
-	}
-	if _, err := r.renderTemplate("missing", "{{ .MissingField }}", promptData{}); err == nil {
-		t.Fatal("missing section template field unexpectedly executed")
-	}
-	if _, _, err := r.renderFromContent("parse", []byte("{{"), promptData{}); err == nil {
-		t.Fatal("bad top-level template unexpectedly parsed")
-	}
-	if got := collapseBlankLines("a\n\n\n\n\nb"); got != "a\n\nb" {
-		t.Fatalf("collapsed blank lines = %q", got)
-	}
-
-	providerOnly := &sectionResolver{surface: "openai", sources: []sectionSource{diskSource{dir: dir}}}
-	if got := providerOnly.Section("tools", promptData{}); got != "provider before\n\nbase\n\nprovider after" {
-		t.Fatalf("provider layering = %q", got)
-	}
-	if got := (&sectionResolver{}).Section("role", promptData{}); got != "" {
-		t.Fatalf("empty role = %q", got)
-	}
-	override := &sectionResolver{agent: "reviewer"}
-	if got := override.Section("role", promptData{RolePromptOverride: " override role "}); got != "override role" || !wppHasSource(override.Sources(), "config:role_prompt_override") {
-		t.Fatalf("role override = %q sources:%#v", got, override.Sources())
-	}
-	fromAgentFS := &sectionResolver{
-		agent:   "worker",
-		agentFS: fstest.MapFS{"worker.md": &fstest.MapFile{Data: []byte("---\nname: worker\n---\nworker role\n")}},
-	}
-	if got := fromAgentFS.Section("role", promptData{}); got != "worker role" || !wppHasSource(fromAgentFS.Sources(), "agent:worker") {
-		t.Fatalf("agent filesystem role = %q sources:%#v", got, fromAgentFS.Sources())
-	}
-	badAgentFS := &sectionResolver{
-		agent:   "bad",
-		agentFS: fstest.MapFS{"bad.md": &fstest.MapFile{Data: []byte("---\n: bad: yaml: [unclosed\n---\nbody\n")}},
-	}
-	if got := badAgentFS.Section("role", promptData{}); got != "" {
-		t.Fatalf("invalid frontmatter role = %q", got)
-	}
-	if got := (&sectionResolver{agent: "missing", agentFS: fstest.MapFS{}}).Section("role", promptData{}); got != "" {
-		t.Fatalf("missing agent filesystem role = %q", got)
-	}
-
-	embedded := embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}
-	if data, ok := embedded.ReadFile("identity.md"); !ok || len(data) == 0 {
-		t.Fatal("embedded source did not read identity")
-	}
-	if data, ok := embedded.ReadFile("missing.md"); ok || data != nil {
-		t.Fatalf("missing embedded source = %#v ok:%v", data, ok)
-	}
-	if data, ok := (diskSource{}).ReadFile("anything"); ok || data != nil {
-		t.Fatalf("empty disk source = %#v ok:%v", data, ok)
-	}
-	if got := r.sourceLabel(diskSource{dir: dir}, "a.md"); !strings.HasPrefix(got, "disk:") {
-		t.Fatalf("disk source label = %q", got)
-	}
-	if got := r.sourceLabel(embedded, "a.md"); got != "embedded:prompts/sections/a.md" {
-		t.Fatalf("embedded source label = %q", got)
-	}
-	memory := wppMemorySource{files: map[string][]byte{"x.md": []byte("memory")}}
-	if got := r.sourceLabel(memory, "x.md"); got != "unknown:x.md" {
-		t.Fatalf("unknown source label = %q", got)
-	}
-	memResolver := &sectionResolver{sources: []sectionSource{memory}}
-	if content := memResolver.readAndRender("x", promptData{}); content != "memory" {
-		t.Fatalf("memory source read = %q", content)
-	}
-	if len(memResolver.tracked) != 1 || memResolver.tracked[0].Label != "unknown:x.md" {
-		t.Fatalf("memory source tracking = %#v", memResolver.tracked)
-	}
-	embeddedResolver := &sectionResolver{surface: "openai", agent: defaultAgentName, agentFS: bundled.Agents(), sources: []sectionSource{embedded}}
-	if out, sources, err := embeddedResolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", promptData{Provider: "openai", Agent: defaultAgentName}); err != nil || out == "" || len(sources) == 0 {
-		t.Fatalf("embedded render = %q sources:%#v err:%v", out, sources, err)
-	}
-	if _, _, err := embeddedResolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "missing", promptData{}); err == nil {
-		t.Fatal("missing embedded template unexpectedly rendered")
 	}
 }
 
@@ -736,15 +609,6 @@ func wppWrite(t *testing.T, root, rel, content string) {
 	}
 }
 
-func wppHasTool(entries []toolEntry, name string) bool {
-	for _, entry := range entries {
-		if entry.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
 func wppHasSource(sources []promptSource, label string) bool {
 	for _, source := range sources {
 		if source.Label == label {
@@ -812,12 +676,3 @@ func (e *wppEnv) ExecCommand(_ context.Context, command string, _ int, _ string,
 }
 
 var _ execenv.ExecutionEnvironment = (*wppEnv)(nil)
-
-type wppMemorySource struct{ files map[string][]byte }
-
-func (s wppMemorySource) ReadFile(name string) ([]byte, bool) {
-	data, ok := s.files[name]
-	return data, ok
-}
-
-var _ sectionSource = wppMemorySource{}
