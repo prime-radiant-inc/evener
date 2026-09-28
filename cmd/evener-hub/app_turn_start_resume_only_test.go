@@ -388,3 +388,74 @@ func TestTurnStartResumeOnlyFenceLaunchesDaemonAndDeliversTurn(t *testing.T) {
 		t.Fatalf("the folded resume did not clear the fence: %+v", state)
 	}
 }
+
+// TestTurnStartResumeExplicitRevalidatesAdmission pins the retry-time fence:
+// turnStartResumeExplicit must revalidate the FULL resume-only admission
+// immediately before the folded resume launches, not trust the admission marker
+// and ResumeRequired captured at the request's first admission. A Stop (or any
+// other recovery) can begin between that first admission and this retry, and
+// the explicit resume must never launch during the drain. This is the reviewer's
+// Medium finding: the marker + ResumeRequired alone are stale evidence by the
+// time resumeTurnStartThreadResume consults this predicate.
+func TestTurnStartResumeExplicitRevalidatesAdmission(t *testing.T) {
+	t.Run("a confirmed resume-only shape selects the explicit resume", func(t *testing.T) {
+		cfg := resumeOnlyRecoveryConfig(t)
+		const id = "folded-resume-confirmed"
+		stageResumeOnlyFenceConfirmedExit(t, cfg.ResumeLocks, id)
+		ref := "local:" + id
+		ctx := admitSessionRecovery(t.Context(), cfg, appwire.RequestMessage(
+			appwire.NewIntID(1), appwire.MethodTurnStart, appwire.TurnStartParams{Ref: ref}))
+		if !turnStartResumeExplicit(ctx, cfg, ref, "") {
+			t.Fatalf("turnStartResumeExplicit = false, want true for a confirmed resume-only shape")
+		}
+	})
+
+	t.Run("a Stop begun after admission refuses the explicit resume", func(t *testing.T) {
+		cfg := resumeOnlyRecoveryConfig(t)
+		const id = "folded-resume-stop-after-admit"
+		stageResumeOnlyFenceConfirmedExit(t, cfg.ResumeLocks, id)
+		ref := "local:" + id
+		ctx := admitSessionRecovery(t.Context(), cfg, appwire.RequestMessage(
+			appwire.NewIntID(1), appwire.MethodTurnStart, appwire.TurnStartParams{Ref: ref}))
+		// BeginForceStop without Finish leaves Stopping > 0: the Stop-drain window
+		// that opened after the turn/start was admitted.
+		finish := cfg.ResumeLocks.BeginForceStop([]string{id})
+		t.Cleanup(func() { finish.Finish(false) })
+		if state := cfg.ResumeLocks.RecoveryState(id); state.Stopping == 0 {
+			t.Fatalf("fixture did not stage the in-flight Stop: %+v", state)
+		}
+		if turnStartResumeExplicit(ctx, cfg, ref, "") {
+			t.Fatalf("turnStartResumeExplicit = true while a Stop drains, want false")
+		}
+	})
+
+	t.Run("an unconfirmed exit refuses the explicit resume", func(t *testing.T) {
+		cfg := resumeOnlyRecoveryConfig(t)
+		const id = "folded-resume-unconfirmed-exit"
+		stageResumeOnlyFence(t, cfg, id)
+		ref := "local:" + id
+		ctx := admitSessionRecovery(t.Context(), cfg, appwire.RequestMessage(
+			appwire.NewIntID(1), appwire.MethodTurnStart, appwire.TurnStartParams{Ref: ref}))
+		if turnStartResumeExplicit(ctx, cfg, ref, "") {
+			t.Fatalf("turnStartResumeExplicit = true for an unconfirmed exit, want false")
+		}
+	})
+
+	t.Run("the connection-recovery fence refuses the explicit resume", func(t *testing.T) {
+		cfg := resumeOnlyRecoveryConfig(t)
+		const id = "folded-resume-connection-fence"
+		// A connection admitted before the recovery is stale once the recovery
+		// advances the sequence (sessionConnectionRecoveryError's freshness rule).
+		ctx := admitSessionConnection(t.Context(), cfg)
+		stageResumeOnlyFenceConfirmedExit(t, cfg.ResumeLocks, id)
+		ref := "local:" + id
+		ctx = admitSessionRecovery(ctx, cfg, appwire.RequestMessage(
+			appwire.NewIntID(1), appwire.MethodTurnStart, appwire.TurnStartParams{Ref: ref}))
+		if err := sessionConnectionRecoveryError(ctx, cfg, ref, ""); err == nil {
+			t.Fatalf("fixture did not stage the connection fence")
+		}
+		if turnStartResumeExplicit(ctx, cfg, ref, "") {
+			t.Fatalf("turnStartResumeExplicit = true under the connection-recovery fence, want false")
+		}
+	})
+}

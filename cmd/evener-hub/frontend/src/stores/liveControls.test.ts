@@ -167,3 +167,28 @@ test("the press fence keeps a merely-resumable local session fenced", async () =
   expect(pressRefusal(ref, "send")).toBeUndefined();
   expect(pressLocalRecoveryFenced(ref)).toBe(true);
 });
+
+// RoboRev Medium (this round): the press-time fence reads the store's own
+// in-flight Stop (stoppingRefs) as its OWN clause, never only the restart
+// obligation. A stale thread refresh can clear restartBlockingObligations while
+// a local forceStop is still draining - the hub holds Stopping > 0 and refuses
+// every verb this helper guards for exactly that window - so the press fence
+// must hold on stoppingRefs alone. turn/interrupt is deliberately NOT routed
+// through this helper (the composer's Stop press reads pressRefusal(ref,
+// "stop") directly), so the drain window never blocks the interrupt that ends
+// it.
+test("pressLocalRecoveryFenced keeps its fence while a Stop drains, with no obligation", () => {
+  const ref = "local:draining";
+  // The obligation is already clear; only the in-flight Stop is left.
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
+  expect(pressLocalRecoveryFenced(ref)).toBe(false);
+  threadsStore.setState((s) => ({ stoppingRefs: new Set(s.stoppingRefs).add(ref) }));
+  expect(pressLocalRecoveryFenced(ref)).toBe(true);
+  // The Stop settles: the RPC resolved and cleared stoppingRefs.
+  threadsStore.setState((s) => {
+    const stoppingRefs = new Set(s.stoppingRefs);
+    stoppingRefs.delete(ref);
+    return { stoppingRefs };
+  });
+  expect(pressLocalRecoveryFenced(ref)).toBe(false);
+});

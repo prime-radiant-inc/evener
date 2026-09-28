@@ -326,8 +326,20 @@ func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref,
 // daemon (daemonRestartRequiredError) are all still refused, and every action
 // other than turn/start keeps the fence unchanged.
 func sessionAdmitsResumeRequired(ctx context.Context, ref, threadID string) bool {
+	admission, ok := sessionRecoveryAdmissionFor(ctx, ref, threadID)
+	return ok && admission.admitResumeRequired
+}
+
+// sessionRecoveryAdmissionFor returns the recovery admission that
+// admitSessionRecovery stamped on ctx for (ref, threadID), when it stamped one
+// for that session. The admission carries the request's captured epoch, exactly
+// what sessionActionRecoveryError compares against the live state's.
+func sessionRecoveryAdmissionFor(ctx context.Context, ref, threadID string) (sessionRecoveryAdmission, bool) {
 	admission, ok := ctx.Value(sessionRecoveryAdmissionKey{}).(sessionRecoveryAdmission)
-	return ok && admission.admitResumeRequired && admission.sessionID == deletionThreadID(ref, threadID)
+	if !ok || admission.sessionID != deletionThreadID(ref, threadID) {
+		return sessionRecoveryAdmission{}, false
+	}
+	return admission, true
 }
 
 // turnStartResumeExplicit reports whether a turn/start request's folded resume
@@ -343,8 +355,37 @@ func sessionAdmitsResumeRequired(ctx context.Context, ref, threadID string) bool
 // requires the confirmed exit (sessionActionRecoveryError's ExitConfirmed
 // guard), so such a request never reaches this path and Resume stays its way
 // out.
+//
+// It revalidates the WHOLE resume-only admission here, at the retry, not only
+// at the request's first admission: a Stop or another recovery can begin
+// between turn/start's admission and this retry, so the marker and
+// ResumeRequired captured then are stale evidence by now. Every clause the
+// carve-out reads is re-read against the live state - ResumeRequired, no Stop
+// draining (Stopping == 0), the confirmed exit (ExitConfirmed), the admission's
+// captured epoch (the same comparison sessionActionRecoveryError makes against
+// the request's epoch: an epoch advanced since admission cancels this action),
+// the connection-recovery fence, and an incompatible-protocol daemon whose
+// error case fails closed - so the folded resume never launches during a Stop
+// drain or under any other fence the fresh admission would refuse.
 func turnStartResumeExplicit(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) bool {
-	return sessionAdmitsResumeRequired(ctx, ref, threadID) && sessionRecoveryState(cfg, ref, threadID).ResumeRequired
+	admission, ok := sessionRecoveryAdmissionFor(ctx, ref, threadID)
+	if !ok || !admission.admitResumeRequired {
+		return false
+	}
+	state := sessionRecoveryState(cfg, ref, threadID)
+	if !state.ResumeRequired || state.Stopping > 0 || !state.ExitConfirmed {
+		return false
+	}
+	if state.Epoch != admission.epoch {
+		return false
+	}
+	if sessionConnectionRecoveryError(ctx, cfg, ref, threadID) != nil {
+		return false
+	}
+	if _, required, err := restartRequiredDaemon(ctx, cfg, ref, threadID); err != nil || required {
+		return false
+	}
+	return true
 }
 
 type sessionRecoveryAdmissionKey struct{}

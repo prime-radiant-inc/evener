@@ -92,15 +92,24 @@ export function recoveryFence(
   return { resumeOnly, stillFenced, fencedLocal: stillFenced && model.status.type === "notLoaded" };
 }
 
-// The same fence as a press reads it: the obligation as the store holds it
+// The same fence as a press reads it: the store's recovery state as it holds it
 // NOW, not as the subscribing render saw it (this module's own render-vs-press
 // rule - a Stop can arm the fence between the render that offered a control
-// and the press that follows). It is deliberately method-agnostic: none of its
-// callers presses the send (the composer's submit runs its own live read,
-// decideSubmitRoute over availabilityFor, which is where the resume-only
-// carve-out belongs), and every verb it does guard - steer, the queue-strip
-// actions, the recovery-fenced built-ins - is one the hub refuses for the
-// obligation's whole window, turn/start's carve-out notwithstanding.
+// and the press that follows). The fence it reads is TWO clauses, both off one
+// store snapshot: the restart obligation (restartBlockingObligations), and a
+// Stop this page started that is still draining (stoppingRefs) as its OWN
+// fence - a stale thread refresh can clear the obligation while the local
+// forceStop RPC is still in flight, and the hub holds Stopping > 0 (refusing
+// every verb this helper guards) for that whole window. It is deliberately
+// method-agnostic: none of its callers presses the send (the composer's submit
+// runs its own live read, decideSubmitRoute over availabilityFor, which is
+// where the resume-only carve-out belongs), and every verb it does guard -
+// steer, the queue-strip actions, the recovery-fenced built-ins - is one the
+// hub refuses for the obligation's or the drain's whole window, turn/start's
+// carve-out notwithstanding. turn/interrupt is NOT among them: the composer's
+// Stop press reads pressRefusal(ref, "stop") directly, so the interrupt that
+// ends a drain never passes through this fence.
 export function pressLocalRecoveryFenced(ref: string): boolean {
-  return isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref));
+  const state = threadsStore.getState();
+  return isLocalRecoveryFenced(ref, state.restartBlockingObligations.has(ref) || state.stoppingRefs.has(ref));
 }
