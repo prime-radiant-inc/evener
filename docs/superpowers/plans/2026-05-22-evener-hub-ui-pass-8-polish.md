@@ -32,7 +32,7 @@
 - `cmd/evener-hub/assets/settings.js` — toast on theme change + notification toggle save.
 - `cmd/evener-hub/assets/launchconfig.js` / `templates/partials/settings/launch-evener.html` + `project.html` — emit toast on successful save.
 - `cmd/evener-hub/assets/composer-attachments.js` (~line 339, 354) — toast on rejected files alongside the inline banner.
-- `cmd/evener-hub/assets/appwire.js` (~line 168–177) — fire connection-lost + connection-restored notifications.
+- `cmd/serf-hub/assets/appwire.js` (~line 168–177) — fire connection-lost + connection-restored notifications.
 - `cmd/evener-hub/assets/sidebar.js` (~line 63–71) — first-paint stagger; set `style.setProperty('--i', n)` on Live rows.
 - `cmd/evener-hub/templates/partials/credentials.html` (~line 137, 146, 175, 190) — toast on credential set/clear success/failure.
 - `cmd/evener-hub/templates/partials/spawn.html` (chips block, lines 12–37) — add `data-chip-overflow-host` attribute so `chip-overflow.js` can hook in.
@@ -698,7 +698,7 @@ git commit -m "ui(pass-8): toast on rejected attachments"
 ### Task 9: Wire toast + persistent banner in `appwire.js` (connection lost/restored)
 
 **Files:**
-- Modify: `cmd/evener-hub/assets/appwire.js:163-177`
+- Modify: `cmd/serf-hub/assets/appwire.js:163-177`
 - Modify: `cmd/evener-hub/assets/style.css` — add `.connection-banner` rule
 
 - [ ] **Step 1: Add `connection-restored` event surface alongside `connection-lost`**
@@ -834,7 +834,7 @@ Expected: PASS for all appwire tests (the new code is additive; the new `onConne
 - [ ] **Step 5: Commit**
 
 ```bash
-git add cmd/evener-hub/assets/appwire.js cmd/evener-hub/assets/style.css
+git add cmd/serf-hub/assets/appwire.js cmd/evener-hub/assets/style.css
 git commit -m "ui(pass-8): connection-lost toast + persistent banner; connection-restored toast"
 ```
 

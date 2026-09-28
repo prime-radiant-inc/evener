@@ -535,7 +535,7 @@ Only include `message.go` / `message_test.go` if changed.
 ### Task 5: AppWire Replay/Conversion Regression
 
 **Files:**
-- Modify: `cmd/evener-hub/assets/appwire.js` if replay drops `item.raw`.
+- Modify: `cmd/serf-hub/assets/appwire.js` if replay drops `item.raw`.
 - Test: existing hub JS and TUI reducer tests.
 
 **Interfaces:**
@@ -544,7 +544,7 @@ Only include `message.go` / `message_test.go` if changed.
 
 - [ ] **Step 1: Verify appwire conversion already forwards raw**
 
-Confirm `cmd/evener-hub/assets/appwire.js` maps command-execution `item.raw` into `TOOL_CALL_END.tool_state` in all thread replay and item-completed paths. The expected code shape is:
+Confirm `cmd/serf-hub/assets/appwire.js` maps command-execution `item.raw` into `TOOL_CALL_END.tool_state` in all thread replay and item-completed paths. The expected code shape is:
 
 ```js
 tool_state: item.raw || ""
@@ -565,7 +565,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit only if code/test changed**
 
 ```bash
-git add cmd/evener-hub/assets/appwire.js cmd/evener-hub/jstest/test-tool-renderers.js
+git add cmd/serf-hub/assets/appwire.js cmd/evener-hub/jstest/test-tool-renderers.js
 git commit -m "test(appwire): preserve grouped tool raw metadata"
 ```
 
