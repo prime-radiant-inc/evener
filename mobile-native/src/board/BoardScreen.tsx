@@ -1000,6 +1000,12 @@ function Board({
 	);
 }
 
+/** A category's name is at most 80 characters, the journal's own bound. */
+const CATEGORY_NAME_TOO_LONG = "Category names can be up to 80 characters.";
+function categoryNameTooLong(name: string): boolean {
+	return Array.from(name).length > 80;
+}
+
 /** Rename and Delete for the pinned categories (spec 7.1), through the
  * Board's one organization journal. ⋯ shows only while a change can go out:
  * connected, and no change pending or unresolved. The journal's own error
@@ -1017,8 +1023,8 @@ function pinnedCategoryMenu(organization: BoardOrganization, catalog: () => read
 					onPress: (value?: string) => {
 						const name = (value ?? "").trim();
 						if (!name || name === section.name) return;
-						if (Array.from(name).length > 80) {
-							Alert.alert("Category names can be up to 80 characters.");
+						if (categoryNameTooLong(name)) {
+							Alert.alert(CATEGORY_NAME_TOO_LONG);
 							return;
 						}
 						if (!organizationOpen(organization) || !listed(section.id)) return;
@@ -1125,8 +1131,8 @@ function chooseCategory(
 					onPress: (value?: string) => {
 						const name = (value ?? "").trim();
 						if (!name) return;
-						if (Array.from(name).length > 80) {
-							toast.show({ text: "Category names can be up to 80 characters." });
+						if (categoryNameTooLong(name)) {
+							toast.show({ text: CATEGORY_NAME_TOO_LONG });
 							return;
 						}
 						pin({ sectionName: name }, name);
