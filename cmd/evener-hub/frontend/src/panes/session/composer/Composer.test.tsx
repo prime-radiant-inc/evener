@@ -3394,6 +3394,50 @@ test("a merely-resumable stopped local session offers Send and sends turn/start"
   expect(calls[0]?.params).toMatchObject({ ref, input: [{ type: "text", text: "omt" }] });
 });
 
+// A merely-resumable session that also holds delivery-uncertain messages is NOT
+// the clean resume case: the hub's explicit Resume still reconciles those rows
+// (the connection/uncertain-message shape), and the resume-only carve-out must
+// not offer a Send whose folded resume would skip that reconciliation. The
+// composer keeps Send disabled and the chord sends no turn/start.
+test("a merely-resumable local session with uncertain messages keeps Send disabled", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:stopped-uncertain";
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  await act(async () => {
+    const input = [{ type: "text", text: "uncertain" }];
+    const outbox = await storage.enqueueIntent({
+      targetRef: ref,
+      method: "turn/start",
+      payload: { ref, input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
+    await refreshPendingTurnsProjection(ref);
+    await flushPendingTurnsProjectionForTests();
+  });
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "omt");
+  await waitFor(() => expect(submitButton().disabled).toBe(true));
+  // The chord reaches the form by the same route the button does; it refuses too.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
 // A snapshot that advertises send is not the hub's resume-fenced shape: the
 // resume requirement clears send:false together with resumeRequired
 // (applyThreadResumeRequirement). The client-side obligation still fences it -

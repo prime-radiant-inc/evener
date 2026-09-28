@@ -40,7 +40,6 @@ import {
   mutationErrorData,
   notificationRoutingKey,
   resolvePendingEscalation,
-  SHUT_DOWN_STATUSES,
   WireError,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
@@ -130,6 +129,14 @@ export interface ThreadsStoreState {
   mutationReconciliationFailures: ReadonlySet<string>;
   restartBlockingObligations: ReadonlyMap<string, symbol>;
   mutationAuthorityRefs: ReadonlySet<string>;
+  // Refs with a Force stop RPC this page started still in flight. The hub holds
+  // Stopping > 0 for exactly that window and refuses even turn/start for the
+  // drain (cmd/evener-hub's sessionActionRecoveryError), so a notLoaded snapshot
+  // taken mid-drain must not be read as the merely-resumable shape
+  // (isResumeOnlyLocal). Cleared when the RPC settles. A stop another client
+  // started is not observable here (no wire signal carries Stopping), so that
+  // rare window degrades to the same bounded refusal the normal fence covers.
+  stoppingRefs: ReadonlySet<string>;
   // Per-ref ring of live-notification arrival timestamps, for
   // widgets/cadence's Cadence trace - see appendFrameTime below. Deliberately
   // NOT part of ThreadModel/the reducer: it is display-liveness bookkeeping
@@ -1109,6 +1116,19 @@ function cancelPendingUserIntents(ref: string): void {
   userIntentStopGenerations.set(ref, ++userIntentStopSequence);
 }
 
+// Marks/clears a Force stop this page started as in flight. A fresh Set each
+// change (never mutating the initial state's Set) so a subscriber selects on
+// the boolean and re-renders when the drain begins and ends.
+function markStopping(ref: string, stopping: boolean): void {
+  threadsStore.setState((state) => {
+    if (state.stoppingRefs.has(ref) === stopping) return state;
+    const stoppingRefs = new Set(state.stoppingRefs);
+    if (stopping) stoppingRefs.add(ref);
+    else stoppingRefs.delete(ref);
+    return { stoppingRefs };
+  });
+}
+
 // The explicit Resume action is the one user intent that still starts a daemon
 // directly, and a Stop acknowledged while its reconnect or post-resume
 // hydration is in flight must cancel it. Production fences that action through
@@ -1818,33 +1838,59 @@ export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): b
 
 // A LOCAL session that only needs a resume. The hub expresses its resume
 // requirement as one wire fence: applyThreadResumeRequirement overlays
-// resumeRequired AND clears capabilities.send together on a shut-down snapshot
-// (a daemon that has exited), and no hub read path sets resumeRequired without
-// also fencing send. turn/start now folds that resume into the send
-// (cmd/evener-hub's sessionActionRecoveryError turn/start carve-out), so the
-// composer offers Send and no standalone Resume action. Deliberately narrow -
-// it is NOT the whole recovery fence. A Stop in flight / active drain arms the
-// same obligation on a LIVE status (active or idle, which SHUT_DOWN_STATUSES
-// excludes) and still refuses turn/start, a restartRequired daemon needs the
-// older daemon stopped first, and a snapshot whose wire still advertises send is
-// not the hub's resume-fenced shape; all keep the fence.
+// resumeRequired AND clears capabilities.send together (send === false) on a
+// snapshot, and no hub read path sets resumeRequired without also fencing send.
+// turn/start folds that resume into the send (cmd/evener-hub's
+// sessionActionRecoveryError turn/start carve-out), so the composer offers Send
+// and no standalone Resume action. Deliberately narrow - it is NOT the whole
+// recovery fence:
+//
+//   - status must be "notLoaded", the cold exited shape a past read returns
+//     (app_recovery_persistence_test pins it). "closed"/"ended" carry other
+//     states and reconciliation, and a live Stop still reads active/idle.
+//   - capabilities.send must be exactly false, not merely missing: an older or
+//     non-local snapshot that never advertised send is not this shape.
+//   - signals.uncertainMessages must be false: while delivery-uncertain rows
+//     exist the hub's explicit Resume still runs reconciliation, so the send is
+//     not the whole story and the Resume affordance stays.
+//   - signals.stopInFlight must be false: a Force stop this page started holds
+//     the hub's Stopping > 0, which refuses even turn/start, so a snapshot taken
+//     mid-drain is not the foldable shape.
+//
+// A Stop in flight / active drain arms the same obligation on a LIVE status and
+// still refuses turn/start, a restartRequired daemon needs the older daemon
+// stopped first, and a stale-connection snapshot is still refused by the
+// connection fence; all keep the fence.
+export interface ResumeOnlySignals {
+  // The store's delivery-uncertain rows (blockedUnknown).
+  uncertainMessages?: boolean;
+  // A Force stop this page started is still draining (stoppingRefs).
+  stopInFlight?: boolean;
+}
+
 export function isResumeOnlyLocal(
   ref: string,
   model: Pick<ThreadModel, "resumeRequired" | "status" | "capabilities">,
+  signals: ResumeOnlySignals = {},
 ): boolean {
   return (
     ref.startsWith("local:") &&
     model.resumeRequired === true &&
-    model.capabilities.send !== true &&
-    SHUT_DOWN_STATUSES.has(model.status.type)
+    model.capabilities.send === false &&
+    model.status.type === "notLoaded" &&
+    signals.uncertainMessages !== true &&
+    signals.stopInFlight !== true
   );
 }
 
 // isResumeOnlyLocal over the store's current model for ref, for the press-time
-// paths that hold a ref but not a model (enqueueMutationIntent).
+// paths that hold a ref but not a model (enqueueMutationIntent). It can read the
+// store's own in-flight Stop; delivery-uncertain rows live in the composer's
+// projection, so the composer's disabled Send is what keeps that shape out.
 function resumeOnlyLocalModel(ref: string): boolean {
-  const model = threadsStore.getState().threads.get(ref);
-  return model !== undefined && isResumeOnlyLocal(ref, model);
+  const state = threadsStore.getState();
+  const model = state.threads.get(ref);
+  return model !== undefined && isResumeOnlyLocal(ref, model, { stopInFlight: state.stoppingRefs.has(ref) });
 }
 
 // The verbs the shared admission fences, each mapped to the refusal its own
@@ -3236,6 +3282,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   mutationReconciliationFailures: new Set(),
   restartBlockingObligations: new Map(),
   mutationAuthorityRefs: new Set(),
+  stoppingRefs: new Set(),
   frameTimes: new Map(),
   hydrations: new Map(),
   watchedThreads: new Map(),
@@ -3826,28 +3873,35 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async forceStop(ref) {
     cancelPendingUserIntents(ref);
-    // Write-first (stop-cancellation-outbox §4): the cancellation lands
-    // durably before the stop RPC, so a storage failure aborts the stop here
-    // with the daemon untouched and the user free to retry.
-    await cancelUnattemptedMutations(ref);
     try {
-      await requireClient().forceStop(ref);
-    } catch (error) {
-      // The signal may have succeeded despite failed exit confirmation.
-      // Retain the recovery fence until a fresh snapshot proves it can clear.
+      // The hub holds Stopping > 0 for this window and refuses turn/start, so
+      // the resume-only carve-out must not apply to a snapshot taken now.
+      markStopping(ref, true);
+      // Write-first (stop-cancellation-outbox §4): the cancellation lands
+      // durably before the stop RPC, so a storage failure aborts the stop here
+      // with the daemon untouched and the user free to retry.
+      await cancelUnattemptedMutations(ref);
+      try {
+        await requireClient().forceStop(ref);
+      } catch (error) {
+        // The signal may have succeeded despite failed exit confirmation.
+        // Retain the recovery fence until a fresh snapshot proves it can clear.
+        threadsStore.setState((state) => ({
+          restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
+        }));
+        // Reconcile the hub's recovery requirement without delaying this error.
+        void threadsStore
+          .getState()
+          .refreshThread(ref)
+          .catch(() => {});
+        throw error;
+      }
       threadsStore.setState((state) => ({
         restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
       }));
-      // Reconcile the hub's recovery requirement without delaying this error.
-      void threadsStore
-        .getState()
-        .refreshThread(ref)
-        .catch(() => {});
-      throw error;
+    } finally {
+      markStopping(ref, false);
     }
-    threadsStore.setState((state) => ({
-      restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
-    }));
   },
 
   async shutdown(ref) {

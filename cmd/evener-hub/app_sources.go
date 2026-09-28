@@ -325,6 +325,19 @@ func sessionAdmitsResumeRequired(ctx context.Context, ref, threadID string) bool
 	return ok && admission.admitResumeRequired && admission.sessionID == deletionThreadID(ref, threadID)
 }
 
+// turnStartResumeExplicit reports whether a turn/start request's folded resume
+// must run as an explicit (non-automatic) resume. That is exactly the request
+// the resume-only carve-out admitted (sessionAdmitsResumeRequired) for a
+// session the hub still fences with ResumeRequired: the automatic resume
+// refuses while the obligation stands (app_threadlifecycle.go's
+// `automatic && state.ResumeRequired`), so sending a prompt only resumes the
+// session when the send's own resume owns the fence and clears it. Every other
+// turn/start keeps the automatic resume, and a request that is not a turn/start
+// (or names a different session) never qualifies.
+func turnStartResumeExplicit(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) bool {
+	return sessionAdmitsResumeRequired(ctx, ref, threadID) && sessionRecoveryState(cfg, ref, threadID).ResumeRequired
+}
+
 type sessionRecoveryAdmissionKey struct{}
 
 type sessionRecoveryAdmission struct {

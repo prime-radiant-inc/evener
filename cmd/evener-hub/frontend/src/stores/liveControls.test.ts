@@ -1,9 +1,9 @@
-import type { Thread } from "@evener/appwire-client";
+import type { Thread, ThreadCapabilities } from "@evener/appwire-client";
 import { NO_ACTIVE_TURN, STEER_UNAVAILABLE } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { connectionStore } from "./connection";
-import { controlsFor, pressRefusal } from "./liveControls";
+import { controlsFor, pressLocalRecoveryFenced, pressRefusal, recoveryFence } from "./liveControls";
 import { resetThreadsStoreForTests, threadsStore } from "./threads";
 
 const CAPABILITIES = { send: true, steer: true, interrupt: true, queue: true } as Thread["evener"]["capabilities"];
@@ -78,4 +78,83 @@ test("controlsFor is sessionControls over the model's status, capabilities and q
   expect(controls.steer).toBe(false);
   // Idle with a parked queue drains.
   expect(controls.drain).toBe(true);
+});
+
+// The resume-only carve-out as the predicate reads it: only the hub's exact
+// resume-fenced shape (local, notLoaded, resumeRequired, send exactly false) is
+// the foldable send. A snapshot that never advertised send is NOT that shape -
+// the trigger `send !== true` treated a missing capability as the fence, which
+// the reviewer's Low finding flagged.
+test("isResumeOnlyLocal requires send === false, not merely missing", () => {
+  const base = { resumeRequired: true, status: { type: "notLoaded" } } as const;
+  expect(recoveryFence("local:s", { ...base, capabilities: {} as ThreadCapabilities }, true).resumeOnly).toBe(false);
+  expect(
+    recoveryFence("local:s", { ...base, capabilities: { send: false } as ThreadCapabilities }, true).resumeOnly,
+  ).toBe(true);
+});
+
+// Certainty: the carve-out spans only the cold exited status and excludes a
+// stopped snapshot whose outbox still holds delivery-uncertain rows, which the
+// hub's explicit Resume reconciles. A closed/ended status is not this shape.
+test("isResumeOnlyLocal is the notLoaded shape with no uncertain messages", () => {
+  const capabilities = { send: false } as ThreadCapabilities;
+  expect(
+    recoveryFence("local:s", { resumeRequired: true, status: { type: "closed" }, capabilities }, true).resumeOnly,
+  ).toBe(false);
+  expect(
+    recoveryFence("local:s", { resumeRequired: true, status: { type: "notLoaded" }, capabilities }, true).resumeOnly,
+  ).toBe(true);
+  expect(
+    recoveryFence("local:s", { resumeRequired: true, status: { type: "notLoaded" }, capabilities }, true, {
+      uncertainMessages: true,
+    }).resumeOnly,
+  ).toBe(false);
+  // A Force stop this page started is still draining: the hub refuses even
+  // turn/start for the window, so the shape is not foldable either.
+  expect(
+    recoveryFence("local:s", { resumeRequired: true, status: { type: "notLoaded" }, capabilities }, true, {
+      stopInFlight: true,
+    }).resumeOnly,
+  ).toBe(false);
+  // A fenced-but-not-resume-only shape is still fenced, and still reached by
+  // the stopped-local card.
+  const uncertain = recoveryFence(
+    "local:s",
+    { resumeRequired: true, status: { type: "notLoaded" }, capabilities },
+    true,
+    { uncertainMessages: true },
+  );
+  expect(uncertain.stillFenced).toBe(true);
+  expect(uncertain.fencedLocal).toBe(true);
+});
+
+// The press-time fence is method-aware: turn/start is the one method the hub
+// admits for a merely-resumable session, so a Send press is not refused for
+// that shape; every other action and every other session keeps the fence.
+test("the press fence exempts turn/start only for a merely-resumable local session", async () => {
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  const ref = "local:resume-only";
+  fake.on("thread/read", () => ({
+    thread: {
+      ...thread("notLoaded"),
+      id: ref,
+      sessionId: ref,
+      evener: {
+        ref,
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        capabilities: { ...CAPABILITIES, send: false },
+        queue: { revision: 0, depth: 0 },
+      },
+    } as Thread,
+  }));
+  await threadsStore.getState().ensureThread(ref);
+  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+  // Send is offered, so its press-time reading agrees and does not refuse.
+  expect(pressRefusal(ref, "send")).toBeUndefined();
+  // turn/start alone is exempt from the press fence; the bare call - every
+  // other action and state - still reads the fence.
+  expect(pressLocalRecoveryFenced(ref, "turn/start")).toBe(false);
+  expect(pressLocalRecoveryFenced(ref)).toBe(true);
 });

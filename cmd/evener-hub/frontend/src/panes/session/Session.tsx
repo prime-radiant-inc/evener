@@ -30,7 +30,7 @@ import { navigate, paneToURL } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
-import { controlsFor, isResumeOnlyLocal } from "../../stores/liveControls";
+import { controlsFor, recoveryFence } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { resumeStopBaseline, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
@@ -295,6 +295,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // transcript…" forever.
   const deletedRef = useThreadsStore((s) => !model && s.deletedRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
+  const stopping = useThreadsStore((s) => s.stoppingRefs.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
   const reconciliationFailed = useThreadsStore((s) => s.mutationReconciliationFailures.has(ref));
   const navigation = useNavigationStore();
@@ -520,8 +521,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // resumes it. It drops the standalone Resume action and its notice. The other
   // two causes of the obligation keep the notice - a restartRequired daemon and
   // a session with uncertain messages still carry reconciliation the Resume
-  // action performs - so only the clean resume case is carved out.
-  const resumeOnlyLocal = isResumeOnlyLocal(ref, model);
+  // action performs - so only the clean resume case is carved out. The uncertain
+  // -message signal is read here so a resumable snapshot whose outbox still
+  // holds delivery-uncertain rows keeps both the notice and the fence.
+  const resumeOnlyLocal = recoveryFence(ref, model, restartPending, {
+    uncertainMessages: blockedMutations.length > 0,
+    stopInFlight: stopping,
+  }).resumeOnly;
   const showRestartNotice =
     model.status.type === "restartRequired" ||
     (restartPending && !resumeOnlyLocal) ||

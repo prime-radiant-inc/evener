@@ -3,11 +3,16 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // A session that merely needs resume no longer refuses turn/start: sending a
@@ -144,5 +149,109 @@ func TestTurnStartDispatchesThroughResumeOnlyFence(t *testing.T) {
 	startResp, ok := resp.(appwire.TurnStartResponse)
 	if !ok || startResp.Turn.ID != "turn_after_resume" {
 		t.Fatalf("turn/start response = %#v, want the source's turn", resp)
+	}
+}
+
+// stageResumeOnlyFenceConfirmedExit is stageResumeOnlyFence plus a proven
+// process exit, the shape a completed Force stop leaves: ResumeRequired set,
+// Stopping back to zero, ExitConfirmed true. A real resume launch requires the
+// confirmed exit (resumeThreadLockedLaunch refuses an unconfirmed one), so the
+// end-to-end test below needs it; the admission-only tests above do not.
+func stageResumeOnlyFenceConfirmedExit(t *testing.T, locks *hubcore.ResumeLocks, id string) {
+	t.Helper()
+	finish := locks.BeginForceStop([]string{id})
+	if err := locks.PersistForceStop([]string{id}, id); err != nil {
+		t.Fatal(err)
+	}
+	finish.Finish(true)
+	if err := locks.ConfirmForceStop(id); err != nil {
+		t.Fatal(err)
+	}
+	state := locks.RecoveryState(id)
+	if !state.ResumeRequired || state.Stopping != 0 || !state.ExitConfirmed {
+		t.Fatalf("fixture did not stage the confirmed resume-only state: %+v", state)
+	}
+}
+
+// TestTurnStartResumeOnlyFenceLaunchesDaemonAndDeliversTurn is the end-to-end
+// shape the resume-only carve-out exists for, and the reviewer's High finding
+// made into a test: a genuinely NOT-LIVE local session under the ResumeRequired
+// fence. Sending a prompt must be admitted past sessionActionRecoveryError, the
+// folded resume must run as an EXPLICIT resume (the automatic path refuses
+// while ResumeRequired stands, so the prompt would otherwise never be
+// delivered), and the prompt must reach the launched daemon.
+//
+// Unlike TestTurnStartDispatchesThroughResumeOnlyFence this drives a real
+// spawner, roster and daemon - resolveTurnStartSource is not stubbed - so it
+// exercises the resume path itself. With the resume left automatic the launch
+// is refused ("session recovery requires a fresh explicit thread/resume") and
+// the prompt is never delivered.
+func TestTurnStartResumeOnlyFenceLaunchesDaemonAndDeliversTurn(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	ref := "local:" + sessionID
+
+	locks := hubcore.NewResumeLocks()
+	stageResumeOnlyFenceConfirmedExit(t, locks, sessionID)
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+	})
+	var gotPrompt string
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		gotPrompt = inputTextForTest(params.Input)
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_after_resume"}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalls++
+			if req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
+			entry := rendezvous.Entry{
+				PID:        108,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past, ResumeLocks: locks})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", ExpectedInstanceID: sessionID, Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
+		t.Fatalf("turn/start under the resume-only fence: %v", err)
+	}
+	if gotPrompt != "resume work" {
+		t.Fatalf("prompt=%q, want the send delivered after the folded resume", gotPrompt)
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume launches=%d, want 1", resumeCalls)
+	}
+	if state := locks.RecoveryState(sessionID); state.ResumeRequired {
+		t.Fatalf("the folded resume did not clear the fence: %+v", state)
 	}
 }

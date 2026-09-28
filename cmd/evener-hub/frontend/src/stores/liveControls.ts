@@ -12,7 +12,7 @@
 // their own boundaries.
 
 import { NO_ACTIVE_TURN, type SessionControls, sessionControls, type ThreadModel } from "@evener/appwire-client";
-import { isLocalRecoveryFenced, isResumeOnlyLocal, threadsStore } from "./threads";
+import { isLocalRecoveryFenced, isResumeOnlyLocal, type ResumeOnlySignals, threadsStore } from "./threads";
 
 export type SessionControl = keyof SessionControls["reason"];
 
@@ -28,10 +28,15 @@ export function liveThreadModel(ref: string): ThreadModel | undefined {
 
 // Why a press on `control` is refused against the session's live controls, or
 // undefined when it may run. A session the store no longer holds has no turn
-// to act on.
+// to act on. `send` is the one control the hub's resume-only carve-out admits:
+// a merely-resumable local session folds its resume into turn/start, so the
+// press-time reading agrees with the offered Send instead of returning
+// SEND_UNAVAILABLE for the fenced-but-resumable shape. Every other control and
+// session keeps its own reason.
 export function pressRefusal(ref: string, control: SessionControl): string | undefined {
   const model = liveThreadModel(ref);
   if (!model) return NO_ACTIVE_TURN;
+  if (control === "send" && isResumeOnlyLocal(ref, model, { stopInFlight: stopInFlightLocal(ref) })) return undefined;
   return controlsFor(model).reason[control];
 }
 
@@ -45,10 +50,50 @@ export function pressRefusal(ref: string, control: SessionControl): string | und
 // adds the shape its own surface needs.
 export { isLocalRecoveryFenced, isResumeOnlyLocal };
 
+// The recovery fence as one reading, so its three consumers cannot drift:
+//   resumeOnly  - the hub admits a folded turn/start (isResumeOnlyLocal).
+//   stillFenced - the fence still blocks Send/Queue for any other shape.
+//   fencedLocal - a stopped local snapshot still fenced, whose follow-up card
+//                 keeps the control row reachable for the retained draft.
+// `signals` is the store's delivery-uncertain / in-flight-Stop reading (see
+// isResumeOnlyLocal): a caller that can see it passes it so a resumable session
+// whose reconciliation is pending keeps the fence and the Resume affordance.
+export interface RecoveryFenceReading {
+  resumeOnly: boolean;
+  stillFenced: boolean;
+  fencedLocal: boolean;
+}
+
+export function recoveryFence(
+  ref: string,
+  model: Pick<ThreadModel, "resumeRequired" | "status" | "capabilities">,
+  restartObligated: boolean,
+  signals: ResumeOnlySignals = {},
+): RecoveryFenceReading {
+  const resumeOnly = isResumeOnlyLocal(ref, model, signals);
+  const stillFenced = isLocalRecoveryFenced(ref, restartObligated) && !resumeOnly;
+  return { resumeOnly, stillFenced, fencedLocal: stillFenced && model.status.type === "notLoaded" };
+}
+
+// Whether a Force stop this page started is still draining for ref, read from
+// the store at the press. Delivery-uncertain rows live in the composer's own
+// projection, so they stay a caller-passed signal.
+function stopInFlightLocal(ref: string): boolean {
+  return threadsStore.getState().stoppingRefs.has(ref);
+}
+
 // The same fence as a press reads it: the obligation as the store holds it
 // NOW, not as the subscribing render saw it (this module's own render-vs-press
 // rule - a Stop can arm the fence between the render that offered a control
-// and the press that follows).
-export function pressLocalRecoveryFenced(ref: string): boolean {
-  return isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref));
+// and the press that follows). `method` names the action the press will run:
+// turn/start is the one method the hub admits for a merely-resumable session
+// (isResumeOnlyLocal), so it alone is exempt; a caller that names no method
+// gets the fence for every action and state.
+export function pressLocalRecoveryFenced(ref: string, method?: "turn/start"): boolean {
+  if (!isLocalRecoveryFenced(ref, threadsStore.getState().restartBlockingObligations.has(ref))) return false;
+  if (method === "turn/start") {
+    const model = liveThreadModel(ref);
+    if (model && isResumeOnlyLocal(ref, model, { stopInFlight: stopInFlightLocal(ref) })) return false;
+  }
+  return true;
 }
