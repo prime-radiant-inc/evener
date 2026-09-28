@@ -50,7 +50,7 @@ import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationDispatcher } from "./mutationDispatcher";
 import { MutationOutboxIndexedDB, MutationStorageTimeoutError } from "./mutationOutboxIndexedDB";
-import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
+import { holdIndexedDBEvent, holdNextWriteTransaction } from "./testing/stalledIndexedDB";
 import {
   appendFrameTime,
   ConflictError,
@@ -10948,19 +10948,37 @@ test("a Stop in flight arms the recovery fence for the drain window", async () =
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
   const stop = deferred<void>();
   const requested = nextHandledRequest(fake, "evener/thread/forceStop", () => stop.promise);
-  const pending = threadsStore.getState().forceStop(ref);
-  await requested;
-  // Mid-drain: the hub holds Stopping > 0 and refuses even turn/start, so the
-  // store's own admission must refuse the send here rather than dispatch it.
-  expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
-  expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
-  await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
-    "Send isn't available until this session is resumed",
-  );
-  expect(await storage.listOutbox(ref)).toEqual([]);
-  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
-  stop.resolve();
-  await pending;
+  // Hold the cancellation write open. The drain window begins at the click,
+  // and this is the window BEFORE that write completes - the write is an await,
+  // and the in-flight Stop is not itself a fence, so a send offered here must
+  // still be refused rather than enqueued and dispatched.
+  const hold = holdNextWriteTransaction(["outbox", "sequences"]);
+  try {
+    const pending = threadsStore.getState().forceStop(ref);
+    await hold.reached;
+    expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+      "Send isn't available until this session is resumed",
+    );
+    expect(await storage.listOutbox(ref)).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    hold.release();
+    await requested;
+    // Mid-drain: the hub holds Stopping > 0 and refuses even turn/start, so the
+    // store's own admission must refuse the send here rather than dispatch it.
+    expect(threadsStore.getState().stoppingRefs.has(ref)).toBe(true);
+    expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true);
+    await expect(threadsStore.getState().send(ref, "text")).rejects.toThrow(
+      "Send isn't available until this session is resumed",
+    );
+    expect(await storage.listOutbox(ref)).toEqual([]);
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+    stop.resolve();
+    await pending;
+  } finally {
+    hold.release();
+  }
 });
 
 // RoboRev Medium (all three reviewers): the store-wide resume-only predicate
@@ -11372,6 +11390,9 @@ describe("Stop cancellation as durable outbox state", () => {
 
     await expect(threadsStore.getState().forceStop("ref_a")).rejects.toThrow("storage unavailable");
     expect(forceStopRpc).not.toHaveBeenCalled();
+    // The abort touched no daemon and leaves the user free to retry: the fence
+    // armed with the drain is restored to its captured state (none was armed).
+    expect(threadsStore.getState().restartBlockingObligations.has("ref_a")).toBe(false);
 
     failWrites = false;
     await threadsStore.getState().forceStop("ref_a");

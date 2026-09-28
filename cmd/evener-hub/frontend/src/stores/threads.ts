@@ -1852,9 +1852,10 @@ export function isLocalRecoveryFenced(ref: string, restartObligated: boolean): b
 // requirement is set, no Stop is draining, the exit is confirmed, and no
 // connection fence applies). The client no longer reads resumeRequired plus a
 // cleared send capability as this shape - that overlay (applyThreadResumeRequirement)
-// sets both for a Stop drain, an unconfirmed force-stop exit, and the
-// connection-recovery fence too, three shapes whose turn/start the hub still
-// refuses, so inferring from them offered Send where the hub would refuse it.
+// sets both for a Stop drain, an unconfirmed force-stop exit, the
+// connection-recovery fence, and an incompatible-protocol daemon too, four
+// shapes whose turn/start the hub still refuses, so inferring from them offered
+// Send where the hub would refuse it.
 //
 // Deliberately narrow - it is NOT the whole recovery fence. Every clause below
 // excludes a shape the hub would refuse or one whose send would starve:
@@ -3971,21 +3972,37 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // The hub holds Stopping > 0 for this window and refuses turn/start, so
       // the resume-only carve-out must not apply to a snapshot taken now.
       markStopping(ref, true);
-      // Write-first (stop-cancellation-outbox §4): the cancellation lands
-      // durably before the stop RPC, so a storage failure aborts the stop here
-      // with the daemon untouched and the user free to retry.
-      await cancelUnattemptedMutations(ref);
-      // Arm the recovery fence BEFORE the stop RPC, not after it settles: the
-      // hub holds Stopping > 0 for the RPC's whole window and refuses even
+      // Arm the recovery fence synchronously with the drain, BEFORE the first
+      // await: the hub holds Stopping > 0 for the whole window and refuses even
       // turn/start there (cmd/evener-hub's sessionActionRecoveryError), so the
       // store's own admission - currentDispatchClient, enqueueMutationIntent,
       // and every control surface that reads this obligation - must fence that
       // window too, not only the restartRequired state the drain leaves behind.
-      // The durable cancellation above has already succeeded, so no path below
-      // can abort the stop with the daemon untouched and strand this armed.
+      // The in-flight Stop is not itself a fence, so arming after the
+      // cancellation write's await would leave that write's window unfenced.
+      // Capture the current obligation so an abort that touches no daemon can
+      // restore exactly it; a Stop that proceeds keeps the fence.
+      const previousObligation = threadsStore.getState().restartBlockingObligations.get(ref);
       threadsStore.setState((state) => ({
         restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
       }));
+      try {
+        // Write-first (stop-cancellation-outbox §4): the cancellation lands
+        // durably before the stop RPC, so a storage failure aborts the stop here
+        // with the daemon untouched and the user free to retry.
+        await cancelUnattemptedMutations(ref);
+      } catch (error) {
+        // The stop aborted before the daemon was touched, so the user is free
+        // to retry: restore the obligation armed above to exactly its captured
+        // state (delete the key when there was none) before rethrowing.
+        threadsStore.setState((state) => {
+          const restartBlockingObligations = new Map(state.restartBlockingObligations);
+          if (previousObligation === undefined) restartBlockingObligations.delete(ref);
+          else restartBlockingObligations.set(ref, previousObligation);
+          return { restartBlockingObligations };
+        });
+        throw error;
+      }
       try {
         await requireClient().forceStop(ref);
       } catch (error) {

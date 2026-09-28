@@ -413,6 +413,17 @@ export function resetPendingTurnsStoreForTests(): void {
   });
 }
 
+// Test-only: publish an already-durable outbox record into this projection
+// store synchronously, in the same task as a press, so a test can stage the
+// window between a render and a press - the render-time read a component holds
+// cannot have caught up, while the live hasBlockedUnknown/readMutationPersistence
+// reads have. Mirrors resetPendingTurnsStoreForTests.
+export function publishOutboxRecordForTests(record: MutationOutboxRecord): void {
+  pendingTurnsStore.setState((state) => ({
+    outbox: new Map(state.outbox).set(record.clientMutationId, record),
+  }));
+}
+
 // Keep the singleton projection warm when an authoritative pendingMutations
 // snapshot changes even if no pending component is currently mounted.
 threadsStore.subscribe((state, previous) => {

@@ -315,9 +315,9 @@ export interface ThreadModel {
   // admission would actually succeed, which is why the client keys its Send
   // offer on this bit rather than inferring the shape from resumeRequired plus
   // a missing send capability - that same overlay also clears send for a Stop
-  // drain, an unconfirmed force-stop exit, and the connection-recovery fence.
-  // Snapshot-only: a resume that clears the fence re-hydrates the model without
-  // it.
+  // drain, an unconfirmed force-stop exit, the connection-recovery fence, and
+  // a daemon on an incompatible protocol. Snapshot-only: a resume that clears
+  // the fence re-hydrates the model without it.
   resumeOnlyFoldable?: boolean;
   modelProvider: string;
   model: string;

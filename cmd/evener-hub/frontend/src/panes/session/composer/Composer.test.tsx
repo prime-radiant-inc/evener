@@ -40,7 +40,11 @@ import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
 import { draftStorageKey, readComposerDraft, readDraft, writeComposerDraft } from "./draft";
-import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import {
+  publishOutboxRecordForTests,
+  refreshPendingTurnsProjection,
+  resetPendingTurnsStoreForTests,
+} from "./queue/pendingTurnsStore";
 import {
   flushPendingTurnsProjectionForTests,
   startFlushPastEmptyRoundForTests,
@@ -3405,6 +3409,62 @@ test("a merely-resumable local session with uncertain messages keeps Send disabl
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
+// The submit re-derivation reads delivery uncertainty LIVE, like stopInFlight
+// and queuedNonSend beside it (and like resumeOnlyLocalModel, which enqueue and
+// dispatch use): a blockedUnknown row published between the render and the
+// press must route the press to the refusal, not fold the resume into a send
+// that the store's own fence would then refuse. The store update and the press
+// run in one synchronous task, so the render-time read cannot have caught up.
+test("a blockedUnknown row published after the render routes the press to the refusal", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const ref = "local:stopped-late-uncertain";
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      resumeOnlyFoldable: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "omt");
+  // A durable blockedUnknown row lands in storage, but the projection store is
+  // NOT refreshed: the render still reads no blocked rows, so Send is offered.
+  // It is a turn/queue row, not a send, so it does not itself count as a
+  // pending send (ownPendingSend) - only the uncertainty signal is under test.
+  const input = [{ type: "text", text: "uncertain" }];
+  const record = await storage.enqueueIntent({
+    targetRef: ref,
+    threadId: `thr_${ref}`,
+    method: "turn/queue",
+    payload: { ref, input },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input },
+  });
+  await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+  const blocked = await storage.getOutbox(record.clientMutationId);
+  const submit = submitButton();
+  expect(submit.disabled).toBe(false);
+  act(() => {
+    publishOutboxRecordForTests(blocked!);
+    fireEvent.click(submit);
+  });
+  await flushPendingTurnsProjectionForTests();
+  // The submit itself refused (route none): the alternative is routing to send
+  // and being refused a step later at enqueue with a different toast.
+  await waitFor(() =>
+    expect(getToasts().map((toast) => toast.text)).toContain("Send is not available for this session"),
+  );
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
 // Part 3: during the resume window a SECOND send must wait for the first, not
 // route its own turn/start. availabilityFor's resume-only branch returns
 // canSend: !pendingSend, matching the ended-session substitution's
@@ -3446,7 +3506,10 @@ test("a merely-resumable local session with a pending send refuses a second send
   const editor = textarea();
   await user.click(editor);
   await user.type(editor, "second");
-  await user.click(submitButton());
+  // The pending send keeps Send unavailable during the resume window: the
+  // button is disabled, and the chord still routes the press to the refusal.
+  expect(submitButton().disabled).toBe(true);
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
   await flushPendingTurnsProjectionForTests();
   // The pending send keeps Send unavailable during the resume window: the press
   // mints no second turn/start, so the outbox still holds only the seeded send.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -52,7 +53,7 @@ func stageResumeOnlyFence(t *testing.T, cfg hubcore.WebConfig, id string) {
 func TestTurnStartAdmitsResumeRequiredButOtherActionsDoNot(t *testing.T) {
 	cfg := resumeOnlyRecoveryConfig(t)
 	const id = "resume-only-admission"
-	stageResumeOnlyFence(t, cfg, id)
+	stageResumeOnlyFenceConfirmedExit(t, cfg.ResumeLocks, id)
 	ref := "local:" + id
 	epoch := sessionRecoveryState(cfg, ref, "").Epoch
 
@@ -92,6 +93,25 @@ func TestTurnStartStillRefusedWhileStopInFlight(t *testing.T) {
 		appwire.NewIntID(1), appwire.MethodTurnStart, appwire.TurnStartParams{Ref: ref, ClientMutationID: "send-during-stop"}))
 	if err := sessionActionRecoveryError(turnCtx, cfg, ref, "", epoch); !isSessionRecoveryAdmissionError(err) {
 		t.Fatalf("turn/start admission = %v, want the explicit-resume refusal while a Stop is in flight", err)
+	}
+}
+
+// The unconfirmed force-stop exit is NOT the resume-only shape: the carve-out
+// requires the confirmed exit that resumeOnlyFoldable, the wire bit, also
+// requires (sessionActionRecoveryError's ExitConfirmed guard). A turn/start
+// pressed while the exit is still unconfirmed is refused with the
+// explicit-resume fence, and Resume stays the way out.
+func TestTurnStartRefusedForUnconfirmedForceStopExit(t *testing.T) {
+	cfg := resumeOnlyRecoveryConfig(t)
+	const id = "unconfirmed-exit-admission"
+	stageResumeOnlyFence(t, cfg, id)
+	ref := "local:" + id
+	epoch := sessionRecoveryState(cfg, ref, "").Epoch
+
+	turnCtx := admitSessionRecovery(t.Context(), cfg, appwire.RequestMessage(
+		appwire.NewIntID(1), appwire.MethodTurnStart, appwire.TurnStartParams{Ref: ref, ClientMutationID: "send-unconfirmed-exit"}))
+	if err := sessionActionRecoveryError(turnCtx, cfg, ref, "", epoch); !isSessionRecoveryAdmissionError(err) {
+		t.Fatalf("turn/start admission = %v, want the explicit-resume refusal while the force-stop exit is unconfirmed", err)
 	}
 }
 
@@ -171,6 +191,39 @@ func TestApplyThreadResumeRequirementStampsResumeOnlyFoldable(t *testing.T) {
 			t.Fatalf("ResumeOnlyFoldable = true under the connection-recovery fence, want false")
 		}
 	})
+
+	t.Run("a daemon on an incompatible protocol is not foldable", func(t *testing.T) {
+		runDir := t.TempDir()
+		const id = "foldable-restart-required"
+		// A live daemon the authenticated probe reports as incompatible: every
+		// turn/start is refused with daemonRestartRequiredError, so the bit must
+		// be false even though the resume requirement and the confirmed exit are
+		// both in place.
+		writeRendezvous(t, runDir, rendezvous.Entry{
+			PID:       os.Getpid(),
+			Protocol:  "evener-appwire-v4",
+			Endpoint:  protocolMismatchPeer(t),
+			SourceID:  "local",
+			ThreadID:  id,
+			SessionID: id,
+		})
+		roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
+		roster.Refresh()
+		cfg := hubcore.WebConfig{RunDir: runDir, Roster: roster, ResumeLocks: hubcore.NewResumeLocks()}
+		stageResumeOnlyFenceConfirmedExit(t, cfg.ResumeLocks, id)
+		if _, required, err := restartRequiredDaemon(t.Context(), cfg, "local:"+id, ""); err != nil || !required {
+			t.Fatalf("fixture did not establish an incompatible daemon: required=%v err=%v", required, err)
+		}
+		ctx := admitSessionConnection(t.Context(), cfg)
+
+		thread := applyThreadResumeRequirement(ctx, cfg, "local:"+id, "", appwire.Thread{})
+		if !thread.Evener.ResumeRequired {
+			t.Fatalf("overlay = %+v, want ResumeRequired set with an incompatible daemon", thread.Evener)
+		}
+		if thread.Evener.ResumeOnlyFoldable {
+			t.Fatalf("ResumeOnlyFoldable = true for a restart-required daemon, want false")
+		}
+	})
 }
 
 // TestTurnStartDispatchesThroughResumeOnlyFence proves the carve-out is not just
@@ -179,7 +232,7 @@ func TestApplyThreadResumeRequirementStampsResumeOnlyFoldable(t *testing.T) {
 func TestTurnStartDispatchesThroughResumeOnlyFence(t *testing.T) {
 	cfg := resumeOnlyRecoveryConfig(t)
 	const id = "resume-only-dispatch"
-	stageResumeOnlyFence(t, cfg, id)
+	stageResumeOnlyFenceConfirmedExit(t, cfg.ResumeLocks, id)
 	ref := "local:" + id
 
 	oldResolve, oldResume := resolveTurnStartSource, resumeTurnStartThread

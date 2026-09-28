@@ -303,7 +303,7 @@ func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref,
 		return err
 	}
 	state := sessionRecoveryState(cfg, ref, threadID)
-	if state.Stopping > 0 || (state.ResumeRequired && !sessionAdmitsResumeRequired(ctx, ref, threadID)) {
+	if state.Stopping > 0 || (state.ResumeRequired && (!state.ExitConfirmed || !sessionAdmitsResumeRequired(ctx, ref, threadID))) {
 		return sessionResumeRequiredError()
 	}
 	if state.Epoch != epoch {
@@ -320,10 +320,11 @@ func sessionActionRecoveryError(ctx context.Context, cfg hubcore.WebConfig, ref,
 // ResumeRequired fence — so a session that only needs a resume is admitted
 // rather than refused with the explicit-resume fence. prepareRelay's automatic
 // resume is NOT this path; it refuses while the obligation stands. This is the
-// ONLY carve-out: a Stop in flight (Stopping > 0), a stale admission epoch, the
-// connection fence, and an incompatible daemon (daemonRestartRequiredError) are
-// all still refused, and every action other than turn/start keeps the fence
-// unchanged.
+// ONLY carve-out: a Stop in flight (Stopping > 0), an unconfirmed force-stop
+// exit (ExitConfirmed false — the same shape resumeOnlyFoldable, the wire bit,
+// refuses), a stale admission epoch, the connection fence, and an incompatible
+// daemon (daemonRestartRequiredError) are all still refused, and every action
+// other than turn/start keeps the fence unchanged.
 func sessionAdmitsResumeRequired(ctx context.Context, ref, threadID string) bool {
 	admission, ok := ctx.Value(sessionRecoveryAdmissionKey{}).(sessionRecoveryAdmission)
 	return ok && admission.admitResumeRequired && admission.sessionID == deletionThreadID(ref, threadID)
@@ -337,7 +338,11 @@ func sessionAdmitsResumeRequired(ctx context.Context, ref, threadID string) bool
 // `automatic && state.ResumeRequired`), so sending a prompt only resumes the
 // session when the send's own resume owns the fence and clears it. Every other
 // turn/start keeps the automatic resume, and a request that is not a turn/start
-// (or names a different session) never qualifies.
+// (or names a different session) never qualifies. A session whose force-stop
+// exit is still unconfirmed is among the still-refused causes: the carve-out
+// requires the confirmed exit (sessionActionRecoveryError's ExitConfirmed
+// guard), so such a request never reaches this path and Resume stays its way
+// out.
 func turnStartResumeExplicit(ctx context.Context, cfg hubcore.WebConfig, ref, threadID string) bool {
 	return sessionAdmitsResumeRequired(ctx, ref, threadID) && sessionRecoveryState(cfg, ref, threadID).ResumeRequired
 }

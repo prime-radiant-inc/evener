@@ -69,6 +69,7 @@ import {
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import {
+  hasBlockedUnknown,
   hasQueuedNonSend,
   type InputAttachment,
   type ResumeOnlySignals,
@@ -1336,7 +1337,13 @@ export function Composer({ ref, focused }: ComposerProps) {
         ownPendingSend(pendingTurnEntries(ref, "send")),
         threadsStore.getState().restartBlockingObligations.has(ref),
         {
-          uncertainMessages: blockedMutations.length > 0,
+          // Read live, like stopInFlight and queuedNonSend beside it: the
+          // render-time blockedMutations snapshot cannot have caught a row
+          // published between the render and the press, while the store-wide
+          // predicate resumeOnlyLocalModel (which enqueue and dispatch use) reads
+          // hasBlockedUnknown fresh. Routing both sides through the same live
+          // read keeps the press from folding a resume ahead of an uncertain row.
+          uncertainMessages: hasBlockedUnknown(ref),
           stopInFlight: threadsStore.getState().stoppingRefs.has(ref),
           queuedNonSend: hasQueuedNonSend(ref),
         },
@@ -1733,7 +1740,9 @@ export function Composer({ ref, focused }: ComposerProps) {
                           disabled={
                             actionPending ||
                             !hasContent ||
-                            !(ended ? (canSendWhenEnded || fence.resumeOnly) && !fence.stillFenced : canCompose)
+                            !(ended
+                              ? (canSendWhenEnded || fence.resumeOnly) && canCompose && !fence.stillFenced
+                              : canCompose)
                           }
                         >
                           <span className={CLASS.submitLabel}>Send</span>
