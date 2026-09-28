@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/transcriptindex"
 )
 
 // TestCovPrettifyModelDisplayName exercises name prettification.
@@ -675,7 +676,8 @@ func TestCovSendHubFork(t *testing.T) {
 	if !ok || msg.err != nil || msg.resp.Ref != "local:01FORK" || msg.aside {
 		t.Fatalf("fork result = %#v", msg)
 	}
-	if got.Ref != ref.String() || got.SourceTurnID != "7" || got.EditedInput != "edited" || got.Label != "test" {
+	wantKey := transcriptindex.ItemKey(forkEntryKeyTurnID, appwire.ThreadItemPosition{Entry: 7})
+	if got.Ref != ref.String() || got.SourceItemKey != wantKey || got.EditedInput != "edited" || got.Label != "test" {
 		t.Fatalf("thread/fork params = %#v", got)
 	}
 }

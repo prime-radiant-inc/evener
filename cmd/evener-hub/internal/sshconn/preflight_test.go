@@ -162,7 +162,7 @@ func TestParseLaunchCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseLaunchCheck: %v", err)
 	}
-	if lc.Protocol != "evener-appwire-v5" || lc.Version != "dev" || len(lc.LaunchFlags) != 1 || lc.LaunchFlags[0] != "api-log" {
+	if lc.Protocol != "evener-appwire-v6" || lc.Version != "dev" || len(lc.LaunchFlags) != 1 || lc.LaunchFlags[0] != "api-log" {
 		t.Fatalf("launchCheck = %+v", lc)
 	}
 
@@ -177,9 +177,9 @@ func TestParseLaunchCheck(t *testing.T) {
 	// reading it as a mismatch would send the host into a deploy whose identity was
 	// never established.
 	for _, out := range []string{
-		`{"protocol":"evener-appwire-v5"}`,
-		`{"protocol":"evener-appwire-v5","version":""}`,
-		`{"protocol":"evener-appwire-v5","version":"   "}`,
+		`{"protocol":"evener-appwire-v6"}`,
+		`{"protocol":"evener-appwire-v6","version":""}`,
+		`{"protocol":"evener-appwire-v6","version":"   "}`,
 	} {
 		if _, err := parseLaunchCheck([]byte(out)); !errors.Is(err, ErrPreflightDecode) {
 			t.Fatalf("parseLaunchCheck(%s) err = %v, want ErrPreflightDecode", out, err)
@@ -189,7 +189,7 @@ func TestParseLaunchCheck(t *testing.T) {
 
 func TestIsProtocolMismatchOutput(t *testing.T) {
 	yes := []string{
-		`unsupported appwire protocol "evener-appwire-v4" (supported "evener-appwire-v5")`,
+		`unsupported appwire protocol "evener-appwire-v4" (supported "evener-appwire-v6")`,
 		`evener launch-check protocol "x" does not match Hub protocol "y"`,
 	}
 	for _, s := range yes {
