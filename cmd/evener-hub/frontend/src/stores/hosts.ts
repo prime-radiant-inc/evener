@@ -65,6 +65,16 @@ interface HostsStoreState {
    * converges instead of sitting on "connecting" forever.
    */
   refresh: () => Promise<void>;
+  /**
+   * Forced quiet re-read: issues a NEW list request even while a background
+   * refresh is in flight. `refresh` coalesces on the in-flight promise, and
+   * that response was captured before the caller's refusal proved the
+   * snapshot stale - a retry that waited on it would echo the same stale
+   * answer (the deploy/restart stale-entry retry is the caller; guardedMutation
+   * reads quietReRead directly for the same reason). Still a quiet read: no
+   * loading flip, and a failure keeps the last snapshot.
+   */
+  reReadForced: () => Promise<void>;
   add: (entry: HostEntry) => Promise<HostRow>;
   update: (params: { name: string; entry: HostEntry }) => Promise<HostRow>;
   connect: (name: string) => Promise<void>;
@@ -581,6 +591,8 @@ export const hostsStore = create<HostsStoreState>((set) => ({
       }
     });
   },
+
+  reReadForced: () => quietReRead(),
 
   add: async (entry) => {
     // The wire carries one entry object (component 08 slice 2's shape, the

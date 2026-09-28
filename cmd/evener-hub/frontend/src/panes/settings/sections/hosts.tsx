@@ -3,9 +3,9 @@ import { useEffect, useState } from "react";
 import {
   deployRefusalAction,
   type HostOpRecovery,
-  hostOpRefusalBlocksRetry,
   hostOpsStore,
   planNoTokenAction,
+  restartRefusalAction,
   useHostOpsStore,
 } from "../../../stores/hostOps";
 import { hostsStore, useHostsStore } from "../../../stores/hosts";
@@ -690,21 +690,38 @@ function RestartDialog({ row, onClose }: HostOpDialogProps) {
     hostOpsStore.getState().beginRestart(name, { generation: row.generation, incarnationId: row.incarnationId });
   }, [name, row.generation, row.incarnationId]);
 
+  async function finishRestart(): Promise<void> {
+    if (hostOpsStore.getState().restarts[name]?.phase === "started") {
+      toasts.push("success", `Restart started for ${name}`);
+      onClose();
+    }
+  }
+
   async function handleRestart(): Promise<void> {
     setBusy(true);
     try {
       await hostOpsStore.getState().restart(name);
-      if (hostOpsStore.getState().restarts[name]?.phase === "started") {
-        toasts.push("success", `Restart started for ${name}`);
-        onClose();
-      }
+      await finishRestart();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleConnectAndRestart(): Promise<void> {
+    setBusy(true);
+    try {
+      await hostOpsStore.getState().connectAndRestart(name);
     } finally {
       setBusy(false);
     }
   }
 
   const refusal = attempt?.refusal ?? null;
-  const blocked = refusal !== null && hostOpRefusalBlocksRetry(refusal.kind);
+  // The recovery the refusal earns (restartRefusalAction): the bare Restart
+  // stays disabled exactly when a plain repeat would refuse again or loop -
+  // the fenced/busy arms and the detached host, whose way out is Connect.
+  const recovery: HostOpRecovery = refusal !== null ? restartRefusalAction(refusal.kind) : "retry";
+  const blocked = recovery === "none" || recovery === "connect";
   return (
     <Dialog
       open
@@ -727,9 +744,16 @@ function RestartDialog({ row, onClose }: HostOpDialogProps) {
         {`Restarting "${name}" drops its channel while the hub restarts and reattaches; sessions on the remote host itself are untouched.`}
       </p>
       {refusal !== null && (
-        <p className={CLASS.formError} role="alert">
-          {refusal.message}
-        </p>
+        <>
+          <p className={CLASS.formError} role="alert">
+            {refusal.message}
+          </p>
+          {recovery === "connect" && (
+            <Button size="sm" variant="quiet" disabled={busy} onClick={() => void handleConnectAndRestart()}>
+              Connect and restart
+            </Button>
+          )}
+        </>
       )}
     </Dialog>
   );

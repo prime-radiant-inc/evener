@@ -787,3 +787,54 @@ test("a restart stale-entry re-reads and retries once with the fresh pair", asyn
   });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 });
+
+test("a host-detached restart offers Connect and restart, never a bare repeat", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let advanced = false;
+  fake.on("evener/host/list", () => ({
+    hosts: [
+      {
+        ...row({ name: "beta", address: "b.example" }),
+        generation: advanced ? 4 : 1,
+        incarnationId: advanced ? "inc-4" : "inc-1",
+      },
+    ],
+  }));
+  let restarts = 0;
+  fake.on("evener/host/restart", () => {
+    restarts += 1;
+    if (restarts === 1) {
+      throw new WireError("no live attached channel", -32014, { evenerErrorInfo: "host-detached" });
+    }
+    return { id: "op-13", clientOperationId: "client-op-13", state: "pending" };
+  });
+  fake.on("evener/host/attach", () => ({ attached: true, host: "beta" }));
+  render(<HostsSection sectionId="hosts" />);
+  const betaRow = (await screen.findByText("beta")).closest("li")!;
+  await user.click(within(betaRow).getByRole("button", { name: "Restart" }));
+  const dialog = await screen.findByRole("dialog", { name: "Restart beta?" });
+  await user.click(within(dialog).getByRole("button", { name: "Restart" }));
+
+  await waitFor(() => expect(within(dialog).getByText(/The host has no live attached channel\./)).toBeTruthy());
+  // No bare repeat: the confirm is disabled and the supported recovery is the
+  // Connect action.
+  expect((within(dialog).getByRole("button", { name: "Restart" }) as HTMLButtonElement).disabled).toBe(true);
+
+  // The registration moved while the host was detached.
+  advanced = true;
+  await user.click(within(dialog).getByRole("button", { name: "Connect and restart" }));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/attach")).toHaveLength(1));
+  // The confirmation is re-seeded against the current pair.
+  const confirm = await within(dialog).findByRole("button", { name: "Restart" });
+  await waitFor(() => expect((confirm as HTMLButtonElement).disabled).toBe(false));
+  await user.click(confirm);
+
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "evener/host/restart")).toHaveLength(2));
+  const second = fake.calls.filter((c) => c.method === "evener/host/restart")[1]!;
+  expect(second.params as { generation: number; incarnationId: string }).toMatchObject({
+    generation: 4,
+    incarnationId: "inc-4",
+  });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});

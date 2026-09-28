@@ -213,6 +213,23 @@ export function hostOpRefusalBlocksRetry(kind: HostOpRefusalKind): boolean {
   return kind === "host-busy-operation" || kind === "remnant-open";
 }
 
+/** restartRefusalAction maps an `evener/host/restart` refusal onto its
+ * recovery: a gone channel Connects and re-seeds the confirmation against the
+ * registry's current pair; the fenced/busy arms never bare-retry; everything
+ * else may repeat the request (a stale-entry re-reads and re-peeks first, and
+ * a conflicting-operation-id rotates the key). */
+export function restartRefusalAction(kind: HostOpRefusalKind): HostOpRecovery {
+  switch (kind) {
+    case "host-detached":
+      return "connect";
+    case "remnant-open":
+    case "host-busy-operation":
+      return "none";
+    default:
+      return "retry";
+  }
+}
+
 // --- per-host state ----------------------------------------------------------
 
 export type HostPlanPhase =
@@ -266,6 +283,10 @@ interface HostOpsStoreState {
   discardPlan: (name: string) => void;
   beginRestart: (name: string, pair: HostMutationPair) => void;
   restart: (name: string) => Promise<void>;
+  /** The `host-detached` restart recovery: Connect, then re-seed the
+   * confirmation against the registry's current pair, never the refused
+   * attempt's pair. */
+  connectAndRestart: (name: string) => Promise<void>;
   discardRestart: (name: string) => void;
   resetForTests: () => void;
 }
@@ -304,6 +325,14 @@ const PLAN_CONNECTION_CHANGED_MESSAGE = "The hub connection changed while this p
 function planConnectionChangedArm(): HostPlanPhase {
   return { phase: "error", refusal: { kind: "unknown", message: PLAN_CONNECTION_CHANGED_MESSAGE }, recovery: "replan" };
 }
+
+/** The refusal a restart records when the registry answers no current pair for
+ * the host - a failed forced read, or a name no longer listed: there is
+ * nothing to confirm against until the registry answers. */
+const RESTART_PAIR_UNKNOWN_REFUSAL: HostOpRefusal = {
+  kind: "unknown",
+  message: "The host registry answered no current pair for this host; re-read the host list and retry.",
+};
 function restartIsCurrent(name: string, sequence: number, client: AppwireClientLike): boolean {
   return restartSequence(name) === sequence && connectionStore.getState().client === client;
 }
@@ -567,18 +596,26 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         });
         return;
       }
-      // The pair the operator saw moved: re-read the registry and retry ONCE
-      // with the pair it now answers, under a fresh operation ID - the retry
-      // shape stores/hosts.ts's guardedMutation uses. A second stale-entry
-      // surfaces instead of looping (only a person can decide what is next).
-      await hostsStore.getState().refresh();
+      // The pair the operator saw moved: take a FORCED registry read and retry
+      // ONCE with the pair it now answers, under a fresh operation ID - the
+      // retry shape stores/hosts.ts's guardedMutation uses (its own quietReRead
+      // reads past the coalescing refresh the same way; a poll already in
+      // flight carries the pre-move snapshot and would consume the one retry
+      // without moving). A second stale-entry surfaces instead of looping
+      // (only a person can decide what is next).
+      await hostsStore.getState().reReadForced();
       if (!restartIsCurrent(name, sequence, client)) return;
       const current = currentPairFor(name);
       if (current === undefined) {
         set((previous) => {
           const held = previous.restarts[name];
           if (held === undefined || held.phase === "started") return previous;
-          return { restarts: { ...previous.restarts, [name]: { ...held, phase: "failed", refusal } } };
+          return {
+            restarts: {
+              ...previous.restarts,
+              [name]: { ...held, phase: "failed", refusal: RESTART_PAIR_UNKNOWN_REFUSAL },
+            },
+          };
         });
         return;
       }
@@ -619,6 +656,43 @@ export const hostOpsStore = create<HostOpsStoreState>((set, get) => ({
         });
       }
     }
+  },
+
+  connectAndRestart: async (name) => {
+    try {
+      await hostsStore.getState().connect(name);
+    } catch (error) {
+      const refusal = hostOpRefusal(error);
+      set((previous) => {
+        const current = previous.restarts[name];
+        if (current === undefined || current.phase === "started") return previous;
+        return { restarts: { ...previous.restarts, [name]: { ...current, phase: "failed", refusal } } };
+      });
+      return;
+    }
+    // Connect succeeded: re-seed the confirmation against what the registry NOW
+    // answers. The refused attempt's pair is exactly what must not be resubmitted
+    // blindly, so the operator confirms against the current pair instead.
+    await hostsStore.getState().reReadForced();
+    const pair = currentPairFor(name);
+    set((previous) => {
+      const current = previous.restarts[name];
+      if (current === undefined || current.phase === "started") return previous;
+      if (pair === undefined) {
+        return {
+          restarts: {
+            ...previous.restarts,
+            [name]: { ...current, phase: "failed", refusal: RESTART_PAIR_UNKNOWN_REFUSAL },
+          },
+        };
+      }
+      return {
+        restarts: {
+          ...previous.restarts,
+          [name]: { phase: "confirm", pair, operationId: createSecureUUID(), refusal: null },
+        },
+      };
+    });
   },
 
   discardRestart: (name) => {
