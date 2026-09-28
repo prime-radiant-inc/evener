@@ -142,10 +142,14 @@ export class NavigationPages<T> {
 		if (this.state.stale && !this.state.loading) this.scheduleReread();
 	}
 	/** Drop the read in flight and stop re-reading on the owner's behalf until
-	 * resume(); a re-read the hub still owes waits for it. */
+	 * resume(); a re-read the hub still owes waits for it. The dropped read may
+	 * never settle (a request the transport silently dropped while the app was
+	 * backgrounded), so the flight is abandoned here rather than left running:
+	 * otherwise every later invalidation for the page would be dropped too. */
 	cancel() {
 		this.request++;
 		this.paused = true;
+		this.rereads.abandon();
 		this.publish({ loading: false });
 		if (this.state.stale) this.scheduleReread();
 	}

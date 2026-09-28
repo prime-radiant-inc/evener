@@ -1666,6 +1666,61 @@ test("retrying missing provider setup discovers a local server started afterward
   expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();
 });
 
+// #2227: the spawn form's retry is the other entry point into retryHostRead.
+// After the registry's own read failed, the retry re-reads the registry, and the
+// host's listing follows from the recovery effect in useHostInstances - exactly
+// once, never twice.
+test("a spawn retry that recovers the registry reads the selected host's listing exactly once", async () => {
+  const user = setupUser();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  let registryDown = true;
+  const fake = readyClient((f) => {
+    f.on("evener/host/list", () => {
+      if (registryDown) throw new WireError("registry unavailable", -32000);
+      return {
+        hosts: [
+          {
+            name: "buildbox",
+            generation: 1,
+            incarnationId: "inc-1",
+            origin: "hub.toml",
+            attached: true,
+            midAttach: false,
+            removed: false,
+          },
+        ],
+      };
+    });
+    f.on("evener/host/request", (params) => routedDiscoveryDefault((params as HostRequestParams).method));
+  });
+  // The registry's own read failed (a settings visit, say): the spawn form's
+  // provider check reads that failure and offers the registry's read to retry.
+  hostsStore.setState({ load: { phase: "error", message: "registry unavailable" } });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await settled();
+
+  // The read is held while the registry has failed: nothing went out yet.
+  const listingReads = () =>
+    fake.calls.filter(
+      (call) =>
+        call.method === "evener/host/request" && (call.params as HostRequestParams).method === "evener/instance/list",
+    );
+  expect(listingReads()).toHaveLength(0);
+
+  registryDown = false;
+  await user.click(screen.getByRole("button", { name: "Retry provider check" }));
+  await settled();
+
+  // Exactly one read across the one recovery: not two, and not zero.
+  expect(listingReads()).toHaveLength(1);
+});
+
 test("successful keyless testing refreshes availability without an auth notification", async () => {
   const user = setupUser();
   let available = false;

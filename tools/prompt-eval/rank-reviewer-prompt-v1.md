@@ -16,4 +16,4 @@ Bad writing:
 - Claims something the transcript does not back up.
 - Is the wrong length: padded when the task was small, or too thin when the task had real content to report.
 
-For each set, rank every packet from best to worst writing, then score each one 1 to 5 (3 good, 2 acceptable, 1 poor). Quote the worst packet's worst sentence, and say the single most important thing about the set.
+For each set, rank every packet from best to worst writing. Quote the worst packet's worst sentence, and say the single most important thing about the set.

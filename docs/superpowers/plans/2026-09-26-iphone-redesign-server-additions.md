@@ -54,7 +54,7 @@
 | 14-15 | Activity pulse (S5a daemon counters, S5b hub read) | S5 | full, in the S4-S5-S3 plan | none |
 | 16-17 | Seen-through marker (S4a turn-ended time, S4b store and method) | S4 | full, in the S4-S5-S3 plan | PR 1 |
 | 18-19 | Subagent tallies (S3a daemon counts, S3b rows) | S3 | full, in the S4-S5-S3 plan | PR 1 |
-| 20-21 | Scoped approvals (S12a daemon grants, S12b wire and hub) | S12 | design | none |
+| 20-21 | Scoped approvals (S12a daemon grants, S12b wire and hub) | S12 | Not needed (Jesse, 2026-09-28): approvals don't come up in real use | none |
 | 22-23 | Hub notices feed (S11a derived notices, S11b sign-in state) | S11 | full, in the S11-S14 plan | none |
 | 24-25 | Message-text search (S14a index, S14b results) | S14 | full, in the S11-S14 plan | PR 25 needs PR 24 |
 | 26-27 | Remote document and image proxying: renumbered, see PR 35 | S7 | moved | |
@@ -62,12 +62,12 @@
 | 29 | Hub-stored launch recipes: renumbered, see PR 39 | S8 | moved | |
 | 30-31 | Direct subagent stop (S6a daemon method, S6b hub routing and capability) | S6 | full, in the S15-S16-S6 plan | PR 31 needs PR 30 |
 | 32 | A session's sandbox mode and network on the thread read | S15 | full, in the S15-S16-S6 plan | none |
-| 33 | Transcript records for queued delivery and approval decisions | S16 | full, in the S15-S16-S6 plan | none |
+| 33 | Transcript records for queued delivery and approval decisions | S16 | Deferred (Jesse, 2026-09-28) | none |
 | 34 | A document read names its revision | S9 | full, in the S7-S9 plan | none |
 | 35 | Documents in remote sessions (images already proxy, #2462) | S7 | full, in the S7-S9 plan | PR 34 |
 | 36 | The model's display name on rows | S17 | full, in the S17-S18-S8 plan | none |
-| 37-38 | A new worktree branch at launch (S18a `evener serve --worktree`, S18b `worktreeBranch` on thread/start and `evener/worktree/check`) | S18 | full, in the S17-S18-S8 plan | PR 38 needs PR 37 |
-| 39 | Hub-stored launch recipes | S8 | full, in the S17-S18-S8 plan | none |
+| 37-38 | A new worktree branch at launch (S18a `evener serve --worktree`, S18b `worktreeBranch` on thread/start and `evener/worktree/check`) | S18 | Dropped (Jesse, 2026-09-28): worktrees are made by the agent's own tool | PR 38 needs PR 37 |
+| 39 | Hub-stored launch recipes | S8 | Deferred (Jesse, 2026-09-28): the phone remembers the latest settings instead | none |
 
 Documents and artifacts named in the final message (the last part of S1) wait for the shared-artifacts work to reach main; no PR is planned for it here and the phone keeps its fallback (no chips).
 
@@ -1382,6 +1382,7 @@ type NavigationTaskProgress struct {
 
 ## S12: Scoped approvals (PRs 20-21, design level)
 
+- **Status.** Not needed (Jesse, 2026-09-28): approvals don't come up in real use.
 - **Adds.** "Allow all of ~/sites/docs · For the rest of this session" on the approval dock (spec 8.4), so a batch job does not ask 214 times.
 - **Today.** Approval re-runs the one denied call with a grant carried on the context and a throwaway environment clone (`agent/session_escalation.go:216`; `agent/session_tools.go:923-935`; `agent/execenv/local.go:457-478`). No session-scoped grant exists; `isGranted` is exact equality (`agent/execenv/securepath.go:116-120`); nothing persists across a restart.
 - **Daemon (PR 20).** A session grant list of `(folder, access)` consulted at the two containment checks (`agent/execenv/securepath_fdops_unix.go:91-105` for reads, `:231-245` for writes) as a `containingRoot`-style prefix check (`securepath.go:379`), for the access kind the escalation was for. The folder is the denied path's parent directory. Refuse a scope that is the filesystem root or the home directory itself, and never cover a sensitive path (those never escalate). Jesse's ruling: the grant persists across a daemon restart if that is easy; if it turns out not to be, the lane reports back before building a heavy persistence mechanism.
@@ -1454,6 +1455,7 @@ type NavigationTaskProgress struct {
 
 ## S8: Hub-stored launch recipes (PR 39, full plan elsewhere)
 
+- **Status.** Deferred (Jesse, 2026-09-28): the phone remembers the latest settings instead.
 - **Plan.** Written in full in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s17-s18-s8.md` (PR 39, rulings 14 to 21). It departs from the design below: the methods are `evener/launch/recipes/get` and `evener/launch/recipes/set` (a whole-list replace against an expected revision, not a patch); a recipe is thread/start's own fields, `{id, name, source?, cwd, modelProvider?, model?, reasoningEffort?, launchOverrides?, newWorktree?}`, with no `order` field (the list's order is the order) and a yes-or-no `newWorktree` in place of a branch; `launchOverrides` is limited to the six settings the New session sheets own; and "Same as last time" stays on each device. The keybindings and transcript-display stores' shared file code moves into one helper the new store uses.
 
 - **Adds.** Recipes that follow you across devices and appear on the web: host, project, model, effort, plugins, access and branch (spec 11), with list, edit, reorder and delete (spec 12).
@@ -1474,6 +1476,7 @@ type NavigationTaskProgress struct {
 
 ## S18: A new worktree branch at launch (PRs 37-38, full plan elsewhere)
 
+- **Status.** Dropped (Jesse, 2026-09-28): worktrees are made by the agent's own tool.
 - **Plan.** Written in full in `docs/superpowers/plans/2026-09-28-iphone-redesign-server-s17-s18-s8.md` (PRs 37 and 38, rulings 6 to 13).
 - **Adds.** New session's Branch row: "a new worktree branch (name field)" (spec 11).
 - **Design.** The daemon makes the lane with the code `manage_worktree create` already runs: PR 37 adds `evener serve --worktree <branch>` for a fresh session, before it listens, and `launch-check` advertises the flag. PR 38 adds `ThreadStartParams.worktreeBranch`, the read-only `evener/worktree/check` (the Branch row's problem: `invalidName`, `notGitRepository` or `branchExists`), a typed `worktreeBranchRefused` refusal, and a check of a remote host before forwarding, so a host too old for the field refuses instead of starting on its current branch. The lane lives on the host that runs the session at `<state dir for the project>/worktrees/<project id>/<branch>`; the name passes the worktree name rule before any git call, and every git call is an argument vector.

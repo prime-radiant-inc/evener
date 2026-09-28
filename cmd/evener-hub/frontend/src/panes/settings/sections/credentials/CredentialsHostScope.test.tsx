@@ -733,6 +733,81 @@ test("the unverifiable state's retry re-reads the registry and restores verifica
   expect(await screen.findByText("on-beta")).toBeTruthy();
 });
 
+// #2227: one recovery must issue exactly ONE read of the host's listing. When
+// the registry's own read is what failed, Retry re-reads the registry and the
+// host's listing follows from the recovery effect in useHostInstances - the
+// retry must not issue a second read alongside it.
+test("a pane retry that recovers the registry reads the host exactly once", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  let registryDown = true;
+  fake.on("evener/host/list", () => {
+    if (registryDown) throw new WireError("registry unavailable", -32000);
+    return { hosts: [hostRow({ name: "beta", attached: true })] };
+  });
+  fake.on("evener/host/request", () => HOST_LIST);
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+  await screen.findByText("Couldn't check beta's registration");
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(0);
+
+  registryDown = false;
+  await setupUser().click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findByText("on-beta")).toBeTruthy();
+  // Exactly one read across the one recovery: not two, and not zero.
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+});
+
+// #2227: a recovery whose registry no longer names the host issues no read at
+// all. The pane unmounts the remote view (it says the host is no longer
+// configured), and the retry must not have issued a read after that unmount.
+test("a recovery whose registry no longer names the host issues no read", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  let registryDown = true;
+  fake.on("evener/host/list", () => {
+    if (registryDown) throw new WireError("registry unavailable", -32000);
+    return { hosts: [] };
+  });
+  fake.on("evener/host/request", () => HOST_LIST);
+
+  settingsHostStore.setState({ host: "beta" });
+  render(<CredentialsHostScope sectionId="credentials" />);
+  await screen.findByText("Couldn't check beta's registration");
+
+  registryDown = false;
+  await setupUser().click(screen.getByRole("button", { name: "Retry" }));
+
+  expect(await screen.findByText(/is no longer configured/)).toBeTruthy();
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(0);
+});
+
+// #2227 acceptance 3: the anti-churn property survives. Two ready snapshots of
+// the same registration under one connection still cause exactly one read - a
+// registry answer that advances no revision re-reads nothing.
+test("a repeated ready snapshot of the same registration causes no second read", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => CONTROLLER_LIST);
+  fake.on("evener/host/list", () => ({ hosts: [hostRow({ name: "beta", attached: true })] }));
+  fake.on("evener/host/request", () => HOST_LIST);
+
+  const select = await renderSettledScope();
+  const user = setupUser();
+  await screen.findByRole("option", { name: "beta" });
+  await user.selectOptions(select, "beta");
+  expect(await screen.findByText("on-beta")).toBeTruthy();
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+
+  // The poll publishes the identical registration again.
+  await act(async () => {
+    hostsStore.setState({ load: { phase: "ready", hosts: [hostRow({ name: "beta", attached: true })] } });
+  });
+
+  expect(fake.calls.filter((call) => call.method === "evener/host/request")).toHaveLength(1);
+});
+
 // M1 (round 8): a listing read while the registry was merely idle (the spawn
 // pane reads its hosts from the navigation manifest, so the registry may never
 // have been asked) must NOT count as verified once the registry has been

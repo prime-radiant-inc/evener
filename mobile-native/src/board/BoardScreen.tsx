@@ -47,7 +47,7 @@ import type { Routes } from "../screens";
 import { sheetKey, useProvideSheetHost } from "../sheet/sheetHosts";
 import { useScreenInFront } from "../sheet/useScreenInFront";
 import { Toast, type ToastController, useToast } from "../Toast";
-import { Action, useColors, useTextScale } from "../ui";
+import { Action, allowFontScaling, useColors, useTextScale } from "../ui";
 import {
 	type Band,
 	boardState,
@@ -67,7 +67,10 @@ import { type BoardItem, groupItems, liveItems, pinnedItems, projectItems } from
 import type { OrganizeBy, SeenMarkers } from "./boardMemory";
 import { ROW_MOVE } from "./boardMotion";
 import { createSearchController, projectResults, type SearchScope } from "./boardSearch";
+import { documentMemory } from "../reader/nativeDocumentMemory";
+import { openDocumentInSession } from "../reader/openDocument";
 import { BoardNotices, NoticeRow } from "./BoardNotices";
+import { ContinueReadingRow } from "./ContinueReadingRow";
 import { BandHeader, FoldChevron, Hairline, TITLE_INSET } from "./BoardRow";
 import { BoardListRow, type RowContext } from "./BoardRows";
 import { BoardToolbar } from "./BoardToolbar";
@@ -288,6 +291,11 @@ function Board({
 		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections, ...projectViews],
 	);
 	useHubSeenMarks(hubMarks, actionsClient, loadedRows);
+	// The document you left partway in the last two hours (spec 7.1). The
+	// window is checked as the Board renders, so it runs no clock.
+	const documents = documentMemory(hubId);
+	useSyncExternalStore(documents.subscribe, documents.getRevision);
+	const continueReading = documents.continueReading();
 	const hubNotices = useMemo(
 		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
 		[snapshot.auth, sources, snapshot.plugins, loadedRows],
@@ -966,6 +974,21 @@ function Board({
 						<>
 							{fatal ? <NoticeRow text={UPDATE_NEEDED_HINT} /> : null}
 							<BoardNotices hubId={hubId} notices={hubNotices} navigation={navigation} />
+							{continueReading ? (
+								<ContinueReadingRow
+									trail={continueReading}
+									onOpen={(trail) =>
+										openDocumentInSession(navigation, {
+											hubId,
+											sessionRef: trail.sessionRef,
+											path: trail.path,
+											reviewRef: trail.reviewRef,
+											reviewTitle: trail.reviewTitle,
+											...(trail.updatedAt === undefined ? {} : { updatedAt: trail.updatedAt }),
+										})
+									}
+								/>
+							) : null}
 							<View
 								testID="live-block"
 								onLayout={(event) => {
@@ -1345,7 +1368,7 @@ function SearchField({
 					autoCapitalize="none"
 					autoCorrect={false}
 					clearButtonMode="while-editing"
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					style={{ flex: 1, alignSelf: "stretch", fontSize: 17 * scale, color: palette.inkHi }}
 				/>
 			</View>
@@ -1356,7 +1379,7 @@ function SearchField({
 					onPress={onCancel}
 					style={({ pressed }) => ({ minHeight: 44, justifyContent: "center", opacity: pressed ? 0.6 : 1 })}
 				>
-					<Text allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 17 * scale, color: palette.accentInk }}>
+					<Text allowFontScaling={allowFontScaling} style={{ fontSize: 17 * scale, color: palette.accentInk }}>
 						Cancel
 					</Text>
 				</Pressable>
@@ -1562,7 +1585,7 @@ function HubButton({ hubName, onOpen }: { hubName: string; onOpen: () => void })
 			}}
 		>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				numberOfLines={1}
 				style={{ flexShrink: 1, fontSize: 17 * scale, color: palette.inkHi }}
 			>
@@ -1618,13 +1641,13 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 					>
 						{chip.pinned ? <SymbolView name="pin.fill" size={12 * scale} tintColor={palette.inkLow} /> : null}
 						<Text
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							style={{ fontSize: 14 * scale, fontWeight: "600", color: palette.inkHi }}
 						>
 							{chip.name}
 						</Text>
 						<Text
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							style={{ fontSize: 14 * scale, fontWeight: "500", color: palette.inkLow, fontVariant: ["tabular-nums"] }}
 						>
 							{String(chip.count)}
@@ -1642,7 +1665,7 @@ function Chips({ chips }: { chips: ChipProps[] }) {
 								}}
 							>
 								<Text
-									allowFontScaling={Platform.OS !== "ios"}
+									allowFontScaling={allowFontScaling}
 									style={{
 										fontSize: 11 * scale,
 										fontWeight: "700",
@@ -1707,7 +1730,7 @@ function SummaryLine({
 			{entries.map((band, index) => (
 				<View key={band} style={{ flexDirection: "row", alignItems: "center" }}>
 					{index > 0 ? (
-						<Text allowFontScaling={Platform.OS !== "ios"} style={{ fontSize: 14 * scale, color: palette.inkLow }}>
+						<Text allowFontScaling={allowFontScaling} style={{ fontSize: 14 * scale, color: palette.inkLow }}>
 							{" · "}
 						</Text>
 					) : null}
@@ -1726,7 +1749,7 @@ function SummaryLine({
 					>
 						{band === "working" ? <PulseMeter tone={connected ? "alive" : "gray"} perMinute={perMinute} /> : null}
 						<Text
-							allowFontScaling={Platform.OS !== "ios"}
+							allowFontScaling={allowFontScaling}
 							style={{
 								fontSize: 14 * scale,
 								lineHeight: 20 * scale,
@@ -1764,7 +1787,7 @@ function IdleFold({ count, folded, onToggle }: { count: number; folded: boolean;
 		>
 			<Text
 				testID="band-header"
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 15 * scale, color: palette.inkMid }}
 			>
 				{`Idle · ${count}`}
@@ -1796,7 +1819,7 @@ function FirstReadFailed() {
 	return (
 		<View style={{ paddingHorizontal: 16, paddingVertical: 32 }}>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkMid, textAlign: "center" }}
 			>
 				Couldn't load this hub's sessions. Trying again shortly.
@@ -1811,7 +1834,7 @@ function EmptyBoard({ disabled, onNewSession }: { disabled: boolean; onNewSessio
 	return (
 		<View style={{ paddingHorizontal: 16, paddingVertical: 32, alignItems: "center", rowGap: 16 }}>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 17 * scale, lineHeight: 22 * scale, color: palette.inkMid, textAlign: "center" }}
 			>
 				Nothing's running. Start a session to put an agent to work.

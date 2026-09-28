@@ -1,9 +1,9 @@
 import type { ConnectionState } from "@evener/appwire-client";
 import { SymbolView } from "expo-symbols";
 import type { ReactNode } from "react";
-import { Platform, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useColors, useTextScale } from "../ui";
+import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useConnectionStatusText } from "./connectionStatus";
 
 /** The bar under the Board, above the home indicator: the toolbar, or the
@@ -53,7 +53,7 @@ export function BarButton({
 			})}
 		>
 			<Text
-				allowFontScaling={Platform.OS !== "ios"}
+				allowFontScaling={allowFontScaling}
 				style={{ fontSize: 17 * scale, color: disabled ? palette.inkLow : palette.accentInk }}
 			>
 				{label}
@@ -88,7 +88,7 @@ export function BoardToolbar({
 			</View>
 			{status ? (
 				<Text
-					allowFontScaling={Platform.OS !== "ios"}
+					allowFontScaling={allowFontScaling}
 					accessibilityLiveRegion="polite"
 					style={{ fontSize: 13 * scale, color: palette.inkMid }}
 				>

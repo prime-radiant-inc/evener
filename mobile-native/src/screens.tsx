@@ -51,7 +51,6 @@ import {
 	createConversationMutationPendingPort,
 	type ConversationMutationSubmitter,
 } from "../../mobile/src/state/conversationMutation";
-import { ActivitySheet } from "./ActivitySheet";
 import { ApprovalControls } from "./approvalControls";
 import { hostLabeler } from "./board/attention";
 import { useMarkSeenInFront } from "./board/sessionSeen";
@@ -150,7 +149,7 @@ import { configForLevel, currentLevel, levelToast } from "./session/detailLevels
 import { detailLevels } from "./session/nativeDetailLevels";
 import { composerPlaceholder, sendAction, sendLabel } from "./session/sendAction";
 import { NotesBar } from "./session/NotesBar";
-import { canWriteHumanNote, type NotesHost, notesHosts } from "./session/NotesSheet";
+import { type NotesHost, notesHosts } from "./session/NotesSheet";
 import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
 import { type SessionMenuAction, sessionMenu } from "./session/sessionMenu";
 import {
@@ -163,7 +162,7 @@ import { SessionNotice } from "./session/SessionNotice";
 import { useSessionRestart } from "./session/sessionRestart";
 import { canDeleteSavedSession, canOpenModelSheet, latestForkPoint, modelChipLabel } from "./session/sessionFacts";
 import { type ChipKind, contextChips, SHUT_DOWN, sessionStateLine } from "./session/sessionState";
-import { NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
+import { canWriteHumanNote, NotesController, notesBarPreview, type SaveOutcome } from "./session/sessionNotes";
 import { SessionTitle } from "./session/SessionTitle";
 import { LiveStatusTray, useFrameCounter } from "./session/StatusTray";
 import { sheetKey, useProvideSheetHost } from "./sheet/sheetHosts";
@@ -175,7 +174,7 @@ import { Toast, type ToastMessage, useToast } from "./Toast";
 import { TranscriptUsage } from "./TranscriptUsage";
 import { groupTimeline, type TimelineRow, timelineGap } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
-import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { Action, allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const NO_QUESTIONS: AskQuestionRef[] = [];
 const STEER_FAILED = { text: "Couldn't steer with this message now." };
@@ -369,7 +368,7 @@ export function HubsScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs"
 				<ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.padded}>
 					<Text
 						accessibilityRole="header"
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={[
 							styles.title,
 							{
@@ -418,7 +417,7 @@ export function HubsScreen({ navigation }: NativeStackScreenProps<Routes, "Hubs"
 					))}
 					<Text
 						accessibilityRole="header"
-						allowFontScaling={Platform.OS !== "ios"}
+						allowFontScaling={allowFontScaling}
 						style={[
 							styles.title,
 							{
@@ -533,7 +532,7 @@ export function useFocusAfterModal(
 
 /** The sheet or screen each context chip and ⋯ menu item opens. */
 const SESSION_DESTINATIONS = {
-	subagents: "activity",
+	subagents: "subagents",
 	tasks: "tasks",
 	notes: "notes",
 	goal: "session",
@@ -667,13 +666,6 @@ export function ConversationScreen({
 	}, []);
 	const focusAfterModal = useRef(false);
 	useFocusAfterModal(navigation, focusAfterModal, composerInput);
-	const [activityContext, setActivityContext] = useState<{
-		hubId: string;
-		ref: string;
-		threadId: string;
-		hubName: string;
-		client: NonNullable<typeof client>;
-	} | null>(null);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Question ownership follows the destination store.
 	const questionBatches = useMemo(() => new QuestionBatches(), [store]);
 	const batches = useSyncExternalStore(questionBatches.subscribe, questionBatches.getSnapshot);
@@ -2618,29 +2610,6 @@ export function ConversationScreen({
 					deletionAvailable={deletionAvailable}
 					close={() => setSessionMenuOpen(false)}
 					choose={openSessionDestination}
-				/>
-			) : null}
-			{/* Dormant: the Subagents list replaced its one way in, and phase 4 PR 8
-			    (plan Task 21) deletes the sheet with this state. */}
-			{activeProfile?.id === route.params.hubId &&
-			activityContext?.hubId === route.params.hubId &&
-			activityContext.ref === route.params.ref ? (
-				<ActivitySheet
-					key={`${route.params.hubId}:${route.params.ref}`}
-					client={client ?? activityContext.client}
-					sessionRef={route.params.ref}
-					threadId={conversation?.threadId ?? activityContext.threadId}
-					connected={connected}
-					hubName={activityContext.hubName}
-					close={() => setActivityContext(null)}
-					openSession={(ref, title) => {
-						setActivityContext(null);
-						navigation.push("Conversation", {
-							hubId: route.params.hubId,
-							ref,
-							title,
-						});
-					}}
 				/>
 			) : null}
 			<KeyboardAvoidingView

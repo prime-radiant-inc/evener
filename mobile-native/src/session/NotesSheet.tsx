@@ -19,7 +19,7 @@ import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { Toast, type ToastController, useToast } from "../Toast";
 import { allowFontScaling, Copy, useColors, useTextScale } from "../ui";
 import { wrapAfterSlashes } from "./format";
-import { type NotesController, noteStatusLine, type SaveOutcome } from "./sessionNotes";
+import { canWriteHumanNote, type NotesController, noteStatusLine, type SaveOutcome } from "./sessionNotes";
 
 export interface NotesHost {
 	session: Pick<ThreadModel, "humanNote" | "agentNote" | "sessionUrls" | "status" | "resumeRequired" | "capabilities">;
@@ -33,16 +33,6 @@ export interface NotesHost {
 }
 
 export const notesHosts = sheetHosts<NotesHost>();
-
-/** Whether this phone may change your note: the web's canWriteHumanNote
- * (cmd/evener-hub/frontend/src/stores/humanNoteDrafts.ts). */
-export function canWriteHumanNote(session: NotesHost["session"]): boolean {
-	return (
-		session.capabilities.sharedNotes === true &&
-		session.resumeRequired !== true &&
-		!["ended", "closed", "notLoaded", "restartRequired"].includes(session.status.type)
-	);
-}
 
 export function NotesSheet({ route, navigation }: NativeStackScreenProps<Routes, "NotesSheet">) {
 	const { hubId, ref, focusEditor = false } = route.params;
