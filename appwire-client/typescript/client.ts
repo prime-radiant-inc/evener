@@ -1,10 +1,8 @@
 // AppwireClient owns the websocket connection to the hub's /rpc endpoint: the
 // initialize/initialized handshake, typed request/response correlation,
 // notification fan-out, an application-level heartbeat, and automatic
-// reconnect with backoff. It mirrors the message-handling and reconnect
-// semantics of the legacy cmd/serf-hub/assets/appwire.js (since deleted), but
-// backs off exponentially up to a cap instead of that file's fixed 250ms
-// retry.
+// reconnect with backoff. Unlike the legacy client's fixed 250ms retry, it
+// backs off exponentially up to a cap.
 
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { isPlainObject } from "./plainObject";
