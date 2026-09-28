@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"debug/buildinfo"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,15 @@ const (
 // repository shares.
 const evenerMainPackage = "primeradiant.com/evener/cmd/evener"
 
+// errArtifactNotEvener is the identity half of validateDeployBinary's refusal,
+// separable so the default-adoption path can say which cause it hit: a build
+// that read fine and was rejected on its main package is "not an evener build",
+// while a path that no longer resolves or a file whose buildinfo cannot be read
+// is a different operator problem and must not be described as the first. The
+// message text is unchanged for callers that print the refusal; only the
+// wrapping lets a caller classify it.
+var errArtifactNotEvener = errors.New("artifact is not the evener runtime")
+
 // verifyDeployArtifactIdentity refuses a Go executable whose main package is not
 // the evener runtime. subject names the artifact the way the refusal must — the
 // flag the operator passed, or the defaulted own-executable state — so the
@@ -45,7 +55,7 @@ func verifyDeployArtifactIdentity(subject string, info *buildinfo.BuildInfo) err
 	if info.Path == evenerMainPackage {
 		return nil
 	}
-	return fmt.Errorf("%s is not evener: its main package is %q, want %q; supply a pre-built evener for the host's target", subject, info.Path, evenerMainPackage)
+	return fmt.Errorf("%w: %s is not evener: its main package is %q, want %q; supply a pre-built evener for the host's target", errArtifactNotEvener, subject, info.Path, evenerMainPackage)
 }
 
 // hubDeployHelp is the remedy the sshconn refusals append when the hub has no
@@ -62,10 +72,39 @@ const hubDeployHelp = "run this hub without -no-deploy so it deploys its own exe
 // (an embedder, a test binary, or any future hub executable that is not the
 // evener runtime) is already running without -no-deploy, so telling it to run
 // without -no-deploy describes where it is. The flags it can act on lead
-// instead. Only a hub that validated no source at all reaches this text — an
-// evener build resolves the own-executable default — so the sentence stating why
-// the default did not fire is true by construction.
+// instead. deployHelp returns this text only when validateDeployFlags read the
+// executable and rejected it on its main package (errArtifactNotEvener), so the
+// cause it names is the cause that happened; every other adoption failure gets
+// hubDeployHelpNoSource.
 const hubDeployHelpUnwired = "this hub's own executable is not an evener build, so there is nothing it can deploy by default; set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path> (an evener checkout to cross-compile from)"
+
+// hubDeployHelpNoSource is hubDeployHelpUnwired's sibling for the other
+// unwired states: the hub could not locate its own executable, or could not read
+// it as a Go build at all (a file replaced or removed under a running hub, a
+// permission change), or the options never went through validation. Claiming
+// "not an evener build" for these would be the opposite of the truth for an
+// evener hub whose executable merely moved, so this text states only what is
+// known: no own-executable source was adopted, and these are the flags that
+// supply one.
+const hubDeployHelpNoSource = "this hub has no own-executable deploy source: its own executable could not be located or read as a Go build, so there is nothing to deploy by default; set -deploy-binary <path> (a pre-built evener for the host's target) or -build-source <path> (an evener checkout to cross-compile from)"
+
+// deployDefaultFailure classifies why the own-executable default was not
+// adopted, so the unwired state's remedy names the actual cause: an evener hub
+// whose executable could not be located or read is a different operator problem
+// from one whose executable is not evener at all.
+type deployDefaultFailure int
+
+const (
+	// deployDefaultNone: the default was adopted, was not attempted (-no-deploy,
+	// or a named source won), or the options never went through validation.
+	deployDefaultNone deployDefaultFailure = iota
+	// deployDefaultNotEvener: the executable read fine and was rejected on its
+	// main package (errArtifactNotEvener).
+	deployDefaultNotEvener
+	// deployDefaultNoSource: the executable could not be located, or could not be
+	// read as a Go build, so there is no default source to describe.
+	deployDefaultNoSource
+)
 
 // deployWiring is the deploy half of sshconn.Options the hub derives from its
 // flags. Constructing it is a pure function of hubOptions, so the precedence
@@ -131,17 +170,26 @@ func (o hubOptions) deployBinarySeam() func(ctx context.Context, goos, goarch, o
 
 // deployHelp picks the remedy the refusals name for the state this hub is in.
 // After validateDeployFlags, a hub that did not set -no-deploy and validated no
-// source at all is the non-evener-executable state — the default resolves for
-// every evener build — and it is the one state the shared text cannot serve: it
-// is already running without -no-deploy, so that clause names no action it can
-// take. Every other state reads the shared text, whose default sentence is
-// exactly the action -no-deploy (and a refusal of a source that IS configured)
-// has a way back to.
+// source at all is the unwired state — the default resolves for every evener
+// build — and it is the one state the shared text cannot serve: it is already
+// running without -no-deploy, so that clause names no action it can take. Of the
+// two unwired texts, the one that asserts a cause ("not an evener build") is
+// returned only when that cause is what validateDeployFlags recorded
+// (defaultFailure); every other adoption failure reads the text that asserts
+// nothing beyond the missing source. Every other state reads the shared text,
+// whose default sentence is exactly the action -no-deploy (and a refusal of a
+// source that IS configured) has a way back to.
 func (o hubOptions) deployHelp() string {
-	if !o.noDeploy && o.deployBinary == "" && o.buildSource == "" {
-		return hubDeployHelpUnwired
+	if o.noDeploy || o.deployBinary != "" || o.buildSource != "" {
+		return hubDeployHelp
 	}
-	return hubDeployHelp
+	switch o.defaultFailure {
+	case deployDefaultNotEvener:
+		return hubDeployHelpUnwired
+	case deployDefaultNoSource, deployDefaultNone:
+		return hubDeployHelpNoSource
+	}
+	return hubDeployHelpNoSource
 }
 
 // deployPathLogLine is the one startup line that records the deploy source the
@@ -149,8 +197,8 @@ func (o hubOptions) deployHelp() string {
 // explicit source won, or -no-deploy disabled deploys — and which named sources
 // an opt-out overrode. It returns "" when there is no deploy source and nothing
 // to say: a non-evener executable (an embedder or test binary) keeps exactly the
-// old silence, and its refusals still name the remedy through
-// hubDeployHelpUnwired.
+// old silence, and its refusals still name the remedy through the unwired
+// state's text (hubDeployHelpUnwired or hubDeployHelpNoSource).
 func (o hubOptions) deployPathLogLine() string {
 	if o.noDeploy {
 		line := "[hub] deploy path: " + noDeployFlag + " (deploys disabled)"
@@ -224,8 +272,10 @@ func (o *hubOptions) validateDeployFlags() error {
 // no-flag case was before this default existed. That is deliberate: an embedder
 // or test binary has no evener build to offer, and wiring it would push a
 // non-evener program — or nothing — while claiming a deploy source exists. The
-// refusal such a hub produces still names the remedy (hubDeployHelpUnwired), so
-// the state is explicit rather than a silent no-op.
+// refusal such a hub produces still names the remedy for the failure that
+// happened (hubDeployHelpUnwired when the executable is not evener,
+// hubDeployHelpNoSource otherwise), so the state is explicit rather than a
+// silent no-op.
 //
 // "This hub's own executable" is the evener runtime by packaging, not by
 // assumption: cmd/evener-hub is a library package (package hub — no main func,
@@ -238,7 +288,8 @@ func (o *hubOptions) validateDeployFlags() error {
 // and reads the line this resolution logs asserts it (deploy_default_e2e_test.go).
 // It is also why the default cannot fire for an embedder or a test binary: their
 // own executable is not that build, and the unwired state is explicit rather
-// than silent — the refusals name the remedy (hubDeployHelpUnwired).
+// than silent — the refusals name the remedy for the failure that happened
+// (hubDeployHelpUnwired or hubDeployHelpNoSource).
 //
 // The residual the file read leaves open — the executable replaced under a
 // running hub — is documented and accepted where the default's seam reads it
@@ -246,10 +297,16 @@ func (o *hubOptions) validateDeployFlags() error {
 func (o *hubOptions) defaultDeployBinary() {
 	exe, err := hubExecutable()
 	if err != nil || strings.TrimSpace(exe) == "" {
+		o.defaultFailure = deployDefaultNoSource
 		return
 	}
 	abs, err := validateDeployBinary(exe)
 	if err != nil {
+		if errors.Is(err, errArtifactNotEvener) {
+			o.defaultFailure = deployDefaultNotEvener
+		} else {
+			o.defaultFailure = deployDefaultNoSource
+		}
 		return
 	}
 	o.deployBinary = abs

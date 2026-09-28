@@ -152,6 +152,11 @@ type hubOptions struct {
 	// defaulted rather than given, and the wiring marks the source as the own
 	// executable (the one source a dirty controller may install).
 	deployDefault bool
+	// defaultFailure records why the own-executable default was not adopted, so
+	// the unwired state's refusal names the actual cause: an executable that read
+	// fine but is not evener is a different problem from one that could not be
+	// located or read at all. See deploy_flags.go's deployDefaultFailure.
+	defaultFailure deployDefaultFailure
 }
 
 type mainDeps struct {

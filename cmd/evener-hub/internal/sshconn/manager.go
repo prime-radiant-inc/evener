@@ -2469,6 +2469,17 @@ var ErrDeployArtifactUnusable = errDeployArtifactUnusable
 // generic internal error, the same reason ErrControllerDirty is.
 var ErrDeployUnstamped = errDeployUnstamped
 
+// ErrOwnExecutableCannotServe is the exported alias for the terminal
+// cross-target deploy refusal (errOwnExecutableCannotServe, deploy.go): the
+// controller's only deploy source is its own executable, the host runs another
+// target, and the installer fallback has no published artifact to pin for this
+// build, so this controller can never provision this host — the same host,
+// target, and build re-refuse identically. It is exported so a caller — the
+// hub's attach handler — can match the refusal with errors.Is and surface it as
+// a typed deploy failure (appwire.HubLaunchError) rather than a generic internal
+// error, the same reason ErrDeployUnstamped is.
+var ErrOwnExecutableCannotServe = errOwnExecutableCannotServe
+
 // hostLockEntry is one per-host gate together with its live-user count.
 // refs counts the hostLock acquisitions that have not been released yet —
 // holders and parked waiters both — so the entry can be dropped exactly when

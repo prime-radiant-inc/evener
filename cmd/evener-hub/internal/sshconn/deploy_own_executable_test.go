@@ -388,7 +388,7 @@ func TestDirtyControllerDeploysItsOwnExecutable(t *testing.T) {
 		},
 	})
 
-	target, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
+	target, err := m.deploy(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH})
 	if err != nil {
 		t.Fatalf("deploy of the controller's own executable from a dirty controller: %v", err)
 	}
@@ -436,7 +436,7 @@ func TestDirtyControllerOwnExecutableDeployConvergesThroughTheOperation(t *testi
 		BuildBinary:               writeStageBinary,
 	})
 
-	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"})
+	target, after, err := m.DeployForOperation(context.Background(), host, Preflight{OS: runtime.GOOS, Arch: runtime.GOARCH})
 	if err != nil {
 		t.Fatalf("DeployForOperation: %v", err)
 	}
@@ -519,7 +519,10 @@ func TestDeployDisabledRefusesEveryDeployPath(t *testing.T) {
 // host to that build.
 func TestDirtyControllerOwnExecutableMismatchRefusesUnstamped(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
-	fr := deployRunner(t,
+	// The host runs the controller's own target, so the deploy is the push the
+	// post-deploy identity read then judges; a hardcoded pair here would make the
+	// test depend on the architecture running it.
+	fr := deployRunnerFor(t, runtime.GOOS, runtime.GOARCH,
 		func(call int) ([]byte, error) {
 			if call == 0 {
 				// The on-disk binary before the deploy: this controller's own

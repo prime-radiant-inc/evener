@@ -894,6 +894,60 @@ func TestParseHubOptionsDefaultNeverFiresForANonEvenerExecutable(t *testing.T) {
 }
 
 // TestParseHubOptionsExplicitDeployFlagsOverrideTheOwnExecutableDefault pins the
+// TestUnwiredRemedyNamesTheActualCause pins why the unwired state has two texts:
+// "not an evener build" is a claim about the executable, so it is returned only
+// when validateDeployFlags actually rejected the executable on its main package.
+// A hub whose executable could not be located or read is refused with the
+// cause-free text instead — an evener hub whose binary moved must not be told it
+// is not evener.
+func TestUnwiredRemedyNamesTheActualCause(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		path    string
+		execErr error
+		want    string
+	}{
+		{name: "not an evener build", path: nonEvenerGoBinary(t), want: hubDeployHelpUnwired},
+		{name: "no executable to locate", execErr: errors.New("no executable"), want: hubDeployHelpNoSource},
+		{name: "an unresolvable path", path: filepath.Join(t.TempDir(), "absent"), want: hubDeployHelpNoSource},
+		{name: "an unreadable file", path: unreadableGoArtifact(t), want: hubDeployHelpNoSource},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubHubExecutable(t, tc.path, tc.execErr)
+			opts, err := parseHubOptions(nil, &bytes.Buffer{})
+			if err != nil {
+				t.Fatalf("parseHubOptions: %v", err)
+			}
+			if opts.deployBinary != "" || opts.deployDefault {
+				t.Fatalf("a non-adoptable executable resolved a deploy source: deployBinary=%q deployDefault=%v", opts.deployBinary, opts.deployDefault)
+			}
+			help := opts.deployWiring().help
+			if help != tc.want {
+				t.Fatalf("unwired remedy = %q, want %q", help, tc.want)
+			}
+			for _, flag := range []string{deployBinaryFlag, buildSourceFlag} {
+				if !strings.Contains(help, flag) {
+					t.Fatalf("the %s remedy does not name %s: %q", tc.name, flag, help)
+				}
+			}
+		})
+	}
+}
+
+// unreadableGoArtifact returns the path of an executable file with no Go
+// buildinfo: validateDeployBinary reads it fine at the filesystem level and
+// rejects it when the buildinfo read fails — an adoption failure that is not the
+// identity one.
+func unreadableGoArtifact(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "not-go")
+	if err := os.WriteFile(path, []byte("plain text, no buildinfo"), 0o755); err != nil {
+		t.Fatalf("seed %q: %v", path, err)
+	}
+	return path
+}
+
+// TestParseHubOptionsExplicitDeployFlagsOverrideTheOwnExecutableDefault pins the
 // precedence: an operator-named source wins over the own-executable default, so
 // the default is a fallback and not a second, silently-preferred path. The own
 // executable is a different file from the explicit artifact, so the assertions

@@ -240,15 +240,36 @@ func writeStageBinary(_ context.Context, _, _, out string) error {
 // successive health probes.
 func deployRunner(t *testing.T, launch func(call int) ([]byte, error), health func(call int) ([]byte, error)) *fakeRunner {
 	t.Helper()
+	return deployRunnerFor(t, "linux", "amd64", launch, health)
+}
+
+// deployRunnerFor is deployRunner for a host on an explicit target: its uname
+// answers are the ones preflight's mapOS/mapArch turn back into goos/goarch, so a
+// test can put the host on the very target the controller itself runs on
+// (runtime.GOOS/runtime.GOARCH) instead of the linux/amd64 pair deployRunner
+// hardcodes — the own-executable dispatch compares the host's facts against the
+// controller's own target, so a hardcoded pair makes such a test pass only on
+// the machine that happens to match it. A target the parser cannot round-trip
+// fails here rather than skipping: it is a test defect.
+func deployRunnerFor(t *testing.T, goos, goarch string, launch func(call int) ([]byte, error), health func(call int) ([]byte, error)) *fakeRunner {
+	t.Helper()
+	osName, ok := map[string]string{"linux": "Linux", "darwin": "Darwin"}[goos]
+	if !ok {
+		t.Fatalf("deployRunnerFor: no uname -s answer maps back to GOOS %q", goos)
+	}
+	archName, ok := map[string]string{"amd64": "x86_64", "arm64": "aarch64"}[goarch]
+	if !ok {
+		t.Fatalf("deployRunnerFor: no uname -m answer maps back to GOARCH %q", goarch)
+	}
 	launchCalls, healthCalls := 0, 0
 	return &fakeRunner{
 		runFn: func(_ context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 			joined := strings.Join(argv, " ")
 			switch {
 			case strings.HasSuffix(joined, "uname -s"):
-				return []byte("Linux\n"), nil
+				return []byte(osName + "\n"), nil
 			case strings.HasSuffix(joined, "uname -m"):
-				return []byte("x86_64\n"), nil
+				return []byte(archName + "\n"), nil
 			case strings.Contains(joined, "XDG_STATE_HOME"):
 				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 			case strings.HasSuffix(joined, "id -u"):
