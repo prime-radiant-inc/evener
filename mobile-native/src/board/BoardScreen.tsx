@@ -66,7 +66,7 @@ import { projectName, ProjectSectionHeader, ProjectTreeRow } from "./ProjectTree
 import { PulseMeter } from "./PulseMeter";
 import { SearchResults } from "./SearchResults";
 import { type BoardOrganization, organizationOpen, useBoardOrganization } from "./useBoardOrganization";
-import { PROJECT_SECTIONS, type ProjectSectionData, showExpanded, useProjectSections } from "./useProjectSections";
+import { PROJECT_SECTIONS, showExpanded, useProjectSections } from "./useProjectSections";
 
 type Props = NativeStackScreenProps<Routes, "Sessions">;
 type Navigation = Props["navigation"];
@@ -156,7 +156,6 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 	const organization = useBoardOrganization(hubId);
 	const categoryMenu = pinnedCategoryMenu(organization, () => board.getSnapshot().pins.rows);
 	const projectSections = useProjectSections(hubId);
-	useHubSeenMarks(hubMarks, connected ? client : null, snapshot, projectSections);
 	const [organizeBy, setOrganizeBy] = useState(() => organizeByPreference(hubId).get());
 	// Every fold inside the project sections, by its ProjectTreeItem fold.
 	const { isFolded, setFolded } = useBoardFolds(hubId);
@@ -172,6 +171,7 @@ function Board({ hubId, hubName, navigation }: { hubId: string; hubName: string;
 		],
 		[snapshot.live.rows, snapshot.needsYou.rows, snapshot.pinSections, ...projectViews],
 	);
+	useHubSeenMarks(hubMarks, connected ? client : null, loadedRows);
 	const hubNotices = useMemo(
 		() => notices({ auth: snapshot.auth, sources: sources ?? [], plugins: snapshot.plugins, loadedRows }),
 		[snapshot.auth, sources, snapshot.plugins, loadedRows],
@@ -815,32 +815,19 @@ function useFirstRun(board: BoardController, markers: SeenMarkers, snapshot: Boa
 
 /** The hub's seen marks (S4): marks go out whenever the connection is ready,
  * which resends any a dropped connection lost and sends those made while
- * offline, and each pending mark is pruned once the Board's rows show it
- * landed: Live, Needs you, the categories and the project sections. */
+ * offline, and each pending mark is pruned once a row the Board has loaded,
+ * from any section, shows it landed. */
 function useHubSeenMarks(
 	hubMarks: HubSeenMarks,
 	client: ConversationClientLike | null,
-	snapshot: Pick<BoardSnapshot, "live" | "needsYou" | "pinSections">,
-	projectSections: Record<ProjectSection, ProjectSectionData>,
+	loadedRows: readonly NavigationSessionSummary[],
 ) {
 	useEffect(() => {
 		hubMarks.flush(client);
 	}, [hubMarks, client]);
-	const { live, needsYou, pinSections } = snapshot;
-	// Each section's view is memoized on its reads, so the three views change
-	// exactly when a project section's rows do.
-	const projectViews = PROJECT_SECTIONS.map((section) => projectSections[section].view);
 	useEffect(() => {
-		const projectRows = projectViews.flatMap((view) =>
-			[...view.pages.values()].flatMap((pages) => Object.values(pages).flatMap((page) => page.rows)),
-		);
-		hubMarks.prune([
-			...live.rows,
-			...needsYou.rows,
-			...Object.values(pinSections).flatMap((page) => page.rows),
-			...projectRows,
-		]);
-	}, [hubMarks, live.rows, needsYou.rows, pinSections, ...projectViews]);
+		hubMarks.prune(loadedRows);
+	}, [hubMarks, loadedRows]);
 }
 
 /** While any of the Board's reads has failed on a ready connection (Live,
