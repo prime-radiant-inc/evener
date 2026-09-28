@@ -1060,6 +1060,22 @@ type EvenerThread struct {
 	// thread/list root rows only, when the tree has at least one subagent, and
 	// never a thread/read snapshot: no notification announces its changes.
 	Subagents *SubagentTally `json:"subagents,omitempty"`
+	// Access is what the session's sandbox lets it reach (S15): the sandbox
+	// mode it started under and whether that sandbox allows the network. Every
+	// current producer sets it; it is absent from an older daemon or hub, which
+	// a client reads as "not known". Snapshot-only: a session's sandbox is
+	// fixed when it starts, so no notification carries it.
+	Access *ThreadAccess `json:"access,omitempty"`
+}
+
+// ThreadAccess is a session's sandbox mode and network setting (spec 8.6,
+// S15). Sandbox is the mode name a session starts with ("off", "read-only",
+// "workspace-write" or "restricted"). Network is true when the session may use
+// the network: always for "off", and for a sandboxed session unless it started
+// with the network turned off.
+type ThreadAccess struct {
+	Sandbox string `json:"sandbox"`
+	Network bool   `json:"network"`
 }
 
 // ThreadActivity is one pulse meter sample. Minutes holds seven one-minute

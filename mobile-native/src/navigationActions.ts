@@ -198,12 +198,26 @@ export class NavigationActions {
 			});
 		} catch {
 			if (this.disposed) return;
+			// The message and the screens' reason line both key off this
+			// checkpoint, so surface the one the failure is about: a checkpoint in
+			// the journal, including one that appeared while the read was in
+			// flight, is a previous change too.
+			let recovery = this.state.recovery;
+			if (!recovery) {
+				try {
+					recovery = this.storage?.load() ?? null;
+				} catch {
+					recovery = null;
+				}
+			}
 			this.publish({
 				...this.state,
 				pending: false,
 				uncertain: true,
-				error:
-					"Could not confirm current navigation for the previous change. Refresh before trying again.",
+				recovery,
+				error: recovery
+					? "Could not confirm current navigation for the previous change. Refresh before trying again."
+					: "Could not load the current navigation. Refresh before trying again.",
 			});
 		}
 	}

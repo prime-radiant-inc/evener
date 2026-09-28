@@ -19,6 +19,7 @@ export interface PinAssignmentEditorProps {
 	remaining: number;
 	pending: boolean;
 	uncertain: boolean;
+	previousChange: boolean;
 	error: string | null;
 	refresh(): void;
 	more(): void;
@@ -44,6 +45,7 @@ export function PinAssignmentEditor({
 	remaining,
 	pending,
 	uncertain,
+	previousChange,
 	error,
 	refresh,
 	more,
@@ -58,7 +60,9 @@ export function PinAssignmentEditor({
 			sections.some((section) => section.id === selection.sectionId)) ||
 		(selection?.kind === "new" && validName(selection.name));
 	const reason = uncertain
-		? "Refresh to confirm the previous pin change before editing it."
+		? previousChange
+			? "Refresh to confirm the previous pin change before editing it."
+			: "Refresh to reload this session's pins before editing."
 		: pending
 			? "Checking the pin assignment…"
 			: !connected

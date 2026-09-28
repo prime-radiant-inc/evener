@@ -105,6 +105,10 @@ type threadEnvelope struct {
 	Preview         string
 	LastTurnEndedAt int64
 	LastMessage     string
+	// Access is the session's sandbox mode and network setting (S15), from
+	// the sandbox request its meta persists. A session's sandbox is fixed when
+	// it starts, so the seed at identity install is the sample that matters.
+	Access *appwire.ThreadAccess
 }
 
 // ThreadEnvelopeSource supplies the live session values the thread envelope
@@ -422,6 +426,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 				next.LastTurnEndedAt = meta.LastTurnEndedAt.UnixMilli()
 			}
 			next.LastMessage = meta.LastMessage
+			next.Access = appwire.SessionAccess(meta.Config.Sandbox, meta.Config.SandboxNet)
 		}
 		if facets&facetGoal != 0 {
 			if meta.Goal != nil {
@@ -550,5 +555,6 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope, notes
 		e.Preview = next.Preview
 		e.LastTurnEndedAt = next.LastTurnEndedAt
 		e.LastMessage = next.LastMessage
+		e.Access = next.Access
 	}
 }

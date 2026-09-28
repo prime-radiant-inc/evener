@@ -669,6 +669,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				params.Thread.Evener.ParentRef = parentRef
 				projection.thread = params.Thread
 				projection.thread.Evener.Kind = "subagent"
+				projection.thread.Evener.Access = appwire.SessionAccess(start.Sandbox, start.SandboxNet)
 				projection.thread.Evener.Tasks = appwire.CloneTaskAggregate(params.Thread.Evener.Tasks)
 				projection.thread.Evener.Goal = cloneGoalState(params.Thread.Evener.Goal)
 				params.Thread = projection.thread
@@ -2394,6 +2395,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 	visionModel := envelope.VisionModel
 	lastTurnEndedAt := envelope.LastTurnEndedAt
 	lastMessage := envelope.LastMessage
+	access := envelope.Access
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
 	if threadPreview == "" {
@@ -2443,6 +2445,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 			VisionModel:           visionModel,
 			LastTurnEndedAt:       lastTurnEndedAt,
 			LastMessage:           lastMessage,
+			Access:                access,
 		},
 	}
 }
