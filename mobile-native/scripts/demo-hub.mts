@@ -1,5 +1,6 @@
 // Explicitly launched network fixture for native UI checks; no Evener or LLM runs.
 import { once } from "node:events";
+import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { WebSocket, WebSocketServer } from "ws";
@@ -12,7 +13,8 @@ import type {
 	Turn,
 	TurnStartParams,
 } from "@evener/appwire-client";
-import { createDemoFleet, type DemoFleetOptions } from "../src/dev/demoFleet.js";
+import { createDemoFleet, type DemoFleetOptions, demoSessionId } from "../src/dev/demoFleet.js";
+import { createDemoDocuments, SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED } from "../src/dev/demoSubagents.js";
 
 export async function createDemoHub(
 	port = 9196,
@@ -20,9 +22,30 @@ export async function createDemoHub(
 	fleetOptions?: DemoFleetOptions,
 ) {
 	const demoFleet = fleetOptions ? createDemoFleet(fleetOptions) : null;
-	const server = new WebSocketServer({ host: "0.0.0.0", port, path: "/rpc" });
-	await once(server, "listening");
-	const address = server.address();
+	// With the demo fleet, the Reader's /doc/file reaches the same port as
+	// /rpc, as on a real hub: one HTTP server carries both.
+	const documents = demoFleet
+		? createDemoDocuments([
+				{
+					sessionRef: `local:${demoSessionId("s-pr2138")}`,
+					path: "docs/superpowers/plans/2026-09-25-settle-race.md",
+					versions: [SETTLE_RACE_PLAN, SETTLE_RACE_PLAN_REVISED],
+				},
+			])
+		: null;
+	const http = createServer((request, response) => {
+		const url = new URL(request.url ?? "/", "http://demo");
+		if (!documents || request.method !== "GET" || url.pathname !== "/doc/file") {
+			response.writeHead(404).end();
+			return;
+		}
+		const answer = documents.answerDocFile(url);
+		response.writeHead(answer.status, { "Content-Type": "text/plain; charset=utf-8" }).end(answer.body);
+	});
+	const server = new WebSocketServer({ server: http, path: "/rpc" });
+	http.listen(port, "0.0.0.0");
+	await once(http, "listening");
+	const address = http.address();
 	if (typeof address === "string" || !address)
 		throw new Error("Missing demo address");
 	const subscribers = new Map<WebSocket, Set<string>>();
@@ -239,20 +262,19 @@ export async function createDemoHub(
 						result = { thread: created, turn };
 						break;
 					}
-					case "thread/read":
-						if (!selected) throw new Error("Unknown demonstration session");
+					case "thread/read": {
+						// A playground thread, or a fleet subagent's own session
+						// (demoSubagents.ts, read-only).
+						const read = selected ?? demoFleet?.answerSubagentThread(params.ref) ?? null;
+						if (!read) throw new Error("Unknown demonstration session");
 						if (params.subscribe) {
 							const refs = subscribers.get(socket) ?? new Set<string>();
-							refs.add(selected.evener.ref);
+							refs.add(read.evener.ref);
 							subscribers.set(socket, refs);
 						}
-						result = {
-							thread: {
-								...selected,
-								turns: params.includeTurns ? selected.turns : undefined,
-							},
-						};
+						result = { thread: { ...read, turns: params.includeTurns ? read.turns : undefined } };
 						break;
+					}
 					case "thread/unsubscribe":
 						subscribers.get(socket)?.delete(params.ref);
 						result = {};
@@ -410,6 +432,9 @@ export async function createDemoHub(
 					case "evener/navigation/read":
 						result = requireFleet().answerNavigationRead(params);
 						break;
+					case "evener/jobs/list":
+						result = requireFleet().answerJobsList(params);
+						break;
 					case "evener/search":
 						result = requireFleet().answerSearch(params);
 						break;
@@ -454,7 +479,8 @@ export async function createDemoHub(
 			new Promise<void>((resolve, reject) => {
 				clearTimeout(askTimer);
 				for (const socket of server.clients) socket.terminate();
-				server.close((error) => (error ? reject(error) : resolve()));
+				server.close();
+				http.close((error) => (error ? reject(error) : resolve()));
 			}),
 	};
 }

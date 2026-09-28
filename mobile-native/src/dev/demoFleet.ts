@@ -27,9 +27,11 @@ import type {
 	NavigationSessionSummary,
 	PluginListResponse,
 	SearchParams,
+	Thread,
 	SearchResponse,
 	Source,
 } from "@evener/appwire-client";
+import { type DemoCoordinator, type DemoSubagent, demoActivityTree, demoSubagentThread } from "./demoSubagents.js";
 
 // The generation id the fleet's navigationCapability advertises in demo-hub.mts's
 // initialize handshake. Every wireV2 response must carry the exact same id:
@@ -175,6 +177,13 @@ interface RawSubagent {
 	title: string;
 	state: SubState;
 	ago: number;
+	// data.js's detail for a named swarm (data.js:209-259), which the Subagents
+	// list's rows show (demoSubagents.ts).
+	elapsed?: number; // seconds it ran
+	model?: string;
+	lane?: string; // its own worktree's branch
+	tokens?: string; // "1.2M", "210K"
+	line?: string; // its why line
 	children?: RawSubagent[];
 }
 
@@ -191,6 +200,7 @@ interface RawSession {
 	activity?: string; // data.js's `activity`; a "Running <cmd>" one becomes a running job
 	subs?: { run: number; fail: number; done: number }; // generic subagent counts (data.js genericSubs)
 	children?: RawSubagent[]; // explicitly named subagents (data.js's `subagents` map)
+	model?: string; // data.js's session model, for a coordinator's subagent tree
 }
 
 // data.js's swarm for s-pr2138: two named failures plus 31 running, 3 waiting
@@ -200,51 +210,222 @@ const PR2138_CHILDREN: RawSubagent[] = [
 		id: "g-settle",
 		title: "Fix race in tree settle",
 		state: "failed",
+		model: "glm-5.3-vision",
+		lane: "fix-settle-race",
 		ago: 6 * M,
-		children: [{ id: "g-settle-1", title: "Check drain ordering in tests", state: "running", ago: 20 }],
+		elapsed: 21 * M,
+		tokens: "1.2M",
+		line: "Failed: go test exited 1 (3 times)",
+		children: [
+			{
+				id: "g-settle-1",
+				title: "Check drain ordering in tests",
+				state: "running",
+				model: "deepseek-4.1-flash",
+				ago: 20,
+				elapsed: 4 * M,
+				tokens: "210K",
+				line: "Reading agent/retirement_test.go",
+			},
+		],
 	},
-	{ id: "g-repro", title: "Reproduce TestRetirementTreeSettleDrains", state: "failed", ago: 9 * M },
+	{
+		id: "g-repro",
+		title: "Reproduce TestRetirementTreeSettleDrains",
+		state: "failed",
+		model: "deepseek-4.1-flash",
+		ago: 9 * M,
+		elapsed: 14 * M,
+		tokens: "640K",
+		line: "Failed: could not reproduce in 200 runs",
+	},
 	...Array.from({ length: 31 }, (_, i) => ({
 		id: `g-run-${i}`,
 		title: SWARM_NAMES[(i + 3) % SWARM_NAMES.length] as string,
 		state: "running" as const,
+		model: i % 4 === 0 ? "glm-5.3-vision" : "deepseek-4.1-flash",
 		ago: 5 + ((i * 7) % 90),
+		elapsed: (2 + ((i * 5) % 30)) * M,
+		tokens: `${120 + ((i * 37) % 900)}K`,
+		...(i % 6 === 0 ? { lane: `lane-${i + 1}` } : {}),
+		line: [
+			"Running go test ./agent/...",
+			"Reading agent/delegate_runtime.go",
+			"Editing agent/retirement.go",
+			"Searching for settleTree",
+			"Running go test -race ./internal/hubcore",
+			"Thinking",
+		][i % 6] as string,
 	})),
 	...Array.from({ length: 3 }, (_, i) => ({
 		id: `g-wait-${i}`,
 		title: SWARM_NAMES[(i + 40) % SWARM_NAMES.length] as string,
 		state: "done" as const,
+		model: "deepseek-4.1-flash",
 		ago: (3 + i) * M,
+		elapsed: (8 + i) * M,
+		tokens: "300K",
+		line: "Finished and reported back",
 	})),
 	...Array.from({ length: 18 }, (_, i) => ({
 		id: `g-done-${i}`,
 		title: SWARM_NAMES[(i + 20) % SWARM_NAMES.length] as string,
 		state: "done" as const,
+		model: "deepseek-4.1-flash",
 		ago: (10 + i * 2) * M,
+		elapsed: (5 + (i % 9)) * M,
+		tokens: `${90 + i * 23}K`,
+		line: ["Tests pass", "No race found in this path", "Fixed and verified", "Report written"][i % 4] as string,
 	})),
 ];
 
 const RETRY_CHILDREN: RawSubagent[] = [
-	{ id: "r-1", title: "Find where retries are scheduled", state: "done", ago: 2 * H },
-	{ id: "r-2", title: "Write a test for the 429 loop", state: "done", ago: 90 * M },
-	{ id: "r-3", title: "Cap retries with backoff", state: "failed", ago: 3 * M },
-	{ id: "r-4", title: "Check other providers for the same loop", state: "done", ago: 4 * M },
+	{
+		id: "r-1",
+		title: "Find where retries are scheduled",
+		state: "done",
+		model: "gpt-5.6",
+		ago: 2 * H,
+		elapsed: 9 * M,
+		tokens: "380K",
+		line: "Found the loop in llm/retry.go",
+	},
+	{
+		id: "r-2",
+		title: "Write a test for the 429 loop",
+		state: "done",
+		model: "gpt-5.6",
+		ago: 90 * M,
+		elapsed: 12 * M,
+		tokens: "410K",
+		line: "Test reproduces the endless retry",
+	},
+	{
+		id: "r-3",
+		title: "Cap retries with backoff",
+		state: "failed",
+		model: "gpt-5.6",
+		ago: 3 * M,
+		elapsed: 18 * M,
+		tokens: "520K",
+		line: "Failed: provider sign-in expired",
+	},
+	{
+		id: "r-4",
+		title: "Check other providers for the same loop",
+		state: "done",
+		model: "gpt-5.6",
+		ago: 4 * M,
+		elapsed: 6 * M,
+		tokens: "150K",
+		line: "Finished and reported back",
+	},
 ];
 
 const TASKLIST_CHILDREN: RawSubagent[] = [
-	{ id: "t-1", title: "Update TaskCard tests", state: "running", ago: 4 },
-	{ id: "t-2", title: "Update the browser guard", state: "running", ago: 9 },
-	{ id: "t-3", title: "Check the Tasks panel", state: "running", ago: 7 },
-	{ id: "t-4", title: "Measure card height", state: "done", ago: 6 * M },
+	{
+		id: "t-1",
+		title: "Update TaskCard tests",
+		state: "running",
+		model: "glm-5.3-vision",
+		ago: 4,
+		elapsed: 5 * M,
+		tokens: "160K",
+		line: "Running npm test",
+	},
+	{
+		id: "t-2",
+		title: "Update the browser guard",
+		state: "running",
+		model: "glm-5.3-vision",
+		ago: 9,
+		elapsed: 4 * M,
+		tokens: "120K",
+		line: "Editing scripts/layoutguard/run.mjs",
+	},
+	{
+		id: "t-3",
+		title: "Check the Tasks panel",
+		state: "running",
+		model: "deepseek-4.1-flash",
+		ago: 7,
+		elapsed: 3 * M,
+		tokens: "95K",
+		line: "Reading TasksPanel.tsx",
+	},
+	{
+		id: "t-4",
+		title: "Measure card height",
+		state: "done",
+		model: "deepseek-4.1-flash",
+		ago: 6 * M,
+		elapsed: 2 * M,
+		tokens: "40K",
+		line: "Card is 212pt today; one line is 36pt",
+	},
 ];
 
 const HIER_CHILDREN: RawSubagent[] = [
-	{ id: "h-a", title: "Mock layout A: project, then host", state: "done", ago: 80 * M },
-	{ id: "h-b", title: "Mock layout B: host badges in projects", state: "done", ago: 78 * M },
-	{ id: "h-c", title: "Mock layout C: host, then project", state: "done", ago: 77 * M },
-	{ id: "h-d", title: "Count sessions per project and host", state: "done", ago: 2 * H },
-	{ id: "h-e", title: "Review the three mocks", state: "done", ago: 70 * M },
-	{ id: "h-f", title: "Write the plan", state: "done", ago: 65 * M },
+	{
+		id: "h-a",
+		title: "Mock layout A: project, then host",
+		state: "done",
+		model: "glm-5.3-vision",
+		ago: 80 * M,
+		elapsed: 11 * M,
+		tokens: "420K",
+		line: "Layout A mock written",
+	},
+	{
+		id: "h-b",
+		title: "Mock layout B: host badges in projects",
+		state: "done",
+		model: "glm-5.3-vision",
+		ago: 78 * M,
+		elapsed: 12 * M,
+		tokens: "460K",
+		line: "Layout B mock written",
+	},
+	{
+		id: "h-c",
+		title: "Mock layout C: host, then project",
+		state: "done",
+		model: "glm-5.3-vision",
+		ago: 77 * M,
+		elapsed: 10 * M,
+		tokens: "400K",
+		line: "Layout C mock written",
+	},
+	{
+		id: "h-d",
+		title: "Count sessions per project and host",
+		state: "done",
+		model: "deepseek-4.1-flash",
+		ago: 2 * H,
+		elapsed: 3 * M,
+		tokens: "80K",
+		line: "88% of sessions are in evener",
+	},
+	{
+		id: "h-e",
+		title: "Review the three mocks",
+		state: "done",
+		model: "gpt-5.6",
+		ago: 70 * M,
+		elapsed: 6 * M,
+		tokens: "210K",
+		line: "B wins on scan time",
+	},
+	{
+		id: "h-f",
+		title: "Write the plan",
+		state: "done",
+		model: "glm-5.3-vision",
+		ago: 65 * M,
+		elapsed: 5 * M,
+		tokens: "130K",
+		line: "Plan written",
+	},
 ];
 
 // Mirrors data.js's genericSubs: a session with only subagent *counts* gets
@@ -272,6 +453,7 @@ const SESSIONS: RawSession[] = [
 	// Needs you (4)
 	{
 		id: "s-retry",
+		model: "gpt-5.6",
 		title: "Fix Endless Provider Retry Loop",
 		host: "paradise-park",
 		state: "failed",
@@ -295,7 +477,14 @@ const SESSIONS: RawSession[] = [
 	{ id: "s-namer", title: "Tune Session Namer Token Cap", state: "restart", ago: 47 * M },
 
 	// Finished, not yet seen (4)
-	{ id: "s-hier", title: "Host Project Hierarchy UI Mockups", state: "yourmove", ago: 62 * M, children: HIER_CHILDREN },
+	{
+		id: "s-hier",
+		title: "Host Project Hierarchy UI Mockups",
+		state: "yourmove",
+		model: "glm-5.3-vision",
+		ago: 62 * M,
+		children: HIER_CHILDREN,
+	},
 	{ id: "s-flakes", title: "Find Test Flakes in GitHub Issues", state: "yourmove", ago: 8 * M },
 	{
 		id: "s-jobdisp",
@@ -310,6 +499,7 @@ const SESSIONS: RawSession[] = [
 	// Working (9)
 	{
 		id: "s-pr2138",
+		model: "glm-5.3-vision",
 		title: "Get PR 2138 Test Clean",
 		state: "working",
 		ago: 5,
@@ -319,6 +509,7 @@ const SESSIONS: RawSession[] = [
 	},
 	{
 		id: "s-tasklist",
+		model: "glm-5.3-vision",
 		title: "Rework Inline Task List Display",
 		state: "working",
 		ago: 3,
@@ -705,6 +896,12 @@ export interface DemoFleet extends FleetAnswers {
 	// ref), another host's by its ref. Returns the reply and the
 	// evener/navigation/invalidated payload a real hub sends for it.
 	archive(params: ArchiveParams): { response: ArchiveResponse; invalidated: NavigationInvalidatedPayload };
+	// Answers evener/jobs/list: a coordinator's subagent tree, and an empty
+	// root for any other fleet session (demoSubagents.ts).
+	answerJobsList(params: { ref?: string; continuation?: string }): { data: unknown };
+	// Answers thread/read for a subagent's own session, or null for a ref
+	// that names no subagent.
+	answerSubagentThread(ref: string): Thread | null;
 }
 
 // The working row EVENER_DEMO_FLEET_ASK_AFTER turns into a question: a plain
@@ -800,7 +997,38 @@ export function createDemoFleet(options: DemoFleetOptions = {}): DemoFleet {
 		navigationCapability: () => ({ ...capability(DEMO_FLEET_GENERATION), sequence }),
 		askQuestion,
 		archive,
+		answerJobsList: (params) => {
+			const raw = sessionsList.find((candidate) => sessionRef(candidate) === params.ref);
+			return demoActivityTree(
+				raw ? coordinatorOf(raw) : { ref: params.ref ?? "", title: "", model: "", subagents: [] },
+				startupMs,
+			);
+		},
+		answerSubagentThread: (ref) => {
+			for (const raw of sessionsList) {
+				const coordinator = coordinatorOf(raw);
+				const sub = findSubagent(coordinator.subagents, ref, hostId(raw.host));
+				if (sub) return demoSubagentThread(coordinator, sub, startupMs);
+			}
+			return null;
+		},
 	};
+}
+
+// A fleet session as the coordinator of its subagents (demoSubagents.ts).
+function coordinatorOf(raw: RawSession): DemoCoordinator {
+	return { ref: sessionRef(raw), title: raw.title, model: raw.model ?? "", subagents: rawChildren(raw) };
+}
+
+// The subagent a ref names, at any depth: its ref is its coordinator's host
+// and its own id (demoSubagentThread).
+function findSubagent(subagents: readonly DemoSubagent[], ref: string, host: string): DemoSubagent | null {
+	for (const sub of subagents) {
+		if (`${host}:${sub.id}` === ref) return sub;
+		const nested = findSubagent(sub.children ?? [], ref, host);
+		if (nested) return nested;
+	}
+	return null;
 }
 
 // Every answer the fleet gives, for one fixed list of sessions at one

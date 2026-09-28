@@ -12,6 +12,8 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import { archiveTarget } from "../board/rowActions.js";
 import { localSessionId } from "../sessionDeletionResult.js";
+import { parseActivityTree } from "@evener/appwire-client";
+import { flattenSubagents, subagentLastLine, tallySubagents } from "../subagents/subagentModel";
 import { capChildren, createDemoFleet, DEMO_FLEET_GENERATION, demoSessionId } from "./demoFleet.js";
 
 const STARTUP = Date.parse("2026-09-26T18:00:00.000Z");
@@ -931,5 +933,36 @@ describe("demo fleet archive", () => {
 			"Unknown demonstration session: 0000000000000000000000",
 		);
 		expect(demo.navigationCapability().sequence).toBe(0);
+	});
+});
+
+// The Subagents list, a subagent's screen and the Reader read the same swarm
+// the Board's rows come from (spec Appendix B).
+describe("demo fleet subagents", () => {
+	const fleet = createDemoFleet({ now: STARTUP });
+	const pr2138 = `local:${demoSessionId("s-pr2138")}`;
+
+	it("lists Get PR 2138 Test Clean's 55 subagents in its activity tree, with data.js's details", () => {
+		const tree = parseActivityTree(fleet.answerJobsList({ ref: pr2138 }).data);
+		if (!tree) throw new Error("no tree");
+		const rows = flattenSubagents(tree);
+		expect(tallySubagents(rows)).toEqual({ total: 55, running: 32, failed: 2, done: 21 });
+		const settle = rows.find((row) => row.title === "Fix race in tree settle");
+		expect(settle?.delegate).toMatchObject({ outcome: "failed" });
+		expect(subagentLastLine(settle as never, "glm-5.3-vision", (model) => model)).toMatchObject({
+			branch: "fix-settle-race",
+			tokens: "1.2M tokens",
+		});
+	});
+
+	it("gives a session with no subagents an empty tree, and a subagent its own session", () => {
+		const other = parseActivityTree(fleet.answerJobsList({ ref: `local:${demoSessionId("s-gateway")}` }).data);
+		expect(other?.root.entries).toEqual([]);
+		const tree = parseActivityTree(fleet.answerJobsList({ ref: pr2138 }).data);
+		const child = flattenSubagents(tree as never).find((row) => row.title === "Check drain ordering in tests");
+		if (!child) throw new Error("no nested subagent");
+		const thread = fleet.answerSubagentThread(child.ref);
+		expect(thread?.evener.ref).toBe(child.ref);
+		expect(fleet.answerSubagentThread("local:nope")).toBeNull();
 	});
 });
