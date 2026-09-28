@@ -45,6 +45,7 @@ export class SubagentTree {
 	private detachList: (() => void) | null = null;
 	private tree: ActivityTree | null = null;
 	private coordinatorModel: string | null = null;
+	private settledMissing: string[] = [];
 	private reloading: Promise<void> | null = null;
 	private again = false;
 	private snapshot: SubagentTreeSnapshot;
@@ -162,14 +163,19 @@ export class SubagentTree {
 		const list = this.list;
 		const state = list?.getSnapshot();
 		const settled = this.reloading === null && state?.loading !== true;
-		const missing = list && settled ? list.branches().map((branch) => branch.label) : [];
+		// What the last settled read couldn't list stays said until a read
+		// settles again, through a reconnect too; while pages are still
+		// arriving, the count isn't whole yet either.
+		const pending = list ? list.branches().map((branch) => branch.label) : [];
+		if (list && settled) this.settledMissing = pending;
+		const missing = this.settledMissing;
 		return {
 			tree: this.tree,
 			loading: this.tree === null && this.client !== null && !settled,
 			failed: this.tree === null && settled && !!state?.error,
 			unsupported: state?.unsupported ?? false,
 			ended: state?.ended ?? false,
-			partial: this.tree !== null && missing.length > 0,
+			partial: this.tree !== null && (missing.length > 0 || (!settled && pending.length > 0)),
 			missing,
 			coordinatorModel: this.coordinatorModel,
 		};

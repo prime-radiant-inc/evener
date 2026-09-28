@@ -70,6 +70,32 @@ describe("one coordinator's subagent tree", () => {
 		expect(reads(client)).toEqual(["root", "page-2", "root", "page-2"]);
 	});
 
+	it("calls its count partial while later pages are still loading", async () => {
+		let answer: (page: unknown) => void = () => {};
+		const client = hub((continuation) =>
+			continuation === "page-2" ? new Promise((resolve) => (answer = resolve)) : firstPage,
+		);
+		const tree = new SubagentTree("local:coord", "coord");
+		const read = tree.setClient(client);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(listed(tree)).toEqual(["a", "b"]);
+		expect(tree.getSnapshot().partial).toBe(true);
+		answer(secondPage);
+		await read;
+		expect(tree.getSnapshot()).toMatchObject({ partial: false, missing: [] });
+	});
+
+	it("keeps saying what it couldn't list while it's disconnected", async () => {
+		const client = hub((continuation) => {
+			if (continuation === "page-2") throw new Error("offline");
+			return firstPage;
+		});
+		const tree = new SubagentTree("local:coord", "coord");
+		await tree.setClient(client);
+		await tree.setClient(null);
+		expect(tree.getSnapshot()).toMatchObject({ partial: true, missing: ["Get PR 2138 Test Clean"] });
+	});
+
 	it("reads again on its coordinator's tree notifications, folding a burst into one more read", async () => {
 		const client = hub(() => whole);
 		const tree = new SubagentTree("local:coord", "coord");

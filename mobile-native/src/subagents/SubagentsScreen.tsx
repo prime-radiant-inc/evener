@@ -129,7 +129,8 @@ export function SubagentsScreen({ route, navigation }: NativeStackScreenProps<Ro
 					))}
 				</View>
 			) : null}
-			{tally.total > SEARCH_AFTER ? <SearchField query={query} onChange={setQuery} /> : null}
+			{/* Kept while it has words, so a list that shrinks never stays filtered with no way to clear it. */}
+			{tally.total > SEARCH_AFTER || query !== "" ? <SearchField query={query} onChange={setQuery} /> : null}
 			{notice ? (
 				<Text allowFontScaling={allowFontScaling} style={quiet}>
 					{notice}

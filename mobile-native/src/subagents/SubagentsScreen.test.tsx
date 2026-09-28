@@ -2,6 +2,7 @@
 // evener/jobs/list, in failed, running and done sections, with the strip, the
 // chips, search, and each row's why and last line.
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
+import { WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ReactElement } from "react";
 import { act, type ReactTestRenderer } from "react-test-renderer";
@@ -273,6 +274,40 @@ it("says the count is partial and whose subagents are missing when a later page 
 	const tree = await mount();
 	expect(headerTitle()).toBe("Subagents · 2+ Get PR 2138 Test Clean");
 	expect(text(tree)).toContain("Some subagents under “Get PR 2138 Test Clean” aren't listed.");
+});
+
+it.each([
+	["can't list its activity", new WireError("unavailable", -32603, { evenerErrorInfo: "actionUnavailable" }), "This session can't list its subagents."],
+	[
+		"is shut down",
+		new WireError("thread not found: coord", -32603, { evenerErrorInfo: "sessionUnavailable" }),
+		"This session is shut down, so its subagents can't be listed.",
+	],
+])("says so when the session %s, and offers nothing to press", async (_name, error, words) => {
+	client = new FakeClient("ready");
+	client.on("evener/jobs/list", () => Promise.reject(error));
+	client.on("thread/read", () => ({ thread: { id: "coord", modelProvider: "", status: { type: "active" } } }) as never);
+	client.on("model/list", () => ({ data: [] }) as never);
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	expect(text(tree)).toContain(words);
+	for (const word of ["Retry", "Refresh", "Reconnect"]) expect(text(tree)).not.toContain(word);
+});
+
+it("keeps the search field while it has words, even once the list shrinks", async () => {
+	let small = false;
+	client = hub(() =>
+		small ? { revision: 2, root: session("local:coord", COORDINATOR.title, [runningOne("solo", "Only one")]) } : specTree(),
+	);
+	harness.connection = screenConnection(client, "ready");
+	const tree = await mount();
+	act(() => tree.root.find((node) => String(node.type) === "TextInput").props.onChangeText("race"));
+	small = true;
+	client.emitNotification({ method: "evener/jobs/treeUpdated", params: { threadId: "coord", ref: "local:coord", revision: 2 } } as never);
+	await settle();
+	expect(pressable(tree, "Clear filter")).toBeDefined();
+	act(() => pressable(tree, "Clear filter")?.props.onPress());
+	expect(text(tree)).toContain("Only one");
 });
 
 it("says why it can't list them when the read fails", async () => {
