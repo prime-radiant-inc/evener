@@ -44,9 +44,11 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 	const scale = useTextScale();
 
 	// What Send does, read when the sheet opens and again each time the
-	// connection returns. Until a read answers, Send waits.
+	// connection returns, which forgets the last answer. Until a read
+	// answers, Send waits.
 	const [send, setSend] = useState<{ action: SendAction; target: SessionTarget } | null>(null);
 	useEffect(() => {
+		setSend(null);
 		if (!online || !client) return;
 		let current = true;
 		readSendAction(getNativeMutationRuntime(), client, hubId, reviewRef)
@@ -63,15 +65,24 @@ export function ReviewSheet({ route, navigation }: NativeStackScreenProps<Routes
 
 	const canSend = online && send !== null && send.action !== "none";
 	const submit = async () => {
-		if (!verdict || !send || !canSend) return;
+		if (!verdict || !client || !canSend) return;
 		setSending(true);
 		setFailure(null);
 		try {
+			// The session may have started or stopped working since the sheet
+			// read it, so Send asks again: queue while it works, never steer.
+			const runtime = getNativeMutationRuntime();
+			const now = await readSendAction(runtime, client, hubId, reviewRef);
+			setSend(now);
+			if (now.action === "none") {
+				setSending(false);
+				return;
+			}
 			await submitSessionMessage(
-				getNativeMutationRuntime(),
+				runtime,
 				client,
-				send.target,
-				send.action === "queue" ? "queue" : "send",
+				now.target,
+				now.action === "queue" ? "queue" : "send",
 				reviewMessage(path, verdict, comments, note),
 			);
 		} catch (error) {

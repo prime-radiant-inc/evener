@@ -263,6 +263,48 @@ it("queues the review while the session works, and never steers or interrupts it
 	expect(mutations()).toEqual(["turn/queue"]);
 });
 
+it("queues the review for a session that started working after the sheet opened", async () => {
+	const tree = await mount();
+	choose(tree, "Approve");
+	status = "active";
+	await send(tree);
+	expect(mutations()).toEqual(["turn/queue"]);
+});
+
+it("sends nothing to a session that stopped taking messages after the sheet opened, and says so", async () => {
+	const tree = await mount();
+	choose(tree, "Approve");
+	status = "restartRequired";
+	await act(async () => sendButton(tree)?.props.onPress());
+	await settle();
+	expect(mutations()).toEqual([]);
+	expect(renderedText(tree)).toContain("This session can't take a message right now.");
+	expect(sheetNavigation.pop).not.toHaveBeenCalled();
+});
+
+it("forgets what Send did while the connection was down, until it reads again", async () => {
+	const tree = await mount();
+	choose(tree, "Approve");
+	expect(sendDisabled(tree)).toBe(false);
+	let answer: (value: ThreadReadResponse) => void = () => {};
+	client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (answer = resolve)));
+	const again = () =>
+		act(() =>
+			tree.update(
+				<ReviewSheet route={{ key: "review", name: "ReviewSheet", params: PARAMS } as never} navigation={sheetNavigation as never} />,
+			),
+		);
+	harness.connection = { state: "reconnecting", client };
+	again();
+	harness.connection = { state: "ready", client };
+	again();
+	await settle();
+	expect(sendDisabled(tree)).toBe(true);
+	await act(async () => answer(read()));
+	await settle();
+	expect(sendDisabled(tree)).toBe(false);
+});
+
 it("resumes a shut-down session with the review", async () => {
 	status = "ended";
 	const tree = await mount();
